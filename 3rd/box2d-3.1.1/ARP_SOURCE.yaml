@@ -1,0 +1,6 @@
+type: arp.third-party-source
+contractVersion: 1
+version: 3.1.1
+commit: 8c661469c9507d3ad6fbd2fea3f1aa71669c2fe3
+archiveSha256: ff94ddf7d75ffa6171502fdc7a7f336594560278978305cfc56c72268bc66721
+license: MIT
