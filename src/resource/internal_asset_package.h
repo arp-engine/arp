@@ -1,0 +1,73 @@
+#pragma once
+
+#include "core/api.h"
+#include "core/cpu_allocator.h"
+#include "reflection/reflection.h"
+#include "resource/resource_manager.h"
+
+#include <cstdint>
+#include <filesystem>
+
+namespace arp::resource {
+
+constexpr NameView kInternalAssetPackageFormat = "ArpInternalAssetPackage";
+constexpr std::uint32_t kInternalAssetPackageVersion = 1;
+
+struct ResourceEnvelopeBuildDesc {
+    core::pmr::String resourceId{&core::defaultCpuMemoryResource()};
+    core::pmr::String resourceType{&core::defaultCpuMemoryResource()};
+    core::pmr::String alias{&core::defaultCpuMemoryResource()};
+    core::pmr::String displayName{&core::defaultCpuMemoryResource()};
+    core::pmr::String status{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<ResourceDependency> dependencies{&core::defaultCpuMemoryResource()};
+};
+
+struct ResourceEnvelopeBuildResult {
+    bool success = false;
+    core::pmr::String envelopeYaml{&core::defaultCpuMemoryResource()};
+    std::uint32_t contentHash = 0;
+    core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
+};
+
+struct InternalAssetPackageEntry {
+    core::pmr::String resourceId{&core::defaultCpuMemoryResource()};
+    core::pmr::String resourceType{&core::defaultCpuMemoryResource()};
+    core::pmr::String alias{&core::defaultCpuMemoryResource()};
+    core::pmr::String envelopePath{&core::defaultCpuMemoryResource()};
+    core::pmr::String status{&core::defaultCpuMemoryResource()};
+    std::uint32_t contentHash = 0;
+    core::pmr::Vector<ResourceDependency> dependencies{&core::defaultCpuMemoryResource()};
+    core::pmr::String envelopeYaml{&core::defaultCpuMemoryResource()};
+};
+
+struct InternalAssetPackageDesc {
+    core::pmr::String name{&core::defaultCpuMemoryResource()};
+    core::pmr::String status{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<InternalAssetPackageEntry> entries{&core::defaultCpuMemoryResource()};
+};
+
+struct InternalAssetPackageValidationResult {
+    bool success = false;
+    core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
+    InternalAssetPackageDesc package;
+};
+
+ARP_API ResourceEnvelopeBuildResult buildResourceEnvelope(
+    const ResourceEnvelopeBuildDesc& desc, const reflection::object& payload);
+
+class ARP_API InternalAssetPackageWriter final {
+public:
+    InternalAssetPackageValidationResult write(
+        const InternalAssetPackageDesc& desc, const std::filesystem::path& outputDirectory) const;
+};
+
+class ARP_API InternalAssetPackageReader final {
+public:
+    InternalAssetPackageValidationResult read(const std::filesystem::path& packageDirectory) const;
+
+    ResourceLoadResult load(const std::filesystem::path& packageDirectory,
+        ResourceManager& manager,
+        ResourceLoadPolicy policy = {}) const;
+};
+
+} // namespace arp::resource

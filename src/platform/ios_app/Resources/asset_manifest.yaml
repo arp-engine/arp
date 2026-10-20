@@ -1,0 +1,6 @@
+type: ArpIosSmokeBundle
+contractVersion: 1
+status: Prototype Complete
+resources:
+  shaders: shaders
+  reflection: shaders
