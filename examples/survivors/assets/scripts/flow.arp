@@ -1,0 +1,284 @@
+# Owns run state and coordinates gameplay components through attached script objects.
+class RunFlow(ScriptComponent):
+    state: int
+    seconds: float
+    tick: int
+    health: float
+    x: float
+    y: float
+    kills: int
+    xp: int
+    upgrades: int
+    pending: int
+    boss_spawned: bool
+    boss_defeated: bool
+    rejected: int
+    stress: bool
+    start: bool
+    pause: bool
+    choice: int
+    autoplay: bool
+    mx: float
+    my: float
+    restart: bool
+    volume_delta: int
+    restart_requested: bool
+    settled: bool
+    best_kills: int
+    best_seconds: int
+    wins: int
+    points: int
+    volume: float
+    record_revision: int
+    random: SeededRandom
+    clock: GameClock
+    enemies: {int: Enemy}
+    projectiles: {int: Projectile}
+    pickups: {int: ExperiencePickup}
+    numbers: {int: DamageNumber}
+    weapons: [AutoWeapon]
+    blades: [OrbitBlade]
+    shots: int
+    pierces: int
+    bounces: int
+    blade_count: int
+    radius_percent: int
+    radius: float
+    pulse: float
+    player: PlayerController
+    hud: Hud
+    particles: ParticleEmitter2DComponent
+    sfx: AudioResourceSourceComponent
+    ui_audio: AudioResourceSourceComponent
+    music: AudioResourceSourceComponent
+
+    def __init__(self):
+        self.state = 0
+        self.seconds = 0.0
+        self.tick = 0
+        self.x = 0.0
+        self.y = 0.0
+        self.kills = 0
+        self.xp = 0
+        self.upgrades = 0
+        self.pending = 0
+        self.boss_spawned = false
+        self.boss_defeated = false
+        self.rejected = 0
+        self.stress = false
+        self.start = false
+        self.pause = false
+        self.choice = -1
+        self.autoplay = false
+        self.mx = 0.0
+        self.my = 0.0
+        self.restart = false
+        self.volume_delta = 0
+        self.restart_requested = false
+        self.settled = false
+        self.best_kills = 0
+        self.best_seconds = 0
+        self.wins = 0
+        self.points = 0
+        self.volume = 0.7
+        self.record_revision = 0
+        self.enemies = {}
+        self.projectiles = {}
+        self.pickups = {}
+        self.numbers = {}
+        self.weapons = []
+        self.blades = []
+        self.pulse = 0.0
+
+    def setup(self):
+        self.health = settings["playerHealth"]
+        var obj: GameObject = scene.create_object_ref("player")
+        self.player = obj.add_component("PlayerController")
+        self.player.setup(self)
+        for i in range(3):
+            obj = scene.create_object_ref("weapon")
+            var weapon: AutoWeapon = obj.add_component("AutoWeapon")
+            weapon.setup(self, i)
+            append(self.weapons, weapon)
+        for i in range(settings["maxOrbitBlades"] as int):
+            obj = scene.create_object_ref("orbit-blade")
+            require(obj.set_parent_object(self.player.game_object))
+            var blade: OrbitBlade = obj.add_component("OrbitBlade")
+            blade.setup(self, i)
+            append(self.blades, blade)
+        self.configure_weapons()
+        obj = scene.create_object_ref("waves")
+        var director: WaveDirector = obj.add_component("WaveDirector")
+        director.setup(self)
+        obj = scene.create_object_ref("particles")
+        self.particles = obj.add_component("ParticleEmitter2DComponent")
+        require(
+            self.particles.configure(
+                sprites["spark"], 0.4, 0.15, v2(1.0, 1.0), color(1.0, 0.8, 0.3, 1.0), 1
+            )
+        )
+        self.particles.set_sorting(6, 0)
+        obj = scene.create_object_ref("sfx")
+        self.sfx = obj.add_component("AudioResourceSourceComponent")
+        obj = scene.create_object_ref("ui-audio")
+        self.ui_audio = obj.add_component("AudioResourceSourceComponent")
+        obj = scene.create_object_ref("music")
+        self.music = obj.add_component("AudioResourceSourceComponent")
+        obj = scene.create_object_ref("hud")
+        self.hud = obj.add_component("Hud")
+        self.hud.setup(self)
+        build_physics_area(self)
+
+    def configure_weapons(self):
+        var n: int = self.weapons[0].level
+        self.shots = math.clamp(1 + n, 1, settings["maxBoltShots"]) as int
+        self.pierces = math.clamp(
+            n / (settings["boltPierceEveryLevels"] as int), 0, settings["maxBoltPierces"]
+        ) as int
+        self.bounces = math.clamp(
+            n / (settings["boltBounceEveryLevels"] as int), 0, settings["maxBoltBounces"]
+        ) as int
+        self.blade_count = math.clamp(
+            settings["baseOrbitBlades"] + self.weapons[1].level,
+            settings["baseOrbitBlades"],
+            settings["maxOrbitBlades"]
+        ) as int
+        self.radius_percent = math.clamp(
+            100 + self.weapons[2].level * settings["pulseRadiusPercentPerLevel"],
+            100,
+            settings["maxPulseRadiusPercent"]
+        ) as int
+        self.radius = settings["pulseRadius"] * self.radius_percent / 100.0
+        for weapon in self.weapons:
+            weapon.configure()
+        for blade in self.blades:
+            blade.game_object.set_active(blade.index < self.blade_count)
+
+    def on_update(self, dt: float):
+        if self.state == 0 and (self.start or self.autoplay):
+            self.state = 1
+            require(self.ui_audio.play_resource(sounds[2], 0.5, 2, false))
+        if self.pause:
+            if self.state == 1:
+                self.state = 3
+            elif self.state == 3:
+                self.state = 1
+        if self.health <= 0.0 and self.state == 1:
+            self.state = 5
+        if self.pending > 0 and self.state == 1:
+            self.state = 2
+        if self.state == 2:
+            var chosen: int = self.choice
+            if self.autoplay:
+                chosen = self.upgrades % 3
+            if chosen >= 0 and chosen < len(self.weapons):
+                self.weapons[chosen].level += 1
+                self.upgrades += 1
+                self.pending -= 1
+                self.configure_weapons()
+                self.state = 1
+                if self.pending > 0:
+                    self.state = 2
+                require(self.ui_audio.play_resource(sounds[1], 0.4, 2, false))
+        self.restart_requested = self.restart
+        if self.volume_delta != 0:
+            self.volume = math.clamp(self.volume + self.volume_delta * 0.1, 0.0, 1.0)
+            require(self.music.set_bus_volume(0, self.volume))
+            self.record_revision += 1
+        self.settle()
+        self.clock.setPaused(self.state != 1)
+
+    def on_fixed_update(self, dt: float):
+        self.seconds += dt
+        self.tick += 1
+        self.pulse = math.clamp(self.pulse - dt, 0.0, 1.0)
+        if self.seconds >= settings["durationSeconds"] and self.boss_defeated:
+            self.state = 4
+            self.clock.setPaused(true)
+
+    def settle(self):
+        if (self.state == 4 or self.state == 5) and not self.settled:
+            self.best_kills = math.clamp(self.kills, self.best_kills, 2147483647) as int
+            self.best_seconds = math.clamp(self.seconds, self.best_seconds, 2147483647) as int
+            self.points += self.upgrades
+            if self.state == 4:
+                self.wins += 1
+            self.settled = true
+            self.record_revision += 1
+
+    def grant_experience(self, amount: int):
+        if amount < 0 or amount > 2147483647 - self.xp:
+            raise "ARP-SURVIVORS-XP-OVERFLOW"
+        self.xp += amount
+        while self.xp >= settings["xpPerUpgrade"]:
+            self.xp -= settings["xpPerUpgrade"]
+            self.pending += 1
+
+    def nearest(self, x: float, y: float, excluded: [int]) -> int:
+        var result: int = -1
+        var distance: float = 1.0e30
+        for id, enemy in self.enemies:
+            var skip: bool = enemy.hp <= 0.0
+            for old in excluded:
+                if old == id:
+                    skip = true
+            if not skip:
+                var dx: float = enemy.x - x
+                var dy: float = enemy.y - y
+                var d: float = dx * dx + dy * dy
+                if d < distance:
+                    distance = d
+                    result = id
+        return result
+
+    def enemy(self, kind: int, boss: bool, x: float, y: float) -> int:
+        if len(self.enemies) >= settings["maxEnemies"]:
+            self.rejected += 1
+            return -1
+        var obj: GameObject = scene.create_object_ref("enemy")
+        pose(obj, x, y, 1.0, 1.0, 0.0)
+        var enemy: Enemy = obj.add_component("Enemy")
+        enemy.setup(self, kind, boss)
+        var id: int = obj.object_id() as int
+        self.enemies[id] = enemy
+        return id
+
+    def pickup(self, x: float, y: float):
+        if len(self.pickups) >= settings["maxPickups"]:
+            self.rejected += 1
+            return
+        var obj: GameObject = scene.create_object_ref("experience")
+        pose(obj, x, y, 0.7, 0.7, 0.0)
+        var pickup: ExperiencePickup = obj.add_component("ExperiencePickup")
+        pickup.setup(self, x, y)
+        self.pickups[obj.object_id() as int] = pickup
+
+    def bolt(
+        self,
+        x: float,
+        y: float,
+        vx: float,
+        vy: float,
+        damage: int,
+        target: int,
+        pierce: int,
+        bounce: int
+    ) -> int:
+        if len(self.projectiles) >= settings["maxProjectiles"]:
+            self.rejected += 1
+            return -1
+        var obj: GameObject = scene.create_object_ref("projectile")
+        var projectile: Projectile = obj.add_component("Projectile")
+        projectile.setup(self, x, y, vx, vy, damage, target, pierce, bounce)
+        var id: int = obj.object_id() as int
+        self.projectiles[id] = projectile
+        return id
+
+    def damage_number(self, x: float, y: float, amount: int):
+        if len(self.numbers) >= settings["maxDamageNumbers"]:
+            self.rejected += 1
+            return
+        var obj: GameObject = scene.create_object_ref("damage-number")
+        var number: DamageNumber = obj.add_component("DamageNumber")
+        number.setup(self, x, y, amount)
+        self.numbers[obj.object_id() as int] = number

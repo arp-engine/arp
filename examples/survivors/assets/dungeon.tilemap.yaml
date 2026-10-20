@@ -1,0 +1,7184 @@
+type: arp.tile-map
+contractVersion: 1
+resourceId: 20000000-0000-4000-8000-000000003001
+tileSetId: 20000000-0000-4000-8000-000000003000
+originX: -16.0
+originY: -16.0
+chunkTiles: 8
+chunks:
+  - x: 0
+    y: 0
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells:
+          - x: 4
+            y: 4
+            tileId: 4
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+  - x: 1
+    y: 0
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells: []
+  - x: 2
+    y: 0
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells: []
+  - x: 3
+    y: 0
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells:
+          - x: 3
+            y: 4
+            tileId: 4
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+  - x: 0
+    y: 1
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells: []
+  - x: 1
+    y: 1
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 5
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells: []
+  - x: 2
+    y: 1
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells: []
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells: []
+  - x: 3
+    y: 1
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 5
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells: []
+  - x: 0
+    y: 2
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells: []
+  - x: 1
+    y: 2
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells: []
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells: []
+  - x: 2
+    y: 2
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells: []
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells: []
+  - x: 3
+    y: 2
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 7
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells: []
+  - x: 0
+    y: 3
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells:
+          - x: 4
+            y: 3
+            tileId: 4
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+  - x: 1
+    y: 3
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 5
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells: []
+  - x: 2
+    y: 3
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells: []
+  - x: 3
+    y: 3
+    layers:
+      - name: ground
+        sortingLayer: -10
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 1
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 2
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 3
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 4
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 5
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 6
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 1
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: obstacles
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 5
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 0
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 1
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 2
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 3
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 4
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 5
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 6
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 0
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 2
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 3
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 4
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 5
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 6
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 7
+            y: 7
+            tileId: 3
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+      - name: foreground
+        sortingLayer: 5
+        sortingOrder: 0
+        cells:
+          - x: 3
+            y: 3
+            tileId: 4
+            quarterTurns: 0
+            flipX: false
+            flipY: false

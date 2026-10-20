@@ -1,0 +1,104 @@
+# Native game code enters through these functions; simulation rules stay in ScriptComponents.
+def initialize(
+    s: RunFlow,
+    config: {string: any},
+    images: {string: string},
+    clips: {string: string},
+    audio: [string],
+    random: SeededRandom,
+    clock: GameClock
+):
+    settings = config
+    sprites = images
+    animations = clips
+    sounds = audio
+    world = physics_world
+    scene = main_scene
+    s.random = random
+    s.clock = clock
+    clock.setPaused(true)
+    s.setup()
+
+def grant_experience(s: RunFlow, amount: int):
+    s.grant_experience(amount)
+
+def force_defeat(s: RunFlow):
+    s.health = 0.0
+
+def set_record(
+    s: RunFlow,
+    best: int,
+    seconds: int,
+    wins: int,
+    points: int,
+    volume: float
+):
+    s.best_kills = best
+    s.best_seconds = seconds
+    s.wins = wins
+    s.points = points
+    s.volume = volume
+    require(s.music.set_bus_volume(0, volume))
+    require(s.music.play_resource(sounds[3], 0.4, 1, true))
+
+def populate_stress(s: RunFlow):
+    s.stress = true
+    s.state = 1
+    for i in range(settings["stressEnemies"] as int):
+        s.enemy(i % 3, false, -9.0 + (i % 40) * 0.45, -5.0 + (i / 40) * 0.4)
+    for i in range(settings["stressProjectiles"] as int):
+        s.bolt(-9.0 + (i % 80) * 0.225, -5.0 + (i / 80) * 0.4, 0.0, 0.4, 1, -1, 0, 0)
+    for i in range(settings["stressPickups"] as int):
+        s.pickup(-9.0 + (i % 100) * 0.18, -5.0 + (i / 100) * 0.33)
+
+def world_checksum(s: RunFlow) -> int:
+    var checksum: int = (
+        s.kills * 31 + ((s.health * 1000.0) as int) + s.tick
+    ) % 1000000007
+    for id, enemy in s.enemies:
+        checksum = (
+            checksum + ((enemy.x * 1000.0) as int) + ((enemy.y * 1000.0) as int)
+        ) % 1000000007
+    if checksum < 0:
+        checksum += 1000000007
+    return checksum
+
+def describe(s: RunFlow) -> [float]:
+    return [
+        s.state as float,
+        s.seconds,
+        s.health,
+        len(s.enemies) as float,
+        len(s.projectiles) as float,
+        len(s.pickups) as float,
+        s.kills as float,
+        s.upgrades as float,
+        s.pending as float,
+        s.boss_spawned as float,
+        s.boss_defeated as float,
+        s.rejected as float,
+        s.shots as float,
+        s.pierces as float,
+        s.bounces as float,
+        s.blade_count as float,
+        s.radius_percent as float,
+        s.radius,
+        s.x,
+        s.y,
+        0.0,
+        1.0,
+        1.0
+    ]
+
+def host_snapshot(s: RunFlow) -> [float]:
+    s.settle()
+    return [
+        1.0,
+        s.record_revision as float,
+        s.restart_requested as float,
+        s.best_kills as float,
+        s.best_seconds as float,
+        s.wins as float,
+        s.points as float,
+        s.volume
+    ]

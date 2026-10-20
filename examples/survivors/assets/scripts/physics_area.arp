@@ -1,0 +1,104 @@
+# Drives the physics showcase platform with a deterministic horizontal velocity.
+class MovingPlatform(ScriptComponent):
+    flow: RunFlow
+    body: RigidBody2DComponent
+
+    def on_fixed_update(self, dt: float):
+        require(self.body.set_velocity(v2(math.cos(self.flow.seconds) * 0.8, 0.0), 0.0))
+
+# Creates a bounded demo body with an explicitly selected collision shape.
+def mechanism(x: float, y: float, shape_kind: int, sprite: string) -> RigidBody2DComponent:
+    var obj: GameObject = scene.create_object_ref("physics-mechanism")
+    pose(obj, x, y, 1.0, 1.0, 0.0)
+    add_sprite(obj, sprite, 2, true)
+    var body: RigidBody2DComponent = obj.add_component("RigidBody2DComponent")
+    var desc: BodyDesc = BodyDesc()
+    desc.type = BodyType.Dynamic
+    require(body.initialize_body(desc))
+    var shape: ShapeDesc = ShapeDesc()
+    var filter: CollisionFilter = CollisionFilter()
+    filter.category = 2
+    filter.mask = 7
+    shape.filter = filter
+    shape.friction = 0.8
+    shape.type = ShapeType.Box
+    shape.halfSize = v2(0.4, 0.4)
+    if shape_kind == 0:
+        shape.type = ShapeType.Circle
+        shape.radius = 0.3
+        shape.restitution = 0.9
+    elif shape_kind == 1:
+        shape.type = ShapeType.Capsule
+        shape.radius = 0.2
+        shape.pointA = v2(0.0, -0.2)
+        shape.pointB = v2(0.0, 0.2)
+    elif shape_kind == 3:
+        shape.type = ShapeType.Convex
+        require(shape.set_points([v2(-0.4, -0.3), v2(0.4, -0.3), v2(0.0, 0.4)]))
+    require(body.add_collider(shape) != nil)
+    return body
+
+# Places the contact and joint examples in the map's physics interaction area.
+def build_physics_area(flow: RunFlow):
+    mechanism(-2.0, 1.0, 2, "tile_0089")
+    var ball: RigidBody2DComponent = mechanism(-1.0, 1.0, 0, "tile_0082")
+    require(ball.set_velocity(v2(1.0, 1.0), 2.0))
+    mechanism(0.0, 1.0, 1, "tile_0074")
+    mechanism(1.0, 1.0, 3, "tile_0056")
+    var anchor_object: GameObject = scene.create_object_ref("joint-anchor")
+    pose(anchor_object, 0.0, 3.0, 1.0, 1.0, 0.0)
+    var anchor: RigidBody2DComponent = anchor_object.add_component("RigidBody2DComponent")
+    var anchor_desc: BodyDesc = BodyDesc()
+    require(anchor.initialize_body(anchor_desc))
+    for i in range(3):
+        var body: RigidBody2DComponent = mechanism(i * 2.0 - 2.0, 3.0, 2, "tile_0064")
+        var obj: GameObject = scene.find_object(body.owner_id())
+        var joint: Joint2DComponent = obj.add_component("Joint2DComponent")
+        var desc: JointDesc = JointDesc()
+        desc.localAnchorA = v2(i * 2.0 - 2.0, 0.0)
+        if i == 0:
+            desc.type = JointType.Distance
+            desc.localAnchorA = v2(-2.0, 1.0)
+            desc.length = 1.0
+        elif i == 1:
+            desc.type = JointType.Revolute
+            desc.enableMotor = true
+            desc.motorSpeed = 1.0
+            desc.maxMotorForce = 10.0
+        else:
+            desc.type = JointType.Prismatic
+            desc.enableMotor = true
+            desc.enableLimit = true
+            desc.lowerLimit = -1.0
+            desc.upperLimit = 1.0
+            desc.motorSpeed = 0.6
+            desc.maxMotorForce = 10.0
+        require(joint.initialize_joint(anchor, body, desc))
+    var obj: GameObject = scene.create_object_ref("moving-platform")
+    pose(obj, -4.0, 3.0, 1.0, 1.0, 0.0)
+    add_sprite(obj, "tile_0068", 2, true)
+    var body: RigidBody2DComponent = obj.add_component("RigidBody2DComponent")
+    var desc: BodyDesc = BodyDesc()
+    desc.type = BodyType.Kinematic
+    require(body.initialize_body(desc))
+    var shape: ShapeDesc = ShapeDesc()
+    shape.type = ShapeType.Box
+    shape.halfSize = v2(0.4, 0.4)
+    var filter: CollisionFilter = CollisionFilter()
+    filter.category = 2
+    filter.mask = 7
+    shape.filter = filter
+    require(body.add_collider(shape) != nil)
+    var moving: MovingPlatform = obj.add_component("MovingPlatform")
+    moving.flow = flow
+    moving.body = body
+    obj = scene.create_object_ref("static-chain")
+    pose(obj, -3.0, 5.0, 1.0, 1.0, 0.0)
+    body = obj.add_component("RigidBody2DComponent")
+    desc = BodyDesc()
+    require(body.initialize_body(desc))
+    shape = ShapeDesc()
+    shape.type = ShapeType.StaticChain
+    shape.filter = filter
+    require(shape.set_points([v2(-1.0, 0.0), v2(0.0, 0.0), v2(1.0, 0.0), v2(2.0, 0.0)]))
+    require(body.add_collider(shape) != nil)

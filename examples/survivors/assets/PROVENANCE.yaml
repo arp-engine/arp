@@ -1,0 +1,8 @@
+type: arp.asset-provenance
+contractVersion: 1
+source: https://kenney.nl/assets/tiny-dungeon
+download: https://kenney.nl/media/pages/assets/tiny-dungeon/f8422efb44-1674742415/kenney_tiny-dungeon.zip
+license: CC0-1.0
+sourcePngSha256: d24e60a41e4ac7a745c0304dfde121143688557f40215f23221c29cfe683825f
+derivatives: Explicit second animation poses, bitmap alphabet, UI pixels and effects authored by ARP contributors.
+audio: Original offline synthesized event tones and two-voice loop by ARP contributors; CC0-1.0.

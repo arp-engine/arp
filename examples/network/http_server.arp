@@ -1,0 +1,36 @@
+import arp_network
+
+def setup() -> any:
+    var runtime: arp_network.NetworkRuntime = arp_network.network
+    var server: arp_network.HttpServer = runtime.create_http_server()
+    server.route("GET", "/health")
+    server.route("GET", "/users/:id")
+    server.route("POST", "/echo")
+    var result: arp_network.NetworkResult = server.start("127.0.0.1", 0)
+    if not result.success:
+        server.destroy()
+        return nil
+    return server
+
+def serve_one(server: arp_network.HttpServer) -> int:
+    var runtime: arp_network.NetworkRuntime = arp_network.network
+    var request: arp_network.HttpServerRequest = await server.next_request()
+    var response: arp_network.HttpResponse = runtime.create_http_response()
+    if request.path() == "/health":
+        response.body = "healthy"
+    elif request.route_pattern() == "/users/:id":
+        response.body = request.param("id")
+    else:
+        response.body = request.body()
+    response.add_header("X-ARP", "script-server")
+    var result: arp_network.NetworkResult = await request.respond(response)
+    request.destroy()
+    if result.success:
+        yield result.bytes
+    else:
+        yield 0
+    return 0
+
+def shutdown(server: arp_network.HttpServer) -> bool:
+    server.stop()
+    return server.destroy()

@@ -1,0 +1,147 @@
+import arp_network
+
+def json_string(value: string) -> string:
+    var escaped: string = value.replace("\\", "\\\\")
+    escaped = escaped.replace("\"", "\\\"")
+    escaped = escaped.replace("\n", "\\n")
+    escaped = escaped.replace("\r", "\\r")
+    escaped = escaped.replace("\t", "\\t")
+    return "\"" + escaped + "\""
+
+
+def usage() -> string:
+    return "Usage: arp_editor_cli [--url BASE_URL] [--token TOKEN] <command> [arguments]\n" + "Commands: state | activate <source> | search <source> <value>\n" + "          scene.hierarchy.get | scene.component.catalog.get\n" + "          scene.inspector.get [objectId]\n" + "          scene.reparent <objectId> <parentId> <childIndex>\n" + "          scene.component.add <objectId> <type> [properties-json]\n" + "          scene.component.remove <objectId> <componentId>\n" + "          scene.component.property.set <objectId> <componentId> <property> <kind> <value-json>\n" + "          scene.undo | scene.redo\n" + "          script.replace <documentId> <text> | script.save <documentId>\n" + "          script.undo <documentId> | script.redo <documentId>\n" + "Defaults: ARP_EDITOR_REMOTE_URL or http://127.0.0.1:8765;\n" + "          ARP_EDITOR_REMOTE_TOKEN supplies the bearer token.\n"
+
+
+def cli_result(code: string, output: string) -> string:
+    return code + "\n" + output
+
+
+def main(args: [string], configured_url: string, configured_token: string) -> string:
+    var base_url: string = configured_url
+    var token: string = configured_token
+    var command: string = ""
+    var first: string = ""
+    var second: string = ""
+    var third: string = ""
+    var fourth: string = ""
+    var fifth: string = ""
+    var positional_count: int = 0
+    var parse_options: bool = true
+    var needs_url: bool = false
+    var needs_token: bool = false
+    for value in args:
+        if value == "--help" or value == "-h":
+            return cli_result("0", usage())
+        if needs_url:
+            base_url = value
+            needs_url = false
+        elif needs_token:
+            token = value
+            needs_token = false
+        elif parse_options and value == "--url":
+            needs_url = true
+        elif parse_options and value == "--token":
+            needs_token = true
+        elif parse_options and value == "--":
+            parse_options = false
+        else:
+            parse_options = false
+            positional_count = positional_count + 1
+            if positional_count == 1:
+                command = value
+            elif positional_count == 2:
+                first = value
+            elif positional_count == 3:
+                second = value
+            elif positional_count == 4:
+                third = value
+            elif positional_count == 5:
+                fourth = value
+            elif positional_count == 6:
+                fifth = value
+            else:
+                return cli_result("2", "error: too many command arguments\n")
+
+    if needs_url:
+        return cli_result("2", "error: --url requires a value\n")
+    if needs_token:
+        return cli_result("2", "error: --token requires a value\n")
+    if positional_count == 0:
+        return cli_result("2", usage())
+    if token.length() < 32 or token.length() > 256:
+        return cli_result("2", "error: set ARP_EDITOR_REMOTE_TOKEN to a 32..256 byte bearer token\n")
+    if base_url.endswith("/"):
+        return cli_result("2", "error: --url must be a base URL without a trailing slash\n")
+
+    var body: string = ""
+    if command == "state":
+        if positional_count != 1:
+            return cli_result("2", "error: state takes no arguments\n")
+        body = "{\"schemaVersion\":1,\"command\":\"editor.state.get\"}"
+    elif command == "activate":
+        if positional_count != 2:
+            return cli_result("2", "error: activate requires a source\n")
+        body = "{\"schemaVersion\":1,\"command\":\"editor.activate\",\"source\":" + json_string(first) + "}"
+    elif command == "search":
+        if positional_count != 3:
+            return cli_result("2", "error: search requires a source and value\n")
+        body = "{\"schemaVersion\":1,\"command\":\"editor.search\",\"source\":" + json_string(first) + ",\"value\":" + json_string(second) + "}"
+    elif command == "script.replace":
+        if positional_count != 3:
+            return cli_result("2", "error: script.replace requires a documentId and text\n")
+        body = "{\"schemaVersion\":1,\"command\":\"script.replace\",\"documentId\":" + first + ",\"text\":" + json_string(second) + "}"
+    elif command == "script.save" or command == "script.undo" or command == "script.redo":
+        if positional_count != 2:
+            return cli_result("2", "error: " + command + " requires a documentId\n")
+        body = "{\"schemaVersion\":1,\"command\":" + json_string(command) + ",\"documentId\":" + first + "}"
+    elif command == "scene.inspector.get":
+        if positional_count == 1:
+            body = "{\"schemaVersion\":1,\"command\":\"scene.inspector.get\"}"
+        elif positional_count == 2:
+            body = "{\"schemaVersion\":1,\"command\":\"scene.inspector.get\",\"objectId\":" + first + "}"
+        else:
+            return cli_result("2", "error: scene.inspector.get accepts an optional objectId\n")
+    elif command == "scene.hierarchy.get" or command == "scene.component.catalog.get":
+        if positional_count != 1:
+            return cli_result("2", "error: " + command + " takes no arguments\n")
+        body = "{\"schemaVersion\":1,\"command\":" + json_string(command) + "}"
+    elif command == "scene.reparent":
+        if positional_count != 4:
+            return cli_result("2", "error: scene.reparent requires objectId, parentId and childIndex\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.reparent\",\"objectId\":" + first + ",\"parentId\":" + second + ",\"childIndex\":" + third + "}"
+    elif command == "scene.component.add":
+        if positional_count != 3 and positional_count != 4:
+            return cli_result("2", "error: scene.component.add requires objectId, type and optional properties-json\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.component.add\",\"objectId\":" + first + ",\"type\":" + json_string(second)
+        if positional_count == 4:
+            body = body + ",\"properties\":" + third
+        body = body + "}"
+    elif command == "scene.component.remove":
+        if positional_count != 3:
+            return cli_result("2", "error: scene.component.remove requires objectId and componentId\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.component.remove\",\"objectId\":" + first + ",\"componentId\":" + second + "}"
+    elif command == "scene.component.property.set":
+        if positional_count != 6:
+            return cli_result("2", "error: scene.component.property.set requires objectId, componentId, property, kind and value-json\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.component.property.set\",\"objectId\":" + first + ",\"componentId\":" + second + ",\"property\":" + json_string(third) + ",\"kind\":" + json_string(fourth) + ",\"value\":" + fifth + "}"
+    elif command == "scene.undo" or command == "scene.redo":
+        if positional_count != 1:
+            return cli_result("2", "error: " + command + " takes no arguments\n")
+        body = "{\"schemaVersion\":1,\"command\":" + json_string(command) + "}"
+    else:
+        return cli_result("2", "error: unknown command: " + command + "\n" + usage())
+
+    var runtime: arp_network.NetworkRuntime = arp_network.network
+    var client: any = runtime.create_http_client()
+    var auth: any = client.set_header("Authorization", "Bearer " + token)
+    if not auth.success:
+        client.destroy()
+        return cli_result("3", "error: could not configure Authorization header\n")
+    var response: arp_network.NetworkResult = await client.post(base_url + "/api/v1/commands", "application/json", body)
+    client.destroy()
+    if not response.success:
+        return cli_result("4", "error: HTTP transport failed\n")
+    if response.code < 200 or response.code >= 300:
+        return cli_result("5", "error: editor REST request rejected\n" + response.data + "\n")
+    return cli_result("0", response.data + "\n")

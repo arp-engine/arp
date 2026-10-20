@@ -1,0 +1,496 @@
+#pragma once
+
+#include "core/cpu_allocator.h"
+#include "core/math.h"
+#include "editor/workspace/editor_scene_inspector.h"
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <memory_resource>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <variant>
+
+namespace arp::editor {
+enum class EditorCommandOrigin : std::uint8_t { LocalUi, PlatformInput, Mcp, HttpRest, Internal };
+
+struct ActivateControlCommand {
+    explicit ActivateControlCommand(std::string_view source,
+        std::pmr::memory_resource* resource = &core::defaultCpuMemoryResource())
+        : source(source, resource)
+    {}
+
+    core::pmr::String source;
+};
+
+struct SetTextValueCommand {
+    SetTextValueCommand(std::string_view source,
+        std::string_view value,
+        std::pmr::memory_resource* resource = &core::defaultCpuMemoryResource())
+        : source(source, resource), value(value, resource)
+    {}
+
+    core::pmr::String source;
+    core::pmr::String value;
+};
+
+enum class EditorInputKind : std::uint8_t {
+    KeyDown,
+    KeyUp,
+    PointerDown,
+    PointerUp,
+    PointerMoved,
+    PointerDelta,
+    Wheel,
+    Text,
+    FocusLost
+};
+enum class EditorPointerButton : std::uint8_t { None, Left, Middle, Right, Auxiliary };
+enum class EditorInputKey : std::uint8_t {
+    Other,
+    A,
+    C,
+    D,
+    E,
+    Q,
+    R,
+    S,
+    V,
+    W,
+    X,
+    Y,
+    Z,
+    Backspace,
+    Delete,
+    Enter,
+    NumpadEnter,
+    Tab,
+    ArrowLeft,
+    ArrowRight,
+    ArrowUp,
+    ArrowDown,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    LeftShift,
+    RightShift,
+    LeftControl,
+    RightControl
+};
+
+struct EditorInputCommand {
+    EditorInputKind kind = EditorInputKind::PointerDelta;
+    EditorInputKey key = EditorInputKey::Other;
+    EditorPointerButton button = EditorPointerButton::None;
+    bool primaryButton = false;
+    float x = 0.0f;
+    float y = 0.0f;
+    float deltaX = 0.0f;
+    float deltaY = 0.0f;
+    float wheelDelta = 0.0f;
+    core::pmr::String text{&core::defaultCpuMemoryResource()};
+};
+
+struct SetInspectorScrollCommand {
+    float offset = 0.0f;
+};
+
+struct DragInspectorThumbCommand {
+    float top = 0.0f;
+};
+
+struct SetGamePreviewStateCommand {
+    bool running = false;
+    bool starting = false;
+    core::pmr::String status{&core::defaultCpuMemoryResource()};
+
+    explicit SetGamePreviewStateCommand(std::string_view statusText,
+        std::pmr::memory_resource* resource = &core::defaultCpuMemoryResource())
+        : status(statusText, resource)
+    {}
+};
+
+struct SelectSceneObjectCommand {
+    std::uint64_t objectId = 0;
+};
+
+struct SelectSceneObjectsCommand {
+    explicit SelectSceneObjectsCommand(
+        std::pmr::memory_resource* resource = &core::defaultCpuMemoryResource())
+        : objectIds(resource)
+    {}
+
+    core::pmr::Vector<std::uint64_t> objectIds;
+    std::uint64_t primaryObjectId = 0;
+};
+
+struct ReparentSceneObjectCommand {
+    std::uint64_t objectId = 0;
+    std::uint64_t parentId = 0;
+    std::uint32_t childIndex = 0;
+};
+
+enum class SceneViewportCameraOperation : std::uint8_t {
+    Orbit,
+    OrbitAround,
+    Look,
+    Pan,
+    Move,
+    Zoom
+};
+
+struct SceneViewportCameraCommand {
+    SceneViewportCameraOperation operation = SceneViewportCameraOperation::Orbit;
+    float deltaX = 0.0f;
+    float deltaY = 0.0f;
+    float viewportWidth = 0.0f;
+    float viewportHeight = 0.0f;
+    core::Vec3 pivot{};
+};
+
+struct CreateSceneObjectCommand {
+    explicit CreateSceneObjectCommand(std::string_view value,
+        std::pmr::memory_resource* resource = &core::defaultCpuMemoryResource())
+        : name(value, resource)
+    {}
+
+    core::pmr::String name;
+};
+
+struct DestroySceneObjectCommand {};
+
+struct SetSceneObjectNameCommand {
+    explicit SetSceneObjectNameCommand(std::string_view value,
+        std::pmr::memory_resource* resource = &core::defaultCpuMemoryResource())
+        : name(value, resource)
+    {}
+
+    core::pmr::String name;
+};
+
+struct SetSceneObjectTranslationCommand {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+};
+
+struct SetSceneObjectTransformCommand {
+    // Zero preserves the UI/REST compatibility behavior of targeting selection.
+    std::uint64_t objectId = 0;
+    core::Vec3 translation{};
+    core::Quat rotation{};
+    core::Vec3 scale{1.0f, 1.0f, 1.0f};
+};
+
+struct BeginSceneTransformEditCommand {
+    std::uint64_t objectId = 0;
+};
+
+struct EndSceneTransformEditCommand {
+    std::uint64_t objectId = 0;
+};
+
+struct UndoSceneCommand {};
+
+struct RedoSceneCommand {};
+
+struct RemoveSceneComponentCommand {
+    // Zero IDs retain the UI behavior of removing the last removable component
+    // from the current selection. Remote commands must provide both IDs.
+    std::uint64_t objectId = 0;
+    std::uint64_t componentId = 0;
+};
+
+enum class ScenePropertyValueKind : std::uint8_t {
+    Boolean,
+    Integer,
+    UnsignedInteger,
+    Number,
+    Enumeration,
+    Vector2,
+    Vector2List,
+    SceneObjectLinkList,
+    Vector3,
+    Color4,
+    String,
+    ResourceReference,
+    SceneObjectReference
+};
+
+struct SetSceneComponentPropertyCommand {
+    explicit SetSceneComponentPropertyCommand(std::string_view propertyName,
+        std::pmr::memory_resource* resource = &core::defaultCpuMemoryResource())
+        : name(propertyName, resource), stringValue(resource), vector2ListValue(resource),
+          sceneObjectLinkListValue(resource)
+    {}
+
+    std::uint64_t objectId = 0;
+    std::uint64_t componentId = 0;
+    core::pmr::String name;
+    core::pmr::String stringValue;
+    ScenePropertyValueKind valueKind = ScenePropertyValueKind::Number;
+    bool booleanValue = false;
+    int integerValue = 0;
+    std::uint32_t unsignedIntegerValue = 0;
+    std::uint64_t sceneObjectReferenceValue = 0;
+    float numberValue = 0.0f;
+    core::Vec2 vector2Value{};
+    core::pmr::Vector<core::Vec2> vector2ListValue{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<SceneInspectorObjectLink> sceneObjectLinkListValue{
+        &core::defaultCpuMemoryResource()};
+    core::Vec3 vector3Value{};
+    core::Vec4 color4Value{};
+};
+
+struct AddSceneComponentCommand {
+    explicit AddSceneComponentCommand(std::string_view value,
+        std::pmr::memory_resource* resource = &core::defaultCpuMemoryResource())
+        : type(value, resource), initialProperties(resource)
+    {}
+
+    core::pmr::String type;
+    // Zero retains the UI behavior of targeting the current selection.
+    std::uint64_t objectId = 0;
+    // Optional typed properties are applied before the add command commits.
+    core::pmr::Vector<SetSceneComponentPropertyCommand> initialProperties;
+};
+
+struct UndoScriptCommand {
+    std::uint64_t documentId = 0;
+};
+
+struct RedoScriptCommand {
+    std::uint64_t documentId = 0;
+};
+
+struct ReplaceScriptTextCommand {
+    ReplaceScriptTextCommand(std::uint64_t document,
+        std::string_view value,
+        std::pmr::memory_resource* resource = &core::defaultCpuMemoryResource())
+        : documentId(document), text(value, resource)
+    {}
+
+    std::uint64_t documentId = 0;
+    core::pmr::String text;
+};
+
+struct SaveScriptCommand {
+    std::uint64_t documentId = 0;
+};
+
+struct SaveSceneCommand {
+    explicit SaveSceneCommand(std::string_view path,
+        std::pmr::memory_resource* resource = &core::defaultCpuMemoryResource())
+        : relativePath(path, resource)
+    {}
+
+    core::pmr::String relativePath;
+};
+
+struct LoadSceneCommand {
+    explicit LoadSceneCommand(std::string_view path,
+        std::pmr::memory_resource* resource = &core::defaultCpuMemoryResource())
+        : relativePath(path, resource)
+    {}
+
+    core::pmr::String relativePath;
+};
+
+enum class ScenePersistenceTaskStatus : std::uint8_t { Unknown, Pending, Succeeded, Failed };
+
+struct GetScenePersistenceTaskQuery {
+    std::uint64_t taskId = 0;
+};
+
+struct CompleteSceneLoadCommand {
+    CompleteSceneLoadCommand(std::uint64_t id,
+        std::string_view contents,
+        std::pmr::memory_resource* resource = &core::defaultCpuMemoryResource())
+        : taskId(id), yaml(contents, resource)
+    {}
+
+    std::uint64_t taskId = 0;
+    core::pmr::String yaml;
+};
+
+struct GetEditorStateQuery {};
+
+struct GetSceneInspectorQuery {
+    // Zero means the current scene selection.
+    std::uint64_t objectId = 0;
+};
+
+struct GetSceneHierarchyQuery {};
+
+struct GetSceneComponentCatalogQuery {};
+
+struct SceneHierarchySnapshotEntry {
+    std::uint64_t objectId = 0;
+    std::uint64_t parentId = 0;
+    std::uint32_t depth = 0;
+    std::uint32_t childIndex = 0;
+    core::pmr::String name{&core::defaultCpuMemoryResource()};
+};
+
+struct SceneHierarchySnapshot {
+    std::uint64_t selectedObjectId = 0;
+    core::pmr::Vector<SceneHierarchySnapshotEntry> entries{&core::defaultCpuMemoryResource()};
+};
+
+struct SceneComponentCatalogSnapshotEntry {
+    core::pmr::String typeName{&core::defaultCpuMemoryResource()};
+    core::pmr::String displayName{&core::defaultCpuMemoryResource()};
+};
+
+struct SceneComponentCatalogSnapshot {
+    core::pmr::Vector<SceneComponentCatalogSnapshotEntry> entries{
+        &core::defaultCpuMemoryResource()};
+};
+
+using EditorCommandPayload = std::variant<ActivateControlCommand,
+    SetTextValueCommand,
+    EditorInputCommand,
+    SetInspectorScrollCommand,
+    DragInspectorThumbCommand,
+    SetGamePreviewStateCommand,
+    SelectSceneObjectCommand,
+    SelectSceneObjectsCommand,
+    ReparentSceneObjectCommand,
+    SceneViewportCameraCommand,
+    CreateSceneObjectCommand,
+    DestroySceneObjectCommand,
+    SetSceneObjectNameCommand,
+    SetSceneObjectTranslationCommand,
+    SetSceneObjectTransformCommand,
+    BeginSceneTransformEditCommand,
+    EndSceneTransformEditCommand,
+    UndoSceneCommand,
+    RedoSceneCommand,
+    AddSceneComponentCommand,
+    RemoveSceneComponentCommand,
+    SetSceneComponentPropertyCommand,
+    UndoScriptCommand,
+    RedoScriptCommand,
+    ReplaceScriptTextCommand,
+    SaveScriptCommand,
+    SaveSceneCommand,
+    LoadSceneCommand,
+    GetScenePersistenceTaskQuery,
+    CompleteSceneLoadCommand,
+    GetEditorStateQuery,
+    GetSceneInspectorQuery,
+    GetSceneHierarchyQuery,
+    GetSceneComponentCatalogQuery>;
+
+struct EditorCommandEnvelope {
+    static constexpr std::uint16_t currentVersion = 1;
+
+    explicit EditorCommandEnvelope(EditorCommandPayload payload) : payload(std::move(payload)) {}
+
+    std::uint16_t schemaVersion = currentVersion;
+    std::uint64_t commandId = 0;
+    std::uint64_t correlationId = 0;
+    std::uint64_t sourceSequence = 0;
+    EditorCommandOrigin origin = EditorCommandOrigin::Internal;
+    bool hasExpectedStateVersion = false;
+    std::uint64_t expectedStateVersion = 0;
+    core::pmr::String idempotencyKey{&core::defaultCpuMemoryResource()};
+    core::pmr::String idempotencyFingerprint{&core::defaultCpuMemoryResource()};
+    EditorCommandPayload payload;
+};
+
+enum class EditorResponseStatus : std::uint8_t { Completed, Rejected, Failed };
+
+enum class EditorDiagnosticCode : std::uint16_t {
+    None,
+    UnsupportedCommandVersion,
+    WrongOwnerThread,
+    StaleStateVersion,
+    StaleDocumentTarget,
+    UnsupportedIdempotency,
+    IdempotencyKeyConflict,
+    IdempotencyCapacityExceeded,
+    InvalidCommandPayload
+};
+
+struct EditorStateSnapshot {
+    core::pmr::String workspace{&core::defaultCpuMemoryResource()};
+    core::pmr::String scene{&core::defaultCpuMemoryResource()};
+    core::pmr::String selection{&core::defaultCpuMemoryResource()};
+    core::pmr::String scriptText{&core::defaultCpuMemoryResource()};
+    core::pmr::String scriptRelativePath{&core::defaultCpuMemoryResource()};
+    std::uint64_t activeDocumentId = 0;
+    std::uint32_t openDocumentCount = 0;
+    bool hasActiveDocument = false;
+    bool scriptDirty = false;
+    std::uint64_t scenePersistenceTaskId = 0;
+    ScenePersistenceTaskStatus scenePersistenceTaskStatus = ScenePersistenceTaskStatus::Unknown;
+    core::pmr::String scenePersistenceTaskDiagnostic{&core::defaultCpuMemoryResource()};
+};
+
+struct EditorCommandOutcome {
+    bool success = true;
+    bool stateChanged = true;
+    EditorDiagnosticCode diagnostic = EditorDiagnosticCode::None;
+    bool hasSnapshot = false;
+    EditorStateSnapshot snapshot;
+    bool hasSceneInspector = false;
+    EditorSceneInspectorSnapshot sceneInspector;
+    bool hasSceneHierarchy = false;
+    SceneHierarchySnapshot sceneHierarchy;
+    bool hasSceneComponentCatalog = false;
+    SceneComponentCatalogSnapshot sceneComponentCatalog;
+};
+
+struct EditorResponse {
+    std::uint16_t schemaVersion = 1;
+    std::uint64_t commandId = 0;
+    std::uint64_t correlationId = 0;
+    std::uint64_t stateVersion = 0;
+    bool hasStateVersion = false;
+    EditorResponseStatus status = EditorResponseStatus::Failed;
+    EditorDiagnosticCode diagnostic = EditorDiagnosticCode::None;
+    bool hasSnapshot = false;
+    EditorStateSnapshot snapshot;
+    bool hasSceneInspector = false;
+    EditorSceneInspectorSnapshot sceneInspector;
+    bool hasSceneHierarchy = false;
+    SceneHierarchySnapshot sceneHierarchy;
+    bool hasSceneComponentCatalog = false;
+    SceneComponentCatalogSnapshot sceneComponentCatalog;
+};
+
+class IEditorCommandExecutor {
+public:
+    virtual ~IEditorCommandExecutor() = default;
+    virtual EditorCommandOutcome execute(const EditorCommandPayload& payload) = 0;
+};
+
+class EditorCommandDispatcher final {
+public:
+    explicit EditorCommandDispatcher(std::size_t idempotencyCapacity = 128);
+    EditorResponse dispatch(const EditorCommandEnvelope& command, IEditorCommandExecutor& executor);
+
+    std::uint64_t stateVersion() const noexcept { return stateVersion_; }
+
+private:
+    struct IdempotencyRecord {
+        explicit IdempotencyRecord(std::pmr::memory_resource* resource)
+            : key(resource), fingerprint(resource)
+        {}
+
+        core::pmr::String key;
+        core::pmr::String fingerprint;
+        EditorResponse response;
+    };
+
+    std::thread::id ownerThread_ = std::this_thread::get_id();
+    std::atomic<std::uint64_t> nextCommandId_{1};
+    std::uint64_t stateVersion_ = 0;
+    std::size_t idempotencyCapacity_ = 0;
+    core::pmr::Vector<IdempotencyRecord> idempotencyRecords_{&core::defaultCpuMemoryResource()};
+};
+} // namespace arp::editor

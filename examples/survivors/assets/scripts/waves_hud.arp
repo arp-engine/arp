@@ -1,0 +1,259 @@
+# Schedules enemies from elapsed run time and skips spawning in stress fixtures.
+class WaveDirector(ScriptComponent):
+    flow: RunFlow
+    last_second: int
+
+    def setup(self, flow: RunFlow):
+        self.flow = flow
+        self.last_second = -1
+
+    def on_fixed_update(self, dt: float):
+        var second: int = self.flow.seconds as int
+        if self.last_second == second or self.flow.stress:
+            return
+        self.last_second = second
+        if second >= settings["bossSecond"] and not self.flow.boss_spawned:
+            self.flow.boss_spawned = true
+            self.flow.enemy(3, true, self.flow.x + 5.0, self.flow.y)
+        var count: int = (settings["spawnPerSecond"] as int) + second / (
+            settings["spawnRampSeconds"] as int
+        )
+        for i in range(count):
+            var angle: float = self.flow.random.unit() * 2.0 * PI
+            var spawn_x: float = math.clamp(
+                self.flow.x + settings["spawnRadius"] * math.cos(angle), -14.0, 14.0
+            )
+            var spawn_y: float = math.clamp(
+                self.flow.y + settings["spawnRadius"] * math.sin(angle), -14.0, 14.0
+            )
+            self.flow.enemy(second % 3, false, spawn_x, spawn_y)
+
+
+# Uses a tween to move and fade each short-lived damage label.
+class DamageNumber(ScriptComponent):
+    flow: RunFlow
+    tween: TweenComponent
+    text: SpriteTextComponent
+    x: float
+    y: float
+
+    def setup(self, flow: RunFlow, x: float, y: float, amount: int):
+        self.flow = flow
+        self.x = x
+        self.y = y
+        self.tween = self.game_object.add_component("TweenComponent")
+        require(self.tween.start_tween(0.7, 0.0, 1.0, false))
+        self.text = self.game_object.add_component("SpriteTextComponent")
+        self.text.set_layer(7)
+        require(self.text.set_text(amount as string))
+        pose(self.game_object, x, y + 0.3, 0.5, 0.5, 0.0)
+
+    def on_fixed_update(self, dt: float):
+        if self.tween.completed():
+            delete(self.flow.numbers, self.game_object.object_id() as int)
+            self.game_object.destroy_self()
+            return
+        var weight: float = self.tween.value()
+        pose(self.game_object, self.x, self.y + 0.3 + weight, 0.5, 0.5, 0.0)
+        self.text.set_tint(color(1.0, 0.85, 0.35, 1.0 - weight))
+
+
+# Owns menu, pause, upgrade selection, and in-run HUD presentation.
+class Hud(ScriptComponent):
+    flow: RunFlow
+    lines: [SpriteTextComponent]
+    panel: GameObject
+    tween: TweenComponent
+    pulse_object: GameObject
+    pulse_sprite: SpriteRendererComponent
+
+    def setup(self, flow: RunFlow):
+        self.flow = flow
+        self.lines = []
+        var canvas: ScreenCanvas2DComponent = self.game_object.add_component(
+            "ScreenCanvas2DComponent"
+        )
+        require(canvas.set_pixels_per_unit(settings["pixelsPerUnit"]))
+        self.tween = self.game_object.add_component("TweenComponent")
+        require(self.tween.start_tween(1.0, 0.65, 1.0, true))
+        var bar: GameObject = scene.create_object_ref("hud-bar")
+        require(bar.set_parent_object(self.game_object))
+        var renderer: SpriteRendererComponent = add_sprite(bar, "white", 100, false)
+        renderer.set_tint(color(0.05, 0.035, 0.06, 0.94))
+        pose(bar, 0.0, 320.0, 1280.0, 84.0, 0.0)
+        self.panel = scene.create_object_ref("menu-panel")
+        require(self.panel.set_parent_object(self.game_object))
+        renderer = add_sprite(self.panel, "white", 100, false)
+        renderer.set_tint(color(0.025, 0.018, 0.035, 0.94))
+        pose(self.panel, 0.0, 0.0, 960.0, 333.0, 0.0)
+        for i in range(11):
+            var obj: GameObject = scene.create_object_ref("hud-line")
+            require(obj.set_parent_object(self.game_object))
+            var text: SpriteTextComponent = obj.add_component("SpriteTextComponent")
+            text.set_layer(101)
+            append(self.lines, text)
+            var x: float = -600.0
+            var y: float = 330.0 - i * 35.0
+            var scale: float = 32.0
+            if i == 0:
+                scale = 41.6
+            elif i == 2:
+                x = 20.0
+                y = 295.0
+            elif i == 3:
+                x = -420.0
+                y = 100.0
+                scale = 64.0
+            elif i >= 4 and i <= 6:
+                x = -400.0
+                y = 10.0 - (i - 4) * 60.0
+                scale = 41.6
+            elif i == 7:
+                y = -333.0
+                scale = 28.8
+            elif i == 8:
+                x = -400.0
+                y = -70.0
+                scale = 35.2
+            elif i == 9:
+                x = -400.0
+                y = -115.0
+                scale = 28.8
+            elif i == 10:
+                x = -400.0
+                y = -10.0
+                scale = 38.4
+            pose(obj, x, y, scale, scale, 0.0)
+        self.pulse_object = scene.create_object_ref("pulse")
+        self.pulse_sprite = add_sprite(self.pulse_object, "pulse", 3, false)
+
+    def on_update(self, dt: float):
+        var s: RunFlow = self.flow
+        self.panel.set_active(s.state != 1)
+        var second: int = s.seconds as int
+        require(self.lines[0].set_text("COPPERLIGHT SURVIVORS"))
+        var health: int = math.clamp(s.health, 0.0, 1000000.0) as int
+        require(
+            self.lines[1].set_text(
+                ((second / 60) as string)
+                    + ":"
+                    + ((second % 60) as string)
+                    + " / 05:00   HP "
+                    + (health as string)
+                    + "   KILLS "
+                    + (s.kills as string)
+            )
+        )
+        require(
+            self.lines[2].set_text(
+                "XP "
+                    + (s.xp as string)
+                    + "/"
+                    + ((settings["xpPerUpgrade"] as int) as string)
+                    + "   BOLT "
+                    + (s.shots as string)
+                    + "X   ORBIT "
+                    + (s.blade_count as string)
+                    + "   PULSE "
+                    + (s.radius_percent as string)
+                    + "%"
+            )
+        )
+        var messages: [string] = [
+            "ENTER - LIGHT THE DUNGEON",
+            "SURVIVE UNTIL DAWN",
+            "LEVEL UP - CHOOSE ONE",
+            "PAUSED - ESC TO RESUME",
+            "DAWN RETURNS - VICTORY",
+            "YOUR LIGHT FADES - DEFEAT"
+        ]
+        require(self.lines[3].set_text(messages[s.state]))
+        var level: int = s.weapons[0].level
+        var shots: int = math.clamp(2 + level, 1, settings["maxBoltShots"]) as int
+        var pierces: int = math.clamp(
+            (level + 1) / (settings["boltPierceEveryLevels"] as int),
+            0,
+            settings["maxBoltPierces"]
+        ) as int
+        var bounces: int = math.clamp(
+            (level + 1) / (settings["boltBounceEveryLevels"] as int),
+            0,
+            settings["maxBoltBounces"]
+        ) as int
+        require(
+            self.lines[4].set_text(
+                "1 BOLT: SHOTS "
+                    + (s.shots as string)
+                    + "/"
+                    + (shots as string)
+                    + "  PIERCE "
+                    + (s.pierces as string)
+                    + "/"
+                    + (pierces as string)
+                    + "  BOUNCE "
+                    + (s.bounces as string)
+                    + "/"
+                    + (bounces as string)
+            )
+        )
+        var blades: int = math.clamp(
+            s.blade_count + 1, settings["baseOrbitBlades"], settings["maxOrbitBlades"]
+        ) as int
+        require(
+            self.lines[5].set_text(
+                "2 ORBIT: BLADES " + (s.blade_count as string) + "/" + (blades as string)
+            )
+        )
+        var radius: int = math.clamp(
+            s.radius_percent + settings["pulseRadiusPercentPerLevel"],
+            100,
+            settings["maxPulseRadiusPercent"]
+        ) as int
+        require(
+            self.lines[6].set_text(
+                "3 PULSE: RADIUS "
+                    + (s.radius_percent as string)
+                    + "%/"
+                    + (radius as string)
+                    + "%"
+            )
+        )
+        var help: string = "WASD MOVE   ESC PAUSE   R RESTART"
+        if s.state == 2:
+            help = "CURRENT / NEXT - ALL OPTIONS ALSO ADD DAMAGE AND SPEED"
+        require(self.lines[7].set_text(help))
+        require(self.lines[10].set_text(help))
+        require(
+            self.lines[8].set_text(
+                "BEST "
+                    + (s.best_kills as string)
+                    + " KILLS   WINS "
+                    + (s.wins as string)
+                    + "   POINTS "
+                    + (s.points as string)
+            )
+        )
+        require(
+            self.lines[9].set_text(
+                "VOLUME "
+                    + (((s.volume * 100.0) as int) as string)
+                    + "%   MINUS / PLUS TO ADJUST"
+            )
+        )
+        for i in range(11):
+            var object: GameObject = scene.find_object(self.lines[i].owner_id())
+            var visible: bool = true
+            if i == 3:
+                visible = s.state != 1
+            elif i >= 4 and i <= 6:
+                visible = s.state == 2
+            elif i >= 8:
+                visible = s.state != 1 and s.state != 2
+            object.set_active(visible)
+        if self.tween.completed():
+            require(self.tween.start_tween(1.0, 0.65, 1.0, true))
+        self.lines[3].set_tint(color(1.0, 0.76, 0.35, self.tween.value()))
+        self.pulse_object.set_active(s.pulse > 0.0)
+        var size: float = s.radius * 2.0 * (1.0 - s.pulse / 0.35)
+        pose(self.pulse_object, s.x, s.y, size, size, 0.0)
+        self.pulse_sprite.set_tint(color(1.0, 1.0, 1.0, s.pulse / 0.35))

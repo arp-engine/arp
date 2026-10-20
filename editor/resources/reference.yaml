@@ -1,0 +1,10 @@
+type: "editor.reference"
+contractVersion: "arp-editor-reference/v1"
+referenceSize: [1920, 1080]
+viewportCrop: [287, 116, 1583, 1034]
+atlasSize: [2048, 1024]
+atlasCombinedHeight: 3072
+atlasLayout: {"origin": [1312, 0], "cellSize": 32, "gutter": 4, "spriteSize": 24, "columns": 23, "regions": {"node": [1316, 4, 24, 24], "probe": [1348, 4, 24, 24], "folder": [1380, 4, 24, 24], "search": [1412, 4, 24, 24], "plus": [1444, 4, 24, 24], "link": [1476, 4, 24, 24], "eye": [1508, 4, 24, 24], "multiplayer-spawner": [1540, 4, 24, 24], "cube": [1572, 4, 24, 24], "move": [1604, 4, 24, 24], "rotate": [1636, 4, 24, 24], "select": [1668, 4, 24, 24], "play": [1700, 4, 24, 24], "pause": [1732, 4, 24, 24], "stop": [1764, 4, 24, 24], "dots": [1796, 4, 24, 24], "sound": [1828, 4, 24, 24], "world": [1860, 4, 24, 24], "file": [1892, 4, 24, 24], "grid": [1924, 4, 24, 24], "save": [1956, 4, 24, 24], "check": [1988, 4, 24, 24], "arrow": [2020, 4, 24, 24], "chevron-right": [1316, 36, 24, 24], "chevron-down": [1348, 36, 24, 24], "workspace-2d": [1380, 36, 24, 24], "workspace-3d": [1412, 36, 24, 24], "workspace-script": [1444, 36, 24, 24], "workspace-game": [1476, 36, 24, 24], "workspace-assetlib": [1508, 36, 24, 24], "tool-viewport": [1540, 36, 24, 24], "tool-move": [1572, 36, 24, 24], "tool-rotate": [1604, 36, 24, 24], "tool-scale": [1636, 36, 24, 24], "tool-select": [1668, 36, 24, 24], "tool-script": [1700, 36, 24, 24], "tool-lock": [1732, 36, 24, 24], "tool-pivot": [1764, 36, 24, 24], "tool-ruler": [1796, 36, 24, 24], "tool-cube": [1828, 36, 24, 24], "tool-joint": [1860, 36, 24, 24], "tool-light": [1892, 36, 24, 24], "tool-view": [1924, 36, 24, 24], "scene-tab-menu": [1956, 36, 24, 24], "scene-tab-level": [1988, 36, 24, 24], "scene-tab-player": [2020, 36, 24, 24], "scene-tab-close": [1316, 68, 24, 24], "reset": [1348, 68, 24, 24], "run-display": [1380, 68, 24, 24], "run-movie": [1412, 68, 24, 24], "run-animation": [1444, 68, 24, 24], "run-debug": [1476, 68, 24, 24], "rounded-selection": [1508, 68, 24, 24]}}
+glyphPageSize: [2048, 512]
+viewportKind: "StaticReferencePreview"
+source: "User supplied Godot editor screenshot"

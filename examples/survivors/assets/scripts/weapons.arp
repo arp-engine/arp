@@ -1,0 +1,119 @@
+# Converts timer events into configured automatic weapon attacks.
+class AutoWeapon(ScriptComponent):
+    flow: RunFlow
+    kind: int
+    level: int
+    power: int
+    timer: TimerComponent
+
+    def setup(self, flow: RunFlow, kind: int):
+        self.flow = flow
+        self.kind = kind
+        self.level = 0
+        self.timer = self.game_object.add_component("TimerComponent")
+
+    def configure(self):
+        var damage: [any] = settings["weaponDamage"]
+        var intervals: [any] = settings["weaponIntervals"]
+        self.power = (damage[self.kind] as int) + self.level * 3
+        require(
+            self.timer.start_timer(
+                math.clamp(intervals[self.kind] - self.level * 0.008, 0.08, 100.0),
+                true,
+                "fire"
+            )
+        )
+
+    def on_event(self, name: string, payload: any):
+        if name == "fire":
+            self.fire()
+
+    def fire(self):
+        if self.flow.stress:
+            return
+        if self.kind == 0:
+            var excluded: [int] = []
+            var first: int = self.flow.nearest(self.flow.x, self.flow.y, excluded)
+            if first < 0:
+                return
+            for i in range(self.flow.shots):
+                var target: int = self.flow.nearest(self.flow.x, self.flow.y, excluded)
+                if target >= 0:
+                    append(excluded, target)
+                else:
+                    target = first
+                var enemy: Enemy = self.flow.enemies[target]
+                var dx: float = enemy.x - self.flow.x
+                var dy: float = enemy.y - self.flow.y
+                var length: float = math.sqrt(dx * dx + dy * dy)
+                if length > 0.000001:
+                    dx /= length
+                    dy /= length
+                else:
+                    dx = 1.0
+                    dy = 0.0
+                var spread: float = (
+                    (i - (self.flow.shots - 1) * 0.5)
+                    * settings["projectileSpreadDegrees"]
+                    * PI
+                    / 180.0
+                )
+                var velocity_x: float = (
+                    dx * math.cos(spread) - dy * math.sin(spread)
+                ) * settings["projectileSpeed"]
+                var velocity_y: float = (
+                    dx * math.sin(spread) + dy * math.cos(spread)
+                ) * settings["projectileSpeed"]
+                self.flow.bolt(
+                    self.flow.x,
+                    self.flow.y,
+                    velocity_x,
+                    velocity_y,
+                    self.power,
+                    target,
+                    self.flow.pierces,
+                    self.flow.bounces
+                )
+        else:
+            var count: int = self.flow.blade_count
+            var radius: float = 0.5
+            if self.kind == 2:
+                count = 1
+                radius = self.flow.radius
+                self.flow.pulse = 0.35
+            for i in range(count):
+                var x: float = self.flow.x
+                var y: float = self.flow.y
+                if self.kind == 1:
+                    var angle: float = self.flow.seconds * 3.0 + i * 2.0 * PI / self.flow.blade_count
+                    x += settings["orbitRadius"] * math.cos(angle)
+                    y += settings["orbitRadius"] * math.sin(angle)
+                var hits: [any] = area(x, y, radius)
+                for raw in hits:
+                    var hit: PhysicsQueryHit = raw
+                    var object: GameObject = scene.find_object(hit.objectId)
+                    if object != nil:
+                        var enemy: Enemy = object.get_component("Enemy")
+                        enemy.damage(self.power)
+
+
+# Orbits one prefab blade around the player and applies its local hit query.
+class OrbitBlade(ScriptComponent):
+    flow: RunFlow
+    index: int
+
+    def setup(self, flow: RunFlow, index: int):
+        self.flow = flow
+        self.index = index
+        add_sprite(self.game_object, "tile_0104", 3, false)
+
+    def on_fixed_update(self, dt: float):
+        var angle: float = self.flow.seconds * 3.0 + self.index * 2.0 * PI / self.flow.blade_count
+        pose(
+            self.game_object,
+            settings["orbitRadius"] * math.cos(angle),
+            settings["orbitRadius"] * math.sin(angle),
+            1.0,
+            1.0,
+            angle
+        )

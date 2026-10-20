@@ -1,0 +1,641 @@
+type: arp.sprite-atlas
+contractVersion: 1
+resourceId: 00000000-0000-4000-8000-000000000301
+width: 512
+height: 416
+filter: nearest
+alpha: straight
+srgb: false
+slices:
+  - name: backdrop
+    x: 0
+    y: 0
+    width: 256
+    height: 256
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: runner_body
+    x: 0
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: hair_bob
+    x: 32
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: hair_curl
+    x: 64
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: hair_long
+    x: 96
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: top_rose
+    x: 128
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: top_ocean
+    x: 160
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: top_lime
+    x: 192
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: top_violet
+    x: 224
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: top_gold
+    x: 256
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: bottom_rose
+    x: 288
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: bottom_ocean
+    x: 320
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: bottom_lime
+    x: 352
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: bottom_violet
+    x: 384
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: bottom_gold
+    x: 416
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: shoes
+    x: 448
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: accessory
+    x: 480
+    y: 256
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: token_rose
+    x: 0
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: token_ocean
+    x: 32
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: token_lime
+    x: 64
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: token_violet
+    x: 96
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: token_gold
+    x: 128
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: obstacle
+    x: 160
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: rival_body
+    x: 192
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: crown
+    x: 224
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: sparkle
+    x: 256
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: rail
+    x: 288
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: stage
+    x: 320
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_41
+    x: 352
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_42
+    x: 384
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_43
+    x: 416
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_44
+    x: 448
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_45
+    x: 480
+    y: 288
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_46
+    x: 0
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_47
+    x: 32
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_48
+    x: 64
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_49
+    x: 96
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_4a
+    x: 128
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_4b
+    x: 160
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_4c
+    x: 192
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_4d
+    x: 224
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_4e
+    x: 256
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_4f
+    x: 288
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_50
+    x: 320
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_51
+    x: 352
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_52
+    x: 384
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_53
+    x: 416
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_54
+    x: 448
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_55
+    x: 480
+    y: 320
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_56
+    x: 0
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_57
+    x: 32
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_58
+    x: 64
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_59
+    x: 96
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_5a
+    x: 128
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_30
+    x: 160
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_31
+    x: 192
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_32
+    x: 224
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_33
+    x: 256
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_34
+    x: 288
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_35
+    x: 320
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_36
+    x: 352
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_37
+    x: 384
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_38
+    x: 416
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_39
+    x: 448
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_21
+    x: 480
+    y: 352
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_3f
+    x: 0
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_2e
+    x: 32
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_2c
+    x: 64
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_3a
+    x: 96
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_2b
+    x: 128
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_2d
+    x: 160
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_2f
+    x: 192
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_3c
+    x: 224
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_3e
+    x: 256
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_28
+    x: 288
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_29
+    x: 320
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_20
+    x: 352
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_27
+    x: 384
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1
+  - name: glyph_23
+    x: 416
+    y: 384
+    width: 32
+    height: 32
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 1

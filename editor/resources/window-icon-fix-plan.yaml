@@ -1,0 +1,25 @@
+type: ImplementationPlan
+contractVersion: 1
+scope: Windows editor title bar and taskbar icon binding
+status: Platform Validated
+platform: Windows MinGW Debug
+evidence: ./build/godot-editor-evidence/window-icon
+validation:
+  focusedTests: 6/6 passed
+  embeddedIcon: all 10 source ICO payloads match executable
+  nativeTitleBar: AI inspected screenshot; approved blue A icon visible
+  renderdoc: 1440x810, 1297 UI draws, zero high/error diagnostics
+  unrelatedFailure: arp_platform_window_tests expects repeat W to be discarded but current Win32 implementation preserves repeats
+phases:
+  - name: Define shared executable icon binding and load class icons
+    status: complete
+    unitTest: arp_platform_window_contract_tests
+    smoke: arp_platform_window_tests
+  - name: Rebuild with MinGW and verify runtime icons
+    status: complete
+    unitTest: runtime class icon handles and sizes match embedded executable resource
+    smoke: arp_editor_hidden_smoke
+  - name: Inspect native window and RenderDoc capture
+    status: complete
+    unitTest: arp_editor_tests
+    smoke: RenderDoc hidden-frame replay

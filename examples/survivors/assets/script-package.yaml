@@ -1,0 +1,10 @@
+type: arp.survivors-script-package
+contractVersion: 1
+sources:
+  - scripts/foundation.arp
+  - scripts/flow.arp
+  - scripts/combat.arp
+  - scripts/weapons.arp
+  - scripts/waves_hud.arp
+  - scripts/physics_area.arp
+  - scripts/entrypoints.arp

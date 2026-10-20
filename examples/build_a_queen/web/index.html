@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Build a Queen · ARP WebGL</title>
+<style>html,body{margin:0;height:100%;background:#221321;color:#fff;font:14px system-ui}body{display:flex;align-items:center;justify-content:center;flex-direction:column;overflow:hidden}canvas{width:min(100vw,calc((100vh - 42px)*16/9));height:auto;aspect-ratio:16/9;touch-action:none;outline:none}#status{height:28px;padding:7px;box-sizing:border-box;color:#f9ccdf}#error{position:absolute;white-space:pre-wrap;max-width:90%;background:#341725;padding:20px;display:none}</style></head>
+<body><canvas id="canvas" width="1280" height="720" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+<div id="status">正在加载 3D 模型与动画…</div><div id="error"></div>
+<script>
+var Module={canvas:document.getElementById('canvas'),print:console.log,printErr:console.error,
+setStatus:text=>document.getElementById('status').textContent=text,
+onAbort:reason=>queenFail(String(reason))};
+function queenFail(reason){Module.queenError=reason;const box=document.getElementById('error');box.textContent=reason;box.style.display='block';}
+function queenReady(){document.getElementById('status').textContent='点击开始 · ← → / A D 移动 · 拖动或触屏选跑道 · R 重来';Module.canvas.focus();}
+window.addEventListener('error',event=>queenFail(event.message));
+</script>{{{ SCRIPT }}}</body></html>

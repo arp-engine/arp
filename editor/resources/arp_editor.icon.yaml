@@ -1,0 +1,22 @@
+type: WindowsApplicationIcon
+contractVersion: 1
+resourceId: 101
+image: arp_editor.png
+icon: arp_editor.ico
+imageSha256: ca570f6cdb01de15d62f1df9966b1e3535ad9d77505bb6a7bc09d53d32cbedb0
+iconSha256: fe992025094156de185a4c76f4134ccf35ef8eb1be6f08dff6084f7d7627de6f
+sizes:
+- 16
+- 20
+- 24
+- 32
+- 40
+- 48
+- 64
+- 96
+- 128
+- 256
+alpha: straight
+colorSpace: sRGB
+logoColor: '#478CBF'
+tileColor: '#171F2B'

@@ -1,0 +1,30 @@
+type: arp.build-a-queen-character-manifest
+contractVersion: 1
+source:
+  name: Quaternius Ultimate Modular Women
+  repository: https://github.com/agentkaerf/FreeModels
+  commit: db3df04d1e4714298a09510b26fb6de6645138a2
+  license: CC0-1.0
+characters:
+  - id: player
+    file: Casual.glb
+    height: 1.72
+    yawDegrees: 0
+    materials:
+      - { name: Skin, role: skin }
+      - { name: White, role: top }
+      - { name: Grey, role: shoes }
+      - { name: Hair_Brown, role: hair }
+      - { name: Brown, role: preserve }
+      - { name: Hair_Blond, role: hair }
+      - { name: Orange, role: bottom }
+  - id: rival
+    file: Formal.glb
+    height: 1.72
+    yawDegrees: 180
+    materials:
+      - { name: Skin, role: skin }
+      - { name: Brown, role: hair }
+      - { name: Red, role: preserve }
+      - { name: LimeGreen, role: preserve }
+      - { name: Gold, role: accessory }

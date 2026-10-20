@@ -1,0 +1,274 @@
+# Reads player movement input and applies temporary invulnerability after contact damage.
+class PlayerController(ScriptComponent):
+    flow: RunFlow
+    body: RigidBody2DComponent
+    sprite: SpriteRendererComponent
+    animation: SpriteAnimationComponent
+    invulnerable: float
+
+    def setup(self, flow: RunFlow):
+        self.flow = flow
+        self.invulnerable = 0.0
+        self.sprite = add_sprite(self.game_object, "hero_step", 2, true)
+        self.animation = self.game_object.add_component("SpriteAnimationComponent")
+        require(self.animation.play_resource(animations["hero"]))
+        self.body = add_body(self.game_object, 2, 0.25, 1, 14, false)
+
+    def on_fixed_update(self, dt: float):
+        var state: BodyState = self.body.body_state()
+        self.flow.x = state.position.x
+        self.flow.y = state.position.y
+        var mx: float = self.flow.mx
+        var my: float = self.flow.my
+        if self.flow.autoplay:
+            mx = 9.0 * math.cos(self.flow.seconds * 0.25) - self.flow.x
+            my = 9.0 * math.sin(self.flow.seconds * 0.25) - self.flow.y
+        var length: float = math.sqrt(mx * mx + my * my)
+        if length > 1.0 or (self.flow.autoplay and length > 0.000001):
+            mx /= length
+            my /= length
+        require(
+            self.body.set_velocity(
+                v2(mx * settings["playerSpeed"], my * settings["playerSpeed"]), 0.0
+            )
+        )
+        if mx != 0.0:
+            self.sprite.set_flip(mx < 0.0, false)
+        self.invulnerable = math.clamp(self.invulnerable - dt, 0.0, 1.0)
+        self.sprite.set_tint(color(1.0, 1.0 - self.invulnerable, 1.0 - self.invulnerable, 1.0))
+
+    def hurt(self):
+        if self.invulnerable <= 0.0 and not self.flow.stress:
+            self.flow.health -= settings["enemyDamage"]
+            self.invulnerable = 0.7
+
+
+# Owns enemy movement, hit reactions, death cleanup, and experience drops.
+class Enemy(ScriptComponent):
+    flow: RunFlow
+    body: RigidBody2DComponent
+    sprite: SpriteRendererComponent
+    animation: SpriteAnimationComponent
+    hp: float
+    x: float
+    y: float
+    flash: float
+    kind: int
+    boss: bool
+
+    def setup(self, flow: RunFlow, kind: int, boss: bool):
+        self.flow = flow
+        self.kind = kind
+        self.boss = boss
+        self.hp = settings["enemyHealth"] + flow.seconds / 60.0 * 2.0
+        self.flash = 0.0
+        var names: [string] = ["slime", "crawler", "ghost", "boss"]
+        var name: string = names[kind]
+        var radius: float = 0.23
+        if boss:
+            self.hp = settings["bossHealth"]
+            radius = 0.65
+        var t: Transform = self.game_object.world_transform()
+        self.x = t.translation.x
+        self.y = t.translation.y
+        self.sprite = add_sprite(self.game_object, name + "_step", 2, true)
+        self.animation = self.game_object.add_component("SpriteAnimationComponent")
+        require(self.animation.play_resource(animations[name]))
+        self.body = add_body(self.game_object, 2, radius, 4, 19, false)
+
+    def on_fixed_update(self, dt: float):
+        if self.hp <= 0.0:
+            if self.animation.completed():
+                delete(self.flow.enemies, self.game_object.object_id() as int)
+                self.game_object.destroy_self()
+            return
+        var state: BodyState = self.body.body_state()
+        self.x = state.position.x
+        self.y = state.position.y
+        var dx: float = self.flow.x - self.x
+        var dy: float = self.flow.y - self.y
+        var distance: float = math.sqrt(dx * dx + dy * dy)
+        var speed: float = settings["enemySpeed"] * (1.0 + self.kind * 0.25)
+        if self.boss:
+            speed = settings["bossSpeed"]
+        if self.flow.stress:
+            speed = 0.05
+        if distance > 0.000001:
+            dx = dx / distance * speed
+            dy = dy / distance * speed
+        require(self.body.set_velocity(v2(dx, dy), 0.0))
+        if distance < 0.7:
+            self.flow.player.hurt()
+        self.flash = math.clamp(self.flash - dt, 0.0, 1.0)
+        self.sprite.set_flip(dx < 0.0, false)
+        self.sprite.set_tint(color(1.0, 1.0 - self.flash * 6.0, 1.0 - self.flash * 6.0, 1.0))
+
+    def damage(self, amount: int):
+        if self.hp <= 0.0 or self.flow.stress:
+            return
+        self.hp -= amount
+        self.flash = 0.12
+        self.flow.damage_number(self.x, self.y, amount)
+        require(self.flow.particles.burst(v2(self.x, self.y), 4))
+        if self.hp <= 0.0:
+            var names: [string] = ["slime_death", "crawler_death", "ghost_death", "boss_death"]
+            require(self.animation.play_resource(animations[names[self.kind]]))
+            require(self.body.set_velocity(v2(0.0, 0.0), 0.0))
+            var collider: Component = self.game_object.get_component("Collider2DComponent")
+            require(self.game_object.remove_component(collider.component_id()))
+            self.flow.kills += 1
+            if self.boss:
+                self.flow.boss_defeated = true
+            self.flow.pickup(self.x, self.y)
+            if self.flow.kills % 4 == 0:
+                require(self.flow.sfx.play_resource(sounds[0], 0.4, 2, false))
+
+
+# Tracks hit targets so pierce and bounce behavior cannot damage the same enemy twice.
+class Projectile(ScriptComponent):
+    flow: RunFlow
+    x: float
+    y: float
+    vx: float
+    vy: float
+    life: float
+    power: int
+    target: int
+    pierce: int
+    bounce: int
+    history: [int]
+
+    def setup(
+        self,
+        flow: RunFlow,
+        x: float,
+        y: float,
+        vx: float,
+        vy: float,
+        power: int,
+        target: int,
+        pierce: int,
+        bounce: int
+    ):
+        self.flow = flow
+        self.x = x
+        self.y = y
+        self.vx = vx
+        self.vy = vy
+        self.life = settings["projectileLifeSeconds"]
+        self.power = power
+        self.target = target
+        self.pierce = pierce
+        self.bounce = bounce
+        self.history = []
+        add_sprite(self.game_object, "spark", 3, false)
+        pose(self.game_object, x, y, 0.3, 0.3, math.atan2(vy, vx))
+
+    def seen(self, id: int) -> bool:
+        for old in self.history:
+            if old == id:
+                return true
+        return false
+
+    def remove(self):
+        delete(self.flow.projectiles, self.game_object.object_id() as int)
+        self.game_object.destroy_self()
+
+    def on_fixed_update(self, dt: float):
+        if self.target >= 0 and self.life <= (
+            settings["projectileLifeSeconds"] - settings["projectileHomingDelaySeconds"]
+        ):
+            var object: GameObject = scene.find_object(self.target)
+            if object != nil:
+                var enemy: Enemy = object.get_component("Enemy")
+                if enemy.hp > 0.0:
+                    self.aim(enemy.x, enemy.y)
+        var translation: Vec2 = v2(self.vx * dt, self.vy * dt)
+        var shape: ShapeDesc = ShapeDesc()
+        shape.radius = 0.08
+        var filter: CollisionFilter = CollisionFilter()
+        filter.category = 16
+        filter.mask = 4
+        var hits: [any] = world.shape_cast_hits(shape, v2(self.x, self.y), 0.0, translation, filter)
+        var redirected: bool = false
+        if not self.flow.stress:
+            for raw in hits:
+                var hit: PhysicsQueryHit = raw
+                var id: int = hit.objectId as int
+                var object: GameObject = scene.find_object(id)
+                if object == nil or self.seen(id):
+                    continue
+                var enemy: Enemy = object.get_component("Enemy")
+                if enemy.hp <= 0.0:
+                    continue
+                if len(self.history) >= 1 + settings["maxBoltPierces"] + settings["maxBoltBounces"]:
+                    raise "ARP-SURVIVORS-PROJECTILE-HISTORY-CAPACITY"
+                append(self.history, id)
+                self.target = -1
+                enemy.damage(self.power)
+                if self.pierce > 0:
+                    self.pierce -= 1
+                    continue
+                if self.bounce > 0:
+                    var nx: float = self.x + translation.x * hit.fraction
+                    var ny: float = self.y + translation.y * hit.fraction
+                    var next: int = self.flow.nearest(nx, ny, self.history)
+                    if next >= 0:
+                        self.x = nx
+                        self.y = ny
+                        self.target = next
+                        self.bounce -= 1
+                        var next_enemy: Enemy = self.flow.enemies[next]
+                        self.aim(next_enemy.x, next_enemy.y)
+                        redirected = true
+                        break
+                self.remove()
+                return
+        if not redirected:
+            self.x += translation.x
+            self.y += translation.y
+        self.life -= dt
+        if self.life <= 0.0:
+            if self.flow.stress:
+                self.life = settings["projectileLifeSeconds"]
+                self.x = -9.0
+                self.y = -5.0
+            else:
+                self.remove()
+                return
+        pose(self.game_object, self.x, self.y, 0.3, 0.3, math.atan2(self.vy, self.vx))
+
+    def aim(self, x: float, y: float):
+        var dx: float = x - self.x
+        var dy: float = y - self.y
+        var length: float = math.sqrt(dx * dx + dy * dy)
+        if length > 0.000001:
+            self.vx = dx / length * settings["projectileSpeed"]
+            self.vy = dy / length * settings["projectileSpeed"]
+        else:
+            self.vx = settings["projectileSpeed"]
+            self.vy = 0.0
+
+
+# Pulls nearby experience toward the player and grants it on collection.
+class ExperiencePickup(ScriptComponent):
+    flow: RunFlow
+    x: float
+    y: float
+
+    def setup(self, flow: RunFlow, x: float, y: float):
+        self.flow = flow
+        self.x = x
+        self.y = y
+        add_sprite(self.game_object, "tile_0116", 1, false)
+        add_body(self.game_object, 0, 0.2, 8, 1, true)
+
+    def on_fixed_update(self, dt: float):
+        var dx: float = self.x - self.flow.x
+        var dy: float = self.y - self.flow.y
+        if not self.flow.stress and dx * dx + dy * dy < (
+            settings["pickupRadius"] * settings["pickupRadius"]
+        ):
+            self.flow.grant_experience(1)
+            delete(self.flow.pickups, self.game_object.object_id() as int)
+            self.game_object.destroy_self()

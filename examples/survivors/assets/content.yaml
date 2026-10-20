@@ -1,0 +1,521 @@
+type: arp.survivors-content
+contractVersion: 1
+atlasId: 20000000-0000-4000-8000-000000000001
+atlasMetadata: dungeon.atlas.yaml
+atlasImage: dungeon.png
+sprites:
+  - name: tile_0000
+    resourceId: 20000000-0000-4000-8000-000000000002
+  - name: tile_0001
+    resourceId: 20000000-0000-4000-8000-000000000003
+  - name: tile_0002
+    resourceId: 20000000-0000-4000-8000-000000000004
+  - name: tile_0003
+    resourceId: 20000000-0000-4000-8000-000000000005
+  - name: tile_0004
+    resourceId: 20000000-0000-4000-8000-000000000006
+  - name: tile_0005
+    resourceId: 20000000-0000-4000-8000-000000000007
+  - name: tile_0006
+    resourceId: 20000000-0000-4000-8000-000000000008
+  - name: tile_0007
+    resourceId: 20000000-0000-4000-8000-000000000009
+  - name: tile_0008
+    resourceId: 20000000-0000-4000-8000-000000000010
+  - name: tile_0009
+    resourceId: 20000000-0000-4000-8000-000000000011
+  - name: tile_0010
+    resourceId: 20000000-0000-4000-8000-000000000012
+  - name: tile_0011
+    resourceId: 20000000-0000-4000-8000-000000000013
+  - name: tile_0012
+    resourceId: 20000000-0000-4000-8000-000000000014
+  - name: tile_0013
+    resourceId: 20000000-0000-4000-8000-000000000015
+  - name: tile_0014
+    resourceId: 20000000-0000-4000-8000-000000000016
+  - name: tile_0015
+    resourceId: 20000000-0000-4000-8000-000000000017
+  - name: tile_0016
+    resourceId: 20000000-0000-4000-8000-000000000018
+  - name: tile_0017
+    resourceId: 20000000-0000-4000-8000-000000000019
+  - name: tile_0018
+    resourceId: 20000000-0000-4000-8000-000000000020
+  - name: tile_0019
+    resourceId: 20000000-0000-4000-8000-000000000021
+  - name: tile_0020
+    resourceId: 20000000-0000-4000-8000-000000000022
+  - name: tile_0021
+    resourceId: 20000000-0000-4000-8000-000000000023
+  - name: tile_0022
+    resourceId: 20000000-0000-4000-8000-000000000024
+  - name: tile_0023
+    resourceId: 20000000-0000-4000-8000-000000000025
+  - name: tile_0024
+    resourceId: 20000000-0000-4000-8000-000000000026
+  - name: tile_0025
+    resourceId: 20000000-0000-4000-8000-000000000027
+  - name: tile_0026
+    resourceId: 20000000-0000-4000-8000-000000000028
+  - name: tile_0027
+    resourceId: 20000000-0000-4000-8000-000000000029
+  - name: tile_0028
+    resourceId: 20000000-0000-4000-8000-000000000030
+  - name: tile_0029
+    resourceId: 20000000-0000-4000-8000-000000000031
+  - name: tile_0030
+    resourceId: 20000000-0000-4000-8000-000000000032
+  - name: tile_0031
+    resourceId: 20000000-0000-4000-8000-000000000033
+  - name: tile_0032
+    resourceId: 20000000-0000-4000-8000-000000000034
+  - name: tile_0033
+    resourceId: 20000000-0000-4000-8000-000000000035
+  - name: tile_0034
+    resourceId: 20000000-0000-4000-8000-000000000036
+  - name: tile_0035
+    resourceId: 20000000-0000-4000-8000-000000000037
+  - name: tile_0036
+    resourceId: 20000000-0000-4000-8000-000000000038
+  - name: tile_0037
+    resourceId: 20000000-0000-4000-8000-000000000039
+  - name: tile_0038
+    resourceId: 20000000-0000-4000-8000-000000000040
+  - name: tile_0039
+    resourceId: 20000000-0000-4000-8000-000000000041
+  - name: tile_0040
+    resourceId: 20000000-0000-4000-8000-000000000042
+  - name: tile_0041
+    resourceId: 20000000-0000-4000-8000-000000000043
+  - name: tile_0042
+    resourceId: 20000000-0000-4000-8000-000000000044
+  - name: tile_0043
+    resourceId: 20000000-0000-4000-8000-000000000045
+  - name: tile_0044
+    resourceId: 20000000-0000-4000-8000-000000000046
+  - name: tile_0045
+    resourceId: 20000000-0000-4000-8000-000000000047
+  - name: tile_0046
+    resourceId: 20000000-0000-4000-8000-000000000048
+  - name: tile_0047
+    resourceId: 20000000-0000-4000-8000-000000000049
+  - name: tile_0048
+    resourceId: 20000000-0000-4000-8000-000000000050
+  - name: tile_0049
+    resourceId: 20000000-0000-4000-8000-000000000051
+  - name: tile_0050
+    resourceId: 20000000-0000-4000-8000-000000000052
+  - name: tile_0051
+    resourceId: 20000000-0000-4000-8000-000000000053
+  - name: tile_0052
+    resourceId: 20000000-0000-4000-8000-000000000054
+  - name: tile_0053
+    resourceId: 20000000-0000-4000-8000-000000000055
+  - name: tile_0054
+    resourceId: 20000000-0000-4000-8000-000000000056
+  - name: tile_0055
+    resourceId: 20000000-0000-4000-8000-000000000057
+  - name: tile_0056
+    resourceId: 20000000-0000-4000-8000-000000000058
+  - name: tile_0057
+    resourceId: 20000000-0000-4000-8000-000000000059
+  - name: tile_0058
+    resourceId: 20000000-0000-4000-8000-000000000060
+  - name: tile_0059
+    resourceId: 20000000-0000-4000-8000-000000000061
+  - name: tile_0060
+    resourceId: 20000000-0000-4000-8000-000000000062
+  - name: tile_0061
+    resourceId: 20000000-0000-4000-8000-000000000063
+  - name: tile_0062
+    resourceId: 20000000-0000-4000-8000-000000000064
+  - name: tile_0063
+    resourceId: 20000000-0000-4000-8000-000000000065
+  - name: tile_0064
+    resourceId: 20000000-0000-4000-8000-000000000066
+  - name: tile_0065
+    resourceId: 20000000-0000-4000-8000-000000000067
+  - name: tile_0066
+    resourceId: 20000000-0000-4000-8000-000000000068
+  - name: tile_0067
+    resourceId: 20000000-0000-4000-8000-000000000069
+  - name: tile_0068
+    resourceId: 20000000-0000-4000-8000-000000000070
+  - name: tile_0069
+    resourceId: 20000000-0000-4000-8000-000000000071
+  - name: tile_0070
+    resourceId: 20000000-0000-4000-8000-000000000072
+  - name: tile_0071
+    resourceId: 20000000-0000-4000-8000-000000000073
+  - name: tile_0072
+    resourceId: 20000000-0000-4000-8000-000000000074
+  - name: tile_0073
+    resourceId: 20000000-0000-4000-8000-000000000075
+  - name: tile_0074
+    resourceId: 20000000-0000-4000-8000-000000000076
+  - name: tile_0075
+    resourceId: 20000000-0000-4000-8000-000000000077
+  - name: tile_0076
+    resourceId: 20000000-0000-4000-8000-000000000078
+  - name: tile_0077
+    resourceId: 20000000-0000-4000-8000-000000000079
+  - name: tile_0078
+    resourceId: 20000000-0000-4000-8000-000000000080
+  - name: tile_0079
+    resourceId: 20000000-0000-4000-8000-000000000081
+  - name: tile_0080
+    resourceId: 20000000-0000-4000-8000-000000000082
+  - name: tile_0081
+    resourceId: 20000000-0000-4000-8000-000000000083
+  - name: tile_0082
+    resourceId: 20000000-0000-4000-8000-000000000084
+  - name: tile_0083
+    resourceId: 20000000-0000-4000-8000-000000000085
+  - name: tile_0084
+    resourceId: 20000000-0000-4000-8000-000000000086
+  - name: tile_0085
+    resourceId: 20000000-0000-4000-8000-000000000087
+  - name: tile_0086
+    resourceId: 20000000-0000-4000-8000-000000000088
+  - name: tile_0087
+    resourceId: 20000000-0000-4000-8000-000000000089
+  - name: tile_0088
+    resourceId: 20000000-0000-4000-8000-000000000090
+  - name: tile_0089
+    resourceId: 20000000-0000-4000-8000-000000000091
+  - name: tile_0090
+    resourceId: 20000000-0000-4000-8000-000000000092
+  - name: tile_0091
+    resourceId: 20000000-0000-4000-8000-000000000093
+  - name: tile_0092
+    resourceId: 20000000-0000-4000-8000-000000000094
+  - name: tile_0093
+    resourceId: 20000000-0000-4000-8000-000000000095
+  - name: tile_0094
+    resourceId: 20000000-0000-4000-8000-000000000096
+  - name: tile_0095
+    resourceId: 20000000-0000-4000-8000-000000000097
+  - name: tile_0096
+    resourceId: 20000000-0000-4000-8000-000000000098
+  - name: tile_0097
+    resourceId: 20000000-0000-4000-8000-000000000099
+  - name: tile_0098
+    resourceId: 20000000-0000-4000-8000-000000000100
+  - name: tile_0099
+    resourceId: 20000000-0000-4000-8000-000000000101
+  - name: tile_0100
+    resourceId: 20000000-0000-4000-8000-000000000102
+  - name: tile_0101
+    resourceId: 20000000-0000-4000-8000-000000000103
+  - name: tile_0102
+    resourceId: 20000000-0000-4000-8000-000000000104
+  - name: tile_0103
+    resourceId: 20000000-0000-4000-8000-000000000105
+  - name: tile_0104
+    resourceId: 20000000-0000-4000-8000-000000000106
+  - name: tile_0105
+    resourceId: 20000000-0000-4000-8000-000000000107
+  - name: tile_0106
+    resourceId: 20000000-0000-4000-8000-000000000108
+  - name: tile_0107
+    resourceId: 20000000-0000-4000-8000-000000000109
+  - name: tile_0108
+    resourceId: 20000000-0000-4000-8000-000000000110
+  - name: tile_0109
+    resourceId: 20000000-0000-4000-8000-000000000111
+  - name: tile_0110
+    resourceId: 20000000-0000-4000-8000-000000000112
+  - name: tile_0111
+    resourceId: 20000000-0000-4000-8000-000000000113
+  - name: tile_0112
+    resourceId: 20000000-0000-4000-8000-000000000114
+  - name: tile_0113
+    resourceId: 20000000-0000-4000-8000-000000000115
+  - name: tile_0114
+    resourceId: 20000000-0000-4000-8000-000000000116
+  - name: tile_0115
+    resourceId: 20000000-0000-4000-8000-000000000117
+  - name: tile_0116
+    resourceId: 20000000-0000-4000-8000-000000000118
+  - name: tile_0117
+    resourceId: 20000000-0000-4000-8000-000000000119
+  - name: tile_0118
+    resourceId: 20000000-0000-4000-8000-000000000120
+  - name: tile_0119
+    resourceId: 20000000-0000-4000-8000-000000000121
+  - name: tile_0120
+    resourceId: 20000000-0000-4000-8000-000000000122
+  - name: tile_0121
+    resourceId: 20000000-0000-4000-8000-000000000123
+  - name: tile_0122
+    resourceId: 20000000-0000-4000-8000-000000000124
+  - name: tile_0123
+    resourceId: 20000000-0000-4000-8000-000000000125
+  - name: tile_0124
+    resourceId: 20000000-0000-4000-8000-000000000126
+  - name: tile_0125
+    resourceId: 20000000-0000-4000-8000-000000000127
+  - name: tile_0126
+    resourceId: 20000000-0000-4000-8000-000000000128
+  - name: tile_0127
+    resourceId: 20000000-0000-4000-8000-000000000129
+  - name: tile_0128
+    resourceId: 20000000-0000-4000-8000-000000000130
+  - name: tile_0129
+    resourceId: 20000000-0000-4000-8000-000000000131
+  - name: tile_0130
+    resourceId: 20000000-0000-4000-8000-000000000132
+  - name: tile_0131
+    resourceId: 20000000-0000-4000-8000-000000000133
+  - name: hero_step
+    resourceId: 20000000-0000-4000-8000-000000000134
+  - name: slime_step
+    resourceId: 20000000-0000-4000-8000-000000000135
+  - name: crawler_step
+    resourceId: 20000000-0000-4000-8000-000000000136
+  - name: ghost_step
+    resourceId: 20000000-0000-4000-8000-000000000137
+  - name: boss_step
+    resourceId: 20000000-0000-4000-8000-000000000138
+  - name: slime_death_0
+    resourceId: 20000000-0000-4000-8000-000000000139
+  - name: slime_death_1
+    resourceId: 20000000-0000-4000-8000-000000000140
+  - name: slime_death_2
+    resourceId: 20000000-0000-4000-8000-000000000141
+  - name: crawler_death_0
+    resourceId: 20000000-0000-4000-8000-000000000142
+  - name: crawler_death_1
+    resourceId: 20000000-0000-4000-8000-000000000143
+  - name: crawler_death_2
+    resourceId: 20000000-0000-4000-8000-000000000144
+  - name: ghost_death_0
+    resourceId: 20000000-0000-4000-8000-000000000145
+  - name: ghost_death_1
+    resourceId: 20000000-0000-4000-8000-000000000146
+  - name: ghost_death_2
+    resourceId: 20000000-0000-4000-8000-000000000147
+  - name: boss_death_0
+    resourceId: 20000000-0000-4000-8000-000000000148
+  - name: boss_death_1
+    resourceId: 20000000-0000-4000-8000-000000000149
+  - name: boss_death_2
+    resourceId: 20000000-0000-4000-8000-000000000150
+  - name: glyph_65
+    resourceId: 20000000-0000-4000-8000-000000000151
+  - name: glyph_66
+    resourceId: 20000000-0000-4000-8000-000000000152
+  - name: glyph_67
+    resourceId: 20000000-0000-4000-8000-000000000153
+  - name: glyph_68
+    resourceId: 20000000-0000-4000-8000-000000000154
+  - name: glyph_69
+    resourceId: 20000000-0000-4000-8000-000000000155
+  - name: glyph_70
+    resourceId: 20000000-0000-4000-8000-000000000156
+  - name: glyph_71
+    resourceId: 20000000-0000-4000-8000-000000000157
+  - name: glyph_72
+    resourceId: 20000000-0000-4000-8000-000000000158
+  - name: glyph_73
+    resourceId: 20000000-0000-4000-8000-000000000159
+  - name: glyph_74
+    resourceId: 20000000-0000-4000-8000-000000000160
+  - name: glyph_75
+    resourceId: 20000000-0000-4000-8000-000000000161
+  - name: glyph_76
+    resourceId: 20000000-0000-4000-8000-000000000162
+  - name: glyph_77
+    resourceId: 20000000-0000-4000-8000-000000000163
+  - name: glyph_78
+    resourceId: 20000000-0000-4000-8000-000000000164
+  - name: glyph_79
+    resourceId: 20000000-0000-4000-8000-000000000165
+  - name: glyph_80
+    resourceId: 20000000-0000-4000-8000-000000000166
+  - name: glyph_81
+    resourceId: 20000000-0000-4000-8000-000000000167
+  - name: glyph_82
+    resourceId: 20000000-0000-4000-8000-000000000168
+  - name: glyph_83
+    resourceId: 20000000-0000-4000-8000-000000000169
+  - name: glyph_84
+    resourceId: 20000000-0000-4000-8000-000000000170
+  - name: glyph_85
+    resourceId: 20000000-0000-4000-8000-000000000171
+  - name: glyph_86
+    resourceId: 20000000-0000-4000-8000-000000000172
+  - name: glyph_87
+    resourceId: 20000000-0000-4000-8000-000000000173
+  - name: glyph_88
+    resourceId: 20000000-0000-4000-8000-000000000174
+  - name: glyph_89
+    resourceId: 20000000-0000-4000-8000-000000000175
+  - name: glyph_90
+    resourceId: 20000000-0000-4000-8000-000000000176
+  - name: glyph_48
+    resourceId: 20000000-0000-4000-8000-000000000177
+  - name: glyph_49
+    resourceId: 20000000-0000-4000-8000-000000000178
+  - name: glyph_50
+    resourceId: 20000000-0000-4000-8000-000000000179
+  - name: glyph_51
+    resourceId: 20000000-0000-4000-8000-000000000180
+  - name: glyph_52
+    resourceId: 20000000-0000-4000-8000-000000000181
+  - name: glyph_53
+    resourceId: 20000000-0000-4000-8000-000000000182
+  - name: glyph_54
+    resourceId: 20000000-0000-4000-8000-000000000183
+  - name: glyph_55
+    resourceId: 20000000-0000-4000-8000-000000000184
+  - name: glyph_56
+    resourceId: 20000000-0000-4000-8000-000000000185
+  - name: glyph_57
+    resourceId: 20000000-0000-4000-8000-000000000186
+  - name: glyph_58
+    resourceId: 20000000-0000-4000-8000-000000000187
+  - name: glyph_45
+    resourceId: 20000000-0000-4000-8000-000000000188
+  - name: glyph_47
+    resourceId: 20000000-0000-4000-8000-000000000189
+  - name: glyph_43
+    resourceId: 20000000-0000-4000-8000-000000000190
+  - name: glyph_37
+    resourceId: 20000000-0000-4000-8000-000000000191
+  - name: glyph_46
+    resourceId: 20000000-0000-4000-8000-000000000192
+  - name: glyph_32
+    resourceId: 20000000-0000-4000-8000-000000000193
+  - name: white
+    resourceId: 20000000-0000-4000-8000-000000000194
+  - name: pulse
+    resourceId: 20000000-0000-4000-8000-000000000195
+  - name: spark
+    resourceId: 20000000-0000-4000-8000-000000000196
+animations:
+  - name: hero
+    resourceId: 20000000-0000-4000-8000-000000002000
+    loop: true
+    frames:
+      - spriteId: 20000000-0000-4000-8000-000000000086
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000134
+        seconds: 0.16
+        eventId: 1
+  - name: slime
+    resourceId: 20000000-0000-4000-8000-000000002001
+    loop: true
+    frames:
+      - spriteId: 20000000-0000-4000-8000-000000000110
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000135
+        seconds: 0.16
+        eventId: 1
+  - name: crawler
+    resourceId: 20000000-0000-4000-8000-000000002002
+    loop: true
+    frames:
+      - spriteId: 20000000-0000-4000-8000-000000000122
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000136
+        seconds: 0.16
+        eventId: 1
+  - name: ghost
+    resourceId: 20000000-0000-4000-8000-000000002003
+    loop: true
+    frames:
+      - spriteId: 20000000-0000-4000-8000-000000000123
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000137
+        seconds: 0.16
+        eventId: 1
+  - name: boss
+    resourceId: 20000000-0000-4000-8000-000000002004
+    loop: true
+    frames:
+      - spriteId: 20000000-0000-4000-8000-000000000112
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000138
+        seconds: 0.16
+        eventId: 1
+  - name: slime_death
+    resourceId: 20000000-0000-4000-8000-000000002010
+    loop: false
+    frames:
+      - spriteId: 20000000-0000-4000-8000-000000000139
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000140
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000141
+        seconds: 0.16
+        eventId: 1
+  - name: crawler_death
+    resourceId: 20000000-0000-4000-8000-000000002011
+    loop: false
+    frames:
+      - spriteId: 20000000-0000-4000-8000-000000000142
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000143
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000144
+        seconds: 0.16
+        eventId: 1
+  - name: ghost_death
+    resourceId: 20000000-0000-4000-8000-000000002012
+    loop: false
+    frames:
+      - spriteId: 20000000-0000-4000-8000-000000000145
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000146
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000147
+        seconds: 0.16
+        eventId: 1
+  - name: boss_death
+    resourceId: 20000000-0000-4000-8000-000000002013
+    loop: false
+    frames:
+      - spriteId: 20000000-0000-4000-8000-000000000148
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000149
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000150
+        seconds: 0.16
+        eventId: 1
+  - name: torch
+    resourceId: 20000000-0000-4000-8000-000000002005
+    loop: true
+    frames:
+      - spriteId: 20000000-0000-4000-8000-000000000031
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000034
+        seconds: 0.16
+        eventId: 1
+  - name: blade
+    resourceId: 20000000-0000-4000-8000-000000002006
+    loop: true
+    frames:
+      - spriteId: 20000000-0000-4000-8000-000000000106
+        seconds: 0.16
+        eventId: 1
+      - spriteId: 20000000-0000-4000-8000-000000000107
+        seconds: 0.16
+        eventId: 1
+tileSetId: 20000000-0000-4000-8000-000000003000
+tileMapId: 20000000-0000-4000-8000-000000003001

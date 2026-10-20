@@ -1,0 +1,91 @@
+# Attached ScriptComponents own gameplay state. Native components own engine services.
+from arp_scene import GameObject, Component, Transform, Scene, SpriteRendererComponent, main_scene
+from arp_scene2d import Vec2, Vec3, Vec4, Quat, BodyDesc, BodyType, BodyState
+from arp_scene2d import ShapeDesc, ShapeType, CollisionFilter, JointDesc, JointType
+from arp_scene2d import PhysicsWorld2D, PhysicsQueryHit, physics_world, RigidBody2DComponent
+from arp_scene2d import Joint2DComponent, SpriteAnimationComponent, TimerComponent, TweenComponent
+from arp_scene2d import SpriteTextComponent, ScreenCanvas2DComponent, ParticleEmitter2DComponent
+from arp_scene2d import AudioResourceSourceComponent, SeededRandom, GameClock
+
+import arp_scene2d as math
+
+var PI: float = 3.141592653589793
+var settings: {string: any} = {}
+var sprites: {string: string} = {}
+var animations: {string: string} = {}
+var sounds: [string] = []
+var world: PhysicsWorld2D
+var scene: Scene
+
+def require(ok: bool):
+    if not ok:
+        raise "ARP-SURVIVORS-COMPONENT-OPERATION-FAILED"
+
+def v2(x: float, y: float) -> Vec2:
+    var v: Vec2 = Vec2()
+    v.x = x
+    v.y = y
+    return v
+
+def color(r: float, g: float, b: float, a: float) -> Vec4:
+    var v: Vec4 = Vec4()
+    v.x = r
+    v.y = g
+    v.z = b
+    v.w = a
+    return v
+
+def pose(obj: GameObject, x: float, y: float, sx: float, sy: float, angle: float):
+    var t: Transform = obj.local_transform()
+    t.set_translation(x, y, t.translation.z)
+    var scale: Vec3 = t.scale
+    scale.x = sx
+    scale.y = sy
+    t.scale = scale
+    var rotation: Quat = t.rotation
+    rotation.z = math.sin(angle * 0.5)
+    rotation.w = math.cos(angle * 0.5)
+    t.rotation = rotation
+    obj.set_local_transform(t)
+
+def add_sprite(obj: GameObject, name: string, layer: int, ysort: bool) -> SpriteRendererComponent:
+    var renderer: SpriteRendererComponent = obj.add_component("SpriteRendererComponent")
+    renderer.set_sprite_resource(sprites[name])
+    renderer.set_sorting(layer, 0, ysort)
+    return renderer
+
+def add_body(
+    obj: GameObject,
+    kind: int,
+    radius: float,
+    category: int,
+    mask: int,
+    sensor: bool
+) -> RigidBody2DComponent:
+    var body: RigidBody2DComponent = obj.add_component("RigidBody2DComponent")
+    var desc: BodyDesc = BodyDesc()
+    desc.type = BodyType.Dynamic
+    if kind == 0:
+        desc.type = BodyType.Static
+    elif kind == 1:
+        desc.type = BodyType.Kinematic
+    desc.fixedRotation = true
+    require(body.initialize_body(desc))
+    var shape: ShapeDesc = ShapeDesc()
+    shape.radius = radius
+    shape.friction = 0.0
+    shape.sensor = sensor
+    var filter: CollisionFilter = CollisionFilter()
+    filter.category = category
+    filter.mask = mask
+    shape.filter = filter
+    require(body.add_collider(shape) != nil)
+    return body
+
+def area(x: float, y: float, radius: float) -> [any]:
+    var shape: ShapeDesc = ShapeDesc()
+    shape.radius = radius
+    var filter: CollisionFilter = CollisionFilter()
+    filter.category = 16
+    filter.mask = 4
+    return world.overlap_hits(shape, v2(x, y), 0.0, filter)
