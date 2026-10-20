@@ -74,17 +74,11 @@ shared Scene scheduler handles activation and deferred destruction.
 `arp_scene` and `arp_scene2d` expose canonical native components and systems;
 the old numeric-table `arp_runtime2d` service has been removed.
 
-The migrated responsibilities are RunFlow, PlayerController, Enemy,
-Projectile, ExperiencePickup, AutoWeapon, OrbitBlade, WaveDirector,
-DamageNumber, Hud, and MovingPlatform. Native host code schedules Scene and
-physics and passes input/configuration; it contains no combat rules.
-Current validation and remaining limitations: `docs/script-components-plan.md`.
-The component implementation is Contract / Prototype Complete. The new
-initial Interpreter 1000/2000/3000 pressure run failed (frame P95 1292.3531 ms).
-The O1 reflection inheritance fix restores object/physics counts and core,
-Box2D and GPU bytes across twenty real Vulkan pressure-populated restarts.
-O2 reduces reflection/VM allocations; its final pressure result is recorded
-in the plan. The 60 FPS acceptance gate remains open until measured to pass.
+Gameplay responsibilities include run flow, player/enemy behavior, projectiles,
+weapons, waves, HUD, and moving platforms. Native host code schedules Scene and
+physics and supplies platform input/configuration; gameplay rules remain in
+scripts. See [Script Components](../../docs/script-components-plan.md) for the
+component and serialization contracts.
 
 `--integer-scale` enables integer scaling within the 1280x720 logical canvas;
 windows smaller than that canvas are explicitly rejected in integer mode.
@@ -144,11 +138,7 @@ contains no native gameplay rules. Box2D, TileMap, timers/Tween, particles,
 audio, resource parsing and rendering remain engine services. Frame slots defer instead of
 blocking/retrying inside render recording. Fixed-step debt remains observable.
 
-See `docs/script-components-plan.md` for the current component migration,
-coverage, limitations and captured evidence. `docs/survivors-script-migration.md`
-records the previous numeric-service migration; `docs/2d-survivors-plan.md` and
-`docs/2d-survivors-acceptance.md` retain the original native-game acceptance.
-Earlier native-game performance does not validate the migrated script runtime.
-Validation targets
-Windows/Vulkan; Metal/WebGPU platform execution and all-backend Production
-Ready status are not claimed.
+The component interface and its serialization and event boundaries are defined
+in [Script Components](../../docs/script-components-plan.md). Platform support
+and validation status are tracked by the relevant backend and platform
+contracts.

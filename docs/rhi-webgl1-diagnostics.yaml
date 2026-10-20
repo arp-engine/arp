@@ -1,0 +1,209 @@
+type: WebGl1DiagnosticCatalog
+contractVersion: 1
+scope: WebGl1Graphics/1
+authority: None
+sourceFiles:
+  - src/rhi/semantics/webgl_runtime_profile.h
+  - src/rhi/semantics/webgl_runtime_identity.h
+  - src/rhi/semantics/webgl_shader_precision.h
+  - src/rhi/semantics/webgl_format_facts.h
+  - src/rhi/semantics/webgl_memory_budget.h
+  - src/rhi/semantics/webgl_extension_execution.h
+  - src/rhi/semantics/webgl_graphics_request.h
+  - src/rhi/semantics/render_target_coordinates.h
+rules:
+  - This catalog defines stable diagnostic identity and recovery, never execution authority.
+  - Group metadata applies to every listed id; identifiers are globally unique in this catalog.
+  - NoneFromAdmission describes this CPU validation call, not the native query that supplied its facts.
+  - Recovery is an explicit caller action; no entry permits silent fallback or automatic retry.
+  - Partial native issue failures retain accepted and possible-side-effect facts; they are not rolled back.
+  - Unknown diagnostic identifiers retain their original text and have no inferred recovery policy.
+groups:
+  - category: CoordinateLoweringUnavailable
+    status: ImplementedAdmission
+    phase: CoordinateAdmission
+    sideEffects: NoneFromAdmission
+    recovery: ImplementAndValidateVersionedCoordinateLoweringBeforeWebGlExecution
+    ids:
+      - RHI-WEBGL1-COORDINATE-LOWERING-UNAVAILABLE
+  - category: UnknownCoordinateBackend
+    status: ExistingSharedContract
+    phase: CoordinateAdmission
+    sideEffects: NoneFromAdmission
+    recovery: SupplyAnExplicitRegisteredBackendIdentity
+    sourceFile: src/rhi/semantics/render_target_coordinates.h
+    ids:
+      - RHI-COORDINATE-BACKEND-UNKNOWN
+  - category: RequestVersion
+    status: ImplementedAdmission
+    phase: Prepare
+    sideEffects: NoneFromAdmission
+    recovery: RebuildRequestWithExplicitSupportedVersion
+    ids:
+      - RHI-WEBGL1-CONTRACT-VERSION
+      - RHI-WEBGL1-PROBE-VERSION
+      - RHI-WEBGL1-CONTEXT-REQUEST-VERSION
+      - RHI-WEBGL1-GRAPHICS-REQUEST-VERSION
+      - RHI-WEBGL1-EXTENSION-CONTRACT-VERSION
+      - RHI-WEBGL1-FORMAT-FACTS-VERSION
+      - RHI-WEBGL1-FORMAT-REQUEST-VERSION
+      - RHI-WEBGL1-BUDGET-VERSION
+      - RHI-WEBGL1-MEMORY-BUDGET-VERSION
+      - RHI-WEBGL1-MEMORY-REQUEST-VERSION
+      - RHI-WEBGL1-PRECISION-REQUIREMENT-VERSION
+  - category: Probe
+    status: ImplementedAdmission
+    phase: ContextAdmission
+    sideEffects: NoneFromAdmission
+    recovery: QueryCompleteFactsFromNewOrCurrentContext
+    ids:
+      - RHI-WEBGL1-PROBE-MISSING
+      - RHI-WEBGL1-PROBE-INCOMPLETE
+      - RHI-WEBGL1-CONTEXT-VERSION
+      - RHI-WEBGL1-CONTEXT-ATTRIBUTES-MISMATCH
+      - RHI-WEBGL1-LIMIT-PROBE-INVALID
+      - RHI-WEBGL1-IDENTITY-CONTEXT-VERSION
+      - RHI-WEBGL1-IDENTITY-SHADER-VERSION
+      - RHI-WEBGL1-IDENTITY-PROBE-INCOMPLETE
+      - RHI-WEBGL1-IDENTITY-PROBE-INVALID
+      - RHI-WEBGL1-EXTENSION-PROBE-INCONSISTENT
+      - RHI-WEBGL1-FORMAT-PROBE-INCOMPLETE
+      - RHI-WEBGL1-FORMAT-PROBE-INVALID
+      - RHI-WEBGL1-PRECISION-PROBE-INCOMPLETE
+      - RHI-WEBGL1-PRECISION-PROBE-INVALID
+  - category: ContextLost
+    status: ImplementedAdmission
+    phase: ContextAdmission
+    sideEffects: NoneFromAdmission
+    recovery: RestoreThenRequeryAndRebuildWithNewGeneration
+    ids:
+      - RHI-WEBGL1-CONTEXT-LOST
+      - RHI-WEBGL1-FORMAT-CONTEXT-LOST
+  - category: Extension
+    status: ImplementedAdmission
+    phase: Prepare
+    sideEffects: NoneFromAdmission
+    recovery: RequireAvailableEnabledAndExplicitOptInOrRejectWorkload
+    ids:
+      - RHI-WEBGL1-EXTENSION-UNAVAILABLE
+      - RHI-WEBGL1-EXTENSION-NOT-ENABLED
+      - RHI-WEBGL1-EXTENSION-OPT-IN-REQUIRED
+  - category: WorkloadLimits
+    status: ImplementedAdmission
+    phase: Prepare
+    sideEffects: NoneFromAdmission
+    recovery: ExplicitlyChangeWorkloadWithinQueriedLimitsAndCallerBudget
+    ids:
+      - RHI-WEBGL1-WORKLOAD-LIMIT
+      - RHI-WEBGL1-BUDGET-LIMIT
+      - RHI-WEBGL1-PUSH-L2-LIMIT
+      - RHI-WEBGL1-TEXTURE-UNIT-ACCOUNTING
+      - RHI-WEBGL1-FRAGMENT-PRECISION
+      - RHI-WEBGL1-PRECISION-REQUIREMENT-INVALID
+      - RHI-WEBGL1-PRECISION-UNSUPPORTED
+      - RHI-WEBGL1-PRECISION-INSUFFICIENT
+  - category: UnsupportedFeature
+    status: ImplementedAdmission
+    phase: Prepare
+    sideEffects: NoneFromAdmission
+    recovery: SelectExplicitlySupportedWorkloadOrReject
+    ids:
+      - RHI-WEBGL1-GRAPHICS-FEATURE-UNSUPPORTED
+      - RHI-WEBGL1-GRAPHICS-OPERATION-UNKNOWN
+      - RHI-WEBGL1-GPU-COMPLETION-UNAVAILABLE
+      - RHI-WEBGL1-MEMORY-PHYSICAL-BOUND-UNAVAILABLE
+      - RHI-WEBGL1-PRESENTATION-POLICY
+      - RHI-WEBGL1-CANVAS-CONTENT-UNAVAILABLE
+  - category: TextureAndSampler
+    status: ImplementedAdmission
+    phase: Prepare
+    sideEffects: NoneFromAdmission
+    recovery: CorrectExplicitDescriptorBindingOrCookProfile
+    ids:
+      - RHI-WEBGL1-DEPTH-TEXTURE-SHAPE
+      - RHI-WEBGL1-TEXTURE-SHAPE
+      - RHI-WEBGL1-TEXTURE-USAGE
+      - RHI-WEBGL1-TEXTURE-MIP-CHAIN
+      - RHI-WEBGL1-FORMAT-ROLE
+      - RHI-WEBGL1-FORMAT-SAMPLE-COUNT
+      - RHI-WEBGL1-FORMAT-UNSUPPORTED
+      - RHI-WEBGL1-SAMPLED-BINDING-MISSING
+      - RHI-WEBGL1-SAMPLED-BINDING-IDENTITY
+      - RHI-WEBGL1-SAMPLER-UNSUPPORTED
+      - RHI-WEBGL1-SAMPLER-CONFLICT
+      - RHI-WEBGL1-INVALID-NPOT
+  - category: Draw
+    status: ImplementedAdmission
+    phase: RecordPreflight
+    sideEffects: NoneFromAdmission
+    recovery: CorrectDrawParametersAndDeclaredBufferRange
+    ids:
+      - RHI-WEBGL1-DRAW-RANGE
+      - RHI-WEBGL1-DRAW-SEMANTICS
+      - RHI-WEBGL1-DRAW-INDEX-FORMAT
+  - category: MemoryBudget
+    status: ImplementedAdmission
+    phase: ReservePreflight
+    sideEffects: NoneFromAdmission
+    recovery: ReleaseEligibleOwnersOrExplicitlyReconfigureBudgetBeforeRetry
+    ids:
+      - RHI-WEBGL1-MEMORY-CAPACITY
+      - RHI-WEBGL1-MEMORY-OVERFLOW
+      - RHI-WEBGL1-MEMORY-LIVE-EXCEEDS-CAPACITY
+  - category: ProbeNativeFailure
+    status: ImplementedAdmission
+    phase: ContextAdmission
+    sideEffects: NoneFromAdmission
+    recovery: PreserveNativeFailureThenRecreateOrRejectContext
+    ids:
+      - RHI-WEBGL1-FORMAT-NATIVE-FAILURE
+      - RHI-WEBGL1-FORMAT-OUT-OF-MEMORY
+  - category: PayloadUnavailable
+    status: ImplementedAdmission
+    phase: ExecutionGate
+    sideEffects: NoneFromAdmission
+    recovery: ImplementAndValidateAuthenticatedBackendPayloadBeforeEnabling
+    ids:
+      - RHI-WEBGL1-EXECUTION-NOT-IMPLEMENTED
+  - category: StaleGeneration
+    status: ExistingSharedContract
+    phase: ReusePreflight
+    sideEffects: NoneFromAdmission
+    recovery: RebuildReferencesInCurrentContextGeneration
+    sourceFile: src/rhi/semantics/ordered_resource_reuse.h
+    ids:
+      - RHI-ORDERED-REUSE-STALE-CONTEXT
+  - category: UniformType
+    status: ReservedP1
+    phase: ArtifactLowering
+    sideEffects: NoneFromAdmission
+    recovery: RecompileExplicitSupportedUniformLeafTypeAndLayout
+    ids:
+      - RHI-WEBGL1-UNIFORM-TYPE
+      - RHI-WEBGL1-UNIFORM-LAYOUT
+  - category: UniformLimit
+    status: ReservedP1
+    phase: ProgramPreflight
+    sideEffects: NoneFromAdmission
+    recovery: RecompileWorkloadWithinActualActiveStageVectorLimits
+    ids:
+      - RHI-WEBGL1-UNIFORM-LIMIT
+  - category: NativeIssueFailure
+    status: ReservedP2
+    phase: Issue
+    sideEffects: PossiblePartialIssue
+    recovery: PreserveAcceptedWorkAndOwnersThenUseFailureOrLossStateMachine
+    ids:
+      - RHI-WEBGL1-ISSUE-NATIVE-FAILURE
+      - RHI-WEBGL1-ISSUE-CONTEXT-LOST
+  - category: ExtensionExecution
+    status: ImplementedAdmission
+    phase: OriginalResourceDomainAdmission
+    sideEffects: NoneFromAdmission
+    recovery: SupplyVersionedPrototypeSubsetCoveredByOriginalContextConsentAndNativeFacts
+    ids:
+      - RHI-WEBGL1-EXTENSION-EXECUTION-VALIDATOR-ONLY
+      - RHI-WEBGL1-EXTENSION-EXECUTION-NOT-APPLICABLE
+      - RHI-WEBGL1-EXTENSION-EXECUTION-BACKEND-UNKNOWN
+      - RHI-WEBGL1-EXTENSION-EXECUTION-VERSION
+      - RHI-WEBGL1-EXTENSION-EXECUTION-OPT-IN
