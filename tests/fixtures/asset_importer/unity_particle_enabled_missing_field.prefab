@@ -1,0 +1,23 @@
+---
+ParticleSystem:
+  m_Name: MissingEnabledField
+  m_MaxParticles: 32
+  randomSeed: 7
+  useAutoRandomSeed: 0
+  InitialModule:
+    enabled: 1
+    startSpeed: 0
+    startSize: 1
+    gravityModifier: 0
+    loop: 1
+    prewarm: 0
+    simulationSpace: 0
+    startColor:
+      r: 1
+      g: 1
+      b: 1
+      a: 1
+---
+ParticleSystemRenderer:
+  m_Material:
+    guid: 0123456789abcdef0123456789abcdef

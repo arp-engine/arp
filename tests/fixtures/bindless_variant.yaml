@@ -1,0 +1,53 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: BindlessFixture
+set: 0
+maxBindings: 16
+maxSwitchCases: 40
+snapshotBytes: 65536
+snapshotMetadataBinding: 13
+tables:
+  - name: Images
+    tableId: 1
+    kind: SampledTexture
+    capacity: 2
+    binding: 0
+    stages: [fragment]
+    operations: [load, query, sampleLevel, sampleGrad]
+    sampler: Filters
+  - name: Filters
+    tableId: 2
+    kind: Sampler
+    capacity: 2
+    binding: 2
+    stages: [fragment]
+    operations: []
+  - name: Outputs
+    tableId: 3
+    kind: StorageTexture
+    format: r32float
+    capacity: 2
+    binding: 4
+    stages: [compute]
+    operations: [load, store, query]
+  - name: Constants
+    tableId: 4
+    kind: UniformBuffer
+    capacity: 2
+    binding: 6
+    stages: [compute]
+    operations: [load]
+  - name: Inputs
+    tableId: 5
+    kind: ReadOnlyStorageBuffer
+    capacity: 2
+    binding: 8
+    stages: [compute]
+    operations: [load, query]
+  - name: Counters
+    tableId: 6
+    kind: StorageBuffer
+    capacity: 2
+    binding: 10
+    stages: [compute]
+    operations: [load, store, query, atomicAdd]

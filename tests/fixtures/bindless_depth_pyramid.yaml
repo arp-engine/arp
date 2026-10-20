@@ -1,0 +1,67 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: DepthPyramid
+set: 0
+# Six scalar resource roles plus metadata/fault. Each pass consumes only its
+# authenticated active roles; all roles stay retained by the same snapshot.
+maxBindings: 8
+# Depth load1 + two storage query/store pairs4 + source load/query2 + read1 + Results1.
+maxSwitchCases: 9
+# Header4 + table headers24 + per-slot lengths6 = 34 words; two fault words.
+snapshotBytes: 144
+snapshotMetadataBinding: 6
+faultLatchBinding: 7
+textureShapeContractVersion: 1
+sampledDepthContractVersion: 1
+storageImageContractVersion: 1
+tables:
+  - name: Depths
+    tableId: 1
+    kind: SampledTexture
+    depthTexture: true
+    dimension: Texture2D
+    capacity: 1
+    binding: 0
+    stages: [compute]
+    operations: [load]
+  - name: CopyOutputs
+    tableId: 2
+    kind: StorageTexture
+    format: rgba16float
+    access: WriteOnly
+    capacity: 1
+    binding: 1
+    stages: [compute]
+    operations: [store, query]
+  - name: ReduceOutputs
+    tableId: 3
+    kind: StorageTexture
+    format: rgba16float
+    access: WriteOnly
+    capacity: 1
+    binding: 2
+    stages: [compute]
+    operations: [store, query]
+  - name: Sources
+    tableId: 4
+    kind: SampledTexture
+    dimension: Texture2D
+    capacity: 1
+    binding: 3
+    stages: [compute]
+    operations: [load, query]
+  - name: ReducedSources
+    tableId: 5
+    kind: SampledTexture
+    dimension: Texture2D
+    capacity: 1
+    binding: 4
+    stages: [compute]
+    operations: [load]
+  - name: Results
+    tableId: 6
+    kind: StorageBuffer
+    capacity: 1
+    binding: 5
+    stages: [compute]
+    operations: [store]

@@ -1,0 +1,34 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: StorageVector
+set: 0
+maxBindings: 8
+maxSwitchCases: 16
+snapshotBytes: 65536
+snapshotMetadataBinding: 6
+faultLatchBinding: 7
+storageImageContractVersion: 1
+tables:
+  - name: Pyramids
+    tableId: 1
+    kind: StorageTexture
+    format: rgba16float
+    access: WriteOnly
+    capacity: 2
+    binding: 0
+    stages: [compute]
+    operations: [store, query]
+  - name: Sources
+    tableId: 2
+    kind: SampledTexture
+    capacity: 2
+    binding: 2
+    stages: [compute]
+    operations: [load]
+  - name: Results
+    tableId: 3
+    kind: StorageBuffer
+    capacity: 2
+    binding: 4
+    stages: [compute]
+    operations: [store]

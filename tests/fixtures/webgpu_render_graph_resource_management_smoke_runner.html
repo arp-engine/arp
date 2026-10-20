@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ARP RenderGraph Resource Management WebGPU Smoke</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #101418; }
+    body { display: grid; place-items: center; }
+    canvas { width: 256px; height: 256px; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+  <canvas id="RenderGraphResourceManagementSmoke" width="64" height="64"></canvas>
+  <script>
+    var Module = {
+      noInitialRun: false,
+      locateFile: function (path) {
+        return "/build/web-webgpu-emscripten-contract-v2/" + path;
+      },
+      print: function (text) { console.log("[arp-rg-resource-smoke] " + text); },
+      printErr: function (text) { console.error("[arp-rg-resource-smoke] " + text); },
+      onRuntimeInitialized: function () {
+        console.log("[arp-rg-resource-smoke] runtime-initialized");
+      },
+      onExit: function (status) {
+        globalThis.arpRenderGraphResourceSmokeExit = status;
+        console.log("[arp-rg-resource-smoke] exit=" + status);
+      }
+    };
+  </script>
+  <script src="/build/web-webgpu-emscripten-contract-v2/arp_render_graph_resource_management_smoke_tests.js"></script>
+</body>
+</html>

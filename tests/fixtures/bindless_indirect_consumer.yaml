@@ -1,0 +1,22 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: BindlessIndirectConsumer
+set: 0
+maxBindings: 5
+maxSwitchCases: 2
+snapshotBytes: 1024
+snapshotMetadataBinding: 1
+faultLatchBinding: 2
+indirectInstanceBaseContractVersion: 1
+indirectInstanceConsumer:
+  binding: 0
+  recordIndex: 0
+  instanceCapacity: 2
+tables:
+  - name: Images
+    tableId: 1
+    kind: SampledTexture
+    capacity: 2
+    binding: 3
+    stages: [fragment]
+    operations: [load]

@@ -1,0 +1,22 @@
+type: arp.script.aot-package/v1
+package: stress
+version: 1
+platforms: [windows, web-wasm]
+budget:
+  instructions: 10000000000
+  recursion: 256
+  frame-values: 4096
+  container-values: 65536
+  call-arguments: 256
+  continuation-frames: 256
+  memory-bytes: 67108864
+contracts:
+  dependency-graph-hash: sha256:7d9f270362365b0e371278cb668d18b5a35d5441320d22c457fce5efe11d01c3
+  reflection-registry-hash: sha256:de438e8cedcbf984e8e2d952f3ce90d13aecc9c5d3996e879582fd7c3d9a6880
+  host-contract-hash: sha256:1d0b72fb08c477507cc7701b4c8e0cfdff7a99ae54cc6f652ab0468e2b1580d1
+modules:
+  - id: stress
+    version: 1
+    source: stress.arp
+    entries: [int_loop, function_calls, recursive_fib, list_index, list_build, dict_index, string_concat, range_sum, branch_mix, power_floor, list_mutate, exception_loop, float_math, bitwise, nested_loop, dict_build, dict_mutate, dict_string, string_compare, string_build, list_iterate, object_method, generator_sum, closure_calls]
+    dependencies: []

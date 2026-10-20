@@ -1,0 +1,124 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Bindless workload resource device limits</title>
+<script type="module">
+const names = ["maxBindGroups", "maxBindingsPerBindGroup", "maxSampledTexturesPerShaderStage",
+  "maxSamplersPerShaderStage", "maxStorageTexturesPerShaderStage", "maxUniformBuffersPerShaderStage",
+  "maxStorageBuffersPerShaderStage", "maxBufferSize", "maxUniformBufferBindingSize",
+  "maxStorageBufferBindingSize", "minUniformBufferOffsetAlignment", "minStorageBufferOffsetAlignment",
+  "maxTextureDimension2D", "maxTextureDimension3D", "maxTextureArrayLayers"];
+const observe = limits => Object.fromEntries(names.map(name => {
+  const value = limits[name];
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Missing queried limit: ${name}`);
+  return [name, value];
+}));
+const result = {success: false, scope: "authored-terrain27-ibl-depth-storage-resource-request-only",
+  runtimeCapabilityGranted: false, diagnostics: [], nativeErrors: [], log: []};
+let device;
+const owned = [];
+try {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error("Adapter unavailable");
+  result.adapterLimits = observe(adapter.limits);
+  await new Promise((resolve, reject) => {
+    window.Module = {
+      arguments: ["--adapter", ...names.map(name => String(result.adapterLimits[name]))],
+      print: line => result.log.push(String(line)),
+      printErr: line => result.diagnostics.push(String(line)),
+      onAbort: reason => reject(new Error(String(reason))),
+      postRun: [resolve]
+    };
+    const script = document.createElement("script");
+    script.src = "arp_bindless_workload_resources_tests.js";
+    script.onerror = () => reject(new Error("Wasm test loading failed"));
+    document.head.append(script);
+  });
+  const prefix = "BINDLESS_WORKLOAD_DEVICE_PLAN_JSON ";
+  const plans = result.log.filter(line => line.startsWith(prefix));
+  if (plans.length !== 1) throw new Error("Exactly one C++ workload plan required");
+  result.plan = JSON.parse(plans[0].slice(prefix.length));
+  const expected = {maxBindGroups: 1, maxBindingsPerBindGroup: 36,
+    maxSampledTexturesPerShaderStage: 31, maxSamplersPerShaderStage: 1,
+    maxStorageTexturesPerShaderStage: 1, maxUniformBuffersPerShaderStage: 1,
+    maxStorageBuffersPerShaderStage: 2, maxBufferSize: 1048576,
+    maxUniformBufferBindingSize: 65536, maxStorageBufferBindingSize: 262144,
+    maxTextureDimension2D: 128, maxTextureDimension3D: 8, maxTextureArrayLayers: 6,
+    minUniformBufferOffsetAlignment: result.adapterLimits.minUniformBufferOffsetAlignment,
+    minStorageBufferOffsetAlignment: result.adapterLimits.minStorageBufferOffsetAlignment};
+  if (result.plan.contractVersion !== 2
+      || JSON.stringify(result.plan.requiredLimits) !== JSON.stringify(expected))
+    throw new Error("Incorrect complete resource request dictionary");
+  device = await adapter.requestDevice({requiredLimits: result.plan.requiredLimits});
+  device.addEventListener("uncapturederror", event => result.nativeErrors.push(String(event.error?.message || event.error)));
+  result.actualDeviceLimits = observe(device.limits);
+  for (const [name, value] of Object.entries(result.plan.requiredLimits)) {
+    const minimum = name.startsWith("min");
+    if (minimum ? result.actualDeviceLimits[name] > value : result.actualDeviceLimits[name] < value)
+      throw new Error(`Created device does not satisfy ${name}`);
+  }
+  device.pushErrorScope("validation");
+  const makeBuffer = (size, usage) => {
+    const buffer = device.createBuffer({size, usage});
+    owned.push(buffer);
+    return buffer;
+  };
+  const uniform = makeBuffer(131072, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+  const storage = makeBuffer(524288, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+  makeBuffer(1048576, GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST);
+  const fault = makeBuffer(4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
+  const entries = [];
+  const resources = [];
+  for (let index = 0; index < 32; ++index) {
+    const cube = index === 27 || index === 28;
+    const lut = index === 29;
+    const depth = index === 30;
+    const volume = index === 31;
+    const layers = cube ? 6 : index === 24 || index === 25 || volume ? 2 : 1;
+    const texture = device.createTexture({
+      size: [cube ? 64 : lut ? 128 : volume ? 8 : 2, cube ? 64 : lut ? 128 : volume ? 4 : 2, layers],
+      dimension: volume ? "3d" : "2d", mipLevelCount: cube ? 7 : lut ? 1 : 2,
+      format: depth ? "depth32float" : cube || lut || volume ? "rgba16float" : "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | (volume ? GPUTextureUsage.STORAGE_BINDING
+        : depth ? GPUTextureUsage.RENDER_ATTACHMENT : GPUTextureUsage.COPY_DST)
+    });
+    owned.push(texture);
+    const dimension = cube ? "cube" : volume ? "3d" : layers > 1 ? "2d-array" : "2d";
+    const view = texture.createView({dimension, ...(volume ? {mipLevelCount: 1} : {})});
+    entries.push(volume
+      ? {binding: index, visibility: GPUShaderStage.COMPUTE,
+        storageTexture: {access: "write-only", format: "rgba16float", viewDimension: dimension}}
+      : {binding: index, visibility: GPUShaderStage.FRAGMENT,
+        texture: {sampleType: depth ? "depth" : "float", viewDimension: dimension}});
+    resources.push({binding: index, resource: view});
+  }
+  entries.push(
+    {binding: 32, visibility: GPUShaderStage.FRAGMENT, sampler: {type: "filtering"}},
+    {binding: 33, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: {type: "uniform"}},
+    {binding: 34, visibility: GPUShaderStage.FRAGMENT, buffer: {type: "read-only-storage"}},
+    {binding: 35, visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: {type: "storage"}}
+  );
+  resources.push(
+    {binding: 32, resource: device.createSampler({magFilter: "linear", minFilter: "linear", mipmapFilter: "linear"})},
+    {binding: 33, resource: {buffer: uniform, offset: 65536, size: 65536}},
+    {binding: 34, resource: {buffer: storage, offset: 256, size: 262144}},
+    {binding: 35, resource: {buffer: fault}}
+  );
+  const layout = device.createBindGroupLayout({entries});
+  device.createBindGroup({layout, entries: resources});
+  const error = await device.popErrorScope();
+  if (error) throw new Error(String(error.message));
+  result.createdDeviceValidated = true;
+  result.bufferAllocations = 4;
+  result.textureAllocations = 32;
+  result.samplerAllocations = 1;
+  result.physicalBindings = 36;
+  result.finiteBindingsValidated = true;
+  result.success = !result.diagnostics.length && !result.nativeErrors.length;
+} catch (error) {
+  result.diagnostics.push(String(error));
+} finally {
+  for (const resource of owned) resource.destroy();
+  device?.destroy();
+  await fetch("/result", {method: "POST", body: JSON.stringify(result)});
+}
+</script>

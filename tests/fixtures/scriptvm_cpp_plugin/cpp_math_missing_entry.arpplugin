@@ -1,0 +1,9 @@
+type: arp.script.cpp-plugin
+contractVersion: 2
+module: cpp_math_missing_entry
+exportContractHash: sha256:cpp-math-missing-entry-v2
+source: cpp_math.cpp
+entry: arp_register_cpp_math_missing_entry
+reflectionModule: cpp_math
+reflectionHeaders:
+  - cpp_math.h

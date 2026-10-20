@@ -1,0 +1,28 @@
+fileFormatVersion: 2
+guid: invalid_duplicate_clip_guid
+ModelImporter:
+  animationType: 3
+  avatarSetup: 1
+  importAnimation: 1
+  clipAnimations:
+    - name: Idle
+    - name: Idle
+  humanDescription:
+    human:
+      - boneName: Hips
+        humanName: Hips
+    skeleton:
+      - name: Hips
+        parentName: ""
+        position:
+          x: 0
+          y: 0
+          z: 0
+        rotation:
+          x: 0
+          y: 0
+          z: 0
+        scale:
+          x: 1
+          y: 1
+          z: 1

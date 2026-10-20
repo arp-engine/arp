@@ -1,0 +1,77 @@
+{
+  "iterations": 100000,
+  "profiles": {
+    "resource": {
+      "description": "Debug resource ceiling used by the per-commit gate.",
+      "components": {
+        "vm_dispatch": {
+          "max_allocations": 1001942,
+          "max_live_bytes_delta": 248
+        },
+        "aot_dispatch": {
+          "max_allocations": 2533757,
+          "max_live_bytes_delta": 16
+        },
+        "semantic_helper": {
+          "max_allocations": 100000,
+          "max_live_bytes_delta": 0
+        },
+        "reflection_bridge": {
+          "max_allocations": 1100020,
+          "max_live_bytes_delta": 884
+        },
+        "allocation": {
+          "max_allocations": 675740,
+          "max_live_bytes_delta": 0
+        },
+        "host_call": {
+          "max_allocations": 168936,
+          "max_live_bytes_delta": 232
+        }
+      }
+    },
+    "release_resource": {
+      "description": "Release resource ceiling measured on the 2026-08-16 Windows host.",
+      "timing_baseline": {
+        "host": "Windows MinGW/Ninja release auto",
+        "measured_on": "2026-08-16",
+        "method": "one 100000-iteration run per component; limits are deliberately 5-10x the observed baseline",
+        "unit": "milliseconds"
+      },
+      "components": {
+        "vm_dispatch": {
+          "max_allocations": 1001942,
+          "max_live_bytes_delta": 248
+        },
+        "aot_dispatch": {
+          "max_allocations": 2533757,
+          "max_live_bytes_delta": 16
+        },
+        "semantic_helper": {
+          "max_allocations": 100000,
+          "max_live_bytes_delta": 0
+        },
+        "reflection_bridge": {
+          "max_allocations": 1100020,
+          "max_live_bytes_delta": 884
+        },
+        "allocation": {
+          "max_allocations": 675740,
+          "max_live_bytes_delta": 0
+        },
+        "host_call": {
+          "max_allocations": 168936,
+          "max_live_bytes_delta": 232
+        }
+      },
+      "timing": {
+        "vm_dispatch": { "max_milliseconds": 2000.0 },
+        "aot_dispatch": { "max_milliseconds": 3000.0 },
+        "semantic_helper": { "max_milliseconds": 500.0 },
+        "reflection_bridge": { "max_milliseconds": 1500.0 },
+        "allocation": { "max_milliseconds": 1000.0 },
+        "host_call": { "max_milliseconds": 500.0 }
+      }
+    }
+  }
+}

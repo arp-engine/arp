@@ -1,0 +1,165 @@
+moduleName: RhiPipelineContract
+sourcePath: "rhi_pipeline_contract.slang"
+reflectionContractVersion: "ShaderReflection/3"
+sourceSha256: "1dfdf22ed33ab3a794782d07a000ae2fa851cc976f1a36a6687c320d61bba33d"
+entryPoints:
+  - name: vsMain
+    stage: Vertex
+    writesRenderTargetArrayIndex: false
+  - name: fsMain
+    stage: Fragment
+    writesRenderTargetArrayIndex: false
+  - name: csMain
+    stage: Compute
+    writesRenderTargetArrayIndex: false
+    computeWorkgroupSizeX: 1
+    computeWorkgroupSizeY: 1
+    computeWorkgroupSizeZ: 1
+bindings:
+  - name: frameConstants
+    type: UniformBuffer
+    set: 0
+    binding: 0
+    arrayCount: 1
+    stageMask: 1
+  - name: materialTexture
+    type: SampledTexture
+    set: 1
+    binding: 0
+    arrayCount: 1
+    stageMask: 2
+    depthTexture: false
+webGpuBindingSpaceContractVersion: "WebGpuBindingSpace/5"
+webGpuBindingSpaceStatus: Available
+webGpuBindingSpaceUnavailableReason: null
+webGpuBindingSpace:
+  - name: frameConstants
+    set: 0
+    binding: 0
+    group: 0
+    webGpuBinding: 0
+    active: true
+    physicalType: UniformBuffer
+    arrayElement: 0
+    capacity: 1
+  - name: materialTexture
+    set: 1
+    binding: 0
+    group: 1
+    webGpuBinding: 0
+    active: true
+    physicalType: SampledTexture
+    arrayElement: 0
+    capacity: 1
+webGpuBindingSpaceGroupCount: 3
+metalBindingSpaceContractVersion: "MetalBindingSpace/1"
+metalBindingSpaceStatus: Available
+metalBindingSpaceUnavailableReason: null
+metalBindingSpace:
+  - name: frameConstants
+    set: 0
+    binding: 0
+    metalSlot: 0
+    active: true
+    physicalType: UniformBuffer
+  - name: materialTexture
+    set: 1
+    binding: 0
+    metalSlot: 0
+    active: true
+    physicalType: SampledTexture
+metalArgumentBufferContractVersion: null
+metalArgumentBufferStatus: Unavailable
+metalArgumentBufferUnavailableReason: "generated MSL artifact did not expose an argument-buffer lowering"
+metalArgumentBuffer: []
+metalFramebufferFetchContractVersion: null
+metalFramebufferFetchStatus: Unavailable
+metalFramebufferFetchUnavailableReason: "generated MSL artifact did not expose framebuffer-fetch lowering"
+metalFramebufferFetch: []
+metalGpuCountedIndirectContractVersion: null
+metalGpuCountedIndirectStatus: Unavailable
+metalGpuCountedIndirectCountBufferIndex: null
+metalGpuCountedIndirectUsesDrawId: false
+metalGpuCountedIndirectMasksOutOfRange: false
+metalTessellationContractVersion: null
+metalTessellationStatus: Unavailable
+metalTessellationVertexEntryPoint: null
+metalTessellationFactorBufferIndex: null
+metalTessellationControlPointCount: 0
+metalTessellationPatchType: null
+metalTessellationFactorFormat: null
+metalTessellationFactorBytesPerPatch: null
+metalTessellationFactorInstanceStrideBytes: null
+pushConstantSizeBytes: 128
+pushConstantContractVersion: "AtomicFullBlockPush/1"
+pushConstantStages: "CS|FS|VS"
+pushConstantWebGpuBinding:
+  group: 2
+  binding: 0
+pushConstantMetalBufferIndex: 1
+computeWorkgroupSizeX: 1
+computeWorkgroupSizeY: 1
+computeWorkgroupSizeZ: 1
+tessellationControlPointCount: 0
+vertexAttributes: []
+targets:
+  spirv: "rhi_pipeline_contract.spv"
+  metal: "rhi_pipeline_contract.metal"
+  wgsl: "rhi_pipeline_contract.wgsl"
+pushConstantMembers:
+  - name: data0
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 0
+    size: 16
+    decorations: 0x00000000
+  - name: data1
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 16
+    size: 16
+    decorations: 0x00000000
+  - name: data2
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 32
+    size: 16
+    decorations: 0x00000000
+  - name: data3
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 48
+    size: 16
+    decorations: 0x00000000
+  - name: data4
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 64
+    size: 16
+    decorations: 0x00000000
+  - name: data5
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 80
+    size: 16
+    decorations: 0x00000000
+  - name: data6
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 96
+    size: 16
+    decorations: 0x00000000
+  - name: data7
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 112
+    size: 16
+    decorations: 0x00000000

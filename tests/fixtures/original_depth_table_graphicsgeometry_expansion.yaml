@@ -1,0 +1,8 @@
+type: OriginalDepthTableScalarExpansion
+contractVersion: 1
+profile: GraphicsGeometry
+sourceSha256: 06755dad27f07d0446f8631b802213b3da3c51f6866c06ffd1c80f8bcdd061b5
+capacity: 3
+maxPhysicalBindings: 3
+maxSwitchCases: 3
+maxArtifactBytes: 1048576

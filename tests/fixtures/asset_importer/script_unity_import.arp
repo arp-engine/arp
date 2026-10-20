@@ -1,0 +1,47 @@
+import unity_import
+
+def main(input: string, projectRoot: string) -> int:
+    return unity_import.main(input, projectRoot)
+
+def export(input: string, projectRoot: string, output: string) -> int:
+    return unity_import.export(input, projectRoot, output)
+
+def inspect_database(projectRoot: string, guid: string) -> int:
+    return unity_import.inspect_database(projectRoot, guid)
+
+def import_character_folder(folder: string, output: string) -> int:
+    return unity_import.import_character_folder(folder, output)
+
+def import_particle(input: string, output: string) -> int:
+    return unity_import.import_particle(input, output)
+
+def import_particle_package(
+    input: string,
+    outputDirectory: string,
+    packageName: string,
+    alias: string,
+    status: string,
+    projectRoot: string) -> int:
+    return unity_import.import_particle_package(
+        input, outputDirectory, packageName, alias, status, projectRoot)
+
+def import_character_package(
+    folder: string,
+    outputDirectory: string,
+    alias: string,
+    displayName: string,
+    projectRoot: string,
+    basicShaderPath: string,
+    stylizedShaderPath: string,
+    guiShaderPath: string,
+    startupShaderPath: string) -> int:
+    return unity_import.import_character_package(
+        folder,
+        outputDirectory,
+        alias,
+        displayName,
+        projectRoot,
+        basicShaderPath,
+        stylizedShaderPath,
+        guiShaderPath,
+        startupShaderPath)

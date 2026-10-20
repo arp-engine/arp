@@ -1,0 +1,20 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: GraphicsSkinning256
+set: 1
+pipelineInterfaceContractVersion: 1
+maxSwitchCases: 1
+maxBindings: 5
+# Same one-result-table snapshot layout as GraphicsMatrixOrdinary. Native tests
+# must independently query the actual allocation before accepting this budget.
+snapshotBytes: 80
+snapshotMetadataBinding: 0
+faultLatchBinding: 1
+tables:
+  - name: Results
+    tableId: 1
+    kind: StorageBuffer
+    capacity: 1
+    binding: 2
+    stages: [fragment]
+    operations: [store]

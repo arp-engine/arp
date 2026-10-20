@@ -1,0 +1,186 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>BindlessCross/1 bounded Emulated shader execution</title>
+<pre id="status">Running</pre>
+<script type="module">
+const report = { success: false, contract: 'BindlessCross/1', execution: 'Emulated', errors: [] };
+const check = (ok, message) => { if (!ok) throw new Error(message); };
+try {
+    check(navigator.gpu, 'WebGPU unavailable');
+    const adapter = await navigator.gpu.requestAdapter({powerPreference: 'high-performance'});
+    check(adapter, 'WebGPU adapter unavailable');
+    const device = await adapter.requestDevice();
+    report.adapter = adapter.info ? {vendor: adapter.info.vendor, architecture: adapter.info.architecture,
+        device: adapter.info.device, description: adapter.info.description} : {};
+    report.limits = {};
+    for (const key of ['maxSampledTexturesPerShaderStage', 'maxSamplersPerShaderStage',
+        'maxStorageBuffersPerShaderStage', 'maxUniformBuffersPerShaderStage',
+        'maxStorageTexturesPerShaderStage', 'maxBindingsPerBindGroup', 'maxBindGroups'])
+        report.limits[key] = device.limits[key];
+    check(device.limits.maxStorageBuffersPerShaderStage >= 7, 'compute storage binding budget');
+    check(device.limits.maxStorageTexturesPerShaderStage >= 2, 'compute storage texture budget');
+    device.addEventListener('uncapturederror', event => report.errors.push(event.error.message));
+    const moduleFor = async path => {
+        const code = await (await fetch(path)).text();
+        check(!code.includes('binding_array'), 'Unexpected binding-array extension');
+        const module = device.createShaderModule({code});
+        const info = await module.getCompilationInfo();
+        const errors = info.messages.filter(m => m.type === 'error').map(m => m.message);
+        check(!errors.length, path + ': ' + errors.join('; '));
+        return module;
+    };
+    device.pushErrorScope('validation');
+    const compute = await device.createComputePipelineAsync({layout: 'auto',
+        compute: {module: await moduleFor('compute.wgsl'), entryPoint: 'computeMain'}});
+    const buffer = (data, usage) => {
+        const b = device.createBuffer({size: data.byteLength, usage: usage | GPUBufferUsage.COPY_DST});
+        device.queue.writeBuffer(b, 0, data); return b;
+    };
+    const metadataContract = await (await fetch('metadata-layout.json')).json();
+    const metadataWords = new Uint32Array(metadataContract.layout.wordCount);
+    metadataWords.set([1,metadataContract.tables.length,1,0]);
+    for(const table of metadataContract.tables){
+        metadataWords.set([table.tableId,table.capacity,table.capacity,0],table.metadataWordOffset);
+        if(table.bufferLayout)metadataWords.fill(1,table.metadataWordOffset+4,table.metadataWordOffset+4+table.capacity);
+    }
+    const metadata = buffer(metadataWords,GPUBufferUsage.STORAGE);
+    const metadataEntry = {binding:metadataContract.layout.binding,resource:{buffer:metadata}};
+    const uniformA = buffer(new Float32Array([1,2,3,4]), GPUBufferUsage.UNIFORM);
+    const uniformB = buffer(new Float32Array([5,6,7,8]), GPUBufferUsage.UNIFORM);
+    const inputA = buffer(new Uint32Array([10]), GPUBufferUsage.STORAGE);
+    const inputB = buffer(new Uint32Array([20]), GPUBufferUsage.STORAGE);
+    const counterA = buffer(new Uint32Array([2]), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
+    const counterB = buffer(new Uint32Array([3]), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
+    const faults = buffer(new Uint32Array(5), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
+    const faultLatch = buffer(new Uint32Array(1), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
+    const latchEntry = {binding:metadataContract.faultLatch.binding,resource:{buffer:faultLatch}};
+    const texture = () => device.createTexture({size:[1,1], format:'r32float',
+        usage:GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST});
+    const outputA=texture(), outputB=texture();
+    for (const t of [outputA,outputB])
+        device.queue.writeTexture({texture:t},new Float32Array(1),{bytesPerRow:4},[1,1]);
+    const group=device.createBindGroup({layout:compute.getBindGroupLayout(0),entries:[metadataEntry,latchEntry,
+        {binding:4,resource:outputA.createView()},{binding:5,resource:outputB.createView()},
+        ...[uniformA,uniformB,inputA,inputB,counterA,counterB,faults].map((b,i)=>({binding:6+i,resource:{buffer:b}}))]});
+    const readback=device.createBuffer({size:768,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ});
+    const commands=device.createCommandEncoder();
+    const pass=commands.beginComputePass();pass.setPipeline(compute);pass.setBindGroup(0,group);
+    pass.dispatchWorkgroups(1);pass.end();
+    commands.copyBufferToBuffer(counterA,0,readback,0,4);
+    commands.copyBufferToBuffer(counterB,0,readback,4,4);
+    commands.copyBufferToBuffer(faults,0,readback,8,20);
+    commands.copyBufferToBuffer(faultLatch,0,readback,28,4);
+    commands.copyTextureToBuffer({texture:outputA},{buffer:readback,offset:256,bytesPerRow:256},[1,1]);
+    commands.copyTextureToBuffer({texture:outputB},{buffer:readback,offset:512,bytesPerRow:256},[1,1]);
+    device.queue.submit([commands.finish()]);await device.queue.onSubmittedWorkDone();
+    const computeError=await device.popErrorScope();check(!computeError,computeError?.message);
+    await readback.mapAsync(GPUMapMode.READ);
+    const bytes=readback.getMappedRange();
+    report.compute=Array.from(new Uint32Array(bytes,0,7));
+    report.faultLatch=new Uint32Array(bytes,28,1)[0];
+    report.storageTextures=[Array.from(new Float32Array(bytes,256,1)),Array.from(new Float32Array(bytes,512,1))];
+    check(JSON.stringify(report.compute)===JSON.stringify([16,27,15,26,1,7,31]),'selected-branch atomic/buffer/fault mismatch');
+    check(report.faultLatch===1,'invalid indexed access did not latch');
+    check(JSON.stringify(report.storageTextures)===JSON.stringify([[1],[5]]),'selected storage texture mismatch');
+    readback.unmap();
+
+    // New immutable metadata buffers for each negative workload. Physical slot
+    // 1 stays bound to real resources, making any forbidden side effect visible.
+    report.metadataCases=[];
+    for(const mode of ['partial','invalidGeneration']){
+        device.pushErrorScope('validation');
+        const words=new Uint32Array(metadataWords);
+        if(mode==='partial'){
+            for(const table of metadataContract.tables){
+                words[table.metadataWordOffset+1]=1;
+                words.fill(0,table.metadataWordOffset+5,table.metadataWordOffset+4+table.capacity);
+            }
+        }else{words[2]=words[3]=0;}
+        const snapshot=buffer(words,GPUBufferUsage.STORAGE);
+        device.queue.writeBuffer(counterA,0,new Uint32Array([2]));
+        device.queue.writeBuffer(counterB,0,new Uint32Array([3]));
+        device.queue.writeBuffer(faults,0,new Uint32Array(5));
+        device.queue.writeBuffer(faultLatch,0,new Uint32Array(1));
+        for(const t of [outputA,outputB])device.queue.writeTexture({texture:t},new Float32Array(1),{bytesPerRow:4},[1,1]);
+        const selected=device.createBindGroup({layout:compute.getBindGroupLayout(0),entries:[latchEntry,
+            {binding:metadataContract.layout.binding,resource:{buffer:snapshot}},
+            {binding:4,resource:outputA.createView()},{binding:5,resource:outputB.createView()},
+            ...[uniformA,uniformB,inputA,inputB,counterA,counterB,faults].map((b,i)=>({binding:6+i,resource:{buffer:b}}))]});
+        const encoder=device.createCommandEncoder();const pass=encoder.beginComputePass();
+        pass.setPipeline(compute);pass.setBindGroup(0,selected);pass.dispatchWorkgroups(1);pass.end();
+        encoder.copyBufferToBuffer(counterA,0,readback,0,4);encoder.copyBufferToBuffer(counterB,0,readback,4,4);
+        encoder.copyBufferToBuffer(faults,0,readback,8,20);
+        encoder.copyBufferToBuffer(faultLatch,0,readback,28,4);
+        encoder.copyTextureToBuffer({texture:outputA},{buffer:readback,offset:256,bytesPerRow:256},[1,1]);
+        encoder.copyTextureToBuffer({texture:outputB},{buffer:readback,offset:512,bytesPerRow:256},[1,1]);
+        device.queue.submit([encoder.finish()]);await device.queue.onSubmittedWorkDone();
+        const error=await device.popErrorScope();check(!error,error?.message);
+        await readback.mapAsync(GPUMapMode.READ);const bytes=readback.getMappedRange();
+        const computed=Array.from(new Uint32Array(bytes,0,7));
+        const latched=new Uint32Array(bytes,28,1)[0];
+        const storage=[new Float32Array(bytes,256,1)[0],new Float32Array(bytes,512,1)[0]];
+        const expected=mode==='partial'?[16,3,15,1,1,7,31]:[2,3,1,1,1,7,31];
+        check(JSON.stringify(computed)===JSON.stringify(expected),mode+' snapshot buffer/atomic guard');
+        check(storage[0]===(mode==='partial'?1:0)&&storage[1]===0,mode+' snapshot storage guard');
+        check(latched===1,mode+' invalid access did not latch');
+        report.metadataCases.push({mode,computed,storage,latched});readback.unmap();snapshot.destroy();
+    }
+
+    device.pushErrorScope('validation');
+    const graphics=await device.createRenderPipelineAsync({layout:'auto',
+        vertex:{module:await moduleFor('vertex.wgsl'),entryPoint:'vertexMain'},
+        fragment:{module:await moduleFor('fragment.wgsl'),entryPoint:'fragmentMain',targets:[{format:'rgba8unorm'}]},
+        primitive:{topology:'triangle-list',frontFace:'ccw',cullMode:'none'}});
+    const colors=[[[20,40,60,255],[100,50,30,255],[60,120,40,255],[160,140,80,255]],
+                  [[120,20,80,255],[80,100,120,255],[30,140,100,255],[140,60,40,255]]];
+    const mips=[[30,60,90,255],[90,30,60,255]];
+    const images=colors.map((color,i)=>{const t=device.createTexture({size:[2,2],mipLevelCount:2,format:'rgba8unorm',
+        usage:GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.COPY_DST});
+        device.queue.writeTexture({texture:t},new Uint8Array(color.flat()),{bytesPerRow:8},[2,2]);
+        device.queue.writeTexture({texture:t,mipLevel:1},new Uint8Array(mips[i]),{bytesPerRow:4},[1,1]);return t;});
+    const samplers=['nearest','linear'].map(filter=>device.createSampler({minFilter:filter,magFilter:filter,mipmapFilter:filter,
+        addressModeU:'clamp-to-edge',addressModeV:'clamp-to-edge',addressModeW:'clamp-to-edge',lodMinClamp:0,lodMaxClamp:1}));
+    const material=device.createBindGroup({layout:graphics.getBindGroupLayout(0),entries:[metadataEntry,latchEntry,
+        ...images.map((t,i)=>({binding:i,resource:t.createView()})),
+        ...samplers.map((s,i)=>({binding:2+i,resource:s}))]});
+    const target=device.createTexture({size:[2,2],format:'rgba8unorm',usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.COPY_SRC});
+    const pixels=device.createBuffer({size:512,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ});
+    device.queue.writeBuffer(faultLatch,0,new Uint32Array(1));
+    const encoder=device.createCommandEncoder();const render=encoder.beginRenderPass({colorAttachments:[{
+        view:target.createView(),loadOp:'clear',storeOp:'store',clearValue:{r:0,g:0,b:0,a:0}}]});
+    render.setPipeline(graphics);render.setBindGroup(0,material);render.draw(3);render.end();
+    encoder.copyTextureToBuffer({texture:target},{buffer:pixels,bytesPerRow:256},[2,2]);
+    encoder.copyBufferToBuffer(faultLatch,0,pixels,16,4);
+    device.queue.submit([encoder.finish()]);await device.queue.onSubmittedWorkDone();
+    const graphicsError=await device.popErrorScope();check(!graphicsError,graphicsError?.message);
+    await pixels.mapAsync(GPUMapMode.READ);const mappedPixels=pixels.getMappedRange();
+    const rgba=new Uint8Array(mappedPixels);
+    report.validFragmentFaultLatch=new Uint32Array(mappedPixels,16,1)[0];
+    check(report.validFragmentFaultLatch===0,'valid fragment access latched a fault');
+    report.pixels=[];
+    report.expectedPixels=[];
+    for(let y=0;y<2;y++)for(let x=0;x<2;x++){
+        const value=Array.from(rgba.slice(y*256+x*4,y*256+x*4+4));report.pixels.push(value);
+        // CPU reference for the declared 2x2 + 1x1 mip data. Row 0 uses
+        // nearest sampling; row 1 uses bilinear + trilinear filtering.
+        // Explicit gradients select mip 1. Replacing them with LOD=0 fails.
+        const u=(x+0.5)/2*0.75+0.1,v=(y+0.5)/2*0.75+0.1;
+        const tx=u*2-0.5,ty=v*2-0.5;
+        const expected=mips[x].map((m,c)=>{
+            let level=colors[x][Math.floor(v*2)*2+Math.floor(u*2)][c];
+            if(y===1){
+                const p=colors[x];
+                const bilinear=(p[0][c]*(1-tx)+p[1][c]*tx)*(1-ty)+(p[2][c]*(1-tx)+p[3][c]*tx)*ty;
+                level=bilinear*0.75+m*0.25;
+            }
+            return (2*m+level)/3;
+        });
+        report.expectedPixels.push(expected);
+        check(value.every((v,c)=>Math.abs(v-expected[c])<=2),'nonuniform sampler/mip/gradient pixel mismatch');
+    }
+    pixels.unmap();check(!report.errors.length,report.errors.join('; '));
+    report.success=true;device.destroy();
+}catch(error){report.errors.push(String(error.stack||error));}
+document.getElementById('status').textContent=JSON.stringify(report,null,2);
+await fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(report)});
+</script>

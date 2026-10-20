@@ -1,0 +1,182 @@
+version: 1
+cases:
+  - id: L00-surface
+    features: [surface]
+    camera:
+      position: [0.0, 1.5, -4.0]
+      target: [0.0, 0.5, 0.0]
+      vertical_fov_degrees: 60.0
+    required_capabilities: [graphics, swapchain]
+    attachments: [final-ldr]
+    acceptance:
+      - {attachment: final-ldr, metric: non_empty_fraction, min: 0.99}
+    frames: 1
+  - id: L01-geometry-depth
+    parent: L00-surface
+    features: [geometry-depth]
+    required_capabilities: [d32-float]
+    attachments: [exact-depth]
+    acceptance:
+      - {attachment: exact-depth, metric: finite_fraction, min: 1.0}
+    frames: 1
+  - id: L02-minimal-pbr
+    parent: L01-geometry-depth
+    features: [minimal-pbr]
+    required_capabilities: [hdr-color, sampled-texture]
+    attachments: [scene-hdr]
+    acceptance:
+      - {attachment: scene-hdr, metric: finite_fraction, min: 1.0}
+    frames: 1
+  - id: L03-forward-plus
+    parent: L02-minimal-pbr
+    features: [forward-plus]
+    required_capabilities: [sampled-depth, compute-dispatch, storage-buffer]
+    attachments: [opaque-tile-headers, opaque-tile-indices, conservative-tile-headers, conservative-tile-indices, overflow-telemetry]
+    acceptance:
+      - {attachment: opaque-tile-headers, metric: cpu_gpu_list_match, min: 1.0}
+      - {attachment: conservative-tile-headers, metric: opaque_subset, min: 1.0}
+    frames: 1
+  - id: L04-shadow
+    parent: L03-forward-plus
+    features: [shadow]
+    required_capabilities: [d32-float]
+    attachments: [csm-atlas]
+    acceptance:
+      - {attachment: csm-atlas, metric: finite_fraction, min: 1.0}
+    frames: 1
+  - id: L05-ddgi
+    features: [ddgi]
+    camera:
+      position: [0.0, 1.0, -3.0]
+      target: [0.0, 0.0, 0.0]
+      vertical_fov_degrees: 60.0
+    required_capabilities: [rgba16f-storage, storage-buffer, compute-dispatch]
+    attachments: [irradiance, distance, classification, age, confidence, screen-cache, final-hdr]
+    acceptance:
+      - {attachment: irradiance, metric: finite_fraction, min: 1.0}
+      - {attachment: distance, metric: finite_fraction, min: 1.0}
+      - {attachment: classification, metric: active_fraction, min: 0.5}
+      - {attachment: age, metric: finite_fraction, min: 1.0}
+      - {attachment: confidence, metric: finite_fraction, min: 1.0}
+      - {attachment: screen-cache, metric: ping_pong_valid, min: 1.0}
+      - {attachment: final-hdr, metric: finite_fraction, min: 1.0}
+    frames: 1
+  - id: L05-ssao
+    parent: L04-shadow
+    features: [ssao]
+    required_capabilities: [sampled-depth]
+    attachments: [ao]
+    acceptance:
+      - {attachment: ao, metric: visibility_range, min: 0.05}
+    frames: 1
+  - id: L06-ssr
+    parent: L05-ssao
+    features: [ssr]
+    required_capabilities: [rgba16f-storage]
+    attachments: [ssr-hit-mask, ssr-color]
+    acceptance:
+      - {attachment: ssr-hit-mask, metric: known_plane_hit_fraction, min: 0.5}
+    frames: 1
+  - id: L07-temporal
+    parent: L06-ssr
+    features: [temporal]
+    required_capabilities: [velocity, history]
+    attachments: [velocity, reactive, taa-history]
+    acceptance:
+      - {attachment: taa-history, metric: reset_match, min: 0.999}
+    frames: 8
+  - id: L08-post
+    parent: L07-temporal
+    features: [post]
+    required_capabilities: [hdr-color]
+    attachments: [bloom, tonemap, grade, final-ldr]
+    acceptance:
+      - {attachment: final-ldr, metric: finite_fraction, min: 1.0}
+    frames: 8
+  - id: L09-transparent
+    parent: L08-post
+    features: [transparent]
+    required_capabilities: [conservative-forward-plus-list]
+    attachments: [transparent-color]
+    acceptance:
+      - {attachment: transparent-color, metric: conservative_light_coverage, min: 1.0}
+    frames: 8
+  - id: L10-full
+    parent: L09-transparent
+    features: [full]
+    required_capabilities: [ddgi, ui]
+    attachments: [ddgi-probes, ddgi-gi-output, final-ldr]
+    acceptance:
+      - {attachment: final-ldr, metric: finite_fraction, min: 1.0}
+      - {attachment: ddgi-probes, metric: persistent_resource_set, min: 1.0}
+      - {attachment: ddgi-gi-output, metric: ping_pong_valid, min: 1.0}
+      - {attachment: ddgi-gi-output, metric: finite_fraction, min: 1.0}
+    frames: 120
+  - id: unit-forward-plus
+    features: [forward-plus]
+    camera:
+      position: [0.0, 0.0, -2.0]
+      target: [0.0, 0.0, 0.0]
+      vertical_fov_degrees: 60.0
+    required_capabilities: [sampled-depth, compute-dispatch, storage-buffer]
+    attachments: [opaque-tile-headers, opaque-tile-indices, conservative-tile-headers, conservative-tile-indices, overflow-telemetry]
+    acceptance:
+      - {attachment: overflow-telemetry, metric: required_light_count, min: 65.0, max: 65.0}
+    frames: 1
+  - id: unit-ssao
+    features: [ssao]
+    camera:
+      position: [0.0, 0.0, -2.0]
+      target: [0.0, 0.0, 0.0]
+      vertical_fov_degrees: 60.0
+    required_capabilities: [sampled-depth]
+    attachments: [ao]
+    acceptance:
+      - {attachment: ao, metric: visibility_range, min: 0.05}
+    frames: 1
+  - id: unit-ssr
+    features: [ssr]
+    camera:
+      position: [0.0, 1.0, -3.0]
+      target: [0.0, 0.0, 0.0]
+      vertical_fov_degrees: 60.0
+    required_capabilities: [rgba16f-storage]
+    attachments: [ssr-hit-mask, ssr-color]
+    acceptance:
+      - {attachment: ssr-hit-mask, metric: known_plane_hit_fraction, min: 0.5}
+    frames: 1
+  - id: unit-ddgi
+    features: [ddgi]
+    camera:
+      position: [0.0, 1.0, -3.0]
+      target: [0.0, 0.0, 0.0]
+      vertical_fov_degrees: 60.0
+    required_capabilities: [rgba16f-storage, storage-buffer, compute-dispatch]
+    attachments: [ddgi-probes, ddgi-bvh, ddgi-gi-output]
+    acceptance:
+      - {attachment: ddgi-probes, metric: persistent_resource_set, min: 1.0}
+      - {attachment: ddgi-gi-output, metric: ping_pong_valid, min: 1.0}
+      - {attachment: ddgi-gi-output, metric: finite_fraction, min: 1.0}
+    frames: 1
+  - id: unit-taa
+    features: [temporal]
+    camera:
+      position: [0.0, 0.0, -2.0]
+      target: [0.0, 0.0, 0.0]
+      vertical_fov_degrees: 60.0
+    required_capabilities: [velocity, history]
+    attachments: [taa-history]
+    acceptance:
+      - {attachment: taa-history, metric: reset_match, min: 0.999}
+    frames: 2
+  - id: unit-post
+    features: [post]
+    camera:
+      position: [0.0, 0.0, -2.0]
+      target: [0.0, 0.0, 0.0]
+      vertical_fov_degrees: 60.0
+    required_capabilities: [hdr-color]
+    attachments: [bloom, tonemap, grade, final-ldr]
+    acceptance:
+      - {attachment: final-ldr, metric: finite_fraction, min: 1.0}
+    frames: 1

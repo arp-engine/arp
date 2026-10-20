@@ -1,0 +1,8 @@
+import unity_import_common
+
+def main(input: string, projectRoot: string) -> int:
+    if unity_import_common.source_contract() != 1:
+        return 1
+    if unity_import_common.YAML_KIND_MAPPING != 1:
+        return 2
+    return 0

@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Finite Graphics Inputs6 and RenderUsage4 contract smoke</title>
+<script src="progress-contract.js"></script>
+<script src="browser_progress_transport.js"></script>
+<script>
+var messages = [], errors = [], reported = false;
+var transport = new BrowserProgressTransport(messages, BrowserProgressLimits,
+  batch => fetch('/progress', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(batch)}), error => { errors.push(String(error)); finish(false); });
+function finish(completed) {
+  if (reported) return;
+  reported = true;
+  const parameters = new URLSearchParams(location.search);
+  const bufferType = parameters.get('general-content-buffer-type') || 'uniform';
+  const whole = parameters.has('general-source-whole');
+  const sourceCount = messages.filter(message => message.startsWith('BINDLESS_RHI_GENERAL_SOURCE5_OK ')).length;
+  const renderInputsCount = messages.filter(message => message.startsWith('BINDLESS_RHI_GENERAL_GRAPHICS_INPUTS6_RENDERUSAGE4_OK ')).length;
+  const graphics = messages.includes('BINDLESS_RHI_GENERAL_GRAPHICS_SOURCE5_COMPOSITION_OK '
+    + bufferType + ' ' + (whole ? 'whole' : 'static-dynamic')
+    + ' accepted-RenderPipeline Fragment4 real-GeneralWrite2 frozen-Source5 original-terminal quotas-zero draw-readback-closed');
+  const retired = messages.includes('BINDLESS_RHI_GENERAL_GRAPHICS_SOURCE5_INPUT_RETIRE_OK original-module-child-custody artifact-input-quotas-zero draw-readback-unvalidated');
+  const terminal = messages.includes('BINDLESS_RHI_GENERAL_GRAPHICS_RENDERUSAGE4_TERMINAL_OK original-inputs-retained invalid-no-output native-draw-closed');
+  const attachmentRetired = messages.includes('BINDLESS_RHI_GENERAL_GRAPHICS_RENDER_PROJECTION_RETIRE_OK original-attachment graph-quotas-zero no-native-record-submit');
+  const sourceRetired = messages.includes('BINDLESS_RHI_GENERAL_SOURCE5_RETIRE_OK '
+    + (whole ? 'whole' : 'static-dynamic') + ' caller-drop weak-inventory terminal-invalid all-quotas-zero execution-public-closed');
+  const nativeErrors = Module.webGpuUncapturedErrors || [];
+  const groups = Module.webGpuNativeGroupCreateCount || 0;
+  const success = completed && graphics && retired && terminal && attachmentRetired && sourceRetired
+    && sourceCount === (whole ? 1 : 2) && renderInputsCount === sourceCount
+    && groups > 0 && !errors.length && !nativeErrors.length;
+  transport.flush().catch(error => { errors.push(String(error)); }).then(() => fetch('/result', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+      success: success && !errors.length && !nativeErrors.length, scenario: 'original-general-finite-graphics-render-projection',
+      bufferType, rangeKind: whole ? 'whole' : 'static-dynamic', sourceCount, renderInputsCount,
+      graphicsSourcePassed: graphics, graphicsInputRetirementPassed: retired,
+      renderTerminalPassed: terminal, attachmentRetirementPassed: attachmentRetired,
+      originalSourceRetirementPassed: sourceRetired, nativeGroupCreateCount: groups, nativeErrors, errors, messages,
+      finiteGraphicsValidated: false, nativeDrawReadbackValidated: false,
+      fullFiniteExecutionValidated: false, finiteLifecycle4Validated: false,
+      publicExecutionAvailable: false, nativeSyncPromoted: false, platformValidated: false, productionReady: false
+    })}));
+}
+window.addEventListener('error', event => { errors.push(String(event.error || event.message)); finish(false); });
+window.addEventListener('unhandledrejection', event => { errors.push(String(event.reason)); finish(false); });
+var Module = {
+  print(value) {
+    const message = String(value);
+    transport.append(message);
+    if (message === 'BINDLESS_RHI_GENERAL_ORIGINAL_PROJECTION_SCENARIO_OK private-submission-numerical-unproven-public-closed')
+      finish(true);
+  },
+  printErr(value) { errors.push(String(value)); finish(false); },
+  onAbort(value) { errors.push(String(value)); finish(false); },
+  onExit(code) { if (code !== 0) { errors.push('EXIT ' + code); finish(false); } }
+};
+</script>
+<script src="graphics_source.js"></script>

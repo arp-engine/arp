@@ -1,0 +1,1 @@
+fixture-only-metal-artifact

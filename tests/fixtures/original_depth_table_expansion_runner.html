@@ -1,0 +1,109 @@
+<!doctype html><meta charset="utf-8"><title>Original depth table compiler contract probe</title>
+<script type="module">
+const result = {success:false, scope:'complete-program-shader-probe-no-original-actor',
+  executionAvailable:false, renderdocDiagnostic:'RHI-RENDERDOC-TOOL-UNAVAILABLE'};
+// Closed original compute row stride30; fixture dispatch covers two rows.
+const width=30, height=2, components=4, texelBytes=components*Float32Array.BYTES_PER_ELEMENT;
+// WebGPU texture-copy bytesPerRow alignment is256 bytes.
+const pitch=Math.ceil(width*texelBytes/256)*256, outputBytes=width*height*texelBytes;
+let device;
+try {
+  if (!navigator.gpu) throw Error('WEBGPU-UNAVAILABLE');
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw Error('ADAPTER-UNAVAILABLE');
+  const disabled = new URLSearchParams(location.search).has('disable-indirect-first-instance');
+  const requiredFeatures = !disabled && adapter.features.has('indirect-first-instance') ? ['indirect-first-instance'] : [];
+  device = await adapter.requestDevice({requiredFeatures});
+  result.adapterFeatures = [...adapter.features]; result.deviceFeatures = [...device.features];
+  result.disabledIndirectFirstInstance = disabled;
+  const required = {maxSampledTexturesPerShaderStage:3, maxBindGroups:2,
+    maxBindingsPerBindGroup:3, maxStorageBuffersPerShaderStage:1,
+    maxComputeInvocationsPerWorkgroup:5, maxComputeWorkgroupSizeX:5,
+    maxComputeWorkgroupsPerDimension:6, maxStorageBufferBindingSize:outputBytes,
+    maxBufferSize:Math.max(outputBytes,pitch*height), maxTextureDimension2D:width};
+  result.limits = {};
+  for (const [name, minimum] of Object.entries(required)) {
+    result.limits[name] = device.limits[name];
+    if (device.limits[name] < minimum) throw Error('LIMIT-' + name);
+  }
+  const errors = [];
+  device.addEventListener('uncapturederror', e => errors.push(e.error.message));
+  const metadata = {};
+  const modules = {};
+  result.compilerObservations = [];
+  for (const [profile, names] of [['compute',['computeMain']],['graphics',['vertexMain','fragmentMain']]]) {
+    metadata[profile] = await (await fetch(profile + '/probe.json')).json();
+    for (const name of names) {
+      const code = await (await fetch(profile + '/' + name + '.wgsl')).text();
+      const bytes = new TextEncoder().encode(code);
+      const sourceSha256 = [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(v=>v.toString(16).padStart(2,'0')).join('');
+      const published = metadata[profile].entries.find(e=>e.entry===name);
+      if (!published || published.files.wgsl.sha256!==sourceSha256) throw Error('TARGET-IDENTITY-' + name);
+      modules[name] = device.createShaderModule({code});
+      const diagnostics = [...(await modules[name].getCompilationInfo()).messages].map(m=>({type:m.type,message:m.message}));
+      result.compilerObservations.push({entry:name, sourceBytes:bytes.length,sourceSha256,diagnostics});
+      if (diagnostics.some(m=>m.type==='error')) throw Error('COMPILER-' + name);
+    }
+  }
+  device.pushErrorScope('validation');
+  const textureLayout = device.createBindGroupLayout({entries:metadata.compute.elementMap.map(m=>({
+    binding:m.binding,visibility:GPUShaderStage.COMPUTE|GPUShaderStage.FRAGMENT,
+    texture:{sampleType:'depth',viewDimension:'2d',multisampled:false}}))});
+  const outputLayout = device.createBindGroupLayout({entries:[{binding:0,visibility:GPUShaderStage.COMPUTE,
+    buffer:{type:'storage',hasDynamicOffset:false,minBindingSize:outputBytes}}]});
+  const compute = await device.createComputePipelineAsync({layout:device.createPipelineLayout({bindGroupLayouts:[textureLayout,outputLayout]}),
+    compute:{module:modules.computeMain,entryPoint:'computeMain'}});
+  const graphics = await device.createRenderPipelineAsync({layout:device.createPipelineLayout({bindGroupLayouts:[textureLayout]}),
+    vertex:{module:modules.vertexMain,entryPoint:'vertexMain',buffers:[]},
+    fragment:{module:modules.fragmentMain,entryPoint:'fragmentMain',targets:[{format:'rgba32float',writeMask:GPUColorWrite.ALL}]},
+    primitive:{topology:'triangle-list',frontFace:'ccw',cullMode:'none'},
+    multisample:{count:1,mask:0xffffffff,alphaToCoverageEnabled:false}});
+  const setupError=await device.popErrorScope(); if(setupError) throw setupError;
+  const values = [0.25,0.5,0.75,1];
+  const textures = values.map(()=>device.createTexture({size:[1,1,1],mipLevelCount:1,sampleCount:1,
+    dimension:'2d',format:'depth32float',usage:GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.RENDER_ATTACHMENT}));
+  const views = textures.map(t=>t.createView({format:'depth32float',dimension:'2d',aspect:'depth-only',
+    baseMipLevel:0,mipLevelCount:1,baseArrayLayer:0,arrayLayerCount:1}));
+  const init = device.createCommandEncoder();
+  views.forEach((view,i)=>{
+    const pass=init.beginRenderPass({colorAttachments:[],depthStencilAttachment:{view,
+      depthClearValue:values[i],depthLoadOp:'clear',depthStoreOp:'store',depthReadOnly:false}});pass.end();
+  });
+  device.queue.submit([init.finish()]); await device.queue.onSubmittedWorkDone();
+  result.observations = [];
+  for (const order of [[0,1,2],[2,0,1],[0,3,2]]) {
+    device.pushErrorScope('validation');
+    const group=device.createBindGroup({layout:textureLayout,entries:metadata.compute.elementMap.map(m=>({
+      binding:m.binding,resource:views[order[m.arrayElement]]}))});
+    const output=device.createBuffer({size:outputBytes,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC});
+    const read=device.createBuffer({size:outputBytes,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
+    const outputGroup=device.createBindGroup({layout:outputLayout,entries:[{binding:0,resource:{buffer:output,offset:0,size:outputBytes}}]});
+    const color=device.createTexture({size:[width,height,1],format:'rgba32float',dimension:'2d',mipLevelCount:1,sampleCount:1,
+      usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.COPY_SRC});
+    const pixels=device.createBuffer({size:pitch*height,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});
+    const encoder=device.createCommandEncoder(); const cp=encoder.beginComputePass();
+    cp.setPipeline(compute);cp.setBindGroup(0,group);cp.setBindGroup(1,outputGroup);cp.dispatchWorkgroups(6,2,1);cp.end();
+    encoder.copyBufferToBuffer(output,0,read,0,outputBytes);
+    const rp=encoder.beginRenderPass({colorAttachments:[{view:color.createView(),loadOp:'clear',storeOp:'store',clearValue:{r:0,g:0,b:0,a:0}}]});
+    rp.setViewport(0,0,width,height,0,1);rp.setScissorRect(0,0,width,height);rp.setPipeline(graphics);rp.setBindGroup(0,group);rp.draw(3,1,0,0);rp.end();
+    encoder.copyTextureToBuffer({texture:color,mipLevel:0,origin:[0,0,0],aspect:'all'},
+      {buffer:pixels,offset:0,bytesPerRow:pitch,rowsPerImage:height},[width,height,1]);
+    device.queue.submit([encoder.finish()]); await device.queue.onSubmittedWorkDone();
+    const executionError=await device.popErrorScope(); if(executionError) throw executionError;
+    await read.mapAsync(GPUMapMode.READ);await pixels.mapAsync(GPUMapMode.READ);
+    const computed=new Float32Array(read.getMappedRange()); const rendered=new Float32Array(pixels.getMappedRange());
+    for(let y=0;y<height;++y) for(let x=0;x<width;++x) for(let c=0;c<components;++c){
+      const expected=c===3?1:values[order[x%3]];
+      if(computed[(y*width+x)*components+c]!==expected)throw Error('COMPUTE-NUMERIC-'+order+'-'+x+'-'+y+'-'+c);
+      if(rendered[y*pitch/Float32Array.BYTES_PER_ELEMENT+x*components+c]!==expected)throw Error('FRAGMENT-NUMERIC-'+order+'-'+x+'-'+y+'-'+c);
+    }
+    result.observations.push({order,computeFirstThree:[...computed.slice(0,12)],fragmentFirstThree:[...rendered.slice(0,12)],
+      computePixels:width*height,fragmentPixels:width*height,exactComponentsPerPath:width*height*components});
+    read.unmap();pixels.unmap();[output,read,pixels].forEach(b=>b.destroy());color.destroy();
+  }
+  textures.forEach(t=>t.destroy());
+  if(errors.length)throw Error(errors.join('\n'));
+  result.success=true;
+} catch(e) {result.error=String(e);result.stack=e.stack;}
+finally {if(device) device.destroy(); await fetch('/result',{method:'POST',body:JSON.stringify(result)});}
+</script>

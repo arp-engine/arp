@@ -1,0 +1,37 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: GraphicsPbrMaterial
+set: 1
+pipelineInterfaceContractVersion: 1
+# 15 indexed physical slots plus two ordinary material/probe bindings.
+maxBindings: 17
+maxSwitchCases: 21
+# Logical demand is 124 bytes. The actual Vulkan allocation query returns
+# metadata128 + fault16 + readback16 = 160. Every backend still preflights its
+# own allocation; this is a bounded fixture budget, not a device capability.
+snapshotBytes: 160
+snapshotMetadataBinding: 13
+faultLatchBinding: 14
+tables:
+  - name: Images
+    tableId: 1
+    kind: SampledTexture
+    capacity: 10
+    binding: 0
+    stages: [fragment]
+    operations: [sampleGrad]
+    sampler: Filters
+  - name: Filters
+    tableId: 2
+    kind: Sampler
+    capacity: 2
+    binding: 10
+    stages: [fragment]
+    operations: []
+  - name: Results
+    tableId: 3
+    kind: StorageBuffer
+    capacity: 1
+    binding: 12
+    stages: [fragment]
+    operations: [store]

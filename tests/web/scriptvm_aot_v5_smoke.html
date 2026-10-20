@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Script AOT v5 smoke</title></head>
+<body data-status="loading">
+<script>
+var Module = {
+    postRun: [function () {
+        if (document.body.dataset.status === "loading") {
+            document.body.dataset.status = "passed";
+            document.body.dataset.exitCode = "0";
+        }
+    }],
+    onExit: function (status) {
+        document.body.dataset.status = status === 0 ? "passed" : "failed";
+        document.body.dataset.exitCode = String(status);
+    },
+    onAbort: function (reason) {
+        document.body.dataset.status = "failed";
+        document.body.dataset.reason = String(reason);
+    }
+};
+</script>
+<script src="arp_scriptvm_aot_v5_generated_smoke.js"></script>
+</body>
+</html>

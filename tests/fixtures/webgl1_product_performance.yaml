@@ -1,0 +1,11 @@
+type: WebGlProductPerformancePlan
+contractVersion: 1
+warmupFrames: 8
+sampleFrames: 60
+repetitions: 3
+timeoutSeconds: 120
+cpuBudgetMs: 16.7
+budgetDomain: CPU renderFrame only; no GPU or target-platform claim
+profiles: [scene2d, gui, basic-forward]
+canvasExtents: [[64, 64], [48, 32]]
+resourceScale: Original product fixtures; BasicForward offscreen and depth stay 64x64

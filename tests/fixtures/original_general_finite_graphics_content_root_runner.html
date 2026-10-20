@@ -1,0 +1,92 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Original finite Graphics mixed content root contract</title>
+<canvas id="canvas" width="1" height="1" hidden></canvas>
+<script src="progress-contract.js"></script>
+<script src="browser_progress_transport.js"></script>
+<script>
+var progress=[],diagnostics=[],reported=false;
+var transport=new BrowserProgressTransport(progress,BrowserProgressLimits,
+  batch=>fetch('/progress',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(batch)}),
+  error=>{diagnostics.push(String(error));finish(false);});
+function finish(completed) {
+  if(reported)return;reported=true;
+  const p=new URLSearchParams(location.search),whole=p.has('general-source-whole'),expected=1;
+  const dynamic=p.has('general-content-plan-dynamic'),terminal=p.get('general-graphics-root-terminal')||'abandon';
+  const shaderContent=p.has('general-graphics-shader-content'),bufferType=p.get('general-content-buffer-type')||'uniform';
+  const nativeCustody=p.has('general-graphics-native-custody');
+  const dependencyFreeze=p.has('general-graphics-dependency-freeze');
+  const nativePayload=p.has('general-graphics-native-payload');
+  const nativeCold=p.has('general-graphics-native-cold');
+  const nativeCommand=p.has('general-graphics-native-command');
+  const nativeCallback=p.has('general-graphics-native-callback');
+  const callbackCount=progress.filter(m=>/^BINDLESS_RHI_GENERAL_GRAPHICS_CALLBACK8_OK Command8 Cold8 Lifecycle5 ContentPlan6 callbacks8 native7 local1 shared1 owners[1-9][0-9]* owner-add11 legacy-short-enlarged-exhausted-forged-native-mutated-refused original-subscription-no-new-registration hot0-query0 no-issuer-record-execution$/.test(m)).length;
+  const callbackRetained=progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_CALLBACK8_RETAIN_OK same-original-Prepared-root Command8-Cold8-caller-drop original-observer-seal-reservation-initializers-retained pending1 armed1 no-native-execution').length;
+  const callbackRetired=progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_CALLBACK8_RETIRE_OK same-original-Abandoned-root original-observer-suppressed sticky-claim reservations0 callbacks0 quota-baseline no-completion-or-public-execution').length;
+  const callbackMatch=[callbackCount,callbackRetained,callbackRetired].every(count=>count===(nativeCallback?1:0));
+  const commandCount=progress.filter(m=>/^BINDLESS_RHI_GENERAL_GRAPHICS_COMMAND8_OK Cold8 Payload8 Lifecycle5 ContentPlan6 commands14 calls9 command1 owners[1-9][0-9]* owner-add3 legacy-refused short-exhausted-recover duplicate-peer-forged-native-mutated-refused sealed-CPU-refused hot0-query0 no-encoder-callback-or-execution$/.test(m)).length;
+  const commandRetained=progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_COMMAND8_RETAIN_OK same-original-Prepared-root original-Cold8-caller-drop payload-freeze-closure-initializer-seal-reservation-retained sealed-CPU-refused no-encoder-or-completion').length;
+  const commandRetired=progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_COMMAND8_RETIRE_OK same-original-Abandoned-root original-shell-Cold8-seal-drop reservations0 callbacks0 quota-baseline no-record-or-completion').length;
+  const commandMatch=[commandCount,commandRetained,commandRetired].every(count=>count===(nativeCommand?1:0));
+  const coldCount=progress.filter(m=>/^BINDLESS_RHI_GENERAL_GRAPHICS_COLD8_OK Payload8 Lifecycle5 ContentPlan6 commands14 calls9 render1 compute0 callbacks8 owners[1-9][0-9]* coldBytes[1-9][0-9]* exact-less-exhausted forged-reservation-native-mutated legacy-refused same-Prepared-root sealed-CPU-refused hot0-query0 no-encoder-or-execution$/.test(m)).length;
+  const coldRetained=progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_COLD8_RETAIN_OK same-original-Prepared-root payload-freeze-closure-initializer-seal-reservation-caller-drop sealed-CPU-refused no-record-or-completion').length;
+  const coldRetired=progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_COLD8_RETIRE_OK same-original-Abandoned-root original-seal-drop reservations0 callbacks0 quota-baseline no-record-or-completion').length;
+  const coldCandidate=progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_COLD8_CANDIDATE_RETIRE_OK before-any-proposal original-factory transaction0 quota0 generation-unchanged CPU-baseline-separate').length;
+  const coldMatch=[coldCount,coldRetained,coldRetired,coldCandidate].every(count=>count===(nativeCold?1:0));
+  const custodyCount=progress.filter(m=>/^BINDLESS_RHI_GENERAL_GRAPHICS_CLOSURE10_OK sources10 resources8 pipeline1 descriptor1 custody2 complete-backing[1-9][0-9]* closureBytes[1-9][0-9]* retainedBytes[1-9][0-9]* owners[1-9][0-9]* exact-less-exhausted no-root-journal-mutation hot0-query0 freeze-native-closed$/.test(m)).length;
+  const custodyRetired=nativeCold?coldRetired:progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_CLOSURE10_RETIRE_OK '+(dependencyFreeze?'same-original-Pending-root Freeze8-child-drop closure-quota-baseline no-draw-or-completion':'same-original-Prepared-root initializer-caller-drop native-owners-retained closure-quota-baseline no-draw-or-completion')).length;
+  const freezeCount=progress.filter(m=>/^BINDLESS_RHI_GENERAL_GRAPHICS_FREEZE8_OK Closure10 ContentPlan6 commands14 dependencies6 initial2 final4 endpoints14 cells7 passes24 visits168 pairs21 freezeBytes[1-9][0-9]* owners[1-9][0-9]* exact-less-exhausted hostile-clauses-refused same-Prepared-root hot0-query0 payload-native-closed$/.test(m)).length;
+  const freezeRetired=nativeCold?coldRetired:progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_FREEZE8_RETIRE_OK same-original-Pending-root stale-candidates-refused caller-drop quota-baseline no-draw-or-completion').length;
+  const freezeRetained=nativeCold?coldRetained:progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_CLOSURE10_RETAIN_OK same-original-Prepared-root initializer-caller-drop Freeze8-retained no-draw-or-completion').length;
+  const rangeKind=whole?'whole':dynamic?'dynamic':'static';
+  const payloadCount=progress.filter(m=>new RegExp('^BINDLESS_RHI_GENERAL_GRAPHICS_PAYLOAD8_OK Freeze8 Closure10 ContentPlan6 commands14 calls9 render1 compute0 pipeline1 group1 draw1 dispatch0 dependencies6 implicit8 viewport1 scissor1 attachment1 dynamicOffsets'+(whole?'0':'1')+' owners[1-9][0-9]* exact-less-exhausted original-pass-group-attachment-mutated same-Prepared-root hot0-query0 cold-record-execution-closed$').test(m)).length;
+  const payloadRetained=nativeCold?coldRetained:progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_PAYLOAD8_RETAIN_OK same-original-Prepared-root freeze-closure-initializer-caller-drop original-native-inputs-retained no-record-or-completion').length;
+  const payloadRetired=nativeCold?coldRetired:progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_PAYLOAD8_RETIRE_OK same-original-Pending-root stale-inputs-refused payload-child-drop no-record-or-completion').length;
+  const payloadStale=progress.filter(m=>m==='BINDLESS_RHI_TYPED_NATIVE_PAYLOAD_REJECT_OK '+(nativeCold?'graphics-Cold-abandoned-root':'graphics-Pending-root')+' genuine-frozen-native-input original-root-stale counts-cleared hot0 execution-closed').length;
+  const payloadFrozen=progress.filter(m=>/^BINDLESS_RHI_TYPED_NATIVE_PAYLOAD_FROZEN_OK general-finite-graphics10 commands14 calls9 render1 compute0 draws1 dispatches0 dependencies6 colors1 bytes[1-9][0-9]* original-native-bindings exact-pass-draw-bound exact-less-exhausted forged-native-mutated-reject hot0-query0 execution-closed$/.test(m)).length;
+  const payloadInputsMatch=[payloadCount,payloadRetained,payloadRetired,payloadStale,payloadFrozen].every(count=>count===(nativePayload?1:0));
+  const shaderBufferInitialized=progress.includes('BINDLESS_RHI_GENERAL_GRAPHICS_SHADER_BUFFER_INITIALIZED_OK '+bufferType+' '+rangeKind+' original-Staging4 Source5 Fragment frozen-backing scopes3 queue1 callbacks-drained hot0-query0 no-draw');
+  const shaderBufferRetired=progress.includes('BINDLESS_RHI_GENERAL_GRAPHICS_SHADER_BUFFER_RETIRE_OK original-initializer-callbacks-drained source-quotas-zero no-native-draw');
+  const roots=progress.filter(m=>/^BINDLESS_RHI_GENERAL_GRAPHICS_CONTENT6_ROOT_OK completed1 attachment1 cells1 bind1 draw1 attachmentSteps2 commands42 projections[1-9][0-9]* finalCells5 stateSteps17 rootBytes[1-9][0-9]* exact-less-exhausted same-original-Stream-Usage-Dependency pending-rollback content-unchanged hot0-query0 native-closed$/.test(m));
+  const rootRetirementCount=progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_CONTENT6_ROOT_RETIRE_OK original-journal-rollback transaction-count0 quota0 no-native-draw-or-completion').length;
+  const pendingCount=progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_CONTENT6_PENDING_OK sampled-completed-stamp-current attachment-private-proposal original-journal no-native-completion').length;
+  const rollbackCount=progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_CONTENT6_ROLLBACK_OK '+terminal+' stale-observations-refused original-Inputs-recaptured sampled-stamp-current attachment-uninitialized generation-one-exhausted').length;
+  const initializedSourcesRetired=progress.includes('BINDLESS_RHI_GENERAL_GRAPHICS_CONTENT_SOURCES_RETIRE_OK original-upload-scopes-callbacks-content-domains-quotas-zero attachment-never-completed no-root-draw-output');
+  const usageDependencyRetired=progress.filter(m=>m==='BINDLESS_RHI_GENERAL_GRAPHICS_USAGE6_DEPENDENCY6_RETIRE_OK original-attachment-state-stream-quotas-zero native-closed').length===expected;
+  const initialized=progress.includes('BINDLESS_RHI_GENERAL_SAMPLED_INITIALIZER_OK same-device upload20 mips2 original-scopes-drained recorded-submit-completed committed-root');
+  const nativeErrors=Module.webGpuUncapturedErrors||[];
+  const output={success:completed && roots.length===expected && rootRetirementCount===expected
+      && pendingCount===expected && rollbackCount===expected && !(whole&&dynamic)
+      && ['abandon','drop'].includes(terminal) && initialized && initializedSourcesRetired && usageDependencyRetired
+      && shaderBufferInitialized===shaderContent && shaderBufferRetired===shaderContent
+      && (!nativeCustody||shaderContent) && custodyCount===(nativeCustody?1:0) && custodyRetired===(nativeCustody?1:0)
+      && (!dependencyFreeze||nativeCustody) && freezeCount===(dependencyFreeze?1:0)
+      && freezeRetired===(dependencyFreeze?1:0) && freezeRetained===(dependencyFreeze?1:0)
+      && (!nativePayload||dependencyFreeze) && payloadInputsMatch
+      && (!nativeCold||nativePayload) && coldMatch
+      && (!nativeCommand||nativeCold) && commandMatch
+      && (!nativeCallback||nativeCommand) && callbackMatch
+      && !diagnostics.length && !nativeErrors.length,
+    scenario:nativeCallback?'original-general-finite-graphics-native-callback':nativeCommand?'original-general-finite-graphics-native-command':nativeCold?'original-general-finite-graphics-native-cold':nativePayload?'original-general-finite-graphics-native-payload':dependencyFreeze?'original-general-finite-graphics-dependency-freeze':nativeCustody?'original-general-finite-graphics-native-custody':shaderContent?'original-general-finite-graphics-shader-buffer':'original-general-finite-graphics-content-root',bufferType,
+    rangeKind,rollbackKind:terminal,rootCount:roots.length,rootRetirementCount,pendingCount,shaderBufferInitialized,shaderBufferRetired,
+    initializedSourcesRetired,usageDependencyRetired,diagnostics,nativeErrors,progress:progress.slice(),
+    nativeCustodyValidated:nativeCustody&&custodyCount===1&&custodyRetired===1,
+    nativeDependencyFreezeValidated:dependencyFreeze&&freezeCount===1&&freezeRetired===1&&freezeRetained===1,
+    nativePayloadInputsValidated:nativePayload&&payloadInputsMatch,
+    nativeColdAdmissionValidated:nativeCold&&coldMatch,coldCandidateIndependentOfCpuBaseline:nativeCold&&coldCandidate===1,
+    nativeCommandConnectionValidated:nativeCommand&&commandMatch,
+    nativeCallbackObserverValidated:nativeCallback&&callbackMatch,
+    nativeDrawReadbackValidated:false,finiteGraphicsValidated:false,fullFiniteExecutionValidated:false,
+    finiteLifecycle4Validated:false,publicBindlessExecutionAvailable:false,nativeSyncPromoted:false,
+    platformValidated:false,productionReady:false};
+  transport.flush().catch(error=>{output.success=false;diagnostics.push(String(error));})
+    .then(()=>fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(output)}));
+}
+window.addEventListener('error',event=>{diagnostics.push(String(event.error||event.message));finish(false);});
+window.addEventListener('unhandledrejection',event=>{diagnostics.push(String(event.reason));finish(false);});
+var Module={print(value){const m=String(value);transport.append(m);
+    if(m==='BINDLESS_RHI_GENERAL_GRAPHICS_CONTENT6_SCENARIO_OK original-resource-backed-root no-native-draw-or-public-authority')finish(true);},
+  printErr(value){diagnostics.push(String(value));finish(false);},onAbort(value){diagnostics.push(String(value));finish(false);},
+  onExit(code){if(code!==0){diagnostics.push('EXIT '+code);finish(false);}}};
+</script>
+<script src="arp_rhi_webgpu_general_graphics_content_root_browser_smoke.js"></script>

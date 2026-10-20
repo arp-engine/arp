@@ -1,0 +1,122 @@
+moduleName: RhiPushContract
+sourcePath: "rhi_push_contract.slang"
+reflectionContractVersion: "ShaderReflection/3"
+sourceSha256: d40ae4183b9076ce1a17cb3c721bad59debe1b19e6ffb4fbf37be8f3f2f135e9
+entryPoints:
+  - name: vsMain
+    stage: Vertex
+    writesRenderTargetArrayIndex: false
+  - name: fsMain
+    stage: Fragment
+    writesRenderTargetArrayIndex: false
+  - name: csMain
+    stage: Compute
+    writesRenderTargetArrayIndex: false
+    computeWorkgroupSizeX: 1
+    computeWorkgroupSizeY: 1
+    computeWorkgroupSizeZ: 1
+bindings: []
+webGpuBindingSpaceContractVersion: "WebGpuBindingSpace/5"
+webGpuBindingSpaceStatus: Available
+webGpuBindingSpaceUnavailableReason: null
+webGpuBindingSpace: []
+webGpuBindingSpaceGroupCount: 1
+metalBindingSpaceContractVersion: "MetalBindingSpace/1"
+metalBindingSpaceStatus: Available
+metalBindingSpaceUnavailableReason: null
+metalBindingSpace: []
+metalArgumentBufferContractVersion: null
+metalArgumentBufferStatus: Unavailable
+metalArgumentBufferUnavailableReason: "generated MSL artifact did not expose an argument-buffer lowering"
+metalArgumentBuffer: []
+metalFramebufferFetchContractVersion: null
+metalFramebufferFetchStatus: Unavailable
+metalFramebufferFetchUnavailableReason: "generated MSL artifact did not expose framebuffer-fetch lowering"
+metalFramebufferFetch: []
+metalGpuCountedIndirectContractVersion: null
+metalGpuCountedIndirectStatus: Unavailable
+metalGpuCountedIndirectCountBufferIndex: null
+metalGpuCountedIndirectUsesDrawId: false
+metalGpuCountedIndirectMasksOutOfRange: false
+metalTessellationContractVersion: null
+metalTessellationStatus: Unavailable
+metalTessellationVertexEntryPoint: null
+metalTessellationFactorBufferIndex: null
+metalTessellationControlPointCount: 0
+metalTessellationPatchType: null
+metalTessellationFactorFormat: null
+metalTessellationFactorBytesPerPatch: null
+metalTessellationFactorInstanceStrideBytes: null
+pushConstantSizeBytes: 128
+pushConstantContractVersion: "AtomicFullBlockPush/1"
+pushConstantStages: "CS|FS|VS"
+pushConstantWebGpuBinding:
+  group: 0
+  binding: 0
+pushConstantMetalBufferIndex: 0
+computeWorkgroupSizeX: 1
+computeWorkgroupSizeY: 1
+computeWorkgroupSizeZ: 1
+tessellationControlPointCount: 0
+vertexAttributes: []
+targets:
+  spirv: "rhi_push_contract.spv"
+  metal: "rhi_push_contract.metal"
+  wgsl: "rhi_push_contract.wgsl"
+pushConstantMembers:
+  - name: data0
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 0
+    size: 16
+    decorations: 0x00000000
+  - name: data1
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 16
+    size: 16
+    decorations: 0x00000000
+  - name: data2
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 32
+    size: 16
+    decorations: 0x00000000
+  - name: data3
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 48
+    size: 16
+    decorations: 0x00000000
+  - name: data4
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 64
+    size: 16
+    decorations: 0x00000000
+  - name: data5
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 80
+    size: 16
+    decorations: 0x00000000
+  - name: data6
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 96
+    size: 16
+    decorations: 0x00000000
+  - name: data7
+    scalarType: float
+    scalarWidth: 32
+    vecSize: 4
+    offset: 112
+    size: 16
+    decorations: 0x00000000

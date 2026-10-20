@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Bindless canonical ordinary Fragment depth closure19</title>
+<canvas id="canvas" width="2" height="2" hidden></canvas>
+<script>
+const result = {success: false, scope: 'canonical-ordinary-fragment-depth-closure19',
+  executionGranted: false, diagnostics: [], nativeErrors: [], log: []};
+let reported = false;
+async function report(success) {
+  if (reported) return;
+  reported = true;
+  try {
+    const device = Module.preinitializedWebGPUDevice;
+    if (!device) throw new Error('No real device');
+    const validation = await device.popErrorScope();
+    if (validation) result.nativeErrors.push(String(validation.message || validation));
+    // Flush actual native validation after both synchronous public factories.
+    await device.queue.onSubmittedWorkDone();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    result.nativeErrors.push(...(Module.webGpuUncapturedErrors || []));
+    const marker = 'BINDLESS_WEBGPU_ORDINARY_DEPTH_CLOSURE19_PIPELINE_OK public-root clean/fault depth-color comparison2 stale-reclear quota0 no-execution';
+    result.success = success && result.log.filter(line => line === marker).length === 1
+      && !result.diagnostics.length && !result.nativeErrors.length;
+  } catch (error) { result.diagnostics.push(String(error)); }
+  await fetch('/result', {method: 'POST', body: JSON.stringify(result)});
+}
+window.addEventListener('error', event => {
+  result.diagnostics.push(String(event.error || event.message)); report(false);
+});
+window.addEventListener('unhandledrejection', event => {
+  result.diagnostics.push(String(event.reason)); report(false);
+});
+var Module = {
+  arguments: ['/bindless-depth/GraphicsDepthColor.emulated.bindless.yaml', '--closure19'],
+  print: line => {
+    result.log.push(String(line));
+    if (String(line).startsWith('BINDLESS_WEBGPU_ORDINARY_DEPTH_CLOSURE19_PIPELINE_OK ')) report(true);
+  },
+  printErr: line => result.diagnostics.push(String(line)),
+  onAbort: reason => { result.diagnostics.push(String(reason)); report(false); },
+  onExit: code => report(code === 0)
+};
+</script>
+<script src="arp_rhi_webgpu_bindless_graphics_depth_pipeline_tests.js"></script>

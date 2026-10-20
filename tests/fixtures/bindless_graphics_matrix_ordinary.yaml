@@ -1,0 +1,20 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: GraphicsMatrixOrdinary
+set: 1
+pipelineInterfaceContractVersion: 1
+maxSwitchCases: 1
+maxBindings: 5
+# Vulkan's real 36/4/4-byte metadata/latch/readback allocations total 80 bytes.
+# Every native run independently rechecks its actual allocation demand.
+snapshotBytes: 80
+snapshotMetadataBinding: 0
+faultLatchBinding: 1
+tables:
+  - name: Results
+    tableId: 1
+    kind: StorageBuffer
+    capacity: 1
+    binding: 2
+    stages: [fragment]
+    operations: [store]

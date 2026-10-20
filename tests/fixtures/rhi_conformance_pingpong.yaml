@@ -1,0 +1,94 @@
+type: ConformanceSampledWorkload
+contractVersion: 2
+id: sampled-four-pass-ping-pong-v2
+shaderSourceSha256: 7f32928fae7c3ef21a23fabb453ec0c1e316b523df37039e4f4b5b12283a0d81
+vertices: [-4, -4, 0.25, 0.5, 0.5, 1, 1, 1, 1, -4, 12, 0.25, 0.5, 0.5, 1, 1, 1, 1, 12, -4, 0.25, 0.5, 0.5, 1, 1, 1, 1]
+indices: [0, 1, 2]
+frames:
+- extent: {width: 64, height: 64}
+  sourceA: [32, 128, 192, 255]
+  sourceB: [192, 32, 128, 255]
+  uniforms: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  draws:
+  - sourceA: SourceA
+    sourceB: SourceB
+    target: PingA
+    push: [0, 0, 0, 0, 1, 1, 1, 0]
+    indexed: false
+    expected: [32, 128, 192, 255]
+  - sourceA: PingA
+    sourceB: SourceB
+    target: PingB
+    push: [0, 0, 0, 0, 1, 1, 1, 0.5]
+    indexed: true
+    expected: [112, 80, 160, 255]
+  - sourceA: PingB
+    sourceB: SourceB
+    target: PingA
+    push: [0, 0, 0, 0, 1, 1, 1, 0.5]
+    indexed: false
+    expected: [152, 56, 144, 255]
+  - sourceA: PingA
+    sourceB: SourceB
+    target: Output
+    push: [0, 0, 0, 0, 1, 1, 1, 0.5]
+    indexed: true
+    expected: [172, 44, 136, 255]
+- extent: {width: 48, height: 32}
+  sourceA: [32, 128, 192, 255]
+  sourceB: [192, 32, 128, 255]
+  uniforms: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  draws:
+  - sourceA: SourceA
+    sourceB: SourceB
+    target: PingA
+    push: [0, 0, 0, 0, 1, 1, 1, 0]
+    indexed: true
+    expected: [32, 128, 192, 255]
+  - sourceA: PingA
+    sourceB: SourceB
+    target: PingB
+    push: [0, 0, 0, 0, 1, 1, 1, 0.5]
+    indexed: false
+    expected: [112, 80, 160, 255]
+  - sourceA: PingB
+    sourceB: SourceB
+    target: PingA
+    push: [0, 0, 0, 0, 0.5, 1, 1, 0.5]
+    indexed: true
+    expected: [76, 56, 144, 255]
+  - sourceA: PingA
+    sourceB: SourceB
+    target: Output
+    push: [0, 0, 0, 0, 1, 1, 1, 0.5]
+    indexed: false
+    expected: [134, 44, 136, 255]
+- extent: {width: 64, height: 64}
+  sourceA: [32, 128, 192, 255]
+  sourceB: [192, 32, 128, 255]
+  uniforms: [1, 0.125, 0, 0, 0.25, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+  draws:
+  - sourceA: SourceA
+    sourceB: SourceB
+    target: PingA
+    push: [0, 0, 0, 0, 1, 1, 1, 0]
+    indexed: true
+    expected: [32, 128, 192, 255]
+  - sourceA: PingA
+    sourceB: SourceB
+    target: PingB
+    push: [0, 0, 0, 0, 1, 1, 1, 0.5]
+    indexed: false
+    expected: [112, 80, 160, 255]
+  - sourceA: PingB
+    sourceB: SourceB
+    target: PingA
+    push: [0, 0, 0, 0, 1, 1, 1, 0.5]
+    indexed: true
+    expected: [152, 56, 144, 255]
+  - sourceA: PingA
+    sourceB: SourceB
+    target: Output
+    push: [0, 0, 0, 0, 0.5, 1, 1, 0.5]
+    indexed: false
+    expected: [86, 44, 136, 255]

@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Bindless device limit observation</title>
+<script type="module">
+// Query-only evidence. No bindings, shaders, commands or capability promotion.
+const names = [
+  "maxBindGroups", "maxBindingsPerBindGroup", "maxBufferSize",
+  "maxSampledTexturesPerShaderStage", "maxSamplersPerShaderStage",
+  "maxUniformBuffersPerShaderStage", "maxStorageBuffersPerShaderStage",
+  "maxStorageTexturesPerShaderStage", "maxUniformBufferBindingSize",
+  "maxStorageBufferBindingSize", "maxDynamicUniformBuffersPerPipelineLayout",
+  "maxDynamicStorageBuffersPerPipelineLayout", "maxVertexBuffers",
+  "maxVertexAttributes", "maxVertexBufferArrayStride", "maxTextureDimension2D",
+  "maxTextureArrayLayers"
+];
+const limits = object => Object.fromEntries(names.map(name => {
+  const value = object[name];
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Missing limit: ${name}`);
+  return [name, value];
+}));
+let normal, expanded;
+const result = {success: false, scope: "device-limit-query-only", runtimeCapabilityGranted: false};
+try {
+  if (!navigator.gpu) throw new Error("WebGPU unavailable");
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error("Adapter unavailable");
+  result.browser = navigator.userAgent;
+  result.adapterInfo = Object.fromEntries(["vendor", "architecture", "device", "description"]
+    .map(name => [name, adapter.info[name]]));
+  result.adapterFeatures = [...adapter.features].sort();
+  result.adapterLimits = limits(adapter.limits);
+  normal = await adapter.requestDevice();
+  result.defaultDeviceLimits = limits(normal.limits);
+  // A separate query tests admission of these exact maxima; it changes no RHI
+  // policy or engine device. Runtime requested limits must be frozen separately.
+  const expandedAdapter = await navigator.gpu.requestAdapter();
+  if (!expandedAdapter) throw new Error("Explicit-limits adapter unavailable");
+  result.explicitAdapterLimits = limits(expandedAdapter.limits);
+  result.explicitAdapterInfo = Object.fromEntries(["vendor", "architecture", "device", "description"]
+    .map(name => [name, expandedAdapter.info[name]]));
+  result.requestedLimits = result.explicitAdapterLimits;
+  expanded = await expandedAdapter.requestDevice({requiredLimits: result.requestedLimits});
+  result.explicitDeviceLimits = limits(expanded.limits);
+  result.success = true;
+} catch (error) {
+  result.diagnostic = String(error);
+} finally {
+  expanded?.destroy();
+  normal?.destroy();
+  await fetch("/result", {method: "POST", body: JSON.stringify(result)});
+}
+</script>

@@ -1,0 +1,56 @@
+import asset
+
+def retarget_first(source: string, target: string) -> int:
+    var imported: asset.ImportedModelResult = asset.import_fbx(source)
+    if not imported.success:
+        raise "source FBX import failed: " + imported.diagnostics
+    if imported.clip_count() <= 0:
+        raise "source FBX has no animation clips"
+    var clipName: string = imported.clip_name(0)
+    var retargeted: asset.ImportedAnimationClipResult = asset.retarget_fbx_clip(
+        source, clipName, target)
+    if not retargeted.success:
+        raise "FBX retarget failed: " + retargeted.diagnostics
+    if retargeted.name != clipName or retargeted.channelCount <= 0:
+        raise "FBX retarget returned an invalid clip"
+    return retargeted.channelCount
+
+def retarget_humanoid_first(source: string, target: string) -> int:
+    var imported: asset.ImportedModelResult = asset.import_fbx(source)
+    if not imported.success:
+        raise "source FBX import failed: " + imported.diagnostics
+    if imported.clip_count() <= 0:
+        raise "source FBX has no animation clips"
+    var binding: asset.AvatarBinding = asset.AvatarBinding()
+    binding.set_humanoid(true)
+    var jointIndex: int = 0
+    while jointIndex < imported.joint_count():
+        var jointName: string = imported.joint_name(jointIndex)
+        if not binding.add_bone_mapping(jointName, jointName, jointName):
+            raise "invalid humanoid source mapping"
+        if not binding.add_skeleton_node(jointName, ""):
+            raise "invalid humanoid skeleton node"
+        jointIndex = jointIndex + 1
+    var clipName: string = imported.clip_name(0)
+    var retargeted: asset.ImportedAnimationClipResult = asset.retarget_fbx_clip_with_avatar(
+        source, clipName, target, binding)
+    if not retargeted.success:
+        raise "humanoid FBX retarget failed: " + retargeted.diagnostics
+    if retargeted.name != clipName or retargeted.channelCount <= 0:
+        raise "humanoid FBX retarget returned an invalid clip"
+    return retargeted.channelCount
+
+def retarget_empty_humanoid(source: string, target: string) -> int:
+    var imported: asset.ImportedModelResult = asset.import_fbx(source)
+    if not imported.success:
+        raise "source FBX import failed: " + imported.diagnostics
+    if imported.clip_count() <= 0:
+        raise "source FBX has no animation clips"
+    var binding: asset.AvatarBinding = asset.AvatarBinding()
+    binding.set_humanoid(true)
+    var clipName: string = imported.clip_name(0)
+    var retargeted: asset.ImportedAnimationClipResult = asset.retarget_fbx_clip_with_avatar(
+        source, clipName, target, binding)
+    if not retargeted.success:
+        raise "humanoid FBX retarget failed: " + retargeted.diagnostics
+    return retargeted.channelCount

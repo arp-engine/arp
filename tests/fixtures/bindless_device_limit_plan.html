@@ -1,0 +1,85 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Bindless complete-layout device limit planning</title>
+<script type="module">
+// Runs the actual C++ shared-layout/backend planner in Wasm before requesting
+// the expanded device. This authored layout is not a production terrain shader.
+const names = ["maxBindGroups", "maxBindingsPerBindGroup",
+  "maxSampledTexturesPerShaderStage", "maxSamplersPerShaderStage",
+  "maxStorageTexturesPerShaderStage", "maxUniformBuffersPerShaderStage",
+  "maxStorageBuffersPerShaderStage"];
+const observe = limits => Object.fromEntries(names.map(name => {
+  const value = limits[name];
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Missing limit: ${name}`);
+  return [name, value];
+}));
+let device;
+const mode = new URLSearchParams(location.search).get("mode");
+const result = {success: false, scope: mode === "package"
+    ? "sealed-package-device-request-only" : "authored-complete-layout-device-request-only",
+  runtimeCapabilityGranted: false, mode, diagnostics: [], nativeErrors: [], log: []};
+try {
+  if (!["default", "requested", "package"].includes(mode)) throw new Error("Explicit mode required");
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error("Adapter unavailable");
+  result.adapterLimits = observe(adapter.limits);
+  if (mode === "default") {
+    device = await adapter.requestDevice();
+    result.defaultDeviceLimits = observe(device.limits);
+  }
+  const ceiling = mode === "default" ? result.defaultDeviceLimits : result.adapterLimits;
+  await new Promise((resolve, reject) => {
+    window.Module = {
+      arguments: [...(mode === "package"
+        ? ["--package", "/bindless-terrain27/GraphicsTerrain27.emulated.bindless.yaml"] : []),
+        "--adapter", ...names.map(name => String(ceiling[name]))],
+      print: line => result.log.push(String(line)),
+      printErr: line => result.diagnostics.push(String(line)),
+      onAbort: reason => reject(new Error(String(reason))),
+      postRun: [resolve]
+    };
+    const script = document.createElement("script");
+    script.src = "arp_bindless_pipeline_demand_tests.js";
+    script.onerror = () => reject(new Error("Wasm test loading failed"));
+    document.head.append(script);
+  });
+  const prefix = "BINDLESS_DEVICE_LIMIT_PLAN_JSON ";
+  const plans = result.log.filter(line => line.startsWith(prefix));
+  if (mode === "default") {
+    if (plans.length || !result.log.includes(
+      "BINDLESS_DEVICE_LIMIT_PLAN_REFUSED RHI-WEBGPU-BINDLESS-ADAPTER-LIMIT"))
+      throw new Error("Expected complete-layout refusal against default device");
+    result.refusedBeforeExpandedDevice = true;
+  } else {
+    if (plans.length !== 1) throw new Error("Exactly one C++ plan required");
+    result.plan = JSON.parse(plans[0].slice(prefix.length));
+    if (result.plan.contractVersion !== 1 || result.plan.scope !== result.scope)
+      throw new Error("Unexpected plan contract/scope");
+    // Independent expected dictionary for this authored layout. No duplicated
+    // planner algorithm and no substitution of adapter maxima for real demand.
+    const expected = mode === "package"
+      ? {maxBindGroups: 2, maxBindingsPerBindGroup: 31,
+        maxSampledTexturesPerShaderStage: 27, maxSamplersPerShaderStage: 1,
+        maxUniformBuffersPerShaderStage: 1, maxStorageBuffersPerShaderStage: 4}
+      : {maxBindGroups: 4, maxBindingsPerBindGroup: 30,
+      maxSampledTexturesPerShaderStage: 36, maxSamplersPerShaderStage: 4,
+      maxUniformBuffersPerShaderStage: 10, maxStorageBuffersPerShaderStage: 5};
+    if (JSON.stringify(result.plan.requiredLimits) !== JSON.stringify(expected))
+      throw new Error("Incorrect full-layout request dictionary");
+    device = await adapter.requestDevice({requiredLimits: result.plan.requiredLimits});
+    device.addEventListener("uncapturederror", event =>
+      result.nativeErrors.push(String(event.error?.message || event.error)));
+    result.actualDeviceLimits = observe(device.limits);
+    for (const [name, value] of Object.entries(result.plan.requiredLimits))
+      if (result.actualDeviceLimits[name] < value)
+        throw new Error(`Created device is undersized: ${name}`);
+    result.createdDeviceValidated = true;
+  }
+  result.success = !result.diagnostics.length && !result.nativeErrors.length;
+} catch (error) {
+  result.diagnostics.push(String(error));
+} finally {
+  device?.destroy();
+  await fetch("/result", {method: "POST", body: JSON.stringify(result)});
+}
+</script>

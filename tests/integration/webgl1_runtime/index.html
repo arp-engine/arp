@@ -1,0 +1,60 @@
+<!doctype html>
+<meta charset="utf-8">
+<canvas id="canvas" width="64" height="64"></canvas>
+<canvas id="other" width="64" height="64" hidden></canvas>
+<script>
+// Test-only platform isolation: a WebGPU implementation cannot satisfy this run.
+Object.defineProperty(navigator, 'gpu', {value: undefined, configurable: true});
+function fail(error) {
+    fetch('/result', {method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({success:false,diagnostic:String(error),stack:error?.stack,
+            stage:Module.arpStage,productionBackendValidated:false})});
+}
+window.addEventListener('error', event => fail(event.error || event.message));
+window.addEventListener('unhandledrejection', event => fail(event.reason));
+var Module = {canvas: document.getElementById('canvas'), onAbort: fail};
+const forwardResult = window.fetch.bind(window);
+window.fetch = (url, options) => {
+    if (url === '/result' && typeof options?.body === 'string') {
+        const report = JSON.parse(options.body);
+        report.runtimeEnvironment = Module.arpRuntimeEnvironment || null;
+        options = {...options, body: JSON.stringify(report)};
+    }
+    return forwardResult(url, options);
+};
+if (new URLSearchParams(location.search).get('captureGate') === '1') {
+    Module.noInitialRun = true;
+    Module.onRuntimeInitialized = async () => {
+        if (new URLSearchParams(location.search).get('recoveryGate') !== '1') {
+            await fetch('/ready', {method:'POST'});
+            while (!(await fetch('/armed', {cache:'no-store'})).ok) {
+                await new Promise(resolve => requestAnimationFrame(resolve));
+            }
+        }
+        for (let frame = 0; frame < 12; ++frame) {
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            const completed = new Promise(resolve => { Module.arpWorkloadFinished = resolve; });
+            Module.callMain([]);
+            if (Module.arpAsyncWorkload) await completed;
+        }
+    };
+}
+const canvas = Module.canvas;
+const subscribed = new Set();
+function trackOwnedSubscriptions(target, types) {
+    const add = target.addEventListener.bind(target), remove = target.removeEventListener.bind(target);
+    target.addEventListener = (type, listener, capture) => {
+        if (types.includes(type)) subscribed.add(listener);
+        return add(type, listener, capture);
+    };
+    target.removeEventListener = (type, listener, capture) => {
+        if (types.includes(type)) subscribed.delete(listener);
+        return remove(type, listener, capture);
+    };
+}
+trackOwnedSubscriptions(canvas, ['webglcontextlost', 'webglcontextrestored']);
+trackOwnedSubscriptions(document, ['visibilitychange']);
+trackOwnedSubscriptions(window, ['pagehide', 'pageshow']);
+Module.webGlOwnedSubscriptions = subscribed;
+</script>
+<script src="arp_webgl_context_smoke.js"></script>

@@ -1,0 +1,86 @@
+
+from arp_scene import GameObject, Component
+var ticks: int = 0
+var constructors: int = 0
+def constructor_count() -> int:
+    return constructors
+class Counter(ScriptComponent):
+    count: int
+    collision_enters: int
+    collision_exits: int
+    trigger_enters: int
+    trigger_exits: int
+    last_other_id: int
+    def __init__(self):
+        self.count = 10
+        self.collision_enters = 0
+        self.collision_exits = 0
+        self.trigger_enters = 0
+        self.trigger_exits = 0
+        self.last_other_id = 0
+        constructors += 1
+    def on_start(self):
+        self.count += 1
+    def on_update(self, dt: float):
+        self.count += 2
+        ticks += 1
+    def on_fixed_update(self, dt: float):
+        self.count += 3
+    def on_event(self, name: string, payload: any):
+        if name == "damage":
+            self.count += payload as int
+    def on_collision_enter(self, other: GameObject):
+        self.collision_enters += 1
+        self.last_other_id = other.object_id() as int
+    def on_collision_exit(self, other: GameObject):
+        self.collision_exits += 1
+        self.last_other_id = other.object_id() as int
+    def on_trigger_enter(self, other: GameObject):
+        self.trigger_enters += 1
+        self.last_other_id = other.object_id() as int
+    def on_trigger_exit(self, other: GameObject):
+        self.trigger_exits += 1
+        self.last_other_id = other.object_id() as int
+    def marker(self) -> int:
+        return 7
+class Link(ScriptComponent):
+    target: GameObject
+    other: Counter
+    labels: [string]
+    native: Component
+    optional: GameObject?
+    def __init__(self):
+        self.labels = ["one", "two"]
+        self.optional = nil
+class Spawner(ScriptComponent):
+    def on_update(self, dt: float):
+        self.game_object.add_component("Counter")
+        self.component.set_enabled(false)
+class Remover(ScriptComponent):
+    def on_update(self, dt: float):
+        self.game_object.destroy_self()
+class Faulty(ScriptComponent):
+    def on_update(self, dt: float):
+        raise "fixture script failure"
+
+class DestroyOnCollision(ScriptComponent):
+    def on_collision_enter(self, other: GameObject):
+        self.game_object.destroy_self()
+
+class ShortSetup:
+    def setup(self, value: int) -> int:
+        return value + 1
+class LongSetup:
+    def setup(self, a: int, b: int) -> int:
+        return a + b
+def different_arities(a: ShortSetup, b: LongSetup) -> int:
+    return a.setup(4) + b.setup(5, 6)
+def arity_probe() -> int:
+    return different_arities(ShortSetup(), LongSetup())
+def marker_probe(receiver: Counter) -> int:
+    return receiver.marker()
+
+class Nested(ScriptComponent):
+    nested_accepted: bool
+    def __init__(self):
+        self.nested_accepted = self.game_object.add_component("Nested") != nil

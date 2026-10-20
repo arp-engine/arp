@@ -1,0 +1,6 @@
+--- !u!1 &100
+GameObject:
+  m_Name: InvalidTransform
+--- !u!4 &200
+Transform:
+  m_GameObject: 100

@@ -1,0 +1,32 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: CompletedTextureRoot
+set: 0
+maxBindings: 8
+maxSwitchCases: 16
+snapshotBytes: 65536
+snapshotMetadataBinding: 6
+faultLatchBinding: 7
+tables:
+  - name: Images
+    tableId: 1
+    kind: SampledTexture
+    capacity: 2
+    binding: 0
+    stages: [compute]
+    operations: [load, query, sampleLevel]
+    sampler: Filters
+  - name: Filters
+    tableId: 2
+    kind: Sampler
+    capacity: 2
+    binding: 2
+    stages: [compute]
+    operations: []
+  - name: Results
+    tableId: 3
+    kind: StorageBuffer
+    capacity: 2
+    binding: 4
+    stages: [compute]
+    operations: [store]

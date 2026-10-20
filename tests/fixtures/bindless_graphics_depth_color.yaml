@@ -1,0 +1,24 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: GraphicsDepthColor
+set: 1
+pipelineInterfaceContractVersion: 1
+maxSwitchCases: 1
+maxBindings: 8
+snapshotBytes: 256
+snapshotMetadataBinding: 0
+faultLatchBinding: 1
+tables:
+  - name: Results
+    tableId: 1
+    kind: StorageBuffer
+    capacity: 1
+    binding: 3
+    stages: [fragment]
+    operations: [store]
+ordinaryOpaqueBindings:
+  - {name: ColorTexture, set: 2, binding: 0, type: SampledTexture, stages: [fragment], textureViewDimension: Texture2D, depthTexture: false, sampledTextureFilterable: true}
+  - {name: ColorSampler, set: 2, binding: 1, type: Sampler, stages: [fragment], samplerFiltering: Filtering}
+  - {name: ShadowMap, set: 2, binding: 2, type: SampledTexture, stages: [fragment], textureViewDimension: Texture2D, depthTexture: true, sampledTextureFilterable: false}
+  - {name: LessSampler, set: 2, binding: 3, type: Sampler, stages: [fragment], samplerFiltering: Comparison}
+  - {name: GreaterSampler, set: 2, binding: 4, type: Sampler, stages: [fragment], samplerFiltering: Comparison}

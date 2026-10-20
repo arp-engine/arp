@@ -1,0 +1,30 @@
+moduleName: NullHiddenFrameSmokeShaderPackage
+sourcePath: "null_hidden_frame_smoke.slang"
+reflectionContractVersion: "ShaderReflection/3"
+sourceSha256: "2cd992ffeff1677655c04291c2b165c147381d8ab463ff2bbef5b8b5cc88309b"
+entryPoints:
+  - name: vsMain
+    stage: Vertex
+  - name: fsMain
+    stage: Fragment
+bindings:
+  - name: FrameConstants
+    set: 0
+    binding: 0
+    type: UniformBuffer
+    stageMask: 3
+pushConstantSizeBytes: 64
+pushConstantContractVersion: "AtomicFullBlockPush/1"
+pushConstantStages: "VS|FS"
+pushConstantMembers:
+  - name: data
+    scalarType: uint32
+    scalarWidth: 32
+    arrayDims: [16]
+    arrayStride: 4
+    offset: 0
+    size: 64
+    decorations: 0x00000000
+targets:
+  spirv: "null_hidden_frame_smoke.spv"
+  metal: "null_hidden_frame_smoke.metal"

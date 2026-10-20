@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Original Graphics8 recording-only contract</title>
+<canvas id="canvas" width="1" height="1" hidden></canvas>
+<script src="progress-contract.js"></script>
+<script src="browser_progress_transport.js"></script>
+<script src="original_general_finite_graphics_recording_report.js"></script>
+<script>
+var progress=[],diagnostics=[],reported=false;
+var transport=new BrowserProgressTransport(progress,BrowserProgressLimits,
+  batch=>fetch('/progress',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(batch)}),
+  error=>{diagnostics.push(String(error));finish(false);});
+function finish(completed) {
+  if(reported)return;reported=true;
+  const output=OriginalGraphicsRecordingReport.inspect(progress,location.search,completed,
+    diagnostics,Module.webGpuUncapturedErrors||[]);
+  transport.flush().catch(error=>{output.success=false;output.nativeRecordingValidated=false;diagnostics.push(String(error));
+    output.diagnostics=diagnostics.slice();})
+    .then(()=>fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(output)}));
+}
+window.addEventListener('error',event=>{diagnostics.push(String(event.error||event.message));finish(false);});
+window.addEventListener('unhandledrejection',event=>{diagnostics.push(String(event.reason));finish(false);});
+var Module={print(value){const message=String(value);transport.append(message);
+    if(message===(new URLSearchParams(location.search).has('general-graphics-physical-loss')
+      ?'BINDLESS_RHI_GENERAL_GRAPHICS_LOSS4_SCENARIO_OK original-resource-backed-root actual-device-loss no-completion-or-output public-closed'
+      :new URLSearchParams(location.search).has('general-graphics-native-submission')
+      ?(new URLSearchParams(location.search).has('general-graphics-submission-terminal')
+        ?'BINDLESS_RHI_GENERAL_GRAPHICS_SUBMISSION3_FAULT_SCENARIO_OK original-resource-backed-root genuine-terminal-drain no-readback public-closed'
+        :'BINDLESS_RHI_GENERAL_GRAPHICS_SUBMISSION3_SCENARIO_OK original-resource-backed-root genuine-queue-completion '
+          +(new URLSearchParams(location.search).has('general-graphics-output-readback')?'readback3':'no-readback')+' public-closed')
+      :'BINDLESS_RHI_GENERAL_GRAPHICS_RECORDING8_SCENARIO_OK original-resource-backed-root no-submit-or-output public-closed'))finish(true);},
+  printErr(value){diagnostics.push(String(value));finish(false);},
+  onAbort(value){diagnostics.push(String(value));finish(false);},
+  onExit(code){if(code!==0){diagnostics.push('EXIT '+code);finish(false);}}};
+</script>
+<script src="arp_rhi_webgpu_general_graphics_content_root_browser_smoke.js"></script>

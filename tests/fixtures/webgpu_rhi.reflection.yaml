@@ -1,0 +1,35 @@
+moduleName: WebGpuRhiShaderPackage
+sourcePath: "webgpu_rhi.slang"
+reflectionContractVersion: "ShaderReflection/3"
+sourceSha256: "a391290d8309a9202a944d468238449d0d5f0b5da0c777c2aad846cc0aa8bc50"
+entryPoints:
+  - name: vsMain
+    stage: Vertex
+  - name: fsMain
+    stage: Fragment
+  - name: csMain
+    stage: Compute
+bindings: []
+webGpuBindingSpaceContractVersion: "WebGpuBindingSpace/5"
+webGpuBindingSpaceStatus: Available
+webGpuBindingSpaceGroupCount: 4
+webGpuBindingSpace: []
+pushConstantSizeBytes: 64
+pushConstantContractVersion: "AtomicFullBlockPush/1"
+pushConstantStages: "VS|FS|CS"
+pushConstantWebGpuBinding:
+  group: 3
+  binding: 0
+pushConstantMembers:
+  - name: data
+    scalarType: uint32
+    scalarWidth: 32
+    arrayDims: [16]
+    arrayStride: 4
+    offset: 0
+    size: 64
+    decorations: 0x00000000
+targets:
+  spirv: "webgpu_rhi.spv"
+  metal: "webgpu_rhi.metal"
+  wgsl: "webgpu_rhi.wgsl"

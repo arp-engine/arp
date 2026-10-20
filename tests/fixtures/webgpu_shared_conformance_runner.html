@@ -1,0 +1,86 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebGPU shared conformance</title>
+<canvas id="canvas" width="64" height="64"></canvas>
+<script>
+if (new URLSearchParams(location.search).get('captureGate') === '1')
+  window.__arpRenderFeatureLabKeepCanvasAlive = true;
+var Module={sharedMessages:[],print(message){Module.sharedMessages.push(String(message));},
+  printErr(message){console.error(message);},onAbort(message){
+    fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({success:false,diagnostic:String(message),messages:Module.sharedMessages})});
+  }};
+// Observation only: actual API arguments and object relationships. These
+// records never authorize RHI execution or native completion.
+window.arpBeginSharedShaderTrace = function(maxModules, maxPipelines, maxDraws, maxSourceBytes) {
+  const device=Module.preinitializedWebGPUDevice;
+  const trace=Module.sharedShaderTrace={modules:[],pipelines:[],draws:[],submissions:[]};
+  const modules=new WeakMap(),pipelines=new WeakMap(),commands=new WeakMap();
+  let encoderSerial=0;
+  const createShader=device.createShaderModule;
+  device.createShaderModule=function(desc){
+    if(trace.modules.length>=maxModules || new TextEncoder().encode(desc.code).length>maxSourceBytes)
+      throw Error('SHARED-SHADER-TRACE-BUDGET');
+    const module=createShader.call(this,desc),id=trace.modules.length;
+    modules.set(module,id);trace.modules.push({id,code:desc.code});return module;
+  };
+  const createPipeline=device.createRenderPipeline;
+  device.createRenderPipeline=function(desc){
+    if(trace.pipelines.length>=maxPipelines || !modules.has(desc.vertex.module)
+      || !desc.fragment || !modules.has(desc.fragment.module))throw Error('SHARED-PIPELINE-TRACE-OWNER');
+    const pipeline=createPipeline.call(this,desc),id=trace.pipelines.length;
+    pipelines.set(pipeline,id);trace.pipelines.push({id,vertexModule:modules.get(desc.vertex.module),
+      fragmentModule:modules.get(desc.fragment.module),vertexEntry:desc.vertex.entryPoint,
+      fragmentEntry:desc.fragment.entryPoint,format:desc.fragment.targets[0].format});return pipeline;
+  };
+  const createEncoder=device.createCommandEncoder;
+  const createCompute=device.createComputePipeline;
+  device.createComputePipeline=function(desc){
+    if(trace.pipelines.length>=maxPipelines || !modules.has(desc.compute.module))throw Error('SHARED-COMPUTE-TRACE-OWNER');
+    const pipeline=createCompute.call(this,desc),id=trace.pipelines.length;
+    pipelines.set(pipeline,id);trace.pipelines.push({id,computeModule:modules.get(desc.compute.module),
+      computeEntry:desc.compute.entryPoint});return pipeline;
+  };
+  device.createCommandEncoder=function(desc){
+    const encoder=createEncoder.call(this,desc),serial=encoderSerial++;
+    const begin=encoder.beginRenderPass,computeBegin=encoder.beginComputePass,finish=encoder.finish;
+    encoder.beginComputePass=function(desc){
+      const pass=computeBegin.call(this,desc),set=pass.setPipeline,dispatch=pass.dispatchWorkgroups;
+      let pipeline;
+      pass.setPipeline=function(value){
+        if(!pipelines.has(value))throw Error('SHARED-DISPATCH-TRACE-PIPELINE');
+        pipeline=pipelines.get(value);return set.call(this,value);
+      };
+      pass.dispatchWorkgroups=function(){
+        if(pipeline===undefined || trace.draws.length>=maxDraws)throw Error('SHARED-DISPATCH-TRACE-BUDGET');
+        trace.draws.push({encoder:serial,pipeline,kind:'dispatch',args:Array.from(arguments)});
+        return dispatch.apply(this,arguments);
+      };
+      return pass;
+    };
+    encoder.beginRenderPass=function(desc){
+      const pass=begin.call(this,desc),set=pass.setPipeline,draw=pass.draw,indexed=pass.drawIndexed;
+      let pipeline;
+      pass.setPipeline=function(value){
+        if(!pipelines.has(value))throw Error('SHARED-DRAW-TRACE-PIPELINE');
+        pipeline=pipelines.get(value);return set.call(this,value);
+      };
+      function record(kind,args){
+        if(pipeline===undefined || trace.draws.length>=maxDraws)throw Error('SHARED-DRAW-TRACE-BUDGET');
+        trace.draws.push({encoder:serial,pipeline,kind,args:Array.from(args)});
+      }
+      pass.draw=function(){record('draw',arguments);return draw.apply(this,arguments);};
+      pass.drawIndexed=function(){record('drawIndexed',arguments);return indexed.apply(this,arguments);};
+      return pass;
+    };
+    encoder.finish=function(desc){const command=finish.call(this,desc);commands.set(command,serial);return command;};
+    return encoder;
+  };
+  const submit=device.queue.submit;
+  device.queue.submit=function(buffers){
+    if(trace.submissions.length>=3 || buffers.some(value=>!commands.has(value)))throw Error('SHARED-SUBMIT-TRACE-OWNER');
+    trace.submissions.push(buffers.map(value=>commands.get(value)));return submit.call(this,buffers);
+  };
+};
+</script>
+<script src="arp_rhi_webgpu_shared_conformance_browser_smoke.js"></script>

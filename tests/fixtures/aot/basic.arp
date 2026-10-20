@@ -1,0 +1,141 @@
+import math_dep
+import host
+
+def add(a: int, b: int) -> int:
+    return a + b
+
+def add_then_increment(a: int, b: int) -> int:
+    return add(a, b) + 1
+
+def sum_loop(count: int) -> int:
+    var index: int = 0
+    var total: int = 0
+    while index < count:
+        total = total + index
+        index = index + 1
+    return total
+
+def append_then_length() -> int:
+    var values: [int] = []
+    append(values, 7)
+    return values.length()
+
+def multiply_from_dependency(a: int, b: int) -> int:
+    return math_dep.multiply(a, b)
+
+def dependency_constant() -> int:
+    return math_dep.SCALE
+
+def reflected_get(receiver: any, value: any) -> any:
+    return receiver.get(value)
+
+def yielded_reflected(receiver: any, value: any) -> any:
+    yield 1
+    return receiver.get(value)
+
+def closure_accumulate(start: int) -> int:
+    var value: int = start
+    var read: () -> int = lambda() -> int: value
+    value = value + 5
+    return read()
+
+def handled_raise() -> int:
+    try:
+        raise "expected"
+    except as error:
+        return 7
+    return 0
+
+def raise_from_child() -> int:
+    raise "child failure"
+    return 0
+
+def handled_child_raise() -> int:
+    try:
+        return raise_from_child()
+    except as error:
+        return 8
+    return 0
+
+def handled_divide_by_zero() -> int:
+    try:
+        return 10 / 0
+    except as error:
+        return 9
+    return 0
+
+def count_two(start: int) -> int:
+    yield start
+    yield start + 1
+    return start + 2
+
+def handled_generator_throw() -> int:
+    try:
+        yield 1
+    except as error:
+        yield 2
+    return 3
+
+def await_then_yield(gate: any) -> int:
+    yield await gate
+    return 4
+
+def captured_generator(start: int) -> any:
+    var value: int = start
+    def produce() -> int:
+        yield value
+        return value + 1
+    value = value + 5
+    return produce()
+
+def delegated_child(start: int) -> int:
+    yield start
+    return start + 1
+
+def delegated_await_child(gate: any) -> int:
+    yield await gate
+    return 6
+
+def delegated_await_parent(gate: any) -> int:
+    yield from delegated_await_child(gate)
+    return 9
+
+def delegated_parent(start: int) -> int:
+    yield from delegated_child(start)
+    return 99
+
+def delegated_pair(start: int) -> int:
+    yield from delegated_child(start)
+    yield from delegated_child(start + 10)
+    return 199
+
+def delegated_with_plain_for(start: int) -> int:
+    yield from delegated_child(start)
+    for value in [30, 31]:
+        yield value
+    return 200
+
+def delegated_dynamic_parent(source: any) -> int:
+    yield from source
+    return 88
+
+def recursive_delegated(depth: int) -> int:
+    if depth <= 0:
+        yield 1
+        return 1
+    yield from recursive_delegated(depth - 1)
+    return depth
+
+def delegated_import_parent(start: int) -> int:
+    yield from math_dep.delegated_import_child(start)
+    return 99
+
+def delegated_collection_child() -> any:
+    return [4, 7]
+
+def delegated_collection_parent() -> int:
+    try:
+        yield from delegated_collection_child()
+    except as error:
+        return 8
+    return 9

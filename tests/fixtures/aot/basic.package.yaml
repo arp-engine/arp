@@ -1,0 +1,34 @@
+type: arp.script.aot-package/v1
+package: basic
+version: 1
+platforms: [windows, web-wasm]
+budget:
+  instructions: 100000
+  recursion: 8
+  frame-values: 1024
+  container-values: 4096
+  call-arguments: 128
+  continuation-frames: 128
+  memory-bytes: 1048576
+contracts:
+  dependency-graph-hash: sha256:69fa47dc4ed6c0c7b80be1b8ae3c77aaf62249716be17232f4dae2ed77182f93
+  reflection-registry-hash: sha256:e8311d81e258683387449bd3cf45858aea0eeb58718770913ae46a145e713a28
+  host-contract-hash: sha256:1d0b72fb08c477507cc7701b4c8e0cfdff7a99ae54cc6f652ab0468e2b1580d1
+  callables:
+    - binding: arp-reflection:host/Box/get/v1
+      target: host.Box.get
+      signature-hash: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      kind: reflection
+      arity: 1
+      lifetime-version: 1
+modules:
+  - id: basic
+    version: 1
+    source: basic.arp
+    entries: [add, add_then_increment, sum_loop, append_then_length, multiply_from_dependency, dependency_constant, reflected_get, yielded_reflected, closure_accumulate, handled_raise, handled_child_raise, handled_divide_by_zero, count_two, handled_generator_throw, await_then_yield, captured_generator, delegated_child, delegated_await_child, delegated_await_parent, delegated_parent, delegated_dynamic_parent, recursive_delegated, delegated_collection_child, delegated_collection_parent, delegated_import_parent]
+    dependencies: [math_dep]
+  - id: math_dep
+    version: 1
+    source: math_dep.arp
+    entries: [multiply]
+    dependencies: []

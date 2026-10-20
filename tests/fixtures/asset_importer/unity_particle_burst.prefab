@@ -1,0 +1,21 @@
+---
+ParticleSystem:
+  m_Name: ScheduledBurst
+  m_MaxParticles: 64
+  randomSeed: 19
+  useAutoRandomSeed: 0
+  EmissionModule:
+    enabled: 1
+    rateOverTime: 0
+    rateOverDistance: 0
+    bursts:
+      - time: 0.25
+        minCount: 2
+        maxCount: 4
+        cycleCount: 2
+        repeatInterval: 0.5
+        probability: 1
+---
+ParticleSystemRenderer:
+  m_Material:
+    guid: 0123456789abcdef0123456789abcdef

@@ -1,0 +1,25 @@
+import yaml
+
+def main(input: string, projectRoot: string) -> int:
+    var parsed: yaml.YamlParseResult = yaml.parse("value: 1.5\n")
+    var amount: float = yaml.document_at(parsed, 0).get("value").float_value()
+    var value: yaml.YamlDocument = yaml.number_float(amount)
+    if yaml.kind(value) != "FLOAT":
+        raise "yaml.float did not create a float node"
+    var mapping: yaml.YamlDocument = yaml.mapping()
+    mapping.set("value", value)
+    var serialized: yaml.YamlTextResult = yaml.stringify(mapping)
+    if not serialized.success:
+        raise serialized.diagnostics
+    if not serialized.text.contains("value"):
+        raise "yaml.float node was not serialized: " + serialized.text
+    var entry: yaml.YamlDocument = yaml.mapping()
+    entry.set("time", yaml.number_float(amount))
+    var entries: yaml.YamlDocument = yaml.sequence()
+    entries.append(entry)
+    var nested: yaml.YamlDocument = yaml.mapping()
+    nested.set("entries", entries)
+    var nestedText: yaml.YamlTextResult = yaml.stringify(nested)
+    if not nestedText.success or not nestedText.text.contains("time"):
+        raise "nested float node was not serialized: " + nestedText.text
+    return 0

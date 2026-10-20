@@ -1,0 +1,23 @@
+type: arp.tile-set
+contractVersion: 1
+resourceId: 00000000-0000-4000-8000-000000000020
+tileWorldSize: 1.0
+tiles:
+  - id: 1
+    visualId: 00000000-0000-4000-8000-000000000003
+    animated: false
+    solid: true
+    collision:
+      shape: box
+      halfWidth: 0.5
+      halfHeight: 0.5
+      centerX: 0.0
+      centerY: 0.0
+      friction: 0.8
+      restitution: 0.1
+      category: 2
+      mask: 65535
+  - id: 2
+    visualId: 00000000-0000-4000-8000-000000000010
+    animated: true
+    solid: false

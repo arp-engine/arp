@@ -1,0 +1,26 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: CompletedGraphicsRoot
+set: 1
+pipelineInterfaceContractVersion: 1
+maxBindings: 9
+maxSwitchCases: 16
+snapshotBytes: 65536
+snapshotMetadataBinding: 4
+faultLatchBinding: 5
+tables:
+  - name: Images
+    tableId: 1
+    kind: SampledTexture
+    capacity: 2
+    binding: 0
+    stages: [fragment]
+    operations: [load, query, sampleLevel, sampleGrad]
+    sampler: Filters
+  - name: Filters
+    tableId: 2
+    kind: Sampler
+    capacity: 2
+    binding: 2
+    stages: [fragment]
+    operations: []

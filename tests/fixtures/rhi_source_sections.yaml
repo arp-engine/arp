@@ -1,0 +1,149 @@
+type: RhiSourceContractSections
+contractVersion: 1
+sections:
+  backends_metal_metal_buffer_binding_facts_h: Metal buffer binding facts
+  backends_metal_metal_texture_binding_facts_h: Metal texture binding facts
+  backends_metal_metal_vertex_input_facts_h: Metal vertex input facts
+  backends_metal_metal_prepared_binding_validation_h: Metal prepared binding validation
+  backends_metal_metal_prepared_compute_validation_h: Metal prepared compute validation
+  backends_metal_metal_prepared_graphics_validation_h: Metal prepared graphics validation
+  backends_metal_metal_ordinary_graphics_provider_h: Metal ordinary graphics provider
+  backends_metal_metal_ordinary_graphics_binding_h: Metal ordinary graphics binding
+  backends_metal_metal_ordinary_graphics_vertex_h: Metal ordinary graphics vertex
+  backends_metal_metal_ordinary_graphics_push_h: Metal ordinary graphics push
+  backends_metal_metal_ordinary_graphics_pass_h: Metal ordinary graphics pass
+  backends_metal_metal_ordinary_graphics_index_h: Metal ordinary graphics index
+  backends_metal_metal_ordinary_graphics_indirect_h: Metal ordinary graphics indirect
+  backends_metal_metal_indirect_producer_pipeline_h: Metal indirect producer pipeline
+  backends_metal_metal_canonical_producer_recording_preparation_h: Metal canonical
+    producer recording preparation
+  backends_metal_metal_indirect_output_preparation_h: Metal indirect output preparation
+  backends_metal_metal_closed_consumer_recording_inputs_h: Metal closed consumer recording
+    inputs
+  backends_metal_metal_indirect_output_recording_lease_h: Metal indirect output recording
+    lease
+  backends_metal_metal_closed_consumer_recording_preparation_h: Metal closed consumer
+    recording preparation
+  backends_metal_metal_indirect_execution_preparation_h: Metal indirect execution
+    preparation
+  backends_metal_metal_closed_consumer_recording_reservation_h: Metal closed consumer
+    recording reservation
+  backends_null_null_command_validation_cpp: Null command validation
+  backends_null_null_commands_cpp: Null commands
+  backends_vulkan_vulkan_runtime_h: Vulkan runtime
+  backends_vulkan_vulkan_handle_utils_h: Vulkan handle utils
+  backends_vulkan_vulkan_wait_policy_h: Vulkan wait policy
+  backends_webgpu_webgpu_generic_command_projection_h: Webgpu generic command projection
+  backends_webgpu_webgpu_generic_command_usage_h: Webgpu generic command usage
+  backends_webgpu_webgpu_frozen_command_scalars_h: Webgpu frozen command scalars
+  backends_webgpu_webgpu_frozen_render_pass_binding_h: Webgpu frozen render pass binding
+  backends_webgpu_webgpu_frozen_transfer_arguments_h: Webgpu frozen transfer arguments
+  backends_webgpu_webgpu_artifact_creation_native_methods_h: Webgpu artifact creation
+    native methods
+  backends_webgpu_webgpu_original_depth_table_expansion_pipeline_preflight_h: Webgpu
+    original depth table expansion pipeline preflight
+  backends_webgpu_webgpu_artifact_creation_scope_support_h: Webgpu artifact creation
+    scope support
+  backends_webgpu_webgpu_original_artifact_creation_source_h: Webgpu original artifact
+    creation source
+  backends_webgpu_webgpu_original_artifact_compute_factory_h: Webgpu original artifact
+    compute factory
+  backends_webgpu_webgpu_original_artifact_graphics_factory_h: Webgpu original artifact
+    graphics factory
+  backends_webgpu_webgpu_accepted_original_compute_pipeline_factory_h: Webgpu accepted
+    original compute pipeline factory
+  backends_webgpu_webgpu_accepted_original_graphics_pipeline_factory_h: Webgpu accepted
+    original graphics pipeline factory
+  backends_webgpu_webgpu_accepted_original_pipeline_validation_h: Webgpu accepted
+    original pipeline validation
+  backends_webgpu_webgpu_original_depth_table_expansion_creation_validation_h: Webgpu
+    original depth table expansion creation validation
+  backends_webgpu_webgpu_original_artifact_compute_creation_h: Webgpu original artifact
+    compute creation
+  backends_webgpu_webgpu_original_artifact_graphics_creation_h: Webgpu original artifact
+    graphics creation
+  backends_webgpu_webgpu_original_texture_readback_source_h: Webgpu original texture
+    readback source
+  backends_webgpu_webgpu_original_texture_readback_device_staging_budget_h: Webgpu
+    original texture readback device staging budget
+  backends_webgpu_webgpu_original_texture_readback_destination_h: Webgpu original
+    texture readback destination
+  backends_webgpu_webgpu_original_texture_readback_pair_projection_h: Webgpu original
+    texture readback pair projection
+  backends_webgpu_webgpu_original_texture_readback_mapping_h: Webgpu original texture
+    readback mapping
+  backends_webgpu_webgpu_original_texture_readback_statistics_h: Webgpu original texture
+    readback statistics
+  backends_webgpu_webgpu_original_texture_readback_numerical_result_h: Webgpu original
+    texture readback numerical result
+  backends_webgpu_webgpu_owned_texture_readback_snapshot_h: Webgpu owned texture readback
+    snapshot
+  backends_webgpu_webgpu_original_texture_readback_publication_h: Webgpu original
+    texture readback publication
+  backends_webgpu_webgpu_original_buffer_upload_source_h: Webgpu original buffer upload
+    source
+  backends_webgpu_webgpu_original_texture_upload_destination_h: Webgpu original texture
+    upload destination
+  backends_webgpu_webgpu_canonical_buffer_upload_source_h: Webgpu canonical buffer
+    upload source
+  backends_webgpu_webgpu_original_texture_upload_source_h: Webgpu original texture
+    upload source
+  backends_webgpu_webgpu_canonical_texture_upload_source_h: Webgpu canonical texture
+    upload source
+  backends_webgpu_webgpu_canonical_texture_content_upload_source_h: Webgpu canonical
+    texture content upload source
+  frontend_command_scalar_arguments_h: Command scalar arguments
+  frontend_command_resource_dependency_arguments_h: Command resource dependency arguments
+  frontend_command_render_pass_arguments_h: Command render pass arguments
+  frontend_command_variable_arguments_h: Command variable arguments
+  frontend_command_usage_validation_h: Command usage validation
+  frontend_command_input_admission_validation_h: Command input admission validation
+  frontend_command_state_validation_h: Command state validation
+  frontend_command_native_closure_validation_h: Command native closure validation
+  frontend_command_readback_validation_h: Command readback validation
+  frontend_command_native_lifecycle_validation_h: Command native lifecycle validation
+  frontend_command_recording_lifetime_h: Command recording lifetime
+  frontend_command_upload_sources_h: Command upload sources
+  frontend_command_readback_sources_h: Command readback sources
+  frontend_command_pipeline_sources_h: Command pipeline sources
+  frontend_command_descriptor_dependencies_h: Command descriptor dependencies
+  frontend_command_descriptor_sources_h: Command descriptor sources
+  frontend_command_resource_sources_h: Command resource sources
+  frontend_command_resource_states_h: Command resource states
+  frontend_command_state_sequence_h: Command state sequence
+  frontend_command_access_validation_h: Command access validation
+  frontend_command_state_transaction_h: Command state transaction
+  frontend_command_usage_h: Command usage
+  frontend_command_scalars_h: Command scalars
+  frontend_command_input_binding_validation_h: Command input binding validation
+  frontend_command_inputs_h: Command inputs
+  frontend_command_descriptor_consumption_h: Command descriptor consumption
+  frontend_command_typed_usage_projection_h: Command typed usage projection
+  frontend_command_typed_dependency_projection_h: Command typed dependency projection
+  frontend_pipeline_artifact_creation_budget_validation_h: Pipeline artifact creation
+    budget validation
+  frontend_pipeline_creation_validation_h: Pipeline creation validation
+  frontend_pipeline_depth_table_creation_validation_h: Pipeline depth table creation
+    validation
+  frontend_resource_buffer_resource_layout_h: Resource buffer resource layout
+  frontend_resource_texture_view_resource_layout_h: Resource texture view resource
+    layout
+  frontend_resource_native_loss_observation_h: Resource native loss observation
+  frontend_resource_native_loss_join_validation_h: Resource native loss join validation
+  frontend_transfer_copy_arguments_h: Transfer copy arguments
+  frontend_transfer_copy_mip_layout_arguments_h: Transfer copy mip layout arguments
+  frontend_transfer_copy_input_snapshot_h: Transfer copy input snapshot
+  frontend_transfer_copy_projection_h: Transfer copy projection
+  frontend_transfer_readback_layout_h: Transfer readback layout
+  frontend_transfer_readback_request_declaration_h: Transfer readback request declaration
+  frontend_transfer_readback_statistics_plan_h: Transfer readback statistics plan
+  frontend_transfer_readback_source_lease_h: Transfer readback source lease
+  frontend_transfer_buffer_upload_arguments_h: Transfer buffer upload arguments
+  frontend_transfer_upload_arguments_h: Transfer upload arguments
+  semantics_command_input_binding_lowering_h: Command input binding lowering
+  semantics_command_native_closure_lowering_h: Command native closure lowering
+  semantics_command_source_lowering_h: Command source lowering
+  semantics_command_native_lifecycle_lowering_h: Command native lifecycle lowering
+  semantics_command_readback_lowering_h: Command readback lowering
+  semantics_command_shader_lowering_h: Command shader lowering
+  semantics_command_transfer_lowering_h: Command transfer lowering

@@ -1,0 +1,86 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: TerrainMaterialRecord
+vectorRecordContractVersion: 1
+textureShapeContractVersion: 1
+set: 1
+# Complete 27-texture numerical workload. Not a production device budget.
+maxBindings: 34
+maxSwitchCases: 33
+snapshotBytes: 272
+snapshotMetadataBinding: 32
+faultLatchBinding: 33
+tables:
+  - name: TerrainImages
+    tableId: 1
+    kind: SampledTexture
+    capacity: 25
+    binding: 0
+    stages: [fragment]
+    operations: [sampleGrad]
+    sampler: TerrainSamplers
+  - name: TerrainArrays
+    tableId: 2
+    kind: SampledTexture
+    dimension: Texture2DArray
+    capacity: 2
+    binding: 25
+    stages: [fragment]
+    operations: [sampleGrad]
+    sampler: TerrainSamplers
+  - name: TerrainSamplers
+    tableId: 3
+    kind: Sampler
+    capacity: 1
+    binding: 27
+    stages: [fragment]
+    operations: []
+  - name: TerrainRecords
+    tableId: 4
+    kind: ReadOnlyStorageBuffer
+    capacity: 1
+    binding: 28
+    stages: [fragment]
+    operations: [load]
+    record:
+      fields:
+        - {name: layer0, type: uint4}
+        - {name: layer1, type: uint4}
+        - {name: layer2, type: uint4}
+        - {name: layer3, type: uint4}
+        - {name: layer4, type: uint4}
+        - {name: layer5, type: uint4}
+        - {name: routing, type: uint4}
+        - {name: domains, type: uint4}
+        - {name: generation, type: uint4}
+        - {name: texParams, type: float4}
+        - {name: weightParams, type: float4}
+        - {name: layerRough012, type: float4}
+        - {name: layerRough345, type: float4}
+        - {name: brushParams, type: float4}
+        - {name: brushColor, type: float4}
+  - name: TerrainPages
+    tableId: 5
+    kind: ReadOnlyStorageBuffer
+    capacity: 1
+    binding: 29
+    stages: [fragment]
+    operations: [load, query]
+    record:
+      fields:
+        - {name: worldBounds, type: float4}
+        - {name: routing, type: uint4}
+  - name: TerrainFoam
+    tableId: 6
+    kind: ReadOnlyStorageBuffer
+    capacity: 1
+    binding: 30
+    stages: [fragment]
+    operations: [load, query]
+  - name: TerrainResults
+    tableId: 7
+    kind: StorageBuffer
+    capacity: 1
+    binding: 31
+    stages: [fragment]
+    operations: [store]

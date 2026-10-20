@@ -1,0 +1,26 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: PipelineImages
+set: 1
+pipelineInterfaceContractVersion: 1
+maxSwitchCases: 4
+maxBindings: 16
+snapshotBytes: 256
+snapshotMetadataBinding: 0
+faultLatchBinding: 1
+tables:
+  - name: IndexedValues
+    tableId: 1
+    kind: StorageBuffer
+    capacity: 2
+    binding: 3
+    stages: [compute, fragment]
+    operations: [load, store]
+ordinaryOpaqueBindings:
+  - {name: Environment, set: 2, binding: 0, type: SampledTexture, stages: [compute, fragment], textureViewDimension: TextureCube, depthTexture: false, sampledTextureFilterable: true}
+  - {name: BrdfLut, set: 2, binding: 1, type: SampledTexture, stages: [compute, fragment], textureViewDimension: Texture2D, depthTexture: false, sampledTextureFilterable: true}
+  - {name: LinearSampler, set: 2, binding: 2, type: Sampler, stages: [compute, fragment], samplerFiltering: Filtering}
+  - {name: ShadowMap, set: 2, binding: 3, type: SampledTexture, stages: [compute, fragment], textureViewDimension: Texture2D, depthTexture: true, sampledTextureFilterable: false}
+  - {name: ShadowSampler, set: 2, binding: 4, type: Sampler, stages: [compute, fragment], samplerFiltering: Comparison}
+  - {name: Irradiance, set: 2, binding: 5, type: SampledTexture, stages: [compute, fragment], textureViewDimension: Texture2DArray, depthTexture: false, sampledTextureFilterable: true}
+  - {name: SceneVolume, set: 2, binding: 6, type: SampledTexture, stages: [compute, fragment], textureViewDimension: Texture3D, depthTexture: false, sampledTextureFilterable: true}

@@ -1,0 +1,9 @@
+--- !u!1 &100
+GameObject:
+  m_Name: InvalidComponent
+  m_Component:
+    - component: 42
+--- !u!4 &200
+Transform:
+  m_GameObject:
+    fileID: 100

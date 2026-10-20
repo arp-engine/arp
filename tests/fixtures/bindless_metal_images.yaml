@@ -1,0 +1,40 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: MetalComputeImages
+set: 0
+maxBindings: 10
+maxSwitchCases: 32
+snapshotBytes: 65536
+snapshotMetadataBinding: 8
+faultLatchBinding: 9
+tables:
+  - name: Images
+    tableId: 1
+    kind: SampledTexture
+    capacity: 2
+    binding: 0
+    stages: [compute]
+    operations: [load, query, sampleLevel]
+    sampler: Filters
+  - name: Filters
+    tableId: 2
+    kind: Sampler
+    capacity: 2
+    binding: 2
+    stages: [compute]
+    operations: []
+  - name: Outputs
+    tableId: 3
+    kind: StorageTexture
+    format: r32float
+    capacity: 2
+    binding: 4
+    stages: [compute]
+    operations: [load, query, store]
+  - name: Results
+    tableId: 4
+    kind: StorageBuffer
+    capacity: 2
+    binding: 6
+    stages: [compute]
+    operations: [store]

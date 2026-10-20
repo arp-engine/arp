@@ -1,0 +1,24 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: GraphicsMatrixPush
+set: 1
+pipelineInterfaceContractVersion: 1
+maxSwitchCases: 1
+maxBindings: 5
+snapshotBytes: 80
+snapshotMetadataBinding: 0
+faultLatchBinding: 1
+pushConstants:
+  contractVersion: 1
+  sizeBytes: 224
+  stages: [vertex, fragment]
+  webGpuGroup: 3
+  webGpuBinding: 0
+tables:
+  - name: Results
+    tableId: 1
+    kind: StorageBuffer
+    capacity: 1
+    binding: 2
+    stages: [fragment]
+    operations: [store]

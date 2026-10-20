@@ -1,0 +1,10 @@
+type: ConformanceClearWorkload
+contractVersion: 1
+id: clear-resize-linear-unorm8-v1
+frames:
+  - extent: {width: 64, height: 64}
+    rgba8: [32, 128, 191, 255]
+  - extent: {width: 48, height: 32}
+    rgba8: [191, 32, 128, 255]
+  - extent: {width: 64, height: 64}
+    rgba8: [128, 191, 32, 255]

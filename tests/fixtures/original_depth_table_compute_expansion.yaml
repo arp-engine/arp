@@ -1,0 +1,8 @@
+type: OriginalDepthTableScalarExpansion
+contractVersion: 1
+profile: Compute
+sourceSha256: a5c13f383abb647fc2b64202a7f9ad96a0beed5961089a5445fc97d6495ceacd
+capacity: 3
+maxPhysicalBindings: 4
+maxSwitchCases: 3
+maxArtifactBytes: 1048576

@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ARP WebGPU RHI device contract</title>
+<canvas id="WebGpuCanvasInvalidResizeContract" width="640" height="360"></canvas>
+<script>
+  var Module = {
+    noInitialRun: false,
+    locateFile: function (path) {
+      return "/build/web-webgpu-emscripten-contract-v2/" + path;
+    },
+    print: function (text) { console.log("[arp-rhi-contract] " + text); },
+    printErr: function (text) { console.error("[arp-rhi-contract] " + text); },
+    onRuntimeInitialized: function () {
+      console.log("[arp-rhi-contract] runtime-initialized");
+    },
+    onExit: function (status) {
+      console.log("[arp-rhi-contract] exit=" + status);
+    }
+  };
+</script>
+<script src="/build/web-webgpu-emscripten-contract-v2/arp_rhi_webgpu_device_contract_tests.js"></script>

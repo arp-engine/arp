@@ -1,0 +1,56 @@
+type: BindlessWoccIblInputs
+contractVersion: 1
+encoding: Rgba16FloatLittleEndian
+cubeFaceOrder: '+X,-X,+Y,-Y,+Z,-Z'
+payloadBytes: 655328
+baker: core/ibl_bake.h
+provenance: bindless-wocc-ibl-shared-metal1-vulkan1
+resources:
+  - role: horizon
+    binding: 0
+    dimension: TextureCube
+    width: 64
+    height: 64
+    layers: 6
+    mipLevels: 7
+    file: horizon.rgba16f
+    byteCount: 262128
+    sha256: 2e52d0bfb5d76c3781117cc314ee4cb2515a7892c9030cb62c5e97b86edd79f2
+    mipLayouts:
+      - {level: 0, offsetBytes: 0, texelCount: 98304}
+      - {level: 1, offsetBytes: 196608, texelCount: 24576}
+      - {level: 2, offsetBytes: 245760, texelCount: 6144}
+      - {level: 3, offsetBytes: 258048, texelCount: 1536}
+      - {level: 4, offsetBytes: 261120, texelCount: 384}
+      - {level: 5, offsetBytes: 261888, texelCount: 96}
+      - {level: 6, offsetBytes: 262080, texelCount: 24}
+  - role: zenith
+    binding: 3
+    dimension: TextureCube
+    width: 64
+    height: 64
+    layers: 6
+    mipLevels: 7
+    file: zenith.rgba16f
+    byteCount: 262128
+    sha256: 96786160afcac54e419cd752d659f63220fb95510ec587bb12e65f36ea9d2720
+    mipLayouts:
+      - {level: 0, offsetBytes: 0, texelCount: 98304}
+      - {level: 1, offsetBytes: 196608, texelCount: 24576}
+      - {level: 2, offsetBytes: 245760, texelCount: 6144}
+      - {level: 3, offsetBytes: 258048, texelCount: 1536}
+      - {level: 4, offsetBytes: 261120, texelCount: 384}
+      - {level: 5, offsetBytes: 261888, texelCount: 96}
+      - {level: 6, offsetBytes: 262080, texelCount: 24}
+  - role: brdf
+    binding: 1
+    dimension: Texture2D
+    width: 128
+    height: 128
+    layers: 1
+    mipLevels: 1
+    file: brdf.rgba16f
+    byteCount: 131072
+    sha256: 57ce7756b1aa8cb66700c347ec492db9fb0b73f9b3ce34f22d5f4ef28de65391
+    mipLayouts:
+      - {level: 0, offsetBytes: 0, texelCount: 65536}

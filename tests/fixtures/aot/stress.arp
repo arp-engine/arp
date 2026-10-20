@@ -1,0 +1,248 @@
+def inc(value: int) -> int:
+    return value + 1
+
+def fib(value: int) -> int:
+    if value < 2:
+        return value
+    return fib(value - 1) + fib(value - 2)
+
+def int_loop(n: int) -> int:
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        total = (total + i) % 1000000007
+        i = i + 1
+    return total
+
+def function_calls(n: int) -> int:
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        total = (total + inc(i)) % 1000000007
+        i = i + 1
+    return total
+
+def recursive_fib(n: int) -> int:
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        total = (total + fib(25)) % 1000000007
+        i = i + 1
+    return total
+
+def list_index(n: int) -> int:
+    var values: [int] = [1, 2, 3, 4, 5, 6, 7, 8]
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        total = (total + values[i % 8]) % 1000000007
+        i = i + 1
+    return total
+
+def list_build(n: int) -> int:
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        var values: [int] = [i, i + 1, i + 2, i + 3]
+        total = (total + values[0] + values[3]) % 1000000007
+        i = i + 1
+    return total
+
+def dict_index(n: int) -> int:
+    var values: {int: int} = {0: 3, 1: 5, 2: 7, 3: 11}
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        total = (total + values[i % 4]) % 1000000007
+        i = i + 1
+    return total
+
+def string_concat(n: int) -> int:
+    var i: int = 0
+    var text: string = ""
+    while i < n:
+        text = text + "x"
+        i = i + 1
+    return len(text)
+
+def range_sum(n: int) -> int:
+    var total: int = 0
+    for i in range(n):
+        total = (total + i * 3 + 1) % 1000000007
+    return total
+
+def branch_mix(n: int) -> int:
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        if i % 3 == 0:
+            total = total + i
+        elif i % 3 == 1:
+            total = total + i * 2
+        else:
+            total = total + i * 3
+        total = total % 1000000007
+        i = i + 1
+    return total
+
+def power_floor(n: int) -> int:
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        var value: int = i % 5
+        total = (total + (value ** 2) // 2) % 1000000007
+        i = i + 1
+    return total
+
+def list_mutate(n: int) -> int:
+    var values: [int] = [0, 0, 0, 0]
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        var index: int = i % 4
+        values[index] = values[index] + 1
+        total = (total + values[index]) % 1000000007
+        i = i + 1
+    return total
+
+def exception_loop(n: int) -> int:
+    var i: int = 0
+    var caught: int = 0
+    while i < n:
+        try:
+            if i % 7 == 0:
+                raise "periodic"
+        except as error:
+            caught = caught + 1
+        i = i + 1
+    return caught
+
+def float_math(n: int) -> int:
+    var x: float = 1.0
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        x = x * 0.5 + 1.0
+        if x > 1.5:
+            total = total + 1
+        i = i + 1
+    return total
+
+def bitwise(n: int) -> int:
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        total = (total + ((i & 255) ^ 85)) % 1000000007
+        i = i + 1
+    return total
+
+def nested_loop(n: int) -> int:
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        var j: int = 0
+        while j < 16:
+            total = (total + (i % 32) * j) % 1000000007
+            j = j + 1
+        i = i + 1
+    return total
+
+def dict_build(n: int) -> int:
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        var values: {int: int} = {0: i, 1: i + 1, 2: i + 2, 3: i + 3}
+        total = (total + values[0] + values[3]) % 1000000007
+        i = i + 1
+    return total
+
+def dict_mutate(n: int) -> int:
+    var values: {int: int} = {0: 0, 1: 0, 2: 0, 3: 0}
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        var index: int = i % 4
+        values[index] = values[index] + 1
+        total = (total + values[index]) % 1000000007
+        i = i + 1
+    return total
+
+def dict_string(n: int) -> int:
+    var values: {string: int} = {"oak": 3, "pine": 5, "birch": 7, "ash": 11}
+    var keys: [string] = ["oak", "pine", "birch", "ash"]
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        total = (total + values[keys[i % 4]]) % 1000000007
+        i = i + 1
+    return total
+
+def string_compare(n: int) -> int:
+    var values: [string] = ["alpha", "beta", "gamma", "delta"]
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        if values[i % 4] == "gamma":
+            total = total + 1
+        i = i + 1
+    return total
+
+def string_build(n: int) -> int:
+    var text: string = "abcdefghijklmnopqrstuvwxyz"
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        var part: string = text + "xyz"
+        total = (total + len(part)) % 1000000007
+        i = i + 1
+    return total
+
+def list_iterate(n: int) -> int:
+    var values: [int] = [1, 2, 3, 4, 5, 6, 7, 8]
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        for value in values:
+            total = (total + value) % 1000000007
+        i = i + 1
+    return total
+
+class BenchBase:
+    def step(self, value: int) -> int:
+        return value + 1
+
+class BenchDerived(BenchBase):
+    def step(self, value: int) -> int:
+        return value + 2
+
+def object_method(n: int) -> int:
+    var object: BenchBase = BenchDerived()
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        total = (total + object.step(i)) % 1000000007
+        i = i + 1
+    return total
+
+def produce(n: int) -> int:
+    var i: int = 0
+    while i < n:
+        yield i
+        i = i + 1
+
+def generator_sum(n: int) -> int:
+    var total: int = 0
+    for value in produce(n):
+        total = (total + value) % 1000000007
+    return total
+
+def closure_calls(n: int) -> int:
+    var offset: int = 3
+    def step(value: int) -> int:
+        return value + offset
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        total = (total + step(i)) % 1000000007
+        i = i + 1
+    return total

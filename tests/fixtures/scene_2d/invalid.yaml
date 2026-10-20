@@ -1,0 +1,25 @@
+type: arp.sprite-atlas
+contractVersion: 1
+resourceId: 00000000-0000-4000-8000-000000000005
+width: 16
+height: 8
+filter: nearest
+alpha: straight
+srgb: false
+slices:
+  - name: left
+    x: 0
+    y: 0
+    width: 80
+    height: 8
+    pivotX: 0.5
+    pivotY: 0.5
+    pixelsPerUnit: 8
+  - name: right
+    x: 8
+    y: 0
+    width: 8
+    height: 8
+    pivotX: 0.0
+    pivotY: 0.0
+    pixelsPerUnit: 8

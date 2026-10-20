@@ -1,0 +1,11 @@
+import yaml
+import io
+
+def main(input: string, projectRoot: string) -> int:
+    var read: io.IoTextResult = io.read_text(input)
+    if not read.success:
+        raise read.diagnostics
+    var document: yaml.YamlDocument = yaml.first_document(read.text)
+    var material: yaml.YamlDocument = document.get("Material")
+    var keys: list = material.keys()
+    return 0

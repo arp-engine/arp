@@ -1,0 +1,14 @@
+format: ArpEditorProject
+version: 1
+assetPackages: []
+physics2d:
+  gravity: {x: 0, y: -9.8}
+  maxBodies: 32
+  maxColliders: 64
+  maxJoints: 16
+  maxNativeShapes: 128
+  maxEvents: 256
+  maxQueryResults: 128
+  maxChainPoints: 32
+  substeps: 4
+  fixedSeconds: 0.016666667

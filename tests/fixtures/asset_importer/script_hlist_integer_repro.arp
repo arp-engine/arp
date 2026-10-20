@@ -1,0 +1,25 @@
+import io
+import yaml
+
+# Regression: yaml.integer preserves direct and int64 values in a document.
+def main(input: string, output: string) -> int:
+    var parsed: yaml.YamlParseResult = yaml.parse("one: 1\ntwo: 2\n")
+    if not parsed.success:
+        raise parsed.diagnostics
+    var document: yaml.YamlDocument = yaml.document_at(parsed, 0)
+    var keys: list = document.keys()
+    var report: yaml.YamlDocument = yaml.mapping()
+    report.set("direct", yaml.integer(keys.length()))
+    var explicitLength: int64 = keys.length()
+    explicitLength = explicitLength * 1
+    report.set("explicitInt64", yaml.integer(explicitLength))
+    report.set("literalInt64", yaml.integer(2))
+    var explicitInt: int = 2
+    report.set("explicitInt", yaml.int(explicitInt))
+    var serialized: yaml.YamlTextResult = yaml.stringify(report)
+    if not serialized.success:
+        raise serialized.diagnostics
+    var written: io.IoOperationResult = io.write_text(output, serialized.text)
+    if not written.success:
+        raise written.diagnostics
+    return 0

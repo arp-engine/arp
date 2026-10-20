@@ -1,0 +1,22 @@
+type: ConformanceStorageMrtWorkload
+contractVersion: 1
+id: storage-mrt-three-outputs
+shaderSourceSha256: cef4333f059a02bda312293911ce249e6fd83a5871336d9bac5f29c25dd3fb8d
+computeSourceSha256: 834ec14e20967990027c8d79bbf0aa455b21892eba625d3bdb99b1a5f50c09fe
+requireTransientAliasing: false
+frames:
+  - extent: {width: 64, height: 64}
+    values: [0.125, 0.25, 0.375, 1, 0.75, 0.375, 0.25, 1, 0.375, 0.125, 0.625, 1]
+    expectedColor0: [32, 64, 96, 255]
+    expectedColor1: [143, 64, 112, 255]
+    expectedStorage: [0.375, 0.125, 0.625, 1]
+  - extent: {width: 48, height: 32}
+    values: [0.25, 0.75, 0.125, 1, 0.375, 0.125, 0.25, 1, 0.125, 0.375, 0.25, 1]
+    expectedColor0: [64, 191, 32, 255]
+    expectedColor1: [64, 64, 64, 255]
+    expectedStorage: [0.125, 0.375, 0.25, 1]
+  - extent: {width: 64, height: 64}
+    values: [0.375, 0.125, 0.75, 1, 0.125, 0.25, 0.375, 1, 0.75, 0.25, 0.125, 1]
+    expectedColor0: [96, 32, 191, 255]
+    expectedColor1: [112, 64, 64, 255]
+    expectedStorage: [0.75, 0.25, 0.125, 1]

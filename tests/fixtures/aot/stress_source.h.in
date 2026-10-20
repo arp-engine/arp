@@ -1,0 +1,3 @@
+#pragma once
+extern "C" int arp_register_script_aot_package_v5(arp::scriptvm::AotRegistrationHostV5*);
+inline constexpr const char* stressCorpusSource = R"ARP_CORPUS(@ARP_STRESS_CORPUS_SOURCE@)ARP_CORPUS";

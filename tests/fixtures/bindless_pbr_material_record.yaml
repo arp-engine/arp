@@ -1,0 +1,50 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: PbrMaterialRecord
+vectorRecordContractVersion: 1
+set: 1
+# Explicit numerical workload: two five-role materials and two samplers.
+# These fixture capacities are not production device capacities.
+maxBindings: 16
+maxSwitchCases: 22
+snapshotBytes: 160
+snapshotMetadataBinding: 0
+faultLatchBinding: 1
+tables:
+  - name: MaterialImages
+    tableId: 1
+    kind: SampledTexture
+    capacity: 10
+    binding: 2
+    stages: [fragment]
+    operations: [sampleGrad]
+    sampler: MaterialSamplers
+  - name: MaterialSamplers
+    tableId: 2
+    kind: Sampler
+    capacity: 2
+    binding: 12
+    stages: [fragment]
+    operations: []
+  - name: MaterialRecords
+    tableId: 3
+    kind: ReadOnlyStorageBuffer
+    capacity: 1
+    binding: 14
+    stages: [fragment]
+    operations: [load]
+    record:
+      fields:
+        - {name: baseColorAlpha, type: float4}
+        - {name: factors, type: float4}
+        - {name: coverageLeaf, type: float4}
+        - {name: textures, type: uint4}
+        - {name: routing, type: uint4}
+        - {name: generation, type: uint4}
+  - name: MaterialResults
+    tableId: 4
+    kind: StorageBuffer
+    capacity: 1
+    binding: 15
+    stages: [fragment]
+    operations: [store]

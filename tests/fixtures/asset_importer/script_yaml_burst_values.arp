@@ -1,0 +1,18 @@
+import io
+import yaml
+
+def main(input: string, projectRoot: string) -> int:
+    var read: io.IoTextResult = io.read_text(input)
+    if not read.success:
+        raise read.diagnostics
+    var parsed: yaml.YamlParseResult = yaml.parse(read.text)
+    if not parsed.success:
+        raise parsed.diagnostics
+    var document: yaml.YamlDocument = yaml.document_at(parsed, 0)
+    var particle: yaml.YamlDocument = document.get("ParticleSystem")
+    var emission: yaml.YamlDocument = particle.get("EmissionModule")
+    var bursts: yaml.YamlDocument = emission.get("bursts")
+    var burst: yaml.YamlDocument = bursts.at(0)
+    if not burst.get("minCount").is_integer():
+        raise "burst minCount is not an integer"
+    return burst.get("minCount").integer_value()

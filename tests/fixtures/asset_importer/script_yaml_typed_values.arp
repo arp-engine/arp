@@ -1,0 +1,33 @@
+import yaml
+
+def main(input: string, projectRoot: string) -> int:
+    var parsed: yaml.YamlParseResult = yaml.parse(
+        "number: 42\nratio: 1.5\nflag: true\ntext: hello\n")
+    if not parsed.success:
+        return 1
+
+    var document: yaml.YamlDocument = yaml.document_at(parsed, 0)
+    var number: yaml.YamlDocument = document.get("number")
+    if not number.is_integer() or number.integer_value() != 42:
+        return 2
+
+    var ratio: yaml.YamlDocument = document.get("ratio")
+    if not ratio.is_float():
+        return 30
+    var ratioValue: float = ratio.float_value()
+    if ratioValue < 1.49 or ratioValue > 1.51:
+        return 31
+
+    var flag: yaml.YamlDocument = document.get("flag")
+    if not flag.is_boolean() or not flag.boolean_value():
+        return 4
+
+    var text: yaml.YamlDocument = document.get("text")
+    if not text.is_string() or text.string_value() != "hello":
+        return 5
+    return 0
+
+def ratio_value(input: string, projectRoot: string) -> float:
+    var parsed: yaml.YamlParseResult = yaml.parse("ratio: 1.5\n")
+    var document: yaml.YamlDocument = yaml.document_at(parsed, 0)
+    return document.get("ratio").float_value()

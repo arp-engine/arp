@@ -1,0 +1,44 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: GraphicsTerrain27
+set: 1
+pipelineInterfaceContractVersion: 1
+textureShapeContractVersion: 1
+maxBindings: 33
+maxSwitchCases: 28
+snapshotBytes: 240
+snapshotMetadataBinding: 29
+faultLatchBinding: 30
+tables:
+  - name: Surfaces
+    tableId: 1
+    kind: SampledTexture
+    capacity: 25
+    binding: 0
+    dimension: Texture2D
+    stages: [fragment]
+    operations: [sampleGrad]
+    sampler: Filters
+  - name: Weights
+    tableId: 2
+    kind: SampledTexture
+    capacity: 2
+    binding: 25
+    dimension: Texture2DArray
+    stages: [fragment]
+    operations: [sampleGrad]
+    sampler: Filters
+  - name: Filters
+    tableId: 3
+    kind: Sampler
+    capacity: 1
+    binding: 27
+    stages: [fragment]
+    operations: []
+  - name: Results
+    tableId: 4
+    kind: StorageBuffer
+    capacity: 1
+    binding: 28
+    stages: [fragment]
+    operations: [store]

@@ -1,0 +1,5 @@
+def on_update(context: any) -> bool:
+    return true
+
+def on_late_update(context: any) -> bool:
+    return false

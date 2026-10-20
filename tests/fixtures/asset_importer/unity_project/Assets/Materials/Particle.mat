@@ -1,0 +1,30 @@
+Material:
+  serializedVersion: 8
+  m_Name: ParticleMaterial
+  m_Shader:
+    fileID: 4800000
+    guid: b60b8b6c1d8d4e8b8c9d9f1c2d3e4f5a
+    type: 3
+  m_ShaderKeywords: 
+  m_LightmapFlags: 0
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+      - _MainTex:
+          m_Texture:
+            fileID: 2800000
+            guid: abcdefabcdefabcdefabcdefabcdefab
+            type: 3
+          m_Scale:
+            x: 1
+            y: 1
+          m_Offset:
+            x: 0
+            y: 0
+    m_Floats: []
+    m_Colors: []

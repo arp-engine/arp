@@ -1,0 +1,110 @@
+type: arp.tile-map
+contractVersion: 1
+resourceId: 00000000-0000-4000-8000-000000000021
+tileSetId: 00000000-0000-4000-8000-000000000020
+originX: -2.0
+originY: -1.0
+chunkTiles: 2
+chunks:
+  - x: 0
+    y: 0
+    layers:
+      - name: layer0
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: true
+            flipY: false
+      - name: layer1
+        sortingLayer: 1
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 1
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 1
+            flipX: true
+            flipY: false
+      - name: layer2
+        sortingLayer: 2
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 2
+            quarterTurns: 2
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 2
+            quarterTurns: 2
+            flipX: true
+            flipY: false
+  - x: 1
+    y: 0
+    layers:
+      - name: layer0
+        sortingLayer: 0
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 2
+            quarterTurns: 0
+            flipX: true
+            flipY: false
+      - name: layer1
+        sortingLayer: 1
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 1
+            quarterTurns: 1
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 1
+            quarterTurns: 1
+            flipX: true
+            flipY: false
+      - name: layer2
+        sortingLayer: 2
+        sortingOrder: 0
+        cells:
+          - x: 0
+            y: 0
+            tileId: 2
+            quarterTurns: 2
+            flipX: false
+            flipY: false
+          - x: 1
+            y: 0
+            tileId: 2
+            quarterTurns: 2
+            flipX: true
+            flipY: false

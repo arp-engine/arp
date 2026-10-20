@@ -1,0 +1,8 @@
+const SCALE: int = 3
+
+def multiply(a: int, b: int) -> int:
+    return a * b
+
+def delegated_import_child(start: int) -> int:
+    yield start
+    return start + 1

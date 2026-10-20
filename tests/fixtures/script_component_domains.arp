@@ -1,0 +1,52 @@
+from arp_scene import GameObject, Component, Transform, main_scene
+from arp_scene2d import BodyDesc, BodyType, BodyState, ShapeDesc, ShapeType, Vec2, Vec4, CollisionFilter, PhysicsWorld2D, physics_world, RigidBody2DComponent, TimerComponent, TweenComponent
+
+def require(ok: bool):
+    if not ok:
+        raise "domain component contract failed"
+
+class Mover(ScriptComponent):
+    body: RigidBody2DComponent
+    timer: TimerComponent
+    tween: TweenComponent
+    events: int
+    hits: int
+    def __init__(self):
+        self.events = 0
+        self.hits = 0
+        var transform: Transform = self.game_object.local_transform()
+        transform.set_translation(1.0, 1.0, 0.0)
+        self.game_object.set_local_transform(transform)
+        self.body = self.game_object.add_component("RigidBody2DComponent")
+        var desc: BodyDesc = BodyDesc()
+        desc.type = BodyType.Dynamic
+        desc.fixedRotation = true
+        require(self.body.initialize_body(desc))
+        var shape: ShapeDesc = ShapeDesc()
+        shape.type = ShapeType.Circle
+        shape.radius = 0.25
+        var filter: CollisionFilter = CollisionFilter()
+        filter.category = 4
+        filter.mask = 16
+        shape.filter = filter
+        require(self.body.add_collider(shape) != nil)
+        var velocity: Vec2 = Vec2()
+        velocity.x = 1.0
+        require(self.body.set_velocity(velocity, 0.0))
+        self.timer = self.game_object.add_component("TimerComponent")
+        require(self.timer.start_timer(0.05, true, "fire"))
+        self.tween = self.game_object.add_component("TweenComponent")
+        require(self.tween.start_tween(0.1, 2.0, 4.0, false))
+    def on_fixed_update(self, dt: float):
+        var shape: ShapeDesc = ShapeDesc()
+        shape.radius = 1.0
+        var filter: CollisionFilter = CollisionFilter()
+        filter.category = 16
+        filter.mask = 4
+        var world: PhysicsWorld2D = physics_world
+        var state: BodyState = self.body.body_state()
+        var hits: [any] = world.overlap_hits(shape, state.position, 0.0, filter)
+        self.hits = len(hits)
+    def on_event(self, name: string, payload: any):
+        if name == "fire":
+            self.events += 1

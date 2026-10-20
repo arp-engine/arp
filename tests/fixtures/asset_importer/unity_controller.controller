@@ -1,0 +1,24 @@
+AnimatorController:
+  m_Name: PlayerController
+  m_AnimatorParameters:
+    - m_Name: Speed
+      m_Type: 1
+      m_DefaultFloat: 0.5
+---
+AnimatorState:
+  m_Name: Idle
+  m_Speed: 1
+  m_Motion:
+    fileID: 7400000
+    guid: player_clip_guid
+  m_Transitions:
+    - fileID: 11020000
+---
+AnimatorTransition:
+  m_TransitionDuration: 0.1
+  m_ExitTime: 0.75
+  m_HasExitTime: 1
+  m_Conditions:
+    - m_ConditionMode: 1
+      m_ConditionEvent: Speed
+      m_EventTreshold: 0.25

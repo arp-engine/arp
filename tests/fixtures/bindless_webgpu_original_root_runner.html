@@ -1,0 +1,294 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ARP original WebGPU BindlessRoot preparation</title>
+<pre id="status">Running</pre>
+<canvas id="canvas" width="2" height="2" hidden></canvas>
+<script src="progress-contract.js"></script>
+<script src="browser_progress_transport.js"></script>
+<script src="bindless_implicit_reference.js"></script>
+<script>
+var progress=[], diagnostics=[], reported=false;
+var storageOnly=new URLSearchParams(location.search).has('original-root-storage-execution-only');
+var geometryOnly=new URLSearchParams(location.search).has('original-root-geometry-execution-only');
+var sampledOnly=new URLSearchParams(location.search).has('original-root-sampled-execution-only');
+var arrayOnly=new URLSearchParams(location.search).has('original-root-array-execution-only');
+var composedOnly=new URLSearchParams(location.search).has("original-root-composed-execution-only");
+var pushOnly=new URLSearchParams(location.search).has("original-root-push-execution-only");
+var matrixOnly=new URLSearchParams(location.search).has("original-root-matrix-execution-only");
+var skinning256=new URLSearchParams(location.search).has("original-root-skinning256");
+var instance64=new URLSearchParams(location.search).has("original-root-instance64");
+var pbrMaterial=new URLSearchParams(location.search).has("original-root-pbr-material");
+var terrain27=new URLSearchParams(location.search).has("original-root-terrain27");
+var implicitParity=new URLSearchParams(location.search).has('original-root-implicit-parity');
+var woccIbl=new URLSearchParams(location.search).has('original-root-wocc-ibl');
+var transport=new BrowserProgressTransport(progress,BrowserProgressLimits,
+  batch=>fetch('/progress',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(batch)}),
+  error=>{diagnostics.push(String(error));report(false);});
+async function report(success) {
+  if(reported)return; reported=true;
+  if(geometryOnly) {
+    const executed=['Vertex','Instance'].every(rate=>Array.from({length:11},(_,scenario)=>[0,1].every(fault=>progress.filter(message=>
+      message==='BINDLESS_WEBGPU_INITIALIZED_GEOMETRY_EXECUTION_OK rate'+rate+' scenario'+scenario+' fault'+fault+' Geometry1 Root5 Content9 lifecycle12 same-root-journal budgets-returned').length===1)).every(Boolean));
+    const numeric=['Vertex','Instance'].every(rate=>[0,1].every(fault=>progress.filter(message=>message===
+      'BINDLESS_WEBGPU_INITIALIZED_GEOMETRY_NUMERIC_OK rate'+rate+' fault'+fault+' indexed3 vertexOffset16 indexOffset2 firstInstance1 same-root-journal').length===2));
+    const retired=progress.includes('BINDLESS_WEBGPU_INITIALIZED_GEOMETRY_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed');
+    const output={scenario:'original-bindless-initialized-geometry',geometryExecutionOnly:true,
+      success:!!success&&executed&&numeric&&retired&&diagnostics.length===0&&!(Module.webGpuUncapturedErrors||[]).length,
+      originalGeometryExecutionPassed:executed,originalGeometryNumericPassed:numeric,originalGeometryRetirementPassed:retired,
+      publicBindlessExecutionAvailable:false,productionReady:false,
+      diagnostics,progress:progress.slice(),nativeErrors:Module.webGpuUncapturedErrors||[]};
+    transport.flush().catch(error=>{output.success=false;diagnostics.push(String(error));}).then(()=>
+      fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(output)}));
+    return;
+  }
+  if(woccIbl) {
+    const details=' execution13 Content9 read18 control1 lifecycle12 same-root-journal genuine-draw-queue-map hot0 publication-gated budgets-returned';
+    const executed=Array.from({length:11},(_,scenario)=>[0,1].every(fault=>progress.filter(message=>
+      message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_WOCC_IBL_EXECUTION_OK scenario'+scenario+' fault'+fault+details).length===1)).every(Boolean);
+    const reference=progress.filter(message=>message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_WOCC_IBL_REFERENCE_EXECUTION_OK scenario0 fault0'+details).length===1;
+    const numeric=[0,1].every(fault=>progress.filter(message=>message===
+      'BINDLESS_WEBGPU_WOCC_IBL_NUMERIC_OK fault'+fault+' lanes424 unfiltered80-exact reference-bitwise color2x2').length===2);
+    const reads=Module.woccIblReadbacks||[];
+    const direct=reads.filter(r=>r.reference&&!r.fault);
+    const parity=reads.length===5&&direct.length===1&&direct[0].words.length===424
+      &&reads.every(r=>r.words.length===424&&r.words.every((word,i)=>word===direct[0].words[i]));
+    const retired=progress.includes('BINDLESS_WEBGPU_WOCC_IBL_RETIRE_OK frozen655328 original-owners-expired budgets-zero scopes3-drained');
+    const output={scenario:'original-bindless-wocc-ibl',
+      success:!!success&&executed&&reference&&numeric&&parity&&retired&&diagnostics.length===0&&!(Module.webGpuUncapturedErrors||[]).length,
+      executionPassed:executed,referencePassed:reference,numericPassed:numeric,bitwiseParityPassed:parity,retirementPassed:retired,
+      publicBindlessExecutionAvailable:false,productionReady:false,directTraditionalParity:false,
+      readbacks:reads,diagnostics,progress:progress.slice(),nativeErrors:Module.webGpuUncapturedErrors||[]};
+    transport.flush().catch(error=>{output.success=false;diagnostics.push(String(error));}).then(()=>
+      fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(output)}));
+    return;
+  }
+  if(pushOnly) {
+    const executed=Array.from({length:11},(_,scenario)=>[0,1].every(fault=>progress.filter(message=>
+      message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PUSH_EXECUTION_OK scenario'+scenario+' fault'+fault+' Root2 Content9 lifecycle12 hot0 publication-gated budgets-returned').length===1)).every(Boolean);
+    const numeric=[0,1].every(fault=>progress.filter(message=>message===
+      'BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PUSH_NUMERIC_OK fault'+fault+' lanes4 exact frozen224 vertex-fragment color2x2').length===2);
+    const multiExecuted=Array.from({length:11},(_,scenario)=>[0,1].every(fault=>progress.filter(message=>
+      message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PUSH_MULTI_EXECUTION_OK scenario'+scenario+' fault'+fault+' Root2 Content9 lifecycle12 hot0 publication-gated budgets-returned').length===1)).every(Boolean);
+    const multiNumeric=[0,1].every(fault=>progress.filter(message=>message===
+      'BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PUSH_MULTI_NUMERIC_OK fault'+fault+' lanes4 exact frozen448 updates2 scissor-columns color2x2').length===2);
+    const slices=progress.filter(message=>/^BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PUSH_SLICES_OK updates2 secondOffset[0-9]+ resident[0-9]+ alignment[0-9]+$/.test(message));
+    const aligned=slices.length===22&&slices.every(message=>{
+      const match=message.match(/secondOffset([0-9]+) resident([0-9]+) alignment([0-9]+)$/);
+      const [offset,resident,alignment]=match.slice(1).map(Number);
+      return offset>=224&&alignment>0&&offset%alignment===0&&resident===offset+224;
+    });
+    const retired=progress.includes('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PUSH_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed');
+    const output={scenario:'original-bindless-graphics-push',pushExecutionOnly:true,
+      success:!!success&&executed&&numeric&&multiExecuted&&multiNumeric&&aligned&&retired&&diagnostics.length===0&&!(Module.webGpuUncapturedErrors||[]).length,
+      originalPushExecutionPassed:executed,originalPushNumericPassed:numeric,originalPushRetirementPassed:retired,
+      originalPushMultiExecutionPassed:multiExecuted,originalPushMultiNumericPassed:multiNumeric,originalPushAlignedSlicesPassed:aligned,
+      publicBindlessExecutionAvailable:false,productionReady:false,
+      diagnostics,progress:progress.slice(),nativeErrors:Module.webGpuUncapturedErrors||[]};
+    transport.flush().catch(error=>{output.success=false;diagnostics.push(String(error));}).then(()=>
+      fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(output)}));
+    return;
+  }
+  if(matrixOnly) {
+    const sampledMaterial=pbrMaterial||terrain27;
+    const workload=terrain27?'GraphicsTerrain27':pbrMaterial?'GraphicsPbrMaterial':instance64?'GraphicsInstance64':skinning256?'GraphicsSkinning256':'GraphicsMatrixOrdinary';
+    const numericDescription=terrain27?'25-2D two-array-pages mip1 six-weights snow-wet ordinary96+16':pbrMaterial?'five-role material mip1 discard filters leaf normal ordinary288+16':instance64?
+      'instance64 base1 rotation-normal-tangent metadata-bits wind-current-previous-grass-canopy-rigid ordinary256+224':skinning256?
+      'skinning256 temporal-high-indices previous-count220 normalized quaternion normal-tangent ordinary32864+32':
+      'current-previous-palette projective-w ordinary320+16';
+    const executionPrefix=terrain27?'BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_TERRAIN27_EXECUTION_OK scenario':pbrMaterial?'BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PBR_MATERIAL_EXECUTION_OK scenario':'BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_MATRIX_EXECUTION_OK scenario';
+    const executionDetails=sampledMaterial?' execution'+(terrain27?4:3)+' Content9 read10 control1 lifecycle12 same-root-journal genuine-draw-queue-map hot0 publication-gated budgets-returned':' Root2 Content9 lifecycle12 hot0 publication-gated budgets-returned';
+    const executed=Array.from({length:11},(_,scenario)=>[0,1].every(fault=>progress.filter(message=>
+      message===executionPrefix+scenario+' fault'+fault+executionDetails).length===1)).every(Boolean);
+    const numericPrefix=terrain27?'BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_TERRAIN27_NUMERIC_OK fault':pbrMaterial?'BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PBR_MATERIAL_NUMERIC_OK fault':instance64?'BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_INSTANCE64_NUMERIC_OK fault':'BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_MATRIX_NUMERIC_OK fault';
+    const numericMode=sampledMaterial?' lanes128 tolerance2e-5 ':instance64?' lanes176 tolerance2e-5 metadata-bits ':skinning256?' lanes64 position-exact normal-tangent2e-5 ':' lanes32 exact ';
+    const numeric=[0,1].every(fault=>progress.filter(message=>message===
+      numericPrefix+fault+numericMode+numericDescription+' color2x2').length===2);
+    const retired=progress.includes('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_MATRIX_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed');
+    const plannedDevice=!terrain27||(progress.includes('BINDLESS_TERRAIN27_DEVICE_PLAN_OK sealed-package queried-adapter actual-device before-rhi no-capability-grant')&&Module.arpBindlessDevicePlan?.createdBeforeRhi===true);
+    const output={scenario:'original-bindless-graphics-matrix',matrixExecutionOnly:true,skinning256,instance64,pbrMaterial,terrain27,workload,
+      success:!!success&&executed&&numeric&&retired&&plannedDevice&&diagnostics.length===0&&!(Module.webGpuUncapturedErrors||[]).length,
+      plannedDevice:terrain27?Module.arpBindlessDevicePlan:undefined,
+      originalMatrixExecutionPassed:executed,originalMatrixNumericPassed:numeric,originalMatrixRetirementPassed:retired,
+      publicBindlessExecutionAvailable:false,productionReady:false,
+      diagnostics,progress:progress.slice(),nativeErrors:Module.webGpuUncapturedErrors||[]};
+    if(pbrMaterial && output.success) {
+      try { output.pbrImplicitSamplingReference=await runBindlessImplicitReference(progress,false,true); }
+      catch(error) { output.success=false;diagnostics.push(String(error&&error.stack||error)); }
+    }
+    if(terrain27 && output.success) {
+      try { output.terrain27ImplicitSamplingReference=await runBindlessImplicitReference(progress,false,false,true); }
+      catch(error) { output.success=false;diagnostics.push(String(error&&error.stack||error)); }
+    }
+    transport.flush().catch(error=>{output.success=false;diagnostics.push(String(error));}).then(()=>
+      fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(output)}));
+    return;
+  }
+  const prepared=progress.includes('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PREPARATION_OK genuine-pipeline-group-buffers same-canonical-inventory nonexecuting selection-record-refused');
+  const retired=progress.includes('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PREPARATION_RETIRE_OK original-owners-expired budgets-zero scopes3-drained public-execution-closed');
+  const closure=progress.some(message=>/^BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_CLOSURE_OK entries9 native12 retained\d+ bytes\d+ exact-less-pressure forged-readback-mutated-refused hot0 original-inventory$/.test(message));
+  const entries=['cleanMain','faultMain'].every(entry=>progress.includes('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_ENTRY_OK '+entry));
+  const callbacks=progress.filter(message=>/^BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_CALLBACK_COLD_OK callbacks12 maps1 owners\d+ bytes\d+ same-graph-stream-seal result-original exact-less-quota hot0 no-execution no-publication capacity-returned$/.test(message)).length===2;
+  const bufferStorage=progress.filter(message=>/^BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_BUFFER_STORAGE_OK snapshots1 bytes4 owners\d+ metadata\d+ same-result same-native receipt-prepared exact-less-quota forged-mutated-refused hot0 no-map no-publication$/.test(message)).length===2;
+  const commandShell=progress.filter(message=>/^BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_COMMAND_COLD_OK owners\d+ metadata\d+ original-admission-result native-device-queue exact-less-quota forged-refused hot0 claim-once no-encoder no-execution$/.test(message)).length===2;
+  const nativeProgram=progress.filter(message=>/^BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PROGRAM_COLD_OK commands\d+ visits\d+ dispatch-limit\d+ original-stream frozen-clear-bind-dispatch-copy budget-limit-refused quota-retry hot0 no-encoder no-execution$/.test(message)).length===1;
+  const custody=progress.filter(message=>/^BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_CALLBACK_CUSTODY_OK callbacks12 maps1 owners\d+ submission\d+ callback\d+ canonical-pool original-result native-loss-armed-suppressed quota-retry claim-once forged-refused hot0 no-map no-execution$/.test(message)).length===2;
+  const issuers=progress.filter(message=>/^BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_ISSUERS_COLD_OK owners\d+ recording\d+ submission\d+ original-issuers seven-native-listeners quota-retry claim-once forged-refused hot0 caller-drop-retained ordinary-closed no-execution$/.test(message)).length===2;
+  const executionProfile=progress.filter(message=>message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_EXECUTION_PROFILE_REFUSED_OK independent-intent cap0 required-rejected auto-traditional original-descriptors conflict-refused preparation-unchanged').length===2;
+  const executed=Array.from({length:11},(_,scenario)=>[0,1].every(fault=>progress.some(message=>message.startsWith('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_EXECUTION_OK scenario'+scenario+' fault'+fault+' public-bindless-cross ')))).every(Boolean);
+  const numeric=progress.filter(message=>message.startsWith('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_NUMERIC_OK ')).length===4;
+  const sampledPrepared=progress.filter(message=>/^BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_SAMPLED_PREPARATION_OK profile3 views2 samplers2 bytes\d+ original-parents same-inventory owner-shape-mutated-refused exact-less-quota hot0 no-content no-execution$/.test(message)).length===3;
+  const completedPrepared=progress.filter(message=>/^BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_COMPLETED_PREPARATION_OK profile3 publication2 control1 views2 samplers2 bytes\d+ original-uploads same-inventory authenticated-content-physical-proof sampler-native-loss exact-less-quota hot0 no-state-change no-execution$/.test(message)).length===1;
+  const completedPublished=progress.includes('BINDLESS_RHI_WEBGPU_COMPLETED_TEXTURE_DESCRIPTOR_OK publication2 control1 generation2 pixels20 mips2 same-parent-registry stale-forged-mutated-refused atomic-oom exact-less-quota hot0 ordinary-closed no-sample no-execution')
+    &&progress.includes('BINDLESS_RHI_WEBGPU_COMPLETED_TEXTURE_DESCRIPTOR_RETIRE_OK real-upload-completion original-view-expired all-quotas-zero no-sample no-execution');
+  const canonicalColorPublished=progress.filter(message=>message==='BINDLESS_RHI_WEBGPU_CANONICAL_COLOR_PUBLICATION6_OK control1 version-retained-copy atomic-oom hot0 raw-export-closed no-sample no-execution').length===1;
+  const canonicalColorPlanned=progress.filter(message=>message==='BINDLESS_RHI_WEBGPU_CANONICAL_COLOR_READ18_OK Content9 profile3 controls2 drawReads2 attachment1 same-root-inventory-journal canonical-control1 CopyDst-retained hot0 no-execution').length===1;
+  const ordinaryColorClosed=['RGBA8','RGBA16F'].every(format=>progress.filter(message=>message===
+    'BINDLESS_RHI_WEBGPU_ORDINARY_COLOR_CLOSURE17_OK format'+format+' images3 sampler1 2D-array-Cube original-upload-publication6 Root2 same-inventory exact-less-pressure forged-mutated-refused hot0 no-execution').length===1)
+    &&progress.filter(message=>message==='BINDLESS_RHI_WEBGPU_ORDINARY_COLOR_CLOSURE17_RETIRE_OK original-owners-expired quota0 no-execution').length===2;
+  const ordinaryColorExecuted=['ORDINARY_COLOR','ORDINARY_HDR'].every(kind=>
+    Array.from({length:11},(_,scenario)=>[0,1].every(fault=>progress.filter(message=>message===
+      'BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_'+kind+'_EXECUTION_OK scenario'+scenario+' fault'+fault+' execution13 Content9 read18 control1 lifecycle12 same-root-journal genuine-draw-queue-map hot0 publication-gated budgets-returned').length===1)).every(Boolean));
+  const ordinaryColorNumeric=[['ORDINARY_COLOR',76],['ORDINARY_HDR',112]].every(([kind,lanes])=>
+    [0,1].every(fault=>progress.filter(message=>message===
+      'BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_'+kind+'_NUMERIC_OK fault'+fault+' lanes'+lanes+' original-upload 2D-array-Cube mips2 vertex-fragment independent-sampler color2x2').length===2));
+  const completedContent=progress.filter(message=>message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_COMPLETED_CONTENT_OK Content9 read10 controls2 drawReads2 attachment1 same-root-inventory-journal canonical-control1 CopyDst-retained hot0 no-execution').length===1;
+  const graphicsPrepared=progress.filter(message=>message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_GRAPHICS_PREPARATION_OK profile2 genuine-pipeline-group-buffers same-inventory exact-less-pressure forged-mutated-refused hot0 no-execution').length===4;
+  const graphicsExecuted=[0,1].every(records=>Array.from({length:11},(_,scenario)=>[0,1].every(fault=>
+    progress.some(message=>message.startsWith('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_GRAPHICS_EXECUTION_OK records'+records+' scenario'+scenario+' fault'+fault+' public-bindless-cross ')))).every(Boolean));
+  const graphicsNumeric=progress.filter(message=>message.startsWith('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_GRAPHICS_NUMERIC_OK ')).length===16;
+  const rangesExecuted=[0,1].every(records=>Array.from({length:11},(_,scenario)=>[0,1].every(fault=>
+    progress.some(message=>message.startsWith('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_RANGE_EXECUTION_OK records'+records+' scenario'+scenario+' fault'+fault+' queried-offsets ')))).every(Boolean));
+  const rangesNumeric=progress.filter(message=>message.startsWith('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_RANGE_NUMERIC_OK ')).length===8;
+  const sampledExecuted=Array.from({length:11},(_,scenario)=>[0,1].every(fault=>progress.filter(message=>
+    message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_SAMPLED_EXECUTION_OK scenario'+scenario+' fault'+fault+' execution3 Content9 read10 control1 lifecycle12 same-root-journal genuine-draw-queue-map hot0 publication-gated budgets-returned').length===1)).every(Boolean);
+  const sampledNumeric=progress.filter(message=>message.startsWith('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_SAMPLED_NUMERIC_OK ')).length===4;
+  const sampledRetired=progress.includes('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_SAMPLED_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed');
+  const arrayExecuted=Array.from({length:11},(_,scenario)=>[0,1].every(fault=>progress.filter(message=>
+    message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_ARRAY_EXECUTION_OK scenario'+scenario+' fault'+fault+' execution4 Content9 read10 control1 lifecycle12 same-root-journal genuine-draw-queue-map hot0 publication-gated budgets-returned').length===1)).every(Boolean);
+  const arrayNumeric=progress.filter(message=>message.startsWith('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_ARRAY_NUMERIC_OK ')).length===4;
+  const ordinaryReceipts=(kind,words)=>[0,1].every(fault=>progress.filter(message=>message===
+    'BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_'+kind+'_ORDINARY_WORDS fault'+fault+' words '+words+' Root2 groups3 Vertex-Fragment same-journal').length===2);
+  const sampledOrdinary=ordinaryReceipts('SAMPLED','98 98 98 98');
+  const arrayOrdinary=ordinaryReceipts('ARRAY','98 0 98 98');
+  const arrayRetired=progress.includes('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_ARRAY_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed');
+  const composedExecuted=Array.from({length:11},(_,scenario)=>[0,1].every(fault=>progress.filter(message=>message==="BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_COMPOSED_EXECUTION_OK scenario"+scenario+" fault"+fault+" public-bindless-cross Root2 groups3 lifecycle11 hot0 publication-gated budgets-returned").length===1)).every(Boolean);
+  const composedNumeric=progress.filter(message=>message.startsWith("BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_COMPOSED_NUMERIC_OK ")).length===4;
+  const composedGraphics=Array.from({length:11},(_,scenario)=>[0,1].every(fault=>progress.filter(message=>message==="BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_COMPOSED_GRAPHICS_EXECUTION_OK scenario"+scenario+" fault"+fault+" Root2 groups3 Content9 lifecycle12 hot0 publication-gated budgets-returned").length===1)).every(Boolean);
+  const composedGraphicsNumeric=progress.filter(message=>message.startsWith("BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_COMPOSED_GRAPHICS_NUMERIC_OK ")).length===4;
+  const runtimeMembers=progress.filter(message=>message.startsWith("BINDLESS_GRAPHICS_RUNTIME_MEMBER2_OK "));
+  const runtimeMemberProof=runtimeMembers.length===22&&[0,1].every(fault=>runtimeMembers.filter(message=>
+    message.endsWith(" fault"+fault+" undersized0 elements4 pipeline-capacity0 legacy1-refused owner-refused hot0")).length===11);
+  const composedAlias=progress.filter(message=>message==="BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_COMPOSED_ALIAS_REFUSED_OK before-record no-publication quotas-zero").length===1;
+  const composedRetired=progress.includes("BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_COMPOSED_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed");
+  const storageCreated=progress.filter(message=>message==="BINDLESS_RHI_STORAGE_CREATION67_DEVICE_OK backend=3 logical=168 allocation=168 queried=0 cells3 uninitialized exclusive budget-rollback hot0 shutdown quota0").length===(storageOnly?22:3);
+  const storageExecuted=Array.from({length:storageOnly?11:1},(_,terminal)=>[0,1].every(fault=>progress.filter(message=>message===
+    'BINDLESS_WEBGPU_PUBLIC_STORAGE_EXECUTION10 terminal='+terminal+' fault='+fault+' clear-store2 dispatch2 same-journal Content14 Completion10 hot-submit0 hot-completion0 retirement0').length===1)).every(Boolean);
+  const storageNumeric=(storageOnly?[0,6]:[0]).every(terminal=>[0,1].every(fault=>progress.filter(message=>message===
+    'BINDLESS_WEBGPU_PUBLIC_STORAGE_NUMERIC terminal='+terminal+' fault='+fault+' half 14848 12288 13312 15360 11264 13312 14336 15360 11264 13312 14336 15360 11264 13312 14336 15360 14848 12288 15616 15360').length===1));
+  const storageRetired=storageOnly?progress.includes('BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_STORAGE_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed')
+    :(!sampledOnly&&!arrayOnly&&!composedOnly&&storageExecuted&&retired);
+  const output={scenario:'original-bindless-root-preparation',
+    storageExecutionOnly:storageOnly,originalStorageExecutionPassed:storageExecuted,originalStorageNumericPassed:storageNumeric,originalStorageRetirementPassed:storageRetired,
+    success:!!success&&(storageOnly?(storageExecuted&&storageNumeric&&storageRetired):composedOnly?(composedExecuted&&composedNumeric&&composedGraphics&&composedGraphicsNumeric&&runtimeMemberProof&&composedAlias&&composedRetired):arrayOnly?(arrayExecuted&&arrayNumeric&&arrayOrdinary&&arrayRetired):(sampledExecuted&&sampledNumeric&&sampledOrdinary&&(sampledOnly?sampledRetired:(prepared&&retired&&closure&&entries&&callbacks&&bufferStorage&&commandShell&&nativeProgram&&custody&&issuers&&executionProfile&&executed&&numeric&&sampledPrepared&&completedPrepared&&completedPublished&&completedContent&&graphicsPrepared&&canonicalColorPublished&&canonicalColorPlanned&&ordinaryColorClosed&&ordinaryColorExecuted&&ordinaryColorNumeric&&graphicsExecuted&&graphicsNumeric&&rangesExecuted&&rangesNumeric&&storageExecuted&&storageNumeric&&storageRetired))))&&diagnostics.length===0&&!(Module.webGpuUncapturedErrors||[]).length,
+    originalBindlessRootComposedAliasRefusalPassed:composedAlias,
+    originalBindlessRootComposedGraphicsExecutionPassed:composedGraphics,originalBindlessRootComposedGraphicsNumericPassed:composedGraphicsNumeric,
+    originalBindlessRootRuntimeMember2Passed:runtimeMemberProof,
+    composedExecutionOnly:composedOnly,originalBindlessRootComposedExecutionPassed:composedExecuted,originalBindlessRootComposedNumericPassed:composedNumeric,originalBindlessRootComposedRetirementPassed:composedRetired,
+    originalBindlessRootArrayExecutionPassed:arrayExecuted,originalBindlessRootArrayNumericPassed:arrayNumeric,
+    originalBindlessRootArrayOrdinaryPassed:arrayOrdinary,originalBindlessRootSampledOrdinaryPassed:sampledOrdinary,
+    originalBindlessRootArrayRetirementPassed:arrayRetired,arrayExecutionOnly:arrayOnly,
+    originalBindlessRootSampledExecutionPassed:sampledExecuted,originalBindlessRootSampledNumericPassed:sampledNumeric,
+    originalBindlessRootSampledRetirementPassed:sampledOnly?sampledRetired:retired,
+    sampledExecutionOnly:sampledOnly,
+    originalBindlessRootFiniteRangeExecutionPassed:rangesExecuted,originalBindlessRootFiniteRangeNumericPassed:rangesNumeric,
+    originalBindlessRootGraphicsExecutionPassed:graphicsExecuted,originalBindlessRootGraphicsNumericPassed:graphicsNumeric,
+    originalBindlessRootGraphicsPreparationPassed:graphicsPrepared,
+    originalBindlessRootSampledPreparationPassed:sampledPrepared,
+    originalCompletedTextureDescriptorPublicationPassed:completedPublished,
+    canonicalColorPublication6Passed:canonicalColorPublished,
+    canonicalColorRead18Passed:canonicalColorPlanned,
+    ordinaryColorClosure17Passed:ordinaryColorClosed,
+    ordinaryColorExecution13Passed:ordinaryColorExecuted,
+    ordinaryColorExecution13NumericPassed:ordinaryColorNumeric,
+    originalCompletedTextureRootPreparationPassed:completedPrepared,
+    originalCompletedTextureRootContentPassed:completedContent,
+    originalBindlessRootPreparationPassed:prepared,originalBindlessRootRetirementPassed:retired,
+    originalBindlessRootNativeClosurePassed:closure,originalBindlessRootCleanFaultEntriesPassed:entries,
+    originalBindlessRootCallbackColdAdmissionPassed:callbacks,
+    originalBindlessRootBufferStoragePassed:bufferStorage,
+    originalBindlessRootCommandShellPassed:commandShell,
+    originalBindlessRootNativeProgramPassed:nativeProgram,
+    originalBindlessRootCallbackCustodyPassed:custody,
+    originalBindlessRootIssuersPassed:issuers,
+    originalBindlessRootExecutionProfileRefusalPassed:executionProfile,
+    originalBindlessRootExecutionPassed:executed,originalBindlessRootNumericPassed:numeric,
+    nativeExecutionValidated:storageOnly?storageExecuted&&storageNumeric:composedOnly?composedExecuted&&composedNumeric:arrayOnly?arrayExecuted&&arrayNumeric:sampledOnly?sampledExecuted&&sampledNumeric:executed&&numeric,publicOriginalBindlessRootExecutionAvailable:storageOnly?storageExecuted&&storageNumeric:composedOnly?composedExecuted&&composedNumeric:arrayOnly?arrayExecuted&&arrayNumeric:sampledOnly?sampledExecuted&&sampledNumeric:executed&&numeric,
+    publicBindlessExecutionAvailable:false,
+    originalStorageTextureCreationPassed:storageCreated,
+    originalStoragePhysicalAliasPassed:progress.filter(message=>message==="BINDLESS_RHI_STORAGE_PHYSICAL_ALIAS_DEVICE_OK backend=3 texture-padding buffer-padding rejected-before-native-group pool0 quota0 no-execution").length===(storageOnly?22:3),
+    originalStorageEntryAccessPassed:progress.filter(message=>message==="BINDLESS_RHI_STORAGE_ENTRY_ACCESS1_DEVICE_OK backend=3 authenticated-entry canonical-dispatch retained9 store4 read6 exact-less hot0 quota0 no-execution").length===1,
+    originalStorageNativeClosurePassed:progress.filter(message=>message==="BINDLESS_RHI_STORAGE_CLOSURE10_DEVICE_OK backend=3 store-read same-inventory native-identity exact-less oom quota0 record-refused no-execution").length===1,
+    originalStoragePipelinePreparationPassed:progress.filter(message=>message==="BINDLESS_RHI_STORAGE_PIPELINE8_DEVICE_OK backend=3 authenticated-package store-read-pipelines physical-bindings disjoint-mips independent-results pool-retirement record-refused no-execution").length===(storageOnly?22:3),
+    originalStorageSnapshotPublicationPassed:progress.filter(message=>message==="BINDLESS_RHI_STORAGE_SNAPSHOT7_DEVICE_OK backend=3 mip1 native-arrays-or-emulated padding immutable original-buffers pending-rollback pool-retirement no-execution").length===(storageOnly?22:3),
+    originalTextureCellDescriptorPublicationPassed:progress.filter(message=>message==="BINDLESS_RHI_TEXTURE_CELL_DESCRIPTOR12_DEVICE_OK backend=3 mip1 sampled-write-only identity-pending-stale retention refusal rollback no-completion").length===(storageOnly?22:3),
+    originalStorageContentPlanPassed:progress.filter(message=>message==="BINDLESS_RHI_STORAGE_CONTENT_PLAN1314_DEVICE_OK backend=3 cells3 steps2 same-journal proposal rollback-drop no-cpu-completion exact-less hot0 native-closed").length===(storageOnly?22:3),
+    diagnostics,progress:progress.slice(),nativeErrors:Module.webGpuUncapturedErrors||[]};
+  if(!storageOnly&&!composedOnly&&!arrayOnly&&!sampledOnly&&!output.originalStoragePhysicalAliasPassed) {
+    output.success=false;diagnostics.push('Original storage physical alias rejection evidence is missing');
+  }
+  if(!storageOnly&&!composedOnly&&!arrayOnly&&!sampledOnly&&!output.originalStorageNativeClosurePassed) {
+    output.success=false;diagnostics.push('Original storage native closure10 evidence is missing');
+  }
+  if(!storageOnly&&!composedOnly&&!arrayOnly&&!sampledOnly&&!output.originalStorageEntryAccessPassed) {
+    output.success=false;diagnostics.push('Original storage entry access1 evidence is missing');
+  }
+  if(!storageOnly&&!composedOnly&&!arrayOnly&&!sampledOnly&&!output.originalStoragePipelinePreparationPassed) {
+    output.success=false;diagnostics.push('Original storage pipeline8 preparation evidence is missing');
+  }
+  if(!storageOnly&&!composedOnly&&!arrayOnly&&!sampledOnly&&!storageCreated) {
+    output.success=false;diagnostics.push('Original storage texture creation7 evidence is missing');
+  }
+  if(!storageOnly&&!composedOnly&&!arrayOnly&&!sampledOnly&&!output.originalStorageSnapshotPublicationPassed) {
+    output.success=false;diagnostics.push('Original storage snapshot7 evidence is missing');
+  }
+  if(!storageOnly&&!composedOnly&&!arrayOnly&&!sampledOnly&&!output.originalStorageContentPlanPassed) {
+    output.success=false;diagnostics.push('Original storage content plan14 evidence is missing');
+  }
+  if(!storageOnly&&!composedOnly&&!arrayOnly&&!sampledOnly&&!output.originalTextureCellDescriptorPublicationPassed) {
+    output.success=false;diagnostics.push('Original texture cell descriptor publication2 evidence is missing');
+  }
+  if(implicitParity && output.success) {
+    try { output.implicitSamplingReference=await runBindlessImplicitReference(progress,arrayOnly); }
+    catch(error) { output.success=false;diagnostics.push(String(error&&error.stack||error)); }
+  }
+  transport.flush().catch(error=>{output.success=false;diagnostics.push(String(error));}).then(()=>
+    fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(output)}));
+}
+function recordFailure(error) {
+  diagnostics.push(String(error&&error.stack||error));
+  if(typeof Asyncify!=='undefined'&&Asyncify.currData&&typeof HEAPU32!=='undefined') {
+    const base=Asyncify.currData;
+    diagnostics.push('ASYNCIFY_CONTINUATION_BYTES '+(HEAPU32[base>>2]-base-12)
+      +' capacity '+(HEAPU32[(base+4)>>2]-base-12)+' state '+Asyncify.state);
+  }
+  report(false);
+}
+window.addEventListener('error',event=>recordFailure(event.error||event.message));
+window.addEventListener('unhandledrejection',event=>recordFailure(event.reason));
+var Module={
+  print(value){const message=String(value);console.log(message);transport.append(message);
+    if(message==='BINDLESS_WEBGPU_INITIALIZED_GEOMETRY_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed'
+      ||message==='BINDLESS_WEBGPU_WOCC_IBL_RETIRE_OK frozen655328 original-owners-expired budgets-zero scopes3-drained'
+      ||message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_STORAGE_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed'
+      ||message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_MATRIX_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed'
+      ||message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PUSH_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed'
+      ||message==="BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_COMPOSED_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed"
+      ||message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PREPARATION_RETIRE_OK original-owners-expired budgets-zero scopes3-drained public-execution-closed'
+      ||message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_SAMPLED_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed'
+      ||message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_ARRAY_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed')report(true);},
+  printErr(value){diagnostics.push(String(value));console.error(value);report(false);},
+  onExit(code){report(code===0);},
+  onAbort(value){diagnostics.push(String(value));report(false);}
+};
+</script>
+<script src="arp_rhi_webgpu_original_bindless_root_browser_smoke.js"></script>

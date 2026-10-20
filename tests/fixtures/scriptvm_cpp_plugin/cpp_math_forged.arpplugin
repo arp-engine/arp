@@ -1,0 +1,9 @@
+type: arp.script.cpp-plugin
+contractVersion: 2
+module: cpp_math_forged
+exportContractHash: sha256:cpp-math-forged-v2
+source: cpp_math_forged.cpp
+entry: arp_register_cpp_math_forged
+reflectionModule: cpp_math
+reflectionHeaders:
+  - cpp_math.h

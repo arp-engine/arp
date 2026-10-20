@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Sealed bindless package compilation</title>
+<script type="module">
+const report = {success:false, compiledEntries:[], errors:[]};
+let device;
+try {
+    const adapter = await navigator.gpu.requestAdapter({powerPreference:'high-performance'});
+    if (!adapter) throw new Error('WebGPU adapter unavailable');
+    device = await adapter.requestDevice();
+    device.addEventListener('uncapturederror', event => report.errors.push(event.error.message));
+    device.pushErrorScope('out-of-memory');
+    device.pushErrorScope('internal');
+    device.pushErrorScope('validation');
+    try {
+        const entries = await (await fetch('preflight.json')).json();
+        const modules = new Map();
+        for (const {entry, path, stage} of entries) {
+            const response = await fetch(path);
+            if (!response.ok) throw new Error('Missing shader: '+path);
+            const module = device.createShaderModule({code:await response.text()});
+            const info = await module.getCompilationInfo();
+            const errors = info.messages.filter(m => m.type === 'error');
+            if (errors.length) throw new Error(path+': '+errors.map(m=>m.message).join('; '));
+            modules.set(entry,module);
+            if (stage === 'Compute') {
+                await device.createComputePipelineAsync({layout:'auto', compute:{module,entryPoint:entry}});
+                report.compiledEntries.push(entry);
+            }
+        }
+        if (entries.some(e => e.stage !== 'Compute')) {
+            const vertex = entries.find(e => e.stage === 'Vertex');
+            const fragment = entries.find(e => e.stage === 'Fragment');
+            if (entries.length !== 2 || !vertex || !fragment) throw new Error('Invalid Graphics selection');
+            await device.createRenderPipelineAsync({layout:'auto',
+                vertex:{module:modules.get(vertex.entry),entryPoint:vertex.entry,buffers:[]},
+                fragment:{module:modules.get(fragment.entry),entryPoint:fragment.entry,
+                    targets:[{format:fragment.colorFormat,writeMask:GPUColorWrite.ALL}]},
+                primitive:{topology:'triangle-list',frontFace:'ccw',cullMode:'none'},
+                multisample:{count:1,mask:0xffffffff,alphaToCoverageEnabled:false}});
+            report.compiledEntries = entries.map(e=>e.entry);
+        }
+    } finally {
+        for (let i=0; i<3; ++i) {
+            const error = await device.popErrorScope();
+            if (error) report.errors.push(error.message);
+        }
+    }
+    report.success = !report.errors.length;
+} catch (error) { report.errors.push(String(error.stack||error)); }
+finally { device?.destroy(); }
+await fetch('/result', {method:'POST', body:JSON.stringify(report)});
+</script>

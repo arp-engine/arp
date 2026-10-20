@@ -1,0 +1,18 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: MetalComputeDomains
+set: 1
+pipelineInterfaceContractVersion: 1
+maxSwitchCases: 4
+maxBindings: 16
+snapshotBytes: 256
+snapshotMetadataBinding: 0
+faultLatchBinding: 1
+tables:
+  - name: IndexedValues
+    tableId: 1
+    kind: StorageBuffer
+    capacity: 2
+    binding: 3
+    stages: [compute]
+    operations: [load, store]

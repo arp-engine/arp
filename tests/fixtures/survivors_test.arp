@@ -1,0 +1,40 @@
+# Test helpers invoke shipped attached components and actual world queries.
+def spawn_enemy(s: RunFlow, kind: int, boss: bool, x: float, y: float) -> int:
+    return s.enemy(kind, boss, x, y)
+
+def test_enemy_health(s: RunFlow, id: int) -> float:
+    return s.enemies[id].hp
+
+def test_bolt(s: RunFlow, pierces: int, bounces: int) -> int:
+    return s.bolt(0.0, 0.0, 8.0, 0.0, 10, -1, pierces, bounces)
+
+def update_projectiles(s: RunFlow, dt: float):
+    var snapshot: [Projectile] = []
+    for id, projectile in s.projectiles:
+        append(snapshot, projectile)
+    for projectile in snapshot:
+        projectile.on_fixed_update(dt)
+
+def fire(s: RunFlow, kind: int):
+    s.weapons[kind].fire()
+
+def test_hits(s: RunFlow, id: int) -> int:
+    var object: GameObject = scene.find_object(id)
+    if object == nil:
+        return 0
+    var projectile: Projectile = object.get_component("Projectile")
+    return len(projectile.history)
+
+def test_distinct(s: RunFlow) -> bool:
+    var first: int = -1
+    for id, projectile in s.projectiles:
+        if first < 0:
+            first = projectile.target
+        elif first != projectile.target:
+            return true
+    return false
+
+def test_remove_enemy(s: RunFlow, id: int):
+    var enemy: Enemy = s.enemies[id]
+    delete(s.enemies, id)
+    enemy.game_object.destroy_self()

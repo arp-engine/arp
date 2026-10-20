@@ -1,0 +1,22 @@
+type: arp.script.aot-package/v1
+package: scene-behavior
+version: 1
+platforms: [windows, web-wasm]
+budget:
+  instructions: 100000
+  recursion: 64
+  frame-values: 1024
+  container-values: 4096
+  call-arguments: 128
+  continuation-frames: 64
+  memory-bytes: 1048576
+contracts:
+  dependency-graph-hash: sha256:6d2fc4343bcedb9bb5881914ca9561c326353cf22e9bbf44ef2a368b8fc83070
+  reflection-registry-hash: sha256:de438e8cedcbf984e8e2d952f3ce90d13aecc9c5d3996e879582fd7c3d9a6880
+  host-contract-hash: sha256:1d0b72fb08c477507cc7701b4c8e0cfdff7a99ae54cc6f652ab0468e2b1580d1
+modules:
+  - id: scene_behavior
+    version: 1
+    source: scene_behavior.arp
+    entries: [on_update, on_late_update]
+    dependencies: []

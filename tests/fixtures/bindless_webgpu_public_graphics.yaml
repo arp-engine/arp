@@ -1,0 +1,58 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: WebGpuPublicGraphics
+set: 0
+maxBindings: 14
+maxSwitchCases: 29
+snapshotBytes: 1024
+snapshotMetadataBinding: 2
+faultLatchBinding: 3
+indirectInstanceBaseContractVersion: 1
+indirectInstanceConsumer:
+  binding: 0
+  recordIndex: 0
+  instanceCapacity: 2
+tables:
+  - name: Images
+    tableId: 1
+    kind: SampledTexture
+    capacity: 2
+    binding: 4
+    stages: [fragment]
+    operations: [load, query, sampleLevel, sampleGrad]
+    sampler: Filters
+  - name: Filters
+    tableId: 2
+    kind: Sampler
+    capacity: 2
+    binding: 6
+    stages: [fragment]
+    operations: []
+  - name: Materials
+    tableId: 3
+    kind: ReadOnlyStorageBuffer
+    capacity: 2
+    binding: 8
+    stages: [fragment]
+    operations: [load, query]
+  - name: Factors
+    tableId: 4
+    kind: UniformBuffer
+    capacity: 2
+    binding: 10
+    stages: [fragment]
+    operations: [load]
+  - name: Counters
+    tableId: 5
+    kind: StorageBuffer
+    capacity: 2
+    binding: 12
+    stages: [fragment]
+    operations: [load, query, store, atomicAdd]
+  - name: MappingWords
+    tableId: 6
+    kind: StorageBuffer
+    capacity: 1
+    binding: 1
+    stages: [compute]
+    operations: [load, query, store]

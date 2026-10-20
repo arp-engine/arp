@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Bindless canonical ordinary Fragment depth execution14</title>
+<canvas id="canvas" width="2" height="2" hidden></canvas>
+<script>
+const rewrite = new URLSearchParams(location.search).get('rewrite') === '1';
+const result = {success: false, scope: rewrite ? 'completed-sampled-depth-write-return1' : 'canonical-ordinary-fragment-depth-execution14',
+  executionGranted: false, diagnostics: [], nativeErrors: [], log: []};
+let reported = false;
+async function report(success) {
+  if (reported) return;
+  reported = true;
+  try {
+    const device = Module.preinitializedWebGPUDevice;
+    if (!device) throw new Error('No real device');
+    const validation = await device.popErrorScope();
+    if (validation) result.nativeErrors.push(String(validation.message || validation));
+    await device.queue.onSubmittedWorkDone();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    result.nativeErrors.push(...(Module.webGpuUncapturedErrors || []));
+    const flows = result.log.filter(line => line.startsWith('BINDLESS_WEBGPU_ORDINARY_DEPTH_EXECUTION14_OK '));
+    const numeric = result.log.filter(line => line.startsWith('BINDLESS_WEBGPU_ORDINARY_DEPTH_NUMERIC_OK '));
+    const writes = result.log.filter(line => line.startsWith('BINDLESS_WEBGPU_DEPTH_WRITE_RETURN1_OK '));
+    const texels = result.log.filter(line => line.startsWith('BINDLESS_WEBGPU_DEPTH_WRITE_RETURN1_TEXELS_OK '));
+    const marker = rewrite ? 'BINDLESS_WEBGPU_DEPTH_WRITE_RETURN1_PIPELINE_OK consumers2 numeric2 real-reclear stale-Closure20 quota0'
+      : 'BINDLESS_WEBGPU_ORDINARY_DEPTH_EXECUTION14_PIPELINE_OK scenarios22 numeric4 fault0-1 same-original completion retirement quota0';
+    result.success = success && result.log.filter(line => line === marker).length === 1
+      && flows.length === (rewrite ? 2 : 22) && numeric.length === (rewrite ? 2 : 4)
+      && Array.from({length: rewrite ? 1 : 11}, (_, scenario) => [0, 1].every(fault =>
+        flows.filter(line => line.startsWith(`BINDLESS_WEBGPU_ORDINARY_DEPTH_EXECUTION14_OK scenario${scenario} fault${fault} `)).length === 1)).every(Boolean)
+      && [0, 1].every(fault => numeric.filter(line => line.startsWith(`BINDLESS_WEBGPU_ORDINARY_DEPTH_NUMERIC_OK fault${fault} `)).length === (rewrite ? 1 : 2))
+      && (!rewrite || (texels.length === 2 && writes.length === 2 && [0, 1].every(fault =>
+        writes.filter(line => line.startsWith(`BINDLESS_WEBGPU_DEPTH_WRITE_RETURN1_OK fault${fault} `)).length === 1)))
+      && !result.diagnostics.length && !result.nativeErrors.length;
+    result.executionGranted = result.success;
+  } catch (error) { result.diagnostics.push(String(error)); }
+  await fetch('/result', {method: 'POST', body: JSON.stringify(result)});
+}
+window.addEventListener('error', event => {
+  result.diagnostics.push(String(event.error || event.message)); report(false);
+});
+window.addEventListener('unhandledrejection', event => {
+  result.diagnostics.push(String(event.reason)); report(false);
+});
+var Module = {
+  arguments: ['/bindless-depth/GraphicsDepthColor.emulated.bindless.yaml', rewrite ? '--rewrite1' : '--execution14'],
+  print: line => {
+    result.log.push(String(line));
+    if (String(line).startsWith(rewrite ? 'BINDLESS_WEBGPU_DEPTH_WRITE_RETURN1_PIPELINE_OK ' : 'BINDLESS_WEBGPU_ORDINARY_DEPTH_EXECUTION14_PIPELINE_OK ')) report(true);
+  },
+  printErr: line => result.diagnostics.push(String(line)),
+  onAbort: reason => { result.diagnostics.push(String(reason)); report(false); },
+  onExit: code => report(code === 0)
+};
+</script>
+<script src="arp_rhi_webgpu_bindless_graphics_depth_pipeline_tests.js"></script>

@@ -1,0 +1,31 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: RootFragmentBuffers
+set: 0
+maxBindings: 8
+maxSwitchCases: 16
+snapshotBytes: 65536
+snapshotMetadataBinding: 6
+faultLatchBinding: 7
+tables:
+  - name: Globals
+    tableId: 1
+    kind: UniformBuffer
+    capacity: 2
+    binding: 0
+    stages: [fragment]
+    operations: [load]
+  - name: Inputs
+    tableId: 2
+    kind: ReadOnlyStorageBuffer
+    capacity: 2
+    binding: 2
+    stages: [fragment]
+    operations: [load, query]
+  - name: Counters
+    tableId: 3
+    kind: StorageBuffer
+    capacity: 2
+    binding: 4
+    stages: [fragment]
+    operations: [load, query, store, atomicAdd]

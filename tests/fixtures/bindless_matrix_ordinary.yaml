@@ -1,0 +1,18 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: MatrixOrdinary
+set: 1
+pipelineInterfaceContractVersion: 1
+maxSwitchCases: 1
+maxBindings: 5
+snapshotBytes: 64
+snapshotMetadataBinding: 0
+faultLatchBinding: 1
+tables:
+  - name: Results
+    tableId: 1
+    kind: StorageBuffer
+    capacity: 1
+    binding: 2
+    stages: [compute]
+    operations: [store]

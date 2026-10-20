@@ -1,0 +1,43 @@
+import io
+import yaml
+import asset
+import arp_import_host
+import unity_import_common
+
+def main(input: string, projectRoot: string) -> int:
+    var read: io.IoTextResult = io.read_text(input)
+    var readOk: bool = read.success
+    if not readOk:
+        return 1
+
+    var resolved: arp_import_host.PathResult = arp_import_host.resolve_path(projectRoot, "tests/fixtures/asset_importer/unity_scene.yaml")
+    var resolveOk: bool = resolved.success
+    if not resolveOk or resolved.path != input:
+        return 64
+
+    var parsed: yaml.YamlParseResult = yaml.parse(read.text)
+    var parseOk: bool = parsed.success
+    if not parseOk:
+        return 2
+
+    var document: yaml.YamlDocument = yaml.first_document(read.text)
+    var nodeOk: bool = yaml.is_node(document)
+    if not nodeOk:
+        return 4
+    var kindCode: int = yaml.kind_code(document)
+    if kindCode != 1:
+        return 128
+
+    var imported: asset.ImportedModelResult = asset.import_glb(input)
+    var importOk: bool = imported.success
+    var diagnostics: string = imported.diagnostics
+    if importOk:
+        return 8
+    if diagnostics == "":
+        return 16
+    var database: asset.UnityAssetDatabaseResult = asset.scan_unity_assets(input)
+    if not database.success or database.assetCount != 0:
+        return 128
+    if unity_import_common.source_contract() != 1:
+        return 256
+    return 0

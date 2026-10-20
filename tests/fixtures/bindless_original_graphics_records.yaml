@@ -1,0 +1,47 @@
+type: BindlessShaderVariant
+contractVersion: 1
+name: RootGraphicsRecords
+set: 0
+maxBindings: 8
+maxSwitchCases: 14
+snapshotBytes: 65536
+snapshotMetadataBinding: 6
+faultLatchBinding: 7
+vectorRecordContractVersion: 1
+tables:
+  - name: Materials
+    tableId: 1
+    kind: UniformBuffer
+    capacity: 2
+    binding: 0
+    stages: [vertex, fragment]
+    operations: [load]
+    record:
+      fields:
+        - {name: color, type: float4}
+        - {name: resources, type: uint4}
+  - name: Instances
+    tableId: 2
+    kind: ReadOnlyStorageBuffer
+    capacity: 2
+    binding: 2
+    stages: [vertex, fragment]
+    operations: [load, query]
+    record:
+      fields:
+        - {name: positionScale, type: float4}
+        - {name: yawPhaseIdLod, type: float4}
+        - {name: extraTransform, type: float4}
+        - {name: speciesLodState, type: float4}
+  - name: Outputs
+    tableId: 3
+    kind: StorageBuffer
+    capacity: 2
+    binding: 4
+    stages: [fragment]
+    operations: [load, query, store]
+    record:
+      fields:
+        - {name: color, type: float4}
+        - {name: metadata, type: uint4}
+        - {name: signedValues, type: int4}

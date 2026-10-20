@@ -1,0 +1,20 @@
+type: arp.ui-bitmap-font
+contractVersion: 1
+resourceId: 00000000-0000-4000-8000-000000000007
+cookProfile: UiBitmapFontCook/1
+glyphPolicy: explicit-static-codepoints
+fontToken: survivors-5x7
+atlasResourceId: 00000000-0000-4000-8000-000000000006
+atlasPage: 0
+sizePx: 8
+format: Rgba8Unorm
+alpha: straight
+filter: nearest
+srgb: false
+glyphs:
+- codepoint: 65
+  slice: glyph_65
+  advanceX: 6
+  bearingX: 0
+  bearingY: 0
+rgba8Sha256: b8f223ccb761662783273903b62012be1d9cd79fadac6510f2515162a4f8ebbf
