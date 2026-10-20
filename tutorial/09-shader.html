@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>09 Shader · arp 引擎教程</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">arp 引擎教程<small>Anime Render Pipeline</small></div>
+  <nav>
+    <div class="group-title">导航</div>
+    <a class="nav" href="index.html"><span class="num">·</span>总览</a>
+    <div class="group-title">系统文档</div>
+    <a class="nav" href="01-render-pipeline.html"><span class="num">01</span>渲染管线</a>
+    <a class="nav" href="02-gameobject-component.html"><span class="num">02</span>GameObject + Component</a>
+    <a class="nav" href="03-animation.html"><span class="num">03</span>动画</a>
+    <a class="nav" href="04-particles.html"><span class="num">04</span>粒子</a>
+    <a class="nav" href="05-ui.html"><span class="num">05</span>UI</a>
+    <a class="nav" href="06-resource-management.html"><span class="num">06</span>资源管理</a>
+    <a class="nav" href="07-reflection.html"><span class="num">07</span>反射</a>
+    <a class="nav" href="08-network.html"><span class="num">08</span>网络</a>
+    <a class="nav active" href="09-shader.html"><span class="num">09</span>Shader</a>
+    <a class="nav" href="10-prefab-internal-resources.html"><span class="num">10</span>预制体</a>
+    <a class="nav" href="11-art-asset-formats.html"><span class="num">11</span>资产导入</a>
+    <a class="nav" href="12-procedural-generation.html"><span class="num">12</span>程序化生成</a>
+    <a class="nav" href="13-scripting.html"><span class="num">13</span>脚本</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <h1>09 Shader <span class="badge blue">Prototype Complete</span></h1>
+  <p class="lead">渲染管线最终要落到 GPU 可执行的字节码。arp 引擎的着色器子系统（<code>src/shader</code>）与 RHI（见 <a href="01-render-pipeline.html">01 渲染管线</a>）共享同一条设计哲学：<strong>上层写一次，后端分支在底层完成</strong>——引擎以 <strong>Slang</strong> 作为统一着色语言，由同一套源码编译出 SPIR-V / Metal / WGSL 三个目标，分别喂给 Vulkan、Metal、WebGPU 后端。本文先讲清这套编译与反射链路，再专门拆解 arp 的<strong>统一内存对齐</strong>约定：为什么 CPU 侧结构体必须与 GPU 侧 uniform/cbuffer 逐字节一致，以及引擎如何用 std140 规则与两层校验把对齐错误挡在加载/录制期。</p>
+
+  <h2>1. Shader：Slang 统一着色语言与多后端编译</h2>
+  <p>渲染管线最终要落到 GPU 可执行的字节码。arp 引擎的着色器子系统（<code>src/shader</code>）与 RHI 共享同一条设计哲学：<strong>上层写一次，后端分支在底层完成</strong>。引擎以 <strong>Slang</strong> 作为统一着色语言，由同一套 <code>.slang</code> 源码编译出 <strong>SPIR-V / Metal / WGSL</strong> 三个目标，分别喂给 Vulkan、Metal、WebGPU 后端——上层开发者永远只面对 Slang 与反射元数据，不接触任何原生着色器方言。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 680 268" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Shader 编译与反射闭环">
+      <defs>
+        <marker id="s6arr" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#5268b8"/></marker>
+        <marker id="s6arrd" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#64748b"/></marker>
+      </defs>
+      <style>
+        .box { fill:#eef3fa; stroke:#5268b8; stroke-width:1.5; rx:8; }
+        .boxg { fill:#e6f4f1; stroke:#2f8a7b; stroke-width:1.5; rx:8; }
+        .boxt { fill:#faedf7; stroke:#b34e94; stroke-width:1.5; rx:8; }
+        .t { fill:#1e2430; font:13px 'Segoe UI',Arial,sans-serif; text-anchor:middle; }
+        .ts { fill:#5b6b82; font:11px 'Segoe UI',Arial,sans-serif; text-anchor:middle; }
+        .lbl { fill:#5b6b82; font:11px 'Segoe UI',Arial,sans-serif; text-anchor:middle; }
+      </style>
+      <rect class="box" x="270" y="14" width="140" height="40"/><text class="t" x="340" y="33">*.slang 源</text><text class="ts" x="340" y="47">统一着色语言</text>
+      <rect class="boxt" x="262" y="78" width="156" height="40"/><text class="t" x="340" y="97">slangc 编译</text><text class="ts" x="340" y="111">scripts/compile-shaders.ps1</text>
+      <rect class="boxg" x="34" y="150" width="118" height="40"/><text class="t" x="93" y="169">SPIR-V</text><text class="ts" x="93" y="183">spirv_1_5</text>
+      <rect class="boxg" x="204" y="150" width="118" height="40"/><text class="t" x="263" y="169">Metal</text><text class="ts" x="263" y="183">sm_6_0</text>
+      <rect class="boxg" x="374" y="150" width="118" height="40"/><text class="t" x="433" y="169">WGSL</text><text class="ts" x="433" y="183">sm_6_0 + 后处理</text>
+      <rect class="box" x="540" y="78" width="138" height="40"/><text class="t" x="609" y="97">*.reflection.json</text><text class="ts" x="609" y="111">静态反射元数据</text>
+      <rect class="box" x="540" y="150" width="138" height="40"/><text class="t" x="609" y="169">ShaderReflectionCache</text><text class="ts" x="609" y="183">loadFromJson</text>
+      <rect class="boxt" x="540" y="214" width="138" height="40"/><text class="t" x="609" y="233">ShaderPipeline</text><text class="t" x="609" y="247">ReflectionValidator</text>
+      <path d="M340,54 L340,76" stroke="#5268b8" stroke-width="2" marker-end="url(#s6arr)"/>
+      <path d="M300,118 L120,148" stroke="#64748b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#s6arrd)"/>
+      <path d="M320,118 L263,148" stroke="#64748b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#s6arrd)"/>
+      <path d="M360,118 L433,148" stroke="#64748b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#s6arrd)"/>
+      <path d="M420,98 L540,98" stroke="#5268b8" stroke-width="2" marker-end="url(#s6arr)"/>
+      <path d="M609,118 L609,148" stroke="#5268b8" stroke-width="2" marker-end="url(#s6arr)"/>
+      <path d="M609,190 L609,212" stroke="#b34e94" stroke-width="2" marker-end="url(#s6arr)"/>
+      <text class="lbl" x="490" y="92">生成</text>
+      <text class="lbl" x="300" y="138">三目标扇出</text>
+    </svg>
+  </div>
+
+  <h3>1.1 后端无关的统一编译 API</h3>
+  <p><code>src/shader/shader_compiler.h</code> 暴露了与 RHI 同源的「上层只声明、后端内部分支」契约。<code>ShaderCompiler::compile()</code> 接受一份请求、返回字节码 + 反射数据，全程不暴露任何原生 API：</p>
+  <table>
+    <thead><tr><th>枚举 / 结构</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>ShaderStage</code></td><td><code>Vertex</code> / <code>Fragment</code> / <code>Compute</code> 三个阶段</td></tr>
+      <tr><td><code>TargetBackend</code></td><td><code>SpirV</code> / <code>Msl</code> / <code>Wgsl</code> 三个编译目标</td></tr>
+      <tr><td><code>BindingType</code></td><td><code>UniformBuffer</code> / <code>StorageBuffer</code> / <code>SampledTexture</code> / <code>StorageTexture</code> / <code>Sampler</code></td></tr>
+      <tr><td><code>VertexAttributeFormat</code></td><td><code>Float2</code> / <code>Float3</code> / <code>Float4</code>（顶点属性位宽）</td></tr>
+      <tr><td><code>ShaderCompileRequest</code></td><td><code>sourcePath</code> / <code>sourceCode</code> / <code>moduleName</code> / <code>target</code> / <code>entryPoints</code></td></tr>
+      <tr><td><code>ShaderCompileResult</code></td><td><code>success</code> / <code>diagnostics</code> / <code>bytecode</code> / <code>bindings</code> / <code>reflection</code></td></tr>
+      <tr><td><code>ShaderReflection</code></td><td><code>entryPoints</code> / <code>bindings</code> / <code>vertexAttributes</code> / <code>pushConstantSizeBytes</code></td></tr>
+    </tbody>
+  </table>
+
+  <pre class="code"><code>// 一次编译：从 Slang 源码到某一后端的字节码 + 反射
+arp::shader::ShaderCompileRequest req;
+req.sourceCode  = readFile("wocc/pbr_scene.slang");
+req.moduleName  = "WoccPbrScene";
+req.target      = arp::shader::TargetBackend::SpirV;
+req.entryPoints = {{"vertexMain", arp::shader::ShaderStage::Vertex},
+                   {"fragmentMain", arp::shader::ShaderStage::Fragment}};
+
+arp::shader::ShaderCompileResult res = arp::shader::ShaderCompiler{}.compile(req);
+if (res.success) {
+    uploadToGpu(res.bytecode);                       // 交 RHI 创建 ShaderModule
+    validatePipelineAgainst(res.reflection);         // 见第 2 章校验
+}</code></pre>
+
+  <h3>1.2 编译流水线：scripts/compile-shaders.ps1</h3>
+  <p>引擎的构建入口是 PowerShell 脚本 <code>compile-shaders.ps1</code>，它对每个着色器模块依次调用 <strong>Slang 编译器 <code>slangc</code></strong>，并产出三份字节码与一份反射 JSON（落在 <code>artifacts/direct/shaders</code>）：</p>
+  <pre class="code"><code># 一套源码 → 三个后端目标（多 entry point）
+slangc wocc/pbr_scene.slang `
+  -target spirv  -profile spirv_1_5 -entry vertexMain -entry fragmentMain -o pbr_scene.spv
+slangc wocc/pbr_scene.slang `
+  -target metal  -profile sm_6_0    -entry vertexMain -entry fragmentMain -o pbr_scene.metal
+slangc wocc/pbr_scene.slang `
+  -target wgsl   -profile sm_6_0    -entry vertexMain -entry fragmentMain -o pbr_scene.wgsl</code></pre>
+  <p>WGSL 目标额外经过三段脚本后处理，把 Slang 默认不显式的绑定信息补齐，使其符合 WebGPU 语义：</p>
+  <ul>
+    <li><code>Set-WgslPushConstantBinding</code>：为 push-constant uniform 注入 <code>@binding(0) @group(0)</code>。</li>
+    <li><code>Set-WgslVertexOutputLocations</code>：给顶点输出结构体逐字段注入 <code>@location(N)</code>。</li>
+    <li><code>Set-WgslStorageTextureFormatAndAccess</code>：修正 storage 纹理的 format/access（如 GI 的 <code>rgba16float write</code>）。</li>
+  </ul>
+  <div class="callout">
+    <p><strong>反射 JSON 怎么来的：</strong>脚本对源码做静态扫描——按 token 名识别绑定（如 <code>SceneConstants</code> 映射到 <code>set=0,binding=0</code> 的 UniformBuffer）、解析 <code>[[vk::push_constant]]</code> 结构体算出 push-constant 字节数、解析 <code>VertexInput</code> 结构体得到顶点属性与 location。该 JSON 是运行时 <code>ShaderReflectionCache</code> 的输入，不依赖运行时编译。</p>
+  </div>
+
+  <h3>1.3 反射缓存与 Pipeline 校验</h3>
+  <p>编译产物不只是字节码。反射数据被序列化为 JSON，运行时通过两个无状态的工具类消费，把「着色器实际签名」与「上层声明的管线布局」对齐：</p>
+  <table>
+    <thead><tr><th>类型</th><th>职责</th></tr></thead>
+    <tbody>
+      <tr><td><code>ShaderReflectionCache</code></td><td>从 JSON 加载 <code>ShaderReflectionModule</code>（<code>loadFromJson</code> / <code>loadFromFile</code>），缓存模块名、源路径与三后端路径</td></tr>
+      <tr><td><code>ShaderPipelineReflectionValidator</code></td><td><code>validate(ShaderPipelineLayoutDesc, ShaderReflection)</code> 校验 push-constant 尺寸、顶点属性与着色器反射一致，返回 <code>ShaderPipelineValidationResult</code></td></tr>
+    </tbody>
+  </table>
+  <pre class="code"><code>// 校验：上层声明的管线布局必须匹配着色器真实反射
+arp::shader::ShaderPipelineLayoutDesc layout;
+layout.pushConstantSizeBytes = sizeof(PbrPushConstants);
+layout.vertexAttributes      = { {"position","POSITION",Float3,0}, {"normal","NORMAL",Float3,1} };
+
+auto mod = arp::shader::ShaderReflectionCache::loadFromFile("pbr_scene.reflection.json").module;
+arp::shader::ShaderPipelineValidationResult v =
+    arp::shader::ShaderPipelineReflectionValidator::validate(layout, mod.reflection);
+assert(v.success);   // 不一致会在编译期/加载期被确定性捕获，而非 GPU 报错</code></pre>
+
+  <h3>1.4 参考实例：world_of_claudecraft 的着色器</h3>
+  <p>本项目把三个 Slang 模块接入了编译脚本，正是渲染管线（01 节）与后处理（01 节 FXAA）的着色器落点：</p>
+  <table>
+    <thead><tr><th>模块</th><th>源</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>WoccPbrScene</code></td><td><code>shaders/wocc/pbr_scene.slang</code></td><td>前向 PBR 场景着色（BaseColor / Normal / MetallicRoughness / 蒙皮矩阵集）</td></tr>
+      <tr><td><code>WoccSky</code></td><td><code>shaders/wocc/sky.slang</code></td><td>程序化天空盒，被 <code>extract()</code> 的 <code>"wocc.sky"</code> payload 驱动</td></tr>
+      <tr><td><code>WoccPost</code></td><td><code>shaders/wocc/post.slang</code></td><td>后处理链：Bloom 降采样/合成 + ACES tonemap + grade，对应 01 节的 <code>recordGraphPostprocess()</code></td></tr>
+    </tbody>
+  </table>
+  <p>要新增一个着色器：在 <code>compile-shaders.ps1</code> 注册源路径与模块名、列出入入口，运行脚本，产物即落到 <code>artifacts/direct/shaders</code>；运行时用 <code>ShaderReflectionCache</code> 读反射、用 <code>ShaderPipelineReflectionValidator</code> 对齐绑定布局，最后交给 RHI 创建 <code>ShaderModule</code>。整条链路与 RHI 的「后端中立」约束一致——你写的仍是 Slang，而不是 Vulkan GLSL、Metal Shading Language 或 WGSL 三种方言。</p>
+
+  <h2>2. 统一内存对齐：CPU 结构体 ↔ GPU uniform/cbuffer</h2>
+  <p>多后端编译解决了「一份源码、三套字节码」的问题，但还有一个更隐蔽的坑：<strong>同一份着色器里声明的 uniform/cbuffer 布局，必须和你在 CPU 侧喂进去的内存块逐字节一致</strong>。这就是 arp 的「统一内存对齐」——它不是一个独立模块，而是贯穿于 Slang 打包规则、C++ 镜像结构体、以及 RHI 校验的一道纪律。</p>
+
+  <h3>2.1 为什么需要统一对齐</h3>
+  <ul>
+    <li>渲染时你常把一小块 CPU 内存（如每帧的 view-projection、材质参数）通过 <strong>push constant</strong> 或 <strong>uniform buffer</strong> 推给 GPU。</li>
+    <li>GPU 侧结构体布局（成员偏移、对齐、大小）由着色器源码定义；CPU 侧的 C++ 镜像结构体必须与之逐字节一致，否则 GPU 读到错位字段 → 画面错乱，或 RHI/校验器直接拒绝。</li>
+    <li>arp 在三个后端用同一套 Slang 源码，因此「统一对齐」的含义是：<strong>一份代码定义的布局，在 Vulkan / Metal / WebGPU 三个后端都得到一致解释</strong>，CPU 侧只需维护一份镜像。</li>
+  </ul>
+
+  <h3>2.2 std140：arp 的统一内存对齐规则</h3>
+  <p>Slang 把 <code>cbuffer</code> / <code>uniform</code> 与 <code>[[vk::push_constant]]</code> 结构体按 <strong>std140</strong> 规则打包：SPIR-V 反射出 std140 偏移；Metal（MSL）沿用其 float4 默认对齐；WGSL 经 slangc 后处理为每个字段注入 <code>@align(16)</code>。三套产物对同一结构体的解释一致。牢记以下规则：</p>
+  <table>
+    <thead><tr><th>类型</th><th>对齐</th><th>占用大小</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>float</code> / <code>int</code> / <code>uint</code></td><td>4</td><td>4</td><td>标量按自身大小对齐</td></tr>
+      <tr><td><code>vec2</code></td><td>8</td><td>8</td><td>2 个分量</td></tr>
+      <tr><td><code>vec3</code></td><td>16</td><td>12（占位 16）</td><td>对齐到 16，后面不能直接贴一个 float 而不产生隐式 padding</td></tr>
+      <tr><td><code>vec4</code></td><td>16</td><td>16</td><td>最常用、最安全的基本粒度</td></tr>
+      <tr><td><code>mat4</code> (float4x4)</td><td>16</td><td>64</td><td>按 4 个 vec4 列排布</td></tr>
+      <tr><td>数组 <code>T[N]</code></td><td>align(T) 向上取 16</td><td>N × roundUp(sizeof(T), 16)</td><td>每个元素 stride 对齐到 16</td></tr>
+      <tr><td>结构体</td><td>max(成员对齐) 向上取 16</td><td>roundUp(成员总和, 16)</td><td>整体大小也要补到 16 的倍数</td></tr>
+    </tbody>
+  </table>
+  <div class="callout note">
+    <p><strong>工程结论：</strong>始终把成员按「大块在前」排序，用 <code>vec4</code> 粒度打包参数；避免 <code>vec3</code> 后面紧跟 <code>float</code> 这类会产生隐式 padding 错位的写法。让结构体总大小是 16 的倍数。</p>
+  </div>
+
+  <h3>2.3 实战：引擎内真实 push-constant 结构体的字节核算</h3>
+  <p>引擎里三处真实的 push-constant 结构体，都是 std140 对齐的干净范例：</p>
+  <table>
+    <thead><tr><th>结构体（来源）</th><th>字段构成</th><th>字节数</th><th>对齐证据</th></tr></thead>
+    <tbody>
+      <tr><td><code>ParticlePushConstants</code><br/><small>粒子 L2 契约</small></td><td>1 × <code>float4x4</code> viewProjection</td><td>64</td><td>Vertex | Fragment；offset 0</td></tr>
+      <tr><td><code>TrailBeamPushConstants</code><br/><small>trail/beam L2 契约</small></td><td><code>float4x4</code>(64) + 4 × uint32（visualFamily / isTextured / trailWidth / beamLength）</td><td>80</td><td>Vertex | Fragment；offset 0，size 80</td></tr>
+      <tr><td><code>StylizedScenePushConstants</code><br/><small>samples/stylized/stylized_scene_draw_plan.h</small></td><td><code>float4x4</code>(64) + 12 × <code>float[4]</code>（共 192）</td><td>256</td><td>Slang 源 <code>shaders/stylized/scene.slang</code> 同构；编译出 WGSL 每个字段标 <code>@align(16)</code>，MSL 为连续 <code>float4</code></td></tr>
+    </tbody>
+  </table>
+
+  <p>以 <code>StylizedScenePushConstants</code> 为例，它的 CPU 镜像（C++）与 Slang 源逐字段对应，总大小正好是 <strong>256 字节 = 16 个 16 字节槽</strong>：</p>
+  <pre class="code"><code>// samples/stylized/stylized_scene_draw_plan.h —— CPU 镜像
+struct StylizedScenePushConstants {
+    float viewProjection[16];        // 64B  (mat4, 占 4 个 16B 槽)
+    float cameraPositionAndTime[4];  // 16B
+    float baseColor[4];              // 16B
+    float shadeColor[4];             // 16B
+    float lightDirectionAndWrap[4];  // 16B
+    float rampParams[4];             // 16B
+    float fogParams[4];              // 16B
+    float materialParams[4];         // 16B
+    float pbrParams[4];              // 16B
+    float pbrExtraParams[4];         // 16B
+    float emissiveParams[4];         // 16B
+    float stylizedParams[4];         // 16B
+    float gltfExtensionParams[4];    // 16B
+};  // sizeof == 256，且每个字段 16 字节对齐</code></pre>
+
+  <p>同一结构体的 Slang 源码只声明语义字段，布局交给 slangc 按 std140 决定；编译产物（WGSL）显式为每个字段标注 <code>@align(16)</code>——这正是「统一内存对齐」在三个后端的落地：</p>
+  <pre class="code"><code>// shaders/stylized/scene.slang —— 统一的着色器侧定义
+struct StylizedScenePushConstants {
+    row_major float4x4 viewProjection;
+    float4 cameraPositionAndTime;
+    float4 baseColor;
+    float4 shadeColor;
+    // ... 其余 9 个 float4 字段 ...
+    float4 gltfExtensionParams;
+};</code></pre>
+
+  <div class="diagram">
+    <svg viewBox="0 0 680 150" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="12">
+      <rect x="20" y="34" width="640" height="46" rx="6" fill="#eef2f6" stroke="#57606a"/>
+      <rect x="20"  y="34" width="160" height="46" fill="#2f6feb" opacity="0.18"/>
+      <rect x="180" y="34" width="480" height="46" fill="#1a7f37" opacity="0.15"/>
+      <g fill="#1f2328" text-anchor="middle" font-size="11">
+        <rect x="20"  y="34" width="40" height="46" fill="none" stroke="#c9d4e3"/>
+        <rect x="60"  y="34" width="40" height="46" fill="none" stroke="#c9d4e3"/>
+        <rect x="100" y="34" width="40" height="46" fill="none" stroke="#c9d4e3"/>
+        <rect x="140" y="34" width="40" height="46" fill="none" stroke="#c9d4e3"/>
+      </g>
+      <text x="100" y="62" text-anchor="middle" fill="#1f2328" font-weight="700" font-size="11">viewProjection (mat4)</text>
+      <text x="420" y="62" text-anchor="middle" fill="#1f2328" font-size="11">12 × float4 参数（每槽 16B）</text>
+      <text x="100" y="100" fill="#57606a">0–63 B</text>
+      <text x="420" y="100" fill="#57606a">64–255 B</text>
+      <text x="340" y="128" fill="#57606a">共 256 B = 16 个 16B 槽；std140 下每个字段按 16B 对齐，三后端布局一致</text>
+    </svg>
+  </div>
+
+  <h3>2.4 256 字节 push-constant 预算的硬约束</h3>
+  <p>Vulkan 的 push-constant 上限通常为 <strong>256 字节</strong>（<code>maxPushConstantsSize</code>）。arp 把场景着色器严格约束在 256 字节预算内。这条约束不是 Slang 报的，而是真实的工程教训：</p>
+  <div class="callout warn">
+    <p><strong>越界的真实后果：</strong></p>
+    <ul>
+      <li>push-constant 涨到 <strong>288 字节</strong> → Vulkan 提交时失败：<code>vkQueueSubmit failed: -4</code>。</li>
+      <li>用一个 <code>float4</code> 载荷把尺寸抬到 <strong>272 字节</strong> → 测试在 Vulkan submit 失败。</li>
+      <li>结论：引擎契约要求 <strong>256 字节预算内打包（256-byte-budget packing）</strong>。新增字段要么复用现有 vec4 槽位，要么改用 uniform buffer 而非 push constant。</li>
+    </ul>
+  </div>
+  <div class="callout">
+    <p><strong>现在由 RHI 硬性强执：</strong>帧计划阶段的 <code>validatePushConstants</code> 会在 <code>pushConstantSizeBytes &gt; 256</code> 时<strong>确定性抛错</strong>，不必再等到 Vulkan 提交期以 <code>vkQueueSubmit failed: -4</code> 失败。因此越界在录制前就会被捕获——把「288/272 字节」这类错误挡在加载/编译期，而非运行时 UB。</p>
+  </div>
+
+  <h3>2.5 RHI 的两条对齐校验防线</h3>
+  <p>对齐错误若在 GPU 运行期才暴露，调试成本极高。arp 把校验前移到确定性的两道防线：</p>
+  <ul>
+    <li><strong>防线一 · PipelineLayout 校验（创建管线前）。</strong>RHI（L2）在创建管线前校验 push-constant 布局：同一 shader stage 的 byte range 重叠 → 确定性失败；<code>offset + size</code> 回绕溢出 → 确定性失败。同时 <code>ShaderPipelineReflectionValidator::validate(ShaderPipelineLayoutDesc, ShaderReflection)</code> 用反射里的 <code>pushConstantSizeBytes</code> 校验你声明的尺寸与顶点属性是否和着色器真实签名一致。</li>
+    <li><strong>防线二 · 命令期 push-constant 校验（录制时）。</strong>Null 后端在 pass 内录制 <code>pushConstants()</code> 时校验：必须先绑管线再 push（pipeline-before-push）、shader stage 必须在管线声明范围内、更新非空且 range 覆盖完整、<code>offset + size</code> 不溢出；任一不满足则不在 pass 内录制任何命令——把后端专属规则挡在 L2 之下，给上层确定性失败而非原生 UB。</li>
+  </ul>
+  <div class="callout note">
+    <p>这两条防线保证：<strong>对齐/尺寸错误在加载期或录制期就被确定性捕获，而不是 GPU 静默错位渲染</strong>。配合 <code>ShaderPipelineReflectionValidator</code>，push-constant 的尺寸与着色器反射永远保持同步。</p>
+  </div>
+
+  <h3>2.6 动态 uniform 偏移对齐（256 字节）</h3>
+  <p>若你用的是 <strong>uniform buffer</strong>（描述符绑定的 UBO，而非 push constant），并按帧用<strong>动态偏移</strong>绑定同一 buffer 的不同槽位，那么偏移量必须是 <code>uniformBufferOffsetAlignment</code> 的倍数——WebGPU 运行时档案里该值就是 <strong>256</strong> 字节（<code>WebGpuRuntimeProfile::uniformBufferOffsetAlignment = 256</code>）。</p>
+  <p>同一 256 字节粒度也出现在 RHI 的暂存上传池（staging upload pool）子分配对齐（<code>alignmentBytes = 256</code>），以及纹理上传的行距（row pitch 必须 256 字节对齐）。注意：</p>
+  <div class="callout">
+    <p><strong>两个不同层级的对齐：</strong></p>
+    <ul>
+      <li><strong>结构体内部 std140 对齐（§2.2）</strong>——buffer 里「结构体的成员怎么排」。</li>
+      <li><strong>动态 uniform 偏移对齐（本节）</strong>——「绑定哪个 buffer 的哪个偏移」。</li>
+    </ul>
+    <p>两者都要满足，但属于不同的约束来源。</p>
+  </div>
+
+  <h3>2.7 编写对齐安全的结构体：清单</h3>
+  <ol>
+    <li>用 <code>float4</code> / <code>float4x4</code> 粒度设计 push-constant / UBO 结构体。</li>
+    <li>把 <code>mat4</code> 放在最前；其余参数按 vec4 打包，必要时显式 padding 到 16 字节。</li>
+    <li>总大小取 16 的倍数；<strong>push-constant 总大小 ≤ 256 字节</strong>（Vulkan 预算）。</li>
+    <li>C++ 镜像结构体与 Slang 结构体字段顺序、类型、大小一一对应；用 <code>sizeof()</code> 作为 <code>pushConstantSizeBytes</code>，并交给 <code>ShaderPipelineReflectionValidator</code> 校验。</li>
+    <li>跨后端一致性由 Slang 单一源码保证；<strong>不要</strong>为某个后端手写特化布局。</li>
+  </ol>
+
+  <h2>参考实例：world_of_claudecraft 的着色器用法</h2>
+  <p>本项目的场景着色器（<code>WoccPbrScene</code>）通过 <code>StylizedScenePushConstants</code> 的 256 字节 push-constant 块接收每帧相机与材质参数；天空盒（<code>WoccSky</code>）与后处理（<code>WoccPost</code>）各自声明自己的 push-constant / 采样器绑定。新增着色器时，先按 §2.2–§2.7 设计好对齐安全的 C++ 镜像，再在 <code>compile-shaders.ps1</code> 注册模块，最后用 <code>ShaderPipelineReflectionValidator</code> 对齐反射。</p>
+
+  <h2>快速上手清单</h2>
+  <ol>
+    <li>用 Slang 写一个 <code>.slang</code> 模块，声明 entry point、uniform/cbuffer 与 <code>[[vk::push_constant]]</code> 结构体。</li>
+    <li>按 §2 的 std140 规则在 C++ 侧写一份字段一一对应的镜像结构体，总大小对齐到 16 的倍数且 ≤ 256 字节（push constant）。</li>
+    <li>在 <code>compile-shaders.ps1</code> 注册源路径、模块名与 entry point，运行脚本产出三后端字节码 + 反射 JSON。</li>
+    <li>运行时用 <code>ShaderReflectionCache::loadFromFile()</code> 读反射，用 <code>ShaderPipelineReflectionValidator::validate()</code> 对齐管线布局，再交 RHI 创建 <code>ShaderModule</code>。</li>
+    <li>录制时用 <code>pushConstants(stages, offset, sizeof(MyPush), &amp;data)</code> 推送；若尺寸/对齐不对，RHI 会在创建管线或录制期确定性报错。</li>
+  </ol>
+
+  <div class="pager">
+    <a href="08-network.html"><div class="dir">← 上一章</div><div class="ttl">08 网络</div></a>
+    <a href="10-prefab-internal-resources.html"><div class="dir">下一章 →</div><div class="ttl">10 预制体</div></a>
+    <a class="next" href="index.html"><div class="dir">回到 →</div><div class="ttl">总览</div></a>
+  </div>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>12 程序化生成 路 arp 寮曟搸鏁欑▼</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">arp 寮曟搸鏁欑▼<small>Anime Render Pipeline</small></div>
+  <nav>
+    <div class="group-title">瀵艰埅</div>
+    <a class="nav" href="index.html"><span class="num">路</span>鎬昏</a>
+    <div class="group-title">绯荤粺鏂囨。</div>
+    <a class="nav" href="01-render-pipeline.html"><span class="num">01</span>娓叉煋绠＄嚎</a>
+    <a class="nav" href="02-gameobject-component.html"><span class="num">02</span>GameObject + Component</a>
+    <a class="nav" href="03-animation.html"><span class="num">03</span>鍔ㄧ敾</a>
+    <a class="nav" href="04-particles.html"><span class="num">04</span>绮掑瓙</a>
+    <a class="nav" href="05-ui.html"><span class="num">05</span>UI</a>
+    <a class="nav" href="06-resource-management.html"><span class="num">06</span>璧勬簮绠＄悊</a>
+    <a class="nav" href="07-reflection.html"><span class="num">07</span>鍙嶅皠</a>
+    <a class="nav" href="08-network.html"><span class="num">08</span>缃戠粶</a>
+    <a class="nav" href="09-shader.html"><span class="num">09</span>Shader</a>
+    <a class="nav" href="10-prefab-internal-resources.html"><span class="num">10</span>棰勫埗浣?</a>
+    <a class="nav" href="11-art-asset-formats.html"><span class="num">11</span>璧勪骇瀵煎叆</a>
+    <a class="nav active" href="12-procedural-generation.html"><span class="num">12</span>程序化生成</a>
+    <a class="nav" href="13-scripting.html"><span class="num">13</span>脚本</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <h1>12 程序化生成 <span class="badge green">Contract Complete</span></h1>
+  <p class="lead">程序化生成是 arp 里把“世界长什么样”拆成一组<strong>可复现、可约束、可分层</strong>的算法和数据的方式。它不等于“随机”，更不等于“运行时随便画点噪声”。对 WoCC 这类世界项目来说，程序化生成负责的是地形轮廓、河流走向、生物群落、资源分布、道路网络、聚落候选点和命名规则；真正的视觉资产仍然来自第 11 章讲的导入管线，以及第 06 章的资源管理。</p>
+
+  <div class="callout note">
+    <p><strong>一句话原则：</strong>程序化生成决定结构，资产管线决定外观，渲染系统决定表现。三者必须分层，不能把“噪声能跑”当作“内容完成”。</p>
+  </div>
+
+  <h2>1. 程序化生成到底在做什么</h2>
+  <p>在 arp 中，程序化生成通常分成四类任务：</p>
+  <ul>
+    <li><strong>布局</strong>：地形、河道、道路、聚落、 POI 的空间关系。</li>
+    <li><strong>约束</strong>：坡度、水文、海岸线、可达性、视线遮挡、资源密度。</li>
+    <li><strong>实例化</strong>：树、石头、草、建筑、道具、效果的分布与变体选择。</li>
+    <li><strong>分层输出</strong>：近景网格、远景轮廓、LOD、mask、atlas、sidecar 数据。</li>
+  </ul>
+  <p>也就是说，它回答的是“哪里应该有山、河、林、路、村子”，而不是“这棵树的叶子长什么样”。后者属于资源导入和材质资产的范畴。</p>
+
+  <h2>2. 一个标准的程序化流水线</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 820 150" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="12.5">
+      <defs><marker id="pgen" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#2f6feb"/></marker></defs>
+      <rect x="20" y="48" width="110" height="54" rx="8" fill="#e7f0ff" stroke="#2f6feb"/>
+      <text x="34" y="73" font-weight="700">Seed + Params</text>
+      <text x="34" y="91" fill="#57606a">世界种子/规则</text>
+
+      <rect x="154" y="48" width="110" height="54" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="174" y="73" font-weight="700">Noise</text>
+      <text x="172" y="91" fill="#57606a">基础形态</text>
+
+      <rect x="288" y="48" width="110" height="54" rx="8" fill="#fff4e0" stroke="#9a6700"/>
+      <text x="305" y="73" font-weight="700">Erosion</text>
+      <text x="301" y="91" fill="#57606a">侵蚀/整形</text>
+
+      <rect x="422" y="48" width="110" height="54" rx="8" fill="#f3e8ff" stroke="#6639ba"/>
+      <text x="446" y="73" font-weight="700">Biome</text>
+      <text x="436" y="91" fill="#57606a">生物群落</text>
+
+      <rect x="556" y="48" width="110" height="54" rx="8" fill="#fdecea" stroke="#b42318"/>
+      <text x="575" y="73" font-weight="700">Scatter</text>
+      <text x="573" y="91" fill="#57606a">植被/岩石</text>
+
+      <rect x="690" y="48" width="110" height="54" rx="8" fill="#eaf2ff" stroke="#0366d6"/>
+      <text x="715" y="73" font-weight="700">Output</text>
+      <text x="706" y="91" fill="#57606a">chunk/LOD</text>
+
+      <path d="M130 75 L152 75" stroke="#2f6feb" stroke-width="2" marker-end="url(#pgen)"/>
+      <path d="M264 75 L286 75" stroke="#2f6feb" stroke-width="2" marker-end="url(#pgen)"/>
+      <path d="M398 75 L420 75" stroke="#2f6feb" stroke-width="2" marker-end="url(#pgen)"/>
+      <path d="M532 75 L554 75" stroke="#2f6feb" stroke-width="2" marker-end="url(#pgen)"/>
+      <path d="M666 75 L688 75" stroke="#2f6feb" stroke-width="2" marker-end="url(#pgen)"/>
+    </svg>
+  </div>
+  <p>这条链路在 WoCC 里非常实用：先用 seed 和 chunk 坐标得到确定的高度场，再经过侵蚀塑形，接着根据坡度、水位和气候带划分 biome，最后把树、石头、草和道路规则撒到对应区域。对玩家来说看到的是“自然”；对引擎来说，每一步都能复现、验证、缓存和流式加载。</p>
+
+  <h2>3. 程序化生成和资产导入的关系</h2>
+  <p>程序化生成不会替代资产导入。它们更像两层分工：</p>
+  <table>
+    <thead><tr><th>层级</th><th>负责什么</th><th>例子</th></tr></thead>
+    <tbody>
+      <tr><td>程序化生成</td><td>决定位置、密度、规则、变体、层级</td><td>某片森林应该偏松散还是偏密集；道路绕开陡坡还是穿过山谷</td></tr>
+      <tr><td>资产导入</td><td>提供具体的树、石头、地表、材质和动画资源</td><td>Quaternius 树族、Poly Haven 岩石、ambientCG 地表</td></tr>
+      <tr><td>渲染系统</td><td>把结果画出来，并处理 LOD、阴影、风动、后处理</td><td>植被实例、阴影贴图、雾、景深、色调映射</td></tr>
+    </tbody>
+  </table>
+  <p>换句话说：程序化生成负责“森林应该出现在这里”，资产导入负责“森林里到底是哪种树”。</p>
+
+  <h2>4. WoCC 里的实战分层</h2>
+  <p>在 WoCC 这样的世界项目里，可以把程序化生成拆成下面几层：</p>
+  <ol>
+    <li><strong>世界底层</strong>：seed、地形高度、侵蚀、水文、海岸线。</li>
+    <li><strong>生态层</strong>：biome、温度、湿度、树线、草线、岩石带。</li>
+    <li><strong>实例层</strong>：树、石头、草、倒木、灌木、装饰物。</li>
+    <li><strong>内容层</strong>：道路、聚落、洞穴、地牢、 POI。</li>
+    <li><strong>表现层</strong>：LOD、雾、风、天空、远景、后处理。</li>
+  </ol>
+  <p>这五层里，前两层更接近“世界规则”，中间两层更接近“内容分布”，最后一层才是“画面表现”。这样拆开后，修改任何一层都不会把整张世界重做一遍。</p>
+
+  <h2>5. 最小可复现思路</h2>
+  <p>如果你要从零写一个程序化地形生成器，最小版本通常只需要四个输入：</p>
+  <ul>
+    <li><code>worldSeed</code>：保证同一张世界图能复现。</li>
+    <li><code>chunkCoord</code>：把无限世界拆成可缓存的小块。</li>
+    <li><code>heightSampler</code>：把世界坐标转成高度。</li>
+    <li><code>scatterRules</code>：把高度、坡度、湿度映射成实例分布。</li>
+  </ul>
+  <pre><code>TerrainChunk generateChunk(uint32_t worldSeed, int cx, int cz) {
+  auto localSeed = hash(worldSeed, cx, cz);
+  auto height = buildHeightField(localSeed, cx, cz);
+  auto biome  = classifyBiome(height, localSeed);
+  auto mesh   = buildChunkMesh(height);
+  auto plants = scatterVegetation(biome, localSeed);
+  return { mesh, plants };
+}</code></pre>
+  <p>真正的关键不是“会不会写噪声”，而是每一步都能被固定输入复现、被测试验证、被缓存保存、被流式切块。</p>
+
+  <h2>6. 这章最重要的几条纪律</h2>
+  <ul>
+    <li>程序化生成可以负责结构，但不能悄悄替代正式资产；</li>
+    <li>同一组输入必须得到同一组输出，不能依赖隐式状态；</li>
+    <li>能缓存的结果要缓存，能分块的结果要分块；</li>
+    <li>任何会影响可见结果的规则，都要有明确参数和验证路径；</li>
+    <li>如果一个系统最终会被玩家长期看到，就不要把 prototype fallback 当生产结果。</li>
+  </ul>
+
+  <div class="callout">
+    <p><strong>记忆版：</strong>程序化生成不是“乱画”，而是“按规则长出来”。规则负责世界，资源负责长相，渲染负责呈现。</p>
+  </div>
+
+  <h2>6a. 更贴近 WoCC 的代码视角</h2>
+  <p>在 WoCC 里，这个流程更接近“世界规则 + 资源选择 + 运行时实例化”的组合。下面这个例子展示了一个比较真实的分工：程序化系统只负责决定地形和生态，具体树族和地表则由资产目录提供。</p>
+  <pre><code>struct ScatterInput {
+  uint32_t worldSeed;
+  int chunkX;
+  int chunkZ;
+  float heightMeters;
+  float slope;
+  float moisture;
+};
+
+struct ScatterResult {
+  std::string treeFamilyId;
+  std::string surfaceId;
+  uint32_t instanceCount;
+};
+
+ScatterResult chooseScatter(const ScatterInput&amp; in) {
+  if (in.heightMeters &gt; 900.0f || in.slope &gt; 0.65f) {
+    return { "quaternius_twisted_tree_family", "mossy_rock_cliff", 24 };
+  }
+  if (in.moisture &gt; 0.55f) {
+    return { "quaternius_common_tree_family", "leaf_root_forest_ground", 48 };
+  }
+  return { "quaternius_pine_family", "rocky_forest_path", 32 };
+}
+
+void buildVegetationChunk(const ScatterInput&amp; in, TerrainChunk&amp; chunk) {
+  auto choice = chooseScatter(in);
+  auto treeSet = resourceManager.findByAlias(choice.treeFamilyId);
+  auto surface = resourceManager.findByAlias(choice.surfaceId);
+  scatterInstances(chunk, treeSet, surface, choice.instanceCount, in.worldSeed);
+}</code></pre>
+  <p>这段代码想表达的重点不是语法，而是职责边界：<code>chooseScatter()</code> 是程序化规则，<code>findByAlias()</code> 是资源查找，<code>scatterInstances()</code> 才是把结果投到 chunk 里的执行层。这样做的好处是每个决定都能被测试，也能很容易切到别的资产族。</p>
+
+  <div class="pager">
+    <a href="11-art-asset-formats.html"><div class="dir">鈫?上一章</div><div class="ttl">11 资源导入</div></a>
+    <a href="index.html"><div class="dir">鈫?目录</div><div class="ttl">总览</div></a>
+    <a class="next" href="13-scripting.html"><div class="dir">下一章 →</div><div class="ttl">13 脚本</div></a>
+  </div>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>03 动画 · arp 引擎教程</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">arp 引擎教程<small>Anime Render Pipeline</small></div>
+  <nav>
+    <div class="group-title">导航</div>
+    <a class="nav" href="index.html"><span class="num">·</span>总览</a>
+    <div class="group-title">系统文档</div>
+    <a class="nav" href="01-render-pipeline.html"><span class="num">01</span>渲染管线</a>
+    <a class="nav" href="02-gameobject-component.html"><span class="num">02</span>GameObject + Component</a>
+    <a class="nav active" href="03-animation.html"><span class="num">03</span>动画</a>
+    <a class="nav" href="04-particles.html"><span class="num">04</span>粒子</a>
+    <a class="nav" href="05-ui.html"><span class="num">05</span>UI</a>
+    <a class="nav" href="06-resource-management.html"><span class="num">06</span>资源管理</a>
+    <a class="nav" href="07-reflection.html"><span class="num">07</span>反射</a>
+    <a class="nav" href="08-network.html"><span class="num">08</span>网络</a>
+    <a class="nav" href="09-shader.html"><span class="num">09</span>Shader</a>
+    <a class="nav" href="10-prefab-internal-resources.html"><span class="num">10</span>预制体</a>
+    <a class="nav" href="11-art-asset-formats.html"><span class="num">11</span>资产导入</a>
+    <a class="nav" href="12-procedural-generation.html"><span class="num">12</span>程序化生成</a>
+    <a class="nav" href="13-scripting.html"><span class="num">13</span>脚本</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <h1>03 动画 <span class="badge green">Contract Complete</span> <span class="badge blue">Prototype Complete</span></h1>
+  <p class="lead">arp 引擎的动画系统（<code>src/animation</code>）覆盖：关节变换与剪辑采样、动画状态机（混合/过渡）、AnimatorController（参数驱动的状态机）、骨骼与逆绑定矩阵、CPU 蒙皮。当前骨骼姿态数学、动画 GLB 导入、CPU 蒙皮均已 <span class="badge green">Contract Complete</span>，但原生后端验证尚在进行。</p>
+
+  <h2>动画数据模型</h2>
+  <p>底层数据类型直接对应 glTF 动画语义：每个关节一条 <code>AnimationChannel</code>，含若干 <code>JointKeyframe</code>（time + transform），以及对 translation/rotation/scale 的 targetPath。</p>
+  <pre><code><span class="tk-key">struct</span> <span class="tk-type">JointTransform</span> { <span class="tk-type">Vec3</span> translation; <span class="tk-type">Quat</span> rotation; <span class="tk-type">Vec3</span> scale; };
+
+<span class="tk-key">struct</span> <span class="tk-type">AnimationChannel</span> {
+  <span class="tk-type">uint32_t</span> jointIndex;
+  <span class="tk-type">std::pmr::vector</span>&lt;<span class="tk-type">JointKeyframe</span>&gt; keyframes;
+  <span class="tk-type">std::pmr::string</span> targetPath = <span class="tk-str">"translation"</span>;
+  <span class="tk-type">std::pmr::string</span> jointName;
+};
+
+<span class="tk-key">struct</span> <span class="tk-type">AnimationClip</span> {
+  <span class="tk-type">std::pmr::string</span> name;
+  <span class="tk-type">float</span> durationSeconds;
+  <span class="tk-type">std::pmr::vector</span>&lt;<span class="tk-type">AnimationChannel</span>&gt; channels;
+  <span class="tk-type">std::pmr::vector</span>&lt;<span class="tk-type">AnimationEvent</span>&gt; events;  <span class="tk-com">// 时间线事件</span>
+};
+
+<span class="tk-com">// 在 timeSeconds 采样整条 clip，输出每关节的 pose</span>
+<span class="tk-type">bool</span> <span class="tk-fn">sampleClip</span>(<span class="tk-key">const</span> <span class="tk-type">AnimationClip</span>&amp;, <span class="tk-type">float</span> timeSeconds,
+                <span class="tk-type">std::pmr::vector</span>&lt;<span class="tk-type">JointTransform</span>&gt;&amp; outPose);
+
+<span class="tk-com">// 收集 [prev, cur] 区间内触发的事件（考虑 looping）</span>
+<span class="tk-type">void</span> <span class="tk-fn">collectEvents</span>(<span class="tk-key">const</span> <span class="tk-type">AnimationClip</span>&amp;, <span class="tk-type">float</span> prev, <span class="tk-type">float</span> cur,
+                   <span class="tk-type">bool</span> looping, <span class="tk-type">std::pmr::vector</span>&lt;<span class="tk-type">AnimationEvent</span>&gt;&amp;);</code></pre>
+
+  <h2>轻量状态机：AnimationStateMachine</h2>
+  <p>对于简单混合需求，<code>animation::AnimationStateMachine</code> 提供 <code>play()</code>、<code>transitionTo()</code>（带过渡时长）、<code>advance()</code>，并暴露当前状态名、当前时间与混合权重。</p>
+  <pre><code><span class="tk-type">AnimationStateMachine</span> sm;
+sm.<span class="tk-fn">play</span>(idleClip);
+sm.<span class="tk-fn">transitionTo</span>(runClip, <span class="tk-num">0.2f</span>);   <span class="tk-com">// 0.2s 过渡</span>
+sm.<span class="tk-fn">advance</span>(dt);
+<span class="tk-type">float</span> w = sm.<span class="tk-fn">blendWeight</span>();      <span class="tk-com">// 过渡期混合权重</span></code></pre>
+
+  <h2>AnimatorController：参数驱动状态机</h2>
+  <p>更完整的状态机由 <code>AnimatorControllerAsset</code>（数据） + <code>AnimatorControllerRuntime</code>（运行时）构成，支持 Bool/Float/Int/Trigger 参数、条件迁移、退出时间（exit time）与过渡时长。</p>
+  <div class="diagram">
+    <svg viewBox="0 0 700 210" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="12.5">
+      <defs><marker id="c1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6639ba"/></marker></defs>
+      <rect x="20" y="70" width="120" height="56" rx="8" fill="#e7f0ff" stroke="#2f6feb"/>
+      <text x="30" y="94" font-weight="700">Idle</text>
+      <text x="30" y="112" fill="#57606a">clip: idle</text>
+      <rect x="290" y="20" width="120" height="56" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="300" y="44" font-weight="700">Run</text>
+      <text x="300" y="62" fill="#57606a">clip: run</text>
+      <rect x="290" y="130" width="120" height="56" rx="8" fill="#fff4e0" stroke="#9a6700"/>
+      <text x="300" y="154" font-weight="700">Jump</text>
+      <text x="300" y="172" fill="#57606a">clip: jump</text>
+      <rect x="540" y="70" width="140" height="56" rx="8" fill="#fdecea" stroke="#b42318"/>
+      <text x="550" y="94" font-weight="700">speed=Float</text>
+      <text x="550" y="112" fill="#57606a">grounded=Bool</text>
+
+      <path d="M140 92 L288 52" stroke="#6639ba" stroke-width="2" marker-end="url(#c1)"/>
+      <path d="M140 100 L288 158" stroke="#6639ba" stroke-width="2" marker-end="url(#c1)"/>
+      <path d="M410 48 L538 88" stroke="#6639ba" stroke-width="2" marker-end="url(#c1)"/>
+      <path d="M410 158 L538 110" stroke="#6639ba" stroke-width="2" marker-end="url(#c1)"/>
+
+      <text x="20" y="180" fill="#57606a">迁移由 AnimatorCondition 驱动（If / Greater / Equals …），可带 exitTime。</text>
+    </svg>
+  </div>
+  <pre><code><span class="tk-key">struct</span> <span class="tk-type">AnimatorControllerAsset</span> {
+  <span class="tk-type">std::pmr::string</span> name;
+  <span class="tk-type">std::pmr::string</span> defaultStateName;
+  <span class="tk-type">std::pmr::vector</span>&lt;<span class="tk-type">AnimatorParameterDefinition</span>&gt; parameters;
+  <span class="tk-type">std::pmr::vector</span>&lt;<span class="tk-type">AnimatorState</span>&gt; states;
+  <span class="tk-type">std::pmr::vector</span>&lt;<span class="tk-type">AnimatorTransition</span>&gt; transitions;
+};
+
+<span class="tk-type">AnimatorControllerRuntime</span> ctrl(asset);
+ctrl.<span class="tk-fn">setFloat</span>(<span class="tk-str">"speed"</span>, 3.5f);
+ctrl.<span class="tk-fn">setBool</span>(<span class="tk-str">"grounded"</span>, <span class="tk-key">false</span>);
+ctrl.<span class="tk-fn">fireTrigger</span>(<span class="tk-str">"attack"</span>);
+ctrl.<span class="tk-fn">advance</span>(dt);
+<span class="tk-key">const</span> <span class="tk-type">std::pmr::string</span>& clip = ctrl.<span class="tk-fn">activeClipName</span>();</code></pre>
+
+  <h2>骨骼与蒙皮</h2>
+  <p><code>animation</code> 提供 <code>Skeleton</code>（关节 + 逆绑定矩阵）、<code>buildModelPose()</code>（局部 pose → 模型空间矩阵）与 <code>buildSkinMatrices()</code>（乘逆绑定得到蒙皮矩阵）。矩阵工具含 <code>Mat4</code> 乘法、仿射求逆、点/向量变换。</p>
+  <pre><code><span class="tk-key">struct</span> <span class="tk-type">Joint</span> { <span class="tk-type">std::pmr::string</span> name; <span class="tk-type">int</span> parentIndex; <span class="tk-type">Mat4</span> inverseBindMatrix; };
+
+<span class="tk-com">// 局部 pose → 模型空间 pose</span>
+<span class="tk-type">std::pmr::vector</span>&lt;<span class="tk-type">Mat4</span>&gt; modelPose =
+  <span class="tk-fn">buildModelPose</span>(skeleton, localPose);
+<span class="tk-com">// 模型空间 pose → 蒙皮矩阵（skin = modelPose * inverseBind）</span>
+<span class="tk-type">std::pmr::vector</span>&lt;<span class="tk-type">Mat4</span>&gt; skin =
+  <span class="tk-fn">buildSkinMatrices</span>(skeleton, modelPose);</code></pre>
+  <p>当前 Project Lane 路径在 CPU 上烘焙蒙皮顶点（<code>cpu_skinning</code>），并把结果作为普通网格经渲染器/RHI 路径上传。GPU 蒙皮尚未就绪，Project Lane 暂时以 CPU 蒙皮作为回退路径。</p>
+
+  <h2>参考实例：world_of_claudecraft 的动画</h2>
+  <p>该项目尚未接入骨骼蒙皮，而是用一个轻量 <code>MovementAnimator</code>（非状态机）直接根据 <code>MovementState</code> 计算视觉修饰（bob 偏移、缩放、lean 角度），再由 <code>AnimationComponent</code> 把这些修饰写回 GameObject 的 <code>TransformComponent</code>。其 <code>AnimationClipId</code> 枚举（Idle/Walk/Run/Jump/Fall）预留了未来对接引擎 <code>AnimationStateMachine</code> 的接口。</p>
+  <pre><code><span class="tk-com">// gameplay/animator.h</span>
+<span class="tk-type">AnimatorVisuals</span> v = animator.<span class="tk-fn">update</span>(movement, dt, totalTime);
+<span class="tk-com">// → 写回 TransformComponent：baseTranslation + bob，scale，lean</span>
+
+<span class="tk-com">// app/components.h — AnimationComponent::updateFromMovement()</span>
+<span class="tk-key">void</span> <span class="tk-fn">updateFromMovement</span>(<span class="tk-key">const</span> <span class="tk-type">MovementState</span>&amp;, <span class="tk-type">float</span> dt, <span class="tk-type">GameObject</span>&amp; owner);</code></pre>
+  <div class="callout note">
+    <p>这是「引擎接口 → 项目用法」的典型对照：引擎提供通用 <code>AnimationStateMachine</code>/<code>AnimatorControllerRuntime</code> 与 <code>sampleClip</code>；项目先用轻量驱动跑通视觉，待骨骼资源到位后再切到 <code>buildSkinMatrices</code> + 状态机。</p>
+  </div>
+
+  <h2>成熟度与验证</h2>
+  <table>
+    <thead><tr><th>能力</th><th>状态</th><th>验证</th></tr></thead>
+    <tbody>
+      <tr><td>骨骼姿态数学</td><td><span class="badge green">Contract</span> <span class="badge blue">Proto</span></td><td>矩阵/逆绑定单元测试</td></tr>
+      <tr><td>动画 GLB 导入</td><td><span class="badge green">Contract</span> <span class="badge blue">Proto</span></td><td>导入 CesiumMan / Fox，拒绝静态 Box</td></tr>
+      <tr><td>CPU 蒙皮</td><td><span class="badge green">Contract</span> <span class="badge blue">Proto</span></td><td><code>arp_cpu_skinning_tests</code></td></tr>
+      <tr><td>后端验证</td><td><span class="badge amber">未达</span></td><td>仅 Windows 平台验证；Android/iOS 未验证</td></tr>
+    </tbody>
+  </table>
+
+  <h2>快速上手清单</h2>
+  <ol>
+    <li>用 <code>AnimationClip</code> + <code>sampleClip()</code> 采样关节 pose；需要时间线事件用 <code>collectEvents()</code>。</li>
+    <li>简单混合用 <code>AnimationStateMachine</code>；复杂参数驱动用 <code>AnimatorControllerAsset</code> + <code>AnimatorControllerRuntime</code>。</li>
+    <li>骨骼模型：<code>buildModelPose</code> → <code>buildSkinMatrices</code>，把蒙皮矩阵送渲染器（当前建议 CPU 烘焙回退）。</li>
+    <li>在角色的 <code>Component::onUpdate</code> 里驱动动画并写回 <code>TransformComponent</code>。</li>
+  </ol>
+
+  <div class="pager">
+    <a href="02-gameobject-component.html"><div class="dir">← 上一章</div><div class="ttl">02 GameObject + Component</div></a>
+    <a class="next" href="04-particles.html"><div class="dir">下一章 →</div><div class="ttl">04 粒子</div></a>
+  </div>
+</main>
+</div>
+</body>
+</html>

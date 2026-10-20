@@ -1,0 +1,12 @@
+type: arp.script.cpp-plugin
+contractVersion: 2
+module: arp_network
+moduleVersion: 1
+exportContractHash: sha256:3433e7df75178e644042cc414d4b128e77b0aa91e999acb88a127fd3cc9d57fd
+source: network_plugin.cpp
+entry: arp_register_arp_network
+requiredServices:
+  - id: arp.network.io-context
+    version: 1
+reflectionHeaders:
+  - network/network_module.h

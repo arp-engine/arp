@@ -1,0 +1,300 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "win-vulkan-debug",
+      "displayName": "Win VULKAN Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/win-vulkan-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "C:/mingw64/bin/gcc.exe",
+        "CMAKE_CXX_COMPILER": "C:/mingw64/bin/g++.exe",
+        "CMAKE_MAKE_PROGRAM": "C:/mingw64/bin/ninja.exe",
+        "ARP_VULKAN_SDK": "C:/VulkanSDK/1.4.350.0",
+        "SLANGC_EXECUTABLE": "C:/VulkanSDK/1.4.350.0/Bin/slangc.exe"
+      }
+    },
+    {
+      "name": "win-vulkan-release",
+      "displayName": "Win VULKAN Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/win-vulkan-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "C:/mingw64/bin/gcc.exe",
+        "CMAKE_CXX_COMPILER": "C:/mingw64/bin/g++.exe",
+        "CMAKE_MAKE_PROGRAM": "C:/mingw64/bin/ninja.exe",
+        "ARP_VULKAN_SDK": "C:/VulkanSDK/1.4.350.0",
+        "SLANGC_EXECUTABLE": "C:/VulkanSDK/1.4.350.0/Bin/slangc.exe"
+      }
+    },
+    {
+      "name": "web-webgpu-debug",
+      "displayName": "Web WEBGPU Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/web-webgpu-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "C:/emsdk/upstream/emscripten/emcc.exe",
+        "CMAKE_CXX_COMPILER": "C:/emsdk/upstream/emscripten/em++.exe",
+        "CMAKE_MAKE_PROGRAM": "C:/mingw64/bin/ninja.exe",
+        "Python3_EXECUTABLE": "C:/emsdk/python/3.13.3_64bit/python.exe",
+        "ARP_SCRIPT_AOTC_HOST": "${sourceDir}/build/win-vulkan-release/arp_script_aotc.exe"
+      },
+      "toolchainFile": "C:/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "environment": {
+        "EMSDK": "C:/emsdk",
+        "EMSDK_PYTHON": "C:/emsdk/python/3.13.3_64bit/python.exe",
+        "EM_BINARYEN_ROOT": "C:/emsdk/upstream",
+        "EM_LLVM_ROOT": "C:/emsdk/upstream/bin",
+        "PATH": "C:/emsdk/python/3.13.3_64bit;C:/emsdk/upstream/bin;$penv{PATH}"
+      }
+    },
+    {
+      "name": "web-webgpu-release",
+      "displayName": "Web WEBGPU Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/web-webgpu-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "C:/emsdk/upstream/emscripten/emcc.exe",
+        "CMAKE_CXX_COMPILER": "C:/emsdk/upstream/emscripten/em++.exe",
+        "CMAKE_MAKE_PROGRAM": "C:/mingw64/bin/ninja.exe",
+        "Python3_EXECUTABLE": "C:/emsdk/python/3.13.3_64bit/python.exe",
+        "ARP_SCRIPT_AOTC_HOST": "${sourceDir}/build/win-vulkan-release/arp_script_aotc.exe"
+      },
+      "toolchainFile": "C:/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "environment": {
+        "EMSDK": "C:/emsdk",
+        "EMSDK_PYTHON": "C:/emsdk/python/3.13.3_64bit/python.exe",
+        "EM_BINARYEN_ROOT": "C:/emsdk/upstream",
+        "EM_LLVM_ROOT": "C:/emsdk/upstream/bin",
+        "PATH": "C:/emsdk/python/3.13.3_64bit;C:/emsdk/upstream/bin;$penv{PATH}"
+      }
+    },
+    {
+      "name": "macos-metal",
+      "displayName": "MacOS METAL",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/macos-metal",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_MAKE_PROGRAM": "/Users/wanghao/Library/Python/3.9/bin/ninja",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "ARP_ENABLE_VENDORED_ASSIMP": "OFF"
+      }
+    },
+    {
+      "name": "mac-metal-debug",
+      "displayName": "Mac METAL Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/mac-metal-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_MAKE_PROGRAM": "/Users/wanghao/Library/Python/3.9/bin/ninja",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "ARP_ENABLE_VENDORED_ASSIMP": "OFF"
+      }
+    },
+    {
+      "name": "mac-metal-release",
+      "displayName": "Mac METAL Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/mac-metal-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_MAKE_PROGRAM": "/Users/wanghao/Library/Python/3.9/bin/ninja",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "ARP_ENABLE_VENDORED_ASSIMP": "OFF"
+      }
+    },
+    {
+      "name": "ios-metal",
+      "displayName": "IOS METAL",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build/ios-metal",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "CMAKE_OSX_SYSROOT": "iphoneos",
+        "CMAKE_OSX_ARCHITECTURES": "arm64"
+      }
+    },
+    {
+      "name": "linux-vulkan",
+      "displayName": "Linux VULKAN",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-vulkan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "android-arm64-vulkan",
+      "displayName": "Android VULKAN",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/android-arm64-vulkan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_SYSTEM_NAME": "Android",
+        "CMAKE_ANDROID_ARCH_ABI": "arm64-v8a",
+        "CMAKE_ANDROID_STL_TYPE": "c++_static"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "win-vulkan-debug",
+      "configurePreset": "win-vulkan-debug"
+    },
+    {
+      "name": "win-vulkan-release",
+      "configurePreset": "win-vulkan-release"
+    },
+    {
+      "name": "web-webgpu-debug",
+      "configurePreset": "web-webgpu-debug",
+      "environment": {
+        "EMSDK": "C:/emsdk",
+        "EMSDK_PYTHON": "C:/emsdk/python/3.13.3_64bit/python.exe",
+        "EM_BINARYEN_ROOT": "C:/emsdk/upstream",
+        "EM_LLVM_ROOT": "C:/emsdk/upstream/bin",
+        "PATH": "C:/emsdk/python/3.13.3_64bit;C:/emsdk/upstream/bin;$penv{PATH}"
+      }
+    },
+    {
+      "name": "web-webgpu-release",
+      "configurePreset": "web-webgpu-release",
+      "environment": {
+        "EMSDK": "C:/emsdk",
+        "EMSDK_PYTHON": "C:/emsdk/python/3.13.3_64bit/python.exe",
+        "EM_BINARYEN_ROOT": "C:/emsdk/upstream",
+        "EM_LLVM_ROOT": "C:/emsdk/upstream/bin",
+        "PATH": "C:/emsdk/python/3.13.3_64bit;C:/emsdk/upstream/bin;$penv{PATH}"
+      }
+    },
+    {
+      "name": "macos-metal",
+      "configurePreset": "macos-metal"
+    },
+    {
+      "name": "mac-metal-debug",
+      "configurePreset": "mac-metal-debug"
+    },
+    {
+      "name": "mac-metal-release",
+      "configurePreset": "mac-metal-release"
+    },
+    {
+      "name": "ios-metal",
+      "configurePreset": "ios-metal"
+    },
+    {
+      "name": "linux-vulkan",
+      "configurePreset": "linux-vulkan"
+    },
+    {
+      "name": "android-arm64-vulkan",
+      "configurePreset": "android-arm64-vulkan"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "win-vulkan-debug",
+      "configurePreset": "win-vulkan-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "win-vulkan-release",
+      "configurePreset": "win-vulkan-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "web-webgpu-debug",
+      "configurePreset": "web-webgpu-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "EMSDK": "C:/emsdk",
+        "EMSDK_PYTHON": "C:/emsdk/python/3.13.3_64bit/python.exe",
+        "EM_BINARYEN_ROOT": "C:/emsdk/upstream",
+        "EM_LLVM_ROOT": "C:/emsdk/upstream/bin",
+        "PATH": "C:/emsdk/python/3.13.3_64bit;C:/emsdk/upstream/bin;$penv{PATH}"
+      }
+    },
+    {
+      "name": "web-webgpu-release",
+      "configurePreset": "web-webgpu-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "EMSDK": "C:/emsdk",
+        "EMSDK_PYTHON": "C:/emsdk/python/3.13.3_64bit/python.exe",
+        "EM_BINARYEN_ROOT": "C:/emsdk/upstream",
+        "EM_LLVM_ROOT": "C:/emsdk/upstream/bin",
+        "PATH": "C:/emsdk/python/3.13.3_64bit;C:/emsdk/upstream/bin;$penv{PATH}"
+      }
+    },
+    {
+      "name": "macos-metal",
+      "configurePreset": "macos-metal",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "mac-metal-debug",
+      "configurePreset": "mac-metal-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "mac-metal-release",
+      "configurePreset": "mac-metal-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ios-metal",
+      "configurePreset": "ios-metal",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-vulkan",
+      "configurePreset": "linux-vulkan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "android-arm64-vulkan",
+      "configurePreset": "android-arm64-vulkan",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

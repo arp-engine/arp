@@ -1,0 +1,1227 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+import package_writer
+import particle_importer
+import texture_importer
+import material_importer
+
+class UnityParticlePackageImporter(Importer):
+    def is_missing(self, document: yaml.YamlDocument) -> bool:
+        return yaml.kind_code(document) <= unity_import_common.YAML_KIND_NULL
+
+    def number(self, value: float) -> yaml.YamlDocument:
+        return yaml.number_float(value)
+
+    def mapping_or_empty(
+        self,
+        document: yaml.YamlDocument,
+        path: string) -> yaml.YamlDocument:
+        if self.is_missing(document):
+            return yaml.mapping()
+        if yaml.kind_code(document) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+        return document
+
+    def sequence_or_empty(
+        self,
+        document: yaml.YamlDocument,
+        path: string) -> yaml.YamlDocument:
+        if self.is_missing(document):
+            return yaml.sequence()
+        if yaml.kind_code(document) != unity_import_common.YAML_KIND_SEQUENCE:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+        return document
+
+    def required_mapping(self, document: yaml.YamlDocument, path: string) -> yaml.YamlDocument:
+        if yaml.kind_code(document) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+        return document
+
+    def optional_scalar(self, document: yaml.YamlDocument, field: string, path: string) -> yaml.YamlDocument:
+        var value: yaml.YamlDocument = document.get(field)
+        if self.is_missing(value):
+            return value
+        if yaml.kind_code(value) == unity_import_common.YAML_KIND_MAPPING:
+            var scalar: yaml.YamlDocument = value.get("scalar")
+            if not self.is_missing(scalar):
+                return scalar
+        if value.is_integer() or value.is_float() or value.is_boolean() or value.is_string():
+            return value
+        raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+
+    def module_enabled(self, module: yaml.YamlDocument, path: string) -> bool:
+        if self.is_missing(module):
+            return false
+        var value: yaml.YamlDocument = module.get("enabled")
+        if self.is_missing(value):
+            return false
+        if value.is_boolean():
+            return value.boolean_value()
+        if value.is_integer():
+            return value.integer_value() != 0
+        raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path + ".enabled"
+
+    def read_float(
+        self,
+        document: yaml.YamlDocument,
+        field: string,
+        path: string,
+        fallback: float) -> float:
+        var value: yaml.YamlDocument = self.optional_scalar(document, field, path)
+        if self.is_missing(value):
+            return fallback
+        if value.is_float() or value.is_integer():
+            return value.float_value()
+        raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+
+    def required_float(
+        self,
+        document: yaml.YamlDocument,
+        field: string,
+        path: string) -> float:
+        var value: yaml.YamlDocument = self.optional_scalar(document, field, path)
+        if self.is_missing(value) or (not value.is_float() and not value.is_integer()):
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+        return value.float_value()
+
+    def read_int(
+        self,
+        document: yaml.YamlDocument,
+        field: string,
+        path: string,
+        fallback: int) -> int:
+        var value: yaml.YamlDocument = self.optional_scalar(document, field, path)
+        if self.is_missing(value):
+            return fallback
+        if value.is_integer():
+            return value.integer_value()
+        raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+
+    def required_int(
+        self,
+        document: yaml.YamlDocument,
+        field: string,
+        path: string) -> int:
+        var value: yaml.YamlDocument = self.optional_scalar(document, field, path)
+        if self.is_missing(value) or not value.is_integer():
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+        return value.integer_value()
+
+    def required_bool(
+        self,
+        document: yaml.YamlDocument,
+        field: string,
+        path: string) -> bool:
+        var value: yaml.YamlDocument = self.optional_scalar(document, field, path)
+        if self.is_missing(value):
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+        if value.is_boolean():
+            return value.boolean_value()
+        if value.is_integer():
+            return value.integer_value() != 0
+        raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+
+    def read_bool(
+        self,
+        document: yaml.YamlDocument,
+        field: string,
+        path: string,
+        fallback: bool) -> bool:
+        var value: yaml.YamlDocument = self.optional_scalar(document, field, path)
+        if self.is_missing(value):
+            return fallback
+        if value.is_boolean():
+            return value.boolean_value()
+        if value.is_integer():
+            return value.integer_value() != 0
+        raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+
+    def read_bool_if_enabled(
+        self,
+        module: yaml.YamlDocument,
+        field: string,
+        path: string,
+        fallback: bool) -> bool:
+        if self.module_enabled(module, path):
+            return self.required_bool(module, field, path)
+        return self.read_bool(module, field, path, fallback)
+
+    def read_float_if_enabled(
+        self,
+        module: yaml.YamlDocument,
+        field: string,
+        path: string,
+        fallback: float) -> float:
+        if self.module_enabled(module, path):
+            return self.required_float(module, field, path)
+        return self.read_float(module, field, path, fallback)
+
+    def read_int_if_enabled(
+        self,
+        module: yaml.YamlDocument,
+        field: string,
+        path: string,
+        fallback: int) -> int:
+        if self.module_enabled(module, path):
+            return self.required_int(module, field, path)
+        return self.read_int(module, field, path, fallback)
+
+    def required_string(
+        self,
+        document: yaml.YamlDocument,
+        field: string,
+        path: string) -> string:
+        var value: yaml.YamlDocument = document.get(field)
+        if not value.is_string() or value.string_value() == "":
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+        return value.string_value()
+
+    def required_string_or_empty(
+        self,
+        document: yaml.YamlDocument,
+        field: string,
+        path: string) -> string:
+        var value: yaml.YamlDocument = document.get(field)
+        if not value.is_string():
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+        return value.string_value()
+
+    def reject_unsupported_module(
+        self,
+        particle: yaml.YamlDocument,
+        fieldName: string,
+        path: string) -> void:
+        var module: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get(fieldName), path)
+        if self.module_enabled(module, path):
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": unsupported enabled module " + path
+
+    def supported_module_field(
+        self,
+        moduleName: string,
+        fieldName: string) -> bool:
+        if fieldName == "enabled":
+            return true
+        if moduleName == "InitialModule":
+            return fieldName == "duration" or fieldName == "loop" or fieldName == "prewarm" or fieldName == "startLifetime" or fieldName == "startSpeed" or fieldName == "startSize" or fieldName == "gravityModifier" or fieldName == "simulationSpace" or fieldName == "startColor"
+        if moduleName == "EmissionModule":
+            return fieldName == "rateOverTime" or fieldName == "rateOverDistance" or fieldName == "bursts"
+        if moduleName == "ShapeModule":
+            return fieldName == "shapeType" or fieldName == "radius" or fieldName == "angle" or fieldName == "scale"
+        if moduleName == "SizeOverLifetimeModule":
+            return fieldName == "curve"
+        if moduleName == "ColorOverLifetimeModule":
+            return fieldName == "gradient"
+        if moduleName == "VelocityOverLifetimeModule":
+            return fieldName == "linearX" or fieldName == "linearY" or fieldName == "linearZ" or fieldName == "space"
+        if moduleName == "ForceOverLifetimeModule":
+            return fieldName == "x" or fieldName == "y" or fieldName == "z" or fieldName == "space"
+        if moduleName == "RotationOverLifetimeModule":
+            return fieldName == "x" or fieldName == "y" or fieldName == "z"
+        if moduleName == "NoiseModule":
+            return fieldName == "strength" or fieldName == "frequency" or fieldName == "scrollSpeed" or fieldName == "quality"
+        if moduleName == "CollisionModule":
+            return fieldName == "type" or fieldName == "dampen" or fieldName == "bounce"
+        if moduleName == "TriggerModule":
+            return fieldName == "colliderType" or fieldName == "m_Colliders"
+        if moduleName == "ExternalForcesModule":
+            return fieldName == "multiplierCurve"
+        if moduleName == "InheritVelocityModule":
+            return fieldName == "curve" or fieldName == "mode"
+        if moduleName == "TextureSheetAnimationModule":
+            return fieldName == "numTilesX" or fieldName == "numTilesY" or fieldName == "numTilesZ" or fieldName == "cycles" or fieldName == "useRandomRow" or fieldName == "m_Mode" or fieldName == "m_UvChannelMask" or fieldName == "useMeshUVs" or fieldName == "m_Sprites" or fieldName == "m_Tiles"
+        return false
+
+    def validate_enabled_module_fields(
+        self,
+        module: yaml.YamlDocument,
+        moduleName: string,
+        path: string) -> void:
+        if not self.module_enabled(module, path):
+            return
+        var keys: list = module.keys()
+        for fieldName: string in keys:
+            if not self.supported_module_field(moduleName, fieldName):
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": unsupported enabled field " + path + "." + fieldName
+
+    def read_component(
+        self,
+        module: yaml.YamlDocument,
+        field: string,
+        component: string,
+        path: string,
+        fallback: float) -> float:
+        var value: yaml.YamlDocument = module.get(field)
+        if self.is_missing(value):
+            return fallback
+        if yaml.kind_code(value) == unity_import_common.YAML_KIND_MAPPING:
+            return self.read_float(value, component, path + "." + component, fallback)
+        if value.is_float() or value.is_integer():
+            return value.float_value()
+        raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+
+    def read_component_if_enabled(
+        self,
+        module: yaml.YamlDocument,
+        field: string,
+        component: string,
+        path: string,
+        fallback: float) -> float:
+        if self.module_enabled(module, path):
+            var value: yaml.YamlDocument = module.get(field)
+            if yaml.kind_code(value) == unity_import_common.YAML_KIND_MAPPING:
+                return self.required_float(value, component, path + "." + component)
+            if value.is_float() or value.is_integer():
+                return value.float_value()
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+        return self.read_component(module, field, component, path, fallback)
+
+    def require_enabled_field(
+        self,
+        module: yaml.YamlDocument,
+        modulePath: string,
+        fieldName: string) -> void:
+        if not self.module_enabled(module, modulePath):
+            return
+        var value: yaml.YamlDocument = module.get(fieldName)
+        if self.is_missing(value):
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": missing enabled field " + modulePath + "." + fieldName
+
+    def make_vec3(self, x: float, y: float, z: float) -> yaml.YamlDocument:
+        var fields: yaml.YamlDocument = yaml.mapping()
+        fields.set("x", self.number(x))
+        fields.set("y", self.number(y))
+        fields.set("z", self.number(z))
+        var result: yaml.YamlDocument = yaml.mapping()
+        result.set("type", yaml.string("Vec3"))
+        result.set("fields", fields)
+        return result
+
+    def make_curve(
+        self,
+        source: yaml.YamlDocument,
+        valueField: string,
+        path: string) -> yaml.YamlDocument:
+        var keys: yaml.YamlDocument = yaml.sequence()
+        if yaml.kind_code(source) != unity_import_common.YAML_KIND_SEQUENCE:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+        var index: int = 0
+        while index < source.size():
+            var key: yaml.YamlDocument = source.at(index)
+            if yaml.kind_code(key) != unity_import_common.YAML_KIND_MAPPING:
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + path
+            var time: float = self.read_float(key, "time", path + ".time", 0.0)
+            var value: float = self.read_float(key, valueField, path + "." + valueField, 0.0)
+            var keyFields: yaml.YamlDocument = yaml.mapping()
+            keyFields.set("time", self.number(time))
+            keyFields.set("value", self.number(value))
+            var typedKey: yaml.YamlDocument = yaml.mapping()
+            typedKey.set("type", yaml.string("CurveKey"))
+            typedKey.set("fields", keyFields)
+            keys.append(typedKey)
+            index = index + 1
+        var curveFields: yaml.YamlDocument = yaml.mapping()
+        curveFields.set("keys", keys)
+        var curve: yaml.YamlDocument = yaml.mapping()
+        curve.set("type", yaml.string("FloatCurve"))
+        curve.set("fields", curveFields)
+        return curve
+
+    def make_burst(
+        self,
+        burst: yaml.YamlDocument,
+        path: string) -> yaml.YamlDocument:
+        var time: float = self.required_float(burst, "time", path + ".time")
+        var minCount: int = self.required_int(burst, "minCount", path + ".minCount")
+        var maxCount: int = self.required_int(burst, "maxCount", path + ".maxCount")
+        var cycleCount: int = self.required_int(burst, "cycleCount", path + ".cycleCount")
+        var repeatInterval: float = self.required_float(
+            burst, "repeatInterval", path + ".repeatInterval")
+        var probability: float = self.required_float(
+            burst, "probability", path + ".probability")
+        if time < 0.0 or minCount < 0 or maxCount < minCount or cycleCount <= 0 or repeatInterval < 0.0 or probability < 0.0 or probability > 1.0:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": invalid burst " + path
+        var fields: yaml.YamlDocument = yaml.mapping()
+        fields.set("time", self.number(time))
+        fields.set("minCount", yaml.int(minCount))
+        fields.set("maxCount", yaml.int(maxCount))
+        fields.set("cycleCount", yaml.int(cycleCount))
+        fields.set("repeatInterval", self.number(repeatInterval))
+        fields.set("probability", self.number(probability))
+        var result: yaml.YamlDocument = yaml.mapping()
+        result.set("type", yaml.string("ParticleBurst"))
+        result.set("fields", fields)
+        return result
+
+    def curve_source(
+        self,
+        module: yaml.YamlDocument,
+        path: string) -> yaml.YamlDocument:
+        var nested: yaml.YamlDocument = self.mapping_or_empty(module, path)
+        var curve: yaml.YamlDocument = nested.get("curve")
+        if not self.is_missing(curve):
+            var curveMapping: yaml.YamlDocument = self.mapping_or_empty(
+                curve, path + ".curve")
+            var nestedCurve: yaml.YamlDocument = curveMapping.get("m_Curve")
+            if not self.is_missing(nestedCurve):
+                return self.sequence_or_empty(nestedCurve, path + ".curve.m_Curve")
+        var directCurve: yaml.YamlDocument = nested.get("m_Curve")
+        if not self.is_missing(directCurve):
+            return self.sequence_or_empty(directCurve, path + ".m_Curve")
+        return yaml.sequence()
+
+    def color_alpha_curve_source(
+        self,
+        module: yaml.YamlDocument,
+        path: string) -> yaml.YamlDocument:
+        var nested: yaml.YamlDocument = self.mapping_or_empty(module, path)
+        var gradient: yaml.YamlDocument = nested.get("gradient")
+        if not self.is_missing(gradient):
+            var gradientMapping: yaml.YamlDocument = self.mapping_or_empty(
+                gradient, path + ".gradient")
+            var alphaKeys: yaml.YamlDocument = gradientMapping.get("alphaKeys")
+            if not self.is_missing(alphaKeys):
+                return self.sequence_or_empty(alphaKeys, path + ".gradient.alphaKeys")
+            var serializedGradient: yaml.YamlDocument = gradientMapping.get("m_Gradient")
+            if not self.is_missing(serializedGradient):
+                var serializedMapping: yaml.YamlDocument = self.mapping_or_empty(
+                    serializedGradient, path + ".gradient.m_Gradient")
+                var serializedAlphaKeys: yaml.YamlDocument = serializedMapping.get("alphaKeys")
+                if not self.is_missing(serializedAlphaKeys):
+                    return self.sequence_or_empty(
+                        serializedAlphaKeys,
+                        path + ".gradient.m_Gradient.alphaKeys")
+        var directKeys: yaml.YamlDocument = nested.get("alphaKeys")
+        if not self.is_missing(directKeys):
+            return self.sequence_or_empty(directKeys, path + ".alphaKeys")
+        return yaml.sequence()
+
+    def make_visual_binding(
+        self,
+        materialId: string,
+        textureId: string,
+        isTextured: bool,
+        isAdditive: bool,
+        isLightningThin: bool,
+        billboardMode: string,
+        flipbook: bool,
+        tilesX: int,
+        tilesY: int,
+        frameCount: int,
+        playRate: float,
+        randomStart: bool) -> yaml.YamlDocument:
+        var fields: yaml.YamlDocument = yaml.mapping()
+        var shaderFamily: string = "ParticleSpriteAlpha"
+        var blendMode: string = "Alpha"
+        if isAdditive:
+            shaderFamily = "ParticleSpriteAdditive"
+            blendMode = "Additive"
+        if isLightningThin:
+            shaderFamily = "ParticleLightningThin"
+            blendMode = "Additive"
+        fields.set("shaderFamilyId", yaml.string(shaderFamily))
+        fields.set("blendMode", yaml.string(blendMode))
+        fields.set("billboardMode", yaml.string(billboardMode))
+        fields.set("tintPolicy", yaml.string("Modulate"))
+        fields.set("materialAssetId", yaml.string(materialId))
+        fields.set("textureAssetId", yaml.string(textureId))
+        fields.set("isTextured", yaml.boolean(isTextured and textureId != ""))
+        fields.set("isAdditiveBlend", yaml.boolean(isAdditive))
+        fields.set("isLightningThin", yaml.boolean(isLightningThin))
+        fields.set("isFlipbook", yaml.boolean(flipbook))
+        fields.set("flipbookTilesX", yaml.int(tilesX))
+        fields.set("flipbookTilesY", yaml.int(tilesY))
+        fields.set("flipbookFrameCount", yaml.int(frameCount))
+        fields.set("flipbookPlayRate", self.number(playRate))
+        fields.set("flipbookLooping", yaml.boolean(playRate > 0.0))
+        fields.set("flipbookRandomStart", yaml.boolean(randomStart))
+        var result: yaml.YamlDocument = yaml.mapping()
+        result.set("type", yaml.string("ParticleVisualBinding"))
+        result.set("fields", fields)
+        return result
+
+    def particle_shader_family(
+        self,
+        shaderGuid: string,
+        materialPath: string) -> string:
+        if shaderGuid == unity_import_common.UNITY_SHADER_PARTICLE_ALPHA or shaderGuid == unity_import_common.UNITY_SHADER_PARTICLE_ALPHA_MOBILE:
+            return "ParticleSpriteAlpha"
+        if shaderGuid == unity_import_common.UNITY_SHADER_PARTICLE_ADDITIVE or shaderGuid == unity_import_common.UNITY_SHADER_PARTICLE_ADDITIVE_MOBILE:
+            return "ParticleSpriteAdditive"
+        if shaderGuid == unity_import_common.UNITY_SHADER_PARTICLE_MULTIPLY:
+            return "ParticleSpriteAlpha"
+        if shaderGuid == unity_import_common.UNITY_SHADER_UNLIT_TRANSPARENT:
+            return "ParticleSpriteAlpha"
+        if shaderGuid == unity_import_common.UNITY_SHADER_UNLIT_ADDITIVE:
+            return "ParticleSpriteAdditive"
+        raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": unsupported particle shader GUID " + shaderGuid + " from " + materialPath
+
+    def resolve_material(
+        self,
+        projectRoot: string,
+        materialGuid: string) -> yaml.YamlDocument:
+        var materialRecord: asset.UnityAssetRecordResult = asset.find_unity_asset(
+            projectRoot, materialGuid)
+        if not materialRecord.success:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": material GUID " + materialGuid + ": " + materialRecord.diagnostics
+        var materialResolveDiagnostic: string = unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD
+        materialResolveDiagnostic = materialResolveDiagnostic + ": material GUID " + materialGuid
+        var materialPath: string = unity_import_common.resolve_project_asset_or_raise(
+            projectRoot,
+            materialRecord.assetPath,
+            materialResolveDiagnostic)
+        var materialText: string = self.read_text_or_raise(materialPath)
+        var materialDocument: yaml.YamlDocument = self.first_document_or_raise(
+            materialText)
+        var material: yaml.YamlDocument = materialDocument.get("Material")
+        if yaml.kind_code(material) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": material document is not a Material: " + materialRecord.assetPath
+        var shader: yaml.YamlDocument = material.get("m_Shader")
+        if yaml.kind_code(shader) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": material shader is missing: " + materialRecord.assetPath
+        var shaderGuid: yaml.YamlDocument = shader.get("guid")
+        if not shaderGuid.is_string() or shaderGuid.string_value() == "":
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": material shader GUID is missing: " + materialRecord.assetPath
+        var shaderGuidText: string = shaderGuid.string_value()
+        var shaderFamily: string = self.particle_shader_family(
+            shaderGuidText, materialRecord.assetPath)
+        var textureGuidText: string = ""
+        var textureEnvironments: yaml.YamlDocument = material.get("m_TexEnvs")
+        if yaml.kind_code(textureEnvironments) <= unity_import_common.YAML_KIND_NULL:
+            var savedProperties: yaml.YamlDocument = material.get("m_SavedProperties")
+            if yaml.kind_code(savedProperties) == unity_import_common.YAML_KIND_MAPPING:
+                textureEnvironments = savedProperties.get("m_TexEnvs")
+        if yaml.kind_code(textureEnvironments) > unity_import_common.YAML_KIND_NULL and yaml.kind_code(textureEnvironments) != unity_import_common.YAML_KIND_SEQUENCE:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": material m_TexEnvs is not a sequence: " + materialRecord.assetPath
+        if yaml.kind_code(textureEnvironments) == unity_import_common.YAML_KIND_SEQUENCE:
+            var textureIndex: int = 0
+            while textureIndex < textureEnvironments.size():
+                var slot: yaml.YamlDocument = textureEnvironments.at(textureIndex)
+                if yaml.kind_code(slot) != unity_import_common.YAML_KIND_MAPPING:
+                    raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": material m_TexEnvs slot"
+                var slotKeys: list = slot.keys()
+                for propertyName: string in slotKeys:
+                    if propertyName != "_BaseMap" and propertyName != "_MainTex":
+                        continue
+                    var textureProperty: yaml.YamlDocument = slot.get(propertyName)
+                    if yaml.kind_code(textureProperty) != unity_import_common.YAML_KIND_MAPPING:
+                        raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": material texture slot " + propertyName
+                    var texture: yaml.YamlDocument = textureProperty.get("m_Texture")
+                    if yaml.kind_code(texture) <= unity_import_common.YAML_KIND_NULL:
+                        continue
+                    if yaml.kind_code(texture) != unity_import_common.YAML_KIND_MAPPING:
+                        raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": material texture reference " + propertyName
+                    var textureGuid: yaml.YamlDocument = texture.get("guid")
+                    if not textureGuid.is_string() or textureGuid.string_value() == "":
+                        raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": material texture GUID " + propertyName
+                    if propertyName == "_BaseMap" or textureGuidText == "":
+                        textureGuidText = textureGuid.string_value()
+                textureIndex = textureIndex + 1
+        var textureId: string = ""
+        var texturePath: string = ""
+        var textureSourceResourceId: string = ""
+        var textureSrgb: bool = false
+        var textureAlpha: bool = false
+        if textureGuidText != "":
+            var textureRecord: asset.UnityAssetRecordResult = asset.find_unity_asset(
+                projectRoot, textureGuidText)
+            if not textureRecord.success:
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": texture GUID " + textureGuidText + ": " + textureRecord.diagnostics
+            var textureResolveDiagnostic: string = unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD
+            textureResolveDiagnostic = textureResolveDiagnostic + ": texture GUID " + textureGuidText
+            texturePath = unity_import_common.resolve_project_asset_or_raise(
+                projectRoot,
+                textureRecord.assetPath,
+                textureResolveDiagnostic)
+            var textureImporter: UnityTextureImporter = UnityTextureImporter()
+            var decodedTexture: asset.DecodedImageResult = textureImporter.import_path(texturePath)
+            textureId = asset.unity_guid_to_uuid(textureGuidText)
+            if textureId == "":
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": invalid texture GUID " + textureGuidText
+            texturePath = textureRecord.assetPath
+            textureSourceResourceId = asset.uuid_from_text("UnityTexture|" + textureRecord.assetPath)
+            textureSrgb = decodedTexture.srgb
+            textureAlpha = decodedTexture.alpha
+        var result: yaml.YamlDocument = yaml.mapping()
+        result.set("materialId", yaml.string(asset.unity_guid_to_uuid(materialGuid)))
+        result.set("shaderGuid", yaml.string(shaderGuidText))
+        result.set("shaderPackageId", yaml.string(asset.unity_guid_to_uuid(shaderGuidText)))
+        result.set("shaderFamily", yaml.string(shaderFamily))
+        result.set("textureGuid", yaml.string(textureGuidText))
+        result.set("textureId", yaml.string(textureId))
+        result.set("texturePath", yaml.string(texturePath))
+        result.set("textureSourceResourceId", yaml.string(textureSourceResourceId))
+        result.set("textureSrgb", yaml.boolean(textureSrgb))
+        result.set("textureAlpha", yaml.boolean(textureAlpha))
+        return result
+
+    def make_emitter(
+        self,
+        particle: yaml.YamlDocument,
+        renderer: yaml.YamlDocument,
+        materialInfo: yaml.YamlDocument) -> yaml.YamlDocument:
+        var main: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("InitialModule"), "ParticleSystem.InitialModule")
+        var emission: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("EmissionModule"), "ParticleSystem.EmissionModule")
+        var shape: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("ShapeModule"), "ParticleSystem.ShapeModule")
+        var sizeLifetime: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("SizeOverLifetimeModule"),
+            "ParticleSystem.SizeOverLifetimeModule")
+        var colorLifetime: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("ColorOverLifetimeModule"),
+            "ParticleSystem.ColorOverLifetimeModule")
+        var velocityLifetime: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("VelocityOverLifetimeModule"),
+            "ParticleSystem.VelocityOverLifetimeModule")
+        var force: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("ForceOverLifetimeModule"),
+            "ParticleSystem.ForceOverLifetimeModule")
+        var rotation: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("RotationOverLifetimeModule"),
+            "ParticleSystem.RotationOverLifetimeModule")
+        var noise: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("NoiseModule"), "ParticleSystem.NoiseModule")
+        var collision: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("CollisionModule"), "ParticleSystem.CollisionModule")
+        var trigger: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("TriggerModule"), "ParticleSystem.TriggerModule")
+        var externalForces: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("ExternalForcesModule"),
+            "ParticleSystem.ExternalForcesModule")
+        var inheritVelocity: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("InheritVelocityModule"),
+            "ParticleSystem.InheritVelocityModule")
+        var textureSheet: yaml.YamlDocument = self.mapping_or_empty(
+            particle.get("TextureSheetAnimationModule"),
+            "ParticleSystem.TextureSheetAnimationModule")
+        self.validate_enabled_module_fields(
+            main, "InitialModule", "ParticleSystem.InitialModule")
+        self.validate_enabled_module_fields(
+            emission, "EmissionModule", "ParticleSystem.EmissionModule")
+        self.validate_enabled_module_fields(
+            shape, "ShapeModule", "ParticleSystem.ShapeModule")
+        self.validate_enabled_module_fields(
+            sizeLifetime, "SizeOverLifetimeModule", "ParticleSystem.SizeOverLifetimeModule")
+        self.validate_enabled_module_fields(
+            colorLifetime, "ColorOverLifetimeModule", "ParticleSystem.ColorOverLifetimeModule")
+        self.validate_enabled_module_fields(
+            velocityLifetime, "VelocityOverLifetimeModule", "ParticleSystem.VelocityOverLifetimeModule")
+        self.validate_enabled_module_fields(
+            force, "ForceOverLifetimeModule", "ParticleSystem.ForceOverLifetimeModule")
+        self.validate_enabled_module_fields(
+            rotation, "RotationOverLifetimeModule", "ParticleSystem.RotationOverLifetimeModule")
+        self.validate_enabled_module_fields(
+            noise, "NoiseModule", "ParticleSystem.NoiseModule")
+        self.validate_enabled_module_fields(
+            collision, "CollisionModule", "ParticleSystem.CollisionModule")
+        self.validate_enabled_module_fields(
+            trigger, "TriggerModule", "ParticleSystem.TriggerModule")
+        self.validate_enabled_module_fields(
+            externalForces, "ExternalForcesModule", "ParticleSystem.ExternalForcesModule")
+        self.validate_enabled_module_fields(
+            inheritVelocity, "InheritVelocityModule", "ParticleSystem.InheritVelocityModule")
+        self.validate_enabled_module_fields(
+            textureSheet, "TextureSheetAnimationModule", "ParticleSystem.TextureSheetAnimationModule")
+        self.reject_unsupported_module(
+            particle, "LightsModule", "ParticleSystem.LightsModule")
+        self.reject_unsupported_module(
+            particle, "CustomDataModule", "ParticleSystem.CustomDataModule")
+        self.reject_unsupported_module(
+            particle, "SubUVParticlesModule", "ParticleSystem.SubUVParticlesModule")
+        self.reject_unsupported_module(
+            particle, "TrailModule", "ParticleSystem.TrailModule")
+        self.reject_unsupported_module(
+            particle, "TrailsModule", "ParticleSystem.TrailsModule")
+        self.reject_unsupported_module(
+            particle, "SubModule", "ParticleSystem.SubModule")
+        self.reject_unsupported_module(
+            particle, "CollisionModule", "ParticleSystem.CollisionModule")
+        self.reject_unsupported_module(
+            particle, "TriggerModule", "ParticleSystem.TriggerModule")
+        self.require_enabled_field(
+            main, "ParticleSystem.InitialModule", "loop")
+        self.require_enabled_field(
+            main, "ParticleSystem.InitialModule", "startLifetime")
+        self.require_enabled_field(
+            main, "ParticleSystem.InitialModule", "startSpeed")
+        self.require_enabled_field(
+            main, "ParticleSystem.InitialModule", "startSize")
+        self.require_enabled_field(
+            main, "ParticleSystem.InitialModule", "gravityModifier")
+        self.require_enabled_field(
+            main, "ParticleSystem.InitialModule", "simulationSpace")
+        self.require_enabled_field(
+            main, "ParticleSystem.InitialModule", "startColor")
+        self.require_enabled_field(
+            emission, "ParticleSystem.EmissionModule", "rateOverTime")
+        self.require_enabled_field(
+            shape, "ParticleSystem.ShapeModule", "shapeType")
+        self.require_enabled_field(
+            shape, "ParticleSystem.ShapeModule", "radius")
+        self.require_enabled_field(
+            shape, "ParticleSystem.ShapeModule", "angle")
+        self.require_enabled_field(
+            shape, "ParticleSystem.ShapeModule", "scale")
+        self.require_enabled_field(
+            velocityLifetime, "ParticleSystem.VelocityOverLifetimeModule", "linearX")
+        self.require_enabled_field(
+            velocityLifetime, "ParticleSystem.VelocityOverLifetimeModule", "linearY")
+        self.require_enabled_field(
+            velocityLifetime, "ParticleSystem.VelocityOverLifetimeModule", "linearZ")
+        self.require_enabled_field(
+            force, "ParticleSystem.ForceOverLifetimeModule", "x")
+        self.require_enabled_field(
+            force, "ParticleSystem.ForceOverLifetimeModule", "y")
+        self.require_enabled_field(
+            force, "ParticleSystem.ForceOverLifetimeModule", "z")
+        self.require_enabled_field(
+            rotation, "ParticleSystem.RotationOverLifetimeModule", "z")
+        self.require_enabled_field(
+            noise, "ParticleSystem.NoiseModule", "strength")
+        self.require_enabled_field(
+            noise, "ParticleSystem.NoiseModule", "frequency")
+        self.require_enabled_field(
+            externalForces, "ParticleSystem.ExternalForcesModule", "multiplierCurve")
+        self.require_enabled_field(
+            inheritVelocity, "ParticleSystem.InheritVelocityModule", "curve")
+        self.require_enabled_field(
+            textureSheet, "ParticleSystem.TextureSheetAnimationModule", "numTilesX")
+        self.require_enabled_field(
+            textureSheet, "ParticleSystem.TextureSheetAnimationModule", "numTilesY")
+        self.require_enabled_field(
+            textureSheet, "ParticleSystem.TextureSheetAnimationModule", "numTilesZ")
+        self.require_enabled_field(
+            textureSheet, "ParticleSystem.TextureSheetAnimationModule", "cycles")
+        self.require_enabled_field(
+            textureSheet, "ParticleSystem.TextureSheetAnimationModule", "useRandomRow")
+        self.require_enabled_field(
+            textureSheet, "ParticleSystem.TextureSheetAnimationModule", "m_Mode")
+        self.require_enabled_field(
+            textureSheet, "ParticleSystem.TextureSheetAnimationModule", "m_UvChannelMask")
+        self.require_enabled_field(
+            textureSheet, "ParticleSystem.TextureSheetAnimationModule", "useMeshUVs")
+        var modulePath: string = "ParticleSystem"
+        var name: string = "Emitter"
+        var nameNode: yaml.YamlDocument = particle.get("m_Name")
+        if nameNode.is_string():
+            name = nameNode.string_value()
+        if name == "":
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + modulePath + ".m_Name"
+        var maxParticles: int = self.required_int(
+            particle, "m_MaxParticles", modulePath + ".m_MaxParticles")
+        if maxParticles <= 0:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + modulePath + ".m_MaxParticles"
+        var seed: int = self.required_int(
+            particle, "randomSeed", modulePath + ".randomSeed")
+        if seed < 0:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + modulePath + ".randomSeed"
+        var autoRandomSeed: bool = self.required_bool(
+            particle, "useAutoRandomSeed", modulePath + ".useAutoRandomSeed")
+        if autoRandomSeed:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": auto random seed is unsupported"
+        var lifetime: float = self.read_float_if_enabled(
+            main, "startLifetime", modulePath + ".InitialModule.startLifetime", 1.0)
+        var speed: float = self.read_float_if_enabled(
+            main, "startSpeed", modulePath + ".InitialModule.startSpeed", 0.0)
+        var startSize: float = self.read_float_if_enabled(
+            main, "startSize", modulePath + ".InitialModule.startSize", 1.0)
+        var gravity: float = self.read_float_if_enabled(
+            main, "gravityModifier", modulePath + ".InitialModule.gravityModifier", 0.0)
+        var loop: bool = self.read_bool_if_enabled(
+            main, "loop", modulePath + ".InitialModule.loop", true)
+        var simulationSpace: int = self.read_int_if_enabled(
+            main, "simulationSpace", modulePath + ".InitialModule.simulationSpace", 0)
+        var worldSpace: bool = simulationSpace == 1
+        var startR: float = self.read_component_if_enabled(
+            main, "startColor", "r", modulePath + ".InitialModule.startColor.r", 1.0)
+        var startG: float = self.read_component_if_enabled(
+            main, "startColor", "g", modulePath + ".InitialModule.startColor.g", 1.0)
+        var startB: float = self.read_component_if_enabled(
+            main, "startColor", "b", modulePath + ".InitialModule.startColor.b", 1.0)
+        var startA: float = self.read_component_if_enabled(
+            main, "startColor", "a", modulePath + ".InitialModule.startColor.a", 1.0)
+        var rate: float = 0.0
+        rate = self.read_float_if_enabled(
+            emission, "rateOverTime", modulePath + ".EmissionModule.rateOverTime", 0.0)
+        var burstCount: int = 0
+        var burstSchedule: yaml.YamlDocument = yaml.sequence()
+        var bursts: yaml.YamlDocument = self.sequence_or_empty(
+            emission.get("bursts"), modulePath + ".EmissionModule.bursts")
+        var burstIndex: int = 0
+        while burstIndex < bursts.size():
+            var burst: yaml.YamlDocument = self.mapping_or_empty(
+                bursts.at(burstIndex), modulePath + ".EmissionModule.bursts")
+            var burstPath: string = modulePath + ".EmissionModule.bursts.entry"
+            burstSchedule.append(self.make_burst(burst, burstPath))
+            burstCount = burstCount + self.required_int(
+                burst, "maxCount", burstPath + ".maxCount")
+            burstIndex = burstIndex + 1
+        var shapeType: int = self.read_int_if_enabled(
+            shape, "shapeType", modulePath + ".ShapeModule.shapeType", 0)
+        var shapeName: string = "Point"
+        if shapeType == 0 or shapeType == 4:
+            shapeName = "Sphere"
+        if shapeType == 2:
+            shapeName = "Cone"
+        if shapeType == 5:
+            shapeName = "Box"
+        if shapeType == 8:
+            shapeName = "DirectionalForward"
+        if shapeType != 0 and shapeType != 4 and shapeType != 5 and shapeType != 8:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": unsupported ShapeModule.shapeType"
+        var radius: float = self.read_float_if_enabled(
+            shape, "radius", modulePath + ".ShapeModule.radius", 1.0)
+        var angle: float = self.read_float_if_enabled(
+            shape, "angle", modulePath + ".ShapeModule.angle", 25.0)
+        var boxX: float = self.read_component_if_enabled(
+            shape, "scale", "x", modulePath + ".ShapeModule.scale.x", 1.0)
+        var boxY: float = self.read_component_if_enabled(
+            shape, "scale", "y", modulePath + ".ShapeModule.scale.y", 1.0)
+        var boxZ: float = self.read_component_if_enabled(
+            shape, "scale", "z", modulePath + ".ShapeModule.scale.z", 1.0)
+        var flipbookEnabled: bool = self.read_bool_if_enabled(
+            textureSheet, "enabled", modulePath + ".TextureSheetAnimationModule.enabled", false)
+        var tilesX: int = self.read_int_if_enabled(
+            textureSheet, "numTilesX", modulePath + ".TextureSheetAnimationModule.numTilesX", 1)
+        var tilesY: int = self.read_int_if_enabled(
+            textureSheet, "numTilesY", modulePath + ".TextureSheetAnimationModule.numTilesY", 1)
+        var frameCount: int = self.read_int_if_enabled(
+            textureSheet, "numTilesZ", modulePath + ".TextureSheetAnimationModule.numTilesZ", 1)
+        var cycles: float = self.read_float_if_enabled(
+            textureSheet, "cycles", modulePath + ".TextureSheetAnimationModule.cycles", 1.0)
+        var randomRow: bool = self.read_bool_if_enabled(
+            textureSheet, "useRandomRow", modulePath + ".TextureSheetAnimationModule.useRandomRow", false)
+        if flipbookEnabled and (tilesX <= 0 or tilesY <= 0 or frameCount <= 0):
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": invalid flipbook grid"
+        if flipbookEnabled:
+            var mode: int = self.read_int_if_enabled(
+                textureSheet, "m_Mode", modulePath + ".TextureSheetAnimationModule.m_Mode", 0)
+            if mode != 0:
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": unsupported TextureSheetAnimationModule.m_Mode"
+            var uvMask: int = self.read_int_if_enabled(
+                textureSheet, "m_UvChannelMask", modulePath + ".TextureSheetAnimationModule.m_UvChannelMask", 0)
+            if uvMask != 0:
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": unsupported TextureSheetAnimationModule.m_UvChannelMask"
+            if self.read_bool(
+                textureSheet, "useMeshUVs", modulePath + ".TextureSheetAnimationModule.useMeshUVs", false):
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": unsupported TextureSheetAnimationModule.useMeshUVs"
+            var sprites: yaml.YamlDocument = textureSheet.get("m_Sprites")
+            if not self.is_missing(sprites):
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": unsupported TextureSheetAnimationModule.m_Sprites"
+        var material: yaml.YamlDocument = self.mapping_or_empty(
+            renderer.get("m_Material"), "ParticleSystemRenderer.m_Material")
+        var materialGuidNode: yaml.YamlDocument = material.get("guid")
+        var materialId: string = ""
+        if not self.is_missing(materialGuidNode):
+            if not materialGuidNode.is_string():
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": ParticleSystemRenderer.m_Material.guid"
+            var unityGuid: string = materialGuidNode.string_value()
+            materialId = asset.unity_guid_to_uuid(unityGuid)
+            if materialId == "":
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": invalid Unity material GUID"
+        elif yaml.kind_code(renderer) == unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": ParticleSystemRenderer.m_Material.guid is missing"
+        var textureId: string = self.required_string_or_empty(
+            materialInfo, "textureId", "resolved material.textureId")
+        var shaderFamily: string = self.required_string(
+            materialInfo, "shaderFamily", "resolved material.shaderFamily")
+        var isTextured: bool = textureId != ""
+        var isAdditive: bool = shaderFamily == "ParticleSpriteAdditive"
+        var isLightningThin: bool = shaderFamily == "ParticleLightningThin"
+        var renderAlignment: int = self.read_int(
+            renderer, "renderAlignment", modulePath + ".ParticleSystemRenderer.renderAlignment", 0)
+        var billboardMode: string = "ViewAligned"
+        if renderAlignment == 1:
+            billboardMode = "LocalAligned"
+        if renderAlignment == 2:
+            billboardMode = "WorldAligned"
+        if renderAlignment < 0 or renderAlignment > 2:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": unsupported ParticleSystemRenderer.renderAlignment"
+        var fields: yaml.YamlDocument = yaml.mapping()
+        fields.set("name", yaml.string(name))
+        fields.set("maxParticles", yaml.int(maxParticles))
+        fields.set("burstCount", yaml.int(burstCount))
+        fields.set("burstSchedule", burstSchedule)
+        fields.set("spawnRatePerSecond", self.number(rate))
+        fields.set("particleLifetimeSeconds", self.number(lifetime))
+        fields.set("gravityAcceleration", self.number(gravity))
+        fields.set("looping", yaml.boolean(loop))
+        fields.set("enabled", yaml.boolean(true))
+        fields.set("seed", yaml.int(seed))
+        fields.set("origin", self.make_vec3(0.0, 0.0, 0.0))
+        var velocityX: float = self.read_component_if_enabled(
+            velocityLifetime, "x", "scalar", modulePath + ".VelocityOverLifetimeModule.x", 0.0)
+        var velocityY: float = self.read_component_if_enabled(
+            velocityLifetime, "y", "scalar", modulePath + ".VelocityOverLifetimeModule.y", 0.0)
+        var velocityZ: float = self.read_component_if_enabled(
+            velocityLifetime, "z", "scalar", modulePath + ".VelocityOverLifetimeModule.z", 0.0)
+        if not self.module_enabled(velocityLifetime, modulePath + ".VelocityOverLifetimeModule") and velocityX == 0.0 and velocityY == 0.0 and velocityZ == 0.0:
+            velocityY = speed
+        fields.set("velocityMin", self.make_vec3(velocityX, velocityY, velocityZ))
+        fields.set("velocityMax", self.make_vec3(velocityX, velocityY, velocityZ))
+        fields.set("emitterShape", yaml.string(shapeName))
+        fields.set("coneAngleDegrees", self.number(angle))
+        fields.set("sphereRadius", self.number(radius))
+        fields.set("boxExtents", self.make_vec3(boxX, boxY, boxZ))
+        fields.set("worldSpaceEmission", yaml.boolean(worldSpace))
+        fields.set("startSize", self.number(startSize))
+        fields.set("endSize", self.number(startSize))
+        fields.set("startColorR", self.number(startR))
+        fields.set("startColorG", self.number(startG))
+        fields.set("startColorB", self.number(startB))
+        fields.set("startColorA", self.number(startA))
+        fields.set("endColorR", self.number(startR))
+        fields.set("endColorG", self.number(startG))
+        fields.set("endColorB", self.number(startB))
+        fields.set("endColorA", self.number(startA))
+        var sizeCurveSource: yaml.YamlDocument = self.curve_source(
+            sizeLifetime, modulePath + ".SizeOverLifetimeModule")
+        if self.module_enabled(sizeLifetime, modulePath + ".SizeOverLifetimeModule") and sizeCurveSource.size() == 0:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": missing SizeOverLifetimeModule curve"
+        fields.set("sizeOverLifetime", self.make_curve(
+            sizeCurveSource,
+            "value", modulePath + ".SizeOverLifetimeModule.curve"))
+        var colorCurveSource: yaml.YamlDocument = self.color_alpha_curve_source(
+            colorLifetime, modulePath + ".ColorOverLifetimeModule")
+        if self.module_enabled(colorLifetime, modulePath + ".ColorOverLifetimeModule") and colorCurveSource.size() == 0:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": missing ColorOverLifetimeModule gradient"
+        fields.set("colorAlphaOverLifetime", self.make_curve(
+            colorCurveSource,
+            "alpha", modulePath + ".ColorOverLifetimeModule.gradient.alphaKeys"))
+        fields.set("boundsExtent", self.make_vec3(1.0, 1.0, 1.0))
+        fields.set("materialBindingId", yaml.string(materialId))
+        fields.set("textureBindingId", yaml.string(textureId))
+        fields.set("visualBinding", self.make_visual_binding(
+            materialId, textureId, isTextured, isAdditive, isLightningThin,
+            billboardMode, flipbookEnabled,
+            tilesX, tilesY, frameCount, cycles, randomRow))
+        var rotationZ: float = self.read_component_if_enabled(
+            rotation, "z", "scalar", modulePath + ".RotationOverLifetimeModule.z", 0.0)
+        fields.set("rotationSpeed", self.number(rotationZ))
+        var noiseAmplitude: float = self.read_float_if_enabled(
+            noise, "strength", modulePath + ".NoiseModule.strength", 0.0)
+        var noiseFrequency: float = self.read_float_if_enabled(
+            noise, "frequency", modulePath + ".NoiseModule.frequency", 0.0)
+        fields.set("noiseAmplitude", self.number(noiseAmplitude))
+        fields.set("noiseFrequency", self.number(noiseFrequency))
+        fields.set("externalForcesMultiplier", self.number(self.read_float_if_enabled(externalForces, "multiplierCurve", modulePath + ".ExternalForcesModule.multiplierCurve", 1.0)))
+        fields.set("inheritVelocityFactor", self.number(self.read_float_if_enabled(inheritVelocity, "curve", modulePath + ".InheritVelocityModule.curve", 0.0)))
+        var externalForceX: float = self.read_component_if_enabled(
+            force, "x", "scalar", modulePath + ".ForceOverLifetimeModule.x", 0.0)
+        var externalForceY: float = self.read_component_if_enabled(
+            force, "y", "scalar", modulePath + ".ForceOverLifetimeModule.y", 0.0)
+        var externalForceZ: float = self.read_component_if_enabled(
+            force, "z", "scalar", modulePath + ".ForceOverLifetimeModule.z", 0.0)
+        fields.set("externalForce", self.make_vec3(
+            externalForceX, externalForceY, externalForceZ))
+        fields.set("flipbookTilesX", yaml.int(tilesX))
+        fields.set("flipbookTilesY", yaml.int(tilesY))
+        fields.set("flipbookFrameCount", yaml.int(frameCount))
+        fields.set("flipbookPlayRate", self.number(cycles))
+        fields.set("flipbookLooping", yaml.boolean(cycles > 0.0))
+        fields.set("flipbookRandomStart", yaml.boolean(randomRow))
+        var typedEmitter: yaml.YamlDocument = yaml.mapping()
+        typedEmitter.set("type", yaml.string("ParticleEmitterAssetDesc"))
+        typedEmitter.set("fields", fields)
+        return typedEmitter
+
+    def find_particle_component(
+        self,
+        parsed: yaml.YamlParseResult) -> yaml.YamlDocument:
+        for document: yaml.YamlDocument in parsed.documents:
+            var particle: yaml.YamlDocument = document.get("ParticleSystem")
+            if self.is_missing(particle):
+                continue
+            if yaml.kind_code(particle) == unity_import_common.YAML_KIND_MAPPING:
+                return particle
+        return yaml.mapping()
+
+    def find_renderer_component(
+        self,
+        parsed: yaml.YamlParseResult) -> yaml.YamlDocument:
+        for document: yaml.YamlDocument in parsed.documents:
+            var renderer: yaml.YamlDocument = document.get("ParticleSystemRenderer")
+            if self.is_missing(renderer):
+                continue
+            if yaml.kind_code(renderer) == unity_import_common.YAML_KIND_MAPPING:
+                return renderer
+        return yaml.mapping()
+
+    def build_fields(
+        self,
+        input: string,
+        parsed: yaml.YamlParseResult,
+        packageName: string,
+        projectRoot: string) -> yaml.YamlDocument:
+        var particle: yaml.YamlDocument = self.find_particle_component(parsed)
+        var particleSystemCount: int = 0
+        for document: yaml.YamlDocument in parsed.documents:
+            var particleDocument: yaml.YamlDocument = document.get("ParticleSystem")
+            if self.is_missing(particleDocument):
+                continue
+            if yaml.kind_code(particleDocument) == unity_import_common.YAML_KIND_MAPPING:
+                particleSystemCount = particleSystemCount + 1
+        if particleSystemCount == 0:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_COMPONENT
+        var fields: yaml.YamlDocument = yaml.mapping()
+        var name: string = packageName
+        var sourceName: yaml.YamlDocument = particle.get("m_Name")
+        if name == "" and sourceName.is_string():
+            name = sourceName.string_value()
+        if name == "":
+            name = unity_import_common.PACKAGE_DEFAULT_PARTICLE_NAME
+
+        var sourceHash: io.IoHashResult = io.hash_file(input)
+        if not sourceHash.success:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": source hash: " + sourceHash.diagnostics
+        fields.set("sourceHash", yaml.string(sourceHash.hash))
+        fields.set("name", yaml.string(name))
+        fields.set("sourcePath", yaml.string(input))
+        fields.set("contractVersion", yaml.string(
+            unity_import_common.PARTICLE_CONTRACT_VERSION))
+        fields.set("prefabBindingId", yaml.string(asset.uuid_from_text(
+            "UnityParticleBinding|" + input)))
+        fields.set("sidecarBlobPath", yaml.string(""))
+        fields.set("sidecarBlobHash", yaml.int(0))
+        fields.set("shaderPackageId", yaml.string(""))
+        fields.set("materialAssetId", yaml.string(""))
+        var maxParticles: int = self.required_int(
+            particle, "m_MaxParticles", "ParticleSystem.m_MaxParticles")
+        if maxParticles <= 0:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": ParticleSystem.m_MaxParticles"
+        fields.set("maxParticles", yaml.int(maxParticles))
+        fields.set("maxEmitters", yaml.int(particleSystemCount))
+        fields.set("maxMaterialBindings", yaml.int(
+            unity_import_common.PARTICLE_DEFAULT_MAX_MATERIAL_BINDINGS))
+        fields.set("maxTextureBindings", yaml.int(
+            unity_import_common.PARTICLE_DEFAULT_MAX_TEXTURE_BINDINGS))
+        fields.set("qualityProfile", yaml.string(
+            unity_import_common.PARTICLE_DEFAULT_QUALITY_PROFILE))
+        var renderer: yaml.YamlDocument = self.find_renderer_component(parsed)
+        var material: yaml.YamlDocument = self.mapping_or_empty(
+            renderer.get("m_Material"), "ParticleSystemRenderer.m_Material")
+        var materialGuid: yaml.YamlDocument = material.get("guid")
+        var materialInfo: yaml.YamlDocument = yaml.mapping()
+        if not self.is_missing(materialGuid):
+            if not materialGuid.is_string():
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": ParticleSystemRenderer.m_Material.guid"
+            var materialId: string = asset.unity_guid_to_uuid(materialGuid.string_value())
+            if materialId == "":
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": invalid Unity material GUID"
+            fields.set("materialAssetId", yaml.string(materialId))
+            materialInfo = self.resolve_material(projectRoot, materialGuid.string_value())
+            var shaderPackageId: string = self.required_string(
+                materialInfo, "shaderPackageId", "resolved material.shaderPackageId")
+            fields.set("shaderPackageId", yaml.string(shaderPackageId))
+        else:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": ParticleSystemRenderer.m_Material.guid is missing"
+        var emitters: yaml.YamlDocument = yaml.sequence()
+        for document: yaml.YamlDocument in parsed.documents:
+            var particleDocument: yaml.YamlDocument = document.get("ParticleSystem")
+            if yaml.kind_code(particleDocument) == unity_import_common.YAML_KIND_MAPPING:
+                var rendererDocument: yaml.YamlDocument = document.get("ParticleSystemRenderer")
+                if self.is_missing(rendererDocument):
+                    rendererDocument = renderer
+                else:
+                    rendererDocument = self.mapping_or_empty(
+                        rendererDocument, "ParticleSystemRenderer")
+                emitters.append(self.make_emitter(
+                    particleDocument, rendererDocument, materialInfo))
+        if emitters.size() == 0:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD
+        fields.set("emitters", emitters)
+        return fields
+
+    def package_texture_info(
+        self,
+        parsed: yaml.YamlParseResult,
+        projectRoot: string) -> yaml.YamlDocument:
+        var renderer: yaml.YamlDocument = self.find_renderer_component(parsed)
+        var material: yaml.YamlDocument = self.mapping_or_empty(
+            renderer.get("m_Material"), "ParticleSystemRenderer.m_Material")
+        var materialGuid: yaml.YamlDocument = material.get("guid")
+        if self.is_missing(materialGuid):
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": ParticleSystemRenderer.m_Material.guid is missing"
+        if not materialGuid.is_string() or materialGuid.string_value() == "":
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": ParticleSystemRenderer.m_Material.guid"
+        return self.resolve_material(projectRoot, materialGuid.string_value())
+
+    def import_path(
+        self,
+        input: string,
+        outputDirectory: string,
+        packageName: string,
+        alias: string,
+        status: string,
+        projectRoot: string) -> int:
+        var validator: UnityParticleImporter = UnityParticleImporter()
+        validator.validate(input)
+        var read: io.IoTextResult = io.read_text(input)
+        if not read.success:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_READ + ": " + read.diagnostics
+        var parsed: yaml.YamlParseResult = yaml.parse(read.text)
+        if not parsed.success:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PARSE + ": " + parsed.diagnostics
+
+        var fields: yaml.YamlDocument = self.build_fields(
+            input, parsed, packageName, projectRoot)
+        var textureInfo: yaml.YamlDocument = self.package_texture_info(
+            parsed, projectRoot)
+        var payload: yaml.YamlDocument = UnityPackageWriter().make_payload(
+            unity_import_common.RESOURCE_TYPE_PARTICLE_EFFECT, fields)
+        var serializedPayload: yaml.YamlTextResult = yaml.stringify(payload)
+        if not serializedPayload.success:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + serializedPayload.diagnostics
+        var payloadHash: asset.AssetHashResult = asset.hash_payload(
+            serializedPayload.text)
+        if not payloadHash.success:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": " + payloadHash.diagnostics
+
+        var resourceName: string = packageName
+        if resourceName == "":
+            resourceName = unity_import_common.PACKAGE_DEFAULT_PARTICLE_NAME
+        var resourceAlias: string = alias
+        if resourceAlias == "":
+            resourceAlias = unity_import_common.PACKAGE_DEFAULT_PARTICLE_ALIAS
+        var resourceStatus: string = status
+        if resourceStatus == "":
+            resourceStatus = unity_import_common.RESOURCE_STATUS_PROTOTYPE
+        var uuidSeedPrefix: string = unity_import_common.PARTICLE_UUID_SEED_PREFIX
+        var uuidSeed: string = uuidSeedPrefix + input
+        uuidSeed = uuidSeed + "|" + resourceAlias
+        var resourceId: string = asset.uuid_from_text(uuidSeed)
+        if not asset.is_resource_uuid(resourceId):
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD
+
+        var writer: UnityPackageWriter = UnityPackageWriter()
+        var dependencies: yaml.YamlDocument = yaml.sequence()
+        var entries: yaml.YamlDocument = yaml.sequence()
+        var hasTextureEntry: bool = false
+        var textureEntry: yaml.YamlDocument = yaml.mapping()
+        var textureIdNode: yaml.YamlDocument = textureInfo.get("textureId")
+        if textureIdNode.is_string() and textureIdNode.string_value() != "":
+            var textureId: string = textureIdNode.string_value()
+            var texturePath: string = textureInfo.get("texturePath").string_value()
+            var textureFields: yaml.YamlDocument = yaml.mapping()
+            textureFields.set("name", yaml.string(texturePath))
+            textureFields.set("sourcePath", yaml.string(texturePath))
+            textureFields.set("sourceResourceId", yaml.string(
+                textureInfo.get("textureSourceResourceId").string_value()))
+            textureFields.set("usage", yaml.string("color"))
+            textureFields.set("srgb", yaml.boolean(
+                textureInfo.get("textureSrgb").boolean_value()))
+            textureFields.set("alpha", yaml.boolean(
+                textureInfo.get("textureAlpha").boolean_value()))
+            var textureSourceId: string = textureInfo.get(
+                "textureSourceResourceId").string_value()
+            var textureSourceDiagnostic: string = unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD
+            textureSourceDiagnostic = textureSourceDiagnostic + ": texture source"
+            var textureSourcePath: string = unity_import_common.resolve_project_asset_or_raise(
+                projectRoot,
+                texturePath,
+                textureSourceDiagnostic)
+            var textureSourceHash: io.IoHashResult = io.hash_file(textureSourcePath)
+            if not textureSourceHash.success:
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": texture source hash: " + textureSourceHash.diagnostics
+            var sourceFields: yaml.YamlDocument = yaml.mapping()
+            sourceFields.set("name", yaml.string(texturePath))
+            sourceFields.set("sourcePath", yaml.string(texturePath))
+            sourceFields.set("sourceGuid", yaml.string(textureInfo.get("textureGuid").string_value()))
+            sourceFields.set("fileId", yaml.string("0"))
+            sourceFields.set("sourceAssetType", yaml.string("Texture"))
+            sourceFields.set("importerKind", yaml.string("UnityParticlePrefab"))
+            sourceFields.set("contentHash", yaml.integer(textureSourceHash.hashValue))
+            var sourcePayload: yaml.YamlDocument = writer.make_payload(
+                unity_import_common.RESOURCE_TYPE_EXTERNAL_SOURCE, sourceFields)
+            var sourceSerialized: yaml.YamlTextResult = yaml.stringify(sourcePayload)
+            if not sourceSerialized.success:
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": serialize texture source: " + sourceSerialized.diagnostics
+            var sourceHash: asset.AssetHashResult = asset.hash_payload(sourceSerialized.text)
+            if not sourceHash.success:
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": hash texture source: " + sourceHash.diagnostics
+            var sourceEnvelope: yaml.YamlDocument = writer.make_envelope(
+                textureSourceId,
+                unity_import_common.RESOURCE_TYPE_EXTERNAL_SOURCE,
+                resourceAlias + "/source/texture",
+                texturePath,
+                resourceStatus,
+                sourceHash.hash,
+                yaml.sequence(),
+                sourcePayload)
+            writer.write_entry(
+                outputDirectory,
+                "particle-source.arpres.yaml",
+                sourceEnvelope)
+            entries.append(writer.make_entry(
+                textureSourceId,
+                unity_import_common.RESOURCE_TYPE_EXTERNAL_SOURCE,
+                resourceAlias + "/source/texture",
+                "particle-source.arpres.yaml",
+                resourceStatus,
+                sourceHash.hash,
+                yaml.sequence()))
+            var texturePayload: yaml.YamlDocument = writer.make_payload(
+                unity_import_common.RESOURCE_TYPE_TEXTURE, textureFields)
+            var textureSerialized: yaml.YamlTextResult = yaml.stringify(texturePayload)
+            if not textureSerialized.success:
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": serialize texture: " + textureSerialized.diagnostics
+            var textureHash: asset.AssetHashResult = asset.hash_payload(
+                textureSerialized.text)
+            if not textureHash.success:
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD + ": hash texture: " + textureHash.diagnostics
+            var textureEnvelope: yaml.YamlDocument = writer.make_envelope(
+                textureId,
+                unity_import_common.RESOURCE_TYPE_TEXTURE,
+                resourceAlias + "/texture",
+                texturePath,
+                resourceStatus,
+                textureHash.hash,
+                yaml.sequence(),
+                texturePayload)
+            writer.write_entry(
+                outputDirectory,
+                unity_import_common.PARTICLE_TEXTURE_ENVELOPE_PATH,
+                textureEnvelope)
+            textureEntry = writer.make_entry(
+                textureId,
+                unity_import_common.RESOURCE_TYPE_TEXTURE,
+                resourceAlias + "/texture",
+                unity_import_common.PARTICLE_TEXTURE_ENVELOPE_PATH,
+                resourceStatus,
+                textureHash.hash,
+                yaml.sequence())
+            hasTextureEntry = true
+            dependencies.append(writer.make_dependency(textureId, "texture"))
+        var envelope: yaml.YamlDocument = writer.make_envelope(
+            resourceId,
+            unity_import_common.RESOURCE_TYPE_PARTICLE_EFFECT,
+            resourceAlias,
+            resourceName,
+            resourceStatus,
+            payloadHash.hash,
+            dependencies,
+            payload)
+        writer.write_entry(
+            outputDirectory,
+            unity_import_common.PARTICLE_ENVELOPE_PATH,
+            envelope)
+        entries.append(writer.make_entry(
+            resourceId,
+            unity_import_common.RESOURCE_TYPE_PARTICLE_EFFECT,
+            resourceAlias,
+            unity_import_common.PARTICLE_ENVELOPE_PATH,
+            resourceStatus,
+            payloadHash.hash,
+            dependencies))
+        if hasTextureEntry:
+            entries.append(textureEntry)
+        writer.write_package(
+            outputDirectory, resourceName, resourceStatus, entries)
+        return unity_import_common.STATUS_OK
+

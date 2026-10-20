@@ -1,0 +1,90 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+import model_importer
+import texture_importer
+
+class UnityMetaImporter(Importer):
+    def read_meta(self, input: string) -> yaml.YamlDocument:
+        var text: string = self.read_text_or_raise(input)
+        var meta: yaml.YamlDocument = self.first_document_or_raise(text)
+        if yaml.kind_code(meta) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_META_INVALID + ": " + input
+        return meta
+
+    def has_component(self, meta: yaml.YamlDocument, name: string) -> bool:
+        return yaml.kind_code(meta.get(name)) == unity_import_common.YAML_KIND_MAPPING
+
+    def importer_name(self, input: string) -> string:
+        var meta: yaml.YamlDocument = self.read_meta(input)
+        var found: string = ""
+        var foundCount: int = 0
+        if self.has_component(meta, "ModelImporter"):
+            found = "ModelImporter"
+            foundCount = foundCount + 1
+        if self.has_component(meta, "TextureImporter"):
+            found = "TextureImporter"
+            foundCount = foundCount + 1
+        if self.has_component(meta, "NativeFormatImporter"):
+            found = "NativeFormatImporter"
+            foundCount = foundCount + 1
+        if self.has_component(meta, "DefaultImporter"):
+            found = "DefaultImporter"
+            foundCount = foundCount + 1
+        if foundCount == 0:
+            var keys: list = meta.keys()
+            for key: string in keys:
+                if yaml.kind_code(meta.get(key)) == unity_import_common.YAML_KIND_MAPPING:
+                    raise unity_import_common.DIAGNOSTIC_META_IMPORTER_UNSUPPORTED + ": " + key
+            raise unity_import_common.DIAGNOSTIC_META_IMPORTER_MISSING + ": " + input
+        if foundCount != 1:
+            raise unity_import_common.DIAGNOSTIC_META_IMPORTER_AMBIGUOUS + ": " + input
+        return found
+
+    def generic_report_kind(self, importerName: string) -> string:
+        if importerName == "NativeFormatImporter":
+            return unity_import_common.REPORT_KIND_NATIVE_META
+        if importerName == "DefaultImporter":
+            return unity_import_common.REPORT_KIND_DEFAULT_META
+        raise unity_import_common.DIAGNOSTIC_META_IMPORTER_UNSUPPORTED + ": " + importerName
+
+    def validate_generic(self, input: string, importerName: string) -> void:
+        var meta: yaml.YamlDocument = self.read_meta(input)
+        var importer: yaml.YamlDocument = meta.get(importerName)
+        if yaml.kind_code(importer) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_META_IMPORTER_UNSUPPORTED + ": " + importerName
+
+    def export_generic(self, input: string, output: string, importerName: string) -> int:
+        self.validate_generic(input, importerName)
+        var report: yaml.YamlDocument = self.make_report(
+            input, self.generic_report_kind(importerName), unity_import_common.STATUS_OK)
+        var meta: yaml.YamlDocument = yaml.mapping()
+        meta.set("importer", yaml.string(importerName))
+        report.set("meta", meta)
+        return self.write_report(output, report)
+
+    def validate(self, input: string) -> void:
+        var importerName: string = self.importer_name(input)
+        if importerName == "ModelImporter":
+            var modelImporter: UnityModelImporter = UnityModelImporter()
+            modelImporter.validate_meta(input)
+            return
+        if importerName == "TextureImporter":
+            var textureImporter: UnityTextureImporter = UnityTextureImporter()
+            textureImporter.validate_meta(input)
+            return
+        self.validate_generic(input, importerName)
+
+    def export_path(self, input: string, output: string) -> int:
+        var importerName: string = self.importer_name(input)
+        if importerName == "ModelImporter":
+            var modelImporter: UnityModelImporter = UnityModelImporter()
+            return modelImporter.export_path(input, output)
+        if importerName == "TextureImporter":
+            var textureImporter: UnityTextureImporter = UnityTextureImporter()
+            return textureImporter.export_meta_path(input, output)
+        return self.export_generic(input, output, importerName)
+

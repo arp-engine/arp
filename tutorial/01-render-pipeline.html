@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>01 渲染管线 · arp 引擎教程</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">arp 引擎教程<small>Anime Render Pipeline</small></div>
+  <nav>
+    <div class="group-title">导航</div>
+    <a class="nav" href="index.html"><span class="num">·</span>总览</a>
+    <div class="group-title">系统文档</div>
+    <a class="nav active" href="01-render-pipeline.html"><span class="num">01</span>渲染管线</a>
+    <a class="nav" href="02-gameobject-component.html"><span class="num">02</span>GameObject + Component</a>
+    <a class="nav" href="03-animation.html"><span class="num">03</span>动画</a>
+    <a class="nav" href="04-particles.html"><span class="num">04</span>粒子</a>
+    <a class="nav" href="05-ui.html"><span class="num">05</span>UI</a>
+    <a class="nav" href="06-resource-management.html"><span class="num">06</span>资源管理</a>
+    <a class="nav" href="07-reflection.html"><span class="num">07</span>反射</a>
+    <a class="nav" href="08-network.html"><span class="num">08</span>网络</a>
+    <a class="nav" href="09-shader.html"><span class="num">09</span>Shader</a>
+    <a class="nav" href="10-prefab-internal-resources.html"><span class="num">10</span>预制体</a>
+    <a class="nav" href="11-art-asset-formats.html"><span class="num">11</span>资产导入</a>
+    <a class="nav" href="12-procedural-generation.html"><span class="num">12</span>程序化生成</a>
+    <a class="nav" href="13-scripting.html"><span class="num">13</span>脚本</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <h1>01 渲染管线 <span class="badge purple">Prototype Complete</span></h1>
+  <p class="lead">arp 引擎的渲染管线是一条「后端中立」的链路：场景/UI 提取产出队列 → 渲染器声明 pass 并构建 DrawPlan → 帧图（FrameGraph）编译出确定执行计划 → RHI 后端录制原生命令。本文讲清楚这条链路上每个环节的职责与接口。</p>
+
+  <h2>全景链路</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 740 230" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="12.5">
+      <defs>
+        <marker id="a1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#2f6feb"/></marker>
+      </defs>
+      <rect x="10" y="60" width="120" height="60" rx="8" fill="#e7f0ff" stroke="#2f6feb"/>
+      <text x="20" y="86" font-weight="700">提取</text>
+      <text x="20" y="104" fill="#57606a">RenderQueue</text>
+
+      <rect x="160" y="60" width="120" height="60" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="170" y="86" font-weight="700">渲染器</text>
+      <text x="170" y="104" fill="#57606a">DrawPlan / pass</text>
+
+      <rect x="310" y="60" width="130" height="60" rx="8" fill="#fff4e0" stroke="#9a6700"/>
+      <text x="320" y="86" font-weight="700">FrameGraph</text>
+      <text x="320" y="104" fill="#57606a">compile()</text>
+
+      <rect x="470" y="60" width="120" height="60" rx="8" fill="#f0e9fb" stroke="#6639ba"/>
+      <text x="480" y="86" font-weight="700">RHI</text>
+      <text x="480" y="104" fill="#57606a">命令录制</text>
+
+      <rect x="620" y="60" width="110" height="60" rx="8" fill="#fdecea" stroke="#b42318"/>
+      <text x="630" y="86" font-weight="700">后端</text>
+      <text x="630" y="104" fill="#57606a">Vulkan/…</text>
+
+      <path d="M130 90 L158 90" stroke="#2f6feb" stroke-width="2" marker-end="url(#a1)"/>
+      <path d="M280 90 L308 90" stroke="#2f6feb" stroke-width="2" marker-end="url(#a1)"/>
+      <path d="M440 90 L468 90" stroke="#2f6feb" stroke-width="2" marker-end="url(#a1)"/>
+      <path d="M590 90 L618 90" stroke="#2f6feb" stroke-width="2" marker-end="url(#a1)"/>
+
+      <text x="10" y="160" fill="#57606a">关键约束：</text>
+      <text x="10" y="180" fill="#1f2328">renderer / render_graph 不得 include 原生图形头或暴露原生句柄；原生实现只在 rhi/backend 与 platform 内。</text>
+      <text x="10" y="200" fill="#1f2328">场景/UI 提取不拷贝静态顶点数据到热路径；队列只携带句柄、元数据、世界变换、包围盒、排序键。</text>
+    </svg>
+  </div>
+
+  <h2>1. RenderPipeline 接口</h2>
+  <p>渲染管线的抽象基类 <code>arp::renderer::RenderPipeline</code> 定义了一帧的创建、缩放、渲染与构图契约。自定义管线通过 <code>RenderFeature::registerPasses()</code> 向 <code>RenderPipelineBuilder</code> 注册 pass。</p>
+  <pre><code><span class="tk-key">class</span> <span class="tk-type">ARP_API</span> <span class="tk-type">RenderPipeline</span> {
+<span class="tk-key">public</span>:
+  <span class="tk-key">virtual const</span> <span class="tk-type">RenderPipelineDesc</span>& desc() <span class="tk-key">const</span> = 0;
+  <span class="tk-key">virtual</span> <span class="tk-type">RendererResult</span> create(<span class="tk-key">const</span> <span class="tk-type">RenderPipelineCreateContext</span>&) = 0;
+  <span class="tk-key">virtual</span> <span class="tk-type">RendererResult</span> resize(<span class="tk-type">rhi::Extent2D</span>) = 0;
+  <span class="tk-key">virtual</span> <span class="tk-type">RendererResult</span> render(<span class="tk-type">RenderPipelineContext</span>&) = 0;
+
+  <span class="tk-com">// 自定义管线实现：把 pass 录入帧图</span>
+  <span class="tk-key">virtual</span> <span class="tk-type">RendererResult</span> recordGraph(<span class="tk-type">render_graph::RenderContext</span>&,
+                                <span class="tk-type">RenderPipelineContext</span>&);
+  <span class="tk-key">virtual</span> <span class="tk-type">RendererResult</span> composeGraph(<span class="tk-type">render_graph::FrameGraph</span>&,
+                                <span class="tk-type">render_graph::TextureHandle</span> backbuffer,
+                                <span class="tk-key">const</span> <span class="tk-type">RenderPipelineGraphCompositionContext</span>&,
+                                <span class="tk-type">RenderPipelineFrameFeatures</span> frameFeatures);
+  <span class="tk-key">virtual bool</span> supportsGraphPostprocess(<span class="tk-type">RenderGraphPostprocessPass</span>) <span class="tk-key">const</span>;
+};</code></pre>
+
+  <h4>用 RenderPipelineBuilder 声明 pass</h4>
+  <p>pass 通过 <code>addGraphicsPass()</code> 声明其读/写纹理与执行回调，帧图据此推导依赖、生命周期与 barrier。</p>
+  <pre><code><span class="tk-type">RenderPipelineBuilder</span> builder(graph, backbuffer, desc);
+
+builder.<span class="tk-fn">addGraphicsPass</span>(
+  <span class="tk-str">"scene"</span>,
+  <span class="tk-com">/* reads  */</span> { { sceneDepth,  rhi::ResourceState::ShaderRead } },
+  <span class="tk-com">/* writes */</span> { { color,      rhi::ResourceState::ColorAttachment } },
+  [](<span class="tk-type">render_graph::RenderContext</span>& rc,
+     <span class="tk-key">const</span> <span class="tk-type">RenderGraphColorTargetContext</span>& ctx) {
+     <span class="tk-com">// 通过 RHI 编码器录制该 pass 的绘制命令</span>
+  });</code></pre>
+
+  <h2>2. FrameGraph：编译式帧执行计划</h2>
+  <p><code>src/render_graph</code> 负责帧级 pass 依赖、资源生命周期、barrier、瞬时别名、load/store 策略与队列/外部资源保护。你声明 pass 及其资源读写意图，FrameGraph 编译出一份确定的执行计划并驱动执行。</p>
+  <p><code>FrameGraph::addPass(name)</code> 声明一个 pass，返回 <code>PassBuilder</code>；用 <code>.read()</code> / <code>.write()</code> / <code>.writeAttachment()</code> / <code>.kind(PassKind)</code> / <code>.queue(QueueRole)</code> 描述资源用途，最后 <code>.execute(callback)</code> 绑定录制回调（渲染器层 <code>RenderPipelineBuilder::addGraphicsPass</code> 只是它的薄封装，见 §1）。<code>compile()</code> 返回 <code>CompiledFrameGraph</code>——编译产物是 barrier、别名与生命周期的<strong>唯一事实源</strong>，执行器只回放它。</p>
+  <table>
+    <thead><tr><th>编译阶段</th><th>产出</th></tr></thead>
+    <tbody>
+      <tr><td>依赖 DAG</td><td>由资源读写依赖生成 pass 执行顺序，检测依赖环</td></tr>
+      <tr><td>资源生命周期</td><td>纹理/缓冲的首次/末次使用、生产者、消费者</td></tr>
+      <tr><td>Barrier 计划</td><td>每个 pass 的 pre-pass barrier 批次，帧末恢复导入资源终态（如 swapchain → Present）</td></tr>
+      <tr><td>瞬时别名</td><td>按生命周期分组瞬时资源，同组共享 GPU 内存以减少分配</td></tr>
+      <tr><td>Load/Store</td><td>附件 load/store、clear/dont-care、memoryless 策略</td></tr>
+      <tr><td>队列 &amp; 外部资源</td><td>graphics/compute/transfer/present 队列角色与导入资源保护</td></tr>
+      <tr><td>编译期校验</td><td>读先于写、Load-on-Undefined、附件格式匹配、pass 种类一致性——不满足则确定性报错；无用 pass 经定点裁剪自动剔除</td></tr>
+    </tbody>
+  </table>
+
+  <h3>2.1 编译期保证</h3>
+  <p>FrameGraph 在 <code>compile()</code> 阶段完成全部决策，<code>execute()</code> 只回放结果：</p>
+  <ul>
+    <li><strong>Barrier 不在运行时二次推算</strong>：编译产出的 barrier 批次是唯一事实源，执行器逐 pass 回放。同一份图执行两次，输出一致。</li>
+    <li><strong>瞬时资源自动复用</strong>：声明为瞬时的纹理/缓冲按生命周期分组，同组共享一块 GPU 内存（Vulkan 走别名位 + 共享设备内存，Metal 走 heap 别名）。L2 语义层判定 <code>features.transientAliasing</code>：NATIVE 后端在编译期计算 alias groups，DEGRADED 后端（Metal/WebGPU）的 aliasPlan 为空，执行器自动走池回收路径——降级在编译期确定，非运行时静默兼容（详见 §5.4）。</li>
+    <li><strong>错误早发现</strong>：读未写入的资源、pass 种类与绑定的状态不匹配、附件格式不一致等问题在编译期即确定性报错，不会表现为运行时的静默错画或 UB。</li>
+    <li><strong>无用 pass 自动裁剪</strong>：输出未被任何后续 pass 消费的 pass（及其传递依赖链上的 pass）经定点迭代自动剔除。</li>
+  </ul>
+
+  <h3>2.2 子图（Subgraph）</h3>
+  <p>FrameGraph 支持<strong>子图</strong>——把一组 pass 封装为可复用的单元，通过 typed pin 与父图连接。<code>SubgraphRecipe</code> 声明输入/输出 pin 的类型（颜色附件、深度附件、采样纹理、存储纹理/缓冲等），<code>addSubgraph(recipe)</code> 注册到帧图中，编译期完成局部编译后 link 进父图（句柄重映射、barrier 缝合）。子图可被整体裁剪（当所有输出 pin 均无消费者时）。</p>
+  <div class="callout note">
+    <p>当前子图为 Prototype 级别：基本类型与最小验证已通过，完整集成仍在推进中。使用前请确认目标后端的支持情况。</p>
+  </div>
+
+  <div class="callout note">
+    <p><code>FrameGraph::execute()</code> 经 <code>FrameGraphRhiActiveExecutor</code> 执行编译后的图。保留 <code>executionTrace()</code>、<code>resourceTrace()</code>、<code>passTrace()</code>、<code>attachmentTrace()</code>、<code>aliasTrace()</code>、<code>barrierTrace()</code> 等诊断方法用于调试。</p>
+  </div>
+
+  <h2>3. 渲染器：声明 pass + 构建 DrawPlan</h2>
+  <p>渲染器（<code>src/renderer</code>）拥有场景、GUI、材质、光照、世界、后处理、调试等 pass 的声明与逐 pass 的绘制计划（DrawPlan）。DrawPlan 携带 submesh/材质的 push-constant 与 GUI 四边形/文本绘制命令顺序，经 RHI 命令编码器录制。</p>
+  <p>参考项目 <code>world_of_claudecraft</code> 通过 <code>SceneRuntimePipelinePayload</code> 把场景运行时提取结果（遍历快照、相机、3D/2D/UI 队列）传入 <code>RenderFrameRequest</code>，由 <code>RenderFrameDirector</code> 适配并驱动 <code>SceneRuntimeWorldUiPass</code>（一 pass 内顺序：3D → 2D → UI）。</p>
+  <pre><code><span class="tk-com">// 自定义管线 payload 契约（renderer/SceneRuntimePipelinePayload v1）</span>
+<span class="tk-type">RenderFrameRequest</span> req;
+req.view    = { extent, colorFormat, frameIndex, deltaSeconds };
+req.pipelinePayload = &amp;payload;                 <span class="tk-com">// SceneRuntimePipelinePayload</span>
+req.pipelinePayloadContractName = <span class="tk-str">"arp::renderer::SceneRuntimePipelinePayload"</span>;
+req.pipelinePayloadContractVersion = 1;</code></pre>
+
+  <h2>4. 后处理：FXAA</h2>
+  <p>管线支持图形后处理 pass，目前内置 <code>RenderGraphPostprocessPass::Fxaa</code>。需由具体管线 <code>supportsGraphPostprocess()</code> 返回 <code>true</code> 并实现 <code>recordGraphPostprocess()</code>。</p>
+  <pre><code><span class="tk-key">enum class</span> <span class="tk-type">RenderGraphPostprocessPass</span> { Fxaa };
+
+<span class="tk-key">struct</span> <span class="tk-type">RenderGraphPostprocessContext</span> {
+  <span class="tk-type">RenderGraphPostprocessPass</span> pass = <span class="tk-type">RenderGraphPostprocessPass</span>::Fxaa;
+  <span class="tk-type">rhi::GpuTexture</span>* sourceColor = <span class="tk-key">nullptr</span>;
+  <span class="tk-key">bool</span> valid() <span class="tk-key">const</span> { <span class="tk-key">return</span> sourceColor != <span class="tk-key">nullptr</span>; }
+};</code></pre>
+
+  <h2>5. RHI：设计哲学</h2>
+  <p><code>src/rhi</code> 不是又一个「包装 Vulkan」的图形抽象，而是一套有鲜明立场的引擎级 GPU API。理解它的设计哲学，才能正确使用其上的渲染管线、动画、粒子、UI 等系统。本节拆开讲清它的定位、分层、四条内部路径与硬约束。</p>
+
+  <h3>5.1 定位：L2 是引擎面对的 GPU API</h3>
+  <p>RHI 对外呈现的是 <strong>L2（Layer 2）</strong> 接口，它有三条设计基准：</p>
+  <ul>
+    <li><strong>WebGPU 式的对象安全与生命周期规则</strong>——资源有显式状态、句柄化、创建/销毁语义清晰，避免原生 API 的悬垂句柄陷阱。</li>
+    <li><strong>Vulkan 级的显式渲染能力</strong>——push constant、次级命令缓冲、显式 barrier、队列族、显式内存控制等都作为一等公民暴露。</li>
+    <li><strong>Descriptor-based 资源绑定</strong>——以描述符布局/集合/表为统一词汇，而非各家后端各自的绑定机制。</li>
+  </ul>
+  <div class="callout warn">
+    <p><strong>立场红线：</strong>RHI 不是 WebGPU 兼容层，也<strong>不被 WebGPU 特性集约束</strong>。WebGPU 只是其中一个后端目标（带内部翻译层），它不定义引擎 API 的上限。<code>webgpu-research-decision.md</code> 明确：即便有 WebGPU 后端，也不把引擎能力削平到 WebGPU 能表达的子集。</p>
+  </div>
+
+  <h3>5.2 三层边界：L2 / semantics / backends</h3>
+  <p>RHI 把「引擎概念」与「原生能力」严格分层，原生头永远不越过 L2 公共头：</p>
+  <div class="diagram">
+    <svg viewBox="0 0 740 250" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="12.5">
+      <defs><marker id="a2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#57606a"/></marker></defs>
+
+      <rect x="20" y="20" width="700" height="44" rx="8" fill="#eef2f6" stroke="#57606a"/>
+      <text x="34" y="40" font-weight="700" fill="#1f2328">上层消费方</text>
+      <text x="34" y="57" fill="#57606a">renderer · GUI · samples · render_graph（不 include 任何原生图形头）</text>
+
+      <rect x="20" y="78" width="700" height="60" rx="8" fill="#e7f0ff" stroke="#2f6feb"/>
+      <text x="34" y="98" font-weight="700" fill="#1f2328">L2（RHI 公共头，native-header-free）</text>
+      <text x="34" y="117" fill="#57606a">引擎 GPU 对象 · 校验 · 描述符 · 命令录制 · push constant · 帧槽 · 可移植资源状态契约</text>
+
+      <rect x="20" y="150" width="700" height="44" rx="8" fill="#fff4e0" stroke="#9a6700"/>
+      <text x="34" y="170" font-weight="700" fill="#1f2328">semantics 层</text>
+      <text x="34" y="187" fill="#57606a">原生能力解释 · 后端分配意图 · 描述符翻译 · 管线编译策略 · 同步降级 · 表面获取/呈现语义</text>
+
+      <rect x="20" y="206" width="223" height="36" rx="8" fill="#fdecea" stroke="#b42318"/>
+      <text x="32" y="229" fill="#1f2328">Vulkan 后端（私有）</text>
+      <rect x="258" y="206" width="223" height="36" rx="8" fill="#fdecea" stroke="#b42318"/>
+      <text x="270" y="229" fill="#1f2328">Metal 后端（私有）</text>
+      <rect x="496" y="206" width="224" height="36" rx="8" fill="#fdecea" stroke="#b42318"/>
+      <text x="508" y="229" fill="#1f2328">WebGPU 后端（私有）</text>
+
+      <!-- 上层消费方 → L2 -->
+      <path d="M370 64 L370 76" stroke="#57606a" stroke-width="1.5" marker-end="url(#a2)"/>
+      <!-- L2 → semantics -->
+      <path d="M370 138 L370 148" stroke="#57606a" stroke-width="1.5" marker-end="url(#a2)"/>
+      <!-- semantics → 三后端（分支） -->
+      <path d="M370 194 L131 204" stroke="#57606a" stroke-width="1.5" marker-end="url(#a2)"/>
+      <path d="M370 194 L369 204" stroke="#57606a" stroke-width="1.5" marker-end="url(#a2)"/>
+      <path d="M370 194 L608 204" stroke="#57606a" stroke-width="1.5" marker-end="url(#a2)"/>
+    </svg>
+  </div>
+  <ul>
+    <li><strong>L2 拥有</strong>引擎 GPU 对象、校验、描述符、命令录制、push constant、帧槽、可移植资源状态契约。</li>
+    <li><strong>semantics 层拥有</strong>原生能力解释、后端分配意图、描述符翻译、管线编译策略、同步降级、表面获取/呈现语义。</li>
+    <li><strong>backend 目录私有</strong>：<code>src/rhi</code> 包根的 L2 公共头保持无原生头；只有 <code>backends/vulkan|metal|webgpu</code> 内部的实现文件可 include 原生头，且不得把原生句柄暴露给 renderer/GUI/samples/FrameGraph/L2 公共头。</li>
+    <li><strong>原生优先（native-first）</strong>：semantics 层通过「能力 + 策略数据」暴露后端原生潜力（如 Vulkan 描述符索引、Metal 参数缓冲、WebGPU 浏览器限制），<strong>不把特性削平到最小公分母</strong>。</li>
+  </ul>
+
+  <h3>5.3 核心哲学：四条内部路径</h3>
+  <p>这是 RHI 最反直觉也最重要的一条原则：<strong>上层只声明「需要什么能力」，后端/平台分支完全发生在 RHI 内部</strong>。当 L2 收到一个引擎级请求时，内部从四条路径中选一条：</p>
+  <table>
+    <thead><tr><th>路径</th><th>含义</th><th>对上层可见性</th></tr></thead>
+    <tbody>
+      <tr><td><code>native</code></td><td>后端原生支持，直接用</td><td rowspan="2">不可见</td></tr>
+      <tr><td><code>emulated</code></td><td>后端无原生能力，RHI 内部模拟（如 WebGPU 的 push constant 用系统描述符 + 上传环模拟）</td></tr>
+      <tr><td><code>degraded</code></td><td>能力降级但保持正确（如 Vulkan 缺描述符索引时，描述符表确定性降级为有界描述符）</td><td>必须确定性，并<strong>经遥测上报</strong></td></tr>
+      <tr><td><code>diagnostic failure</code></td><td>资源语义未知，或降级会改变正确性</td><td>强制失败并给出诊断（而非猜测）</td></tr>
+    </tbody>
+  </table>
+  <div class="callout note">
+    <p><strong>由此得到硬结论：</strong><code>renderer</code>、<code>GUI</code>、<code>samples</code>、<code>render_graph</code> 不得在代码里按后端名分支（不得写 <code>if (backend == Vulkan)</code>）。WebGPU 的 push constant 模拟、soft secondary 的 CPU 重放、描述符表的降级，全部由 L2 内部决定并隐藏。上层只声明需求（feature requirements），RHI 经 <code>semantics-to-L2 fallback bridge</code> 给出单一 fallback 计划。</p>
+  </div>
+
+  <h3>5.4 L2 决策链：从设备初始化到每帧编译</h3>
+  <p>§5.3 讲了四条路径（native / emulated / degraded / diagnostic），本节讲清这些决策<strong>何时产生、如何传递、在哪消费</strong>。</p>
+
+  <h4>设备初始化（一次性）</h4>
+  <p>每个后端在 <code>capabilities()</code> 构造时，用 <code>NativeBackendCapabilityContract</code>（静态原生特性列表）调用 <code>chooseFeatureFallback</code>，为每个 <code>EngineFeature</code> 产出一个 <code>FallbackMode</code>。决策汇总为 <code>EngineFallbackPlan</code>，经 <code>plan.applyTo(caps)</code> 写入 <code>caps.features.*</code> 布尔字段。</p>
+  <pre><code>NativeBackendCapabilityContract(backend)
+  → chooseFeatureFallback(contract, feature)     → NATIVE / EMULATED / DEGRADED / FAIL
+  → buildNativeEngineFallbackPlan(contract, requirements)
+  → plan.applyTo(caps)
+  → <strong>caps.features.*</strong>  (布尔能力门控，缓存到 DeviceCapabilities，每帧不重复)</code></pre>
+  <p><code>applyTo</code> 把 <code>Degraded</code> 和 <code>DiagnosticFailure</code> 映射为 <code>false</code>，<code>Native</code> 和 <code>Emulated</code> 映射为 <code>true</code>。上层只需查一个布尔值，不需要知道 fallback mode 或 backend 身份。</p>
+  <div class="callout warn">
+    <p><strong>易错点：</strong><code>caps.features.*</code>（L2 决策输出）不是 <code>caps.memory.*</code>（裸硬件事实）。以 <code>transientAliasing</code> 为例：Metal 有 <code>memory.transientAliasing = true</code>（MTLHeap 存在），但 <code>features.transientAliasing = false</code>（L2 判定 DEGRADED）。renderer 必须读 <code>features.</code>，不是 <code>memory.</code>。</p>
+  </div>
+
+  <h4>每帧链路：L2 决策在编译期消费</h4>
+  <pre><code><span class="tk-com">Platform</span>   acquireFrame() → renderGraphFrame() → presentFrame()
+
+<span class="tk-com">Renderer</span>   RenderFrameDirector::compose()
+              payload adapters → RenderFrameIntent → pass providers → FrameGraph passes
+            ↓
+            FrameGraph::compile()
+              <strong>① lowerSubpassGraph()</strong>     — 读 caps.features.subpassInputAttachment
+                 NATIVE   → 单个多 subpass PassRecord（Vulkan, Null）
+                 DEGRADED → 拆为独立 PassRecord（Metal, WebGPU）
+              <strong>② FrameGraphCompiler::compile()</strong>
+                 validate → cull → resource lifetimes → barrier plan
+                 → alias plan               — 读 caps.features.transientAliasing
+                    NATIVE   → 计算 alias groups（lifetime + key + overlap）
+                    DEGRADED → 跳过，aliasPlan 为空
+            ↓
+            CompiledFrameGraph
+              pass order + barrier batches + aliasPlan + load/store
+            ↓
+            allocateTransientTextures(compiled)
+              aliasPlan 空 → resourcePool_->acquireTexture()（池回收）
+              aliasPlan 非空 → createMemoryHeap() per group + createPlacedTexture()
+              <strong>（无 capability gate — 纯粹由 compiled aliasPlan 驱动）</strong>
+            ↓
+            FrameGraphExecutor::execute(compiled)
+              replayPassBarriers() → beginRenderPass() → callbacks → queue->submit()
+
+<span class="tk-com">Backend</span>    RHI 虚函数分发 → vulkan / webgpu / metal 命令录制
+              （无 backend enum 分支 — 后端差异在编译期经 caps 消解）</code></pre>
+
+  <table>
+    <thead><tr><th>L2 消费点</th><th>读取的 capability</th><th>NATIVE 行为</th><th>DEGRADED 行为</th></tr></thead>
+    <tbody>
+      <tr><td><code>lowerSubpassGraph</code></td><td><code>features.subpassInputAttachment</code></td><td>多 subpass PassRecord</td><td>拆分为独立 PassRecord</td></tr>
+      <tr><td><code>FrameGraphCompiler</code>（alias plan）</td><td><code>features.transientAliasing</code></td><td>计算 alias groups</td><td>跳过 — aliasPlan 为空</td></tr>
+    </tbody>
+  </table>
+  <p>核心原则：<strong>L2 决策塑造 compiled graph 结构；executor 是 capability-blind 的</strong>。当后端对某特性是 DEGRADED 时，编译器产出不同的图结构（空 aliasPlan / 拆分 pass），执行器只看到编译结果，不做任何运行时 capability 检查。</p>
+
+  <h3>5.5 后端中立的硬约束</h3>
+  <div class="callout">
+    <p>架构边界是硬约束：<code>renderer</code> 与 <code>render_graph</code> 头文件不得 include Vulkan/Metal/WebGPU/Android/iOS 原生头；原生句柄不得上浮到 backend/platform 之上。</p>
+  </div>
+  <p>RHI 的迁移面（migration surface）是一组固定的公共头，新 renderer / RenderGraph 特性只能面向它们开发：</p>
+  <pre><code><span class="tk-com">// RHI 迁移面（被移除的旧 src/rhi 不是生产兼容路径）</span>
+src/rhi/gpu_device.h
+src/rhi/gpu_commands.h
+src/rhi/gpu_resources.h
+src/rhi/gpu_descriptors.h
+src/rhi/gpu_pipeline.h
+src/rhi/gpu_swapchain.h
+src/rhi/gpu_frame_resources.h
+src/rhi/pipeline_cache.h      <span class="tk-com">// RenderPipeline/ComputePipeline/PipelineLayout 缓存</span>
+src/rhi/descriptor_cache.h    <span class="tk-com">// DescriptorArena/DescriptorSet 跨帧缓存</span></code></pre>
+  <p>RenderGraph 端新增的公开头（同样禁止暴露原生句柄）：<code>frame_graph_resource_pool.h</code>（瞬时纹理/缓冲跨帧池）、<code>transient_resource_allocator.h</code>（真实别名物理分配）、<code>frame_graph_uniform_ring_buffer.h</code>（每帧 uniform 环缓冲）。</p>
+
+  <h3>5.6 关键模型要点</h3>
+  <ul>
+    <li><strong>描述符模型</strong>：公共词汇是 <code>DescriptorLayout</code> / <code>DescriptorSet</code> / <code>DescriptorTable</code> / <code>DescriptorArena</code> / <code>PipelineLayout</code> / <code>PushConstantRange</code>。WebGPU 的 bind group、Metal 的 argument binding、Vulkan 的 descriptor set 都只是后端的映射目标。<code>DescriptorArena</code> 容量受限，分配失败确定性返回诊断而非热路径中静默扩容；<code>reset()</code> 开启新分配代（generation），旧代分配出的 set/table 变为 <em>stale</em> 并拒绝再写入/绑定。</li>
+    <li><strong>可变帧槽（≥2）</strong>：契约使用<strong>至少两个</strong>逻辑帧槽，请求图像数量由帧槽数决定（要求 <code>&gt;= 2</code>，默认仍 2 以向后兼容）；即便平台需要更多原生缓冲，L2 依旧只暴露约定的帧在途，并针对原生差异报诊断。帧局部的描述符 arena、上传环、命令池、延迟销毁、瞬时资源都按帧序号取模帧槽数索引。</li>
+    <li><strong>命令模型</strong>：以 <code>CommandEncoder</code> + 类型化 pass 编码器（<code>RenderPassEncoder</code> / <code>ComputePassEncoder</code> / <code>TransferPassEncoder</code>）录制；<code>soft secondary command buffer</code> 是 L2 概念（Vulkan 可降级为原生次级命令缓冲，WebGPU 在能力允许时映射 render bundle 或 CPU 重放）。Null 后端在录制期做确定性校验：拒绝在 pass 打开时做资源转换、<code>finish()</code> 时未闭合 pass、重复 <code>end()</code>、draw/dispatch 前未绑管线——把后端专属规则挡在 L2 之下，给上层确定性失败而非原生 UB。</li>
+    <li><strong>同步与帧资源生命周期</strong>：L2 拥有队列提交、获取、呈现、帧槽同步契约。新增原生同步原语 <code>GpuFence</code> / <code>GpuSemaphore</code> / <code>GpuTimelineSemaphore</code>（L2 语义，无原生句柄暴露）；<code>GpuQueue::submit</code> 增加接受 <code>GpuFence*</code>（或 timeline semaphore）的重载，帧资源经 fence-gated 回收在信号后释放。上层不接收原生 semaphore/fence/promise，也<strong>无需阻塞等待</strong>。WebGPU/Null 的同步为模拟实现，经 <code>NativeSync</code> 能力确定性上报。帧局部资源延迟销毁：帧序列号 <code>N</code> 最后使用的资源，在 <code>N+2</code> 完成后才释放；延迟销毁登记在入队前就拒绝序列号算术溢出。</li>
+    <li><strong>PSO / 描述符缓存（热路径零重建）</strong>：L2 提供 <code>PipelineCache</code> 与 <code>DescriptorCache</code>。管线与描述符集合按稳定 key（<code>stableRenderPipelineStateKey</code> / <code>stableComputePipelineStateKey</code> / <code>stablePipelineLayoutKey</code> 及描述符布局 hash）缓存，<code>device.pipelineCache().acquireRenderPipeline(...)</code> 仅在 miss 时创建、命中即复用，并按帧 <code>onFrameComplete()</code> + fence-gated 淘汰陈旧项。每 pass 每帧的 pipeline/描述符/纹理重建被消除。</li>
+    <li><strong>统一 uniform 环缓冲</strong>：每帧 uniform 不再 <code>createBuffer(256)</code>，改用 <code>FrameGraphUniformRingBuffer</code>，按帧槽做 256 字节对齐的 bump 分配，<code>onFrameComplete(frameSlot)</code> 回卷；避免热路径每帧分配。</li>
+    <li><strong>push-constant 硬上限</strong>：RHI 在帧计划阶段由 <code>validatePushConstants</code> 校验 <code>pushConstantSizeBytes &gt; 256</code> → 确定性抛错（不是警告）。上层仍应遵循 §2.4（09 章）的 256 字节预算打包纪律，但越界现在会在录制前即失败。</li>
+    <li><strong>别名内存与能力降级</strong>：RenderGraph 的瞬时分配支持 aliased memory——Vulkan 走 <code>VK_IMAGE_CREATE_ALIAS_BIT</code> + 共享设备内存，Metal 走 heap 别名。L2 语义层经 <code>chooseFeatureFallback</code> 判定 <code>TransientAliasing</code> 的 fallback mode（Vulkan/Null=NATIVE，Metal/WebGPU=DEGRADED），<code>applyTo(caps)</code> 将 DEGRADED 映射为 <code>caps.features.transientAliasing = false</code>。<strong>FrameGraph 编译器</strong>在编译期读此字段：NATIVE → 计算 alias groups；DEGRADED → 跳过，aliasPlan 为空。<code>allocateTransientTextures</code> 执行器无 capability gate，纯粹由 compiled aliasPlan 驱动（空→池回收，非空→heap+placed）。<code>TextureDesc</code> 新增 <code>sampleCount</code> 字段，进入别名分组 key 与 subresource range 默认推导。</li>
+  </ul>
+
+  <h3>5.7 公共对象模型（引擎侧 API）</h3>
+  <p>上层代码只通过这些虚拟接口操作 GPU 对象，拿到的全是引擎句柄，从不见 <code>Vk*</code>/<code>id&lt;MTL...&gt;</code>/<code>WGPU*</code>：</p>
+  <pre><code><span class="tk-key">class</span> <span class="tk-type">ARP_API</span> <span class="tk-type">GpuDevice</span> {
+<span class="tk-key">public</span>:
+  <span class="tk-type">Backend</span> backend() <span class="tk-key">const</span>;
+  <span class="tk-type">DeviceCapabilities</span> capabilities() <span class="tk-key">const</span>;
+  <span class="tk-type">MemoryStats</span> memoryStats() <span class="tk-key">const</span>;
+
+  <span class="tk-type">GpuQueue</span>& queue();
+  <span class="tk-type">QueueSubmitResult</span> submit(<span class="tk-key">const</span> <span class="tk-type">CommandBuffer</span>&);
+  <span class="tk-type">QueueSubmitResult</span> submit(<span class="tk-key">const</span> <span class="tk-type">CommandBuffer</span>&, <span class="tk-type">GpuFence</span>* signalFence);          <span class="tk-com">// fence-gated 回收</span>
+  <span class="tk-type">QueueSubmitResult</span> submit(<span class="tk-key">const</span> <span class="tk-type">CommandBuffer</span>&, <span class="tk-type">GpuTimelineSemaphore</span>* sem, std::uint64_t value);
+
+  <span class="tk-type">GpuFence</span>*            createFence();             <span class="tk-com">// signal / wait / reset（L2 语义，无原生句柄）</span>
+  <span class="tk-type">GpuSemaphore</span>*        createSemaphore();
+  <span class="tk-type">GpuTimelineSemaphore</span>* createTimelineSemaphore();
+
+  <span class="tk-type">PipelineCache</span>&   pipelineCache();    <span class="tk-com">// 跨帧缓存 RenderPipeline/ComputePipeline/PipelineLayout</span>
+  <span class="tk-type">DescriptorCache</span>& descriptorCache();  <span class="tk-com">// 跨帧缓存 DescriptorArena/DescriptorSet</span>
+
+  <span class="tk-type">GpuBuffer</span>*     createBuffer(<span class="tk-key">const</span> <span class="tk-type">BufferDesc</span>&);
+  <span class="tk-type">GpuTexture</span>*    createTexture(<span class="tk-key">const</span> <span class="tk-type">TextureDesc</span>&);   <span class="tk-com">// TextureDesc 现含 sampleCount</span>
+  <span class="tk-type">GpuSampler</span>*    createSampler(<span class="tk-key">const</span> <span class="tk-type">SamplerDesc</span>&);
+  <span class="tk-type">PipelineLayout</span>*       createPipelineLayout(<span class="tk-key">const</span> <span class="tk-type">PipelineLayoutDesc</span>&);
+  <span class="tk-type">RenderPipeline</span>*      createRenderPipeline(<span class="tk-key">const</span> <span class="tk-type">RenderPipelineDesc</span>&);
+  <span class="tk-type">ComputePipeline</span>*     createComputePipeline(<span class="tk-key">const</span> <span class="tk-type">ComputePipelineDesc</span>&);
+  <span class="tk-type">DescriptorArena</span>*     createDescriptorArena(<span class="tk-key">const</span> <span class="tk-type">DescriptorArenaDesc</span>&);
+  <span class="tk-type">CommandEncoder</span>*      createCommandEncoder(<span class="tk-key">const</span> <span class="tk-type">CommandEncoderDesc</span>&);
+  <span class="tk-type">Swapchain</span>*           createSwapchain(<span class="tk-key">const</span> <span class="tk-type">SwapchainDesc</span>&);
+};</code></pre>
+  <p>热路径上的管线与描述符走缓存而非即时创建；提交可携带 fence 以便帧资源在信号后回收：</p>
+  <pre><code><span class="tk-com">// PSO 缓存命中即复用，仅在 miss 时创建</span>
+<span class="tk-type">RenderPipeline</span>* pipe = device.pipelineCache().acquireRenderPipeline(desc);   <span class="tk-com">// 不重复创建</span>
+
+<span class="tk-com">// 提交时挂 fence，帧末信号后回收该帧的瞬时/延迟资源</span>
+<span class="tk-type">GpuFence</span>* fence = device.createFence();
+device.queue().submit(*cb, fence);</code></pre>
+  <p>录制一段绘制的最小闭环也完全在引擎类型内：</p>
+  <pre><code><span class="tk-com">// 命令编码器 → 类型化 pass 编码器，全程无原生 API</span>
+<span class="tk-type">CommandEncoder</span>* enc = device.createCommandEncoder({ <span class="tk-str">"frame"</span> });
+<span class="tk-type">RenderPassEncoder</span>* pass = enc->beginRenderPass(renderPassDesc);
+pass->setPipeline(*pipeline);
+pass->bindDescriptorSet(0, *dset);
+pass->pushConstants(<span class="tk-type">ShaderStage</span>::Vertex, 0, <span class="tk-key">sizeof</span>(mvp), &amp;mvp);
+pass->drawIndexed(indexCount, 1, 0, 0, 0);
+<span class="tk-type">CommandValidationResult</span> r = pass->end();
+<span class="tk-type">CommandBuffer</span>* cb = enc->finish();
+device.queue().submit(*cb);</code></pre>
+
+  <h3>5.8 状态分级约定</h3>
+  <p>RHI（及整个引擎文档）用一套统一的状态标签标注成熟度。读文档时务必区分，它们之间有不可逾越的阶梯：</p>
+  <table>
+    <thead><tr><th>状态</th><th>含义</th><th>门槛</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge green">Contract Complete</span></td><td>公开/语义契约已定义并被确定性测试覆盖</td><td>—</td></tr>
+      <tr><td><span class="badge blue">Prototype Complete</span></td><td>在显式 gate/有限范围内有可用实现与冒烟覆盖</td><td>非生产默认</td></tr>
+      <tr><td><span class="badge purple">Backend Validated</span></td><td>指定平台上通过后端的冒烟/契约矩阵</td><td>需命名后端证据</td></tr>
+      <tr><td><span class="badge purple">Platform Validated</span></td><td>浏览器/移动/桌面/生命周期行为通过平台级验证</td><td>需命名目标证据</td></tr>
+      <tr><td><span class="badge stable">Production Ready</span></td><td>既定生产路径，旧回退退役，全回归/冒烟矩阵有当前证据</td><td>需 backend+platform+migration+telemetry+lifetime+smoke 全部证据</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">
+    <p><strong>阶梯不可跳：</strong><code>Contract Complete ≠ Backend Validated</code>、<code>Prototype Complete ≠ Backend Validated</code>、<code>Backend Validated ≠ Platform Validated</code>、<code>Platform Validated ≠ Production Ready</code>。<code>Production Ready</code> 不能由单次后端冒烟、过期阶段说明或仅契约通过来宣告。RHI 当前整体仍 <strong>未达 Production Ready</strong>，卡在 Pending Confirmation / 外部平台验证（macOS Metal runtime/hash、iOS Metal 生命周期、Android Vulkan 生命周期及更广硬件/驱动矩阵）。</p>
+  </div>
+
+  <h2>6. Shader</h2>
+  <p>着色器子系统（Slang 统一着色语言、多后端编译、反射缓存与 Pipeline 校验、以及<strong>统一内存对齐</strong>约定）已从渲染管线独立成章，详见 <a href="09-shader.html">09 Shader</a>。它与本页 §5 的 RHI 共享同一条设计哲学：<strong>上层写一次，后端分支在底层完成</strong>——你只面对 Slang 与反射元数据，不接触任何原生着色器方言。</p>
+  <div class="callout note">
+    <p>想了解 arp 的<strong>统一内存对齐</strong>（std140 规则、CPU 镜像结构体字节核算、256 字节 push-constant 预算、RHI 两层校验），直接读 <a href="09-shader.html">第 09 章</a>。</p>
+  </div>
+
+  <h2>参考实例：world_of_claudecraft 的管线用法</h2>
+  <p>该项目把天空盒、网格、植被、生物、灯光等作为 <code>Component</code>，在 <code>extract()</code> 中推送自带类型的 <code>RenderExtractPayload</code>（如 <code>"wocc.mesh"</code>、<code>"wocc.sky"</code>、<code>"wocc.light"</code>）。WoCC 渲染提取器收集这些 payload，经 <code>SceneRuntimePipelinePayload</code> 进入渲染管线，再由 <code>UiBarComponent</code>/<code>UiTextComponent</code> 的 <code>"wocc.hudbar"</code>/<code>"wocc.hudtext"</code> payload 进入 HUD 画布。具体组件定义见 <a href="02-gameobject-component.html">02 GameObject+Component</a> 与 <a href="05-ui.html">05 UI</a>。</p>
+
+  <h2>快速上手清单</h2>
+  <ol>
+    <li>实现 <code>RenderPipeline</code>（或复用内置场景运行时管线），用 <code>RenderPipelineBuilder::addGraphicsPass()</code> 声明每个 pass 的读写纹理与回调。</li>
+    <li>在回调内通过 RHI 命令编码器录制绘制（使用渲染器提供的 DrawPlan，而非自行遍历 submesh）。</li>
+    <li>需要后处理时，让 <code>supportsGraphPostprocess()</code> 返回支持项并实现 <code>recordGraphPostprocess()</code>。</li>
+    <li>把帧请求包成 <code>RenderFrameRequest</code>（含 payload 契约名与版本），交给 <code>RenderSystem</code> 执行。</li>
+    <li>保持后端中立：只在 <code>rhi/backends</code> 与 <code>platform</code> 内写原生代码。</li>
+  </ol>
+
+  <div class="pager">
+    <a href="index.html"><div class="dir">← 返回</div><div class="ttl">总览</div></a>
+    <a class="next" href="02-gameobject-component.html"><div class="dir">下一章 →</div><div class="ttl">02 GameObject + Component</div></a>
+  </div>
+</main>
+</div>
+</body>
+</html>

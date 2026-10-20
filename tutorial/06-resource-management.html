@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>06 资源管理 · arp 引擎教程</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">arp 引擎教程<small>Anime Render Pipeline</small></div>
+  <nav>
+    <div class="group-title">导航</div>
+    <a class="nav" href="index.html"><span class="num">·</span>总览</a>
+    <div class="group-title">系统文档</div>
+    <a class="nav" href="01-render-pipeline.html"><span class="num">01</span>渲染管线</a>
+    <a class="nav" href="02-gameobject-component.html"><span class="num">02</span>GameObject + Component</a>
+    <a class="nav" href="03-animation.html"><span class="num">03</span>动画</a>
+    <a class="nav" href="04-particles.html"><span class="num">04</span>粒子</a>
+    <a class="nav" href="05-ui.html"><span class="num">05</span>UI</a>
+    <a class="nav active" href="06-resource-management.html"><span class="num">06</span>资源管理</a>
+    <a class="nav" href="07-reflection.html"><span class="num">07</span>反射</a>
+    <a class="nav" href="08-network.html"><span class="num">08</span>网络</a>
+    <a class="nav" href="09-shader.html"><span class="num">09</span>Shader</a>
+    <a class="nav" href="10-prefab-internal-resources.html"><span class="num">10</span>预制体</a>
+    <a class="nav" href="11-art-asset-formats.html"><span class="num">11</span>资产导入</a>
+    <a class="nav" href="12-procedural-generation.html"><span class="num">12</span>程序化生成</a>
+    <a class="nav" href="13-scripting.html"><span class="num">13</span>脚本</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <h1>06 资源管理 <span class="badge green">Contract Complete</span></h1>
+  <p class="lead">arp 引擎的运行时资源由 <code>src/resource</code> 统一管理：资源有显式身份（UUID + 别名）、确定性的生命周期状态、依赖元数据与内容指纹；加载走「类型化 <code>ResourceBase</code> → <code>ResourceManager</code> 准入/加载 → <code>ResourceHandle&lt;T&gt;</code> 类型化句柄查询」的单一所有权模型。本文讲清楚这条资源生命周期，并用 <code>world_of_claudecraft</code> 的 <code>ContentAssetResource</code> 演示如何把数据驱动的 YAML 内容接入同一套资源管理器。</p>
+
+  <div class="callout note">
+    <p>引擎不按资源种类各自搞一套运行时管理器：网格、纹理、UI 文档、着色器包、Prefab，乃至游戏内容 YAML，全部共用同一个 <code>ResourceManager</code>，靠「类型化 <code>ResourceBase</code> 子类 + 契约版本」区分。这避免了隐藏的原生句柄与静默兼容回退。</p>
+  </div>
+
+  <h2>资源生命周期与状态机</h2>
+  <p>每个资源从声明到卸载都经过确定的状态。<code>ResourceState</code> 枚举定义了这些状态：</p>
+  <div class="diagram">
+    <svg viewBox="0 0 740 230" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="12.5">
+      <defs><marker id="r1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="context-stroke"/></marker></defs>
+      <rect x="20" y="90" width="110" height="50" rx="8" fill="#e7f0ff" stroke="#2f6feb"/>
+      <text x="32" y="110" font-weight="700">Declared</text>
+      <text x="32" y="128" fill="#57606a">声明</text>
+      <rect x="160" y="90" width="110" height="50" rx="8" fill="#fff4e0" stroke="#9a6700"/>
+      <text x="172" y="110" font-weight="700">Loading</text>
+      <text x="172" y="128" fill="#57606a">加载中</text>
+      <rect x="300" y="90" width="110" height="50" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="312" y="110" font-weight="700">Ready</text>
+      <text x="312" y="128" fill="#57606a">就绪</text>
+      <rect x="440" y="20" width="110" height="50" rx="8" fill="#fdecea" stroke="#b42318"/>
+      <text x="452" y="40" font-weight="700">Failed</text>
+      <text x="452" y="58" fill="#57606a">失败</text>
+      <rect x="440" y="160" width="110" height="50" rx="8" fill="#f3e8ff" stroke="#6639ba"/>
+      <text x="452" y="180" font-weight="700">Stale</text>
+      <text x="452" y="198" fill="#57606a">过期</text>
+      <rect x="580" y="90" width="120" height="50" rx="8" fill="#eceff1" stroke="#57606a"/>
+      <text x="592" y="110" font-weight="700">Unloaded</text>
+      <text x="592" y="128" fill="#57606a">已卸载</text>
+
+      <!-- 主流程：Declared → Loading → Ready → Unloaded -->
+      <path d="M130 115 L158 115" stroke="#2f6feb" stroke-width="2" marker-end="url(#r1)"/>
+      <path d="M270 115 L298 115" stroke="#2f6feb" stroke-width="2" marker-end="url(#r1)"/>
+      <path d="M410 115 L574 115" stroke="#2f6feb" stroke-width="2" marker-end="url(#r1)"/>
+      <!-- Ready 分出 Failed / Stale -->
+      <path d="M410 105 L434 64" stroke="#b42318" stroke-width="2" marker-end="url(#r1)"/>
+      <path d="M410 128 L434 166" stroke="#6639ba" stroke-width="2" marker-end="url(#r1)"/>
+      <!-- 重试 / 重载回环（虚线曲线，区别于主流程） -->
+      <path d="M440 55 C 360 25, 290 55, 258 88" stroke="#2f6feb" stroke-width="1.6" stroke-dasharray="5 4" fill="none" marker-end="url(#r1)"/>
+      <path d="M440 175 C 360 205, 290 175, 258 142" stroke="#2f6feb" stroke-width="1.6" stroke-dasharray="5 4" fill="none" marker-end="url(#r1)"/>
+    </svg>
+  </div>
+  <p>状态含义：<code>Declared</code>（已声明 identity）、<code>Loading</code>（正在加载）、<code>Ready</code>（可被句柄查询）、<code>Failed</code>（确定性失败诊断）、<code>Stale</code>（句柄指向的 generation 已过期）、<code>Unloaded</code>（已卸载）。重新加载时只有内容哈希真正变化才会推进 generation 并进入新 <code>Ready</code>，否则保持原状或转 <code>Failed</code>——绝不发布「半成品 Ready」。</p>
+
+  <h2>ResourceBase：自定义资源的基类</h2>
+  <p>新资源类型只需继承 <code>arp::resource::ResourceBase</code>，并在构造时填入 <code>ResourceReference</code>（id / type / alias / status / displayName），按需重写几个钩子：</p>
+  <pre><code><span class="tk-key">class</span> <span class="tk-type">ARP_API</span> <span class="tk-type">ResourceBase</span> {
+<span class="tk-key">public</span>:
+  <span class="tk-key">virtual</span> <span class="tk-type">ResourceLoadResult</span> load(<span class="tk-type">ResourceManager</span>&, <span class="tk-key">const</span> <span class="tk-type">ResourceLoadContext</span>&);
+  <span class="tk-key">virtual bool</span> collectFileReadIntents(<span class="tk-type">ResourceManager</span>&,
+        core::pmr::Vector&lt;<span class="tk-type">ResourceFileReadIntent</span>&gt;&, core::pmr::String& diagnostics) <span class="tk-key">const</span>;
+  <span class="tk-key">virtual</span> <span class="tk-type">ResourceGraphStage</span> processingStage() <span class="tk-key">const</span> <span class="tk-key">noexcept</span>;
+  <span class="tk-key">virtual</span> std::size_t processedByteCount() <span class="tk-key">const</span> <span class="tk-key">noexcept</span>;
+  <span class="tk-key">virtual void</span> appendContentFingerprint(core::StableHash64&) <span class="tk-key">const</span> <span class="tk-key">noexcept</span>;
+  <span class="tk-key">void</span> addDependency(<span class="tk-type">ResourceDependency</span>);   <span class="tk-com">// 显式声明依赖</span>
+};</code></pre>
+  <ul>
+    <li><code>load()</code>：实际解析（读文件 / 程序化生成 / 解析 YAML），由 <code>ResourceManager::loadResource()</code> 在准入前调用。</li>
+    <li><code>collectFileReadIntents()</code>：声明本资源需要从磁盘读取哪些文件（角色、字节上限），供分阶段图执行器在 <code>FileRead</code> 阶段批量读取。</li>
+    <li><code>processingStage()</code>：返回该资源在图执行中的阶段，如 <code>ResourceGraphStage::TypedProcessing</code>。</li>
+    <li><code>appendContentFingerprint()</code>：把决定内容唯一性的字段喂给稳定哈希（见下方「内容指纹与重载」）。</li>
+    <li><code>addDependency()</code>：声明对其它资源的依赖（重复自动去重），依赖 id 与别名都是 UUID，而非路径。</li>
+  </ul>
+
+  <h2>ResourceManager：声明 / 加载 / 查询</h2>
+  <p><code>ResourceManager</code> 是资源的唯一注册与缓存中心。常见入口：</p>
+  <pre><code><span class="tk-com">// 1) 声明 identity（要求 UUID 格式 resourceId）</span>
+manager.<span class="tk-fn">declareResource</span>(resourceId, <span class="tk-str">"ContentAssetResource"</span>);
+
+<span class="tk-com">// 2) 类型化同步加载：自动 makeUnique&lt;T&gt; 并走共享生命周期</span>
+<span class="tk-type">ResourceLoadResult</span> r = manager.<span class="tk-fn">load&lt;MeshAssetResource&gt;</span>(
+    <span class="tk-type">ResourceLoadContext</span>{}, resourceId, sourcePath);
+
+<span class="tk-com">// 3) 类型化异步加载（提交一个有限 work item 到 WorkService）</span>
+manager.<span class="tk-fn">loadAsync&lt;MeshAssetResource&gt;</span>(workService, completion, ctx, resourceId, sourcePath);
+
+<span class="tk-com">// 4) 图加载：显式节点 + 依赖，拓扑排序后逐节点加载</span>
+<span class="tk-type">ResourceGraphRequest</span> req;
+req.rootResourceId = rootId;
+req.nodes.push_back({ core::makeUnique&lt;PrefabResource&gt;(...), { deps... } });
+manager.<span class="tk-fn">loadGraph</span>(std::move(req));
+
+<span class="tk-com">// 5) 查询：按 id 或别名拿类型化句柄</span>
+<span class="tk-key">auto</span> h = manager.<span class="tk-fn">find&lt;MeshAssetResource&gt;</span>(resourceId);
+<span class="tk-key">auto</span> a = manager.<span class="tk-fn">findByAlias&lt;ContentAssetResource&gt;</span>(<span class="tk-str">"wolf"</span>);</code></pre>
+  <table>
+    <thead><tr><th>API</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>declareResource(id, type)</code></td><td>登记资源 identity；id 必须是 UUID 格式。</td></tr>
+      <tr><td><code>load&lt;T&gt;(ctx, args...)</code></td><td>类型化同步加载，返回 <code>ResourceLoadResult</code>。</td></tr>
+      <tr><td><code>loadAsync&lt;T&gt;(ws, cb, ctx, args...)</code></td><td>异步加载，提交一个有限 work item。</td></tr>
+      <tr><td><code>loadGraph(req)</code> / <code>loadGraphAsync(...)</code></td><td>确定性图加载，校验重复 id/别名、缺失依赖节点、依赖环、非法 UUID、非法 legacy 状态。</td></tr>
+      <tr><td><code>find&lt;T&gt;(id)</code> / <code>findByAlias&lt;T&gt;(alias)</code></td><td>返回 <code>ResourceHandle&lt;T&gt;</code>；未就绪或类型不符时句柄不为 ready。</td></tr>
+      <tr><td><code>stateOf / diagnosticsOf / resolveAlias / recordSnapshot</code></td><td>查询状态、诊断、别名解析、只读记录快照。</td></tr>
+      <tr><td><code>unload(id)</code> / <code>retireResource</code> / <code>releaseRetiredResources</code></td><td>卸载、退役（保留旧 generation 用于回滚）、释放退役资源。</td></tr>
+    </tbody>
+  </table>
+
+  <h2>ResourceHandle&lt;T&gt;：类型化、带代的查询</h2>
+  <p>句柄是查询资源的标准方式，它携带 <code>generation</code>，能区分「资源已失效」与「尚未就绪」：</p>
+  <pre><code><span class="tk-key">auto</span> h = manager.<span class="tk-fn">find&lt;MeshAssetResource&gt;</span>(resourceId);
+<span class="tk-key">if</span> (h.ready()) {                      <span class="tk-com">// Ready 且 generation 匹配</span>
+  <span class="tk-key">const auto</span>* mesh = h.get();         <span class="tk-com">// 返回 const T*</span>
+  <span class="tk-com">// ... 使用 mesh-&gt;mesh() ...</span>
+} <span class="tk-key">else if</span> (h.stale()) {                 <span class="tk-com">// 指向的 generation 已过期（被重载）</span>
+  <span class="tk-com">// 重新 find 以获取新 generation</span>
+}
+<span class="tk-com">// h.id() / h.state() / h.diagnostics() 可读元数据与失败原因</span></code></pre>
+  <div class="callout">
+    <p>组件只持有 <code>resourceId</code> 字符串，不持有裸指针；每帧通过 <code>find&lt;T&gt;(id)</code> 拿句柄。这样重载（热更新）发生时，旧句柄变 <code>stale</code>，组件重新查询即可拿到新资源——单一所有权、无悬挂指针。</p>
+  </div>
+
+  <h2>分阶段图执行：ResourceGraphExecutor</h2>
+  <p>异步图加载由 <code>ResourceGraphExecutor</code> 拥有。它校验并拓扑排序显式节点，按 <code>ResourceGraphStage</code> 分阶段推进：</p>
+  <pre><code><span class="tk-key">enum class</span> <span class="tk-type">ResourceGraphStage</span> : std::uint8_t {
+  Validation,     <span class="tk-com">// 校验 id/别名/依赖/状态</span>
+  FileRead,       <span class="tk-com">// FileService 读取声明文件</span>
+  YamlParse,      <span class="tk-com">// 解析 YAML</span>
+  ImageDecode,    <span class="tk-com">// 解码图像（纹理）</span>
+  TypedProcessing,<span class="tk-com">// 类型化资源处理</span>
+  Admission,      <span class="tk-com">// 准入到 ResourceManager</span>
+  Completion      <span class="tk-com">// 经 CompletionQueue 发布结果</span>
+};</code></pre>
+  <p>节点数、文件读取数、源字节、解码字节、完成派发次数都有显式预算；取消、队列拒绝、服务关闭、依赖失败、读取/解码字节、阶段顺序、耗时与恰好一次完成，都是可观测遥测。<code>ResourceLoadContext::requirePreloadedSources</code> 可阻止文件型资源在该路径上回退到阻塞文件辅助函数。</p>
+
+  <h2>内容指纹与重载（Reload）</h2>
+  <p>每个资源通过 <code>appendContentFingerprint()</code> 把决定内容唯一性的字段喂入 <code>StableHash64</code>。重载时 <code>reloadResource()</code> 先快照旧记录，尝试新加载：</p>
+  <ul>
+    <li>加载失败或内容哈希未变 → <strong>回滚</strong>到旧快照，generation 不变。</li>
+    <li>内容哈希变化且加载成功 → 推进 generation，资源进入新 <code>Ready</code>。</li>
+  </ul>
+  <p><code>ResourceReloadTelemetry</code> 报告 <code>generation</code>、<code>oldContentHash</code>、<code>newContentHash</code>、<code>committed</code>、<code>rolledBack</code>、<code>retiredCount</code> 与失效依赖。绝不发布「部分就绪」的 generation。</p>
+  <pre><code><span class="tk-type">ResourceReloadResult</span> rr = manager.<span class="tk-fn">reloadResource</span>(core::makeUnique&lt;MeshAssetResource&gt;(id, path));
+<span class="tk-key">if</span> (rr.committed) { <span class="tk-com">/* 新 generation 已生效 */</span> }
+<span class="tk-key">else if</span> (rr.rolledBack) { <span class="tk-com">/* 保持旧状态 */</span> }
+<span class="tk-com">// rr.telemetry.invalidatedDependents —— 哪些依赖被失效</span></code></pre>
+
+  <h2>预算与遥测</h2>
+  <p><code>ResourceBudgetConfig</code> 给出各维度的显式上限（值为 0 表示该维度不限制）：</p>
+  <table>
+    <thead><tr><th>字段</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>maxGraphNodes</code></td><td>图节点数上限</td></tr>
+      <tr><td><code>maxDecodedBytes</code></td><td>解码字节上限（会下推到加载上下文）</td></tr>
+      <tr><td><code>maxUploadBytes</code></td><td>上传字节上限（由拥有该资源的 renderer/UI 契约强制）</td></tr>
+      <tr><td><code>maxGlyphPages</code></td><td>字形页上限</td></tr>
+      <tr><td><code>maxReloadGenerations</code></td><td>重载 generation 上限</td></tr>
+      <tr><td><code>maxRetainedRecoveryBytes</code></td><td>退役资源保留恢复字节上限</td></tr>
+      <tr><td><code>maxCompletionDispatchCount</code></td><td>完成派发次数上限</td></tr>
+      <tr><td><code>maxDiagnosticsLength</code></td><td>诊断字符串长度上限</td></tr>
+    </tbody>
+  </table>
+  <p>预算耗尽会产生确定性的 <code>ResourceLoadResult</code>/<code>ResourceReloadResult</code> 诊断并累加计数；绝不出现无界分配或静默部分结果。<code>telemetry()</code> 返回当前预算配置与累计耗尽次数的稳定快照，便于诊断与回归检查。</p>
+  <pre><code><span class="tk-type">ResourceBudgetConfig</span> cfg;
+cfg.maxGraphNodes = 2048;
+cfg.maxDecodedBytes = 256u * 1024u * 1024u;
+manager.<span class="tk-fn">setBudgetConfig</span>(cfg);
+<span class="tk-key">const auto</span> t = manager.<span class="tk-fn">telemetry</span>();</code></pre>
+
+  <h2>契约与状态标签</h2>
+  <p>资源类型通过 <code>ResourceContractDescriptor{ type, contractVersion }</code> 声明一次；加载时用 <code>validateResourceContract()</code> 校验。状态文本走统一的 <code>ResourceStatus</code> 契约（<code>ContractComplete</code> → <code>ProductionReady</code> 等），未知标签、不允许的标签、非法「状态晋升」都会产生确定性诊断——生产加载器不得维护私有的自由格式状态解析。</p>
+  <pre><code><span class="tk-key">inline constexpr</span> <span class="tk-type">ResourceContractDescriptor</span> kContentAssetContract {
+  <span class="tk-str">"ContentAssetResource"</span>, <span class="tk-str">"content.asset/v1"</span> };</code></pre>
+
+  <h2>参考实例：world_of_claudecraft 的内容资源</h2>
+  <p>该项目把 <code>content/*.yaml</code>（生物 / 区域 / 物品）作为数据驱动内容接入<strong>同一个</strong> <code>ResourceManager</code>，而不是再写一套内容管理器。要点：</p>
+  <ul>
+    <li><code>ContentAssetResource</code> 继承 <code>ResourceBase</code>，契约 <code>"content.asset/v1"</code>；构造时填入 <code>ResourceReference</code>。</li>
+    <li>资源管理器要求 id 为 UUID；内容文件用的是人类可读逻辑 id（如 <code>"wolf"</code>、<code>"eastbrook_vale"</code>），于是从逻辑 id 确定性地合成一个格式合法的 UUID，并把逻辑 id 注册为<strong>别名</strong>。这样 <code>findByAlias&lt;ContentAssetResource&gt;("wolf")</code> 就能按名查到资源。</li>
+    <li><code>load()</code> 解析 YAML 并填充 <code>CreatureDesc</code> / <code>ZoneDesc</code> / <code>ItemDesc</code> 描述符（定义在 <code>content/content_manager.h</code>）。</li>
+    <li>场景像查询网格一样查询内容：<code>manager.find&lt;ContentAssetResource&gt;(id)</code> 与 <code>findByAlias</code> 走同一套路径。</li>
+  </ul>
+  <pre><code><span class="tk-com">// content/content_asset_resource.h（节选）</span>
+<span class="tk-key">class</span> <span class="tk-type">ContentAssetResource</span> <span class="tk-key">final</span> : <span class="tk-key">public</span> <span class="tk-type">arp::resource::ResourceBase</span> {
+<span class="tk-key">public</span>:
+  <span class="tk-type">ResourceLoadResult</span> load(<span class="tk-type">ResourceManager</span>&, <span class="tk-key">const</span> <span class="tk-type">ResourceLoadContext</span>&) <span class="tk-key">override</span>;
+  <span class="tk-type">ResourceGraphStage</span> processingStage() <span class="tk-key">const</span> <span class="tk-key">noexcept</span> <span class="tk-key">override</span>
+    { <span class="tk-key">return</span> <span class="tk-type">ResourceGraphStage</span>::TypedProcessing; }
+  <span class="tk-key">void</span> appendContentFingerprint(core::StableHash64&) <span class="tk-key">const</span> <span class="tk-key">noexcept</span> <span class="tk-key">override</span>;
+  <span class="tk-key">const</span> <span class="tk-type">CreatureDesc</span>& creature() <span class="tk-key">const</span> <span class="tk-key">noexcept</span>;
+};
+
+<span class="tk-com">// 场景侧查询（与网格同路）：</span>
+<span class="tk-key">auto</span> wolf = manager.<span class="tk-fn">findByAlias&lt;ContentAssetResource&gt;</span>(<span class="tk-str">"wolf"</span>);
+<span class="tk-key">if</span> (wolf.ready()) spawn(wolf-&gt;creature());</code></pre>
+  <p>引擎内置的 <code>MeshAssetResource</code>（<code>"mesh.asset/v1"</code>）是另一个对照：它支持 GLB 文件加载与程序化网格（grid / cube / 自定义），所有网格数据所有权转交给 <code>ResourceManager</code>，组件只按 <code>resourceId</code> 引用。这与内容资源是同一所有权模型的两种实例。</p>
+
+  <h2>快速上手清单</h2>
+  <ol>
+    <li>新资源继承 <code>ResourceBase</code>，用 <code>ResourceReference</code> 填入 id/type/alias/status；id 用 UUID（人类可读名注册为别名）。</li>
+    <li>重写 <code>load()</code> 解析数据、<code>collectFileReadIntents()</code> 声明文件读取、<code>appendContentFingerprint()</code> 喂内容指纹、<code>processingStage()</code> 返回阶段。</li>
+    <li>用 <code>manager.load&lt;T&gt;(ctx, args...)</code> 同步加载，或用 <code>loadAsync&lt;T&gt;()</code> 异步提交到 <code>WorkService</code>；多资源依赖用 <code>loadGraph()</code>。</li>
+    <li>组件只持有 <code>resourceId</code>，每帧 <code>find&lt;T&gt;(id)</code> 拿 <code>ResourceHandle&lt;T&gt;</code>；用 <code>ready()</code>/<code>stale()</code> 判断就绪与过期。</li>
+    <li>热更新调用 <code>reloadResource()</code>，依赖指纹哈希决定是否推进 generation；用 <code>telemetry()</code> 与 <code>ResourceBudgetConfig</code> 控制预算。</li>
+    <li>不要引入第二个运行时资源管理器；所有资源（网格 / 纹理 / UI / 内容）共用一个 <code>ResourceManager</code>。</li>
+  </ol>
+
+  <div class="pager">
+    <a href="05-ui.html"><div class="dir">← 上一章</div><div class="ttl">05 UI</div></a>
+    <a href="index.html"><div class="dir">↑ 目录</div><div class="ttl">总览</div></a>
+    <a href="07-reflection.html"><div class="dir">下一章 →</div><div class="ttl">07 反射</div></a>
+  </div>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,27 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+import character_validator
+
+class FbxImporter(Importer):
+    def import_path(self, path: string) -> asset.ImportedModelResult:
+        return asset.import_fbx(path)
+
+    def run(self, path: string) -> int:
+        var imported: asset.ImportedModelResult = self.import_path(path)
+        if not imported.success:
+            raise unity_import_common.DIAGNOSTIC_FBX_IMPORT + ": " + imported.diagnostics
+        return unity_import_common.STATUS_OK
+
+    def export_path(self, input: string, output: string) -> int:
+        var imported: asset.ImportedModelResult = self.import_path(input)
+        if not imported.success:
+            raise unity_import_common.DIAGNOSTIC_FBX_IMPORT + ": " + imported.diagnostics
+        var report: yaml.YamlDocument = self.make_report(
+            input, unity_import_common.REPORT_KIND_FBX, unity_import_common.STATUS_OK)
+        self.add_model_summary(report, imported)
+        return self.write_report(output, report)
+

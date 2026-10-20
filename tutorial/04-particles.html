@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>04 粒子 · arp 引擎教程</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">arp 引擎教程<small>Anime Render Pipeline</small></div>
+  <nav>
+    <div class="group-title">导航</div>
+    <a class="nav" href="index.html"><span class="num">·</span>总览</a>
+    <div class="group-title">系统文档</div>
+    <a class="nav" href="01-render-pipeline.html"><span class="num">01</span>渲染管线</a>
+    <a class="nav" href="02-gameobject-component.html"><span class="num">02</span>GameObject + Component</a>
+    <a class="nav" href="03-animation.html"><span class="num">03</span>动画</a>
+    <a class="nav active" href="04-particles.html"><span class="num">04</span>粒子</a>
+    <a class="nav" href="05-ui.html"><span class="num">05</span>UI</a>
+    <a class="nav" href="06-resource-management.html"><span class="num">06</span>资源管理</a>
+    <a class="nav" href="07-reflection.html"><span class="num">07</span>反射</a>
+    <a class="nav" href="08-network.html"><span class="num">08</span>网络</a>
+    <a class="nav" href="09-shader.html"><span class="num">09</span>Shader</a>
+    <a class="nav" href="10-prefab-internal-resources.html"><span class="num">10</span>预制体</a>
+    <a class="nav" href="11-art-asset-formats.html"><span class="num">11</span>资产导入</a>
+    <a class="nav" href="12-procedural-generation.html"><span class="num">12</span>程序化生成</a>
+    <a class="nav" href="13-scripting.html"><span class="num">13</span>脚本</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <h1>04 粒子 <span class="badge blue">Prototype Complete</span></h1>
+  <p class="lead">arp 引擎的粒子/特效系统（<code>src/renderer/particles</code>）是一个确定性、后端中立的 CPU 模拟器：<code>ParticleSystem</code> 管理发射器生命周期与粒子池，按「视觉家族（VisualFamily）」决定渲染方式，并通过 <code>collectActiveParticles()</code> 把粒子交给渲染器的 DrawPlan 与 RHI 录制。本文结合资产导入与运行时 API 讲解。</p>
+
+  <h2>系统链路</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 740 150" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="12.5">
+      <defs><marker id="d1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#2f6feb"/></marker></defs>
+      <rect x="10" y="45" width="150" height="58" rx="8" fill="#e7f0ff" stroke="#2f6feb"/>
+      <text x="20" y="68" font-weight="700">Unity 粒子导入</text>
+      <text x="20" y="86" fill="#57606a">fixture → 包</text>
+      <rect x="190" y="45" width="150" height="58" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="200" y="68" font-weight="700">ResourceManager</text>
+      <text x="200" y="86" fill="#57606a">ParticleEffectResource</text>
+      <rect x="370" y="45" width="150" height="58" rx="8" fill="#fff4e0" stroke="#9a6700"/>
+      <text x="380" y="68" font-weight="700">ParticleVfxRuntime</text>
+      <text x="380" y="86" fill="#57606a">触发/循环/停止</text>
+      <rect x="550" y="45" width="170" height="58" rx="8" fill="#f0e9fb" stroke="#6639ba"/>
+      <text x="560" y="68" font-weight="700">RHI 录制</text>
+      <text x="560" y="86" fill="#57606a">buildParticleDrawPlan</text>
+      <path d="M160 74 L188 74" stroke="#2f6feb" stroke-width="2" marker-end="url(#d1)"/>
+      <path d="M340 74 L368 74" stroke="#2f6feb" stroke-width="2" marker-end="url(#d1)"/>
+      <path d="M520 74 L548 74" stroke="#2f6feb" stroke-width="2" marker-end="url(#d1)"/>
+    </svg>
+  </div>
+
+  <h2>1. ParticleSystem 与品质档</h2>
+  <p>系统以 <code>ParticleSystemDesc</code> 构造，约定最大粒子数与最大发射器数。<code>particleSystemDescForProfile()</code> 把品质档映射为预算：</p>
+  <table>
+    <thead><tr><th>ParticleQualityProfile</th><th>maxParticles</th><th>maxEmitters</th></tr></thead>
+    <tbody>
+      <tr><td>Low</td><td>768</td><td>16</td></tr>
+      <tr><td>Medium</td><td>2048</td><td>32</td></tr>
+      <tr><td>High</td><td>5000</td><td>48</td></tr>
+      <tr><td>Desktop</td><td>12000</td><td>96</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="tk-type">ParticleSystem</span> ps(<span class="tk-fn">particleSystemDescForProfile</span>(<span class="tk-type">ParticleQualityProfile</span>::Desktop));
+<span class="tk-type">ParticleFrameInput</span> input;
+input.deltaSeconds = dt;
+input.hostVelocity = playerVelocity;   <span class="tk-com">// 粒子随宿主位移/继承速度</span>
+ps.<span class="tk-fn">update</span>(input);                  <span class="tk-com">// 推进一帧模拟</span>
+<span class="tk-key">const auto</span>& parts = ps.<span class="tk-fn">particles</span>();   <span class="tk-com">// 给渲染器读取</span></code></pre>
+
+  <h2>2. 发射器（Emitter）</h2>
+  <p>用 <code>addEmitter()</code> 注册一个 <code>ParticleEmitterDesc</code>；返回 <code>ParticleEmitterHandle</code>（含 index + generation，generation  mismatch 会被拒绝）。生命周期 API：<code>enableEmitter</code> / <code>disableEmitter</code> / <code>triggerBurst()</code>（一次性爆发）。</p>
+  <pre><code><span class="tk-type">ParticleEmitterDesc</span> d;
+d.name = <span class="tk-str">"muzzle"</span>;
+d.maxParticles = 256;
+d.spawnRatePerSecond = 120.0f;
+d.particleLifetimeSeconds = 0.6f;
+d.shape = <span class="tk-type">ParticleEmitterDesc::EmitterShape</span>::DirectionalForward;
+d.velocityMin = { 0, 1, 0 };   <span class="tk-com">// 前向轴（枪口火焰）</span>
+d.startColor = { 1, 0.8, 0.3, 1 };
+d.endColor   = { 1, 0.8, 0.3, 0 };
+
+<span class="tk-type">ParticleEmitterResult</span> r = ps.<span class="tk-fn">addEmitter</span>(d);
+<span class="tk-key">if</span> (r.<span class="tk-fn">valid</span>()) ps.<span class="tk-fn">triggerBurst</span>(r.handle, 32);
+<span class="tk-key">else</span> <span class="tk-fn">log</span>(r.diagnostics);   <span class="tk-com">// 预算超限/非法契约 → 确定性诊断</span></code></pre>
+  <p>发射器支持丰富的契约：发射形状（Point/Cone/Sphere/Box/DirectionalForward/RadialBurst）、旋转与轨道（orbit）、噪声/外力场、继承速度、软粒子深度淡出、Trail/Beam、Flipbook 子 UV、碰撞与子发射器（collision → sub-emitter）。</p>
+
+  <h2>3. 视觉家族（VisualFamily）</h2>
+  <p>渲染方式由 <code>ParticleMaterialBinding</code> 的 <code>shaderFamilyId</code>（或回退 blendMode）确定性地映射为 <code>ParticleVisualFamily</code>——绝不靠颜色启发式猜测。家族决定 L2 绘制语义与 billboard 模式。</p>
+  <pre><code><span class="tk-key">enum class</span> <span class="tk-type">ParticleVisualFamily</span> : <span class="tk-type">uint32_t</span> {
+  Unknown, SpriteAlpha, SpriteAdditive, LightningThin,
+  StormCloud, FallbackLegacy, Trail, Beam, MeshParticle, Count
+};
+
+<span class="tk-com">// shaderFamilyId 决定家族；缺失时回退到 blendMode</span>
+<span class="tk-type">ParticleVisualFamily</span> f = <span class="tk-fn">visualFamilyFromBinding</span>(binding);
+<span class="tk-com">// billboard 模式：0=ViewAligned 1=LocalAligned 2=WorldAligned</span>
+<span class="tk-type">uint32_t</span> bm = <span class="tk-fn">billboardModeFromString</span>(binding.billboardMode);</code></pre>
+  <table>
+    <thead><tr><th>shaderFamilyId</th><th>视觉家族</th><th>典型用途</th></tr></thead>
+    <tbody>
+      <tr><td>ParticleSpriteAlpha</td><td>SpriteAlpha</td><td>烟雾、尘埃</td></tr>
+      <tr><td>ParticleSpriteAdditive</td><td>SpriteAdditive</td><td>火焰、光晕</td></tr>
+      <tr><td>ParticleLightningThin</td><td>LightningThin</td><td>电流（渡劫雷云）</td></tr>
+      <tr><td>ParticleStormCloud</td><td>StormCloud</td><td>雷云</td></tr>
+      <tr><td>ParticleTrail / Beam</td><td>Trail / Beam</td><td>拖尾、激光</td></tr>
+      <tr><td>ParticleMeshParticle</td><td>MeshParticle</td><td>实例化 3D 网格粒子</td></tr>
+    </tbody>
+  </table>
+
+  <h2>4. 确定性模拟与遥测</h2>
+  <p>模拟使用 LC 线性同余随机数（<code>nextRandom</code>），相同种子产生相同粒子数——这对回放、测试与跨平台一致性至关重要。<code>update()</code> 后读取 <code>telemetry()</code> 可得存活/生成/淘汰/丢弃/碰撞/子发射等计数。</p>
+  <pre><code><span class="tk-key">auto</span> t = ps.<span class="tk-fn">telemetry</span>();
+<span class="tk-com">// t.aliveParticles / t.spawnedThisFrame / t.droppedSpawns</span>
+<span class="tk-com">// t.collisionEvents / t.subEmitterSpawns / t.budgetDenials</span></code></pre>
+  <div class="callout note">
+    <p>热路径约束：运行时容器用 <code>core::pmr</code>；无默认 STL 动态容器、无每帧着色器编译、无每帧管线创建（管线仅建一次）、无文件/网络 IO、无裸 <code>new</code>/<code>delete</code>；上传/暂存资源由后端拥有（<code>backendOwnedStaging</code>）。</p>
+  </div>
+
+  <h2>5. 渲染：DrawPlan 与 RHI</h2>
+  <p>集成管线里，<code>collectActiveParticles()</code> 取出粒子数据 → <code>buildParticleDrawPlan</code> 生成 6 顶点/四边形的绘制计划（当前 RHI 仅 <code>drawIndexed</code>，非索引 <code>draw()</code> 仍在契约缺口中）→ <code>recordParticleDrawPlan</code> 经 RHI 编码器录制。绘制按 back-to-front 确定性排序。</p>
+  <pre><code><span class="tk-com">// 参考命令（Pika 产品可执行文件）</span>
+arp_pika.exe --mode particle-vfx-demo \
+  --particle-fixture tests\fixtures\unity_particle\fixture_one_shot.yaml \
+  --frames 2</code></pre>
+
+  <h2>参考实例与导入流水线</h2>
+  <p>粒子资产可从 Unity ParticleSystem YAML fixture 经独立 importer 转换：</p>
+  <pre><code>arp_asset_importer --unity-particle-prefab &lt;file&gt; --output-package &lt;dir&gt;</code></pre>
+  <p>导入 → 转换 → <code>ParticleEffectResource</code> → 写内部资产包 → <code>ResourceManager</code> 加载（按 UUID/alias 查找）→ 运行时 <code>ParticleVfxRuntimeSession</code> 绑定并触发。资产包支持哈希校验、生成号增量、无效数据回滚。</p>
+
+  <h2>成熟度与已知限制</h2>
+  <table>
+    <thead><tr><th>域</th><th>状态</th></tr></thead>
+    <tbody>
+      <tr><td>导入 / 资产包 / VFX 运行时 / 集成管线</td><td><span class="badge purple">Backend Validated</span></td></tr>
+      <tr><td>RHI 粒子渲染（Null）</td><td><span class="badge purple">Backend Validated</span></td></tr>
+      <tr><td>RHI 粒子渲染（Vulkan/Metal/WebGPU）</td><td><span class="badge blue">Prototype</span></td></tr>
+      <tr><td>产品验收（本地）</td><td><span class="badge blue">Prototype Complete</span></td></tr>
+      <tr><td>Production Ready</td><td><span class="badge amber">尚未声明</span></td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">
+    <p>已知限制：① RHI 缺非索引 <code>draw()</code>，原生后端可见渲染需新增该入口；② Vulkan/Metal/WebGPU 后端未验证；③ 原生可视化像素验证与美术评审仍是外部门槛；④ 当前 importer 不支持 Unity 嵌套 <code>gradient.m_Gradient.alphaKeys</code> 的 alpha-over-lifetime 路径。</p>
+  </div>
+
+  <h2>快速上手清单</h2>
+  <ol>
+    <li>按品质档构造 <code>ParticleSystem</code>（Desktop 用于桌面，移动端用 Low/Medium）。</li>
+    <li>用 <code>addEmitter(ParticleEmitterDesc)</code> 添加发射器，检查 <code>ParticleEmitterResult</code> 的 diagnostics。</li>
+    <li>每帧 <code>update(ParticleFrameInput)</code>；需要爆发调用 <code>triggerBurst()</code>。</li>
+    <li>通过 <code>ParticleMaterialBinding.shaderFamilyId</code> 明确视觉家族，不要靠颜色推断。</li>
+    <li>从 <code>particles()</code> 取数据交给渲染器，并监控 <code>telemetry()</code> 的预算/碰撞计数。</li>
+  </ol>
+
+  <div class="pager">
+    <a href="03-animation.html"><div class="dir">← 上一章</div><div class="ttl">03 动画</div></a>
+    <a class="next" href="05-ui.html"><div class="dir">下一章 →</div><div class="ttl">05 UI</div></a>
+  </div>
+</main>
+</div>
+</body>
+</html>

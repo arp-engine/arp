@@ -1,0 +1,228 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+
+class UnityCharacterImportValidator(Importer):
+    def validate_mesh_and_skeleton(
+        self,
+        imported: asset.ImportedModelResult) -> void:
+        if not imported.mesh_valid_for_indexed_draw():
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": mesh is not valid for indexed draw"
+        if not imported.skeleton_valid():
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": skeleton hierarchy is invalid"
+        if imported.bind_pose_count() != imported.joint_count():
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": bind pose count does not match skeleton joint count"
+        if imported.skinned_vertex_count() != imported.vertex_count():
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": skinned vertex count does not match mesh vertex count"
+        var jointIndex: int = 0
+        while jointIndex < imported.joint_count():
+            var joint: asset.ModelJointInfo = imported.joint_info(jointIndex)
+            if joint.name == "":
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": joint name is empty"
+            if not joint.inverseBindFinite:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": joint inverse bind matrix contains non-finite values: " + joint.name
+            jointIndex = jointIndex + 1
+        var vertexIndex: int = 0
+        while vertexIndex < imported.vertex_count():
+            var vertex: asset.ModelVertexInfo = imported.vertex_info(vertexIndex)
+            if not vertex.positionFinite:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": mesh vertex position contains non-finite values: " + vertexIndex
+            var weightSum: float = 0.0
+            var slot: int = 0
+            while slot < unity_import_common.CHARACTER_SKIN_INFLUENCE_SLOTS:
+                var influence: asset.SkinInfluenceInfo = imported.skin_influence(vertexIndex, slot)
+                if influence.jointIndex < 0 or influence.jointIndex >= imported.joint_count():
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": mesh vertex references out-of-range joint: " + vertexIndex
+                if influence.weight < 0.0:
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": mesh vertex has negative skin weight: " + vertexIndex
+                weightSum = weightSum + influence.weight
+                slot = slot + 1
+            if weightSum < 0.99 or weightSum > 1.01:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": mesh vertex skin weights do not sum to 1: " + vertexIndex
+            vertexIndex = vertexIndex + 1
+
+    def validate_clips(
+        self,
+        imported: asset.ImportedModelResult) -> void:
+        if imported.clip_count() <= 0:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": no animation clips were imported"
+        var clipIndex: int = 0
+        while clipIndex < imported.clip_count():
+            var clipName: string = imported.clip_name(clipIndex)
+            if clipName == "":
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": animation clip name is empty"
+            if not imported.clip_duration_finite(clipIndex) or imported.clip_duration(clipIndex) <= 0.0:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": animation clip has invalid duration: " + clipName
+            if imported.clip_channel_count(clipIndex) <= 0:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": animation clip has no channels: " + clipName
+            var channelIndex: int = 0
+            while channelIndex < imported.clip_channel_count(clipIndex):
+                var channel: asset.ModelAnimationChannelInfo = imported.clip_channel_info(
+                    clipIndex, channelIndex)
+                if channel.jointIndex < 0 or channel.jointIndex >= imported.joint_count():
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": animation channel targets out-of-range joint: " + clipName
+                if channel.targetPath != "" and channel.targetPath != "translation" and channel.targetPath != "rotation" and channel.targetPath != "scale":
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": animation channel has unsupported target path: " + channel.targetPath
+                if channel.keyframeCount <= 0:
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": animation channel has no keyframes: " + clipName
+                var keyframeIndex: int = 0
+                var hasPreviousTime: bool = false
+                var previousTime: float = 0.0
+                while keyframeIndex < channel.keyframeCount:
+                    var keyframe: asset.ModelAnimationKeyframeInfo = imported.clip_keyframe_info(
+                        clipIndex, channelIndex, keyframeIndex)
+                    if not imported.clip_keyframe_transform_finite(clipIndex, channelIndex, keyframeIndex):
+                        raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": animation keyframe contains non-finite transform values: " + clipName
+                    if hasPreviousTime and keyframe.timeSeconds < previousTime:
+                        raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": animation keyframe times are not sorted: " + clipName
+                    if channel.targetPath == "rotation":
+                        var rotationX: float = imported.clip_keyframe_component(clipIndex, channelIndex, keyframeIndex, 3)
+                        var rotationY: float = imported.clip_keyframe_component(clipIndex, channelIndex, keyframeIndex, 4)
+                        var rotationZ: float = imported.clip_keyframe_component(clipIndex, channelIndex, keyframeIndex, 5)
+                        var rotationW: float = imported.clip_keyframe_component(clipIndex, channelIndex, keyframeIndex, 6)
+                        var quaternionLengthSquared: float = rotationX * rotationX + rotationY * rotationY + rotationZ * rotationZ + rotationW * rotationW
+                        var quaternionMinimum: float = 1.0 - unity_import_common.CHARACTER_QUATERNION_LENGTH_TOLERANCE
+                        var quaternionMaximum: float = 1.0 + unity_import_common.CHARACTER_QUATERNION_LENGTH_TOLERANCE
+                        if quaternionLengthSquared < quaternionMinimum * quaternionMinimum or quaternionLengthSquared > quaternionMaximum * quaternionMaximum:
+                            raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": rotation keyframe quaternion is not normalized: " + clipName
+                    if channel.targetPath == "scale":
+                        var scaleX: float = imported.clip_keyframe_component(clipIndex, channelIndex, keyframeIndex, 7)
+                        var scaleY: float = imported.clip_keyframe_component(clipIndex, channelIndex, keyframeIndex, 8)
+                        var scaleZ: float = imported.clip_keyframe_component(clipIndex, channelIndex, keyframeIndex, 9)
+                        if scaleX < -unity_import_common.CHARACTER_MAX_ABS_SCALE or scaleX > unity_import_common.CHARACTER_MAX_ABS_SCALE or (scaleX > -unity_import_common.CHARACTER_MIN_ABS_SCALE and scaleX < unity_import_common.CHARACTER_MIN_ABS_SCALE):
+                            raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": scale keyframe is outside accepted range: " + clipName
+                        if scaleY < -unity_import_common.CHARACTER_MAX_ABS_SCALE or scaleY > unity_import_common.CHARACTER_MAX_ABS_SCALE or (scaleY > -unity_import_common.CHARACTER_MIN_ABS_SCALE and scaleY < unity_import_common.CHARACTER_MIN_ABS_SCALE):
+                            raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": scale keyframe is outside accepted range: " + clipName
+                        if scaleZ < -unity_import_common.CHARACTER_MAX_ABS_SCALE or scaleZ > unity_import_common.CHARACTER_MAX_ABS_SCALE or (scaleZ > -unity_import_common.CHARACTER_MIN_ABS_SCALE and scaleZ < unity_import_common.CHARACTER_MIN_ABS_SCALE):
+                            raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": scale keyframe is outside accepted range: " + clipName
+                    previousTime = keyframe.timeSeconds
+                    hasPreviousTime = true
+                    keyframeIndex = keyframeIndex + 1
+                channelIndex = channelIndex + 1
+            clipIndex = clipIndex + 1
+
+    def validate_skinning_samples(
+        self,
+        imported: asset.ImportedModelResult) -> void:
+        var minX: float = imported.vertex_position_component(0, 0)
+        var minY: float = imported.vertex_position_component(0, 1)
+        var minZ: float = imported.vertex_position_component(0, 2)
+        var maxX: float = minX
+        var maxY: float = minY
+        var maxZ: float = minZ
+        var vertexIndex: int = 1
+        while vertexIndex < imported.vertex_count():
+            var positionX: float = imported.vertex_position_component(vertexIndex, 0)
+            var positionY: float = imported.vertex_position_component(vertexIndex, 1)
+            var positionZ: float = imported.vertex_position_component(vertexIndex, 2)
+            if positionX < minX:
+                minX = positionX
+            if positionY < minY:
+                minY = positionY
+            if positionZ < minZ:
+                minZ = positionZ
+            if positionX > maxX:
+                maxX = positionX
+            if positionY > maxY:
+                maxY = positionY
+            if positionZ > maxZ:
+                maxZ = positionZ
+            vertexIndex = vertexIndex + 1
+        var extentX: float = maxX - minX
+        var extentY: float = maxY - minY
+        var extentZ: float = maxZ - minZ
+        var longestExtent: float = extentX
+        if extentY > longestExtent:
+            longestExtent = extentY
+        if extentZ > longestExtent:
+            longestExtent = extentZ
+
+        var bindPoseMaxDisplacementSquared: float = 0.0
+        vertexIndex = 0
+        while vertexIndex < imported.vertex_count():
+            var sourceX: float = imported.vertex_position_component(vertexIndex, 0)
+            var sourceY: float = imported.vertex_position_component(vertexIndex, 1)
+            var sourceZ: float = imported.vertex_position_component(vertexIndex, 2)
+            if imported.sampled_vertex_available(-1, 0.0, vertexIndex) == false:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": bind pose skinning failed"
+            var bindX: float = imported.sampled_vertex_position_component(-1, 0.0, vertexIndex, 0)
+            var bindY: float = imported.sampled_vertex_position_component(-1, 0.0, vertexIndex, 1)
+            var bindZ: float = imported.sampled_vertex_position_component(-1, 0.0, vertexIndex, 2)
+            var displacementX: float = sourceX - bindX
+            var displacementY: float = sourceY - bindY
+            var displacementZ: float = sourceZ - bindZ
+            var displacementSquared: float = displacementX * displacementX + displacementY * displacementY + displacementZ * displacementZ
+            if displacementSquared > bindPoseMaxDisplacementSquared:
+                bindPoseMaxDisplacementSquared = displacementSquared
+            vertexIndex = vertexIndex + 1
+        var bindPoseLimit: float = longestExtent * unity_import_common.CHARACTER_BIND_POSE_DISPLACEMENT_RATIO_LIMIT
+        if longestExtent > 0.0 and bindPoseMaxDisplacementSquared > bindPoseLimit * bindPoseLimit:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": bind pose skinning moves vertices beyond validation limit"
+
+        var clipIndex: int = 0
+        while clipIndex < imported.clip_count():
+            var sampleIndex: int = 0
+            while sampleIndex <= 4:
+                var normalizedTime: float = unity_import_common.CHARACTER_SAMPLE_STEP * sampleIndex
+                vertexIndex = 0
+                while vertexIndex < imported.vertex_count():
+                    if imported.sampled_vertex_available(clipIndex, normalizedTime, vertexIndex) == false:
+                        raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": sampled animation produced invalid skinning: " + imported.clip_name(clipIndex)
+                    vertexIndex = vertexIndex + 1
+                var index: int = 0
+                var edgeSlack: float = longestExtent * unity_import_common.CHARACTER_EDGE_LENGTH_SLACK_RATIO
+                while index + 2 < imported.index_count():
+                    var firstIndex: int = imported.index_value(index)
+                    var secondIndex: int = imported.index_value(index + 1)
+                    var thirdIndex: int = imported.index_value(index + 2)
+                    var edgeNumber: int = 0
+                    while edgeNumber < 3:
+                        var edgeFirst: int = firstIndex
+                        var edgeSecond: int = secondIndex
+                        if edgeNumber == 1:
+                            edgeFirst = secondIndex
+                            edgeSecond = thirdIndex
+                        if edgeNumber == 2:
+                            edgeFirst = thirdIndex
+                            edgeSecond = firstIndex
+                        var sourceFirstX: float = imported.vertex_position_component(edgeFirst, 0)
+                        var sourceFirstY: float = imported.vertex_position_component(edgeFirst, 1)
+                        var sourceFirstZ: float = imported.vertex_position_component(edgeFirst, 2)
+                        var sourceSecondX: float = imported.vertex_position_component(edgeSecond, 0)
+                        var sourceSecondY: float = imported.vertex_position_component(edgeSecond, 1)
+                        var sourceSecondZ: float = imported.vertex_position_component(edgeSecond, 2)
+                        var sourceDeltaX: float = sourceFirstX - sourceSecondX
+                        var sourceDeltaY: float = sourceFirstY - sourceSecondY
+                        var sourceDeltaZ: float = sourceFirstZ - sourceSecondZ
+                        var sourceLengthSquared: float = sourceDeltaX * sourceDeltaX + sourceDeltaY * sourceDeltaY + sourceDeltaZ * sourceDeltaZ
+                        var candidateFirstX: float = imported.sampled_vertex_position_component(clipIndex, normalizedTime, edgeFirst, 0)
+                        var candidateFirstY: float = imported.sampled_vertex_position_component(clipIndex, normalizedTime, edgeFirst, 1)
+                        var candidateFirstZ: float = imported.sampled_vertex_position_component(clipIndex, normalizedTime, edgeFirst, 2)
+                        var candidateSecondX: float = imported.sampled_vertex_position_component(clipIndex, normalizedTime, edgeSecond, 0)
+                        var candidateSecondY: float = imported.sampled_vertex_position_component(clipIndex, normalizedTime, edgeSecond, 1)
+                        var candidateSecondZ: float = imported.sampled_vertex_position_component(clipIndex, normalizedTime, edgeSecond, 2)
+                        var candidateDeltaX: float = candidateFirstX - candidateSecondX
+                        var candidateDeltaY: float = candidateFirstY - candidateSecondY
+                        var candidateDeltaZ: float = candidateFirstZ - candidateSecondZ
+                        var candidateLengthSquared: float = candidateDeltaX * candidateDeltaX + candidateDeltaY * candidateDeltaY + candidateDeltaZ * candidateDeltaZ
+                        var allowedLength: float = sourceLengthSquared
+                        if allowedLength > 0.0:
+                            allowedLength = allowedLength * unity_import_common.CHARACTER_EDGE_LENGTH_SCALE_LIMIT
+                        allowedLength = allowedLength + edgeSlack
+                        if candidateLengthSquared > allowedLength * allowedLength:
+                            raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL_VALIDATION + ": sampled animation produced triangle edge stretch above validation limit: " + imported.clip_name(clipIndex)
+                        edgeNumber = edgeNumber + 1
+                    index = index + 3
+                sampleIndex = sampleIndex + 1
+            clipIndex = clipIndex + 1
+
+    def validate(self, imported: asset.ImportedModelResult) -> void:
+        if not imported.success:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_MODEL + ": " + imported.diagnostics
+        self.validate_mesh_and_skeleton(imported)
+        self.validate_clips(imported)
+        self.validate_skinning_samples(imported)
+

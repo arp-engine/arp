@@ -1,0 +1,206 @@
+type: BindlessShaderVariant
+contractVersion: 1
+gpuVisibilityKernelContractVersion: 1
+vectorRecordContractVersion: 1
+name: ArpGpuVisibility
+set: 1
+maxSwitchCases: 16
+maxBindings: 12
+snapshotBytes: 224
+snapshotMetadataBinding: 0
+faultLatchBinding: 1
+tables:
+- name: VisibilityGroups
+  tableId: 1
+  kind: ReadOnlyStorageBuffer
+  capacity: 1
+  binding: 2
+  stages:
+  - compute
+  operations:
+  - load
+  record:
+    fields:
+    - name: head0
+      type: uint4
+    - name: head1
+      type: uint4
+    - name: baseColor
+      type: float4
+    - name: bounds
+      type: float4
+    - name: tail0
+      type: uint4
+    - name: tail1
+      type: uint4
+    - name: tail2
+      type: uint4
+- name: VisibilityInstances
+  tableId: 2
+  kind: ReadOnlyStorageBuffer
+  capacity: 1
+  binding: 3
+  stages:
+  - compute
+  operations:
+  - load
+  record:
+    fields:
+    - name: positionScale
+      type: float4
+    - name: yawPhaseIdLod
+      type: float4
+    - name: extraTransform
+      type: float4
+    - name: speciesLodState
+      type: float4
+- name: VisibilityOwners
+  tableId: 3
+  kind: ReadOnlyStorageBuffer
+  capacity: 1
+  binding: 4
+  stages:
+  - compute
+  operations:
+  - load
+- name: VisibilityCounts
+  tableId: 4
+  kind: StorageBuffer
+  capacity: 1
+  binding: 5
+  stages:
+  - compute
+  operations:
+  - load
+  - store
+  - atomicAdd
+- name: VisibilityVisible
+  tableId: 5
+  kind: StorageBuffer
+  capacity: 1
+  binding: 6
+  stages:
+  - compute
+  operations:
+  - store
+  record:
+    fields:
+    - name: positionScale
+      type: float4
+    - name: yawPhaseIdLod
+      type: float4
+    - name: extraTransform
+      type: float4
+    - name: speciesLodState
+      type: float4
+- name: VisibilityDraws
+  tableId: 6
+  kind: StorageBuffer
+  capacity: 1
+  binding: 7
+  stages:
+  - compute
+  operations:
+  - store
+  - query
+- name: VisibilityBases
+  tableId: 7
+  kind: StorageBuffer
+  capacity: 1
+  binding: 8
+  stages:
+  - compute
+  operations:
+  - store
+  - query
+  record:
+    fields:
+    - name: mapping
+      type: uint4
+- name: VisibilityControl
+  tableId: 8
+  kind: StorageBuffer
+  capacity: 1
+  binding: 9
+  stages:
+  - compute
+  operations:
+  - store
+  - atomicOr
+  - query
+- name: VisibilityParameters
+  tableId: 9
+  kind: UniformBuffer
+  capacity: 1
+  binding: 10
+  stages:
+  - compute
+  operations:
+  - load
+  record:
+    fields:
+    - name: counts
+      type: uint4
+    - name: capacities
+      type: uint4
+    - name: cameraAndEnvelope
+      type: float4
+    - name: selection
+      type: float4
+    - name: plane0
+      type: float4
+    - name: plane1
+      type: float4
+    - name: plane2
+      type: float4
+    - name: plane3
+      type: float4
+    - name: plane4
+      type: float4
+    - name: plane5
+      type: float4
+    - name: plane6
+      type: float4
+    - name: plane7
+      type: float4
+    - name: plane8
+      type: float4
+    - name: plane9
+      type: float4
+    - name: plane10
+      type: float4
+    - name: plane11
+      type: float4
+    - name: plane12
+      type: float4
+    - name: plane13
+      type: float4
+    - name: plane14
+      type: float4
+    - name: plane15
+      type: float4
+    - name: plane16
+      type: float4
+    - name: plane17
+      type: float4
+    - name: row0
+      type: float4
+    - name: row1
+      type: float4
+    - name: row2
+      type: float4
+    - name: row3
+      type: float4
+    - name: depthInfo
+      type: uint4
+    - name: policy
+      type: uint4
+- name: VisibilityDepth
+  tableId: 10
+  kind: SampledTexture
+  capacity: 1
+  binding: 11
+  stages:
+  - compute
+  operations:
+  - load

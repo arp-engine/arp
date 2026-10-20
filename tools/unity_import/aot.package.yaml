@@ -1,0 +1,185 @@
+type: arp.script.aot-package/v1
+package: unity-import
+version: 1
+platforms: [windows, web-wasm]
+budget:
+  instructions: 1000000
+  recursion: 128
+  frame-values: 4096
+  container-values: 65536
+  call-arguments: 256
+  continuation-frames: 256
+  memory-bytes: 67108864
+contracts:
+  dependency-graph-hash: sha256:16a561701f1312c6fc899ff45fad9957539b5b8183ba53c8a5e229fdb51e2135
+  reflection-registry-hash: sha256:1c33e95c55828b4e93de6157f8450c05aa49d279eb073a0e74a84a79097f4284
+  host-contract-hash: sha256:0a1f17e0c8a3b6fe7138d085813340c2da265607b1b982da0fe6390eb455d99c
+  callables:
+    - binding: arp-host:io/read_text/v1
+      target: io.read_text
+      signature-hash: sha256:a5641fefa94fe222b00c185467254ee3acd1d671f59a1f9bb154ae7263a77cc3
+      kind: host
+      arity: 1
+      lifetime-version: 1
+    - binding: arp-host:yaml/parse/v1
+      target: yaml.parse
+      signature-hash: sha256:c5cafce7af4cb433f2024c637d142ab621a006895cfb1084c5a58deeb08d0749
+      kind: host
+      arity: 1
+      lifetime-version: 1
+    - binding: arp-host:yaml/first_document/v1
+      target: yaml.first_document
+      signature-hash: sha256:34df92721a7fc37070c112e7c77b88b803a8d396f0225ec1b7b8c203da513510
+      kind: host
+      arity: 1
+      lifetime-version: 1
+    - binding: arp-host:yaml/kind_code/v1
+      target: yaml.kind_code
+      signature-hash: sha256:f18311f4cab5f36b33cf8b52929e844f289e68ce21bff52c0c0aaf3095e22389
+      kind: host
+      arity: 1
+      lifetime-version: 1
+    - binding: arp-host:io/write_text/v1
+      target: io.write_text
+      signature-hash: sha256:f769d28f3e1e37cc5edc0bf0963afa6fae06458b7bff0fba1a44fdc8c5a3057b
+      kind: host
+      arity: 2
+      lifetime-version: 1
+    - binding: arp-host:io/list_paths/v1
+      target: io.list_paths
+      signature-hash: sha256:09e5219b7f208e0d020d81b9c0e40980a36ca3620bd1cad490c8a0a7c25eec0a
+      kind: host
+      arity: 2
+      lifetime-version: 1
+    - binding: arp-host:arp_import_host/resolve_path/v1
+      target: arp_import_host.resolve_path
+      signature-hash: sha256:6e08aa93b6d37eb5d83b58bf58e9537ceb7fb5277bbb61feb015249372379a12
+      kind: host
+      arity: 2
+      lifetime-version: 1
+    - binding: arp-host:io/exists/v1
+      target: io.exists
+      signature-hash: sha256:9d1970d6f214a2c26aa4dd5b11ff4cf9e72721ade4047813e2d7d560ade3b087
+      kind: host
+      arity: 1
+      lifetime-version: 1
+    - binding: arp-host:arp_import_host/path_extension/v1
+      target: arp_import_host.path_extension
+      signature-hash: sha256:1304cde5f9735afda92560ff662d996f702283aa4193bca78538f9269c6f740e
+      kind: host
+      arity: 1
+      lifetime-version: 1
+    - binding: arp-host:asset/scan_unity_assets/v1
+      target: asset.scan_unity_assets
+      signature-hash: sha256:63ff28ee353af607a06291569ded329b94eed5a19ab10827ac00b600382c7685
+      kind: host
+      arity: 1
+      lifetime-version: 1
+    - binding: arp-reflection:yaml/YamlDocument/get/v1
+      target: yaml.YamlDocument.get
+      signature-hash: sha256:721300fb413e50b262b1e6c911135fabdca1ce8a7ec1208a91820699fa72cc03
+      kind: reflection
+      arity: 1
+      lifetime-version: 1
+    - binding: arp-reflection:yaml/YamlDocument/string_value/v1
+      target: yaml.YamlDocument.string_value
+      signature-hash: sha256:94952925875ff2da7c54939d7c289d6b17a8cc4f1e31f9f9fcf092c5b02e3c7e
+      kind: reflection
+      arity: 0
+      lifetime-version: 1
+modules:
+  - id: unity_import_common
+    version: 1
+    source: unity_import_common.arp
+    entries: [source_contract]
+    dependencies: []
+  - id: importer_base
+    version: 1
+    source: importer_base.arp
+    entries: [Importer.make_report]
+    dependencies: [unity_import_common]
+  - id: package_writer
+    version: 1
+    source: package_writer.arp
+    entries: [UnityPackageWriter.write_package]
+    dependencies: [unity_import_common]
+  - id: character_validator
+    version: 1
+    source: character_validator.arp
+    entries: [UnityCharacterImportValidator.validate]
+    dependencies: [unity_import_common, importer_base]
+  - id: fbx_importer
+    version: 1
+    source: fbx_importer.arp
+    entries: [FbxImporter.export_path]
+    dependencies: [unity_import_common, importer_base, character_validator]
+  - id: glb_importer
+    version: 1
+    source: glb_importer.arp
+    entries: [GlbImporter.export_path]
+    dependencies: [unity_import_common, importer_base]
+  - id: texture_importer
+    version: 1
+    source: texture_importer.arp
+    entries: [UnityTextureImporter.export_path]
+    dependencies: [unity_import_common, importer_base]
+  - id: model_importer
+    version: 1
+    source: model_importer.arp
+    entries: [UnityModelImporter.export_path]
+    dependencies: [unity_import_common, importer_base]
+  - id: animator_controller_importer
+    version: 1
+    source: animator_controller_importer.arp
+    entries: [UnityAnimatorControllerImporter.export_path]
+    dependencies: [unity_import_common, importer_base]
+  - id: material_importer
+    version: 1
+    source: material_importer.arp
+    entries: [UnityMaterialImporter.export_path]
+    dependencies: [unity_import_common, importer_base, texture_importer]
+  - id: prefab_importer
+    version: 1
+    source: prefab_importer.arp
+    entries: [UnityPrefabImporter.export_path]
+    dependencies: [unity_import_common, importer_base]
+  - id: scene_importer
+    version: 1
+    source: scene_importer.arp
+    entries: [UnitySceneImporter.export_path]
+    dependencies: [unity_import_common, importer_base, prefab_importer]
+  - id: yaml_importer
+    version: 1
+    source: yaml_importer.arp
+    entries: [UnityYamlImporter.export_path]
+    dependencies: [unity_import_common, importer_base]
+  - id: meta_importer
+    version: 1
+    source: meta_importer.arp
+    entries: [UnityMetaImporter.export_path]
+    dependencies: [unity_import_common, importer_base, model_importer, texture_importer]
+  - id: particle_importer
+    version: 1
+    source: particle_importer.arp
+    entries: [UnityParticleImporter.export_path]
+    dependencies: [unity_import_common, importer_base, material_importer]
+  - id: character_folder_importer
+    version: 1
+    source: character_folder_importer.arp
+    entries: [UnityCharacterFolderImporter.export_path]
+    dependencies: [unity_import_common, importer_base, fbx_importer]
+  - id: character_package_importer
+    version: 1
+    source: character_package_importer.arp
+    entries: [UnityCharacterPackageImporter.import_path]
+    dependencies: [unity_import_common, importer_base, package_writer, character_folder_importer, model_importer, animator_controller_importer, texture_importer, material_importer, prefab_importer]
+  - id: particle_package_importer
+    version: 1
+    source: particle_package_importer.arp
+    entries: [UnityParticlePackageImporter.import_path]
+    dependencies: [unity_import_common, importer_base, package_writer, particle_importer, texture_importer, material_importer]
+  - id: unity_import
+    version: 1
+    source: unity_import.arp
+    entries: [main, export]
+    dependencies: [unity_import_common, importer_base, package_writer, glb_importer, fbx_importer, character_validator, texture_importer, yaml_importer, model_importer, meta_importer, material_importer, animator_controller_importer, character_folder_importer, prefab_importer, scene_importer, character_package_importer, particle_importer, particle_package_importer]

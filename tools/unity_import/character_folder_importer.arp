@@ -1,0 +1,68 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+import fbx_importer
+
+class UnityCharacterFolderImporter(Importer):
+    def scan_files(self, folder: string) -> io.IoFileList:
+        return io.list_paths(folder, true)
+
+    def validate(self, folder: string) -> void:
+        if not io.exists(folder):
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_FOLDER
+        var files: io.IoFileList = self.scan_files(folder)
+        if not files.success:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_FOLDER + ": " + files.diagnostics
+        if files.count() == 0:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_FOLDER
+        var modelPath: string = ""
+        var index: int = 0
+        while index < files.count():
+            var path: string = files.at(index)
+            var extension: string = self.input_extension(path)
+            if extension == unity_import_common.EXTENSION_FBX and modelPath == "":
+                modelPath = path
+            index = index + 1
+        if modelPath == "":
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL
+
+    def export_path(self, folder: string, output: string) -> int:
+        self.validate(folder)
+        var files: io.IoFileList = self.scan_files(folder)
+        var modelPath: string = ""
+        var controllerCount: int = 0
+        var materialCount: int = 0
+        var metaCount: int = 0
+        var index: int = 0
+        while index < files.count():
+            var path: string = files.at(index)
+            var extension: string = self.input_extension(path)
+            if extension == unity_import_common.EXTENSION_FBX and modelPath == "":
+                modelPath = path
+            if extension == unity_import_common.EXTENSION_CONTROLLER:
+                controllerCount = controllerCount + 1
+            if extension == unity_import_common.EXTENSION_MATERIAL:
+                materialCount = materialCount + 1
+            if extension == unity_import_common.EXTENSION_META:
+                metaCount = metaCount + 1
+            index = index + 1
+        var fbxImporter: FbxImporter = FbxImporter()
+        var imported: asset.ImportedModelResult = fbxImporter.import_path(modelPath)
+        if not imported.success:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_MODEL + ": " + imported.diagnostics
+        var report: yaml.YamlDocument = self.make_report(
+            folder,
+            unity_import_common.REPORT_KIND_CHARACTER_FOLDER,
+            unity_import_common.STATUS_OK)
+        var summary: yaml.YamlDocument = yaml.mapping()
+        summary.set("fileCount", yaml.int(files.count()))
+        summary.set("controllerCount", yaml.int(controllerCount))
+        summary.set("materialCount", yaml.int(materialCount))
+        summary.set("metaCount", yaml.int(metaCount))
+        self.add_model_summary(report, imported)
+        report.set("character", summary)
+        return self.write_report(output, report)
+

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>05 UI · arp 引擎教程</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">arp 引擎教程<small>Anime Render Pipeline</small></div>
+  <nav>
+    <div class="group-title">导航</div>
+    <a class="nav" href="index.html"><span class="num">·</span>总览</a>
+    <div class="group-title">系统文档</div>
+    <a class="nav" href="01-render-pipeline.html"><span class="num">01</span>渲染管线</a>
+    <a class="nav" href="02-gameobject-component.html"><span class="num">02</span>GameObject + Component</a>
+    <a class="nav" href="03-animation.html"><span class="num">03</span>动画</a>
+    <a class="nav" href="04-particles.html"><span class="num">04</span>粒子</a>
+    <a class="nav active" href="05-ui.html"><span class="num">05</span>UI</a>
+    <a class="nav" href="06-resource-management.html"><span class="num">06</span>资源管理</a>
+    <a class="nav" href="07-reflection.html"><span class="num">07</span>反射</a>
+    <a class="nav" href="08-network.html"><span class="num">08</span>网络</a>
+    <a class="nav" href="09-shader.html"><span class="num">09</span>Shader</a>
+    <a class="nav" href="10-prefab-internal-resources.html"><span class="num">10</span>预制体</a>
+    <a class="nav" href="11-art-asset-formats.html"><span class="num">11</span>资产导入</a>
+    <a class="nav" href="12-procedural-generation.html"><span class="num">12</span>程序化生成</a>
+    <a class="nav" href="13-scripting.html"><span class="num">13</span>脚本</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <h1>05 UI <span class="badge blue">Prototype Complete</span></h1>
+  <p class="lead">arp 引擎的 UI 系统（<code>src/ui</code>，屏幕空间；<code>src/gui</code> 为 retained GUI 树与 flex-like 子集）是一个后端中立、确定性布局与命中的框架。屏幕空间 UI 是显式的 <code>Canvas</code> + <code>Widget</code> 树（<strong>不是</strong> GameObject 层级，也不需要相机）；世界空间 UI 通过「锚点桥 + 解析相机」投影到屏幕矩形。</p>
+
+  <h2>核心概念</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="12.5">
+      <defs><marker id="e1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#2f6feb"/></marker></defs>
+      <rect x="20" y="40" width="150" height="60" rx="8" fill="#e7f0ff" stroke="#2f6feb"/>
+      <text x="30" y="64" font-weight="700">Canvas</text>
+      <text x="30" y="82" fill="#57606a">viewport/safeArea</text>
+      <rect x="210" y="40" width="150" height="60" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="220" y="64" font-weight="700">Widget 树</text>
+      <text x="220" y="82" fill="#57606a">父子 + 稳定 id</text>
+      <rect x="400" y="40" width="150" height="60" rx="8" fill="#fff4e0" stroke="#9a6700"/>
+      <text x="410" y="64" font-weight="700">LayoutEngine</text>
+      <text x="410" y="82" fill="#57606a">resolveLayout</text>
+      <rect x="590" y="40" width="110" height="60" rx="8" fill="#f0e9fb" stroke="#6639ba"/>
+      <text x="600" y="64" font-weight="700">DrawPlan</text>
+      <text x="600" y="82" fill="#57606a">提取→录制</text>
+      <path d="M170 70 L208 70" stroke="#2f6feb" stroke-width="2" marker-end="url(#e1)"/>
+      <path d="M360 70 L398 70" stroke="#2f6feb" stroke-width="2" marker-end="url(#e1)"/>
+      <path d="M550 70 L588 70" stroke="#2f6feb" stroke-width="2" marker-end="url(#e1)"/>
+      <text x="20" y="150" fill="#57606a">屏幕空间 UI 不依赖相机；世界空间 UI 经 WorldAnchorProjector 投影。</text>
+    </svg>
+  </div>
+
+  <h2>1. Canvas 与 Widget</h2>
+  <p><code>Canvas</code> 是根容器，携带视口、安全区、缩放策略与最大控件数；<code>Widget</code> 通过 <code>createWidget(WidgetDesc)</code> 创建并挂到父节点。<code>resolveLayout()</code> 产出 <code>ResolvedWidget</code> 列表，<code>hitTest()</code> 做确定性命中测试。UI 树明确不暴露原生后端句柄、不在热路径生成静态顶点数据。</p>
+  <pre><code><span class="tk-type">Canvas</span> canvas(<span class="tk-str">"hud"</span>, {
+  .viewport = <span class="tk-type">UiViewport</span>::<span class="tk-fn">explicitPixels</span>(1280, 720),
+  .safeArea = <span class="tk-type">UiSafeArea</span>::<span class="tk-fn">none</span>(),
+  .scalePolicy = <span class="tk-type">UiScalePolicy</span>::<span class="tk-fn">fixed</span>(1.0f),
+  .maxWidgetCount = 1024,
+});
+
+<span class="tk-type">Widget</span>& root = canvas.<span class="tk-fn">createWidget</span>({ .name = <span class="tk-str">"root"</span> });
+<span class="tk-type">Widget</span>& panel = canvas.<span class="tk-fn">createWidget</span>({ .name = <span class="tk-str">"panel"</span>,
+  .localRect = { 24, 24, 360, 96 }, .controlType = <span class="tk-type">UiControlType</span>::Panel });
+canvas.<span class="tk-fn">reparent</span>(panel.id(), root.id());
+
+<span class="tk-key">auto</span> layout = canvas.<span class="tk-fn">resolveLayout</span>();   <span class="tk-com">// CanvasLayoutResult</span></code></pre>
+
+  <h2>2. 布局引擎</h2>
+  <p><code>LayoutEngine</code> 是静态解析工具：按 <code>Style</code>（fixed/percent/min/max、stretch、padding、gap、axis、align）解析宽高与对齐原点。支持 Stack / Grid 布局参与模式。</p>
+  <pre><code><span class="tk-type">Style</span> s;
+s.axis = <span class="tk-type">Axis</span>::Column;
+s.align = <span class="tk-type">Align</span>::Start;
+s.fixedSize = { 200, 0 };
+s.padding = <span class="tk-type">Spacing</span>::<span class="tk-fn">all</span>(8.0f);
+
+<span class="tk-type">float</span> w = <span class="tk-type">LayoutEngine</span>::<span class="tk-fn">resolveWidth</span>(s, parentWidth);
+<span class="tk-type">float</span> x = <span class="tk-type">LayoutEngine</span>::<span class="tk-fn">alignedOrigin</span>(s.align, origin, content, child);</code></pre>
+
+  <h2>3. 控件与交互</h2>
+  <p>UI 提供一套控件类型（Panel/Label/Button/Slider/Checkbox/TextInput/Dropdown/Tabs/TreeView/ColorPicker/Image/ScrollView…），每个控件是薄封装，暴露确定性交互方法（如 <code>Button::click</code>、<code>Slider::drag</code>、<code>Dropdown::select</code>）。<code>UiControlRuntime</code> 管理控件集合、焦点捕获与交互分发；<code>InputRouter</code> 在游戏输入之前消费指针/键盘/文本，返回 <code>InputConsumption</code> 以避免 UI 输入再去驱动角色。</p>
+  <pre><code><span class="tk-type">UiControlRuntime</span> ui(<span class="tk-str">"hud"</span>, canvasDesc);
+<span class="tk-key">auto</span> btn = ui.<span class="tk-fn">createControl</span>({ .type = <span class="tk-type">UiControlType</span>::Button,
+                              .widget = panelWidgetDesc }, rootId);
+ui.<span class="tk-fn">interact</span>(<span class="tk-type">UiControlInteraction</span>::<span class="tk-fn">click</span>(btn.widgetId()));
+
+<span class="tk-com">// UI 先于游戏输入消费；被消费的指针不再驱动玩家</span>
+<span class="tk-type">InputRouter</span> router;
+<span class="tk-key">auto</span> route = router.<span class="tk-fn">route</span>(canvas, layout, inputSystem);</code></pre>
+
+  <h2>4. 渲染提取与 DrawPlan</h2>
+  <p>提取阶段把布局结果转为 <code>UIRenderItem</code>（Box/Text/Image），写入 <code>RenderQueue</code>（不含原生句柄/静态顶点），再由 <code>DrawPlanner::plan()</code> 产出 <code>DrawPlan</code>（含排序键 zOrder），最终经渲染器/RHI 绘制。引擎通过 <code>DocumentComponent</code>（挂在 GameObject 上的 <code>arp::ui::DocumentComponent</code>）把 <code>.arpui</code> 文档挂载到运行时。</p>
+  <pre><code><span class="tk-type">RenderExtractor</span> extractor;
+<span class="tk-key">auto</span> rq = extractor.<span class="tk-fn">extract</span>(canvas, layout);   <span class="tk-com">// UIRenderExtractionResult</span>
+<span class="tk-type">DrawPlanner</span> planner;
+<span class="tk-key">auto</span> plan = planner.<span class="tk-fn">plan</span>(rq.queue());       <span class="tk-com">// DrawPlanResult</span></code></pre>
+
+  <h2>5. .arpui 资源与创作流程</h2>
+  <p>屏幕 UI 由 <code>.arpui</code> 文件声明（<code>Contract Complete</code>）。运行时、渲染器、RHI、玩法代码只消费显式的 <code>.arpui</code> 元数据。示例 schema 含 canvasId/screenId/viewId/stateId、安全区策略、命令角色、游戏绑定、数据绑定、纹理图集切片与节点树。</p>
+  <pre><code>{
+  <span class="tk-str">"type"</span>: <span class="tk-str">"ArpUiDocument"</span>,
+  <span class="tk-str">"contractVersion"</span>: <span class="tk-str">"arpui.v1"</span>,
+  <span class="tk-str">"canvasId"</span>: <span class="tk-str">"pika.hud.canvas"</span>,
+  <span class="tk-str">"safeAreaPolicy"</span>: <span class="tk-str">"RespectPlatformSafeArea"</span>,
+  <span class="tk-str">"commandRole"</span>: <span class="tk-str">"command.pause"</span>,
+  <span class="tk-str">"gameBinding"</span>: <span class="tk-str">"pika.session.pause"</span>,
+  <span class="tk-str">"dataBinding"</span>: <span class="tk-str">"binding.player.health"</span>,
+  <span class="tk-str">"textures"</span>: [ { <span class="tk-str">"resourceId"</span>: <span class="tk-str">"ui/pika/hud_bar"</span>, <span class="tk-str">"atlas"</span>: <span class="tk-str">"pika_ui_atlas"</span>, <span class="tk-str">"sliceLeft"</span>: 8, <span class="tk-str">"sliceTop"</span>: 8 } ],
+  <span class="tk-str">"nodes"</span>: [ { <span class="tk-str">"id"</span>: 1, <span class="tk-str">"parent"</span>: 0, <span class="tk-str">"type"</span>: <span class="tk-str">"Panel"</span>, <span class="tk-str">"style"</span>: <span class="tk-str">"hud.panel"</span> } ]
+}</code></pre>
+  <div class="callout warn">
+    <p>禁止回退规则：不靠 layer 名推断语义；不在运行时解析 PSD/Illustrator/Figma/截图；缺失纹理/图集/命令/状态/安全区/数据绑定时必须报确定性诊断（如 <code>MissingRequiredResourceBinding</code>、<code>MissingCommandBinding</code>），不得静默猜测。</p>
+  </div>
+
+  <h2>6. 世界空间 UI（名称牌/血条）</h2>
+  <p>世界空间 UI 不是把 UI 节点变成场景子物体，而是：场景对象暴露 <code>WorldAnchorComponent</code> 元数据，<code>WorldAnchorProjector</code> 结合稳定遍历快照与 <code>ResolvedCamera</code> 计算屏幕矩形；UI 控件树仍在 <code>src/ui</code>。命中测试、焦点、布局规则与屏幕 UI 一致。</p>
+  <pre><code><span class="tk-type">WorldAnchorProjector</span> projector;
+<span class="tk-key">auto</span> anchors = projector.<span class="tk-fn">project</span>(scene, snapshot, camera, canvas);
+<span class="tk-com">// anchors: 每个 WorldAnchorProjection 含 widgetId + 屏幕 LayoutRect</span></code></pre>
+
+  <h2>参考实例：world_of_claudecraft 的 HUD</h2>
+  <p>该项目用两类 Component 驱动 HUD：<code>UiTextComponent</code>（文本，typeId <code>wocc.hudtext</code>）与 <code>UiBarComponent</code>（血条/蓝条/经验，typeId <code>wocc.hudbar</code>）。它们在 <code>extract()</code> 中推送矩形 + 内容 + <code>styleId</code>（如 <code>text.hud</code>/<code>bar.hp</code>），由 HUD 画布构建器收集，生成「背景 Box + 填充 Box（宽度 = rect.width * fillRatio）」。<code>presentation::HudPresenter::buildFrame()</code> 则把 <code>Character</code> 的属性（职业/等级/血量/蓝量）排成 <code>HudFrame</code> 元素。</p>
+  <pre><code><span class="tk-com">// presentation/hud.cpp — HUD 每帧构建</span>
+<span class="tk-type">HudFrame</span> frame = presenter.<span class="tk-fn">buildFrame</span>(character, screenW, screenH);
+<span class="tk-com">// 元素含职业+等级文本、红色血条、蓝色蓝条、经验百分比</span></code></pre>
+  <div class="callout note">
+    <p>注意区分两条 HUD 路径：① 组件驱动的 <code>wocc.hud*</code> payload → HUD 画布构建器（数据驱动、适合绑定角色属性）；② <code>presentation::HudPresenter</code> 直接由 <code>Character</code> 构建（适合演示/快速原型）。两者都落在 <code>arp::ui</code> 的 DrawPlan 渲染链上。</p>
+  </div>
+
+  <h2>成熟度</h2>
+  <p>UI 框架能力（Layout / Style / Interaction / Text / Image / ResourceBinding / RenderExtraction / Diagnostics / HotPathConstraints）通过 <code>UiFrameworkContract</code> 声明状态，当前整体为 <span class="badge blue">Prototype Complete</span>；可见窗口/多平台与 Production Ready 尚未声明。<code>.arpui</code> 创作流程为 <span class="badge green">Contract Complete</span>。</p>
+
+  <h2>快速上手清单</h2>
+  <ol>
+    <li>用 <code>Canvas</code> + <code>createWidget(WidgetDesc)</code> 建屏幕 UI 树，<code>reparent</code> 组织层级。</li>
+    <li>用 <code>Style</code> / <code>LayoutEngine</code> 描述布局，调 <code>resolveLayout()</code> 拿 <code>ResolvedWidget</code>。</li>
+    <li>用 <code>UiControlRuntime</code> 管理控件与交互；用 <code>InputRouter</code> 在游戏前消费 UI 输入。</li>
+    <li>提取 <code>RenderExtractor::extract</code> → <code>DrawPlanner::plan</code> → 交给渲染器录制。</li>
+    <li>世界空间 UI 用 <code>WorldAnchorComponent</code> + <code>WorldAnchorProjector</code>，不要变成场景子物体。</li>
+    <li>美术/策划编辑 <code>.arpui</code>，缺失绑定必须报确定性诊断，不要猜测。</li>
+  </ol>
+
+  <div class="pager">
+    <a href="04-particles.html"><div class="dir">← 上一章</div><div class="ttl">04 粒子</div></a>
+    <a class="next" href="06-resource-management.html"><div class="dir">下一章 →</div><div class="ttl">06 资源管理</div></a>
+    <a href="index.html"><div class="dir">← 返回</div><div class="ttl">总览</div></a>
+  </div>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,116 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+import material_importer
+
+class UnityParticleImporter(Importer):
+    def validate_required_integer(
+        self,
+        particle: yaml.YamlDocument,
+        fieldName: string,
+        path: string) -> yaml.YamlDocument:
+        var value: yaml.YamlDocument = particle.get(fieldName)
+        if not value.is_integer():
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PARSE + ": " + path
+        return value
+
+    def validate_renderer(
+        self,
+        renderer: yaml.YamlDocument,
+        materialGuid: string) -> string:
+        if yaml.kind_code(renderer) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_RENDERER
+        var material: yaml.YamlDocument = renderer.get("m_Material")
+        if yaml.kind_code(material) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_RENDERER + ": m_Material"
+        var guid: yaml.YamlDocument = material.get("guid")
+        if not guid.is_string() or guid.string_value() == "":
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_RENDERER + ": m_Material.guid"
+        var currentGuid: string = guid.string_value()
+        if materialGuid != "" and materialGuid != currentGuid:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_RENDERER + ": conflicting material GUIDs"
+        return currentGuid
+
+    def validate(self, input: string) -> void:
+        var read: io.IoTextResult = io.read_text(input)
+        if not read.success:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_READ + ": " + read.diagnostics
+        var parsed: yaml.YamlParseResult = yaml.parse(read.text)
+        if not parsed.success:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_PARSE + ": " + parsed.diagnostics
+        var particleCount: int = 0
+        var rendererCount: int = 0
+        var materialGuid: string = ""
+        for document: yaml.YamlDocument in parsed.documents:
+            if yaml.kind_code(document) != unity_import_common.YAML_KIND_MAPPING:
+                if yaml.kind_code(document) > unity_import_common.YAML_KIND_NULL:
+                    raise unity_import_common.DIAGNOSTIC_PARTICLE_PARSE + ": document"
+                continue
+            var particle: yaml.YamlDocument = document.get("ParticleSystem")
+            if yaml.kind_code(particle) == unity_import_common.YAML_KIND_MAPPING:
+                particleCount = particleCount + 1
+                var maxParticles: yaml.YamlDocument = self.validate_required_integer(
+                    particle, "m_MaxParticles", "ParticleSystem.m_MaxParticles")
+                if maxParticles.integer_value() <= 0:
+                    raise unity_import_common.DIAGNOSTIC_PARTICLE_PARSE + ": ParticleSystem.m_MaxParticles"
+                var seed: yaml.YamlDocument = self.validate_required_integer(
+                    particle, "randomSeed", "ParticleSystem.randomSeed")
+                if seed.integer_value() < 0:
+                    raise unity_import_common.DIAGNOSTIC_PARTICLE_PARSE + ": ParticleSystem.randomSeed"
+                var autoSeed: yaml.YamlDocument = particle.get("useAutoRandomSeed")
+                if not autoSeed.is_boolean() and not autoSeed.is_integer():
+                    raise unity_import_common.DIAGNOSTIC_PARTICLE_PARSE + ": ParticleSystem.useAutoRandomSeed"
+                if autoSeed.is_boolean() and autoSeed.boolean_value():
+                    raise unity_import_common.DIAGNOSTIC_PARTICLE_PARSE + ": auto random seed is unsupported"
+                if autoSeed.is_integer() and autoSeed.integer_value() != 0:
+                    raise unity_import_common.DIAGNOSTIC_PARTICLE_PARSE + ": auto random seed is unsupported"
+            elif yaml.kind_code(particle) > unity_import_common.YAML_KIND_NULL:
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PARSE + ": ParticleSystem"
+            var renderer: yaml.YamlDocument = document.get("ParticleSystemRenderer")
+            if yaml.kind_code(renderer) > unity_import_common.YAML_KIND_NULL:
+                rendererCount = rendererCount + 1
+                materialGuid = self.validate_renderer(renderer, materialGuid)
+        if particleCount == 0:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_COMPONENT
+        if rendererCount == 0:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_RENDERER
+
+    def export_path(self, input: string, output: string) -> int:
+        self.validate(input)
+        var read: io.IoTextResult = io.read_text(input)
+        if not read.success:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_READ + ": " + read.diagnostics
+        var parsed: yaml.YamlParseResult = self.parse_yaml_or_raise(read.text)
+        var particleCount: int = 0
+        var rendererCount: int = 0
+        var materialGuid: string = ""
+        for document: yaml.YamlDocument in parsed.documents:
+            if yaml.kind_code(document) != unity_import_common.YAML_KIND_MAPPING:
+                if yaml.kind_code(document) > unity_import_common.YAML_KIND_NULL:
+                    raise unity_import_common.DIAGNOSTIC_PARTICLE_PARSE + ": document"
+                continue
+            var particle: yaml.YamlDocument = document.get("ParticleSystem")
+            if yaml.kind_code(particle) == unity_import_common.YAML_KIND_MAPPING:
+                particleCount = particleCount + 1
+            elif yaml.kind_code(particle) > unity_import_common.YAML_KIND_NULL:
+                raise unity_import_common.DIAGNOSTIC_PARTICLE_PARSE + ": ParticleSystem"
+            var renderer: yaml.YamlDocument = document.get("ParticleSystemRenderer")
+            if yaml.kind_code(renderer) > unity_import_common.YAML_KIND_NULL:
+                rendererCount = rendererCount + 1
+                materialGuid = self.validate_renderer(renderer, materialGuid)
+        if particleCount == 0:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_COMPONENT
+        if rendererCount == 0:
+            raise unity_import_common.DIAGNOSTIC_PARTICLE_RENDERER
+        var report: yaml.YamlDocument = self.make_report(
+            input, unity_import_common.REPORT_KIND_PARTICLE, unity_import_common.STATUS_OK)
+        var summary: yaml.YamlDocument = yaml.mapping()
+        summary.set("particleSystemCount", yaml.int(particleCount))
+        summary.set("rendererCount", yaml.int(rendererCount))
+        summary.set("materialGuid", yaml.string(materialGuid))
+        report.set("particle", summary)
+        return self.write_report(output, report)
+

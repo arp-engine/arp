@@ -1,0 +1,24 @@
+type: arp.script.cpp-plugin
+contractVersion: 2
+module: arp_scene
+moduleVersion: 1
+source: scene/scene_module.cpp
+entry: arp_register_arp_scene
+exportContractHash: sha256:915612d5bf0d67157bccf3397941abf1229faae2a67d7327b16eb73faf15f4f7
+requiredServices:
+  - id: arp.scene.main-scene
+    version: 1
+  - id: arp.scene.main-scene-registry
+    version: 1
+reflectionHeaders:
+  - src/scene/component.h
+  - src/scene/game_object.h
+  - src/scene/scene.h
+  - src/scene/diagnostics.h
+  - src/scene/transform.h
+  - src/scene/transform_component.h
+  - src/scene/camera_temporal_component.h
+  - src/scene/script_behavior_component.h
+  - src/scene/scene_runtime_profile_component.h
+  - src/2d/bounds.h
+  - src/2d/components.h

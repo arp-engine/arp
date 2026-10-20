@@ -1,0 +1,16 @@
+type: arp.script.cpp-plugin
+contractVersion: 2
+module: arp_resources
+moduleVersion: 1
+exportContractHash: sha256:1db4e73a01144fa2a569261da9dd3e962c9455d8677e8885717d457dfeff47bb
+source: resources_plugin.cpp
+entry: arp_register_arp_resources
+requiredServices:
+  - id: arp.resources.manager
+    version: 1
+  - id: arp.runtime.async
+    version: 1
+reflectionHeaders:
+  - src/resource/resource_module.h
+  - src/resource/resource_manager.h
+  - src/resource/resource_request_component.h

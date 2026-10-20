@@ -1,0 +1,318 @@
+import io
+import yaml
+import arp_import_host
+import asset
+
+# Importer failures raise diagnostics. The only script return status is the
+# successful CLI/report boundary value; failure details stay in the exception.
+const STATUS_OK: int = 0
+const SOURCE_CONTRACT_VERSION: int = 1
+const UNITY_FILE_ID_FIELD: string = "__arp_unity_fileID"
+const UNITY_TYPE_FIELD: string = "__arp_unity_type"
+
+# Unity Import report contract.
+const REPORT_CONTRACT_VERSION: int = 1
+const DIAGNOSTIC_PACKAGE_ENVELOPE_DIRECTORY: string = "package envelope directory creation failed"
+const DIAGNOSTIC_PACKAGE_ENVELOPE_SERIALIZE: string = "package envelope serialization failed"
+const DIAGNOSTIC_PACKAGE_ENVELOPE_WRITE: string = "package envelope write failed"
+const DIAGNOSTIC_PACKAGE_MANIFEST_SERIALIZE: string = "package manifest serialization failed"
+const DIAGNOSTIC_PACKAGE_WRITE: string = "package writer failed"
+const DIAGNOSTIC_PARTICLE_PACKAGE_VALIDATE: string = "particle package validation failed"
+const DIAGNOSTIC_PARTICLE_PACKAGE_READ: string = "particle package source read failed"
+const DIAGNOSTIC_PARTICLE_PACKAGE_PARSE: string = "particle package YAML parse failed"
+const DIAGNOSTIC_PARTICLE_PACKAGE_PAYLOAD: string = "particle package payload construction failed"
+const DIAGNOSTIC_CHARACTER_PACKAGE_VALIDATE: string = "character package validation failed"
+const DIAGNOSTIC_CHARACTER_PACKAGE_MODEL: string = "character package model import failed"
+const DIAGNOSTIC_CHARACTER_MODEL_VALIDATION: string = "character model validation failed"
+const DIAGNOSTIC_CHARACTER_PACKAGE_SHADER: string = "character package shader contract failed"
+const DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD: string = "character package payload construction failed"
+const DIAGNOSTIC_TEXTURE_SOURCE: string = "Unity texture source does not exist"
+const DIAGNOSTIC_TEXTURE_META: string = "Unity TextureImporter meta is invalid"
+const DIAGNOSTIC_TEXTURE_DECODE: string = "Unity texture decode failed"
+const DIAGNOSTIC_TEXTURE_INVALID: string = "Unity texture decode result is invalid"
+
+const DIAGNOSTIC_SOURCE_READ: string = "unity source read failed"
+const DIAGNOSTIC_YAML_PARSE: string = "unity YAML parse failed"
+const DIAGNOSTIC_YAML_EMPTY: string = "unity YAML contains no documents"
+const DIAGNOSTIC_YAML_DOCUMENT: string = "unity YAML document is not a mapping"
+const DIAGNOSTIC_UNSUPPORTED_OBJECT: string = "unity YAML contains no supported object"
+const DIAGNOSTIC_ASSET_DATABASE: string = "unity asset database scan failed"
+const DIAGNOSTIC_ASSET_DATABASE_PATH: string = "unity asset database path resolution failed"
+const DIAGNOSTIC_UNSUPPORTED_EXTENSION: string = "unsupported Unity import extension"
+const DIAGNOSTIC_GLB_IMPORT: string = "GLB import failed"
+const DIAGNOSTIC_FBX_IMPORT: string = "FBX import failed"
+const DIAGNOSTIC_REPORT_SERIALIZE: string = "Unity import report serialization failed"
+const DIAGNOSTIC_REPORT_WRITE: string = "Unity import report write failed"
+const DIAGNOSTIC_MODEL_META_READ: string = "Unity ModelImporter meta read failed"
+const DIAGNOSTIC_MODEL_META_MISSING: string = "Unity ModelImporter component missing"
+const DIAGNOSTIC_MODEL_META_INVALID: string = "Unity ModelImporter meta is invalid"
+const DIAGNOSTIC_MODEL_META_ANIMATION: string = "Unity ModelImporter animationType is invalid"
+const DIAGNOSTIC_META_INVALID: string = "Unity meta is invalid"
+const DIAGNOSTIC_META_IMPORTER_MISSING: string = "Unity meta importer component is missing"
+const DIAGNOSTIC_META_IMPORTER_AMBIGUOUS: string = "Unity meta has multiple importer components"
+const DIAGNOSTIC_META_IMPORTER_UNSUPPORTED: string = "Unity meta importer is unsupported"
+const DIAGNOSTIC_MATERIAL_PATH: string = "Unity material path does not exist"
+const DIAGNOSTIC_MATERIAL_READ: string = "Unity material read failed"
+const DIAGNOSTIC_MATERIAL_INVALID: string = "Unity material is invalid"
+const DIAGNOSTIC_MATERIAL_SHADER: string = "Unity material shader reference is missing"
+const DIAGNOSTIC_MATERIAL_TEXTURE: string = "Unity material texture reference is invalid"
+const DIAGNOSTIC_MATERIAL_TEXTURE_RESOLUTION: string = "Unity material texture reference cannot be resolved"
+const DIAGNOSTIC_CONTROLLER_READ: string = "Unity AnimatorController read failed"
+const DIAGNOSTIC_CONTROLLER_PARSE: string = "Unity AnimatorController YAML is invalid"
+const DIAGNOSTIC_CONTROLLER_MISSING: string = "Unity AnimatorController component is missing"
+const DIAGNOSTIC_CONTROLLER_STATE: string = "Unity AnimatorController contains no state"
+const DIAGNOSTIC_CHARACTER_FOLDER: string = "Unity character folder is missing or empty"
+const DIAGNOSTIC_CHARACTER_MODEL: string = "Unity character model is invalid"
+const DIAGNOSTIC_PARTICLE_READ: string = "Unity particle source read failed"
+const DIAGNOSTIC_PARTICLE_PARSE: string = "Unity particle YAML is invalid"
+const DIAGNOSTIC_PARTICLE_COMPONENT: string = "Unity particle component is missing"
+const DIAGNOSTIC_PARTICLE_RENDERER: string = "Unity particle renderer is invalid"
+const DIAGNOSTIC_DATABASE_RECORD: string = "Unity asset database record is missing"
+const DIAGNOSTIC_DATABASE_GUID: string = "Unity asset database GUID mismatch"
+const DIAGNOSTIC_DATABASE_PATH: string = "Unity asset database record path is missing"
+
+const EXTENSION_GLB: string = ".glb"
+const EXTENSION_FBX: string = ".fbx"
+const EXTENSION_META: string = ".meta"
+const EXTENSION_MATERIAL: string = ".mat"
+const EXTENSION_CONTROLLER: string = ".controller"
+const EXTENSION_ASSET: string = ".asset"
+const EXTENSION_PREFAB: string = ".prefab"
+const EXTENSION_SCENE: string = ".unity"
+const EXTENSION_YAML: string = ".yaml"
+const EXTENSION_PNG: string = ".png"
+const EXTENSION_JPG: string = ".jpg"
+const EXTENSION_JPEG: string = ".jpeg"
+const EXTENSION_WEBP: string = ".webp"
+const EXTENSION_TGA: string = ".tga"
+const EXTENSION_PSD: string = ".psd"
+const TEXTURE_DEFAULT_SRGB: bool = true
+const TEXTURE_DEFAULT_ALPHA_IS_TRANSPARENCY: bool = false
+const CHARACTER_SKIN_INFLUENCE_SLOTS: int = 4
+const CHARACTER_BIND_POSE_DISPLACEMENT_RATIO_LIMIT: float = 0.05
+const CHARACTER_EDGE_LENGTH_SCALE_LIMIT: float = 4.0
+const CHARACTER_EDGE_LENGTH_SLACK_RATIO: float = 0.06
+const CHARACTER_QUATERNION_LENGTH_TOLERANCE: float = 0.25
+const CHARACTER_MIN_ABS_SCALE: float = 0.00001
+const CHARACTER_MAX_ABS_SCALE: float = 100.0
+const CHARACTER_SAMPLE_STEP: float = 0.25
+
+const REPORT_TYPE: string = "UnityImportReport"
+const REPORT_KIND_GLB: string = "glb"
+const REPORT_KIND_FBX: string = "fbx"
+const REPORT_KIND_UNITY_YAML: string = "unity_yaml"
+const REPORT_KIND_PREFAB: string = "prefab"
+const REPORT_KIND_SCENE: string = "scene"
+const REPORT_KIND_MODEL_META: string = "model_meta"
+const REPORT_KIND_TEXTURE_META: string = "texture_meta"
+const REPORT_KIND_NATIVE_META: string = "native_meta"
+const REPORT_KIND_DEFAULT_META: string = "default_meta"
+const REPORT_KIND_MATERIAL: string = "material"
+const REPORT_KIND_CONTROLLER: string = "controller"
+const REPORT_KIND_CHARACTER_FOLDER: string = "character_folder"
+const REPORT_KIND_PARTICLE: string = "particle"
+const REPORT_KIND_TEXTURE: string = "texture"
+
+const PACKAGE_FORMAT: string = "ArpInternalAssetPackage"
+const PACKAGE_VERSION: int = 1
+const RESOURCE_FORMAT: string = "ArpRuntimeResource"
+const RESOURCE_VERSION: int = 1
+const RESOURCE_STATUS_PROTOTYPE: string = "Prototype Complete"
+const RESOURCE_TYPE_PARTICLE_EFFECT: string = "ParticleEffectResource"
+const PARTICLE_CONTRACT_VERSION: string = "particle.effect/v1"
+const PARTICLE_DEFAULT_MAX_PARTICLES: int = 1024
+const PARTICLE_DEFAULT_MAX_EMITTERS: int = 32
+const PARTICLE_DEFAULT_MAX_MATERIAL_BINDINGS: int = 8
+const PARTICLE_DEFAULT_MAX_TEXTURE_BINDINGS: int = 8
+const PARTICLE_DEFAULT_QUALITY_PROFILE: string = "default"
+const PACKAGE_DEFAULT_PARTICLE_NAME: string = "UnityParticleEffect"
+const PACKAGE_DEFAULT_PARTICLE_ALIAS: string = "particle/unity-effect"
+const PARTICLE_UUID_SEED_PREFIX: string = "ArpInternalAssetPackage.ParticleEffect.v1|"
+const PARTICLE_ENVELOPE_PATH: string = "particle-effect.arpres.yaml"
+const PARTICLE_TEXTURE_ENVELOPE_PATH: string = "particle-texture.arpres.yaml"
+const UNITY_SHADER_PARTICLE_ALPHA: string = "b60b8b6c1d8d4e8b8c9d9f1c2d3e4f5a"
+const UNITY_SHADER_PARTICLE_ADDITIVE: string = "7c7e5c0a1d8d4e8b8c9d9f1c2d3e4f5b"
+const UNITY_SHADER_PARTICLE_MULTIPLY: string = "8d8e5c0a1d8d4e8b8c9d9f1c2d3e4f5c"
+const UNITY_SHADER_PARTICLE_ALPHA_MOBILE: string = "9e9f5c0a1d8d4e8b8c9d9f1c2d3e4f5d"
+const UNITY_SHADER_PARTICLE_ADDITIVE_MOBILE: string = "0a0b5c0a1d8d4e8b8c9d9f1c2d3e4f5e"
+const UNITY_SHADER_UNLIT_TRANSPARENT: string = "1b2b5c0a1d8d4e8b8c9d9f1c2d3e4f5f"
+const UNITY_SHADER_UNLIT_ADDITIVE: string = "2c3c5c0a1d8d4e8b8c9d9f1c2d3e4f60"
+const CHARACTER_GRAPH_SEED_PREFIX: string = "ArpInternalAssetPackage.ExternalPrefab.v1|"
+const CHARACTER_SOURCE_KIND: string = "UnityPrefabFolder"
+const CHARACTER_PACKAGE_FIXED_ENTRY_COUNT: int = 16
+const RESOURCE_TYPE_EXTERNAL_SOURCE: string = "ExternalAssetSourceResource"
+const RESOURCE_TYPE_RUNTIME_PAYLOAD: string = "PrefabRuntimePayloadResource"
+const RESOURCE_TYPE_PREFAB: string = "PrefabResource"
+const RESOURCE_TYPE_MODEL: string = "ModelResource"
+const RESOURCE_TYPE_SKINNED_MESH: string = "SkinnedMeshResource"
+const RESOURCE_TYPE_SKELETON: string = "SkeletonResource"
+const RESOURCE_TYPE_AVATAR: string = "AvatarResource"
+const RESOURCE_TYPE_ANIMATION_CLIP: string = "AnimationClipResource"
+const RESOURCE_TYPE_ANIMATION_SET: string = "AnimationSetResource"
+const RESOURCE_TYPE_ANIMATOR: string = "AnimatorControllerResource"
+const RESOURCE_TYPE_MATERIAL: string = "MaterialResource"
+const RESOURCE_TYPE_MATERIAL_SET: string = "MaterialSetResource"
+const RESOURCE_TYPE_TEXTURE: string = "TextureResource"
+const RESOURCE_TYPE_SEQUENCE: string = "SequenceResource"
+const RESOURCE_TYPE_SEQUENCE_BINDINGS: string = "SequenceBindingSetResource"
+const RESOURCE_TYPE_PREVIEW_STUDIO: string = "PreviewStudioResource"
+const RESOURCE_TYPE_SHADER_PACKAGE: string = "ShaderPackageResource"
+const CHARACTER_ROLE_ROOT: string = "PrefabResource/root"
+const CHARACTER_ROLE_MODEL: string = "ModelResource/model"
+const CHARACTER_ROLE_SKINNED_MESH: string = "SkinnedMeshResource/skinned-mesh"
+const CHARACTER_ROLE_SKELETON: string = "SkeletonResource/skeleton"
+const CHARACTER_ROLE_AVATAR: string = "AvatarResource/avatar"
+const CHARACTER_ROLE_ANIMATION_SET: string = "AnimationSetResource/animation-set"
+const CHARACTER_ROLE_ANIMATOR: string = "AnimatorControllerResource/animator"
+const CHARACTER_ROLE_MATERIAL_SET: string = "MaterialSetResource/material-set"
+const CHARACTER_ROLE_SEQUENCE: string = "SequenceResource/sequence"
+const CHARACTER_ROLE_SEQUENCE_BINDINGS: string = "SequenceBindingSetResource/sequence-bindings"
+const CHARACTER_ROLE_PREVIEW_STUDIO: string = "PreviewStudioResource/preview-studio"
+const CHARACTER_ROLE_SHADER_BASIC: string = "ShaderPackageResource/shader/basic"
+const CHARACTER_ROLE_SHADER_STYLIZED: string = "ShaderPackageResource/shader/stylized"
+const CHARACTER_ROLE_SHADER_GUI: string = "ShaderPackageResource/shader/gui"
+const CHARACTER_ROLE_SHADER_STARTUP: string = "ShaderPackageResource/shader/startup-splash"
+const CHARACTER_ENVELOPE_SOURCE: string = "source.arpres.yaml"
+const CHARACTER_ENVELOPE_RUNTIME_PAYLOAD: string = "runtime-payload.arpres.yaml"
+const CHARACTER_BLOB_RUNTIME_PAYLOAD: string = "blobs/prefab-runtime.arpa.bin"
+const CHARACTER_ENVELOPE_PREFAB: string = "prefab.arpres.yaml"
+const CHARACTER_ENVELOPE_MODEL: string = "model.arpres.yaml"
+const CHARACTER_ENVELOPE_SKINNED_MESH: string = "skinned-mesh.arpres.yaml"
+const CHARACTER_ENVELOPE_SKELETON: string = "skeleton.arpres.yaml"
+const CHARACTER_ENVELOPE_AVATAR: string = "avatar.arpres.yaml"
+const CHARACTER_ENVELOPE_ANIMATION_CLIP: string = "animation-clip.arpres.yaml"
+const CHARACTER_ENVELOPE_ANIMATION_SET: string = "animation-set.arpres.yaml"
+const CHARACTER_ENVELOPE_ANIMATOR: string = "animator.arpres.yaml"
+const CHARACTER_ENVELOPE_MATERIAL: string = "material.arpres.yaml"
+const CHARACTER_ENVELOPE_MATERIAL_SET: string = "material-set.arpres.yaml"
+const CHARACTER_ENVELOPE_TEXTURE_PREFIX: string = "texture-"
+const CHARACTER_ENVELOPE_SEQUENCE: string = "sequence.arpres.yaml"
+const CHARACTER_ENVELOPE_SEQUENCE_BINDINGS: string = "sequence-bindings.arpres.yaml"
+const CHARACTER_ENVELOPE_PREVIEW_STUDIO: string = "preview-studio.arpres.yaml"
+const CHARACTER_ENVELOPE_SHADER_BASIC: string = "shader-basic.arpres.yaml"
+const CHARACTER_ENVELOPE_SHADER_STYLIZED: string = "shader-stylized.arpres.yaml"
+const CHARACTER_ENVELOPE_SHADER_GUI: string = "shader-gui.arpres.yaml"
+const CHARACTER_ENVELOPE_SHADER_STARTUP: string = "shader-startup-splash.arpres.yaml"
+
+# YAML node kind codes are part of the yaml module contract.
+const YAML_KIND_UNDEFINED: int = -1
+const YAML_KIND_NULL: int = 0
+const YAML_KIND_MAPPING: int = 1
+const YAML_KIND_SEQUENCE: int = 2
+const YAML_KIND_STRING: int = 3
+
+def read_text_or_raise(path: string) -> string:
+    var result: io.IoTextResult = io.read_text(path)
+    if not result.success:
+        raise DIAGNOSTIC_SOURCE_READ + ": " + path + ": " + result.diagnostics
+    return result.text
+
+def parse_yaml_or_raise(text: string) -> yaml.YamlParseResult:
+    var result: yaml.YamlParseResult = yaml.parse(text)
+    if not result.success:
+        raise DIAGNOSTIC_YAML_PARSE + ": " + result.diagnostics
+    return result
+
+def first_document_or_raise(text: string) -> yaml.YamlDocument:
+    parse_yaml_or_raise(text)
+    var document: yaml.YamlDocument = yaml.first_document(text)
+    if yaml.kind_code(document) < YAML_KIND_NULL:
+        raise DIAGNOSTIC_YAML_EMPTY
+    return document
+
+def write_text_or_raise(path: string, text: string) -> void:
+    var result: io.IoOperationResult = io.write_text(path, text)
+    if not result.success:
+        raise DIAGNOSTIC_REPORT_WRITE + ": " + path + ": " + result.diagnostics
+
+def list_paths_or_raise(root: string, recursive: bool) -> io.IoFileList:
+    var result: io.IoFileList = io.list_paths(root, recursive)
+    if not result.success:
+        raise DIAGNOSTIC_SOURCE_READ + ": " + root + ": " + result.diagnostics
+    return result
+
+def resolve_project_asset_or_raise(
+    projectRoot: string,
+    assetPath: string,
+    diagnostic: string) -> string:
+    if projectRoot == "" or assetPath == "":
+        raise diagnostic + ": missing project asset path"
+    var resolved: arp_import_host.PathResult = arp_import_host.resolve_path(
+        projectRoot, assetPath)
+    if not resolved.success:
+        raise diagnostic + ": " + resolved.diagnostics
+    if not io.exists(resolved.path):
+        raise diagnostic + ": source file is missing: " + assetPath
+    return resolved.path
+
+def source_contract() -> int:
+    return SOURCE_CONTRACT_VERSION
+
+def input_extension(path: string) -> string:
+    return arp_import_host.path_extension(path)
+
+def document_kind(document: yaml.YamlDocument) -> int:
+    return yaml.kind_code(document)
+
+def is_undefined(document: yaml.YamlDocument) -> bool:
+    return yaml.kind_code(document) < YAML_KIND_NULL
+
+def has_supported_object(document: yaml.YamlDocument) -> bool:
+    var gameObject: yaml.YamlDocument = document.get("GameObject")
+    if yaml.kind_code(gameObject) == YAML_KIND_MAPPING:
+        var name: yaml.YamlDocument = gameObject.get("m_Name")
+        if yaml.kind_code(name) == YAML_KIND_STRING:
+            var nameText: string = name.string_value()
+            if nameText != "":
+                return true
+
+    var transform: yaml.YamlDocument = document.get("Transform")
+    if yaml.kind_code(transform) == YAML_KIND_MAPPING:
+        var gameObjectReference: yaml.YamlDocument = transform.get("m_GameObject")
+        if yaml.kind_code(gameObjectReference) == YAML_KIND_MAPPING:
+            return true
+    return false
+
+def validate_unity_scene(text: string) -> void:
+    var parsed: yaml.YamlParseResult = yaml.parse(text)
+    if not parsed.success:
+        raise DIAGNOSTIC_YAML_PARSE + ": " + parsed.diagnostics
+    var documentCount: int = 0
+    for document: yaml.YamlDocument in parsed.documents:
+        documentCount = documentCount + 1
+        var documentKind: int = document_kind(document)
+        if documentKind < YAML_KIND_UNDEFINED:
+            raise DIAGNOSTIC_YAML_DOCUMENT
+    if documentCount == 0:
+        raise DIAGNOSTIC_YAML_EMPTY
+
+    var supportedObjectCount: int = 0
+    for document: yaml.YamlDocument in parsed.documents:
+        var kindCode: int = yaml.kind_code(document)
+        if kindCode == YAML_KIND_NULL or kindCode == YAML_KIND_UNDEFINED:
+            continue
+        if kindCode != YAML_KIND_MAPPING:
+            raise DIAGNOSTIC_YAML_DOCUMENT
+
+        if has_supported_object(document):
+            supportedObjectCount = supportedObjectCount + 1
+
+    if supportedObjectCount == 0:
+        raise DIAGNOSTIC_UNSUPPORTED_OBJECT
+
+def validate_unity_file(path: string) -> void:
+    validate_unity_scene(read_text_or_raise(path))
+
+def project_has_assets(projectRoot: string) -> bool:
+    var assetsPath: arp_import_host.PathResult = arp_import_host.resolve_path(
+        projectRoot, "Assets")
+    if not assetsPath.success:
+        raise DIAGNOSTIC_ASSET_DATABASE_PATH + ": " + assetsPath.diagnostics
+    return io.exists(assetsPath.path)
+
+def validate_project(projectRoot: string) -> void:
+    if not project_has_assets(projectRoot):
+        return
+    var database: asset.UnityAssetDatabaseResult = asset.scan_unity_assets(projectRoot)
+    if not database.success:
+        raise DIAGNOSTIC_ASSET_DATABASE + ": " + database.diagnostics

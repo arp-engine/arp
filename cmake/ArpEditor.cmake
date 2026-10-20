@@ -1,0 +1,12 @@
+# Standard authoring application; mobile builds consume authored data only.
+set(_arp_editor_default ON)
+if(ANDROID OR IOS OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(_arp_editor_default OFF)
+endif()
+option(ARP_BUILD_EDITOR "Build the standard ARP Editor application" ${_arp_editor_default})
+if(ARP_BUILD_EDITOR)
+    if(ANDROID OR IOS OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        message(FATAL_ERROR "ARP-EDITOR-PLATFORM-UNSUPPORTED: use a desktop or Web authoring build")
+    endif()
+    add_subdirectory(editor)
+endif()

@@ -1,0 +1,35 @@
+# Native visual tools are opt-in: absence of RenderDoc is never a passing native test.
+option(ARP_WEBGL1_VISUAL_VALIDATION "Register frozen WebGL1 RenderDoc product validation" OFF)
+set(ARP_WEBGL1_VISUAL_BUILD_MANIFEST "" CACHE FILEPATH "Successful root WebGL1 build manifest")
+set(ARP_WEBGL1_VISUAL_QRENDERDOC "" CACHE FILEPATH "Explicit native RenderDoc Python host")
+set(ARP_WEBGL1_VISUAL_BROWSER "" CACHE FILEPATH "Dedicated capture browser")
+set(ARP_WEBGL1_VISUAL_BUNDLE "" CACHE PATH "Optional exact frozen root bundle")
+set(ARP_WEBGL1_VISUAL_REPLAY_SOURCE "" CACHE PATH "Optional matching original capture cohort")
+set(ARP_WEBGL1_VISUAL_OUTPUT "${CMAKE_BINARY_DIR}/webgl1-visual" CACHE PATH "Append-only visual evidence")
+if(ARP_WEBGL1_VISUAL_VALIDATION)
+    foreach(required IN ITEMS ARP_WEBGL1_VISUAL_BUILD_MANIFEST ARP_WEBGL1_VISUAL_QRENDERDOC)
+        if(NOT EXISTS "${${required}}")
+            message(FATAL_ERROR "WEBGL-VISUAL-CMAKE-INPUT-MISSING: ${required}")
+        endif()
+    endforeach()
+    if(NOT ARP_WEBGL1_VISUAL_REPLAY_SOURCE AND NOT EXISTS "${ARP_WEBGL1_VISUAL_BROWSER}")
+        message(FATAL_ERROR "WEBGL-VISUAL-CMAKE-BROWSER-MISSING")
+    endif()
+    set(visual_command "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build.py"
+        webgl1-visual --manifest "${ARP_WEBGL1_VISUAL_BUILD_MANIFEST}"
+        --qrenderdoc "${ARP_WEBGL1_VISUAL_QRENDERDOC}" --output-dir "${ARP_WEBGL1_VISUAL_OUTPUT}")
+    foreach(pair IN ITEMS "browser|ARP_WEBGL1_VISUAL_BROWSER" "bundle|ARP_WEBGL1_VISUAL_BUNDLE"
+            "replay-source|ARP_WEBGL1_VISUAL_REPLAY_SOURCE")
+        string(REPLACE "|" ";" parts "${pair}")
+        list(GET parts 0 argument)
+        list(GET parts 1 variable)
+        if(${variable})
+            list(APPEND visual_command "--${argument}" "${${variable}}")
+        endif()
+    endforeach()
+    add_test(NAME arp_webgl1_product_visual_validation COMMAND ${visual_command})
+    set_tests_properties(arp_webgl1_product_visual_validation PROPERTIES
+        LABELS "renderdoc;backend-native;webgl1;prototype" RUN_SERIAL TRUE TIMEOUT 900)
+    add_custom_target(arp_webgl1_visual_replay COMMAND ${visual_command}
+        USES_TERMINAL VERBATIM)
+endif()

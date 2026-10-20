@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>13 脚本 - arp 引擎教程</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">arp 引擎教程<small>Anime Render Pipeline</small></div>
+  <nav>
+    <div class="group-title">导航</div>
+    <a class="nav" href="index.html"><span class="num">·</span>总览</a>
+    <div class="group-title">系统文档</div>
+    <a class="nav" href="01-render-pipeline.html"><span class="num">01</span>渲染管线</a>
+    <a class="nav" href="02-gameobject-component.html"><span class="num">02</span>GameObject + Component</a>
+    <a class="nav" href="03-animation.html"><span class="num">03</span>动画</a>
+    <a class="nav" href="04-particles.html"><span class="num">04</span>粒子</a>
+    <a class="nav" href="05-ui.html"><span class="num">05</span>UI</a>
+    <a class="nav" href="06-resource-management.html"><span class="num">06</span>资源管理</a>
+    <a class="nav" href="07-reflection.html"><span class="num">07</span>反射</a>
+    <a class="nav" href="08-network.html"><span class="num">08</span>网络</a>
+    <a class="nav" href="09-shader.html"><span class="num">09</span>Shader</a>
+    <a class="nav" href="10-prefab-internal-resources.html"><span class="num">10</span>预制体</a>
+    <a class="nav" href="11-art-asset-formats.html"><span class="num">11</span>资产导入</a>
+    <a class="nav" href="12-procedural-generation.html"><span class="num">12</span>程序化生成</a>
+    <a class="nav active" href="13-scripting.html"><span class="num">13</span>脚本</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <h1>13 脚本 <span class="badge green">Contract Complete</span></h1>
+  <p class="lead">ArpScript 是 arp 引擎内置的、带类型标注的脚本语言。它把玩法规则、资源编排和工具逻辑放在可热替换的源码模块中，同时通过反射和模块注册受控地访问 C++ 宿主。</p>
+
+  <div class="callout note">
+    <p><strong>边界先说清楚：</strong>ScriptVM 负责解析、类型检查、编译和执行；它不负责窗口、渲染或资源所有权。脚本需要通过宿主模块调用引擎服务，宿主也必须明确检查参数和错误。</p>
+  </div>
+
+  <h2>1. 一条完整的执行链路</h2>
+  <p>公开 API 有意拆成几个阶段，便于编辑器做增量诊断，也便于服务器或工具在执行前拒绝不安全脚本：</p>
+  <ol>
+    <li><code>ScriptFrontend</code> 完成 parse 与 semantic analysis；</li>
+    <li><code>ScriptLowerer</code> 生成并验证 canonical Typed IR；</li>
+    <li><code>InterpreterBytecodeLowerer</code> 将同一份 IR 确定性降为版本化 <code>Program</code>；</li>
+    <li><code>runFunctionByName()</code> 或 <code>Vm</code> 执行已验证 bytecode，结果和诊断放在 <code>EvalResult</code> 中。</li>
+  </ol>
+  <pre><code>源码 (.arp)
+    │
+    ▼
+ScriptFrontend ──&gt; ScriptLowerer ──&gt; validated Typed IR
+                                            │
+                                            ▼
+                              InterpreterBytecodeLowerer
+                                            │
+                                            ▼
+                                  validated Program ──&gt; Vm</code></pre>
+
+  <h2>2. 最小 ArpScript 程序</h2>
+  <p>变量、参数和返回值使用类型标注。缩进表示代码块，函数和控制流的语法接近 Python，但类型检查和运行时值都由 ScriptVM 管理。</p>
+  <pre><code>def score(base: int, bonus: int) -&gt; int:
+    var total: int = base + bonus
+    if total &gt; 100:
+        return 100
+    return total
+
+def main() -&gt; int:
+    return score(72, 18)</code></pre>
+  <p>宿主侧执行这段源码的最小流程如下。依赖图和 reflection registry hash 必须由宿主的版本化模块契约提供，禁止使用空值或文件名推断。</p>
+  <pre><code>#include "scriptvm/interpreter/pipeline.h"
+#include "scriptvm/interpreter/eval.h"
+
+using namespace arp::scriptvm;
+
+ScriptInterpreterBuildRequest request;
+request.source = std::move(source);
+request.filename = "score.arp";
+request.moduleId = "tutorial.score";
+request.moduleVersion = 1;
+request.dependencyGraphHash = dependencyHash;
+request.reflectionRegistryHash = reflectionHash;
+
+auto built = ScriptInterpreterPipeline::build(request);
+if (!built.ok()) {
+    report(built.error);
+    return;
+}
+
+arp::core::pmr::Vector&lt;Value&gt; args {
+    &amp;arp::core::defaultCpuMemoryResource()
+};
+auto result = runFunctionByName(built.program, "main", args);
+if (!result.ok()) {
+    report(result.error);
+    return;
+}
+
+int value = 0;
+if (!tryGetInt(result.value, value)) {
+    report("main() did not return int");
+}</code></pre>
+
+  <h2>3. 语言能力：函数、容器与闭包</h2>
+  <p>当前语法覆盖标量、列表、字典、索引、lambda、条件、<code>while</code>、<code>for ... in range()</code>、异常处理和可变参数。闭包捕获的局部变量会由编译器提升到共享的 <code>ScriptCell</code>，因此下面的计数器会跨调用保留状态：</p>
+  <pre><code>def make_counter(start: int) -&gt; () -&gt; int:
+    var count: int = start
+    def next() -&gt; int:
+        count = count + 1
+        return count
+    return next
+
+def main() -&gt; int:
+    var counter: () -&gt; int = make_counter(40)
+    counter()
+    return counter()       # 42</code></pre>
+  <p>脚本类使用 <code>class</code> 声明字段和方法；导入的 C++ 类则走反射绑定（见第 7 章）。不要把脚本对象当作跨线程共享的普通 C++ 对象，VM、闭包和容器的生命周期应由拥有它们的运行时线程管理。</p>
+
+  <h2>4. yield、生成器与 await</h2>
+  <p><code>yield</code> 会把当前值作为 <code>Suspended</code> 结果返回，适合把大批量工作拆成多次更新；<code>await</code> 消费宿主提供的 <code>ScriptAwaitable</code>。当 awaitable 尚未完成时，宿主等待自己的异步系统，再调用同一个 <code>Vm</code> 的 <code>resume()</code>。</p>
+  <pre><code>def ticks(limit: int) -&gt; int:
+    var i: int = 0
+    while i &lt; limit:
+        yield i
+        i = i + 1
+    return i
+
+# C++ 侧：
+auto first = vm.runFunctionByName(program, "ticks", args, &amp;err);
+if (err.code == ScriptDiagnosticCode::Suspended) {
+    consumeYieldedValue(first);
+}
+
+// Await 挂起时：
+auto pending = vm.run(program, &amp;err);
+if (err.code == ScriptDiagnosticCode::Suspended &amp;&amp; vm.suspended()) {
+    dispatchAsyncWork();
+    auto completed = vm.resume(program, &amp;err);
+}</code></pre>
+  <p><code>Suspended</code> 不是失败。真正的失败仍会携带 <code>ScriptDiagnosticCode</code>、消息和 traceback；宿主必须分别处理这两类状态。</p>
+
+  <h2>5. 模块：把宿主能力做成窄接口</h2>
+  <p>脚本通过 <code>import math</code> 或 <code>from math import double</code> 获取模块导出。模块注册表先查源码解析器，再查显式的 v2 C++ plugin；已加载的源码模块会被缓存，并检测循环导入。</p>
+  <pre><code>from math import double
+
+def main() -&gt; int:
+    return double(21)</code></pre>
+  <p>宿主模块只导出脚本真正需要的能力。例如，测试里的 <code>math</code> 模块导出了 <code>double</code> 和 <code>abs</code>：</p>
+  <pre><code>ScriptPluginRegistrar registrar("math");
+registrar.exportFunction("double",
+    [](const arp::core::pmr::Vector&lt;Value&gt;&amp; args) -&gt; Value {
+        int value = 0;
+        if (args.empty() || !tryGetInt(args[0], value))
+            return makeInt(0);
+        return makeInt(value * 2);
+    });
+
+ModuleRegistry modules;
+modules.installPluginModule("math", registrar.build());
+
+Vm vm;
+vm.setModuleRegistry(&amp;modules);
+auto result = vm.runFunctionByName(program, "main", args, &amp;err);</code></pre>
+  <p>标量、函数和反射类型都可以导出。<code>bindType&lt;T&gt;()</code> 只绑定已经登记到 reflection 数据库的 C++ 类型；构造函数、静态成员和方法是否可见，取决于该类型的反射契约。</p>
+
+  <h2>6. 源码模块与 C++ 插件</h2>
+  <p>需要从磁盘加载 <code>.arp</code> 时，给 <code>ModuleRegistry</code> 设置 <code>SourceResolver</code>。解析器负责读取文件、执行本章第 2 节的 parse → analyze → compile 流程，并返回一个 <code>ModuleExports</code>；注册表会负责缓存和循环检测。</p>
+  <pre><code>modules.setSourceResolver([&amp;compiler](const core::pmr::String&amp; name) {
+    auto source = compiler.readModule(name);       // 应限制在脚本根目录内
+    if (!source)
+        return std::shared_ptr&lt;ModuleExports&gt; {};
+    return compiler.compileExports(*source, name);
+});</code></pre>
+  <p>需要原生扩展时使用显式 <code>.arpplugin</code> manifest 和 <code>CppPluginImporter</code>，不要让脚本直接拼接 DLL 路径。插件的模块名、源码、入口和缓存目录都由 importer 校验，模块值还会持有 native lifetime，避免反射函数悬空。</p>
+
+  <h2>7. 诊断、资源和线程纪律</h2>
+  <ul>
+    <li>解析、语义、编译阶段统一读取 <code>ScriptDiagnostic</code> 的 <code>code/message/line/column</code>，在编辑器中标到原始源码行；</li>
+    <li>执行阶段检查 <code>EvalResult::ok()</code>，并把 <code>VmError::traceback</code> 和宿主诊断一起写入日志；</li>
+    <li>模块解析器必须限制根目录、拒绝路径穿越，并限制脚本可见的宿主函数集合；</li>
+    <li>脚本值使用 arp 的 <code>core::pmr</code> 分配器，宿主构造参数向量时也应使用 <code>defaultCpuMemoryResource()</code>；</li>
+    <li>一个 <code>Vm</code> 的挂起帧、闭包和临时容器不要跨线程迁移；需要并发时，为每个执行线程建立独立 VM 和明确的消息接口。</li>
+  </ul>
+
+  <div class="callout">
+    <p><strong>实践顺序：</strong>先让脚本只返回纯值，再接入一个窄的 host module，最后才开放资源、网络或异步能力。每新增一个导出，都应同时增加参数错误、模块缺失和 traceback 的测试。</p>
+  </div>
+
+  <h2>8. 验证路径</h2>
+  <p>仓库中的 ScriptVM 测试覆盖 lexer、parser、sema、compiler、VM、模块、闭包、生成器和 await。改动语言或宿主边界后，至少运行对应的 unit/contract 测试，再运行端到端 smoke：</p>
+  <pre><code>ctest --preset ninja-mingw-debug -R scriptvm
+
+# 端到端 smoke（构建后）
+artifacts/cmake/ninja-mingw-debug/arp_scriptvm_e2e_smoke.exe</code></pre>
+
+  <div class="pager">
+    <a href="12-procedural-generation.html"><div class="dir">← 上一章</div><div class="ttl">12 程序化生成</div></a>
+    <a href="index.html"><div class="dir">目录 →</div><div class="ttl">总览</div></a>
+  </div>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,93 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+
+class Importer:
+    def read_text_or_raise(self, path: string) -> string:
+        return unity_import_common.read_text_or_raise(path)
+
+    def parse_yaml_or_raise(self, text: string) -> yaml.YamlParseResult:
+        return unity_import_common.parse_yaml_or_raise(text)
+
+    def first_document_or_raise(self, text: string) -> yaml.YamlDocument:
+        return unity_import_common.first_document_or_raise(text)
+
+    def write_text_or_raise(self, path: string, text: string) -> void:
+        unity_import_common.write_text_or_raise(path, text)
+
+    def list_paths_or_raise(self, root: string, recursive: bool) -> io.IoFileList:
+        return unity_import_common.list_paths_or_raise(root, recursive)
+
+    def input_extension(self, path: string) -> string:
+        return unity_import_common.input_extension(path)
+
+    def validate_unity_file(self, path: string) -> void:
+        unity_import_common.validate_unity_file(path)
+
+    def validate_project(self, projectRoot: string) -> void:
+        unity_import_common.validate_project(projectRoot)
+
+    def make_report(self, input: string, kind: string, status: int) -> yaml.YamlDocument:
+        var report: yaml.YamlDocument = yaml.mapping()
+        report.set("type", yaml.string(unity_import_common.REPORT_TYPE))
+        report.set("contractVersion", yaml.int(unity_import_common.REPORT_CONTRACT_VERSION))
+        report.set("source", yaml.string(input))
+        report.set("kind", yaml.string(kind))
+        report.set("status", yaml.int(status))
+        return report
+
+    def write_report(self, output: string, report: yaml.YamlDocument) -> int:
+        var serialized: yaml.YamlTextResult = yaml.stringify(report)
+        if not serialized.success:
+            raise unity_import_common.DIAGNOSTIC_REPORT_SERIALIZE + ": " + serialized.diagnostics
+        self.write_text_or_raise(output, serialized.text)
+        return unity_import_common.STATUS_OK
+
+    def add_model_summary(
+        self,
+        report: yaml.YamlDocument,
+        imported: asset.ImportedModelResult) -> void:
+        var model: yaml.YamlDocument = yaml.mapping()
+        model.set("vertexCount", yaml.int(imported.vertex_count()))
+        model.set("indexCount", yaml.int(imported.index_count()))
+        model.set("submeshCount", yaml.int(imported.submesh_count()))
+        model.set("jointCount", yaml.int(imported.joint_count()))
+        model.set("materialCount", yaml.int(imported.material_count()))
+        model.set("clipCount", yaml.int(imported.clip_count()))
+        var materials: yaml.YamlDocument = yaml.sequence()
+        var materialIndex: int = 0
+        while materialIndex < imported.material_count():
+            materials.append(yaml.string(imported.material_name(materialIndex)))
+            materialIndex = materialIndex + 1
+        model.set("materials", materials)
+        var clips: yaml.YamlDocument = yaml.sequence()
+        var clipIndex: int = 0
+        while clipIndex < imported.clip_count():
+            var clip: yaml.YamlDocument = yaml.mapping()
+            clip.set("name", yaml.string(imported.clip_name(clipIndex)))
+            clip.set("durationSeconds", yaml.float(imported.clip_duration(clipIndex)))
+            clip.set("channelCount", yaml.int(imported.clip_channel_count(clipIndex)))
+            clips.append(clip)
+            clipIndex = clipIndex + 1
+        model.set("clips", clips)
+        report.set("model", model)
+
+    def add_project_summary(
+        self,
+        report: yaml.YamlDocument,
+        projectRoot: string) -> void:
+        if not unity_import_common.project_has_assets(projectRoot):
+            return
+        var database: asset.UnityAssetDatabaseResult = asset.scan_unity_assets(projectRoot)
+        if not database.success:
+            raise unity_import_common.DIAGNOSTIC_ASSET_DATABASE + ": " + database.diagnostics
+        var summary: yaml.YamlDocument = yaml.mapping()
+        summary.set("assetCount", yaml.int(database.assetCount))
+        summary.set("warningCount", yaml.int(database.warningCount))
+        report.set("assetDatabase", summary)
+
+    def validate_input_exists(self, path: string, diagnostic: string) -> void:
+        if not io.exists(path):
+            raise diagnostic + ": " + path

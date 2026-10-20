@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>10 预制体 · arp 引擎教程</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">arp 引擎教程<small>Anime Render Pipeline</small></div>
+  <nav>
+    <div class="group-title">导航</div>
+    <a class="nav" href="index.html"><span class="num">·</span>总览</a>
+    <div class="group-title">系统文档</div>
+    <a class="nav" href="01-render-pipeline.html"><span class="num">01</span>渲染管线</a>
+    <a class="nav" href="02-gameobject-component.html"><span class="num">02</span>GameObject + Component</a>
+    <a class="nav" href="03-animation.html"><span class="num">03</span>动画</a>
+    <a class="nav" href="04-particles.html"><span class="num">04</span>粒子</a>
+    <a class="nav" href="05-ui.html"><span class="num">05</span>UI</a>
+    <a class="nav" href="06-resource-management.html"><span class="num">06</span>资源管理</a>
+    <a class="nav" href="07-reflection.html"><span class="num">07</span>反射</a>
+    <a class="nav" href="08-network.html"><span class="num">08</span>网络</a>
+    <a class="nav" href="09-shader.html"><span class="num">09</span>Shader</a>
+    <a class="nav active" href="10-prefab-internal-resources.html"><span class="num">10</span>预制体</a>
+    <a class="nav" href="11-art-asset-formats.html"><span class="num">11</span>资产导入</a>
+    <a class="nav" href="12-procedural-generation.html"><span class="num">12</span>程序化生成</a>
+    <a class="nav" href="13-scripting.html"><span class="num">13</span>脚本</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <h1>10 预制体 <span class="badge green">Contract Complete</span></h1>
+  <p class="lead">arp 引擎把第三方资产（Unity 角色/预制体文件夹）与所有内置资产统一建模为「<strong>内部资源（internal resource）</strong>」，经由 <code>src/resource</code> 的 <code>ResourceManager</code> 与内部资产包（<code>ArpInternalAssetPackage/v1</code>）管理。本文先讲<strong>预制体（Prefab）</strong>作为可复用资产模板的概念与资源模型，再给出当前由 <code>prefabResourceFactory()</code> 注册的 21 个内部资源类型的完整清单。参考项目 <code>world_of_claudecraft</code> 用 <code>content/*.yaml</code>（见 06）做数据驱动内容，其角色（boar / wolf 等）正是预制体导入器的典型输入。</p>
+
+  <div class="callout note">
+    <p><strong>Prefab ≠ SceneObject。</strong> 按引擎契约（<code>docs/pika-prefab-sceneobject-contract.md</code>）：预制体是<strong>资产侧</strong>的模板（描述 GameObject + Component + 子层级的形状），<em>不是</em>运行时场景节点；它进入场景后变为 SceneObject（见 02）。嵌套预制体编辑、Variant、apply/revert 不在本期范围内。</p>
+  </div>
+
+  <h2>1. 什么是预制体</h2>
+  <p>预制体是一个可复用的<strong>创作/打包模板资产</strong>，至少要能描述「对象身份 + 父子层级 + 组件负载」的形状。它的关键约定：</p>
+  <ul>
+    <li><strong>是资产，不是节点</strong>：<code>resource::PrefabResource</code> 留在资产侧，绝不被当作可渲染或可更新的场景节点消费。</li>
+    <li><strong>实例 → 场景对象图</strong>：<code>PrefabInstance -&gt; SceneObject graph</code>；普通场景-authored 对象与预制体实例化对象可以共存于同一场景层级（见 02）。</li>
+    <li><strong>身份保留</strong>：一个预制体实例至少保留 <code>source prefab id</code>，以便后续支持 override 元数据。</li>
+    <li><strong>运行时不直接消费预制体资产</strong>：场景遍历/提取只认 SceneObject 这一唯一运行时事实形状。</li>
+  </ul>
+
+  <h2>2. 引擎里的预制体资源模型</h2>
+  <p><code>PrefabResource</code> 本身是一个<strong>引用图枢纽</strong>：它不直接持有几何，而是用 UUID 引用同一资产包里的其它内部资源（模型、蒙皮网格、骨骼、动画集、材质集、运行时负载等）。这保证了预制体可被确定性地打包、重载与依赖校验。</p>
+  <pre><code><span class="tk-com">// src/resource/prefab_asset_resources.h（节选）</span>
+<span class="tk-key">struct</span> <span class="tk-type">PrefabResource</span> : <span class="tk-key">public</span> <span class="tk-type">ResourceBase</span> {
+  <span class="tk-key">static constexpr const char*</span> resourceTypeName() { <span class="tk-key">return</span> <span class="tk-str">"PrefabResource"</span>; }
+  <span class="tk-key">static constexpr const char*</span> defaultEnvelopePath() { <span class="tk-key">return</span> <span class="tk-str">"resources/prefab.arpres.yaml"</span>; }
+
+  arp::core::pmr::String name, sourcePath, sourceResourceId;
+  arp::core::pmr::String modelId, skinnedMeshId, skeletonId, avatarId;
+  arp::core::pmr::String animationSetId, animatorControllerId, materialSetId;
+  arp::core::pmr::String runtimePayloadId, sequenceId, sequenceBindingSetId;
+  arp::core::pmr::String previewStudioId;
+  arp::reflection::hlist shaderPackageIds;   <span class="tk-com">// 绑定 4 个着色包（basic/stylized/gui/startupSplash）</span>
+  <span class="tk-key">int</span> objectCount, componentCount, physicsColliderCount, lightHelperCount;
+};</code></pre>
+
+  <p>与预制体根配对的是 <code>PrefabRuntimePayloadResource</code>——它记录<strong>运行时 sidecar blob</strong>（确定性二进制，存于 <code>blobs/</code>），承载可动画的运行时状态：</p>
+  <pre><code><span class="tk-key">struct</span> <span class="tk-type">PrefabRuntimePayloadResource</span> : <span class="tk-key">public</span> <span class="tk-type">ResourceBase</span> {
+  arp::core::pmr::String blobPath;        <span class="tk-com">// 如 blobs/prefab-runtime.arpa.bin</span>
+  <span class="tk-key">int</span> blobHash, blobByteSize;
+  arp::core::pmr::String defaultStateName, defaultClipName;
+  <span class="tk-key">int</span> stateBindingCount, materialCount, textureCount, imageCount;
+};</code></pre>
+  <p>加载时引擎会校验 <code>PrefabResource</code> 依赖的 <code>PrefabRuntimePayloadResource</code> 是否存在，并比对 sidecar blob 的 <code>blobHash</code> / <code>blobByteSize</code>，再重建 <code>AnimatedMeshAsset</code> 与动画状态绑定。</p>
+
+  <h2>3. 构建预制体（CLI + API）</h2>
+  <p>从 Unity 角色/预制体文件夹转换为内部资产包（<strong>Prototype Complete</strong>）：</p>
+  <pre><code><span class="tk-com"># Unity 角色/预制体文件夹 → 内部资产包（yaml 包目录）</span>
+arp_asset_importer --unity-prefab-folder &lt;dir&gt; --output-package &lt;dir&gt;</code></pre>
+  <p>编程式构建走 <code>PrefabAssetGraphBuilder::buildPackage(desc)</code>；<code>desc</code> 携带 alias、displayName、sourcePath、shaderPaths 等。它会确定性地分配图内各资源 UUID（以 <code>"ArpInternalAssetPackage.PrefabAssetGraph.v1|"</code> 为种子），写入 <code>manifest.arpkg.yaml</code> + 每个资源的 <code>.arpres.yaml</code> envelope，并把运行时数据写成 sidecar blob。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 740 320" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="12.5">
+      <defs><marker id="pr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#2f6feb"/></marker></defs>
+      <rect x="20" y="130" width="150" height="56" rx="8" fill="#e7f0ff" stroke="#2f6feb"/>
+      <text x="34" y="152" font-weight="700">PrefabResource</text>
+      <text x="34" y="172" fill="#57606a" font-size="10.5">root（引用图枢纽）</text>
+
+      <rect x="210" y="20" width="150" height="48" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="222" y="46" font-weight="700">ModelResource</text>
+      <rect x="210" y="80" width="150" height="48" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="220" y="106" font-weight="700">SkinnedMesh</text>
+      <rect x="210" y="140" width="150" height="48" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="222" y="166" font-weight="700">Skeleton / Avatar</text>
+      <rect x="210" y="200" width="150" height="48" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="220" y="226" font-weight="700">AnimationSet</text>
+      <rect x="210" y="260" width="150" height="48" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="216" y="286" font-weight="700">MaterialSet</text>
+
+      <rect x="400" y="80" width="160" height="48" rx="8" fill="#fff4e0" stroke="#9a6700"/>
+      <text x="412" y="106" font-weight="700">AnimatorController</text>
+      <rect x="400" y="140" width="160" height="48" rx="8" fill="#fff4e0" stroke="#9a6700"/>
+      <text x="412" y="166" font-weight="700">Sequence / Bindings</text>
+      <rect x="400" y="200" width="160" height="48" rx="8" fill="#fff4e0" stroke="#9a6700"/>
+      <text x="412" y="226" font-weight="700">PreviewStudio</text>
+      <rect x="400" y="260" width="160" height="48" rx="8" fill="#f3e8ff" stroke="#6639ba"/>
+      <text x="414" y="286" font-weight="700">ShaderPackages ×4</text>
+
+      <rect x="590" y="130" width="130" height="56" rx="8" fill="#fdecea" stroke="#b42318"/>
+      <text x="600" y="152" font-weight="700">RuntimePayload</text>
+      <text x="600" y="172" fill="#57606a" font-size="10.5">blobs/*.arpa.bin</text>
+
+      <path d="M170 150 L208 44" stroke="#2f6feb" stroke-width="2" marker-end="url(#pr)"/>
+      <path d="M170 155 L208 104" stroke="#2f6feb" stroke-width="2" marker-end="url(#pr)"/>
+      <path d="M170 158 L208 164" stroke="#2f6feb" stroke-width="2" marker-end="url(#pr)"/>
+      <path d="M170 162 L208 224" stroke="#2f6feb" stroke-width="2" marker-end="url(#pr)"/>
+      <path d="M170 166 L208 284" stroke="#2f6feb" stroke-width="2" marker-end="url(#pr)"/>
+      <path d="M360 100 L398 104" stroke="#2f6feb" stroke-width="2" marker-end="url(#pr)"/>
+      <path d="M360 160 L398 164" stroke="#2f6feb" stroke-width="2" marker-end="url(#pr)"/>
+      <path d="M360 220 L398 224" stroke="#2f6feb" stroke-width="2" marker-end="url(#pr)"/>
+      <path d="M360 280 L398 284" stroke="#2f6feb" stroke-width="2" marker-end="url(#pr)"/>
+      <path d="M560 158 L588 152" stroke="#b42318" stroke-width="2" marker-end="url(#pr)"/>
+    </svg>
+  </div>
+  <p>所有边都是<strong>UUID 引用</strong>，而非路径；依赖缺失、重复 id/别名、非法 UUID 都会在包构建与图加载阶段被确定性拒绝。</p>
+
+  <h2>4. 加载与实例化</h2>
+  <p>内部资产包是一个 YAML 包目录：<code>manifest.arpkg.yaml</code> 记录每个资源的 id / type / alias / envelope 路径 / 依赖 / status / content hash；每个资源一个 <code>.arpres.yaml</code> envelope（反射序列化）。加载路径：</p>
+  <ol>
+    <li><code>ResourceManager</code> 解析别名（如 <code>prefab/unitychan-pika-visible</code>）→ UUID；</li>
+    <li>校验 <code>PrefabResource</code> 依赖的 <code>PrefabRuntimePayloadResource</code> 存在；</li>
+    <li>比对 sidecar blob 的 <code>blobHash</code> / <code>blobByteSize</code>；</li>
+    <li>重建 <code>AnimatedMeshAsset</code> + 动画状态绑定（<code>loadPrefabRuntimePayloadFromPackage()</code>）；</li>
+    <li>运行时实例化 → SceneObject 图（见 02），预制体资产本身不被场景消费。</li>
+  </ol>
+
+  <h2>5. 当前支持的内部资源（完整清单）</h2>
+  <p>引擎当前由 <code>prefabResourceFactory()</code> 注册 <strong>21 个内部资源类型</strong>（位于 <code>src/resource/prefab_asset_resources.cpp</code> 与 <code>particle_asset_resources.cpp</code>）。下表每个类型的 <code>resourceTypeName</code>、默认 envelope 路径与序列化字段均取自源码：</p>
+  <table>
+    <thead><tr><th>类型</th><th>envelope 路径</th><th>关键序列化字段（节选）</th><th>分类</th></tr></thead>
+    <tbody>
+      <tr><td><code>PrefabResource</code></td><td><code>resources/prefab.arpres.yaml</code></td><td>modelId / skinnedMeshId / skeletonId / avatarId / animationSetId / animatorControllerId / materialSetId / runtimePayloadId / sequenceId / sequenceBindingSetId / previewStudioId + shaderPackageIds[]；objectCount / componentCount / physicsColliderCount / lightHelperCount</td><td>预制体</td></tr>
+      <tr><td><code>PrefabRuntimePayloadResource</code></td><td><code>resources/runtime-payload.arpres.yaml</code></td><td>blobPath / blobHash / blobByteSize；defaultStateName / defaultClipName；stateBindingCount / materialCount / textureCount / imageCount</td><td>预制体</td></tr>
+
+      <tr><td><code>ModelResource</code></td><td><code>resources/model.arpres.yaml</code></td><td>skinnedMeshId / skeletonId / avatarId / animationSetId / materialSetId；materialRemapCount / importedAnimationCount / humanoid</td><td>网格</td></tr>
+      <tr><td><code>SkinnedMeshResource</code></td><td><code>resources/skinned-mesh.arpres.yaml</code></td><td>vertexCount / indexCount / submeshCount / materialSlotCount</td><td>网格</td></tr>
+
+      <tr><td><code>SkeletonResource</code></td><td><code>resources/skeleton.arpres.yaml</code></td><td>jointCount / bindPoseCount</td><td>骨骼</td></tr>
+      <tr><td><code>AvatarResource</code></td><td><code>resources/avatar.arpres.yaml</code></td><td>humanBoneCount / humanoid</td><td>骨骼</td></tr>
+
+      <tr><td><code>AnimationClipResource</code></td><td><code>resources/animation-clip.arpres.yaml</code></td><td>durationSeconds / channelCount / recordedCurve</td><td>动画</td></tr>
+      <tr><td><code>AnimationSetResource</code></td><td><code>resources/animation-set.arpres.yaml</code></td><td>clipCount / clipIds[]</td><td>动画</td></tr>
+      <tr><td><code>AnimatorControllerResource</code></td><td><code>resources/animator.arpres.yaml</code></td><td>defaultStateName / stateCount / parameterCount（controllerAsset 非序列化）</td><td>动画</td></tr>
+
+      <tr><td><code>MaterialResource</code></td><td><code>resources/material.arpres.yaml</code></td><td>shaderPackageId / textureBindingCount / propertyCount</td><td>材质/着色</td></tr>
+      <tr><td><code>MaterialSetResource</code></td><td><code>resources/material-set.arpres.yaml</code></td><td>materialCount / materialIds[]</td><td>材质/着色</td></tr>
+      <tr><td><code>ShaderPackageResource</code></td><td><code>resources/shader.arpres.yaml</code></td><td>slangPath / spirvPath / mslPath / reflectionPath</td><td>材质/着色</td></tr>
+      <tr><td><code>ShaderGraphSourceResource</code></td><td><code>resources/shader-graph-source.arpres.yaml</code></td><td>sourceResourceId / dependencyCount</td><td>材质/着色</td></tr>
+      <tr><td><code>PreviewStudioResource</code></td><td><code>resources/preview-studio.arpres.yaml</code></td><td>lightingPreset / verticalFovDegrees / cameraDistance / exposure</td><td>材质/着色</td></tr>
+
+      <tr><td><code>TextureResource</code></td><td><code>resources/texture-resource.arpres.yaml</code></td><td>usage / srgb / alpha</td><td>纹理</td></tr>
+
+      <tr><td><code>SequenceResource</code></td><td><code>resources/sequence.arpres.yaml</code></td><td>durationSeconds / trackCount / clipCount / recordedCurveCount / emptyBindingCount / diagnostics</td><td>序列</td></tr>
+      <tr><td><code>SequenceBindingSetResource</code></td><td><code>resources/sequence-bindings.arpres.yaml</code></td><td>sequenceId / bindingCount / emptyBindingCount / diagnostics</td><td>序列</td></tr>
+
+      <tr><td><code>PhysicsColliderResource</code></td><td><code>resources/physics-collider.arpres.yaml</code></td><td>colliderCount</td><td>物理</td></tr>
+
+      <tr><td><code>ExternalAssetSourceResource</code></td><td><code>resources/source.arpres.yaml</code></td><td>sourcePath / sourceGuid / fileId / sourceAssetType / importerKind / contentHash</td><td>源/创作</td></tr>
+      <tr><td><code>AuthoringAssetResource</code></td><td><code>resources/authoring.arpres.yaml</code></td><td>sourceResourceId / authoringType / contentHash</td><td>源/创作</td></tr>
+
+      <tr><td><code>ParticleEffectResource</code></td><td><code>resources/particle-effect.arpres.yaml</code></td><td>contractVersion <code>"particle.effect/v1"</code>；emitters[] / shaderPackageId / materialAssetId / prefabBindingId / sidecarBlobPath / sidecarBlobHash；maxParticles / maxEmitters / qualityProfile</td><td>特效</td></tr>
+    </tbody>
+  </table>
+  <div class="callout">
+    <p><strong>范围说明：</strong>上表是「内部资产包」家族。项目级内容资源 <code>ContentAssetResource</code>（见 06）与内置 <code>MeshAssetResource</code> 在其它工厂注册，不在此表内；它们与这些内部资源共用同一个 <code>ResourceManager</code> 与同一套生命周期/句柄/契约模型。</p>
+  </div>
+
+  <h2>6. 内部资源契约与状态分级</h2>
+  <p>每个内部资源类型通过 <code>ResourceContractDescriptor{ type, contractVersion }</code> 声明一次（如 <code>ParticleEffectResource</code> 为 <code>"particle.effect/v1"</code>），加载时用 <code>validateResourceContract()</code> 校验。所有资源走统一状态分级（见总览「状态分级约定」）：</p>
+  <p>
+    <span class="badge green">Contract Complete</span> 身份/契约已锁定并测试
+    <span class="badge blue">Prototype Complete</span> 原型跑通（如 prefab 导入/加载）
+    <span class="badge purple">Backend Validated</span> 指定后端已验证
+    <span class="badge amber">Platform Validated</span> 多平台已验证
+    <span class="badge red">Production Ready</span> 生产就绪
+  </p>
+  <p>资产包写入与读取本身<strong>不创建任何 GPU 资源</strong>（无原生句柄、buffer、descriptor），因此它们被标记为「Backend Validated: Not applicable」——GPU 归 renderer / RHI / backend 层。</p>
+
+  <h2>7. 与 02 / 06 的关系</h2>
+  <p>三层对应是本系统的关键视角：</p>
+  <table>
+    <thead><tr><th>层</th><th>对应文档</th><th>职责</th></tr></thead>
+    <tbody>
+      <tr><td>资产侧（模板）</td><td>本文（预制体）</td><td>PrefabResource / 内部资源包；确定身份、依赖、内容指纹</td></tr>
+      <tr><td>运行时实例</td><td>02 GameObject + Component</td><td>PrefabInstance → SceneObject 图；组件挂载与每帧更新</td></tr>
+      <tr><td>资源管理者</td><td>06 资源管理</td><td>ResourceManager 单一所有权、生命周期状态、句柄、图加载、重载与预算</td></tr>
+    </tbody>
+  </table>
+
+  <h2>8. 快速上手清单</h2>
+  <ol>
+    <li>理解 <strong>Prefab 是资产、SceneObject 是运行时</strong>：不要直接把 <code>PrefabResource</code> 当作场景节点消费。</li>
+    <li>从 Unity 资产构建预制体：<code>arp_asset_importer --unity-prefab-folder &lt;dir&gt; --output-package &lt;dir&gt;</code>；编程式用 <code>PrefabAssetGraphBuilder::buildPackage(desc)</code>。</li>
+    <li>加载走 <code>ResourceManager</code>：别名解析为 UUID、校验 <code>PrefabRuntimePayloadResource</code> 依赖与 sidecar blob 哈希、重建动画资产。</li>
+    <li>实例化后接入 02 的 GameObject/Component 体系；同一资产可被多处实例复用。</li>
+    <li>需要新资产类型时，继承 <code>ResourceBase</code> 并在工厂注册（参考 <code>prefabResourceFactory()</code> 的 <code>registerType</code> 模式）；不要绕过 <code>ResourceManager</code> 用原生句柄。</li>
+    <li>所有内部资源共用同一套契约/状态/句柄模型，与项目级 <code>ContentAssetResource</code>（06）一致。</li>
+  </ol>
+
+  <div class="pager">
+    <a href="09-shader.html"><div class="dir">← 上一章</div><div class="ttl">09 Shader</div></a>
+    <a href="index.html"><div class="dir">↑ 目录</div><div class="ttl">总览</div></a>
+    <a class="next" href="11-art-asset-formats.html"><div class="dir">下一章 →</div><div class="ttl">11 资产导入</div></a>
+  </div>
+</main>
+</div>
+</body>
+</html>

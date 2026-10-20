@@ -1,0 +1,49 @@
+BasedOnStyle: LLVM
+Standard: c++17
+IndentWidth: 4
+ContinuationIndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+NamespaceIndentation: None
+AccessModifierOffset: -4
+PointerAlignment: Left
+ReferenceAlignment: Left
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: false
+  AfterStruct: false
+  AfterEnum: false
+  AfterNamespace: false
+  AfterFunction: true
+  AfterControlStatement: Never
+  BeforeElse: false
+  BeforeCatch: false
+  SplitEmptyFunction: false
+AllowShortFunctionsOnASingleLine: InlineOnly
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortLambdasOnASingleLine: Empty
+BinPackArguments: false
+BinPackParameters: false
+AlignAfterOpenBracket: DontAlign
+AlignOperands: DontAlign
+BreakBeforeBinaryOperators: NonAssignment
+BreakConstructorInitializers: BeforeColon
+ConstructorInitializerIndentWidth: 4
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^"'
+    Priority: 1
+  - Regex: '^<'
+    Priority: 2
+ReflowComments: Never
+FixNamespaceComments: true
+SeparateDefinitionBlocks: Always
+IndentPPDirectives: None
+BreakStringLiterals: false
+ObjCBlockIndentWidth: 4
+# Emscripten JavaScript bodies use explicit clang-format off/on regions.
+# Format those regions with a JavaScript profile, preserving their operators.

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>08 网络 · arp 引擎教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">arp 引擎教程<small>Anime Render Pipeline</small></div>
+  <nav>
+    <div class="group-title">导航</div>
+    <a class="nav" href="index.html"><span class="num">·</span>总览</a>
+    <div class="group-title">系统文档</div>
+    <a class="nav" href="01-render-pipeline.html"><span class="num">01</span>渲染管线</a>
+    <a class="nav" href="02-gameobject-component.html"><span class="num">02</span>GameObject + Component</a>
+    <a class="nav" href="03-animation.html"><span class="num">03</span>动画</a>
+    <a class="nav" href="04-particles.html"><span class="num">04</span>粒子</a>
+    <a class="nav" href="05-ui.html"><span class="num">05</span>UI</a>
+    <a class="nav" href="06-resource-management.html"><span class="num">06</span>资源管理</a>
+    <a class="nav" href="07-reflection.html"><span class="num">07</span>反射</a>
+    <a class="nav" href="08-network.html"><span class="num">08</span>网络</a>
+    <a class="nav" href="09-shader.html"><span class="num">09</span>Shader</a>
+    <a class="nav" href="10-prefab-internal-resources.html"><span class="num">10</span>预制体</a>
+    <a class="nav" href="11-art-asset-formats.html"><span class="num">11</span>资产导入</a>
+    <a class="nav" href="12-procedural-generation.html"><span class="num">12</span>程序化生成</a>
+    <a class="nav" href="13-scripting.html"><span class="num">13</span>脚本</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <h1>08 网络系统（network）</h1>
+  <p class="lead">arp 的网络层（<code>src/network/</code>）是一套 <strong>asio 风格</strong>的跨平台 I/O 抽象：事件循环 <code>io_service</code> 驱动每个对象的 <code>io_context</code>，在其上叠 <code>tcp</code>/<code>udp</code> socket，再往上提供 <strong>HTTP</strong>、<strong>WebSocket</strong>、<strong>TLS</strong> 客户端。它把「传输细节」做成类型安全的 <code>ClientTransportKind</code> 决策，便于后端中立与确定性诊断。</p>
+
+  <div class="callout note">
+    <strong>状态：</strong><span class="badge stable">Stable</span> <code>io_service</code> / <code>socket</code> / <code>tcp</code> / <code>udp</code> / <code>http::Client</code> / <code>websocket::Client</code> / <code>tls</code> 均已实现可用。文档中反复提到的更高层门面 <code>NetworkService</code> / <code>NetworkStream</code> / <code>CompletionQueue</code> 目前属于<strong>契约 / 迁移目标</strong>（源码 <code>src/network</code> 中尚未落地），本页以已实现的 API 为主线。
+  </div>
+
+  <h2>8.1 分层模型</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 680 210" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Consolas,monospace" font-size="12">
+      <rect x="20" y="75" width="150" height="60" rx="8" fill="#eef3fb" stroke="#3b6fb0"/>
+      <text x="95" y="100" text-anchor="middle" fill="#234" font-weight="bold">io_service</text>
+      <text x="95" y="120" text-anchor="middle" fill="#456">事件循环 (run)</text>
+
+      <rect x="195" y="75" width="150" height="60" rx="8" fill="#eafaf0" stroke="#2f9e6b"/>
+      <text x="270" y="100" text-anchor="middle" fill="#143" font-weight="bold">io_context</text>
+      <text x="270" y="120" text-anchor="middle" fill="#265">每对象 I/O 上下文</text>
+
+      <rect x="370" y="20" width="150" height="55" rx="8" fill="#fdf3ec" stroke="#d68a3a"/>
+      <text x="445" y="42" text-anchor="middle" fill="#432" font-weight="bold">stream_socket</text>
+      <text x="445" y="60" text-anchor="middle" fill="#543">tcp::socket&lt;ipv4&gt;</text>
+
+      <rect x="370" y="115" width="150" height="55" rx="8" fill="#fdf3ec" stroke="#d68a3a"/>
+      <text x="445" y="137" text-anchor="middle" fill="#432" font-weight="bold">datagram_socket</text>
+      <text x="445" y="155" text-anchor="middle" fill="#543">udp::socket&lt;ipv4&gt;</text>
+
+      <rect x="545" y="20" width="125" height="55" rx="8" fill="#f3ecfd" stroke="#8a5cd6"/>
+      <text x="607" y="42" text-anchor="middle" fill="#314" font-weight="bold">http::Client</text>
+      <text x="607" y="60" text-anchor="middle" fill="#413">+ tls</text>
+
+      <rect x="545" y="115" width="125" height="55" rx="8" fill="#f3ecfd" stroke="#8a5cd6"/>
+      <text x="607" y="137" text-anchor="middle" fill="#314" font-weight="bold">websocket::Client</text>
+      <text x="607" y="155" text-anchor="middle" fill="#413">+ tls</text>
+
+      <line x1="170" y1="105" x2="192" y2="105" stroke="#3b6fb0" stroke-width="2" marker-end="url(#ar)"/>
+      <line x1="320" y1="105" x2="368" y2="47" stroke="#2f9e6b" stroke-width="2" marker-end="url(#ar)"/>
+      <line x1="320" y1="105" x2="368" y2="142" stroke="#2f9e6b" stroke-width="2" marker-end="url(#ar)"/>
+      <line x1="520" y1="47" x2="543" y2="47" stroke="#d68a3a" stroke-width="2" marker-end="url(#ar)"/>
+      <line x1="520" y1="142" x2="543" y2="142" stroke="#d68a3a" stroke-width="2" marker-end="url(#ar)"/>
+      <defs><marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#555"/></marker></defs>
+    </svg>
+  </div>
+
+  <h2>8.2 事件循环：io_service 与 io_context</h2>
+  <p><code>io_service</code> 是真正的事件循环，内部有 worker 线程 + poller，调用 <code>run()</code> 会阻塞驱动 I/O；<code>io_context</code> 是绑定到具体 socket / 客户端的每对象上下文——它既可以被某个 <code>io_service</code> 驱动，也可以独立构造（此时<strong>自己持有</strong>一个 <code>io_service</code>，见 <code>owned_service_</code>）。</p>
+  <pre><code>#include "network/io_service.h"
+#include "network/io_context.h"
+#include "network/http/client.h"
+using namespace arp::network;
+
+// 方案 A：独立 io_context（自带 io_service）
+io_context ctx;                          // 内部拥有 io_service
+http::Client client(&ctx);
+
+// 方案 B：显式事件循环 + 绑定 ctx
+io_service svc;
+io_context ctx2(&svc);                   // ctx2 由 svc 驱动
+http::Client client2(&ctx2);
+
+// 在专用线程上跑事件循环
+std::thread loop([&svc]() { svc.run(); });   // 阻塞；用 svc.wakeup()/close() 退出
+// ... 发出异步请求 ...
+svc.close();
+loop.join();</code></pre>
+  <p><code>io_service</code> 关键方法：<code>run()</code> / <code>wakeup()</code> / <code>close()</code> / <code>schedule(timer)</code> / <code>execute(op)</code> / <code>time()</code> / <code>quit()</code>。<code>io_context</code> 关键方法：<code>dispatch()</code> / <code>post_complete(cb)</code> / <code>run_at</code> / <code>run_after</code> / <code>run_every</code> / <code>now()</code> / <code>start_op(op)</code> / <code>service()</code>。</p>
+
+  <h2>8.3 寻址：endpoint</h2>
+  <p><code>endpoint</code> 封装 <code>sockaddr_storage</code>（IPv4 / IPv6 透明）：</p>
+  <pre><code>using namespace arp::network;
+
+endpoint ep("127.0.0.1", 8080);          // 字符串 IP + 端口
+if (!ep.is_valid()) { /* ... */ }
+
+endpoint server = endpoint::anyaddr&lt;ipv4&gt;(9000);   // 监听 0.0.0.0:9000
+endpoint loop   = endpoint::localhost&lt;ipv4&gt;(9000);  // 127.0.0.1:9000
+
+core::pmr::Vector&lt;endpoint&gt; resolved;
+error_code ec;
+endpoint::resolve(ec, "example.com", "443", AF_UNSPEC, SOCK_STREAM, 0, resolved);
+bool v6 = ep.is_ipv6();
+core::pmr::String text = ep.to_string(); // "127.0.0.1:8080"</code></pre>
+
+  <h2>8.4 TCP socket</h2>
+  <p><code>tcp::socket&lt;ipv4&gt;</code> 是 <code>stream_socket</code> 的别名。支持同步与异步两种范式：</p>
+  <table>
+    <thead><tr><th>方法</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>open(ec)</code> / <code>bind(ec, ep)</code> / <code>listen(ec, backlog)</code></td><td>建立监听</td></tr>
+      <tr><td><code>accept(ec, sock)</code></td><td>接受连接（注意：源码里另有一个拼写 <code>accecpt</code> 的别名，统一用 <code>accept</code>）</td></tr>
+      <tr><td><code>connect(ec, ep)</code></td><td>发起连接</td></tr>
+      <tr><td><code>send(ec, buf, size)</code> / <code>recv(ec, buf, size)</code> / <code>recvall(ec, buf)</code></td><td>同步收发</td></tr>
+      <tr><td><code>async_connect(ep, h)</code> / <code>async_send(buf, h)</code> / <code>async_recv(buf, h)</code> / <code>async_accept(sock, h)</code></td><td>异步收发（回调 handler）</td></tr>
+      <tr><td><code>set_nodelay</code> / <code>set_reuseaddr</code> / <code>set_keepalive</code> / <code>set_nonblocking</code></td><td>socket 选项</td></tr>
+      <tr><td><code>set_sni(host)</code> / <code>set_socks5_proxy(ep)</code></td><td>TLS SNI / SOCKS5 代理</td></tr>
+    </tbody>
+  </table>
+  <p>服务端 / 客户端最小示例：</p>
+  <pre><code>// 服务端（在 io_context ctx 驱动下）
+tcp::socket&lt;ipv4&gt; listener(&ctx);
+error_code ec;
+listener.open(ec);
+listener.set_reuseaddr(ec, true);
+listener.bind(ec, endpoint::anyaddr&lt;ipv4&gt;(9000));
+listener.listen(ec, 8);
+tcp::socket&lt;ipv4&gt; peer(&ctx);
+listener.accept(ec, peer);               // 阻塞等待一个连接
+byte_buffer buf { &core::defaultCpuMemoryResource() };
+peer.recvall(ec, buf);                    // 收满 buf 再返回
+peer.send(ec, buf.data(), buf.size());   // 回显
+
+// 客户端
+tcp::socket&lt;ipv4&gt; sock(&ctx);
+sock.open(ec);
+sock.connect(ec, endpoint("127.0.0.1", 9000));
+sock.send(ec, "ping", 4);
+byte_buffer in { &core::defaultCpuMemoryResource() };
+in.resize(4);
+sock.recvall(ec, in);</code></pre>
+
+  <h2>8.5 UDP socket</h2>
+  <p><code>udp::socket&lt;ipv4&gt;</code> 是 <code>datagram_socket</code> 的别名，面向无连接数据报：</p>
+  <pre><code>udp::socket&lt;ipv4&gt; s(&ctx);
+error_code ec; s.open(ec);
+endpoint dst("127.0.0.1", 9000);
+s.sendto(ec, dst, "hello", 5);
+
+endpoint from;
+byte_buffer pkt { &core::defaultCpuMemoryResource() };
+pkt.resize(512);
+socklen_t n = s.recvfrom(ec, from, pkt);  // 收到 pkt.size() 字节或错误</code></pre>
+
+  <h2>8.6 HTTP 客户端</h2>
+  <p><code>http::Client</code> 把「请求对象」与「事件回调」解耦：先构建 <code>ClientRequest</code>（<code>get/post</code>），再交给 <code>async_send</code> / <code>async_stream</code>。是否走 TLS 由 URI scheme 决定。</p>
+  <pre><code>#include "network/http/client.h"
+using namespace arp::network::http;
+
+Client client(&ctx);
+
+ClientRequest req = ClientRequest::get("https://api.example.com/v1/status");
+req.add_header("Accept", "application/json");
+req.set_content_type(ContentType::json);
+
+client.async_send(req, [](const ClientStatus& status, const Response& resp) {
+    if (!status.success()) {
+        // status.transport_error / status.diagnostic / status.tls_diagnostic
+        return;
+    }
+    // resp 已解析：headers + body
+});
+
+// 流式（大响应 / SSE）：分 on_headers / on_body / on_complete 三段回调
+client.async_stream(req,
+    [](const Response& headers) { /* 首字节头 */ },
+    [](StringView chunk)        { /* 每个 body 分片 */ },
+    [](const ClientStatus& st)  { /* 完成 */ });</code></pre>
+  <p>传输决策来自 <code>Client::prepareTransport(uri)</code>，返回 <code>ClientTransportKind</code>：</p>
+  <table>
+    <thead><tr><th>枚举值</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>http_cleartext</code></td><td><code>http://</code> 明文</td></tr>
+      <tr><td><code>websocket_cleartext</code></td><td>该 URI 其实是 WS（HTTP 客户端会拒绝）</td></tr>
+      <tr><td><code>tls_required</code></td><td><code>https://</code> 需要 TLS；若 TLS 后端未启用则报 <code>tls_unavailable</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>8.7 WebSocket 客户端</h2>
+  <p><code>websocket::Client</code> 用于长连接双向通信（如实时对战 / 热更新推送）：</p>
+  <pre><code>#include "network/websocket/client.h"
+using namespace arp::network::websocket;
+
+Client ws(&ctx);
+auto req = ClientRequest::connect("ws://127.0.0.1:9000/live");
+
+ws.async_connect(req, [](const ClientStatus& st) {
+    if (!st.success()) return;
+    // 连上后发送文本帧
+    ws.send_text("hello", [](const ClientStatus& s) { /* 发送完成 */ });
+    // 持续读帧
+    ws.async_read_frame([](const ClientStatus& s, const Frame& frame) {
+        if (!s.success()) return;
+        // frame.payload() / frame.is_text() ...
+    });
+});
+
+// 关闭
+ws.async_close(1000, "bye", [](const ClientStatus& s) { /* 关闭完成 */ });</code></pre>
+  <p>注意：<code>send</code> 与 <code>send_text</code> 都是对 <code>async_write_text</code> 的封装；二进制走 <code>async_write_binary(byte_buffer)</code>。写/读/关都要求当前处于 <code>ActiveTransport::direct</code> 且 <code>stream_</code> 已建立，否则回调直接拿到 <code>connection_closed</code>。</p>
+
+  <h2>8.8 TLS</h2>
+  <p>加密由 <code>tls::</code> 命名空间提供：<code>TlsContext</code> / <code>SslStream</code> / <code>TlsConfig</code> / <code>TlsStatus</code> / <code>TlsDiagnosticCode</code>。HTTP/WS 客户端在 <code>https://</code> / <code>wss://</code> 时自动走 TLS 握手；可在 <code>ClientRequest::tls_config()</code> 上定制证书 / SNI 等。</p>
+  <p>TLS 后端是<strong>编译期开关</strong>：仅当定义 <code>ARP_NETWORK_TLS_BACKEND_OPENSSL</code> 时 <code>wss://</code> 才能握手成功；否则 <code>async_connect</code> 立即以 <code>tls_diagnostic == disabled</code> / <code>http_diagnostic == tls_unavailable</code> 失败（见 <code>websocket::Client::async_connect</code>）。这一点对「后端中立」契约至关重要——所有诊断都通过 <code>ClientStatus</code> / <code>TlsDiagnosticCode</code> 返回，而非抛异常。</p>
+
+  <h2>8.9 后端中立与确定性诊断</h2>
+  <p>网络层遵循 <code>network-typed-transport-governance.md</code> 的「类型化传输」治理：</p>
+  <ul>
+    <li><strong>传输决策集中</strong>：一切以 <code>ClientTransportKind</code> 为先，禁止在业务层散落 <code>if (https)</code> 分支。</li>
+    <li><strong>诊断结构化</strong>：失败统一返回 <code>ClientStatus</code>（含 <code>transport_error</code> / <code>diagnostic</code> / <code>tls_diagnostic</code>），可据此稳定判断原因、写日志、做重试策略。</li>
+    <li><strong>确定性</strong>：诊断枚举值与顺序固定，便于第 06 章资源系统那样做遥测与指纹比对。</li>
+    <li><strong>无异常跨 ABI</strong>：所有错误走 <code>error_code</code> + 诊断码，不穿过 <code>ARP_API</code> 边界抛 C++ 异常。</li>
+  </ul>
+
+  <div class="callout warn">
+    <strong>迁移提示：</strong>文档中的 <code>NetworkService</code> / <code>NetworkStream</code> / <code>CompletionQueue</code> 是更高层、面向「游戏会话」的门面（意图把 io_service/socket/http/ws 统一封装）。在源码落地之前，请直接基于本页的 <code>io_service</code> + <code>io_context</code> + 各客户端 API 开发；待门面就绪可平滑替换上层调用。
+  </div>
+
+  <h2>8.10 参考实例：与资源遥测的衔接</h2>
+  <p>回到 <code>games/world_of_claudecraft</code> 的视角：若要让客户端拉取<strong>热更新内容</strong>或上报<strong>资源遥测</strong>（见第 06 章 <code>ResourceReloadTelemetry</code>），可用 <code>http::Client</code> 在 app 启动时绑定到引擎的 <code>io_context</code>：</p>
+  <pre><code>// 概念示例：在引擎的 io_context 上用一个 HTTP 客户端拉取配置
+arp::network::io_context& appCtx = engine.ioContext();   // 由引擎 bootstrap 提供
+arp::network::http::Client liveClient(&appCtx);
+
+auto cfgReq = arp::network::http::ClientRequest::get("https://cdn.example.com/wocc/live.yaml");
+liveClient.async_send(cfgReq, [](const arp::network::http::ClientStatus& st,
+                                 const arp::network::http::Response& resp) {
+    if (st.success()) {
+        // 把 resp.body 交给第 06 章的反序列化 / 第 07 章的 deserialize_from_yaml
+    }
+});</code></pre>
+  <p>这里 <code>engine.ioContext()</code> 仅为示意入口——确切的获取方式取决于引擎 app 引导如何暴露 <code>io_context</code>；重点是三套系统如何串起来：<strong>网络取字节 → 反射/资源反序列化 → 运行时对象</strong>。</p>
+
+  <div class="pager">
+    <a href="07-reflection.html"><div class="dir">← 上一章</div><div class="ttl">07 反射</div></a>
+    <a class="next" href="09-shader.html"><div class="dir">下一章 →</div><div class="ttl">09 Shader</div></a>
+    <a href="index.html"><div class="dir">↑ 目录</div><div class="ttl">总览</div></a>
+  </div>
+</main>
+</div>
+</body>
+</html>

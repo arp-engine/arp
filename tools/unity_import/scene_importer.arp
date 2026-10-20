@@ -1,0 +1,25 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+import prefab_importer
+
+class UnitySceneImporter(Importer):
+    def summary(self, input: string) -> yaml.YamlDocument:
+        var prefabImporter: UnityPrefabImporter = UnityPrefabImporter()
+        return prefabImporter.summary(input)
+
+    def validate(self, input: string, projectRoot: string) -> void:
+        self.summary(input)
+        self.validate_project(projectRoot)
+
+    def export_path(self, input: string, projectRoot: string, output: string) -> int:
+        self.validate(input, projectRoot)
+        var report: yaml.YamlDocument = self.make_report(
+            input, unity_import_common.REPORT_KIND_SCENE, unity_import_common.STATUS_OK)
+        report.set("scene", self.summary(input))
+        self.add_project_summary(report, projectRoot)
+        return self.write_report(output, report)
+

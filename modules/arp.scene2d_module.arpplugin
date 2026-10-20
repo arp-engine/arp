@@ -1,0 +1,25 @@
+type: arp.script.cpp-plugin
+contractVersion: 2
+module: arp_scene2d
+moduleVersion: 1
+source: scene2d/scene2d_module.cpp
+entry: arp_register_arp_scene2d
+exportContractHash: sha256:eeea03034f0d7b92d7f933bb6ed63147e3fbc3b57db6a980053610515620862d
+requiredServices:
+  - id: arp.physics2d.world
+    version: 1
+reflectionHeaders:
+  - src/core/math.h
+  - src/core/script_math.h
+  - src/core/seeded_random.h
+  - src/core/runtime/game_clock.h
+  - src/physics2d/physics_world_2d.h
+  - src/physics2d/components.h
+  - src/scene/runtime_components.h
+  - src/2d/scene_runtime_codec.h
+  - src/2d/screen_canvas_component.h
+  - src/2d/sprite_resources.h
+  - src/2d/sprite_text_component.h
+  - src/2d/particle_emitter_component.h
+  - src/audio/audio_components.h
+  - src/resource/audio_source_component.h

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>11 资产导入 · arp 引擎教程</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">arp 引擎教程<small>Anime Render Pipeline</small></div>
+  <nav>
+    <div class="group-title">导航</div>
+    <a class="nav" href="index.html"><span class="num">·</span>总览</a>
+    <div class="group-title">系统文档</div>
+    <a class="nav" href="01-render-pipeline.html"><span class="num">01</span>渲染管线</a>
+    <a class="nav" href="02-gameobject-component.html"><span class="num">02</span>GameObject + Component</a>
+    <a class="nav" href="03-animation.html"><span class="num">03</span>动画</a>
+    <a class="nav" href="04-particles.html"><span class="num">04</span>粒子</a>
+    <a class="nav" href="05-ui.html"><span class="num">05</span>UI</a>
+    <a class="nav" href="06-resource-management.html"><span class="num">06</span>资源管理</a>
+    <a class="nav" href="07-reflection.html"><span class="num">07</span>反射</a>
+    <a class="nav" href="08-network.html"><span class="num">08</span>网络</a>
+    <a class="nav" href="09-shader.html"><span class="num">09</span>Shader</a>
+    <a class="nav" href="10-prefab-internal-resources.html"><span class="num">10</span>预制体</a>
+    <a class="nav active" href="11-art-asset-formats.html"><span class="num">11</span>资产导入</a>
+    <a class="nav" href="12-procedural-generation.html"><span class="num">12</span>程序化生成</a>
+    <a class="nav" href="13-scripting.html"><span class="num">13</span>脚本</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <h1>11 资产导入 <span class="badge green">Contract Complete</span></h1>
+  <p class="lead">arp 引擎是<strong>数据驱动 + 后端中立</strong>的风格化渲染引擎。美术资产从 DCC 工具（Blender / Unity / Photoshop 等）导出为标准<strong>源格式</strong>文件，经 importer 转成引擎<strong>内部资源包</strong>（确定性 envelope + sidecar blob，见 10），再统一由 <code>ResourceManager</code>（见 06）管理。本文给出当前引擎实际支持的全部<strong>资产导入</strong>：从磁盘扩展名到内部资源类型的完整映射，所有结论均取自引擎源码（<code>src/resource/prefab_asset_resources.cpp</code> 的 <code>assetTypeForExtension</code>、各 importer、<code>src/assets/asset_pipeline.h</code>、<code>src/shader/shader_compiler.h</code>、<code>src/rhi/gpu_common.h</code>）。</p>
+
+  <div class="callout note">
+    <p><strong>「源格式」与「内部格式」是两件事。</strong> 引擎运行时<em>不直接</em>加载原始 DCC 文件。DCC 文件是 importer 的输入；importer 产出的是引擎内部资源包（envelope JSON 描述类型/别名/来源，sidecar blob 存确定性字节）。本文同时列出两层——前者决定「美术能导出什么」，后者决定「引擎真正吃什么」。</p>
+  </div>
+
+  <h2>1. 格式总览矩阵</h2>
+  <p>下表是引擎当前资产导入的完整清单（与 10 章的 21 个内部资源类型一一对应，这里按<strong>文件格式</strong>而不是资源类组织）：</p>
+  <table>
+    <thead>
+      <tr><th>资产类别</th><th>源格式（扩展名）</th><th>引擎内部资源类型</th><th>主要 Importer / 模块</th><th>状态</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>模型 / 网格</td><td><code>.glb</code> <code>.gltf</code> <code>.fbx</code></td><td>Model / SkinnedMesh / MeshAsset</td><td>glb_static_mesh_importer、glb_animated_mesh_importer、fbx_character_importer、unity_character_importer</td><td><span class="badge green">Complete</span></td></tr>
+      <tr><td>贴图</td><td><code>.png</code> <code>.jpg</code> <code>.jpeg</code> <code>.tga</code> <code>.webp</code>（<code>.psd</code> 仅导入）</td><td>Texture / MaterialTextureSource / UIAtlasTexture / ParticleTexture</td><td>image_decoder、ui_atlas_texture_resource、particle_texture_resource、unity_asset_database</td><td><span class="badge green">Complete</span></td></tr>
+      <tr><td>材质</td><td><code>.mat</code>（Unity YAML）<code>.shadergraph</code> <code>.shadersubgraph</code></td><td>Material / MaterialSet / ShaderGraphSource</td><td>unity_character_importer、asset_pipeline（SceneStylizedPbr）</td><td><span class="badge green">Complete</span></td></tr>
+      <tr><td>着色器</td><td><code>.slang</code></td><td>ShaderPackage / ShaderGraphSource</td><td>shader_compiler、renderer_common</td><td><span class="badge green">Complete</span></td></tr>
+      <tr><td>动画 / 骨骼</td><td>glTF 内嵌 clips <code>.controller</code>（Unity）Avatar</td><td>AnimationClip / AnimationSet / Skeleton / Avatar / AnimatorController</td><td>glb_animated_mesh_importer、unity_character_importer</td><td><span class="badge green">Complete</span></td></tr>
+      <tr><td>粒子</td><td><code>.prefab</code> <code>.asset</code>（Unity 粒子系统）</td><td>ParticleEffect</td><td>unity_particle_importer / unity_particle_converter</td><td><span class="badge green">Complete</span></td></tr>
+      <tr><td>序列 / 过场</td><td><code>.playable</code>（Unity Timeline）</td><td>Sequence / SequenceBindingSet</td><td>资产包 <code>sequence</code> 项</td><td><span class="badge green">Complete</span></td></tr>
+      <tr><td>场景 / 预制体</td><td><code>.unity</code> <code>.prefab</code></td><td>Scene / Prefab</td><td>unity_prefab_folder 导入（见 10）</td><td><span class="badge green">Complete</span></td></tr>
+      <tr><td>设置 / 其他</td><td><code>.asset</code></td><td>SettingsAsset</td><td>资产包 entry</td><td><span class="badge green">Complete</span></td></tr>
+      <tr><td>创作源（非运行时）</td><td><code>.psd</code> <code>.ai</code> <code>.pdf</code> <code>.svg</code></td><td>Authoring</td><td>unity_asset_database</td><td><span class="badge green">Complete</span></td></tr>
+    </tbody>
+  </table>
+  <p class="note-line">权威扩展名→类型映射见 <code>src/resource/prefab_asset_resources.cpp:157</code> 的 <code>assetTypeForExtension()</code>；参与打包的源见同文件 <code>isPackageRelevantSource()</code>。</p>
+
+  <h2>2. DCC → 引擎的格式管线</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 770 150" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="12.5">
+      <defs><marker id="c1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="context-stroke"/></marker></defs>
+      <rect x="20" y="50" width="150" height="54" rx="8" fill="#eceff1" stroke="#57606a"/>
+      <text x="32" y="74" font-weight="700">DCC 工具</text>
+      <text x="32" y="92" fill="#57606a">Blender/Unity/PS</text>
+      <rect x="200" y="50" width="160" height="54" rx="8" fill="#e7f0ff" stroke="#2f6feb"/>
+      <text x="212" y="74" font-weight="700">源格式文件</text>
+      <text x="212" y="92" fill="#57606a">.glb/.fbx/.png/.mat</text>
+      <rect x="392" y="50" width="150" height="54" rx="8" fill="#fff4e0" stroke="#9a6700"/>
+      <text x="404" y="74" font-weight="700">Importer</text>
+      <text x="404" y="92" fill="#57606a">资产导入器</text>
+      <rect x="574" y="50" width="176" height="54" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="586" y="74" font-weight="700">内部资源包</text>
+      <text x="586" y="92" fill="#57606a">envelope + blob</text>
+      <path d="M170 77 L198 77" stroke="#2f6feb" stroke-width="2" marker-end="url(#c1)"/>
+      <path d="M360 77 L390 77" stroke="#2f6feb" stroke-width="2" marker-end="url(#c1)"/>
+      <path d="M542 77 L572 77" stroke="#2f6feb" stroke-width="2" marker-end="url(#c1)"/>
+    </svg>
+  </div>
+  <p>任一美术源文件进入管线后，最终都变成统一的内部资源包格式（第 11 节），与它是哪种 DCC 工具导出无关。</p>
+
+  <h2>3. 模型与网格（Model / Mesh）</h2>
+  <ul>
+    <li><strong>glTF 2.0</strong>：<code>.gltf</code>（JSON + 外置 bin/贴图）与 <code>.glb</code>（二进制单文件）由 <code>glb_static_mesh_importer</code>（静态网格）与 <code>glb_animated_mesh_importer</code>（蒙皮动画网格）消费；<code>glb_importer_common</code> 统一解析节点层级、PBR 材质与 <code>KHR_materials_*</code> 扩展（clearcoat / specular / sheen / transmission / volume / ior / iridescence / emissive_strength）。</li>
+    <li><strong>FBX</strong>：<code>.fbx</code> 由 <code>fbx_character_importer</code>（裸 FBX）与 <code>unity_character_importer</code>（Unity 导出的 FBX + <code>.meta</code>）消费，产出内含蒙皮/骨骼/材质/动画集的 <code>AnimatedMeshAsset</code>。</li>
+    <li>内部目标资源：<code>ModelResource</code> / <code>SkinnedMeshResource</code> / <code>MeshAssetResource</code>（后者在其它工厂注册，见 10）。网格可选 <code>optimizeIndices</code> / <code>generateBounds</code> / <code>prepareMeshlets</code>（见 <code>RuntimeMeshAssetDesc</code>）。</li>
+  </ul>
+
+  <h2>4. 贴图（Texture）</h2>
+  <ul>
+    <li><strong>源格式</strong>：位图 <code>.png</code> <code>.jpg</code> <code>.jpeg</code> <code>.tga</code>，glTF 内嵌的 <code>.webp</code>（<code>EXT_texture_webp</code>）；<code>.psd</code> 仅作 Unity 资产数据库的输入（被算作 Authoring，不进运行时像素流）。所有位图经 <code>decodeImageToRgba8()</code>（<code>src/assets/image_decoder.cpp</code>）统一解码为 <strong>rgba8</strong> 像素缓冲（<code>ImageDecodeResult.rgba8</code>）。</li>
+    <li><strong>内部纹理格式</strong>（<code>rhi::TextureFormat</code>，<code>src/rhi/gpu_common.h:61</code>）：<code>Rgba8Unorm</code>、<code>Bgra8Unorm</code>、<code>Rgba16Float</code>、<code>R32Float</code>（单通道 32 位浮点，用于阴影/深度数据）、<code>D32Float</code>、<code>Depth24Stencil8</code>。UI / 粒子 / 材质贴图运行时均要求 <code>Rgba8Unorm</code>。</li>
+    <li><strong>移动端压缩</strong>（<code>MobileTextureCompression</code>，<code>src/assets/asset_pipeline.h:522</code>）：<code>None</code> / <code>Astc</code> / <code>Etc2</code> / <code>Bc</code>；开启压缩时必须同时指定移动目标，否则打包失败。纹理另支持 <code>generateMips</code>（生成 mipmap）与 <code>srgb</code>（sRGB 色彩空间）选项。</li>
+  </ul>
+
+  <h2>5. 材质（Material）</h2>
+  <ul>
+    <li><strong>源格式</strong>：Unity <code>.mat</code>（YAML）由 <code>unity_character_importer</code> 解析为 <code>ImportedMaterial</code>（含 baseColorTexture / normalTexture / cullMode / surface / alphaClip 等）；<code>.shadergraph</code> / <code>.shadersubgraph</code> 作为 ShaderGraph 源（<code>ShaderGraphSource</code>）。</li>
+    <li><strong>内部材质</strong>：引擎运行时消费 <code>SceneStylizedPbr</code> JSON（见 01/SDK 文档，支持 <code>baseColorTexture</code> / <code>normalTexture</code> / <code>roughnessMetallicAoTexture</code> 路径 + <code>biomeTintStrength</code> / <code>lightWrap</code> / <code>weatherMaskStrength</code> 等参数），由 <code>MaterialResource</code> / <code>MaterialSetResource</code> 承载。</li>
+  </ul>
+
+  <h2>6. 着色器（Shader）</h2>
+  <ul>
+    <li><strong>源格式</strong>：<code>.slang</code> 统一着色语言（见 09）。引擎<em>不</em>直接接触 GLSL / HLSL / MSL 原生方言。</li>
+    <li><strong>编译产物</strong>（<code>TargetBackend</code>，<code>src/shader/shader_compiler.h:18</code>）：<code>.spv</code>（SPIR-V，Vulkan）、<code>.metal</code>（Metal Shading Language，macOS/iOS）、<code>.wgsl</code>（WebGPU），外加 <code>.reflection.json</code>（绑定/推送常量反射，供 <code>ShaderReflectionCache</code> 与 <code>ShaderPipelineReflectionValidator</code> 校验）。一个 <code>shader</code> 包项需同时提供这四类产物（见 <code>RuntimeAssetPackagePlan::shaderReferences</code>）。</li>
+  </ul>
+
+  <h2>7. 动画与骨骼（Animation / Skeleton）</h2>
+  <ul>
+    <li>动画 clips 可内嵌于 glTF（<code>glb_animated_mesh_importer</code> 提取）或来自 Unity 角色导入；状态机来自 Unity <code>.controller</code>（AnimatorController）被解析为 <code>AnimatorControllerResource</code>（含参数/状态/过渡）。</li>
+    <li>骨骼绑定以 <code>Avatar</code>（Generic / Humanoid，见 <code>unity_model_importer_meta.cpp</code> 的 <code>animationType</code>）描述，内部资源类型包括 <code>AnimationClipResource</code> / <code>AnimationSetResource</code> / <code>SkeletonResource</code> / <code>AvatarResource</code>。</li>
+  </ul>
+
+  <h2>8. 粒子（Particle）</h2>
+  <ul>
+    <li><strong>源格式</strong>：Unity 粒子系统导出为 <code>.prefab</code> 或 <code>.asset</code>，由 <code>unity_particle_importer</code>（直接解析 YAML）与 <code>unity_particle_converter</code>（运行时便捷转换）消费。</li>
+    <li><strong>内部</strong>：<code>ParticleEffectResource</code>，记录各 emitter 及其 <code>materialBinding</code>（引用材质/纹理 UUID），与 04 章的运行时粒子系统对接。</li>
+  </ul>
+
+  <h2>9. 序列 / 过场（Sequence）</h2>
+  <ul>
+    <li><strong>源格式</strong>：Unity Timeline 的 <code>.playable</code>，映射为 <code>SequenceResource</code> / <code>SequenceBindingSetResource</code>。</li>
+  </ul>
+
+  <h2>10. 创作源（非运行时）</h2>
+  <ul>
+    <li><code>.psd</code> <code>.ai</code> <code>.pdf</code> <code>.svg</code> 被 <code>assetTypeForExtension()</code> 归为 <code>Authoring</code>。它们<strong>不进入运行时像素流</strong>，仅作为管线输入 / 美术审计资产（<code>AuthoringAssetResource</code>）——典型的「源文件，不是引擎资源」。</li>
+  </ul>
+
+  <h2>11. 内部运行时包格式（统一落点）</h2>
+  <p>无论上述哪种源格式，importer 产出的都是同一种<strong>内部资源包</strong>：一个确定性 <code>envelope</code>（JSON，含 type / name / alias + 每个 entry 的来源与确定性缓存键）加一个 <code>sidecar blob</code>（确定性字节，带内容哈希）。这正是 10 章讲的内部资源模型，也是 06 章 <code>ResourceManager</code> 实际加载的对象。换句话说——</p>
+  <div class="callout note">
+    <p><strong>美术关心的「格式」</strong>是磁盘扩展名（第 1 节矩阵左列）；<strong>引擎关心的「格式」</strong>是内部资源包（envelope + blob）。中间由 importer 隔离，上游 DCC 工具怎么变，下游运行时契约不变。</p>
+  </div>
+
+  <h2>12. 快速参考清单</h2>
+  <ol>
+    <li>导模型优先用 <code>.glb</code>（单文件、内嵌贴图）；需要外部引用或调试用 <code>.gltf</code>。</li>
+    <li>贴图统一走 <code>decodeImageToRgba8</code> → <code>Rgba8Unorm</code>；移动端务必选 <code>Astc</code>/<code>Etc2</code>/<code>Bc</code> 并开 <code>generateMips</code>。</li>
+    <li>材质交给 Unity <code>.mat</code> 或引擎 <code>SceneStylizedPbr</code> JSON；不要手写原生 PBR 绑定。</li>
+    <li>着色器只写 <code>.slang</code>，三后端产物（<code>.spv</code>/<code>.metal</code>/<code>.wgsl</code> + <code>.reflection.json</code>）由构建脚本生成（见 09）。</li>
+    <li>动画/粒子尽可能复用在 Unity 内已验证的 <code>.controller</code> / <code>.prefab</code>，让 importer 处理语义降级。</li>
+    <li>不要把 <code>.psd</code>/<code>.ai</code>/<code>.svg</code> 当运行时资产——它们是 Authoring，只参与管线。</li>
+  </ol>
+
+  <div class="pager">
+    <a href="10-prefab-internal-resources.html"><div class="dir">← 上一章</div><div class="ttl">10 预制体</div></a>
+    <a href="index.html"><div class="dir">↑ 目录</div><div class="ttl">总览</div></a>
+    <a class="next" href="12-procedural-generation.html"><div class="dir">下一章 →</div><div class="ttl">12 程序化生成</div></a>
+  </div>
+</main>
+</div>
+</body>
+</html>

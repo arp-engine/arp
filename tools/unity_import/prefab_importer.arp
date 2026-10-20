@@ -1,0 +1,269 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+
+class UnityPrefabImporter(Importer):
+    def known_document_type(self, name: string) -> bool:
+        return name == "GameObject" or name == "Transform" or name == "RectTransform" or name == "MeshRenderer" or name == "SkinnedMeshRenderer" or name == "ParticleSystem" or name == "ParticleSystemRenderer" or name == "Camera" or name == "Animator" or name == "MonoBehaviour" or name == "Light" or name == "LightProbeGroup" or name == "BoxCollider" or name == "CapsuleCollider" or name == "CharacterController" or name == "MeshCollider" or name == "SphereCollider" or name == "WheelCollider" or name == "Prefab" or name == "PrefabInstance" or name == "Modification" or name == "OcclusionCullingSettings" or name == "RenderSettings" or name == "LightmapSettings" or name == "NavMeshSettings" or name == "SceneRoots"
+
+    def validate_component_shape(
+        self,
+        document: yaml.YamlDocument,
+        componentName: string):
+        var component: yaml.YamlDocument = document.get(componentName)
+        if yaml.kind_code(component) > unity_import_common.YAML_KIND_NULL and yaml.kind_code(component) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_YAML_DOCUMENT + ": " + componentName
+
+    def document_type(self, document: yaml.YamlDocument) -> string:
+        var documentKeys: list = document.keys()
+        for documentName: string in documentKeys:
+            if self.known_document_type(documentName):
+                return documentName
+        return ""
+
+    def is_document_metadata(self, name: string) -> bool:
+        return name == unity_import_common.UNITY_FILE_ID_FIELD or name == unity_import_common.UNITY_TYPE_FIELD
+
+    def document_id(self, document: yaml.YamlDocument, path: string) -> int:
+        var anchor: string = document.anchor()
+        if anchor == "":
+            var metadata: yaml.YamlDocument = document.get(
+                unity_import_common.UNITY_FILE_ID_FIELD)
+            if not metadata.is_integer():
+                return 0
+            var metadataValue: int = metadata.integer_value()
+            if metadataValue <= 0:
+                raise unity_import_common.DIAGNOSTIC_YAML_DOCUMENT + ": " + path + ".fileID"
+            return metadataValue
+        var value: int = anchor as int
+        if value <= 0:
+            raise unity_import_common.DIAGNOSTIC_YAML_DOCUMENT + ": " + path + ".fileID"
+        return value
+
+    def build_document_index(
+        self,
+        parsed: yaml.YamlParseResult) -> yaml.YamlDocument:
+        var index: yaml.YamlDocument = yaml.sequence()
+        for document: yaml.YamlDocument in parsed.documents:
+            if yaml.kind_code(document) != unity_import_common.YAML_KIND_MAPPING:
+                continue
+            var documentName: string = self.document_type(document)
+            if documentName == "":
+                continue
+            var fileId: int = self.document_id(document, documentName)
+            if fileId == 0:
+                continue
+            var entryIndex: int = 0
+            while entryIndex < index.size():
+                var prior: yaml.YamlDocument = index.at(entryIndex)
+                if prior.get("fileID").integer_value() == fileId:
+                    raise unity_import_common.DIAGNOSTIC_YAML_DOCUMENT + ": duplicate fileID " + documentName
+                entryIndex = entryIndex + 1
+            var entry: yaml.YamlDocument = yaml.mapping()
+            entry.set("fileID", yaml.int(fileId))
+            entry.set("type", yaml.string(documentName))
+            index.append(entry)
+        return index
+
+    def target_type(
+        self,
+        index: yaml.YamlDocument,
+        fileId: int) -> string:
+        var indexEntry: int = 0
+        while indexEntry < index.size():
+            var entry: yaml.YamlDocument = index.at(indexEntry)
+            if entry.get("fileID").integer_value() == fileId:
+                return entry.get("type").string_value()
+            indexEntry = indexEntry + 1
+        return ""
+
+    def validate_reference(
+        self,
+        reference: yaml.YamlDocument,
+        path: string,
+        index: yaml.YamlDocument,
+        expectedType: string):
+        if yaml.kind_code(reference) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_YAML_DOCUMENT + ": " + path
+        var guid: yaml.YamlDocument = reference.get("guid")
+        if guid.is_string() and guid.string_value() != "":
+            return
+        var fileId: yaml.YamlDocument = reference.get("fileID")
+        if not fileId.is_integer() or fileId.integer_value() <= 0:
+            raise unity_import_common.DIAGNOSTIC_YAML_DOCUMENT + ": " + path + ".fileID"
+        var target: string = self.target_type(index, fileId.integer_value())
+        if target == "":
+            raise unity_import_common.DIAGNOSTIC_YAML_DOCUMENT + ": unresolved " + path + ".fileID"
+        if expectedType != "" and target != expectedType:
+            raise unity_import_common.DIAGNOSTIC_YAML_DOCUMENT + ": " + path + ".fileID target type " + target
+
+    def summary(self, input: string) -> yaml.YamlDocument:
+        var text: string = self.read_text_or_raise(input)
+        var parsed: yaml.YamlParseResult = self.parse_yaml_or_raise(text)
+        var objectCount: int = 0
+        var componentCount: int = 0
+        var physicsColliderCount: int = 0
+        var lightHelperCount: int = 0
+        var transformCount: int = 0
+        var rendererCount: int = 0
+        var particleSystemCount: int = 0
+        var cameraCount: int = 0
+        var animatorCount: int = 0
+        var scriptCount: int = 0
+        var externalReferenceCount: int = 0
+        var supportedObjectCount: int = 0
+        var documentIndex: yaml.YamlDocument = self.build_document_index(parsed)
+        for document: yaml.YamlDocument in parsed.documents:
+            if yaml.kind_code(document) != unity_import_common.YAML_KIND_MAPPING:
+                if yaml.kind_code(document) > unity_import_common.YAML_KIND_NULL:
+                    raise unity_import_common.DIAGNOSTIC_YAML_DOCUMENT
+                continue
+            var documentKeys: list = document.keys()
+            for documentName: string in documentKeys:
+                if not self.known_document_type(documentName) and not self.is_document_metadata(documentName):
+                    raise unity_import_common.DIAGNOSTIC_UNSUPPORTED_OBJECT + ": " + documentName
+            self.validate_component_shape(document, "GameObject")
+            self.validate_component_shape(document, "Transform")
+            self.validate_component_shape(document, "RectTransform")
+            self.validate_component_shape(document, "MeshRenderer")
+            self.validate_component_shape(document, "SkinnedMeshRenderer")
+            self.validate_component_shape(document, "ParticleSystem")
+            self.validate_component_shape(document, "ParticleSystemRenderer")
+            self.validate_component_shape(document, "Camera")
+            self.validate_component_shape(document, "Animator")
+            self.validate_component_shape(document, "MonoBehaviour")
+            self.validate_component_shape(document, "Light")
+            self.validate_component_shape(document, "LightProbeGroup")
+            self.validate_component_shape(document, "BoxCollider")
+            self.validate_component_shape(document, "CapsuleCollider")
+            self.validate_component_shape(document, "CharacterController")
+            self.validate_component_shape(document, "MeshCollider")
+            self.validate_component_shape(document, "SphereCollider")
+            self.validate_component_shape(document, "WheelCollider")
+            var gameObject: yaml.YamlDocument = document.get("GameObject")
+            if yaml.kind_code(gameObject) == unity_import_common.YAML_KIND_MAPPING:
+                objectCount = objectCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+                var objectName: yaml.YamlDocument = gameObject.get("m_Name")
+                if not objectName.is_string() or objectName.string_value() == "":
+                    raise unity_import_common.DIAGNOSTIC_UNSUPPORTED_OBJECT + ": GameObject.m_Name"
+                var gameObjectComponents: yaml.YamlDocument = gameObject.get("m_Component")
+                if yaml.kind_code(gameObjectComponents) == unity_import_common.YAML_KIND_SEQUENCE:
+                    componentCount = componentCount + gameObjectComponents.size()
+                    var componentIndex: int = 0
+                    while componentIndex < gameObjectComponents.size():
+                        var componentReference: yaml.YamlDocument = gameObjectComponents.at(componentIndex)
+                        if yaml.kind_code(componentReference) != unity_import_common.YAML_KIND_MAPPING:
+                            raise unity_import_common.DIAGNOSTIC_YAML_DOCUMENT + ": GameObject.m_Component"
+                        var component: yaml.YamlDocument = componentReference.get("component")
+                        self.validate_reference(
+                            component,
+                            "GameObject.m_Component.component",
+                            documentIndex,
+                            "")
+                        externalReferenceCount = externalReferenceCount + 1
+                        componentIndex = componentIndex + 1
+                elif yaml.kind_code(gameObjectComponents) > unity_import_common.YAML_KIND_NULL:
+                    raise unity_import_common.DIAGNOSTIC_YAML_DOCUMENT + ": GameObject.m_Component"
+            var boxCollider: yaml.YamlDocument = document.get("BoxCollider")
+            var capsuleCollider: yaml.YamlDocument = document.get("CapsuleCollider")
+            var characterController: yaml.YamlDocument = document.get("CharacterController")
+            var meshCollider: yaml.YamlDocument = document.get("MeshCollider")
+            var sphereCollider: yaml.YamlDocument = document.get("SphereCollider")
+            var wheelCollider: yaml.YamlDocument = document.get("WheelCollider")
+            if yaml.kind_code(boxCollider) == unity_import_common.YAML_KIND_MAPPING:
+                physicsColliderCount = physicsColliderCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            if yaml.kind_code(capsuleCollider) == unity_import_common.YAML_KIND_MAPPING:
+                physicsColliderCount = physicsColliderCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            if yaml.kind_code(characterController) == unity_import_common.YAML_KIND_MAPPING:
+                physicsColliderCount = physicsColliderCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            if yaml.kind_code(meshCollider) == unity_import_common.YAML_KIND_MAPPING:
+                physicsColliderCount = physicsColliderCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            if yaml.kind_code(sphereCollider) == unity_import_common.YAML_KIND_MAPPING:
+                physicsColliderCount = physicsColliderCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            if yaml.kind_code(wheelCollider) == unity_import_common.YAML_KIND_MAPPING:
+                physicsColliderCount = physicsColliderCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            var transform: yaml.YamlDocument = document.get("Transform")
+            if yaml.kind_code(transform) == unity_import_common.YAML_KIND_MAPPING:
+                var transformGameObject: yaml.YamlDocument = transform.get("m_GameObject")
+                self.validate_reference(
+                    transformGameObject,
+                    "Transform.m_GameObject",
+                    documentIndex,
+                    "GameObject")
+                var father: yaml.YamlDocument = transform.get("m_Father")
+                if yaml.kind_code(father) > unity_import_common.YAML_KIND_NULL:
+                    self.validate_reference(
+                        father,
+                        "Transform.m_Father",
+                        documentIndex,
+                        "Transform")
+                transformCount = transformCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            var meshRenderer: yaml.YamlDocument = document.get("MeshRenderer")
+            var skinnedRenderer: yaml.YamlDocument = document.get("SkinnedMeshRenderer")
+            if yaml.kind_code(meshRenderer) == unity_import_common.YAML_KIND_MAPPING:
+                rendererCount = rendererCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            if yaml.kind_code(skinnedRenderer) == unity_import_common.YAML_KIND_MAPPING:
+                rendererCount = rendererCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            var particleSystem: yaml.YamlDocument = document.get("ParticleSystem")
+            if yaml.kind_code(particleSystem) == unity_import_common.YAML_KIND_MAPPING:
+                particleSystemCount = particleSystemCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            var camera: yaml.YamlDocument = document.get("Camera")
+            if yaml.kind_code(camera) == unity_import_common.YAML_KIND_MAPPING:
+                cameraCount = cameraCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            var animator: yaml.YamlDocument = document.get("Animator")
+            if yaml.kind_code(animator) == unity_import_common.YAML_KIND_MAPPING:
+                animatorCount = animatorCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            var monoBehaviour: yaml.YamlDocument = document.get("MonoBehaviour")
+            if yaml.kind_code(monoBehaviour) == unity_import_common.YAML_KIND_MAPPING:
+                scriptCount = scriptCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            var light: yaml.YamlDocument = document.get("Light")
+            var lightProbe: yaml.YamlDocument = document.get("LightProbeGroup")
+            if yaml.kind_code(light) == unity_import_common.YAML_KIND_MAPPING:
+                lightHelperCount = lightHelperCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+            if yaml.kind_code(lightProbe) == unity_import_common.YAML_KIND_MAPPING:
+                lightHelperCount = lightHelperCount + 1
+                supportedObjectCount = supportedObjectCount + 1
+        if supportedObjectCount == 0:
+            raise unity_import_common.DIAGNOSTIC_UNSUPPORTED_OBJECT
+        var result: yaml.YamlDocument = yaml.mapping()
+        result.set("objectCount", yaml.int(objectCount))
+        result.set("componentCount", yaml.int(componentCount))
+        result.set("physicsColliderCount", yaml.int(physicsColliderCount))
+        result.set("lightHelperCount", yaml.int(lightHelperCount))
+        result.set("transformCount", yaml.int(transformCount))
+        result.set("rendererCount", yaml.int(rendererCount))
+        result.set("particleSystemCount", yaml.int(particleSystemCount))
+        result.set("cameraCount", yaml.int(cameraCount))
+        result.set("animatorCount", yaml.int(animatorCount))
+        result.set("scriptCount", yaml.int(scriptCount))
+        result.set("externalReferenceCount", yaml.int(externalReferenceCount))
+        return result
+
+    def validate(self, input: string) -> void:
+        self.summary(input)
+
+    def export_path(self, input: string, output: string) -> int:
+        var prefabSummary: yaml.YamlDocument = self.summary(input)
+        var report: yaml.YamlDocument = self.make_report(
+            input, unity_import_common.REPORT_KIND_PREFAB, unity_import_common.STATUS_OK)
+        report.set("prefab", prefabSummary)
+        return self.write_report(output, report)
+

@@ -1,0 +1,380 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+import texture_importer
+
+class UnityMaterialImporter(Importer):
+    def read_material(self, input: string) -> yaml.YamlDocument:
+        var text: string = self.read_text_or_raise(input)
+        var document: yaml.YamlDocument = self.first_document_or_raise(text)
+        var material: yaml.YamlDocument = document.get("Material")
+        if yaml.kind_code(material) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID
+        return material
+
+    def material_guid(self, input: string) -> string:
+        var metaPath: string = input + ".meta"
+        if not io.exists(metaPath):
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": missing .meta"
+        var text: string = self.read_text_or_raise(metaPath)
+        var document: yaml.YamlDocument = self.first_document_or_raise(text)
+        var guid: yaml.YamlDocument = document.get("guid")
+        if not guid.is_string() or guid.string_value() == "":
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": guid"
+        return guid.string_value()
+
+    def validate(self, input: string) -> void:
+        if not io.exists(input):
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_PATH
+        var material: yaml.YamlDocument = self.read_material(input)
+        var shader: yaml.YamlDocument = material.get("m_Shader")
+        if yaml.kind_code(shader) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_SHADER
+        var shaderGuid: yaml.YamlDocument = shader.get("guid")
+        if not shaderGuid.is_string() or shaderGuid.string_value() == "":
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_SHADER
+
+    def texture_guid(
+        self,
+        textureProperty: yaml.YamlDocument,
+        propertyName: string) -> string:
+        var texture: yaml.YamlDocument = textureProperty.get("m_Texture")
+        var textureKind: int = yaml.kind_code(texture)
+        if textureKind <= unity_import_common.YAML_KIND_NULL:
+            return ""
+        if textureKind != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE + ": " + propertyName + ".m_Texture"
+        var guid: yaml.YamlDocument = texture.get("guid")
+        if yaml.kind_code(guid) <= unity_import_common.YAML_KIND_NULL:
+            return ""
+        if not guid.is_string():
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE + ": " + propertyName + ".m_Texture.guid"
+        return guid.string_value()
+
+    def texture_slots(self, material: yaml.YamlDocument) -> yaml.YamlDocument:
+        var textureEnvironments: yaml.YamlDocument = material.get("m_TexEnvs")
+        if yaml.kind_code(textureEnvironments) <= unity_import_common.YAML_KIND_NULL:
+            var savedProperties: yaml.YamlDocument = material.get("m_SavedProperties")
+            if yaml.kind_code(savedProperties) == unity_import_common.YAML_KIND_MAPPING:
+                textureEnvironments = savedProperties.get("m_TexEnvs")
+        if yaml.kind_code(textureEnvironments) <= unity_import_common.YAML_KIND_NULL:
+            return yaml.sequence()
+        if yaml.kind_code(textureEnvironments) != unity_import_common.YAML_KIND_SEQUENCE:
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": m_TexEnvs"
+        var slots: yaml.YamlDocument = yaml.sequence()
+        var index: int = 0
+        while index < textureEnvironments.size():
+            var slot: yaml.YamlDocument = textureEnvironments.at(index)
+            if yaml.kind_code(slot) != unity_import_common.YAML_KIND_MAPPING:
+                raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE + ": m_TexEnvs"
+            var keys: list = slot.keys()
+            for propertyName: string in keys:
+                var textureProperty: yaml.YamlDocument = slot.get(propertyName)
+                if yaml.kind_code(textureProperty) != unity_import_common.YAML_KIND_MAPPING:
+                    raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE + ": " + propertyName
+                var guid: string = self.texture_guid(textureProperty, propertyName)
+                if guid != "":
+                    var slotSummary: yaml.YamlDocument = yaml.mapping()
+                    slotSummary.set("property", yaml.string(propertyName))
+                    slotSummary.set("textureGuid", yaml.string(guid))
+                    var scale: yaml.YamlDocument = textureProperty.get("m_Scale")
+                    if yaml.kind_code(scale) == unity_import_common.YAML_KIND_MAPPING:
+                        var scaleX: yaml.YamlDocument = scale.get("x")
+                        var scaleY: yaml.YamlDocument = scale.get("y")
+                        if (scaleX.is_integer() or scaleX.is_float()) and (scaleY.is_integer() or scaleY.is_float()):
+                            slotSummary.set("scaleX", yaml.float(scaleX.float_value()))
+                            slotSummary.set("scaleY", yaml.float(scaleY.float_value()))
+                        else:
+                            raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE + ": " + propertyName + ".m_Scale"
+                    elif yaml.kind_code(scale) > unity_import_common.YAML_KIND_NULL:
+                        raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE + ": " + propertyName + ".m_Scale"
+                    var offset: yaml.YamlDocument = textureProperty.get("m_Offset")
+                    if yaml.kind_code(offset) == unity_import_common.YAML_KIND_MAPPING:
+                        var offsetX: yaml.YamlDocument = offset.get("x")
+                        var offsetY: yaml.YamlDocument = offset.get("y")
+                        if (offsetX.is_integer() or offsetX.is_float()) and (offsetY.is_integer() or offsetY.is_float()):
+                            slotSummary.set("offsetX", yaml.float(offsetX.float_value()))
+                            slotSummary.set("offsetY", yaml.float(offsetY.float_value()))
+                        else:
+                            raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE + ": " + propertyName + ".m_Offset"
+                    elif yaml.kind_code(offset) > unity_import_common.YAML_KIND_NULL:
+                        raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE + ": " + propertyName + ".m_Offset"
+                    slots.append(slotSummary)
+            index = index + 1
+        return slots
+
+    def saved_property_sequence(
+        self,
+        material: yaml.YamlDocument,
+        fieldName: string) -> yaml.YamlDocument:
+        var savedProperties: yaml.YamlDocument = material.get("m_SavedProperties")
+        var values: yaml.YamlDocument = yaml.mapping()
+        if yaml.kind_code(savedProperties) == unity_import_common.YAML_KIND_MAPPING:
+            values = savedProperties.get(fieldName)
+        else:
+            values = material.get(fieldName)
+        if yaml.kind_code(values) <= unity_import_common.YAML_KIND_NULL:
+            return yaml.sequence()
+        if yaml.kind_code(values) != unity_import_common.YAML_KIND_SEQUENCE:
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": m_SavedProperties." + fieldName
+        return values
+
+    def float_properties(self, material: yaml.YamlDocument) -> yaml.YamlDocument:
+        var values: yaml.YamlDocument = self.saved_property_sequence(material, "m_Floats")
+        var result: yaml.YamlDocument = yaml.sequence()
+        var index: int = 0
+        while index < values.size():
+            var entry: yaml.YamlDocument = values.at(index)
+            if yaml.kind_code(entry) != unity_import_common.YAML_KIND_MAPPING:
+                raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": m_Floats"
+            var keys: list = entry.keys()
+            for propertyName: string in keys:
+                var value: yaml.YamlDocument = entry.get(propertyName)
+                if not value.is_integer() and not value.is_float():
+                    raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": m_Floats." + propertyName
+                var property: yaml.YamlDocument = yaml.mapping()
+                property.set("property", yaml.string(propertyName))
+                property.set("value", yaml.float(value.float_value()))
+                result.append(property)
+            index = index + 1
+        return result
+
+    def color_properties(self, material: yaml.YamlDocument) -> yaml.YamlDocument:
+        var values: yaml.YamlDocument = self.saved_property_sequence(material, "m_Colors")
+        var result: yaml.YamlDocument = yaml.sequence()
+        var index: int = 0
+        while index < values.size():
+            var entry: yaml.YamlDocument = values.at(index)
+            if yaml.kind_code(entry) != unity_import_common.YAML_KIND_MAPPING:
+                raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": m_Colors"
+            var keys: list = entry.keys()
+            for propertyName: string in keys:
+                var color: yaml.YamlDocument = entry.get(propertyName)
+                if yaml.kind_code(color) != unity_import_common.YAML_KIND_MAPPING:
+                    raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": m_Colors." + propertyName
+                var red: yaml.YamlDocument = color.get("r")
+                var green: yaml.YamlDocument = color.get("g")
+                var blue: yaml.YamlDocument = color.get("b")
+                var alpha: yaml.YamlDocument = color.get("a")
+                if (not red.is_integer() and not red.is_float()) or (not green.is_integer() and not green.is_float()) or (not blue.is_integer() and not blue.is_float()) or (not alpha.is_integer() and not alpha.is_float()):
+                    raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": m_Colors." + propertyName
+                var value: yaml.YamlDocument = yaml.mapping()
+                value.set("r", yaml.float(red.float_value()))
+                value.set("g", yaml.float(green.float_value()))
+                value.set("b", yaml.float(blue.float_value()))
+                value.set("a", yaml.float(alpha.float_value()))
+                var property: yaml.YamlDocument = yaml.mapping()
+                property.set("property", yaml.string(propertyName))
+                property.set("value", value)
+                result.append(property)
+            index = index + 1
+        return result
+
+    def scalar_property(
+        self,
+        material: yaml.YamlDocument,
+        propertyName: string) -> yaml.YamlDocument:
+        var values: yaml.YamlDocument = self.saved_property_sequence(material, "m_Floats")
+        var found: yaml.YamlDocument = yaml.mapping()
+        var index: int = 0
+        while index < values.size():
+            var entry: yaml.YamlDocument = values.at(index)
+            if yaml.kind_code(entry) != unity_import_common.YAML_KIND_MAPPING:
+                raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": m_Floats"
+            var keys: list = entry.keys()
+            for key: string in keys:
+                if key == propertyName:
+                    var value: yaml.YamlDocument = entry.get(key)
+                    if not value.is_integer() and not value.is_float():
+                        raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": m_Floats." + propertyName
+                    found = value
+            index = index + 1
+        return found
+
+    def render_state(self, material: yaml.YamlDocument) -> yaml.YamlDocument:
+        var cull: yaml.YamlDocument = self.scalar_property(material, "_Cull")
+        var surface: yaml.YamlDocument = self.scalar_property(material, "_Surface")
+        var alphaClip: yaml.YamlDocument = self.scalar_property(material, "_AlphaClip")
+        var cutoff: yaml.YamlDocument = self.scalar_property(material, "_Cutoff")
+        var cullValue: int = 2
+        var surfaceValue: int = 0
+        var alphaClipValue: int = 0
+        var cutoffValue: float = 0.5
+        if cull.is_integer():
+            cullValue = cull.integer_value()
+        elif cull.is_float():
+            if cull.float_value() == 0.0:
+                cullValue = 0
+            elif cull.float_value() == 1.0:
+                cullValue = 1
+            elif cull.float_value() == 2.0:
+                cullValue = 2
+            else:
+                raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": _Cull"
+        if surface.is_integer():
+            surfaceValue = surface.integer_value()
+        elif surface.is_float():
+            if surface.float_value() == 0.0:
+                surfaceValue = 0
+            elif surface.float_value() == 1.0:
+                surfaceValue = 1
+            else:
+                raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": _Surface"
+        if alphaClip.is_integer():
+            alphaClipValue = alphaClip.integer_value()
+        elif alphaClip.is_float():
+            if alphaClip.float_value() == 0.0:
+                alphaClipValue = 0
+            elif alphaClip.float_value() == 1.0:
+                alphaClipValue = 1
+            else:
+                raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": _AlphaClip"
+        if cutoff.is_integer() or cutoff.is_float():
+            cutoffValue = cutoff.float_value()
+        if cullValue < 0 or cullValue > 2:
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": _Cull"
+        if surfaceValue < 0 or surfaceValue > 1:
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": _Surface"
+        if alphaClipValue < 0 or alphaClipValue > 1:
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": _AlphaClip"
+        if cutoffValue < 0.0 or cutoffValue > 1.0:
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_INVALID + ": _Cutoff"
+        var alphaMode: string = "OPAQUE"
+        if surfaceValue == 1:
+            alphaMode = "BLEND"
+        elif alphaClipValue == 1:
+            alphaMode = "MASK"
+        var state: yaml.YamlDocument = yaml.mapping()
+        state.set("doubleSided", yaml.boolean(cullValue == 0))
+        state.set("alphaMode", yaml.string(alphaMode))
+        state.set("alphaClip", yaml.boolean(alphaClipValue == 1))
+        state.set("alphaCutoff", yaml.float(cutoffValue))
+        return state
+
+    def base_color_priority(self, propertyName: string) -> int:
+        if propertyName == "_MainTex":
+            return 0
+        if propertyName == "_BaseMap":
+            return 1
+        if propertyName == "_BaseColorTex":
+            return 2
+        if propertyName == "_1st_ShadeMap":
+            return 3
+        return 1000
+
+    def base_color_texture(self, slots: yaml.YamlDocument) -> yaml.YamlDocument:
+        var selected: yaml.YamlDocument = yaml.mapping()
+        var selectedGuid: string = ""
+        var selectedProperty: string = ""
+        var selectedPriority: int = 1000
+        var index: int = 0
+        while index < slots.size():
+            var slot: yaml.YamlDocument = slots.at(index)
+            var property: yaml.YamlDocument = slot.get("property")
+            var guid: yaml.YamlDocument = slot.get("textureGuid")
+            if not property.is_string() or not guid.is_string() or guid.string_value() == "":
+                raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE + ": textureSlots"
+            var propertyName: string = property.string_value()
+            var guidText: string = guid.string_value()
+            var priority: int = self.base_color_priority(propertyName)
+            if priority < selectedPriority:
+                selectedProperty = propertyName
+                selectedGuid = guidText
+                selectedPriority = priority
+            index = index + 1
+        if selectedGuid != "":
+            selected.set("property", yaml.string(selectedProperty))
+            selected.set("textureGuid", yaml.string(selectedGuid))
+        return selected
+
+    def resolve_texture_reference(
+        self,
+        projectRoot: string,
+        propertyName: string,
+        guid: string) -> yaml.YamlDocument:
+        if projectRoot == "" or guid == "":
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE_RESOLUTION + ": " + propertyName
+        var record: asset.UnityAssetRecordResult = asset.find_unity_asset(projectRoot, guid)
+        if not record.success:
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE_RESOLUTION + ": " + propertyName + ": " + record.diagnostics
+        if record.assetPath == "" or record.metaPath == "":
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE_RESOLUTION + ": " + propertyName + ": missing asset path"
+        var textureResolveDiagnostic: string = unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE_RESOLUTION
+        textureResolveDiagnostic = textureResolveDiagnostic + ": " + propertyName
+        var resolvedPath: string = unity_import_common.resolve_project_asset_or_raise(
+            projectRoot,
+            record.assetPath,
+            textureResolveDiagnostic)
+        var textureImporter: UnityTextureImporter = UnityTextureImporter()
+        var decoded: asset.DecodedImageResult = textureImporter.import_path(resolvedPath)
+        var textureSettings: yaml.YamlDocument = textureImporter.import_settings(resolvedPath)
+        var textureResourceId: string = asset.unity_guid_to_uuid(guid)
+        if textureResourceId == "" or not asset.is_resource_uuid(textureResourceId):
+            raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE_RESOLUTION + ": " + propertyName + ": invalid texture GUID"
+        var result: yaml.YamlDocument = yaml.mapping()
+        result.set("property", yaml.string(propertyName))
+        result.set("textureGuid", yaml.string(guid))
+        result.set("assetPath", yaml.string(record.assetPath))
+        result.set("sourcePath", yaml.string(resolvedPath))
+        result.set("textureResourceId", yaml.string(textureResourceId))
+        result.set("width", yaml.int(decoded.width))
+        result.set("height", yaml.int(decoded.height))
+        result.set("srgb", yaml.boolean(decoded.srgb))
+        result.set("alphaIsTransparency", yaml.boolean(
+            textureSettings.get("alphaIsTransparency").boolean_value()))
+        return result
+
+    def resolve_texture_slots(
+        self,
+        projectRoot: string,
+        slots: yaml.YamlDocument) -> yaml.YamlDocument:
+        var resolved: yaml.YamlDocument = yaml.sequence()
+        var index: int = 0
+        while index < slots.size():
+            var slot: yaml.YamlDocument = slots.at(index)
+            var property: yaml.YamlDocument = slot.get("property")
+            var guid: yaml.YamlDocument = slot.get("textureGuid")
+            if not property.is_string() or not guid.is_string():
+                raise unity_import_common.DIAGNOSTIC_MATERIAL_TEXTURE_RESOLUTION
+            resolved.append(self.resolve_texture_reference(
+                projectRoot, property.string_value(), guid.string_value()))
+            index = index + 1
+        return resolved
+
+    def export_path(self, input: string, projectRoot: string, output: string) -> int:
+        self.validate(input)
+        var material: yaml.YamlDocument = self.read_material(input)
+        var shader: yaml.YamlDocument = material.get("m_Shader")
+        var report: yaml.YamlDocument = self.make_report(
+            input, unity_import_common.REPORT_KIND_MATERIAL, unity_import_common.STATUS_OK)
+        var summary: yaml.YamlDocument = yaml.mapping()
+        var name: yaml.YamlDocument = material.get("m_Name")
+        if name.is_string():
+            summary.set("name", yaml.string(name.string_value()))
+        summary.set("shaderGuid", yaml.string(shader.get("guid").string_value()))
+        summary.set("materialGuid", yaml.string(self.material_guid(input)))
+        var textureSlots: yaml.YamlDocument = self.texture_slots(material)
+        var floatProperties: yaml.YamlDocument = self.float_properties(material)
+        var colorProperties: yaml.YamlDocument = self.color_properties(material)
+        var baseColorTexture: yaml.YamlDocument = self.base_color_texture(textureSlots)
+        var renderState: yaml.YamlDocument = self.render_state(material)
+        var textureBindings: yaml.YamlDocument = yaml.sequence()
+        if unity_import_common.project_has_assets(projectRoot):
+            textureBindings = self.resolve_texture_slots(projectRoot, textureSlots)
+        summary.set("textureSlots", textureSlots)
+        summary.set("textureBindings", textureBindings)
+        summary.set("floatProperties", floatProperties)
+        summary.set("colorProperties", colorProperties)
+        summary.set("baseColorTexture", baseColorTexture)
+        summary.set("renderState", renderState)
+        var baseColorGuid: yaml.YamlDocument = baseColorTexture.get("textureGuid")
+        if baseColorGuid.is_string():
+            summary.set("mainTextureGuid", baseColorGuid)
+        else:
+            summary.set("mainTextureGuid", yaml.string(""))
+        report.set("material", summary)
+        return self.write_report(output, report)
+

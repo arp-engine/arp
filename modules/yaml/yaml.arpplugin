@@ -1,0 +1,10 @@
+type: arp.script.cpp-plugin
+contractVersion: 2
+module: yaml
+moduleVersion: 1
+exportContractHash: sha256:yaml-v2
+source: yaml_module.cpp
+entry: arp_register_yaml
+reflectionModule: yaml
+reflectionHeaders:
+  - yaml_module.h

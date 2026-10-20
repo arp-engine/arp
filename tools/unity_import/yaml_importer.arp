@@ -1,0 +1,19 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+
+class UnityYamlImporter(Importer):
+    def validate(self, input: string, projectRoot: string) -> void:
+        self.validate_unity_file(input)
+        self.validate_project(projectRoot)
+
+    def export_path(self, input: string, projectRoot: string, output: string) -> int:
+        self.validate(input, projectRoot)
+        var report: yaml.YamlDocument = self.make_report(
+            input, unity_import_common.REPORT_KIND_UNITY_YAML, unity_import_common.STATUS_OK)
+        self.add_project_summary(report, projectRoot)
+        return self.write_report(output, report)
+

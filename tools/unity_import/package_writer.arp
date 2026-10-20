@@ -1,0 +1,103 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+
+class UnityPackageWriter:
+    def make_payload(
+        self,
+        resourceType: string,
+        fields: yaml.YamlDocument) -> yaml.YamlDocument:
+        var payload: yaml.YamlDocument = yaml.mapping()
+        payload.set("type", yaml.string(resourceType))
+        payload.set("fields", fields)
+        return payload
+
+    def make_envelope(
+        self,
+        resourceId: string,
+        resourceType: string,
+        alias: string,
+        displayName: string,
+        status: string,
+        contentHash: int64,
+        dependencies: yaml.YamlDocument,
+        payload: yaml.YamlDocument) -> yaml.YamlDocument:
+        var envelope: yaml.YamlDocument = yaml.mapping()
+        envelope.set("format", yaml.string(unity_import_common.RESOURCE_FORMAT))
+        envelope.set("version", yaml.int(unity_import_common.RESOURCE_VERSION))
+        envelope.set("resourceId", yaml.string(resourceId))
+        envelope.set("resourceType", yaml.string(resourceType))
+        envelope.set("alias", yaml.string(alias))
+        envelope.set("displayName", yaml.string(displayName))
+        envelope.set("status", yaml.string(status))
+        envelope.set("contentHash", yaml.integer(contentHash))
+        envelope.set("dependencies", dependencies)
+        envelope.set("payload", payload)
+        return envelope
+
+    def write_entry(
+        self,
+        outputDirectory: string,
+        envelopePath: string,
+        envelope: yaml.YamlDocument) -> void:
+        var directories: io.IoOperationResult = io.make_dirs(outputDirectory)
+        if not directories.success:
+            raise unity_import_common.DIAGNOSTIC_PACKAGE_ENVELOPE_DIRECTORY + ": " + directories.diagnostics
+        var serialized: yaml.YamlTextResult = yaml.stringify(envelope)
+        if not serialized.success:
+            raise unity_import_common.DIAGNOSTIC_PACKAGE_ENVELOPE_SERIALIZE + ": " + serialized.diagnostics
+        var resolved: arp_import_host.PathResult = arp_import_host.resolve_path(
+            outputDirectory, envelopePath)
+        if not resolved.success:
+            raise unity_import_common.DIAGNOSTIC_PACKAGE_ENVELOPE_WRITE + ": " + resolved.diagnostics
+        var written: io.IoOperationResult = io.write_text(resolved.path, serialized.text)
+        if not written.success:
+            raise unity_import_common.DIAGNOSTIC_PACKAGE_ENVELOPE_WRITE + ": " + written.diagnostics
+
+    def write_package(
+        self,
+        outputDirectory: string,
+        packageName: string,
+        status: string,
+        entries: yaml.YamlDocument) -> void:
+        var manifest: yaml.YamlDocument = yaml.mapping()
+        manifest.set("format", yaml.string(unity_import_common.PACKAGE_FORMAT))
+        manifest.set("version", yaml.int(unity_import_common.PACKAGE_VERSION))
+        manifest.set("name", yaml.string(packageName))
+        manifest.set("status", yaml.string(status))
+        manifest.set("entries", entries)
+        var serialized: yaml.YamlTextResult = yaml.stringify(manifest)
+        if not serialized.success:
+            raise unity_import_common.DIAGNOSTIC_PACKAGE_MANIFEST_SERIALIZE + ": " + serialized.diagnostics
+        var written: asset.AssetPackageWriteResult = asset.write_package(
+            outputDirectory, serialized.text)
+        if not written.success:
+            raise unity_import_common.DIAGNOSTIC_PACKAGE_WRITE + ": " + written.diagnostics
+
+    def make_entry(
+        self,
+        resourceId: string,
+        resourceType: string,
+        alias: string,
+        envelopePath: string,
+        status: string,
+        contentHash: int64,
+        dependencies: yaml.YamlDocument) -> yaml.YamlDocument:
+        var entry: yaml.YamlDocument = yaml.mapping()
+        entry.set("resourceId", yaml.string(resourceId))
+        entry.set("resourceType", yaml.string(resourceType))
+        entry.set("alias", yaml.string(alias))
+        entry.set("envelopePath", yaml.string(envelopePath))
+        entry.set("status", yaml.string(status))
+        entry.set("contentHash", yaml.integer(contentHash))
+        entry.set("dependencies", dependencies)
+        return entry
+
+    def make_dependency(self, resourceId: string, usage: string) -> yaml.YamlDocument:
+        var dependency: yaml.YamlDocument = yaml.mapping()
+        dependency.set("id", yaml.string(resourceId))
+        dependency.set("usage", yaml.string(usage))
+        return dependency
+

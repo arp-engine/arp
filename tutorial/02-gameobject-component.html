@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>02 GameObject + Component · arp 引擎教程</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">arp 引擎教程<small>Anime Render Pipeline</small></div>
+  <nav>
+    <div class="group-title">导航</div>
+    <a class="nav" href="index.html"><span class="num">·</span>总览</a>
+    <div class="group-title">系统文档</div>
+    <a class="nav" href="01-render-pipeline.html"><span class="num">01</span>渲染管线</a>
+    <a class="nav active" href="02-gameobject-component.html"><span class="num">02</span>GameObject + Component</a>
+    <a class="nav" href="03-animation.html"><span class="num">03</span>动画</a>
+    <a class="nav" href="04-particles.html"><span class="num">04</span>粒子</a>
+    <a class="nav" href="05-ui.html"><span class="num">05</span>UI</a>
+    <a class="nav" href="06-resource-management.html"><span class="num">06</span>资源管理</a>
+    <a class="nav" href="07-reflection.html"><span class="num">07</span>反射</a>
+    <a class="nav" href="08-network.html"><span class="num">08</span>网络</a>
+    <a class="nav" href="09-shader.html"><span class="num">09</span>Shader</a>
+    <a class="nav" href="10-prefab-internal-resources.html"><span class="num">10</span>预制体</a>
+    <a class="nav" href="11-art-asset-formats.html"><span class="num">11</span>资产导入</a>
+    <a class="nav" href="12-procedural-generation.html"><span class="num">12</span>程序化生成</a>
+    <a class="nav" href="13-scripting.html"><span class="num">13</span>脚本</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <h1>02 GameObject + Component 运行时框架 <span class="badge green">Contract Complete</span></h1>
+  <p class="lead">场景运行时（<code>src/scene</code>）是 arp 引擎的对象模型核心：GameObject 形成确定性的父子层级，Component 承载可复用行为，Transform 区分局部/世界变换，Scene 负责每帧的启用/启动/更新/延迟更新阶段与稳定遍历快照。本文结合 <code>world_of_claudecraft</code> 的组件用法逐层拆解。</p>
+
+  <h2>对象模型总览</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="12.5">
+      <defs><marker id="b1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#2f6feb"/></marker></defs>
+
+      <rect x="30" y="20" width="160" height="60" rx="8" fill="#e7f0ff" stroke="#2f6feb"/>
+      <text x="40" y="44" font-weight="700">Scene (根 GameObject)</text>
+      <text x="40" y="62" fill="#57606a">createObject / update</text>
+
+      <rect x="30" y="120" width="160" height="60" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="40" y="144" font-weight="700">GameObject</text>
+      <text x="40" y="162" fill="#57606a">id / parent / childIds</text>
+
+      <rect x="230" y="120" width="160" height="60" rx="8" fill="#fff4e0" stroke="#9a6700"/>
+      <text x="240" y="144" font-weight="700">TransformComponent</text>
+      <text x="240" y="162" fill="#57606a">local / world 变换</text>
+
+      <rect x="430" y="120" width="160" height="60" rx="8" fill="#f0e9fb" stroke="#6639ba"/>
+      <text x="440" y="144" font-weight="700">Component[]</text>
+      <text x="440" y="162" fill="#57606a">Mesh / Light / Anim…</text>
+
+      <rect x="630" y="120" width="70" height="60" rx="8" fill="#fdecea" stroke="#b42318"/>
+      <text x="640" y="150">Camera</text>
+
+      <!-- Scene → GameObject -->
+      <path d="M110 80 L110 118" stroke="#2f6feb" stroke-width="2" marker-end="url(#b1)"/>
+      <!-- GameObject → TransformComponent（水平右出） -->
+      <path d="M190 150 L228 150" stroke="#2f6feb" stroke-width="2" marker-end="url(#b1)"/>
+      <!-- TransformComponent → Component[] -->
+      <path d="M390 150 L428 150" stroke="#2f6feb" stroke-width="2" marker-end="url(#b1)"/>
+      <!-- Component[] → Camera -->
+      <path d="M590 150 L628 150" stroke="#2f6feb" stroke-width="2" marker-end="url(#b1)"/>
+
+      <text x="30" y="215" fill="#57606a">相机是普通 GameObject + TransformComponent + 共享 CameraComponent，不是特殊对象类。</text>
+    </svg>
+  </div>
+
+  <h2>1. GameObject</h2>
+  <p>GameObject 不可拷贝，拥有稳定的 <code>id()</code>、<code>name()</code>、<code>parentId()</code>、<code>childIds()</code>、<code>active()</code>，以及唯一的 <code>TransformComponent</code>。组件通过模板方法 <code>addComponent&lt;T&gt;()</code> 挂载（底层用 <code>core::makeUnique</code>，受 pmr 分配器管理）。</p>
+  <pre><code><span class="tk-type">GameObject</span>& root = scene.<span class="tk-fn">createObject</span>(<span class="tk-str">"player"</span>);
+<span class="tk-type">MeshComponent</span>& mesh = root.<span class="tk-fn">addComponent</span>&lt;<span class="tk-type">MeshComponent</span>&gt;();
+mesh.<span class="tk-fn">setResourceId</span>(<span class="tk-str">"meshes/player"</span>);
+
+root.<span class="tk-fn">transform</span>().<span class="tk-fn">setLocalTranslation</span>({ 0, 0, 0 });
+
+scene.<span class="tk-fn">reparent</span>(child.id(), root.id());   <span class="tk-com">// 显式重父化，拒绝环</span>
+scene.<span class="tk-fn">setWorldTransform</span>(root.id(), world);</code></pre>
+  <div class="callout note">
+    <p>层级是确定性的：稳定子节点顺序、显式重父化、循环检测、确定性非法 id 诊断。世界变换由父链 + 稳定遍历快照推导，局部变换归对象所有。</p>
+  </div>
+
+  <h2>2. Component 生命周期与提取</h2>
+  <p>所有组件派生自 <code>arp::scene::Component</code>，含启用/启动/更新/延迟更新/禁用/销毁钩子，以及一个多态的 <code>extract()</code> 渲染提取钩子。提取器遍历场景图、对「active 且 enabled」的组件派发 <code>extract()</code>，而不是对具体组件类型做 <code>dynamic_cast</code>。</p>
+  <pre><code><span class="tk-key">class</span> <span class="tk-type">Component</span> {
+<span class="tk-key">public</span>:
+  <span class="tk-key">virtual void</span> onEnable(<span class="tk-key">const</span> <span class="tk-type">SceneUpdateContext</span>&) {}
+  <span class="tk-key">virtual void</span> onStart(<span class="tk-key">const</span> <span class="tk-type">SceneUpdateContext</span>&) {}
+  <span class="tk-key">virtual void</span> onUpdate(<span class="tk-key">const</span> <span class="tk-type">SceneUpdateContext</span>&) {}
+  <span class="tk-key">virtual void</span> onLateUpdate(<span class="tk-key">const</span> <span class="tk-type">SceneUpdateContext</span>&) {}
+  <span class="tk-key">virtual void</span> extract(<span class="tk-key">const</span> <span class="tk-type">RenderExtractContext</span>&,
+                          <span class="tk-type">RenderExtractSink</span>&) <span class="tk-key">const</span> {}  <span class="tk-com">// 默认空：仅数据组件可不重写</span>
+};</code></pre>
+  <p><code>SceneUpdateContext</code> 携带 <code>deltaSeconds</code> 与 <code>frameIndex</code>；<code>extract()</code> 的 <code>ctx</code> 由提取器填充（owner、worldTransform、activeInHierarchy），组件可据此解析兄弟组件。</p>
+
+  <h2>3. Transform：局部与世界</h2>
+  <p><code>TransformComponent</code> 持有 <code>localTransform()</code> 与 <code>worldTransform()</code>。局部空间归对象所有；世界空间由父链与稳定遍历快照推导。注意：引擎的 <code>Transform</code> 默认只含平移 + 缩放，<strong>不携带旋转/前向轴</strong>——方向类数据（如灯光方向）需由组件自行保存。</p>
+  <pre><code><span class="tk-key">const</span> <span class="tk-type">Transform</span>& local  = go.<span class="tk-fn">transform</span>().<span class="tk-fn">localTransform</span>();
+<span class="tk-key">const</span> <span class="tk-type">Transform</span>& world  = go.<span class="tk-fn">transform</span>().<span class="tk-fn">worldTransform</span>();
+go.<span class="tk-fn">transform</span>().<span class="tk-fn">setLocalTranslation</span>({ x, y, z });</code></pre>
+
+  <h2>4. Scene：每帧更新与提取</h2>
+  <p><code>Scene</code> 本身继承自 <code>GameObject</code>，是根节点。其 <code>update()</code> 按确定顺序跑四个阶段：enable/disable → start → update → lateUpdate。<code>extractTraversalSnapshot()</code> 产出稳定的遍历快照，供相机解析、2D/3D/UI 队列提取使用。</p>
+  <pre><code><span class="tk-type">Scene</span> scene(<span class="tk-str">"world"</span>);
+<span class="tk-type">GameObject</span>& player = scene.<span class="tk-fn">createObject</span>(<span class="tk-str">"player"</span>);
+
+<span class="tk-type">SceneUpdateResult</span> r = scene.<span class="tk-fn">update</span>({ .deltaSeconds = dt, .frameIndex = frame });
+<span class="tk-type">SceneTraversalSnapshot</span> snap = scene.<span class="tk-fn">extractTraversalSnapshot</span>({ /* options */ });</code></pre>
+  <table>
+    <thead><tr><th>阶段</th><th>做什么</th><th>备注</th></tr></thead>
+    <tbody>
+      <tr><td>enable/disable</td><td>根据 active 状态切换组件启停</td><td>确定性</td></tr>
+      <tr><td>start</td><td>首次启用后跑一次 <code>onStart</code></td><td>幂等</td></tr>
+      <tr><td>update</td><td>主更新 <code>onUpdate</code></td><td>输入/角色/动画驱动</td></tr>
+      <tr><td>lateUpdate</td><td>延迟更新 <code>onLateUpdate</code></td><td>相机跟随在此跑</td></tr>
+    </tbody>
+  </table>
+
+  <h2>5. 相机与输入（确定性顺序）</h2>
+  <p>相机是普通 GameObject + <code>TransformComponent</code> + 共享 <code>CameraComponent</code>；<code>CameraResolver</code> 消费遍历快照产出 <code>ResolvedCamera</code>。测试过的控制顺序是：</p>
+  <pre><code>平台原始事件 → InputSystem 动作快照 → (可选) UI 输入路由
+→ PlayerInputComponent → CharacterControllerComponent(update)
+→ CameraFollowComponent(late update) → 遍历快照 → CameraResolver
+→ 2D / 3D / UI RenderQueue 提取</code></pre>
+  <ul>
+    <li><code>PlayerInputComponent</code>：只暴露高层 <code>InputActionState</code>，不移动对象、不改相机、不暴露原生键码。</li>
+    <li><code>CharacterControllerComponent</code>：仅消费来自 PlayerInput 的意图，更新自身 Transform 与移动状态。</li>
+    <li><code>CameraFollowComponent</code>：消费目标 Transform + 高层 look/zoom 动作，在 lateUpdate 确定性更新相机 Transform。</li>
+  </ul>
+
+  <h2>参考实例：world_of_claudecraft 的组件</h2>
+  <p>该项目在引擎 Component 之上定义了一批「自带类型」的组件，均重写 <code>extract()</code> 推送确定 typeId 的 payload（sink 必须拒绝未知 typeId，不猜测、不静默回退）：</p>
+  <table>
+    <thead><tr><th>组件</th><th>extract typeId</th><th>携带</th></tr></thead>
+    <tbody>
+      <tr><td><code>MeshComponent</code></td><td><code>wocc.mesh</code></td><td>resourceId + baseColor</td></tr>
+      <tr><td><code>VegetationComponent</code></td><td><code>wocc.mesh</code></td><td>合并植被网格 resourceId + 实例数</td></tr>
+      <tr><td><code>CritterComponent</code></td><td><code>wocc.mesh</code></td><td>动态生物场合并网格（每帧重烘焙）</td></tr>
+      <tr><td><code>SkyboxComponent</code></td><td><code>wocc.sky</code></td><td>穹顶 resourceId + 太阳方向/渐变/穹顶半径</td></tr>
+      <tr><td><code>LightComponent</code></td><td><code>wocc.light</code></td><td>类型/颜色/方向/强度/范围/锥角/阴影</td></tr>
+      <tr><td><code>AnimationComponent</code></td><td>—</td><td>按 MovementState 选 clip 并改写 Transform</td></tr>
+      <tr><td><code>UiTextComponent</code> / <code>UiBarComponent</code></td><td><code>wocc.hudtext</code> / <code>wocc.hudbar</code></td><td>屏幕空间文本/血条矩形 + styleId</td></tr>
+    </tbody>
+  </table>
+  <pre><code><span class="tk-com">// 类型安全地查找兄弟组件（引擎用扁平 vector 存组件，无内置 finder）</span>
+<span class="tk-key">const</span> <span class="tk-type">MeshComponent</span>* m =
+  <span class="tk-fn">findComponentByType</span>&lt;<span class="tk-type">MeshComponent</span>&gt;(gameObject);</code></pre>
+  <div class="callout">
+    <p>WoCC 的 MeshComponent 使用「resourceId 字符串 + baseColor」的运行时模型（绘制时经 ResourceManager 解析），与引擎 3D 模块的 <code>MeshHandle</code>/<code>MaterialHandle</code> 模型不同。这是项目级的契约选择，文档与 sink 必须据此校验。</p>
+  </div>
+
+  <h2>内存与热路径约束</h2>
+  <p>运行时动态容器统一使用 <code>core::pmr</code>（<code>core::makeUnique</code>/<code>makeShared</code>）。新生产代码不得用默认 STL 动态容器、默认 STL 分配助手或裸 <code>new</code>/<code>delete</code>。提取不拷贝静态顶点数据到热路径；2D/3D/UI 保持独立逻辑队列，默认在一 pass 内按 3D→2D→UI 提交。</p>
+
+  <h2>快速上手清单</h2>
+  <ol>
+    <li>用 <code>scene.createObject(name)</code> 建对象，用 <code>addComponent&lt;T&gt;()</code> 挂组件。</li>
+    <li>变换放 <code>TransformComponent</code>；方向/特殊数据由组件自身保存。</li>
+    <li>渲染相关组件重写 <code>extract()</code>，推送自描述的 payload（带确定 typeId）。</li>
+    <li>每帧 <code>scene.update(...)</code> → <code>extractTraversalSnapshot(...)</code> → 交给渲染器/相机解析。</li>
+    <li>保持后端中立与 pmr 分配，不要在任何热路径做文件/网络 IO 或原生句柄操作。</li>
+  </ol>
+
+  <div class="pager">
+    <a href="01-render-pipeline.html"><div class="dir">← 上一章</div><div class="ttl">01 渲染管线</div></a>
+    <a class="next" href="03-animation.html"><div class="dir">下一章 →</div><div class="ttl">03 动画</div></a>
+  </div>
+</main>
+</div>
+</body>
+</html>

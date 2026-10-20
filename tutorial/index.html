@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>arp 引擎使用教程 · 总览</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">arp 引擎教程<small>Anime Render Pipeline</small></div>
+  <nav>
+    <div class="group-title">导航</div>
+    <a class="nav active" href="index.html"><span class="num">·</span>总览</a>
+    <div class="group-title">系统文档</div>
+    <a class="nav" href="01-render-pipeline.html"><span class="num">01</span>渲染管线</a>
+    <a class="nav" href="02-gameobject-component.html"><span class="num">02</span>GameObject + Component</a>
+    <a class="nav" href="03-animation.html"><span class="num">03</span>动画</a>
+    <a class="nav" href="04-particles.html"><span class="num">04</span>粒子</a>
+    <a class="nav" href="05-ui.html"><span class="num">05</span>UI</a>
+    <a class="nav" href="06-resource-management.html"><span class="num">06</span>资源管理</a>
+    <a class="nav" href="07-reflection.html"><span class="num">07</span>反射</a>
+    <a class="nav" href="08-network.html"><span class="num">08</span>网络</a>
+    <a class="nav" href="09-shader.html"><span class="num">09</span>Shader</a>
+    <a class="nav" href="10-prefab-internal-resources.html"><span class="num">10</span>预制体</a>
+    <a class="nav" href="11-art-asset-formats.html"><span class="num">11</span>资产导入</a>
+    <a class="nav" href="12-procedural-generation.html"><span class="num">12</span>程序化生成</a>
+    <a class="nav" href="13-scripting.html"><span class="num">13</span>脚本</a>
+  </nav>
+</aside>
+
+<main class="content">
+  <h1>arp 引擎使用教程</h1>
+  <p class="lead">面向「数据驱动 + 组件化」的 C++17 风格化渲染引擎。本教程以 <code>games/world_of_claudecraft</code> 项目为<strong>参考实例</strong>，讲解 arp 引擎的十大核心系统：渲染管线、GameObject+Component 运行时框架、动画、粒子、UI、资源管理、反射、网络、Shader、预制体；并附一篇资产导入参考。</p>
+
+  <div class="callout note">
+    <p>所有 API 名称、字段、枚举值均直接取自引擎源码（<code>src/</code>）与项目状态文档（<code>docs/</code>），可作为权威参考。文中代码片段为真实接口签名，未经臆造。</p>
+  </div>
+
+  <h2>引擎与项目的关系</h2>
+  <p>arp 引擎的核心代码位于仓库根 <code>D:\arp-engine\src\</code>，分为若干后端中立（backend-neutral）的子系统；具体游戏（如本教程的参考项目 <code>games/world_of_claudecraft</code>）在引擎之上做游戏逻辑与内容适配，并通过 DLL 链接到 <code>arp_engine</code>。</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="13">
+      <rect x="20" y="20" width="680" height="210" rx="10" fill="#f6f8fa" stroke="#d8dee4"/>
+      <text x="36" y="44" font-weight="700" fill="#1f2328">arp-engine 仓库</text>
+
+      <rect x="40" y="60" width="180" height="150" rx="8" fill="#e7f0ff" stroke="#2f6feb"/>
+      <text x="52" y="82" font-weight="700" fill="#1f2328">引擎核心 src/</text>
+      <text x="52" y="104" fill="#1f2328">scene · animation</text>
+      <text x="52" y="122" fill="#1f2328">renderer · render_graph</text>
+      <text x="52" y="140" fill="#1f2328">rhi · ui · gui</text>
+      <text x="52" y="158" fill="#1f2328">core · platform · input</text>
+      <text x="52" y="184" fill="#57606a" font-size="11">后端中立，禁止暴露原生句柄</text>
+
+      <rect x="270" y="60" width="170" height="150" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
+      <text x="282" y="82" font-weight="700" fill="#1f2328">参考项目</text>
+      <text x="282" y="104" fill="#1f2328">world_of_claudecraft</text>
+      <text x="282" y="128" fill="#1f2328">app/ gameplay/</text>
+      <text x="282" y="146" fill="#1f2328">content/ assets/</text>
+      <text x="282" y="172" fill="#57606a" font-size="11">组件/玩法/内容适配</text>
+
+      <rect x="480" y="60" width="200" height="150" rx="8" fill="#fff4e0" stroke="#9a6700"/>
+      <text x="492" y="82" font-weight="700" fill="#1f2328">其他游戏</text>
+      <text x="492" y="104" fill="#1f2328">games/pika</text>
+      <text x="492" y="122" fill="#1f2328">games/project_lane</text>
+      <text x="492" y="140" fill="#1f2328">games/character_viewer</text>
+      <text x="492" y="166" fill="#57606a" font-size="11">各自复用同一引擎</text>
+
+      <path d="M220 135 L268 135" stroke="#2f6feb" stroke-width="2" marker-end="url(#arw)"/>
+      <path d="M440 135 L478 135" stroke="#1a7f37" stroke-width="2" marker-end="url(#arw)"/>
+      <defs>
+        <marker id="arw" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#2f6feb"/>
+        </marker>
+      </defs>
+    </svg>
+  </div>
+
+  <p>本教程的「参考实例」指的就是中间的 <code>world_of_claudecraft</code>：它用引擎的 <code>GameObject</code>/<code>Component</code> 搭建场景，用 <code>animation</code> 命名空间做动画，用 <code>arp::renderer::ParticleSystem</code> 做特效，用 <code>arp::ui</code> 做 HUD。下面每个系统都会给出「引擎接口 → 项目里怎么用」的对照。</p>
+
+  <h2>全局架构分层</h2>
+  <table>
+    <thead><tr><th>层</th><th>目录</th><th>职责</th><th>边界约束</th></tr></thead>
+    <tbody>
+      <tr><td>场景运行时</td><td><code>src/scene</code>, <code>src/input</code>, <code>src/2d</code>, <code>src/3d</code></td><td>GameObject/Component、Transform、相机、输入动作、可见性提取</td><td>后端中立，不得含原生图形/窗口头</td></tr>
+      <tr><td>渲染数据模型</td><td><code>src/renderer</code></td><td>运行时场景数据、DrawPlan、pass 声明</td><td>仅用 RHI 描述符，不 include 原生后端</td></tr>
+      <tr><td>帧图</td><td><code>src/render_graph</code></td><td>pass 依赖、资源生命周期、barrier、瞬时别名、load/store、队列</td><td>后端中立，仅用 RHI 描述符</td></tr>
+      <tr><td>硬件抽象</td><td><code>src/rhi</code></td><td>L2 命令录制契约、后端降级、原生 API 翻译</td><td>原生实现藏在 backend 私有目录</td></tr>
+      <tr><td>平台</td><td><code>src/platform</code></td><td>surface、swapchain、acquire/present、后端选择</td><td>拥有窗口与后端选择</td></tr>
+    </tbody>
+  </table>
+
+  <h2>构建与运行</h2>
+  <p>引擎使用 CMake，首选 MinGW + Ninja，Windows 上通过 <code>scripts/build.ps1</code> 即可构建；着色器通过 <code>scripts/compile-shaders.ps1</code> 离线编译为 SPIR-V / MSL（slangc）。</p>
+  <pre><code><span class="tk-com"># 本地（MinGW）一键构建 + 着色器</span>
+.<span class="tk-fn">\scripts\build.ps1</span>
+
+<span class="tk-com"># 或直接用 CMake preset</span>
+cmake --preset ninja-mingw-debug
+cmake --build --preset ninja-mingw-debug
+ctest --preset ninja-mingw-debug
+
+<span class="tk-com"># 离线编译着色器（Slang → SPIR-V / MSL）</span>
+.<span class="tk-fn">\scripts\compile-shaders.ps1</span></code></pre>
+  <p>运行示例（无窗口模式，适合 CI）：</p>
+  <pre><code><span class="tk-com"># 风格化展示（隐藏窗口，跑 2 帧）</span>
+.<span class="tk-fn">\artifacts\cmake\ninja-mingw-debug\arp_stylized_showcase.exe</span> --hidden --frames 2
+
+<span class="tk-com"># 全功能特性演示（Esc 或关窗退出）</span>
+.<span class="tk-fn">\artifacts\cmake\ninja-mingw-debug\arp_stylized_showcase.exe</span> --feature-demo
+
+<span class="tk-com"># 生产级 demo（1280x720 Vulkan 窗口）</span>
+.<span class="tk-fn">\artifacts\direct\arp_production_demo.exe</span></code></pre>
+  <div class="callout">
+    <p><strong>参考项目如何构建：</strong><code>world_of_claudecraft</code> 作为引擎的一个游戏目标参与整体构建，链接到 <code>arp_engine</code>。具体可执行文件名以仓库 CMake 配置为准；游戏逻辑改动通常无需重编引擎本体。</p>
+  </div>
+
+  <h2>本教程包含的篇目</h2>
+  <table>
+    <thead><tr><th>章节</th><th>系统</th><th>你会学到</th></tr></thead>
+    <tbody>
+      <tr><td><a href="01-render-pipeline.html">01 渲染管线</a></td><td>Renderer / FrameGraph / RHI</td><td>从 <code>RenderPipeline</code> 到编译帧图、DrawPlan、后处理 FXAA 的全链路</td></tr>
+      <tr><td><a href="02-gameobject-component.html">02 GameObject+Component</a></td><td>scene 运行时</td><td>对象层级、组件生命周期、Transform 局部/世界变换、提取与渲染队列</td></tr>
+      <tr><td><a href="03-animation.html">03 动画</a></td><td>animation</td><td>剪辑采样、状态机、AnimatorController、骨骼与 CPU 蒙皮</td></tr>
+      <tr><td><a href="04-particles.html">04 粒子</a></td><td>renderer/particles</td><td><code>ParticleSystem</code> 生命周期、发射器、视觉家族、品质档位、确定性</td></tr>
+      <tr><td><a href="05-ui.html">05 UI</a></td><td>ui / gui</td><td>Canvas/Widget 树、布局引擎、DrawPlan、.arpui 资源、世界锚点</td></tr>
+      <tr><td><a href="06-resource-management.html">06 资源管理</a></td><td>resource</td><td><code>ResourceBase</code>/<code>ResourceManager</code> 单一所有权、生命周期状态、句柄、图加载、重载与预算</td></tr>
+      <tr><td><a href="07-reflection.html">07 反射</a></td><td>reflection / serialization</td><td>运行时类型系统、<code>registration::class_</code> 注册、<code>object</code>/<code>variant</code>、继承与向下转换、YAML 序列化</td></tr>
+      <tr><td><a href="08-network.html">08 网络</a></td><td>network</td><td>事件循环、TCP/UDP socket、HTTP/WebSocket/TLS 客户端、确定性诊断与后端中立约束</td></tr>
+      <tr><td><a href="09-shader.html">09 Shader</a></td><td>shader</td><td>Slang 统一着色语言、多后端编译、反射缓存与 Pipeline 校验、CPU↔GPU 统一内存对齐（std140 / 256B push-constant 预算）</td></tr>
+      <tr><td><a href="10-prefab-internal-resources.html">10 预制体</a></td><td>resource / prefab</td><td>预制体资产模型（PrefabResource 引用图枢纽 + 运行时 sidecar blob）、<code>prefabResourceFactory()</code> 注册的 21 个内部资源类型完整清单、内部资产包契约与状态分级</td></tr>
+      <tr><td><a href="11-art-asset-formats.html">11 资产导入</a></td><td>asset / format</td><td>从 DCC 源格式（<code>.glb</code>/<code>.fbx</code>/<code>.png</code>/<code>.mat</code>/<code>.slang</code>…）到引擎内部资源类型（Model/Texture/Material/ShaderPackage…）的完整扩展名映射、内部纹理/压缩/着色器产物格式、统一内部资源包落点</td></tr>
+      <tr><td><a href="12-procedural-generation.html">12 程序化生成</a></td><td>pcg / world generation</td><td>世界种子、噪声、侵蚀、biome、散布、道路、聚落与 LOD 的分层生成思路，以及它和真实资产导入的分工关系</td></tr>
+      <tr><td><a href="13-scripting.html">13 脚本</a></td><td>scriptvm</td><td>ArpScript 从源码到字节码与 VM 的执行链路、类型系统、闭包、模块、宿主函数以及 yield/await</td></tr>
+    </tbody>
+  </table>
+
+  <h2>术语表</h2>
+  <dl class="glossary">
+    <dt>GameObject</dt><dd>场景中的对象节点，拥有 id、名称、父子层级、active 状态与 <code>TransformComponent</code>；组件挂载其上。</dd>
+    <dt>Component</dt><dd>挂在 GameObject 上的可复用行为/数据单元，含 <code>onUpdate</code>/<code>onLateUpdate</code> 生命周期与 <code>extract()</code> 渲染提取钩子。</dd>
+    <dt>RenderQueue</dt><dd>提取阶段产出的「渲染项 + 队列记录」，携带句柄、元数据、世界变换、包围盒与排序键，不含原生顶点拷贝。</dd>
+    <dt>FrameGraph</dt><dd>帧级 pass 依赖与资源规划器；<code>compile()</code> 产出 <code>CompiledFrameGraph</code>（顺序、生命周期、barrier、别名、load/store、队列）。</dd>
+    <dt>DrawPlan</dt><dd>渲染器拥有的「绘制计划」，含 submesh/材质 push-constant 与 GUI 文本/四边形绘制命令顺序，经 RHI 编码器录制。</dd>
+    <dt>RHI</dt><dd>渲染硬件接口第 2 版，L2 命令录制契约；原生 Vulkan/Metal/WebGPU 实现藏在 backend 私有目录。</dd>
+    <dt>Backend-neutral</dt><dd>后端中立约束：<code>scene/renderer/render_graph/ui</code> 不得 include 原生图形/平台头或暴露原生句柄。</dd>
+    <dt>pmr 分配器</dt><dd>运行时动态容器统一使用 <code>core::pmr</code>（<code>core::makeUnique</code>/<code>makeShared</code>），禁止默认 STL 动态分配进入热路径。</dd>
+    <dt>ResourceManager</dt><dd>引擎唯一的运行时资源注册/缓存中心；资源以类型化 <code>ResourceBase</code> 子类接入，经 <code>load/find/findByAlias</code> 与 <code>ResourceHandle&lt;T&gt;</code> 类型化查询，靠内容指纹支持确定性重载。</dd>
+    <dt>Slang</dt><dd>arp 的统一着色语言；一份 <code>.slang</code> 源码经 <code>slangc</code> 编译为 SPIR-V / MSL / WGSL 三目标，uniform/cbuffer 按 std140 打包。</dd>
+    <dt>Push constant</dt><dd>每帧直推 GPU 的小块常量（如 view-projection、材质参数）；arp 约定结构体按 std140 对齐、总大小 ≤ 256 字节，并由 RHI 两层校验保证与着色器反射一致。</dd>
+    <dt>Prefab（预制体）</dt><dd>资产侧的可复用模板，描述 GameObject + Component + 子层级；实例进入场景后变为 SceneObject（见 02）。引擎以 <code>PrefabResource</code> 为引用图枢纽，按 UUID 引用同一内部资产包里的模型、蒙皮、骨骼、动画、材质、运行时负载等资源。</dd>
+    <dt>内部资源</dt><dd>引擎统一建模的资产单元，由 <code>ResourceManager</code> 与内部资产包（<code>ArpInternalAssetPackage/v1</code>）管理；当前共 21 个类型（见 10），与项目级 <code>ContentAssetResource</code>（06）共用同一套生命周期/句柄/契约模型。</dd>
+    <dt>资产导入</dt><dd>DCC 工具导出的磁盘源格式（如 <code>.glb</code>/<code>.fbx</code>/<code>.png</code>/<code>.mat</code>/<code>.slang</code>）经 importer 转成内部资源包；权威扩展名→类型映射见 <code>assetTypeForExtension()</code>（11）。</dd>
+  </dl>
+
+  <h2>状态分级约定</h2>
+  <p>引擎文档对功能成熟度有统一分级，本教程沿用：</p>
+  <p>
+    <span class="badge green">Contract Complete</span> 接口契约已锁定并有契约测试
+    <span class="badge blue">Prototype Complete</span> 原型跑通
+    <span class="badge purple">Backend Validated</span> 指定后端已验证
+    <span class="badge amber">Platform Validated</span> 多平台已验证
+    <span class="badge red">Production Ready</span> 生产就绪
+  </p>
+
+  <div class="pager">
+    <a class="next" href="01-render-pipeline.html"><div class="dir">下一章 →</div><div class="ttl">01 渲染管线</div></a>
+  </div>
+</main>
+</div>
+</body>
+</html>

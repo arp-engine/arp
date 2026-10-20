@@ -1,0 +1,63 @@
+name: Apple Metal
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-metal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bootstrap Apple tools
+        run: bash ci/bootstrap_apple.sh
+
+      - name: Report Apple environment
+        run: |
+          sw_vers
+          system_profiler SPDisplaysDataType || true
+
+      - name: Validate Apple project and CI contracts
+        run: python3 -m unittest tests/tooling/apple_ci_contract_tests.py
+
+      - name: Build and test macOS Metal
+        run: python3 ci/apple_build.py macos --parallel 2
+
+      - name: Generate unsigned iOS IPA for local free-account signing
+        run: python3 ci/apple_build.py ios-sideload --parallel 2
+
+      - name: Upload unsigned IPA for Sideloadly or AltStore
+        uses: actions/upload-artifact@v4
+        with:
+          name: arp-ios-unsigned-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: build/ci-apple/ios-metal/sideload/arp_ios_smoke_unsigned.ipa
+
+      - name: Upload Apple build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-metal-build-evidence
+          if-no-files-found: warn
+          path: |
+            build/ci-apple/macos-metal/shaders/*.metal
+            build/ci-apple/macos-metal/shaders/*.reflection.yaml
+            build/ci-apple/macos-metal/metal-air/**/*.air
+            build/ci-apple/ios-metal/shaders/*.metal
+            build/ci-apple/ios-metal/shaders/*.reflection.yaml
+            build/ci-apple/ios-metal/metal-air/**/*.air
+            build/ci-apple/ios-metal/AnimeRenderPipeline.xcodeproj/project.pbxproj
+            build/ci-apple/ios-metal/unsigned-products/*.app/**

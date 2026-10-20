@@ -1,0 +1,353 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+
+class UnityModelImporter(Importer):
+    def read_importer(self, input: string) -> yaml.YamlDocument:
+        var text: string = self.read_text_or_raise(input)
+        var document: yaml.YamlDocument = self.first_document_or_raise(text)
+        var modelImporter: yaml.YamlDocument = document.get("ModelImporter")
+        if yaml.kind_code(modelImporter) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_MODEL_META_MISSING
+        return modelImporter
+
+    def required_integer(
+        self,
+        importer: yaml.YamlDocument,
+        fieldName: string) -> int:
+        var value: yaml.YamlDocument = importer.get(fieldName)
+        if not value.is_integer():
+            raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": " + fieldName
+        return value.integer_value()
+
+    def optional_boolean(
+        self,
+        importer: yaml.YamlDocument,
+        fieldName: string,
+        defaultValue: bool) -> bool:
+        var value: yaml.YamlDocument = importer.get(fieldName)
+        var kindCode: int = yaml.kind_code(value)
+        if kindCode <= unity_import_common.YAML_KIND_NULL:
+            return defaultValue
+        if value.is_boolean():
+            return value.boolean_value()
+        if value.is_integer():
+            return value.integer_value() != 0
+        raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": " + fieldName
+
+    def optional_string(
+        self,
+        node: yaml.YamlDocument,
+        fieldName: string,
+        defaultValue: string) -> string:
+        var value: yaml.YamlDocument = node.get(fieldName)
+        var kindCode: int = yaml.kind_code(value)
+        if kindCode <= unity_import_common.YAML_KIND_NULL:
+            return defaultValue
+        if not value.is_string():
+            raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": " + fieldName
+        return value.string_value()
+
+    def validate_vector3(
+        self,
+        node: yaml.YamlDocument,
+        path: string) -> void:
+        if yaml.kind_code(node) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": " + path
+        var x: yaml.YamlDocument = node.get("x")
+        var y: yaml.YamlDocument = node.get("y")
+        var z: yaml.YamlDocument = node.get("z")
+        if (not x.is_integer() and not x.is_float()) or (not y.is_integer() and not y.is_float()) or (not z.is_integer() and not z.is_float()):
+            raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": " + path
+
+    def validate_human_bone_duplicates(
+        self,
+        humanBones: yaml.YamlDocument) -> void:
+        var index: int = 0
+        while index < humanBones.size():
+            var current: yaml.YamlDocument = humanBones.at(index)
+            var currentBoneName: yaml.YamlDocument = current.get("boneName")
+            var currentHumanName: yaml.YamlDocument = current.get("humanName")
+            var previous: int = 0
+            while previous < index:
+                var prior: yaml.YamlDocument = humanBones.at(previous)
+                if prior.get("boneName").string_value() == currentBoneName.string_value():
+                    raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": duplicate humanDescription.human.boneName"
+                if prior.get("humanName").string_value() == currentHumanName.string_value():
+                    raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": duplicate humanDescription.human.humanName"
+                previous = previous + 1
+            index = index + 1
+
+    def validate_skeleton_parents(
+        self,
+        skeleton: yaml.YamlDocument) -> void:
+        var index: int = 0
+        while index < skeleton.size():
+            var node: yaml.YamlDocument = skeleton.at(index)
+            var name: string = node.get("name").string_value()
+            var previous: int = 0
+            while previous < index:
+                if skeleton.at(previous).get("name").string_value() == name:
+                    raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": duplicate humanDescription.skeleton.name"
+                previous = previous + 1
+            var parentName: string = node.get("parentName").string_value()
+            if parentName == name:
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": skeleton parent cycle"
+            var depth: int = 0
+            var currentName: string = parentName
+            while currentName != "":
+                var parentFound: bool = false
+                var parentIndex: int = 0
+                while parentIndex < skeleton.size():
+                    if skeleton.at(parentIndex).get("name").string_value() == currentName:
+                        parentFound = true
+                        currentName = skeleton.at(parentIndex).get("parentName").string_value()
+                    parentIndex = parentIndex + 1
+                if not parentFound:
+                    raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": skeleton parent is missing: " + name
+                depth = depth + 1
+                if depth > skeleton.size():
+                    raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": skeleton parent cycle: " + name
+            index = index + 1
+
+    def animation_type(self, input: string) -> int:
+        var modelImporter: yaml.YamlDocument = self.read_importer(input)
+        var animationTypeValue: int = self.required_integer(modelImporter, "animationType")
+        if animationTypeValue < 1 or animationTypeValue > 3:
+            raise unity_import_common.DIAGNOSTIC_MODEL_META_ANIMATION
+        return animationTypeValue
+
+    def avatar_setup(self, importer: yaml.YamlDocument) -> int:
+        var setup: yaml.YamlDocument = importer.get("avatarSetup")
+        var kindCode: int = yaml.kind_code(setup)
+        if kindCode <= unity_import_common.YAML_KIND_NULL:
+            return 0
+        var value: int = self.required_integer(importer, "avatarSetup")
+        if value < 0 or value > 2:
+            raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": avatarSetup"
+        return value
+
+    def add_human_description(
+        self,
+        importer: yaml.YamlDocument,
+        summary: yaml.YamlDocument) -> void:
+        var description: yaml.YamlDocument = importer.get("humanDescription")
+        var descriptionKind: int = yaml.kind_code(description)
+        var descriptionSummary: yaml.YamlDocument = yaml.mapping()
+        var humanBones: yaml.YamlDocument = yaml.sequence()
+        var skeleton: yaml.YamlDocument = yaml.sequence()
+        var humanBoneCount: int = 0
+        var skeletonCount: int = 0
+        if descriptionKind > unity_import_common.YAML_KIND_NULL:
+            if descriptionKind != unity_import_common.YAML_KIND_MAPPING:
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription"
+            var human: yaml.YamlDocument = description.get("human")
+            if yaml.kind_code(human) == unity_import_common.YAML_KIND_SEQUENCE:
+                if human.size() == 0:
+                    raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.human"
+                var index: int = 0
+                while index < human.size():
+                    var bone: yaml.YamlDocument = human.at(index)
+                    if yaml.kind_code(bone) != unity_import_common.YAML_KIND_MAPPING:
+                        raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.human"
+                    var boneName: string = self.optional_string(bone, "boneName", "")
+                    var humanName: string = self.optional_string(bone, "humanName", "")
+                    if boneName == "" or humanName == "":
+                        raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.human"
+                    var boneSummary: yaml.YamlDocument = yaml.mapping()
+                    boneSummary.set("boneName", yaml.string(boneName))
+                    boneSummary.set("humanName", yaml.string(humanName))
+                    humanBones.append(boneSummary)
+                    humanBoneCount = humanBoneCount + 1
+                    index = index + 1
+            elif yaml.kind_code(human) > unity_import_common.YAML_KIND_NULL:
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.human"
+
+            var skeletonNodes: yaml.YamlDocument = description.get("skeleton")
+            if yaml.kind_code(skeletonNodes) == unity_import_common.YAML_KIND_SEQUENCE:
+                if skeletonNodes.size() == 0:
+                    raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.skeleton"
+                var skeletonIndex: int = 0
+                while skeletonIndex < skeletonNodes.size():
+                    var node: yaml.YamlDocument = skeletonNodes.at(skeletonIndex)
+                    if yaml.kind_code(node) != unity_import_common.YAML_KIND_MAPPING:
+                        raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.skeleton"
+                    var nodeName: string = self.optional_string(node, "name", "")
+                    if nodeName == "":
+                        raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.skeleton.name"
+                    var nodeSummary: yaml.YamlDocument = yaml.mapping()
+                    nodeSummary.set("name", yaml.string(nodeName))
+                    nodeSummary.set("parentName", yaml.string(
+                        self.optional_string(node, "parentName", "")))
+                    var position: yaml.YamlDocument = node.get("position")
+                    self.validate_vector3(position,
+                        "humanDescription.skeleton.position")
+                    nodeSummary.set("position", position)
+                    var rotation: yaml.YamlDocument = node.get("rotation")
+                    self.validate_vector3(rotation,
+                        "humanDescription.skeleton.rotation")
+                    nodeSummary.set("rotation", rotation)
+                    var scale: yaml.YamlDocument = node.get("scale")
+                    self.validate_vector3(scale,
+                        "humanDescription.skeleton.scale")
+                    nodeSummary.set("scale", scale)
+                    skeleton.append(nodeSummary)
+                    skeletonCount = skeletonCount + 1
+                    skeletonIndex = skeletonIndex + 1
+            elif yaml.kind_code(skeletonNodes) > unity_import_common.YAML_KIND_NULL:
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.skeleton"
+            if yaml.kind_code(human) == unity_import_common.YAML_KIND_SEQUENCE:
+                self.validate_human_bone_duplicates(humanBones)
+            if yaml.kind_code(skeletonNodes) == unity_import_common.YAML_KIND_SEQUENCE:
+                self.validate_skeleton_parents(skeleton)
+        descriptionSummary.set("declared", yaml.boolean(descriptionKind > unity_import_common.YAML_KIND_NULL))
+        descriptionSummary.set("humanSectionDeclared", yaml.boolean(
+            yaml.kind_code(description.get("human")) > unity_import_common.YAML_KIND_NULL))
+        descriptionSummary.set("skeletonSectionDeclared", yaml.boolean(
+            yaml.kind_code(description.get("skeleton")) > unity_import_common.YAML_KIND_NULL))
+        descriptionSummary.set("humanBoneCount", yaml.int(humanBoneCount))
+        descriptionSummary.set("humanBones", humanBones)
+        descriptionSummary.set("skeletonCount", yaml.int(skeletonCount))
+        descriptionSummary.set("skeleton", skeleton)
+        summary.set("humanDescription", descriptionSummary)
+
+    def add_clip_animations(
+        self,
+        importer: yaml.YamlDocument,
+        summary: yaml.YamlDocument) -> void:
+        var clips: yaml.YamlDocument = importer.get("clipAnimations")
+        var clipSummary: yaml.YamlDocument = yaml.sequence()
+        var clipCount: int = 0
+        var kindCode: int = yaml.kind_code(clips)
+        if kindCode > unity_import_common.YAML_KIND_NULL:
+            if kindCode != unity_import_common.YAML_KIND_SEQUENCE:
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": clipAnimations"
+            var index: int = 0
+            while index < clips.size():
+                var clip: yaml.YamlDocument = clips.at(index)
+                if yaml.kind_code(clip) != unity_import_common.YAML_KIND_MAPPING:
+                    raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": clipAnimations"
+                var clipName: string = self.optional_string(clip, "name", "")
+                if clipName == "":
+                    raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": clipAnimations.name"
+                var previous: int = 0
+                while previous < index:
+                    if clipSummary.at(previous).get("name").string_value() == clipName:
+                        raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": duplicate clipAnimations.name"
+                    previous = previous + 1
+                var clipOutput: yaml.YamlDocument = yaml.mapping()
+                clipOutput.set("name", yaml.string(clipName))
+                clipOutput.set("takeName", yaml.string(
+                    self.optional_string(clip, "takeName", "")))
+                clipOutput.set("loopTime", yaml.boolean(
+                    self.optional_boolean(clip, "loopTime", false)))
+                clipOutput.set("keepOriginalOrientation", yaml.boolean(
+                    self.optional_boolean(clip, "keepOriginalOrientation", false)))
+                clipOutput.set("keepOriginalPositionY", yaml.boolean(
+                    self.optional_boolean(clip, "keepOriginalPositionY", false)))
+                clipOutput.set("keepOriginalPositionXZ", yaml.boolean(
+                    self.optional_boolean(clip, "keepOriginalPositionXZ", false)))
+                clipSummary.append(clipOutput)
+                clipCount = clipCount + 1
+                index = index + 1
+        summary.set("clipAnimationCount", yaml.int(clipCount))
+        summary.set("clipAnimations", clipSummary)
+
+    def summary(self, input: string) -> yaml.YamlDocument:
+        var modelImporter: yaml.YamlDocument = self.read_importer(input)
+        var animationTypeValue: int = self.animation_type(input)
+        var avatarSetupValue: int = self.avatar_setup(modelImporter)
+        var importAnimation: bool = self.optional_boolean(
+            modelImporter, "importAnimation", false)
+        if animationTypeValue == 1 and avatarSetupValue != 0:
+            raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": Legacy avatarSetup"
+        if animationTypeValue == 3 and avatarSetupValue == 1:
+            var description: yaml.YamlDocument = modelImporter.get("humanDescription")
+            if yaml.kind_code(description) != unity_import_common.YAML_KIND_MAPPING:
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription"
+            var human: yaml.YamlDocument = description.get("human")
+            var skeleton: yaml.YamlDocument = description.get("skeleton")
+            if yaml.kind_code(human) != unity_import_common.YAML_KIND_SEQUENCE or human.size() == 0:
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.human"
+            if yaml.kind_code(skeleton) != unity_import_common.YAML_KIND_SEQUENCE or skeleton.size() == 0:
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.skeleton"
+        if avatarSetupValue == 2:
+            var sourceAvatar: yaml.YamlDocument = modelImporter.get("sourceAvatar")
+            if yaml.kind_code(sourceAvatar) != unity_import_common.YAML_KIND_MAPPING:
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": sourceAvatar"
+            var sourceAvatarFileId: yaml.YamlDocument = sourceAvatar.get("fileID")
+            if not sourceAvatarFileId.is_integer() or sourceAvatarFileId.integer_value() == 0:
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": sourceAvatar.fileID"
+        var result: yaml.YamlDocument = yaml.mapping()
+        result.set("animationType", yaml.int(animationTypeValue))
+        result.set("avatarSetup", yaml.int(avatarSetupValue))
+        result.set("importAnimation", yaml.boolean(importAnimation))
+        var avatarKind: string = "Missing"
+        if avatarSetupValue == 1 or avatarSetupValue == 2:
+            if animationTypeValue == 2:
+                avatarKind = "Generic"
+            elif animationTypeValue == 3:
+                avatarKind = "Humanoid"
+            else:
+                avatarKind = "Unsupported"
+        result.set("avatarKind", yaml.string(avatarKind))
+        result.set("avatarValid", yaml.boolean(
+            avatarKind == "Generic" or avatarKind == "Humanoid"))
+        self.add_clip_animations(modelImporter, result)
+        self.add_human_description(modelImporter, result)
+        return result
+
+    def avatar_binding(self, input: string) -> asset.AvatarBinding:
+        var importer: yaml.YamlDocument = self.read_importer(input)
+        var animationTypeValue: int = self.animation_type(input)
+        var avatarSetupValue: int = self.avatar_setup(importer)
+        var binding: asset.AvatarBinding = asset.AvatarBinding()
+        if animationTypeValue != 3:
+            return binding
+        if avatarSetupValue != 1:
+            raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": Humanoid avatar requires avatarSetup 1"
+        var description: yaml.YamlDocument = importer.get("humanDescription")
+        if yaml.kind_code(description) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription"
+        var humanBones: yaml.YamlDocument = description.get("human")
+        var skeletonNodes: yaml.YamlDocument = description.get("skeleton")
+        if yaml.kind_code(humanBones) != unity_import_common.YAML_KIND_SEQUENCE or humanBones.size() == 0:
+            raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.human"
+        if yaml.kind_code(skeletonNodes) != unity_import_common.YAML_KIND_SEQUENCE or skeletonNodes.size() == 0:
+            raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.skeleton"
+        binding.set_humanoid(true)
+        var humanIndex: int = 0
+        while humanIndex < humanBones.size():
+            var humanBone: yaml.YamlDocument = humanBones.at(humanIndex)
+            var boneName: string = self.optional_string(humanBone, "boneName", "")
+            var humanName: string = self.optional_string(humanBone, "humanName", "")
+            if boneName == "" or humanName == "":
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.human"
+            if not binding.add_human_bone(boneName, humanName):
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.human"
+            humanIndex = humanIndex + 1
+        var skeletonIndex: int = 0
+        while skeletonIndex < skeletonNodes.size():
+            var skeletonNode: yaml.YamlDocument = skeletonNodes.at(skeletonIndex)
+            var nodeName: string = self.optional_string(skeletonNode, "name", "")
+            var parentName: string = self.optional_string(skeletonNode, "parentName", "")
+            if nodeName == "":
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.skeleton.name"
+            if not binding.add_skeleton_node(nodeName, parentName):
+                raise unity_import_common.DIAGNOSTIC_MODEL_META_INVALID + ": humanDescription.skeleton.name"
+            skeletonIndex = skeletonIndex + 1
+        return binding
+
+    def validate_meta(self, input: string) -> void:
+        self.summary(input)
+
+    def export_path(self, input: string, output: string) -> int:
+        var modelSummary: yaml.YamlDocument = self.summary(input)
+        var report: yaml.YamlDocument = self.make_report(
+            input, unity_import_common.REPORT_KIND_MODEL_META, unity_import_common.STATUS_OK)
+        report.set("modelImporter", modelSummary)
+        return self.write_report(output, report)
+

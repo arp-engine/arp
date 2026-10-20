@@ -1,0 +1,148 @@
+import unity_import_common
+import importer_base
+import package_writer
+import glb_importer
+import fbx_importer
+import character_validator
+import texture_importer
+import yaml_importer
+import model_importer
+import meta_importer
+import material_importer
+import animator_controller_importer
+import character_folder_importer
+import prefab_importer
+import scene_importer
+import character_package_importer
+import particle_importer
+import particle_package_importer
+import asset
+import io
+import yaml
+import arp_import_host
+
+def inspect_database(projectRoot: string, guid: string) -> int:
+    var record: asset.UnityAssetRecordResult = asset.find_unity_asset(projectRoot, guid)
+    if not record.success:
+        raise unity_import_common.DIAGNOSTIC_DATABASE_RECORD + ": " + record.diagnostics
+    if record.guid != guid:
+        raise unity_import_common.DIAGNOSTIC_DATABASE_GUID
+    if record.metaPath == "" or record.assetPath == "":
+        raise unity_import_common.DIAGNOSTIC_DATABASE_PATH
+    return unity_import_common.STATUS_OK
+
+def import_character_folder(folder: string, output: string) -> int:
+    var importer: UnityCharacterFolderImporter = UnityCharacterFolderImporter()
+    return importer.export_path(folder, output)
+
+def import_particle(input: string, output: string) -> int:
+    var importer: UnityParticleImporter = UnityParticleImporter()
+    return importer.export_path(input, output)
+
+def import_particle_package(
+    input: string,
+    outputDirectory: string,
+    packageName: string,
+    alias: string,
+    status: string,
+    projectRoot: string) -> int:
+    var importer: UnityParticlePackageImporter = UnityParticlePackageImporter()
+    return importer.import_path(
+        input, outputDirectory, packageName, alias, status, projectRoot)
+
+def import_character_package(
+    folder: string,
+    outputDirectory: string,
+    alias: string,
+    displayName: string,
+    projectRoot: string,
+    basicShaderPath: string,
+    stylizedShaderPath: string,
+    guiShaderPath: string,
+    startupShaderPath: string) -> int:
+    var importer: UnityCharacterPackageImporter = UnityCharacterPackageImporter()
+    return importer.import_path(
+        folder,
+        outputDirectory,
+        alias,
+        displayName,
+        projectRoot,
+        basicShaderPath,
+        stylizedShaderPath,
+        guiShaderPath,
+        startupShaderPath)
+
+def main(input: string, projectRoot: string) -> int:
+    var extension: string = unity_import_common.input_extension(input)
+    var glbImporter: GlbImporter = GlbImporter()
+    if extension == unity_import_common.EXTENSION_GLB:
+        return glbImporter.run(input)
+    var fbxImporter: FbxImporter = FbxImporter()
+    if extension == unity_import_common.EXTENSION_FBX:
+        return fbxImporter.run(input)
+    var textureImporter: UnityTextureImporter = UnityTextureImporter()
+    if extension == unity_import_common.EXTENSION_PNG or extension == unity_import_common.EXTENSION_JPG or extension == unity_import_common.EXTENSION_JPEG or extension == unity_import_common.EXTENSION_WEBP or extension == unity_import_common.EXTENSION_TGA or extension == unity_import_common.EXTENSION_PSD:
+        textureImporter.import_path(input)
+        return unity_import_common.STATUS_OK
+    var yamlImporter: UnityYamlImporter = UnityYamlImporter()
+    var metaImporter: UnityMetaImporter = UnityMetaImporter()
+    if extension == unity_import_common.EXTENSION_META:
+        metaImporter.validate(input)
+        return unity_import_common.STATUS_OK
+    var materialImporter: UnityMaterialImporter = UnityMaterialImporter()
+    if extension == unity_import_common.EXTENSION_MATERIAL:
+        materialImporter.validate(input)
+        return unity_import_common.STATUS_OK
+    var controllerImporter: UnityAnimatorControllerImporter = UnityAnimatorControllerImporter()
+    if extension == unity_import_common.EXTENSION_CONTROLLER:
+        controllerImporter.validate(input)
+        return unity_import_common.STATUS_OK
+    var prefabImporter: UnityPrefabImporter = UnityPrefabImporter()
+    if extension == unity_import_common.EXTENSION_PREFAB:
+        prefabImporter.validate(input)
+        return unity_import_common.STATUS_OK
+    if extension == unity_import_common.EXTENSION_ASSET:
+        yamlImporter.validate(input, projectRoot)
+        return unity_import_common.STATUS_OK
+    var sceneImporter: UnitySceneImporter = UnitySceneImporter()
+    if extension == unity_import_common.EXTENSION_SCENE:
+        sceneImporter.validate(input, projectRoot)
+        return unity_import_common.STATUS_OK
+    if extension == unity_import_common.EXTENSION_YAML:
+        yamlImporter.validate(input, projectRoot)
+        return unity_import_common.STATUS_OK
+    raise unity_import_common.DIAGNOSTIC_UNSUPPORTED_EXTENSION + ": " + extension
+
+def export(input: string, projectRoot: string, output: string) -> int:
+    var extension: string = unity_import_common.input_extension(input)
+    var glbImporter: GlbImporter = GlbImporter()
+    if extension == unity_import_common.EXTENSION_GLB:
+        return glbImporter.export_path(input, output)
+    var fbxImporter: FbxImporter = FbxImporter()
+    if extension == unity_import_common.EXTENSION_FBX:
+        return fbxImporter.export_path(input, output)
+    var textureImporter: UnityTextureImporter = UnityTextureImporter()
+    if extension == unity_import_common.EXTENSION_PNG or extension == unity_import_common.EXTENSION_JPG or extension == unity_import_common.EXTENSION_JPEG or extension == unity_import_common.EXTENSION_WEBP or extension == unity_import_common.EXTENSION_TGA or extension == unity_import_common.EXTENSION_PSD:
+        return textureImporter.export_path(input, output)
+
+    var yamlImporter: UnityYamlImporter = UnityYamlImporter()
+    var metaImporter: UnityMetaImporter = UnityMetaImporter()
+    if extension == unity_import_common.EXTENSION_META:
+        return metaImporter.export_path(input, output)
+    var materialImporter: UnityMaterialImporter = UnityMaterialImporter()
+    if extension == unity_import_common.EXTENSION_MATERIAL:
+        return materialImporter.export_path(input, projectRoot, output)
+    var controllerImporter: UnityAnimatorControllerImporter = UnityAnimatorControllerImporter()
+    if extension == unity_import_common.EXTENSION_CONTROLLER:
+        return controllerImporter.export_path(input, output)
+    var prefabImporter: UnityPrefabImporter = UnityPrefabImporter()
+    if extension == unity_import_common.EXTENSION_PREFAB:
+        return prefabImporter.export_path(input, output)
+    if extension == unity_import_common.EXTENSION_ASSET:
+        return yamlImporter.export_path(input, projectRoot, output)
+    var sceneImporter: UnitySceneImporter = UnitySceneImporter()
+    if extension == unity_import_common.EXTENSION_SCENE:
+        return sceneImporter.export_path(input, projectRoot, output)
+    if extension == unity_import_common.EXTENSION_YAML:
+        return yamlImporter.export_path(input, projectRoot, output)
+    raise unity_import_common.DIAGNOSTIC_UNSUPPORTED_EXTENSION + ": " + extension

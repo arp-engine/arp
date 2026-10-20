@@ -1,0 +1,10 @@
+type: arp.script.cpp-plugin
+contractVersion: 2
+module: asset
+moduleVersion: 1
+exportContractHash: sha256:asset-v2
+source: asset_module.cpp
+entry: arp_register_asset
+reflectionModule: asset
+reflectionHeaders:
+  - asset_module.h

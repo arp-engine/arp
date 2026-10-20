@@ -1,0 +1,1073 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+import package_writer
+import character_folder_importer
+import model_importer
+import animator_controller_importer
+import texture_importer
+import material_importer
+import prefab_importer
+
+class UnityCharacterPackageImporter(Importer):
+    def make_id(self, folder: string, alias: string, role: string) -> string:
+        var seedPrefix: string = unity_import_common.CHARACTER_GRAPH_SEED_PREFIX
+        var seed: string = seedPrefix + folder
+        seed = seed + "|" + alias
+        var text: string = seed + "|" + role
+        var resourceId: string = asset.uuid_from_text(text)
+        if not asset.is_resource_uuid(resourceId):
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD
+        return resourceId
+
+    def make_shader_fields(self, name: string, slangPath: string) -> yaml.YamlDocument:
+        if slangPath == "" or self.input_extension(slangPath) != ".slang":
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_SHADER
+        var fields: yaml.YamlDocument = yaml.mapping()
+        fields.set("name", yaml.string(name))
+        fields.set("slangPath", yaml.string(slangPath))
+        fields.set("spirvPath", yaml.string(
+            arp_import_host.path_replace_extension(slangPath, ".spv")))
+        fields.set("mslPath", yaml.string(
+            arp_import_host.path_replace_extension(slangPath, ".metal")))
+        fields.set("reflectionPath", yaml.string(
+            arp_import_host.path_replace_extension(slangPath, ".reflection.yaml")))
+        return fields
+
+    def texture_usage(self, propertyName: string) -> string:
+        if propertyName == "_BumpMap" or propertyName == "_NormalMap":
+            return "normal"
+        if propertyName == "_MainTex" or propertyName == "_BaseMap" or propertyName == "_BaseColorMap":
+            return "color"
+        raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": unsupported texture property: " + propertyName
+
+    def resolve_texture_fields(
+        self,
+        projectRoot: string,
+        textureGuid: string,
+        propertyName: string) -> yaml.YamlDocument:
+        var record: asset.UnityAssetRecordResult = asset.find_unity_asset(
+            projectRoot, textureGuid)
+        if not record.success:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": texture GUID " + textureGuid + ": " + record.diagnostics
+        var textureResolveDiagnostic: string = unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD
+        textureResolveDiagnostic = textureResolveDiagnostic + ": texture GUID " + textureGuid
+        var sourcePath: string = unity_import_common.resolve_project_asset_or_raise(
+            projectRoot,
+            record.assetPath,
+            textureResolveDiagnostic)
+        var textureImporter: UnityTextureImporter = UnityTextureImporter()
+        var decoded: asset.DecodedImageResult = textureImporter.import_path(sourcePath)
+        var textureSettings: yaml.YamlDocument = textureImporter.import_settings(sourcePath)
+        var textureId: string = asset.unity_guid_to_uuid(textureGuid)
+        if textureId == "" or not asset.is_resource_uuid(textureId):
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": invalid texture GUID " + textureGuid
+        var textureFields: yaml.YamlDocument = yaml.mapping()
+        textureFields.set("name", yaml.string(record.assetPath))
+        textureFields.set("sourcePath", yaml.string(record.assetPath))
+        textureFields.set("sourceResourceId", yaml.string(asset.uuid_from_text(
+            "UnityTexture|" + record.assetPath)))
+        textureFields.set("usage", yaml.string(self.texture_usage(propertyName)))
+        textureFields.set("srgb", yaml.boolean(decoded.srgb))
+        textureFields.set("alpha", yaml.boolean(decoded.alpha))
+        textureFields.set("alphaIsTransparency", yaml.boolean(
+            textureSettings.get("alphaIsTransparency").boolean_value()))
+        return textureFields
+
+    def add_entry(
+        self,
+        writer: UnityPackageWriter,
+        outputDirectory: string,
+        entries: yaml.YamlDocument,
+        resourceId: string,
+        resourceType: string,
+        alias: string,
+        displayName: string,
+        status: string,
+        envelopePath: string,
+        fields: yaml.YamlDocument,
+        dependencies: yaml.YamlDocument):
+        var payload: yaml.YamlDocument = writer.make_payload(resourceType, fields)
+        var serialized: yaml.YamlTextResult = yaml.stringify(payload)
+        if not serialized.success:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": serialize " + resourceType + ": " + serialized.diagnostics
+        var payloadHash: asset.AssetHashResult = asset.hash_payload(serialized.text)
+        if not payloadHash.success:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": hash " + resourceType + ": " + payloadHash.diagnostics
+        var envelope: yaml.YamlDocument = writer.make_envelope(
+            resourceId,
+            resourceType,
+            alias,
+            displayName,
+            status,
+            payloadHash.hash,
+            dependencies,
+            payload)
+        writer.write_entry(outputDirectory, envelopePath, envelope)
+        entries.append(writer.make_entry(
+            resourceId,
+            resourceType,
+            alias,
+            envelopePath,
+            status,
+            payloadHash.hash,
+            dependencies))
+
+    def add_source_entry(
+        self,
+        writer: UnityPackageWriter,
+        outputDirectory: string,
+        entries: yaml.YamlDocument,
+        sourceId: string,
+        sourcePath: string,
+        sourceAssetType: string,
+        displayName: string,
+        status: string):
+        if sourceId == "" or not asset.is_resource_uuid(sourceId):
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": invalid source resource ID"
+        var existingIndex: int = 0
+        while existingIndex < entries.size():
+            var existing: yaml.YamlDocument = entries.at(existingIndex)
+            if existing.get("resourceId").is_string() and existing.get("resourceId").string_value() == sourceId:
+                if existing.get("resourceType").string_value() != unity_import_common.RESOURCE_TYPE_EXTERNAL_SOURCE:
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": source ID collides with resource"
+                return
+            existingIndex = existingIndex + 1
+
+        var sourceFields: yaml.YamlDocument = yaml.mapping()
+        sourceFields.set("name", yaml.string(sourcePath))
+        sourceFields.set("sourcePath", yaml.string(sourcePath))
+        var sourceGuid: string = ""
+        var contentHash: int64 = 0
+        if io.exists(sourcePath):
+            var sourceMetaPath: string = sourcePath + ".meta"
+            if io.exists(sourceMetaPath):
+                var meta: yaml.YamlDocument = self.first_document_or_raise(
+                    self.read_text_or_raise(sourceMetaPath))
+                var guid: yaml.YamlDocument = meta.get("guid")
+                if not guid.is_string() or guid.string_value() == "":
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD
+                sourceGuid = guid.string_value()
+            if self.input_extension(sourcePath) != "":
+                var sourceHash: io.IoHashResult = io.hash_file(sourcePath)
+                if not sourceHash.success:
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": source hash: " + sourcePath + ": " + sourceHash.diagnostics
+                contentHash = sourceHash.hashValue
+        sourceFields.set("sourceGuid", yaml.string(sourceGuid))
+        sourceFields.set("fileId", yaml.string("0"))
+        sourceFields.set("sourceAssetType", yaml.string(sourceAssetType))
+        sourceFields.set("importerKind", yaml.string(
+            unity_import_common.CHARACTER_SOURCE_KIND))
+        sourceFields.set("contentHash", yaml.integer(contentHash))
+        var envelopePath: string = "source-" + sourceId + ".arpres.yaml"
+        self.add_entry(
+            writer,
+            outputDirectory,
+            entries,
+            sourceId,
+            unity_import_common.RESOURCE_TYPE_EXTERNAL_SOURCE,
+            "source/" + sourceId,
+            displayName,
+            status,
+            envelopePath,
+            sourceFields,
+            yaml.sequence())
+
+    def resolve_motion_asset(
+        self,
+        folder: string,
+        motionGuid: string,
+        stateName: string) -> string:
+        var files: io.IoFileList = io.list_paths(folder, true)
+        if not files.success:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": motion asset scan: " + files.diagnostics
+        var resolvedPath: string = ""
+        var index: int = 0
+        while index < files.count():
+            var metaPath: string = files.at(index)
+            if self.input_extension(metaPath) != unity_import_common.EXTENSION_META:
+                index = index + 1
+                continue
+            var metaText: string = self.read_text_or_raise(metaPath)
+            var meta: yaml.YamlDocument = self.first_document_or_raise(metaText)
+            var guid: yaml.YamlDocument = meta.get("guid")
+            if not guid.is_string() or guid.string_value() == "":
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": motion meta GUID: " + metaPath
+            if guid.string_value() == motionGuid:
+                var candidatePath: string = arp_import_host.path_replace_extension(metaPath, "")
+                if self.input_extension(candidatePath) != unity_import_common.EXTENSION_FBX:
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": controller state motion GUID is not an FBX: " + stateName
+                if resolvedPath != "":
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": duplicate controller state motion GUID: " + motionGuid
+                resolvedPath = candidatePath
+            index = index + 1
+        if resolvedPath == "":
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": controller state motion GUID did not resolve: " + stateName + ": " + motionGuid
+        if not io.exists(resolvedPath):
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": resolved controller motion FBX does not exist: " + resolvedPath
+        return resolvedPath
+
+    def validate_controller_clip_bindings(
+        self,
+        controllerSummary: yaml.YamlDocument,
+        folder: string,
+        imported: asset.ImportedModelResult,
+        targetModelPath: string,
+        avatarBinding: asset.AvatarBinding) -> yaml.YamlDocument:
+        var bindings: yaml.YamlDocument = yaml.sequence()
+        var states: yaml.YamlDocument = controllerSummary.get("states")
+        if yaml.kind_code(states) != unity_import_common.YAML_KIND_SEQUENCE:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": controller states"
+        var stateIndex: int = 0
+        while stateIndex < states.size():
+            var state: yaml.YamlDocument = states.at(stateIndex)
+            if yaml.kind_code(state) != unity_import_common.YAML_KIND_MAPPING:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": controller state"
+            var stateName: yaml.YamlDocument = state.get("name")
+            var motionGuid: yaml.YamlDocument = state.get("motionGuid")
+            var motionFileId: yaml.YamlDocument = state.get("motionFileId")
+            if not stateName.is_string() or stateName.string_value() == "":
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": controller state name"
+            if not motionGuid.is_string() or motionGuid.string_value() == "":
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": controller state motionGuid: " + stateName.string_value()
+            if not motionFileId.is_integer() or motionFileId.integer_value() <= 0:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": controller state motionFileId: " + stateName.string_value()
+            var motionPath: string = self.resolve_motion_asset(
+                folder, motionGuid.string_value(), stateName.string_value())
+            var motionImported: asset.ImportedModelResult = asset.import_fbx(motionPath)
+            if not motionImported.success:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": controller state motion FBX import: " + stateName.string_value() + ": " + motionImported.diagnostics
+            var clipIndex: int = 0
+            var clipFound: bool = false
+            var clipDuration: float = 0.0
+            var clipChannelCount: int = 0
+            while clipIndex < motionImported.clip_count():
+                if motionImported.clip_name(clipIndex) == stateName.string_value():
+                    clipFound = true
+                    clipDuration = motionImported.clip_duration(clipIndex)
+                    clipChannelCount = motionImported.clip_channel_count(clipIndex)
+                clipIndex = clipIndex + 1
+            if not clipFound:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": controller state has no matching clip in resolved motion FBX: " + stateName.string_value()
+            var baseClipFound: bool = false
+            var baseClipIndex: int = 0
+            while baseClipIndex < imported.clip_count():
+                if imported.clip_name(baseClipIndex) == stateName.string_value():
+                    baseClipFound = true
+                baseClipIndex = baseClipIndex + 1
+            if not baseClipFound:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": resolved motion clip cannot bind to base skeleton: " + stateName.string_value()
+            var retargeted: asset.ImportedAnimationClipResult = asset.retarget_fbx_clip_with_avatar(
+                motionPath, stateName.string_value(), targetModelPath, avatarBinding)
+            if not retargeted.success:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": retarget controller clip " + stateName.string_value() + ": " + retargeted.diagnostics
+            if retargeted.name != stateName.string_value() or retargeted.channelCount <= 0:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": invalid retargeted controller clip " + stateName.string_value()
+            var binding: yaml.YamlDocument = yaml.mapping()
+            binding.set("stateName", yaml.string(stateName.string_value()))
+            binding.set("clipName", yaml.string(stateName.string_value()))
+            binding.set("motionGuid", yaml.string(motionGuid.string_value()))
+            binding.set("motionFileId", motionFileId)
+            binding.set("motionPath", yaml.string(motionPath))
+            binding.set("clipDurationSeconds", yaml.float(clipDuration))
+            binding.set("clipChannelCount", yaml.int(clipChannelCount))
+            binding.set("retargetedChannelCount", yaml.int(retargeted.channelCount))
+            binding.set("retargeted", yaml.boolean(true))
+            bindings.append(binding)
+            stateIndex = stateIndex + 1
+        return bindings
+
+    def external_material_remaps(self, modelPath: string) -> yaml.YamlDocument:
+        var metaPath: string = modelPath + ".meta"
+        if not io.exists(metaPath):
+            return yaml.sequence()
+        var text: string = self.read_text_or_raise(metaPath)
+        var document: yaml.YamlDocument = self.first_document_or_raise(text)
+        var importer: yaml.YamlDocument = document.get("ModelImporter")
+        if yaml.kind_code(importer) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": ModelImporter externalObjects"
+        var externalObjects: yaml.YamlDocument = importer.get("externalObjects")
+        if yaml.kind_code(externalObjects) <= unity_import_common.YAML_KIND_NULL:
+            return yaml.sequence()
+        if yaml.kind_code(externalObjects) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": externalObjects"
+        var keys: list = externalObjects.keys()
+        var remapKeyCount: int = 0
+        for key: string in keys:
+            if key != "UnityEngine:Material":
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": unsupported externalObjects type: " + key
+            remapKeyCount = remapKeyCount + 1
+        if remapKeyCount == 0:
+            return yaml.sequence()
+        var materialObjects: yaml.YamlDocument = externalObjects.get("UnityEngine:Material")
+        if yaml.kind_code(materialObjects) != unity_import_common.YAML_KIND_SEQUENCE:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": externalObjects.UnityEngine:Material"
+        var remaps: yaml.YamlDocument = yaml.sequence()
+        var index: int = 0
+        while index < materialObjects.size():
+            var entry: yaml.YamlDocument = materialObjects.at(index)
+            if yaml.kind_code(entry) != unity_import_common.YAML_KIND_MAPPING:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": external material remap"
+            var first: yaml.YamlDocument = entry.get("first")
+            var second: yaml.YamlDocument = entry.get("second")
+            if yaml.kind_code(first) != unity_import_common.YAML_KIND_MAPPING:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": external material remap.first"
+            if yaml.kind_code(second) != unity_import_common.YAML_KIND_MAPPING:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": external material remap.second"
+            var sourceName: yaml.YamlDocument = first.get("name")
+            var materialGuid: yaml.YamlDocument = second.get("guid")
+            var materialFileId: yaml.YamlDocument = second.get("fileID")
+            if not sourceName.is_string() or sourceName.string_value() == "":
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": external material remap.first.name"
+            if not materialGuid.is_string() or materialGuid.string_value() == "":
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": external material remap.second.guid"
+            if not materialFileId.is_integer():
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": external material remap.second.fileID"
+            var remap: yaml.YamlDocument = yaml.mapping()
+            remap.set("sourceMaterialName", yaml.string(sourceName.string_value()))
+            remap.set("materialGuid", yaml.string(materialGuid.string_value()))
+            remap.set("materialFileId", materialFileId)
+            remaps.append(remap)
+            index = index + 1
+        return remaps
+
+    def import_path(
+        self,
+        folder: string,
+        outputDirectory: string,
+        alias: string,
+        displayName: string,
+        projectRoot: string,
+        basicShaderPath: string,
+        stylizedShaderPath: string,
+        guiShaderPath: string,
+        startupShaderPath: string) -> int:
+        var validator: UnityCharacterFolderImporter = UnityCharacterFolderImporter()
+        validator.validate(folder)
+        if alias == "" or displayName == "":
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_VALIDATE
+        var files: io.IoFileList = io.list_paths(folder, true)
+        if not files.success:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_VALIDATE + ": " + files.diagnostics
+        var modelPath: string = ""
+        var controllerCount: int = 0
+        var materialCount: int = 0
+        var onlyMaterialPath: string = ""
+        var index: int = 0
+        while index < files.count():
+            var path: string = files.at(index)
+            var extension: string = self.input_extension(path)
+            if extension == unity_import_common.EXTENSION_FBX and modelPath == "":
+                modelPath = path
+            if extension == unity_import_common.EXTENSION_CONTROLLER:
+                controllerCount = controllerCount + 1
+            if extension == unity_import_common.EXTENSION_MATERIAL:
+                materialCount = materialCount + 1
+                onlyMaterialPath = path
+            index = index + 1
+
+        var imported: asset.ImportedModelResult = asset.import_fbx(modelPath)
+        var characterValidator: UnityCharacterImportValidator = UnityCharacterImportValidator()
+        characterValidator.validate(imported)
+        if imported.joint_count() <= 0:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_MODEL
+        if imported.submesh_count() <= 0 or imported.material_count() <= 0:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_MODEL
+        if imported.clip_count() <= 0:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_MODEL
+
+        var writer: UnityPackageWriter = UnityPackageWriter()
+        var entries: yaml.YamlDocument = yaml.sequence()
+        var status: string = unity_import_common.RESOURCE_STATUS_PROTOTYPE
+        var rootId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_ROOT)
+        var modelId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_MODEL)
+        var meshId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_SKINNED_MESH)
+        var skeletonId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_SKELETON)
+        var avatarId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_AVATAR)
+        var animationSetId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_ANIMATION_SET)
+        var animatorId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_ANIMATOR)
+        var materialSetId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_MATERIAL_SET)
+        var sequenceId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_SEQUENCE)
+        var sequenceBindingsId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_SEQUENCE_BINDINGS)
+        var previewId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_PREVIEW_STUDIO)
+        var basicShaderId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_SHADER_BASIC)
+        var stylizedShaderId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_SHADER_STYLIZED)
+        var guiShaderId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_SHADER_GUI)
+        var startupShaderId: string = self.make_id(folder, alias,
+            unity_import_common.CHARACTER_ROLE_SHADER_STARTUP)
+
+        var noDependencies: yaml.YamlDocument = yaml.sequence()
+        self.add_entry(writer, outputDirectory, entries, basicShaderId,
+            unity_import_common.RESOURCE_TYPE_SHADER_PACKAGE,
+            alias + "/shader/basic", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_SHADER_BASIC,
+            self.make_shader_fields("material_preview_pbr", basicShaderPath),
+            noDependencies)
+        self.add_entry(writer, outputDirectory, entries, stylizedShaderId,
+            unity_import_common.RESOURCE_TYPE_SHADER_PACKAGE,
+            alias + "/shader/stylized", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_SHADER_STYLIZED,
+            self.make_shader_fields("stylized_scene", stylizedShaderPath),
+            noDependencies)
+        self.add_entry(writer, outputDirectory, entries, guiShaderId,
+            unity_import_common.RESOURCE_TYPE_SHADER_PACKAGE,
+            alias + "/shader/gui", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_SHADER_GUI,
+            self.make_shader_fields("gui_overlay", guiShaderPath),
+            noDependencies)
+        self.add_entry(writer, outputDirectory, entries, startupShaderId,
+            unity_import_common.RESOURCE_TYPE_SHADER_PACKAGE,
+            alias + "/shader/startup-splash", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_SHADER_STARTUP,
+            self.make_shader_fields("startup_splash", startupShaderPath),
+            noDependencies)
+
+        var materialFiles: io.IoFileList = io.list_paths(folder, true)
+        if not materialFiles.success:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_VALIDATE + ": " + materialFiles.diagnostics
+        var materialIds: yaml.YamlDocument = yaml.sequence()
+        var materialDependencies: yaml.YamlDocument = yaml.sequence()
+        var textureGuids: yaml.YamlDocument = yaml.sequence()
+        var textureIds: yaml.YamlDocument = yaml.sequence()
+        var externalMaterialRemaps: yaml.YamlDocument = self.external_material_remaps(modelPath)
+        var materialIndex: int = 0
+        while materialIndex < imported.material_count():
+            var materialName: string = imported.material_name(materialIndex)
+            if materialName == "":
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD
+            var materialPath: string = ""
+            var remapMatched: bool = false
+            var remapIndex: int = 0
+            while remapIndex < externalMaterialRemaps.size():
+                var remap: yaml.YamlDocument = externalMaterialRemaps.at(remapIndex)
+                var remapSourceName: yaml.YamlDocument = remap.get("sourceMaterialName")
+                if remapSourceName.is_string() and remapSourceName.string_value() == materialName:
+                    if remapMatched:
+                        raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": duplicate external material remap: " + materialName
+                    remapMatched = true
+                    var remapGuid: yaml.YamlDocument = remap.get("materialGuid")
+                    var remapFileIndex: int = 0
+                    while remapFileIndex < materialFiles.count():
+                        var remapCandidate: string = materialFiles.at(remapFileIndex)
+                        if self.input_extension(remapCandidate) == unity_import_common.EXTENSION_MATERIAL:
+                            var remapCandidateImporter: UnityMaterialImporter = UnityMaterialImporter()
+                            var remapCandidateGuid: string = remapCandidateImporter.material_guid(remapCandidate)
+                            if remapCandidateGuid == remapGuid.string_value():
+                                if materialPath != "":
+                                    raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": ambiguous external material remap: " + materialName
+                                materialPath = remapCandidate
+                        remapFileIndex = remapFileIndex + 1
+                    if materialPath == "":
+                        raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": external material GUID has no local .mat: " + remapGuid.string_value()
+                remapIndex = remapIndex + 1
+            if remapMatched and materialPath == "":
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": external material remap did not resolve: " + materialName
+            var materialFileIndex: int = 0
+            while materialFileIndex < materialFiles.count():
+                var candidatePath: string = materialFiles.at(materialFileIndex)
+                if materialPath == "" and self.input_extension(candidatePath) == unity_import_common.EXTENSION_MATERIAL:
+                    var candidateMaterialImporter: UnityMaterialImporter = UnityMaterialImporter()
+                    candidateMaterialImporter.validate(candidatePath)
+                    var candidateMaterial: yaml.YamlDocument = candidateMaterialImporter.read_material(candidatePath)
+                    var candidateName: yaml.YamlDocument = candidateMaterial.get("m_Name")
+                    if candidateName.is_string() and candidateName.string_value() == materialName:
+                        materialPath = candidatePath
+                materialFileIndex = materialFileIndex + 1
+            if materialPath == "" and not remapMatched and materialCount == 1:
+                materialPath = onlyMaterialPath
+            if materialPath == "" and not remapMatched and materialCount > 1:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": material name cannot be mapped deterministically: " + materialName
+            var materialSourcePath: string = modelPath
+            var materialSourceId: string = asset.uuid_from_text(
+                "UnityFbxMaterial|" + modelPath + "|" + materialName)
+            var shaderGuid: string = ""
+            var mainTextureGuid: string = ""
+            var mainTextureProperty: string = ""
+            var textureBindingCount: int = 0
+            var propertyCount: int = 0
+            var textureSlots: yaml.YamlDocument = yaml.sequence()
+            var baseColorTexture: yaml.YamlDocument = yaml.mapping()
+            var renderState: yaml.YamlDocument = yaml.mapping()
+            if materialPath != "":
+                var materialImporter: UnityMaterialImporter = UnityMaterialImporter()
+                materialImporter.validate(materialPath)
+                var materialDocument: yaml.YamlDocument = materialImporter.read_material(materialPath)
+                var materialNameNode: yaml.YamlDocument = materialDocument.get("m_Name")
+                if materialNameNode.is_string() and materialNameNode.string_value() != "":
+                    materialName = materialNameNode.string_value()
+                var materialShader: yaml.YamlDocument = materialDocument.get("m_Shader")
+                var materialShaderGuid: yaml.YamlDocument = materialShader.get("guid")
+                if not materialShaderGuid.is_string() or materialShaderGuid.string_value() == "":
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": material shader GUID"
+                shaderGuid = materialShaderGuid.string_value()
+                textureSlots = materialImporter.texture_slots(materialDocument)
+                baseColorTexture = materialImporter.base_color_texture(textureSlots)
+                var baseColorGuid: yaml.YamlDocument = baseColorTexture.get("textureGuid")
+                if baseColorGuid.is_string():
+                    mainTextureGuid = baseColorGuid.string_value()
+                var baseColorProperty: yaml.YamlDocument = baseColorTexture.get("property")
+                if baseColorProperty.is_string():
+                    mainTextureProperty = baseColorProperty.string_value()
+                renderState = materialImporter.render_state(materialDocument)
+                textureBindingCount = textureSlots.size()
+                propertyCount = textureSlots.size()
+                materialSourcePath = materialPath
+                materialSourceId = asset.uuid_from_text("UnityMaterial|" + materialPath)
+            var materialId: string = self.make_id(folder, alias,
+                "MaterialResource/material-" + materialName)
+            var materialFields: yaml.YamlDocument = yaml.mapping()
+            materialFields.set("name", yaml.string(materialName))
+            materialFields.set("sourcePath", yaml.string(materialSourcePath))
+            materialFields.set("sourceResourceId", yaml.string(materialSourceId))
+            materialFields.set("shaderPackageId", yaml.string(stylizedShaderId))
+            materialFields.set("shaderGuid", yaml.string(shaderGuid))
+            materialFields.set("mainTextureGuid", yaml.string(mainTextureGuid))
+            materialFields.set("mainTextureProperty", yaml.string(mainTextureProperty))
+            materialFields.set("baseColorTexture", baseColorTexture)
+            materialFields.set("renderState", renderState)
+            materialFields.set("textureSlots", textureSlots)
+            materialFields.set("textureBindingCount", yaml.int(textureBindingCount))
+            materialFields.set("propertyCount", yaml.int(propertyCount))
+            materialFields.set("externalRemapApplied", yaml.boolean(remapMatched))
+            var materialTextureIds: yaml.YamlDocument = yaml.sequence()
+            var materialTextureGuids: yaml.YamlDocument = yaml.sequence()
+            var textureSlotIndex: int = 0
+            while textureSlotIndex < textureSlots.size():
+                var textureSlot: yaml.YamlDocument = textureSlots.at(textureSlotIndex)
+                var textureProperty: yaml.YamlDocument = textureSlot.get("property")
+                var textureGuid: yaml.YamlDocument = textureSlot.get("textureGuid")
+                if not textureProperty.is_string() or not textureGuid.is_string() or textureGuid.string_value() == "":
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": invalid material texture slot"
+                var textureId: string = ""
+                var textureKnown: bool = false
+                var textureIndex: int = 0
+                while textureIndex < textureGuids.size():
+                    if textureGuids.at(textureIndex).string_value() == textureGuid.string_value():
+                        textureKnown = true
+                        textureId = textureIds.at(textureIndex).string_value()
+                    textureIndex = textureIndex + 1
+                if not textureKnown:
+                    var textureFields: yaml.YamlDocument = self.resolve_texture_fields(
+                        projectRoot,
+                        textureGuid.string_value(),
+                        textureProperty.string_value())
+                    var textureGuidText: string = textureGuid.string_value()
+                    textureId = asset.unity_guid_to_uuid(textureGuidText)
+                    if textureId == "" or not asset.is_resource_uuid(textureId):
+                        raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": invalid texture GUID " + textureGuidText
+                    self.add_source_entry(
+                        writer,
+                        outputDirectory,
+                        entries,
+                        textureFields.get("sourceResourceId").string_value(),
+                        textureFields.get("sourcePath").string_value(),
+                        "Texture",
+                        displayName,
+                        status)
+                    var textureEnvelopePath: string = unity_import_common.CHARACTER_ENVELOPE_TEXTURE_PREFIX
+                    textureEnvelopePath = textureEnvelopePath + textureGuidText + ".arpres.yaml"
+                    self.add_entry(
+                        writer,
+                        outputDirectory,
+                        entries,
+                        textureId,
+                        unity_import_common.RESOURCE_TYPE_TEXTURE,
+                        "texture/" + textureGuidText,
+                        textureFields.get("sourcePath").string_value(),
+                        status,
+                        textureEnvelopePath,
+                        textureFields,
+                        noDependencies)
+                    textureGuids.append(yaml.string(textureGuid.string_value()))
+                    textureIds.append(yaml.string(textureId))
+                materialTextureIds.append(yaml.string(textureId))
+                var materialTextureSeen: bool = false
+                var materialTextureIndex: int = 0
+                while materialTextureIndex < materialTextureGuids.size():
+                    if materialTextureGuids.at(materialTextureIndex).string_value() == textureGuid.string_value():
+                        materialTextureSeen = true
+                    materialTextureIndex = materialTextureIndex + 1
+                if not materialTextureSeen:
+                    materialTextureGuids.append(yaml.string(textureGuid.string_value()))
+                textureSlotIndex = textureSlotIndex + 1
+            materialFields.set("textureResourceIds", materialTextureIds)
+            materialFields.set("textureResourceCount", yaml.int(materialTextureIds.size()))
+            var materialEnvelopePath: string = unity_import_common.CHARACTER_ENVELOPE_MATERIAL
+            if imported.material_count() > 1:
+                materialEnvelopePath = "material-" + materialName + ".arpres.yaml"
+            var materialResourceDependencies: yaml.YamlDocument = yaml.sequence()
+            materialResourceDependencies.append(writer.make_dependency(stylizedShaderId, "shader"))
+            var materialTextureDependencyIndex: int = 0
+            while materialTextureDependencyIndex < materialTextureIds.size():
+                materialResourceDependencies.append(writer.make_dependency(
+                    materialTextureIds.at(materialTextureDependencyIndex).string_value(),
+                    "texture"))
+                materialTextureDependencyIndex = materialTextureDependencyIndex + 1
+            self.add_source_entry(
+                writer,
+                outputDirectory,
+                entries,
+                materialSourceId,
+                materialSourcePath,
+                "Material",
+                displayName,
+                status)
+            self.add_entry(writer, outputDirectory, entries, materialId,
+                unity_import_common.RESOURCE_TYPE_MATERIAL,
+                alias + "/material/" + materialName, displayName, status,
+                materialEnvelopePath, materialFields, materialResourceDependencies)
+            materialIds.append(yaml.string(materialId))
+            materialDependencies.append(writer.make_dependency(materialId, "material"))
+            materialIndex = materialIndex + 1
+        if imported.material_count() == 0:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD
+        var materialSetFields: yaml.YamlDocument = yaml.mapping()
+        materialSetFields.set("name", yaml.string(displayName))
+        materialSetFields.set("sourcePath", yaml.string(folder))
+        materialSetFields.set("materialCount", yaml.int(imported.material_count()))
+        materialSetFields.set("materialIds", materialIds)
+        self.add_entry(writer, outputDirectory, entries, materialSetId,
+            unity_import_common.RESOURCE_TYPE_MATERIAL_SET,
+            alias + "/materials", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_MATERIAL_SET,
+            materialSetFields, materialDependencies)
+
+        var meshFields: yaml.YamlDocument = yaml.mapping()
+        meshFields.set("name", yaml.string(displayName))
+        meshFields.set("sourcePath", yaml.string(modelPath))
+        meshFields.set("vertexCount", yaml.int(imported.vertex_count()))
+        meshFields.set("indexCount", yaml.int(imported.index_count()))
+        meshFields.set("submeshCount", yaml.int(imported.submesh_count()))
+        meshFields.set("materialSlotCount", yaml.int(imported.material_count()))
+        var meshDependencies: yaml.YamlDocument = yaml.sequence()
+        meshDependencies.append(writer.make_dependency(materialSetId, "material-set"))
+        self.add_entry(writer, outputDirectory, entries, meshId,
+            unity_import_common.RESOURCE_TYPE_SKINNED_MESH,
+            alias + "/mesh/skinned", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_SKINNED_MESH,
+            meshFields, meshDependencies)
+
+        var skeletonFields: yaml.YamlDocument = yaml.mapping()
+        skeletonFields.set("name", yaml.string(displayName))
+        skeletonFields.set("sourcePath", yaml.string(modelPath))
+        skeletonFields.set("jointCount", yaml.int(imported.joint_count()))
+        skeletonFields.set("bindPoseCount", yaml.int(imported.joint_count()))
+        self.add_entry(writer, outputDirectory, entries, skeletonId,
+            unity_import_common.RESOURCE_TYPE_SKELETON,
+            alias + "/skeleton", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_SKELETON,
+            skeletonFields, noDependencies)
+
+        var avatarFields: yaml.YamlDocument = yaml.mapping()
+        avatarFields.set("name", yaml.string(displayName))
+        avatarFields.set("sourcePath", yaml.string(modelPath))
+        var modelMetaPath: string = modelPath + ".meta"
+        var animationType: int = 0
+        var modelMetaSummary: yaml.YamlDocument = yaml.mapping()
+        var avatarBinding: asset.AvatarBinding = asset.AvatarBinding()
+        if io.exists(modelMetaPath):
+            var modelImporter: UnityModelImporter = UnityModelImporter()
+            modelMetaSummary = modelImporter.summary(modelMetaPath)
+            animationType = modelMetaSummary.get("animationType").integer_value()
+            if animationType == 3:
+                avatarBinding = modelImporter.avatar_binding(modelMetaPath)
+        var humanoid: bool = animationType == 3
+        var humanBoneCount: int = 0
+        var mappedHumanBoneCount: int = 0
+        var mappedSkeletonNodeCount: int = 0
+        if humanoid:
+            var humanDescription: yaml.YamlDocument = modelMetaSummary.get("humanDescription")
+            if yaml.kind_code(humanDescription) == unity_import_common.YAML_KIND_MAPPING:
+                humanBoneCount = humanDescription.get("humanBoneCount").integer_value()
+                if humanBoneCount <= 0:
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": humanoid meta has no human bones"
+                var humanBones: yaml.YamlDocument = humanDescription.get("humanBones")
+                if yaml.kind_code(humanBones) != unity_import_common.YAML_KIND_SEQUENCE:
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": humanoid meta human bones"
+                var humanIndex: int = 0
+                while humanIndex < humanBones.size():
+                    var humanBone: yaml.YamlDocument = humanBones.at(humanIndex)
+                    var boneName: yaml.YamlDocument = humanBone.get("boneName")
+                    var humanName: yaml.YamlDocument = humanBone.get("humanName")
+                    if not boneName.is_string() or boneName.string_value() == "" or not humanName.is_string() or humanName.string_value() == "":
+                        raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": humanoid meta human bone"
+                    var jointIndex: int = 0
+                    var jointFound: bool = false
+                    while jointIndex < imported.joint_count():
+                        if imported.joint_name(jointIndex) == boneName.string_value():
+                            jointFound = true
+                        jointIndex = jointIndex + 1
+                    if not jointFound:
+                        raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": humanoid bone is missing from imported skeleton: " + boneName.string_value()
+                    mappedHumanBoneCount = mappedHumanBoneCount + 1
+                    humanIndex = humanIndex + 1
+                var skeletonNodes: yaml.YamlDocument = humanDescription.get("skeleton")
+                if yaml.kind_code(skeletonNodes) != unity_import_common.YAML_KIND_SEQUENCE:
+                    raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": humanoid meta skeleton"
+                var skeletonIndex: int = 0
+                while skeletonIndex < skeletonNodes.size():
+                    var skeletonNode: yaml.YamlDocument = skeletonNodes.at(skeletonIndex)
+                    var skeletonName: yaml.YamlDocument = skeletonNode.get("name")
+                    if not skeletonName.is_string() or skeletonName.string_value() == "":
+                        raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": humanoid meta skeleton node"
+                    var importedJointIndex: int = 0
+                    var importedJointFound: bool = false
+                    while importedJointIndex < imported.joint_count():
+                        if imported.joint_name(importedJointIndex) == skeletonName.string_value():
+                            importedJointFound = true
+                        importedJointIndex = importedJointIndex + 1
+                    if not importedJointFound:
+                        raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": humanoid skeleton node is missing from imported skeleton: " + skeletonName.string_value()
+                    mappedSkeletonNodeCount = mappedSkeletonNodeCount + 1
+                    skeletonIndex = skeletonIndex + 1
+            else:
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": humanoid meta humanDescription"
+        avatarFields.set("humanBoneCount", yaml.int(humanBoneCount))
+        avatarFields.set("mappedHumanBoneCount", yaml.int(mappedHumanBoneCount))
+        avatarFields.set("mappedSkeletonNodeCount", yaml.int(mappedSkeletonNodeCount))
+        avatarFields.set("humanoid", yaml.boolean(humanoid))
+        avatarFields.set("animationType", yaml.int(animationType))
+        if yaml.kind_code(modelMetaSummary) == unity_import_common.YAML_KIND_MAPPING:
+            avatarFields.set("modelImporter", modelMetaSummary)
+        var avatarDependencies: yaml.YamlDocument = yaml.sequence()
+        avatarDependencies.append(writer.make_dependency(skeletonId, "skeleton"))
+        self.add_entry(writer, outputDirectory, entries, avatarId,
+            unity_import_common.RESOURCE_TYPE_AVATAR,
+            alias + "/avatar", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_AVATAR,
+            avatarFields, avatarDependencies)
+
+        var animationSetFields: yaml.YamlDocument = yaml.mapping()
+        animationSetFields.set("name", yaml.string(displayName))
+        animationSetFields.set("sourcePath", yaml.string(folder))
+        var clipIds: yaml.YamlDocument = yaml.sequence()
+        var animationDependencies: yaml.YamlDocument = yaml.sequence()
+        var clipIndex: int = 0
+        var recordedCurveCount: int = 0
+        var emptyClipCount: int = 0
+        var sequenceDuration: float = 0.0
+        while clipIndex < imported.clip_count():
+            var clipName: string = imported.clip_name(clipIndex)
+            if clipName == "":
+                raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD
+            var clipId: string = self.make_id(folder, alias,
+                "AnimationClipResource/" + clipName)
+            var clipFields: yaml.YamlDocument = yaml.mapping()
+            var clipDuration: float = imported.clip_duration(clipIndex)
+            var clipChannels: int = imported.clip_channel_count(clipIndex)
+            var clipSourceResourceId: string = asset.uuid_from_text(
+                "UnityAnimationClip|" + modelPath + "|" + clipName)
+            clipFields.set("name", yaml.string(clipName))
+            clipFields.set("sourcePath", yaml.string(modelPath))
+            clipFields.set("sourceResourceId", yaml.string(clipSourceResourceId))
+            clipFields.set("durationSeconds", yaml.float(clipDuration))
+            clipFields.set("channelCount", yaml.int(clipChannels))
+            clipFields.set("recordedCurve", yaml.boolean(clipChannels > 0))
+            var clipEnvelopePath: string = unity_import_common.CHARACTER_ENVELOPE_ANIMATION_CLIP
+            if imported.clip_count() > 1:
+                clipEnvelopePath = "animation-clip-" + clipName + ".arpres.yaml"
+            self.add_source_entry(
+                writer,
+                outputDirectory,
+                entries,
+                clipSourceResourceId,
+                modelPath,
+                "AnimationClip",
+                displayName,
+                status)
+            self.add_entry(writer, outputDirectory, entries, clipId,
+                unity_import_common.RESOURCE_TYPE_ANIMATION_CLIP,
+                alias + "/animation/" + clipName, displayName, status,
+                clipEnvelopePath, clipFields, noDependencies)
+            clipIds.append(yaml.string(clipId))
+            animationDependencies.append(writer.make_dependency(clipId, "animation"))
+            recordedCurveCount = recordedCurveCount + clipChannels
+            if clipChannels == 0:
+                emptyClipCount = emptyClipCount + 1
+            if clipDuration > sequenceDuration:
+                sequenceDuration = clipDuration
+            clipIndex = clipIndex + 1
+        if imported.clip_count() == 0:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD
+        animationSetFields.set("clipCount", yaml.int(imported.clip_count()))
+        animationSetFields.set("clipIds", clipIds)
+        self.add_entry(writer, outputDirectory, entries, animationSetId,
+            unity_import_common.RESOURCE_TYPE_ANIMATION_SET,
+            alias + "/animation-set", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_ANIMATION_SET,
+            animationSetFields, animationDependencies)
+
+        var animatorFields: yaml.YamlDocument = yaml.mapping()
+        animatorFields.set("name", yaml.string(displayName))
+        animatorFields.set("sourcePath", yaml.string(folder))
+        var controllerPath: string = ""
+        var prefabPath: string = ""
+        var folderIndex: int = 0
+        while folderIndex < files.count():
+            var folderFile: string = files.at(folderIndex)
+            var folderExtension: string = self.input_extension(folderFile)
+            if folderExtension == unity_import_common.EXTENSION_CONTROLLER and controllerPath == "":
+                controllerPath = folderFile
+            if folderExtension == unity_import_common.EXTENSION_PREFAB and prefabPath == "":
+                prefabPath = folderFile
+            folderIndex = folderIndex + 1
+        var defaultStateName: string = ""
+        var stateCount: int = 0
+        var parameterCount: int = 0
+        var controllerSourceAvailable: bool = false
+        var controllerClipBindings: yaml.YamlDocument = yaml.sequence()
+        if controllerPath != "":
+            var controllerImporter: UnityAnimatorControllerImporter = UnityAnimatorControllerImporter()
+            var controllerSummary: yaml.YamlDocument = controllerImporter.summary(controllerPath)
+            var controllerDefault: yaml.YamlDocument = controllerSummary.get("stateNames")
+            if yaml.kind_code(controllerDefault) == unity_import_common.YAML_KIND_SEQUENCE and controllerDefault.size() > 0:
+                defaultStateName = controllerDefault.at(0).string_value()
+            stateCount = controllerSummary.get("stateCount").integer_value()
+            parameterCount = controllerSummary.get("parameterCount").integer_value()
+            controllerClipBindings = self.validate_controller_clip_bindings(
+                controllerSummary, folder, imported, modelPath, avatarBinding)
+            animatorFields.set("controller", controllerSummary)
+            controllerSourceAvailable = true
+        animatorFields.set("defaultStateName", yaml.string(defaultStateName))
+        animatorFields.set("stateCount", yaml.int(stateCount))
+        animatorFields.set("parameterCount", yaml.int(parameterCount))
+        animatorFields.set("clipBindingCount", yaml.int(controllerClipBindings.size()))
+        animatorFields.set("clipBindings", controllerClipBindings)
+        animatorFields.set("controllerSourceAvailable", yaml.boolean(controllerSourceAvailable))
+        self.add_entry(writer, outputDirectory, entries, animatorId,
+            unity_import_common.RESOURCE_TYPE_ANIMATOR,
+            alias + "/animator", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_ANIMATOR,
+            animatorFields, noDependencies)
+
+        var runtimePayloadId: string = asset.uuid_from_text(
+            "UnityRuntimePayload|" + folder + "|" + alias)
+        var runtimePayload: asset.RuntimePayloadResult = asset.write_prefab_runtime_payload(
+            outputDirectory,
+            unity_import_common.CHARACTER_BLOB_RUNTIME_PAYLOAD,
+            displayName,
+            imported,
+            defaultStateName)
+        if not runtimePayload.success:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD + ": runtime payload: " + runtimePayload.diagnostics
+        var runtimePayloadFields: yaml.YamlDocument = yaml.mapping()
+        runtimePayloadFields.set("name", yaml.string(displayName))
+        runtimePayloadFields.set("blobPath", yaml.string(runtimePayload.blobPath))
+        runtimePayloadFields.set("blobHash", yaml.integer(runtimePayload.blobHash))
+        runtimePayloadFields.set("blobByteSize", yaml.int(runtimePayload.blobByteSize))
+        runtimePayloadFields.set("defaultStateName", yaml.string(runtimePayload.defaultStateName))
+        runtimePayloadFields.set("defaultClipName", yaml.string(runtimePayload.defaultClipName))
+        runtimePayloadFields.set("stateBindingCount", yaml.int(runtimePayload.stateBindingCount))
+        runtimePayloadFields.set("materialCount", yaml.int(runtimePayload.materialCount))
+        runtimePayloadFields.set("textureCount", yaml.int(runtimePayload.textureCount))
+        runtimePayloadFields.set("imageCount", yaml.int(runtimePayload.imageCount))
+        self.add_entry(
+            writer,
+            outputDirectory,
+            entries,
+            runtimePayloadId,
+            unity_import_common.RESOURCE_TYPE_RUNTIME_PAYLOAD,
+            alias + "/runtime-payload",
+            displayName,
+            status,
+            unity_import_common.CHARACTER_ENVELOPE_RUNTIME_PAYLOAD,
+            runtimePayloadFields,
+            noDependencies)
+
+        var sequenceFields: yaml.YamlDocument = yaml.mapping()
+        sequenceFields.set("name", yaml.string(displayName))
+        sequenceFields.set("sourcePath", yaml.string(folder))
+        var sourceResourceId: string = asset.uuid_from_text(
+            "UnityCharacterFolder|" + folder)
+        sequenceFields.set("sourceResourceId", yaml.string(sourceResourceId))
+        self.add_source_entry(
+            writer,
+            outputDirectory,
+            entries,
+            sourceResourceId,
+            folder,
+            "Folder",
+            displayName,
+            status)
+        sequenceFields.set("durationSeconds", yaml.float(sequenceDuration))
+        sequenceFields.set("trackCount", yaml.int(imported.clip_count()))
+        sequenceFields.set("clipCount", yaml.int(imported.clip_count()))
+        sequenceFields.set("recordedCurveCount", yaml.int(recordedCurveCount))
+        sequenceFields.set("emptyBindingCount", yaml.int(emptyClipCount))
+        sequenceFields.set("diagnostics", yaml.string(""))
+        self.add_entry(writer, outputDirectory, entries, sequenceId,
+            unity_import_common.RESOURCE_TYPE_SEQUENCE,
+            alias + "/sequence", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_SEQUENCE,
+            sequenceFields, noDependencies)
+
+        var bindingFields: yaml.YamlDocument = yaml.mapping()
+        bindingFields.set("name", yaml.string(displayName))
+        bindingFields.set("sourcePath", yaml.string(folder))
+        bindingFields.set("sequenceId", yaml.string(sequenceId))
+        bindingFields.set("bindingCount", yaml.int(imported.joint_count()))
+        bindingFields.set("emptyBindingCount", yaml.int(0))
+        bindingFields.set("diagnostics", yaml.string(""))
+        var bindingDependencies: yaml.YamlDocument = yaml.sequence()
+        bindingDependencies.append(writer.make_dependency(sequenceId, "sequence"))
+        self.add_entry(writer, outputDirectory, entries, sequenceBindingsId,
+            unity_import_common.RESOURCE_TYPE_SEQUENCE_BINDINGS,
+            alias + "/sequence-bindings", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_SEQUENCE_BINDINGS,
+            bindingFields, bindingDependencies)
+
+        var previewFields: yaml.YamlDocument = yaml.mapping()
+        previewFields.set("lightingPreset", yaml.string("Neutral"))
+        previewFields.set("verticalFovDegrees", yaml.float(42.0))
+        previewFields.set("cameraDistance", yaml.float(4.0))
+        previewFields.set("exposure", yaml.float(1.08))
+        self.add_entry(writer, outputDirectory, entries, previewId,
+            unity_import_common.RESOURCE_TYPE_PREVIEW_STUDIO,
+            alias + "/preview-studio", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_PREVIEW_STUDIO,
+            previewFields, noDependencies)
+
+        var modelFields: yaml.YamlDocument = yaml.mapping()
+        modelFields.set("name", yaml.string(displayName))
+        modelFields.set("sourcePath", yaml.string(modelPath))
+        var modelSourceResourceId: string = asset.uuid_from_text(
+            "UnityFbx|" + modelPath)
+        modelFields.set("sourceResourceId", yaml.string(modelSourceResourceId))
+        self.add_source_entry(
+            writer,
+            outputDirectory,
+            entries,
+            modelSourceResourceId,
+            modelPath,
+            "Model",
+            displayName,
+            status)
+        modelFields.set("skinnedMeshId", yaml.string(meshId))
+        modelFields.set("skeletonId", yaml.string(skeletonId))
+        modelFields.set("avatarId", yaml.string(avatarId))
+        modelFields.set("animationSetId", yaml.string(animationSetId))
+        modelFields.set("materialSetId", yaml.string(materialSetId))
+        modelFields.set("materialRemapCount", yaml.int(externalMaterialRemaps.size()))
+        modelFields.set("importedAnimationCount", yaml.int(imported.clip_count()))
+        modelFields.set("humanoid", yaml.boolean(humanoid))
+        var modelDependencies: yaml.YamlDocument = yaml.sequence()
+        modelDependencies.append(writer.make_dependency(meshId, "mesh"))
+        modelDependencies.append(writer.make_dependency(skeletonId, "skeleton"))
+        modelDependencies.append(writer.make_dependency(avatarId, "avatar"))
+        modelDependencies.append(writer.make_dependency(animationSetId, "animation-set"))
+        modelDependencies.append(writer.make_dependency(materialSetId, "material-set"))
+        self.add_entry(writer, outputDirectory, entries, modelId,
+            unity_import_common.RESOURCE_TYPE_MODEL,
+            alias + "/model", displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_MODEL,
+            modelFields, modelDependencies)
+
+        var prefabFields: yaml.YamlDocument = yaml.mapping()
+        prefabFields.set("name", yaml.string(displayName))
+        prefabFields.set("sourcePath", yaml.string(folder))
+        var prefabSourceId: string = asset.uuid_from_text(
+            "UnityCharacterFolder|" + folder)
+        if prefabPath != "":
+            prefabSourceId = asset.uuid_from_text("UnityPrefab|" + prefabPath)
+        prefabFields.set("sourceResourceId", yaml.string(prefabSourceId))
+        var prefabSourcePath: string = folder
+        var prefabSourceType: string = "Folder"
+        if prefabPath != "":
+            prefabSourcePath = prefabPath
+            prefabSourceType = "Prefab"
+        self.add_source_entry(
+            writer,
+            outputDirectory,
+            entries,
+            prefabSourceId,
+            prefabSourcePath,
+            prefabSourceType,
+            displayName,
+            status)
+        prefabFields.set("modelId", yaml.string(modelId))
+        prefabFields.set("skinnedMeshId", yaml.string(meshId))
+        prefabFields.set("skeletonId", yaml.string(skeletonId))
+        prefabFields.set("avatarId", yaml.string(avatarId))
+        prefabFields.set("animationSetId", yaml.string(animationSetId))
+        prefabFields.set("animatorControllerId", yaml.string(animatorId))
+        prefabFields.set("materialSetId", yaml.string(materialSetId))
+        prefabFields.set("runtimePayloadId", yaml.string(runtimePayloadId))
+        prefabFields.set("sequenceId", yaml.string(sequenceId))
+        prefabFields.set("sequenceBindingSetId", yaml.string(sequenceBindingsId))
+        prefabFields.set("previewStudioId", yaml.string(previewId))
+        var shaderIds: yaml.YamlDocument = yaml.sequence()
+        shaderIds.append(yaml.string(basicShaderId))
+        shaderIds.append(yaml.string(stylizedShaderId))
+        shaderIds.append(yaml.string(guiShaderId))
+        shaderIds.append(yaml.string(startupShaderId))
+        prefabFields.set("shaderPackageIds", shaderIds)
+        prefabFields.set("prefabSourceAvailable", yaml.boolean(prefabPath != ""))
+        var prefabObjectCount: int = 0
+        var prefabComponentCount: int = 0
+        var prefabPhysicsColliderCount: int = 0
+        var prefabLightHelperCount: int = 0
+        if prefabPath != "":
+            var prefabImporter: UnityPrefabImporter = UnityPrefabImporter()
+            var prefabSummary: yaml.YamlDocument = prefabImporter.summary(prefabPath)
+            prefabObjectCount = prefabSummary.get("objectCount").integer_value()
+            prefabComponentCount = prefabSummary.get("componentCount").integer_value()
+            prefabPhysicsColliderCount = prefabSummary.get("physicsColliderCount").integer_value()
+            prefabLightHelperCount = prefabSummary.get("lightHelperCount").integer_value()
+        prefabFields.set("objectCount", yaml.int(prefabObjectCount))
+        prefabFields.set("componentCount", yaml.int(prefabComponentCount))
+        prefabFields.set("physicsColliderCount", yaml.int(prefabPhysicsColliderCount))
+        prefabFields.set("lightHelperCount", yaml.int(prefabLightHelperCount))
+        var prefabDependencies: yaml.YamlDocument = yaml.sequence()
+        prefabDependencies.append(writer.make_dependency(modelId, "model"))
+        prefabDependencies.append(writer.make_dependency(meshId, "mesh"))
+        prefabDependencies.append(writer.make_dependency(skeletonId, "skeleton"))
+        prefabDependencies.append(writer.make_dependency(avatarId, "avatar"))
+        prefabDependencies.append(writer.make_dependency(animationSetId, "animation-set"))
+        prefabDependencies.append(writer.make_dependency(animatorId, "animator"))
+        prefabDependencies.append(writer.make_dependency(materialSetId, "material-set"))
+        prefabDependencies.append(writer.make_dependency(runtimePayloadId, "runtime-payload"))
+        prefabDependencies.append(writer.make_dependency(sequenceId, "sequence"))
+        prefabDependencies.append(writer.make_dependency(sequenceBindingsId, "sequence-bindings"))
+        prefabDependencies.append(writer.make_dependency(previewId, "preview-studio"))
+        prefabDependencies.append(writer.make_dependency(basicShaderId, "shader"))
+        prefabDependencies.append(writer.make_dependency(stylizedShaderId, "shader"))
+        prefabDependencies.append(writer.make_dependency(guiShaderId, "shader"))
+        prefabDependencies.append(writer.make_dependency(startupShaderId, "shader"))
+        self.add_entry(writer, outputDirectory, entries, rootId,
+            unity_import_common.RESOURCE_TYPE_PREFAB,
+            alias, displayName, status,
+            unity_import_common.CHARACTER_ENVELOPE_PREFAB,
+            prefabFields, prefabDependencies)
+        var expectedEntryCount: int = unity_import_common.CHARACTER_PACKAGE_FIXED_ENTRY_COUNT
+        expectedEntryCount = expectedEntryCount + imported.clip_count()
+        expectedEntryCount = expectedEntryCount + imported.material_count()
+        expectedEntryCount = expectedEntryCount + textureIds.size()
+        var externalSourceEntryCount: int = 0
+        var entryIndex: int = 0
+        while entryIndex < entries.size():
+            if entries.at(entryIndex).get("resourceType").string_value() == unity_import_common.RESOURCE_TYPE_EXTERNAL_SOURCE:
+                externalSourceEntryCount = externalSourceEntryCount + 1
+            entryIndex = entryIndex + 1
+        expectedEntryCount = expectedEntryCount + externalSourceEntryCount
+        if entries.size() != expectedEntryCount:
+            raise unity_import_common.DIAGNOSTIC_CHARACTER_PACKAGE_PAYLOAD
+        writer.write_package(outputDirectory, displayName, status, entries)
+        return unity_import_common.STATUS_OK
+

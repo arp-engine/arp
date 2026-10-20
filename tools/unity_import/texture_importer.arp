@@ -1,0 +1,120 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+
+class UnityTextureImporter(Importer):
+    def mime_type(self, extension: string) -> string:
+        if extension == unity_import_common.EXTENSION_PNG:
+            return "image/png"
+        if extension == unity_import_common.EXTENSION_JPG or extension == unity_import_common.EXTENSION_JPEG:
+            return "image/jpeg"
+        if extension == unity_import_common.EXTENSION_WEBP:
+            return "image/webp"
+        if extension == unity_import_common.EXTENSION_TGA:
+            return "image/tga"
+        if extension == unity_import_common.EXTENSION_PSD:
+            return "image/vnd.adobe.photoshop"
+        raise unity_import_common.DIAGNOSTIC_UNSUPPORTED_EXTENSION + ": " + extension
+
+    def optional_boolean(
+        self,
+        importer: yaml.YamlDocument,
+        fieldName: string,
+        defaultValue: bool,
+        metaPath: string) -> bool:
+        var value: yaml.YamlDocument = importer.get(fieldName)
+        var kindCode: int = yaml.kind_code(value)
+        if kindCode <= unity_import_common.YAML_KIND_NULL:
+            return defaultValue
+        if value.is_boolean():
+            return value.boolean_value()
+        if value.is_integer():
+            return value.integer_value() != 0
+        raise unity_import_common.DIAGNOSTIC_TEXTURE_META + ": " + metaPath + ": " + fieldName
+
+    def import_settings(self, path: string) -> yaml.YamlDocument:
+        var settings: yaml.YamlDocument = yaml.mapping()
+        settings.set("sRGBTexture", yaml.boolean(
+            unity_import_common.TEXTURE_DEFAULT_SRGB))
+        settings.set("alphaIsTransparency", yaml.boolean(
+            unity_import_common.TEXTURE_DEFAULT_ALPHA_IS_TRANSPARENCY))
+        var metaPath: string = path + ".meta"
+        if not io.exists(metaPath):
+            return settings
+        var metaText: string = self.read_text_or_raise(metaPath)
+        var meta: yaml.YamlDocument = self.first_document_or_raise(metaText)
+        var importer: yaml.YamlDocument = meta.get("TextureImporter")
+        if yaml.kind_code(importer) != unity_import_common.YAML_KIND_MAPPING:
+            raise unity_import_common.DIAGNOSTIC_TEXTURE_META + ": " + metaPath + ": TextureImporter"
+        settings.set("sRGBTexture", yaml.boolean(self.optional_boolean(
+            importer,
+            "sRGBTexture",
+            unity_import_common.TEXTURE_DEFAULT_SRGB,
+            metaPath)))
+        settings.set("alphaIsTransparency", yaml.boolean(self.optional_boolean(
+            importer,
+            "alphaIsTransparency",
+            unity_import_common.TEXTURE_DEFAULT_ALPHA_IS_TRANSPARENCY,
+            metaPath)))
+        return settings
+
+    def import_path(self, path: string) -> asset.DecodedImageResult:
+        if not io.exists(path):
+            raise unity_import_common.DIAGNOSTIC_TEXTURE_SOURCE + ": " + path
+        var extension: string = self.input_extension(path)
+        var mime: string = self.mime_type(extension)
+        var settings: yaml.YamlDocument = self.import_settings(path)
+        var srgb: bool = settings.get("sRGBTexture").boolean_value()
+        var decoded: asset.DecodedImageResult = asset.decode_image(
+            path, mime, srgb)
+        if not decoded.success:
+            raise unity_import_common.DIAGNOSTIC_TEXTURE_DECODE + ": " + path + ": " + decoded.diagnostics
+        if decoded.width <= 0 or decoded.height <= 0:
+            raise unity_import_common.DIAGNOSTIC_TEXTURE_INVALID + ": " + path
+        var expectedByteCount: int64 = decoded.width
+        expectedByteCount = expectedByteCount * decoded.height * 4
+        if decoded.rgba8.length() != expectedByteCount:
+            raise unity_import_common.DIAGNOSTIC_TEXTURE_INVALID + ": " + path
+        return decoded
+
+    def export_path(self, input: string, output: string) -> int:
+        var decoded: asset.DecodedImageResult = self.import_path(input)
+        var report: yaml.YamlDocument = self.make_report(
+            input, unity_import_common.REPORT_KIND_TEXTURE, unity_import_common.STATUS_OK)
+        var texture: yaml.YamlDocument = yaml.mapping()
+        texture.set("mime", yaml.string(self.mime_type(
+            self.input_extension(input))))
+        texture.set("width", yaml.int(decoded.width))
+        texture.set("height", yaml.int(decoded.height))
+        texture.set("srgb", yaml.boolean(decoded.srgb))
+        texture.set("alpha", yaml.boolean(decoded.alpha))
+        var settings: yaml.YamlDocument = self.import_settings(input)
+        texture.set("alphaIsTransparency", yaml.boolean(
+            settings.get("alphaIsTransparency").boolean_value()))
+        var byteCount: int64 = decoded.width
+        byteCount = byteCount * decoded.height * 4
+        texture.set("rgba8ByteCount", yaml.integer(byteCount))
+        report.set("texture", texture)
+        return self.write_report(output, report)
+
+    def validate_meta(self, input: string) -> void:
+        var assetPath: string = arp_import_host.path_replace_extension(input, "")
+        self.import_settings(assetPath)
+
+    def export_meta_path(self, input: string, output: string) -> int:
+        var assetPath: string = arp_import_host.path_replace_extension(input, "")
+        var settings: yaml.YamlDocument = self.import_settings(assetPath)
+        var report: yaml.YamlDocument = self.make_report(
+            input, unity_import_common.REPORT_KIND_TEXTURE_META,
+            unity_import_common.STATUS_OK)
+        var meta: yaml.YamlDocument = yaml.mapping()
+        meta.set("importer", yaml.string("TextureImporter"))
+        meta.set("assetPath", yaml.string(assetPath))
+        meta.set("sRGBTexture", settings.get("sRGBTexture"))
+        meta.set("alphaIsTransparency", settings.get("alphaIsTransparency"))
+        report.set("meta", meta)
+        return self.write_report(output, report)
+

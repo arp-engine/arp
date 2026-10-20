@@ -1,0 +1,71 @@
+name: Signed iPhone IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: Xcode build configuration
+        required: true
+        default: Release
+        type: choice
+        options:
+          - Release
+          - Debug
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-signed-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-signed-ipa:
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+      APPLE_BUNDLE_IDENTIFIER: ${{ vars.APPLE_BUNDLE_IDENTIFIER }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bootstrap Apple tools
+        run: bash ci/bootstrap_apple.sh
+
+      - name: Validate Apple project and signing contracts
+        run: python3 -m unittest tests/tooling/apple_ci_contract_tests.py
+
+      - name: Install and validate Ad Hoc signing material
+        run: python3 ci/apple_signing.py install
+
+      - name: Archive and export signed IPA
+        run: >-
+          python3 ci/apple_build.py ios-signed
+          --configuration "${{ inputs.configuration }}"
+          --parallel 2
+
+      - name: Verify IPA signature and embedded profile
+        run: >-
+          python3 ci/apple_signing.py verify-ipa
+          --ipa build/ci-apple/ios-metal/export/arp_ios_smoke_app.ipa
+
+      - name: Upload installable IPA and symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: arp-ios-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            build/ci-apple/ios-metal/export/*.ipa
+            build/ci-apple/ios-metal/archive/*.xcarchive/dSYMs/**
+            build/ci-apple/ios-metal/ExportOptions.plist
+            build/ci-apple/ios-metal/shaders/*.metal
+            build/ci-apple/ios-metal/shaders/*.reflection.yaml
+
+      - name: Remove temporary signing material
+        if: always()
+        run: python3 ci/apple_signing.py cleanup

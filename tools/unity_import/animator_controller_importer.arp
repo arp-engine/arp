@@ -1,0 +1,191 @@
+import unity_import_common
+import asset
+import io
+import yaml
+import arp_import_host
+import importer_base
+
+class UnityAnimatorControllerImporter(Importer):
+    def summary(self, input: string) -> yaml.YamlDocument:
+        var text: string = self.read_text_or_raise(input)
+        var parsed: yaml.YamlParseResult = self.parse_yaml_or_raise(text)
+        var controllerFound: bool = false
+        var controllerName: string = ""
+        var stateCount: int = 0
+        var transitionCount: int = 0
+        var parameterCount: int = 0
+        var stateNames: yaml.YamlDocument = yaml.sequence()
+        var parametersSummary: yaml.YamlDocument = yaml.sequence()
+        var statesSummary: yaml.YamlDocument = yaml.sequence()
+        var transitionsSummary: yaml.YamlDocument = yaml.sequence()
+        var stateMachineSummary: yaml.YamlDocument = yaml.mapping()
+        for document: yaml.YamlDocument in parsed.documents:
+            var controller: yaml.YamlDocument = document.get("AnimatorController")
+            if yaml.kind_code(controller) == unity_import_common.YAML_KIND_MAPPING:
+                controllerFound = true
+                var name: yaml.YamlDocument = controller.get("m_Name")
+                if not name.is_string() or name.string_value() == "":
+                    raise unity_import_common.DIAGNOSTIC_CONTROLLER_MISSING + ": m_Name"
+                controllerName = name.string_value()
+                var parameters: yaml.YamlDocument = controller.get("m_AnimatorParameters")
+                if yaml.kind_code(parameters) == unity_import_common.YAML_KIND_SEQUENCE:
+                    parameterCount = parameters.size()
+                    var parameterIndex: int = 0
+                    while parameterIndex < parameters.size():
+                        var parameter: yaml.YamlDocument = parameters.at(parameterIndex)
+                        if yaml.kind_code(parameter) != unity_import_common.YAML_KIND_MAPPING:
+                            raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": m_AnimatorParameters"
+                        var parameterName: yaml.YamlDocument = parameter.get("m_Name")
+                        if not parameterName.is_string() or parameterName.string_value() == "":
+                            raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": m_AnimatorParameters.m_Name"
+                        var parameterOutput: yaml.YamlDocument = yaml.mapping()
+                        parameterOutput.set("name", yaml.string(parameterName.string_value()))
+                        var parameterType: yaml.YamlDocument = parameter.get("m_Type")
+                        if not parameterType.is_integer():
+                            raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": m_AnimatorParameters.m_Type"
+                        parameterOutput.set("type", parameterType)
+                        var defaultFloat: yaml.YamlDocument = parameter.get("m_DefaultFloat")
+                        if yaml.kind_code(defaultFloat) > unity_import_common.YAML_KIND_NULL:
+                            if not defaultFloat.is_integer() and not defaultFloat.is_float():
+                                raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": m_DefaultFloat"
+                            parameterOutput.set("defaultFloat", defaultFloat)
+                        var defaultInt: yaml.YamlDocument = parameter.get("m_DefaultInt")
+                        if yaml.kind_code(defaultInt) > unity_import_common.YAML_KIND_NULL:
+                            if not defaultInt.is_integer():
+                                raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": m_DefaultInt"
+                            parameterOutput.set("defaultInt", defaultInt)
+                        var defaultBool: yaml.YamlDocument = parameter.get("m_DefaultBool")
+                        if yaml.kind_code(defaultBool) > unity_import_common.YAML_KIND_NULL:
+                            if not defaultBool.is_boolean() and not defaultBool.is_integer():
+                                raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": m_DefaultBool"
+                            parameterOutput.set("defaultBool", defaultBool)
+                        parametersSummary.append(parameterOutput)
+                        parameterIndex = parameterIndex + 1
+                elif yaml.kind_code(parameters) > unity_import_common.YAML_KIND_NULL:
+                    raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": m_AnimatorParameters"
+            var state: yaml.YamlDocument = document.get("AnimatorState")
+            if yaml.kind_code(state) == unity_import_common.YAML_KIND_MAPPING:
+                stateCount = stateCount + 1
+                var stateName: yaml.YamlDocument = state.get("m_Name")
+                if not stateName.is_string() or stateName.string_value() == "":
+                    raise unity_import_common.DIAGNOSTIC_CONTROLLER_STATE + ": m_Name"
+                stateNames.append(yaml.string(stateName.string_value()))
+                var stateOutput: yaml.YamlDocument = yaml.mapping()
+                stateOutput.set("name", yaml.string(stateName.string_value()))
+                var transitions: yaml.YamlDocument = state.get("m_Transitions")
+                if yaml.kind_code(transitions) == unity_import_common.YAML_KIND_SEQUENCE:
+                    transitionCount = transitionCount + transitions.size()
+                    stateOutput.set("transitionCount", yaml.int(transitions.size()))
+                elif yaml.kind_code(transitions) > unity_import_common.YAML_KIND_NULL:
+                    raise unity_import_common.DIAGNOSTIC_CONTROLLER_STATE + ": m_Transitions"
+                var speed: yaml.YamlDocument = state.get("m_Speed")
+                if yaml.kind_code(speed) > unity_import_common.YAML_KIND_NULL:
+                    if not speed.is_integer() and not speed.is_float():
+                        raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": AnimatorState.m_Speed"
+                    stateOutput.set("speed", speed)
+                var motion: yaml.YamlDocument = state.get("m_Motion")
+                if yaml.kind_code(motion) == unity_import_common.YAML_KIND_MAPPING:
+                    var motionGuid: yaml.YamlDocument = motion.get("guid")
+                    var motionFileId: yaml.YamlDocument = motion.get("fileID")
+                    if yaml.kind_code(motionGuid) > unity_import_common.YAML_KIND_NULL:
+                        if not motionGuid.is_string():
+                            raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": AnimatorState.m_Motion.guid"
+                        stateOutput.set("motionGuid", motionGuid)
+                    if yaml.kind_code(motionFileId) > unity_import_common.YAML_KIND_NULL:
+                        if not motionFileId.is_integer():
+                            raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": AnimatorState.m_Motion.fileID"
+                        stateOutput.set("motionFileId", motionFileId)
+                elif yaml.kind_code(motion) > unity_import_common.YAML_KIND_NULL:
+                    raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": AnimatorState.m_Motion"
+                statesSummary.append(stateOutput)
+            var stateMachine: yaml.YamlDocument = document.get("AnimatorStateMachine")
+            if yaml.kind_code(stateMachine) == unity_import_common.YAML_KIND_MAPPING:
+                var defaultState: yaml.YamlDocument = stateMachine.get("m_DefaultState")
+                if yaml.kind_code(defaultState) > unity_import_common.YAML_KIND_NULL:
+                    if yaml.kind_code(defaultState) != unity_import_common.YAML_KIND_MAPPING:
+                        raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": AnimatorStateMachine.m_DefaultState"
+                    stateMachineSummary.set("defaultState", defaultState)
+            var transition: yaml.YamlDocument = document.get("AnimatorTransition")
+            if yaml.kind_code(transition) == unity_import_common.YAML_KIND_MAPPING:
+                var transitionOutput: yaml.YamlDocument = yaml.mapping()
+                var duration: yaml.YamlDocument = transition.get("m_TransitionDuration")
+                if yaml.kind_code(duration) > unity_import_common.YAML_KIND_NULL:
+                    if not duration.is_integer() and not duration.is_float():
+                        raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": AnimatorTransition.m_TransitionDuration"
+                    transitionOutput.set("duration", duration)
+                var exitTime: yaml.YamlDocument = transition.get("m_ExitTime")
+                if yaml.kind_code(exitTime) > unity_import_common.YAML_KIND_NULL:
+                    if not exitTime.is_integer() and not exitTime.is_float():
+                        raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": AnimatorTransition.m_ExitTime"
+                    transitionOutput.set("exitTime", exitTime)
+                var hasExitTime: yaml.YamlDocument = transition.get("m_HasExitTime")
+                if yaml.kind_code(hasExitTime) > unity_import_common.YAML_KIND_NULL:
+                    if not hasExitTime.is_boolean() and not hasExitTime.is_integer():
+                        raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": AnimatorTransition.m_HasExitTime"
+                    transitionOutput.set("hasExitTime", hasExitTime)
+                var sourceState: yaml.YamlDocument = transition.get("m_SrcState")
+                if yaml.kind_code(sourceState) > unity_import_common.YAML_KIND_NULL:
+                    if yaml.kind_code(sourceState) != unity_import_common.YAML_KIND_MAPPING:
+                        raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": AnimatorTransition.m_SrcState"
+                    transitionOutput.set("sourceState", sourceState)
+                var destinationState: yaml.YamlDocument = transition.get("m_DstState")
+                if yaml.kind_code(destinationState) > unity_import_common.YAML_KIND_NULL:
+                    if yaml.kind_code(destinationState) != unity_import_common.YAML_KIND_MAPPING:
+                        raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": AnimatorTransition.m_DstState"
+                    transitionOutput.set("destinationState", destinationState)
+                var conditions: yaml.YamlDocument = transition.get("m_Conditions")
+                if yaml.kind_code(conditions) > unity_import_common.YAML_KIND_NULL:
+                    if yaml.kind_code(conditions) != unity_import_common.YAML_KIND_SEQUENCE:
+                        raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": AnimatorTransition.m_Conditions"
+                    var conditionSummary: yaml.YamlDocument = yaml.sequence()
+                    var conditionIndex: int = 0
+                    while conditionIndex < conditions.size():
+                        var condition: yaml.YamlDocument = conditions.at(conditionIndex)
+                        if yaml.kind_code(condition) != unity_import_common.YAML_KIND_MAPPING:
+                            raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": AnimatorTransition.m_Conditions"
+                        var conditionOutput: yaml.YamlDocument = yaml.mapping()
+                        var conditionMode: yaml.YamlDocument = condition.get("m_ConditionMode")
+                        if yaml.kind_code(conditionMode) > unity_import_common.YAML_KIND_NULL:
+                            if not conditionMode.is_integer():
+                                raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": m_ConditionMode"
+                            conditionOutput.set("mode", conditionMode)
+                        var conditionEvent: yaml.YamlDocument = condition.get("m_ConditionEvent")
+                        if yaml.kind_code(conditionEvent) > unity_import_common.YAML_KIND_NULL:
+                            if not conditionEvent.is_string():
+                                raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": m_ConditionEvent"
+                            conditionOutput.set("event", conditionEvent)
+                        var threshold: yaml.YamlDocument = condition.get("m_EventTreshold")
+                        if yaml.kind_code(threshold) > unity_import_common.YAML_KIND_NULL:
+                            if not threshold.is_integer() and not threshold.is_float():
+                                raise unity_import_common.DIAGNOSTIC_CONTROLLER_PARSE + ": m_EventTreshold"
+                            conditionOutput.set("threshold", threshold)
+                        conditionSummary.append(conditionOutput)
+                        conditionIndex = conditionIndex + 1
+                    transitionOutput.set("conditions", conditionSummary)
+                transitionsSummary.append(transitionOutput)
+        if not controllerFound:
+            raise unity_import_common.DIAGNOSTIC_CONTROLLER_MISSING
+        if stateCount == 0:
+            raise unity_import_common.DIAGNOSTIC_CONTROLLER_STATE
+        var result: yaml.YamlDocument = yaml.mapping()
+        result.set("name", yaml.string(controllerName))
+        result.set("stateCount", yaml.int(stateCount))
+        result.set("transitionCount", yaml.int(transitionCount))
+        result.set("parameterCount", yaml.int(parameterCount))
+        result.set("stateNames", stateNames)
+        result.set("parameters", parametersSummary)
+        result.set("states", statesSummary)
+        result.set("transitions", transitionsSummary)
+        result.set("stateMachine", stateMachineSummary)
+        return result
+
+    def validate(self, input: string) -> void:
+        self.summary(input)
+
+    def export_path(self, input: string, output: string) -> int:
+        var controllerSummary: yaml.YamlDocument = self.summary(input)
+        var report: yaml.YamlDocument = self.make_report(
+            input, unity_import_common.REPORT_KIND_CONTROLLER, unity_import_common.STATUS_OK)
+        report.set("controller", controllerSummary)
+        return self.write_report(output, report)
+

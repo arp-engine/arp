@@ -1,0 +1,10 @@
+type: arp.script.cpp-plugin
+contractVersion: 2
+module: arp_import_host
+moduleVersion: 1
+exportContractHash: sha256:arp-import-host-v2
+source: arp_import_host_module.cpp
+entry: arp_register_import_host
+reflectionModule: arp_import_host
+reflectionHeaders:
+  - arp_import_host_module.h

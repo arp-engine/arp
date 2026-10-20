@@ -1,0 +1,11 @@
+# These checked-in shader fixtures carry SHA-256 fingerprints of LF bytes.
+tests/fixtures/rhi_push_contract.slang text eol=lf
+tests/fixtures/rhi_pipeline_contract.slang text eol=lf
+tests/fixtures/descriptor_depth_compute.slang text eol=lf
+tests/fixtures/descriptor_depth.slang text eol=lf
+tests/fixtures/original_depth_table_geometry.slang text eol=lf
+tests/fixtures/null_hidden_frame_smoke.slang text eol=lf
+tests/fixtures/webgpu_rhi.slang text eol=lf
+tests/fixtures/original_general_readonly_shader_resources.slang text eol=lf
+tests/fixtures/original_general_graphics_shader_resources.slang text eol=lf
+tests/fixtures/original_general_graphics_readonly_shader_resources.slang text eol=lf
