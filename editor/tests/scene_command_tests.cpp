@@ -102,6 +102,11 @@ int main()
                    ->desc()
                    .textureResourceId
             == "icon-cube");
+        assert(sceneChromeShell.runtime()
+                .canvas()
+                .findWidget(sceneChromeShell.id("selected_icon"))
+                ->desc()
+                .hasTextureSourceRect);
         const auto* selectedMesh = sceneChromeShell.sceneDocument()
                                        .scene()
                                        .findObject(meshId)
@@ -120,11 +125,14 @@ int main()
                 meshTypeIcon = widget;
         }
         assert(meshTypeIcon && meshTypeIcon->desc().textureResourceId == "icon-cube");
+        assert(meshTypeIcon->desc().hasTextureSourceRect);
+        assert(meshTypeIcon->desc().textureSourceRect.valid());
         assert(std::any_of(
             sceneChrome.commands().begin(), sceneChrome.commands().end(), [&](const auto& command) {
                 return command.kind == renderer::ui::UiDrawCommandKind::Image
                     && command.widgetId != sceneChromeShell.id("viewport")
-                    && command.textureResourceId == "icon-cube";
+                    && command.textureResourceId == "icon-cube" && command.hasTextureSourceRect
+                    && command.textureSourceRect.valid();
             }));
         for (const auto axis :
             {std::pair{"x", "axis-x"}, std::pair{"y", "axis-y"}, std::pair{"z", "axis-z"}}) {
@@ -190,13 +198,15 @@ int main()
                     && (command.textureResourceId == "icon-node"
                         || command.textureResourceId == "icon-cube"
                         || command.textureResourceId == "icon-world"
-                        || command.textureResourceId == "icon-tool-viewport");
+                        || command.textureResourceId == "icon-tool-viewport")
+                    && command.hasTextureSourceRect && command.textureSourceRect.valid();
             });
         const auto visibleEyeIcons = std::count_if(expandedDraw.commands().begin(),
             expandedDraw.commands().end(),
             [](const auto& command) {
                 return command.kind == renderer::ui::UiDrawCommandKind::Image
-                    && command.textureResourceId == "icon-eye"
+                    && command.textureResourceId == "icon-eye" && command.hasTextureSourceRect
+                    && command.textureSourceRect.valid()
                     && command.clipRect.x == editor::layout::kSceneHierarchyLeft
                     && command.clipRect.y == editor::layout::kSceneHierarchyTop;
             });
@@ -231,6 +241,7 @@ int main()
             [](const auto& command) {
                 return command.kind == renderer::ui::UiDrawCommandKind::Image
                     && command.textureResourceId == "icon-chevron-right"
+                    && command.hasTextureSourceRect && command.textureSourceRect.valid()
                     && command.clipRect.x == editor::layout::kSceneHierarchyLeft;
             }));
 
@@ -1366,6 +1377,14 @@ int main()
     meshHeaderName += std::to_string(meshObject->id().value());
     meshHeaderName.push_back('_');
     meshHeaderName += std::to_string(meshComponent->id().value());
+    const auto findWidgetByName = [&](const core::pmr::String& name) {
+        for (const auto widgetId : shell.runtime().canvas().traversal()) {
+            const auto* widget = shell.runtime().canvas().findWidget(widgetId);
+            if (widget && widget->name() == name)
+                return widget;
+        }
+        return static_cast<const ui::Widget*>(nullptr);
+    };
     ui::WidgetId meshHeaderWidget;
     for (const auto widgetId : shell.runtime().canvas().traversal()) {
         const auto* widget = shell.runtime().canvas().findWidget(widgetId);
@@ -1373,7 +1392,11 @@ int main()
             meshHeaderWidget = widgetId;
     }
     const auto* meshHeader = shell.runtime().canvas().findWidget(meshHeaderWidget);
-    assert(meshHeader && meshHeader->desc().text == "      Mesh");
+    assert(meshHeader && meshHeader->desc().text.empty());
+    const auto meshTitleName = meshHeaderName + "_title";
+    const auto* meshTitle = findWidgetByName(meshTitleName);
+    assert(meshTitle && meshTitle->desc().text == "Mesh"
+        && meshTitle->desc().controlType == ui::UiControlType::Label);
     core::pmr::String meshToggleSource(
         "scene_component_toggle_", &core::defaultCpuMemoryResource());
     meshToggleSource += std::to_string(meshObject->id().value());
@@ -1384,14 +1407,6 @@ int main()
     meshEnabledSource.push_back('_');
     meshEnabledSource += std::to_string(meshComponent->id().value());
     meshEnabledSource += "_enabled";
-    const auto findWidgetByName = [&](const core::pmr::String& name) {
-        for (const auto widgetId : shell.runtime().canvas().traversal()) {
-            const auto* widget = shell.runtime().canvas().findWidget(widgetId);
-            if (widget && widget->name() == name)
-                return widget;
-        }
-        return static_cast<const ui::Widget*>(nullptr);
-    };
     const auto meshDisclosureIconName = meshHeaderName + "_disclosure_icon";
     const auto meshTypeIconName = meshHeaderName + "_type_icon";
     const auto* meshDisclosureIcon = findWidgetByName(meshDisclosureIconName);
@@ -1399,18 +1414,22 @@ int main()
     assert(
         meshDisclosureIcon && meshDisclosureIcon->desc().textureResourceId == "icon-chevron-down");
     assert(meshTypeIcon && meshTypeIcon->desc().textureResourceId == "icon-cube");
+    assert(meshTitle->desc().localRect.x
+        >= meshTypeIcon->desc().localRect.x + meshTypeIcon->desc().localRect.width);
     shell.activate(meshToggleSource);
     const auto* collapsedMeshHeader = findWidgetByName(meshHeaderName);
     const auto* collapsedDisclosureIcon = findWidgetByName(meshDisclosureIconName);
     assert(collapsedMeshHeader && !findWidgetByName(meshEnabledSource));
-    assert(collapsedMeshHeader->desc().text == "      Mesh");
+    assert(collapsedMeshHeader->desc().text.empty());
+    assert(findWidgetByName(meshTitleName)->desc().text == "Mesh");
     assert(collapsedDisclosureIcon
         && collapsedDisclosureIcon->desc().textureResourceId == "icon-chevron-right");
     shell.activate(meshToggleSource);
     const auto* expandedMeshHeader = findWidgetByName(meshHeaderName);
     const auto* expandedDisclosureIcon = findWidgetByName(meshDisclosureIconName);
     assert(expandedMeshHeader && findWidgetByName(meshEnabledSource));
-    assert(expandedMeshHeader->desc().text == "      Mesh");
+    assert(expandedMeshHeader->desc().text.empty());
+    assert(findWidgetByName(meshTitleName)->desc().text == "Mesh");
     assert(expandedDisclosureIcon
         && expandedDisclosureIcon->desc().textureResourceId == "icon-chevron-down");
     assert(shell.submitCommand(editor::AddSceneComponentCommand("LightComponent")).status

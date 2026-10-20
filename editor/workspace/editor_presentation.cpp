@@ -547,12 +547,21 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
     const float hierarchyTextY = layout::kSceneHierarchyTop + 3.0f;
     const auto addHierarchyIcon =
         [&](std::string_view resource, ui::LayoutRect rect, unsigned tint) {
+            ui::LayoutRect sourceRect;
+            if (!iconSourceRect(resource, sourceRect))
+                return;
             renderer::ui::UiDrawCommand icon;
             icon.kind = renderer::ui::UiDrawCommandKind::Image;
             icon.widgetId = viewportId;
             icon.rect = rect;
             icon.clipRect = hierarchyClip;
             icon.textureResourceId.assign(resource.data(), resource.size());
+            icon.textureSourceRect = ui::LayoutRect::fromOriginSize(
+                sourceRect.x / static_cast<float>(editor_atlas::kWidth),
+                sourceRect.y / static_cast<float>(editor_atlas::kHeight),
+                sourceRect.width / static_cast<float>(editor_atlas::kWidth),
+                sourceRect.height / static_cast<float>(editor_atlas::kHeight));
+            icon.hasTextureSourceRect = true;
             color(icon, tint);
             commands.push_back(std::move(icon));
         };

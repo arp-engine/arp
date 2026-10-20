@@ -185,6 +185,9 @@ public:
             {6u,
                 rhi::DescriptorType::SampledTexture,
                 rhi::ShaderStage::Compute}, // SceneDepthPyramid
+            {7u,
+                rhi::DescriptorType::SampledTexture,
+                rhi::ShaderStage::Compute}, // SceneNormalTexture
         };
 
         rhi::PipelineLayoutDesc layoutDesc;
@@ -287,7 +290,7 @@ public:
         descriptorArena_ = device_.createDescriptorArena({
             "SsrDescriptorArena",
             kSsrDescriptorSetSlots * 2u,
-            kSsrDescriptorSetSlots * 2u * 7u,
+            kSsrDescriptorSetSlots * 2u * 8u,
         });
         if (!descriptorArena_) {
             return {false, "SSR descriptor arena creation failed"};
@@ -522,6 +525,7 @@ public:
         rhi::GpuTextureView& sceneColorView,
         rhi::GpuTextureView& sceneDepthView,
         rhi::GpuTextureView& waterMaskView,
+        rhi::GpuTextureView& sceneNormalView,
         const rhi::GpuTextureView& depthPyramidView,
         const SsrPushConstants& pc,
         std::uint32_t frameIndex)
@@ -562,6 +566,10 @@ public:
             {6u,
                 rhi::DescriptorType::SampledTexture,
                 depthPyramidView.id(),
+                rhi::DescriptorResourceKind::TextureView},
+            {7u,
+                rhi::DescriptorType::SampledTexture,
+                sceneNormalView.id(),
                 rhi::DescriptorResourceKind::TextureView},
         };
         for (const auto& write : writes) {
@@ -641,6 +649,10 @@ public:
                 sceneColorView.id(),
                 rhi::DescriptorResourceKind::TextureView},
             {6u,
+                rhi::DescriptorType::SampledTexture,
+                sceneColorView.id(),
+                rhi::DescriptorResourceKind::TextureView},
+            {7u,
                 rhi::DescriptorType::SampledTexture,
                 sceneColorView.id(),
                 rhi::DescriptorResourceKind::TextureView},

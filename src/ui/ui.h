@@ -411,6 +411,12 @@ public:
         desc_.textureResourceId = std::move(resourceId);
     }
 
+    void setTextureSourceRect(LayoutRect rect)
+    {
+        desc_.textureSourceRect = rect;
+        desc_.hasTextureSourceRect = rect.valid();
+    }
+
     void setAcceptsPointerInput(bool value) { desc_.acceptsPointerInput = value; }
 
     void setLocalRect(LayoutRect rect) { desc_.localRect = rect; }

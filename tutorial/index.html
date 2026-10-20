@@ -32,14 +32,14 @@
 
 <main class="content">
   <h1>arp 引擎使用教程</h1>
-  <p class="lead">面向「数据驱动 + 组件化」的 C++17 风格化渲染引擎。本教程以 <code>games/world_of_claudecraft</code> 项目为<strong>参考实例</strong>，讲解 arp 引擎的十大核心系统：渲染管线、GameObject+Component 运行时框架、动画、粒子、UI、资源管理、反射、网络、Shader、预制体；并附一篇资产导入参考。</p>
+  <p class="lead">面向「数据驱动 + 组件化」的 C++17 引擎与渲染框架教程。章节结合当前 <code>src/</code> 实现和仓库示例，介绍渲染管线、GameObject+Component、动画、粒子、UI、资源、反射、网络、Slang Shader、预制体、资产导入、程序化生成与 ArpScript。</p>
 
   <div class="callout note">
-    <p>所有 API 名称、字段、枚举值均直接取自引擎源码（<code>src/</code>）与项目状态文档（<code>docs/</code>），可作为权威参考。文中代码片段为真实接口签名，未经臆造。</p>
+    <p>本教程用于介绍系统结构与关键工作流。精确 API、当前支持范围和验证等级以对应源码、contract tests、README 及能力矩阵为准；章节未必覆盖每次接口演进。</p>
   </div>
 
   <h2>引擎与项目的关系</h2>
-  <p>arp 引擎的核心代码位于仓库根 <code>D:\arp-engine\src\</code>，分为若干后端中立（backend-neutral）的子系统；具体游戏（如本教程的参考项目 <code>games/world_of_claudecraft</code>）在引擎之上做游戏逻辑与内容适配，并通过 DLL 链接到 <code>arp_engine</code>。</p>
+  <p>引擎源码位于仓库根目录的 <code>src/</code>。示例与游戏位于 <code>examples/</code>；例如 <code>examples/survivors</code> 展示 Windows/Vulkan 原生运行路径，<code>examples/build_a_queen</code> 还包含显式 opt-in 的 WebGL1 Prototype 示例。示例的存在不代表所有后端或平台都已达到相同验证等级。</p>
 
   <div class="diagram">
     <svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" font-family="sans-serif" font-size="13">
@@ -55,11 +55,11 @@
       <text x="52" y="184" fill="#57606a" font-size="11">后端中立，禁止暴露原生句柄</text>
 
       <rect x="270" y="60" width="170" height="150" rx="8" fill="#e6f4ea" stroke="#1a7f37"/>
-      <text x="282" y="82" font-weight="700" fill="#1f2328">参考项目</text>
-      <text x="282" y="104" fill="#1f2328">world_of_claudecraft</text>
-      <text x="282" y="128" fill="#1f2328">app/ gameplay/</text>
-      <text x="282" y="146" fill="#1f2328">content/ assets/</text>
-      <text x="282" y="172" fill="#57606a" font-size="11">组件/玩法/内容适配</text>
+      <text x="282" y="82" font-weight="700" fill="#1f2328">仓库示例</text>
+      <text x="282" y="104" fill="#1f2328">Copperlight Survivors</text>
+      <text x="282" y="128" fill="#1f2328">Build a Queen</text>
+      <text x="282" y="146" fill="#1f2328">examples/</text>
+      <text x="282" y="172" fill="#57606a" font-size="11">展示不同集成与验证范围</text>
 
       <rect x="480" y="60" width="200" height="150" rx="8" fill="#fff4e0" stroke="#9a6700"/>
       <text x="492" y="82" font-weight="700" fill="#1f2328">其他游戏</text>
@@ -78,7 +78,7 @@
     </svg>
   </div>
 
-  <p>本教程的「参考实例」指的就是中间的 <code>world_of_claudecraft</code>：它用引擎的 <code>GameObject</code>/<code>Component</code> 搭建场景，用 <code>animation</code> 命名空间做动画，用 <code>arp::renderer::ParticleSystem</code> 做特效，用 <code>arp::ui</code> 做 HUD。下面每个系统都会给出「引擎接口 → 项目里怎么用」的对照。</p>
+  <p>章节中的代码和术语以当前引擎源码及对应合约为准。具体系统的验证状态会随后端、平台和功能范围不同而变化；不要把单个示例的通过结果外推为整套引擎的就绪声明。</p>
 
   <h2>全局架构分层</h2>
   <table>
@@ -93,28 +93,26 @@
   </table>
 
   <h2>构建与运行</h2>
-  <p>引擎使用 CMake，首选 MinGW + Ninja，Windows 上通过 <code>scripts/build.ps1</code> 即可构建；着色器通过 <code>scripts/compile-shaders.ps1</code> 离线编译为 SPIR-V / MSL（slangc）。</p>
+  <p>Windows 本地工作流使用 CMake、Ninja、MinGW-w64、Python、Vulkan SDK 与 Slang。仓库构建入口是 <code>scripts/build.py</code>；preset、构建目标和其他平台要求以 README 与平台构建矩阵为准。</p>
   <pre><code><span class="tk-com"># 本地（MinGW）一键构建 + 着色器</span>
-.<span class="tk-fn">\scripts\build.ps1</span>
+python scripts/build.py --preset win-vulkan-debug configure
+python scripts/build.py --preset win-vulkan-debug engine
 
-<span class="tk-com"># 或直接用 CMake preset</span>
-cmake --preset ninja-mingw-debug
-cmake --build --preset ninja-mingw-debug
-ctest --preset ninja-mingw-debug
+<span class="tk-com"># 构建 shader 产物与游戏目标</span>
+python scripts/build.py --preset win-vulkan-debug shaders
+python scripts/build.py --preset win-vulkan-debug game survivors
 
-<span class="tk-com"># 离线编译着色器（Slang → SPIR-V / MSL）</span>
-.<span class="tk-fn">\scripts\compile-shaders.ps1</span></code></pre>
-  <p>运行示例（无窗口模式，适合 CI）：</p>
+<span class="tk-com"># 运行完整 CTest 集（目标先构建）</span>
+cmake --build --preset win-vulkan-debug
+ctest --preset win-vulkan-debug</code></pre>
+  <p>运行 Windows/Vulkan 示例：</p>
   <pre><code><span class="tk-com"># 风格化展示（隐藏窗口，跑 2 帧）</span>
-.<span class="tk-fn">\artifacts\cmake\ninja-mingw-debug\arp_stylized_showcase.exe</span> --hidden --frames 2
+.<span class="tk-fn">build\win-vulkan-debug\arp_survivors.exe</span> --hidden --autoplay --fixed-step --frames 120 --mute
 
-<span class="tk-com"># 全功能特性演示（Esc 或关窗退出）</span>
-.<span class="tk-fn">\artifacts\cmake\ninja-mingw-debug\arp_stylized_showcase.exe</span> --feature-demo
-
-<span class="tk-com"># 生产级 demo（1280x720 Vulkan 窗口）</span>
-.<span class="tk-fn">\artifacts\direct\arp_production_demo.exe</span></code></pre>
+<span class="tk-com"># 运行交互游戏</span>
+build\win-vulkan-debug\arp_survivors.exe</code></pre>
   <div class="callout">
-    <p><strong>参考项目如何构建：</strong><code>world_of_claudecraft</code> 作为引擎的一个游戏目标参与整体构建，链接到 <code>arp_engine</code>。具体可执行文件名以仓库 CMake 配置为准；游戏逻辑改动通常无需重编引擎本体。</p>
+    <p><strong>其他平台与示例：</strong>WebGPU preset 构建浏览器目标；Build a Queen 的 WebGL1 实战使用独立脚本和显式 Prototype opt-in。请按 <a href="../docs/platform-build-matrix.md">Platform Build Matrix</a> 与 <a href="../examples/build_a_queen/WEBGL.md">Build a Queen WebGL1 指南</a>操作，不要把 WebGL1 Prototype 与共享四后端 L2 profile 混为一谈。</p>
   </div>
 
   <h2>本教程包含的篇目</h2>
@@ -129,7 +127,7 @@ ctest --preset ninja-mingw-debug
       <tr><td><a href="06-resource-management.html">06 资源管理</a></td><td>resource</td><td><code>ResourceBase</code>/<code>ResourceManager</code> 单一所有权、生命周期状态、句柄、图加载、重载与预算</td></tr>
       <tr><td><a href="07-reflection.html">07 反射</a></td><td>reflection / serialization</td><td>运行时类型系统、<code>registration::class_</code> 注册、<code>object</code>/<code>variant</code>、继承与向下转换、YAML 序列化</td></tr>
       <tr><td><a href="08-network.html">08 网络</a></td><td>network</td><td>事件循环、TCP/UDP socket、HTTP/WebSocket/TLS 客户端、确定性诊断与后端中立约束</td></tr>
-      <tr><td><a href="09-shader.html">09 Shader</a></td><td>shader</td><td>Slang 统一着色语言、多后端编译、反射缓存与 Pipeline 校验、CPU↔GPU 统一内存对齐（std140 / 256B push-constant 预算）</td></tr>
+      <tr><td><a href="09-shader.html">09 Shader</a></td><td>shader</td><td>Slang 工件与 YAML reflection、Pipeline 校验、CPU↔GPU ABI 和 row-major 矩阵契约、L2 push-constant 上限</td></tr>
       <tr><td><a href="10-prefab-internal-resources.html">10 预制体</a></td><td>resource / prefab</td><td>预制体资产模型（PrefabResource 引用图枢纽 + 运行时 sidecar blob）、<code>prefabResourceFactory()</code> 注册的 21 个内部资源类型完整清单、内部资产包契约与状态分级</td></tr>
       <tr><td><a href="11-art-asset-formats.html">11 资产导入</a></td><td>asset / format</td><td>从 DCC 源格式（<code>.glb</code>/<code>.fbx</code>/<code>.png</code>/<code>.mat</code>/<code>.slang</code>…）到引擎内部资源类型（Model/Texture/Material/ShaderPackage…）的完整扩展名映射、内部纹理/压缩/着色器产物格式、统一内部资源包落点</td></tr>
       <tr><td><a href="12-procedural-generation.html">12 程序化生成</a></td><td>pcg / world generation</td><td>世界种子、噪声、侵蚀、biome、散布、道路、聚落与 LOD 的分层生成思路，以及它和真实资产导入的分工关系</td></tr>
@@ -144,12 +142,12 @@ ctest --preset ninja-mingw-debug
     <dt>RenderQueue</dt><dd>提取阶段产出的「渲染项 + 队列记录」，携带句柄、元数据、世界变换、包围盒与排序键，不含原生顶点拷贝。</dd>
     <dt>FrameGraph</dt><dd>帧级 pass 依赖与资源规划器；<code>compile()</code> 产出 <code>CompiledFrameGraph</code>（顺序、生命周期、barrier、别名、load/store、队列）。</dd>
     <dt>DrawPlan</dt><dd>渲染器拥有的「绘制计划」，含 submesh/材质 push-constant 与 GUI 文本/四边形绘制命令顺序，经 RHI 编码器录制。</dd>
-    <dt>RHI</dt><dd>渲染硬件接口第 2 版，L2 命令录制契约；原生 Vulkan/Metal/WebGPU 实现藏在 backend 私有目录。</dd>
+    <dt>RHI</dt><dd>渲染硬件接口 L2 命令与资源语义；Null、Vulkan、Metal、WebGPU 属共享 profile，WebGL1 是独立的有界 Prototype profile。具体能力和证据见能力矩阵。</dd>
     <dt>Backend-neutral</dt><dd>后端中立约束：<code>scene/renderer/render_graph/ui</code> 不得 include 原生图形/平台头或暴露原生句柄。</dd>
     <dt>pmr 分配器</dt><dd>运行时动态容器统一使用 <code>core::pmr</code>（<code>core::makeUnique</code>/<code>makeShared</code>），禁止默认 STL 动态分配进入热路径。</dd>
     <dt>ResourceManager</dt><dd>引擎唯一的运行时资源注册/缓存中心；资源以类型化 <code>ResourceBase</code> 子类接入，经 <code>load/find/findByAlias</code> 与 <code>ResourceHandle&lt;T&gt;</code> 类型化查询，靠内容指纹支持确定性重载。</dd>
-    <dt>Slang</dt><dd>arp 的统一着色语言；一份 <code>.slang</code> 源码经 <code>slangc</code> 编译为 SPIR-V / MSL / WGSL 三目标，uniform/cbuffer 按 std140 打包。</dd>
-    <dt>Push constant</dt><dd>每帧直推 GPU 的小块常量（如 view-projection、材质参数）；arp 约定结构体按 std140 对齐、总大小 ≤ 256 字节，并由 RHI 两层校验保证与着色器反射一致。</dd>
+    <dt>Slang</dt><dd>arp 的权威着色器源码语言；构建生成 SPIR-V / MSL / WGSL 与 YAML reflection。WebGL1 的 GLSL ES 1.00 工件由显式工具链从 Slang 生成并受 Prototype 合约约束。</dd>
+    <dt>Push constant</dt><dd>每帧提交的小块常量（如 view-projection、材质参数）；L2 atomic payload 上限为 256 字节，实际布局和 backend 能力由 reflection、lowering contract 与执行 gate 校验。</dd>
     <dt>Prefab（预制体）</dt><dd>资产侧的可复用模板，描述 GameObject + Component + 子层级；实例进入场景后变为 SceneObject（见 02）。引擎以 <code>PrefabResource</code> 为引用图枢纽，按 UUID 引用同一内部资产包里的模型、蒙皮、骨骼、动画、材质、运行时负载等资源。</dd>
     <dt>内部资源</dt><dd>引擎统一建模的资产单元，由 <code>ResourceManager</code> 与内部资产包（<code>ArpInternalAssetPackage/v1</code>）管理；当前共 21 个类型（见 10），与项目级 <code>ContentAssetResource</code>（06）共用同一套生命周期/句柄/契约模型。</dd>
     <dt>资产导入</dt><dd>DCC 工具导出的磁盘源格式（如 <code>.glb</code>/<code>.fbx</code>/<code>.png</code>/<code>.mat</code>/<code>.slang</code>）经 importer 转成内部资源包；权威扩展名→类型映射见 <code>assetTypeForExtension()</code>（11）。</dd>

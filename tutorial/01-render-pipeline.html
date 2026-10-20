@@ -105,14 +105,14 @@ builder.<span class="tk-fn">addGraphicsPass</span>(
 
   <h2>2. FrameGraph：编译式帧执行计划</h2>
   <p><code>src/render_graph</code> 负责帧级 pass 依赖、资源生命周期、barrier、瞬时别名、load/store 策略与队列/外部资源保护。你声明 pass 及其资源读写意图，FrameGraph 编译出一份确定的执行计划并驱动执行。</p>
-  <p><code>FrameGraph::addPass(name)</code> 声明一个 pass，返回 <code>PassBuilder</code>；用 <code>.read()</code> / <code>.write()</code> / <code>.writeAttachment()</code> / <code>.kind(PassKind)</code> / <code>.queue(QueueRole)</code> 描述资源用途，最后 <code>.execute(callback)</code> 绑定录制回调（渲染器层 <code>RenderPipelineBuilder::addGraphicsPass</code> 只是它的薄封装，见 §1）。<code>compile()</code> 返回 <code>CompiledFrameGraph</code>——编译产物是 barrier、别名与生命周期的<strong>唯一事实源</strong>，执行器只回放它。</p>
+  <p><code>FrameGraph::addPass(name)</code> 声明一个 pass，返回 <code>PassBuilder</code>；用 <code>.read()</code> / <code>.write()</code> / <code>.writeAttachment()</code> / <code>.kind(PassKind)</code> / <code>.queue(QueueRole)</code> 描述资源用途，最后 <code>.execute(callback)</code> 绑定录制回调（渲染器层 <code>RenderPipelineBuilder::addGraphicsPass</code> 只是它的薄封装，见 §1）。<code>compile()</code> 返回 <code>CompiledFrameGraph</code>，记录 pass、barrier、别名与生命周期计划；backend executor 仍要校验并消费相符的 lowering/payload，不能仅凭图已编译就视为可执行。</p>
   <table>
     <thead><tr><th>编译阶段</th><th>产出</th></tr></thead>
     <tbody>
       <tr><td>依赖 DAG</td><td>由资源读写依赖生成 pass 执行顺序，检测依赖环</td></tr>
       <tr><td>资源生命周期</td><td>纹理/缓冲的首次/末次使用、生产者、消费者</td></tr>
       <tr><td>Barrier 计划</td><td>每个 pass 的 pre-pass barrier 批次，帧末恢复导入资源终态（如 swapchain → Present）</td></tr>
-      <tr><td>瞬时别名</td><td>按生命周期分组瞬时资源，同组共享 GPU 内存以减少分配</td></tr>
+      <tr><td>瞬时别名</td><td>仅在 capability、资源生命周期/预算及 backend lowering 允许且有真实 allocation payload 时共享 GPU 内存；否则按 contract 禁止或失败</td></tr>
       <tr><td>Load/Store</td><td>附件 load/store、clear/dont-care、memoryless 策略</td></tr>
       <tr><td>队列 &amp; 外部资源</td><td>graphics/compute/transfer/present 队列角色与导入资源保护</td></tr>
       <tr><td>编译期校验</td><td>读先于写、Load-on-Undefined、附件格式匹配、pass 种类一致性——不满足则确定性报错；无用 pass 经定点裁剪自动剔除</td></tr>
@@ -120,10 +120,10 @@ builder.<span class="tk-fn">addGraphicsPass</span>(
   </table>
 
   <h3>2.1 编译期保证</h3>
-  <p>FrameGraph 在 <code>compile()</code> 阶段完成全部决策，<code>execute()</code> 只回放结果：</p>
+  <p>FrameGraph 的 <code>compile()</code> 阶段生成确定的资源与 pass 计划；执行阶段还要验证并消费目标 backend 的 lowering decision。计划与运行时 capability/payload 不一致时以诊断失败，不得静默改走其他路径。</p>
   <ul>
     <li><strong>Barrier 不在运行时二次推算</strong>：编译产出的 barrier 批次是唯一事实源，执行器逐 pass 回放。同一份图执行两次，输出一致。</li>
-    <li><strong>瞬时资源自动复用</strong>：声明为瞬时的纹理/缓冲按生命周期分组，同组共享一块 GPU 内存（Vulkan 走别名位 + 共享设备内存，Metal 走 heap 别名）。L2 语义层判定 <code>features.transientAliasing</code>：NATIVE 后端在编译期计算 alias groups，DEGRADED 后端（Metal/WebGPU）的 aliasPlan 为空，执行器自动走池回收路径——降级在编译期确定，非运行时静默兼容（详见 §5.4）。</li>
+    <li><strong>瞬时资源与 aliasing</strong>：FrameGraph 可生成生命周期与 alias 候选计划，但执行必须由与 capability 一致的版本化 lowering 决定。只有 contract 证明语义、预算和 completion/lifetime 均成立时才允许别名；没有等价 lowering 时必须关闭该能力或确定性失败，不自动替换成另一条成功路径。</li>
     <li><strong>错误早发现</strong>：读未写入的资源、pass 种类与绑定的状态不匹配、附件格式不一致等问题在编译期即确定性报错，不会表现为运行时的静默错画或 UB。</li>
     <li><strong>无用 pass 自动裁剪</strong>：输出未被任何后续 pass 消费的 pass（及其传递依赖链上的 pass）经定点迭代自动剔除。</li>
   </ul>
@@ -140,7 +140,7 @@ builder.<span class="tk-fn">addGraphicsPass</span>(
 
   <h2>3. 渲染器：声明 pass + 构建 DrawPlan</h2>
   <p>渲染器（<code>src/renderer</code>）拥有场景、GUI、材质、光照、世界、后处理、调试等 pass 的声明与逐 pass 的绘制计划（DrawPlan）。DrawPlan 携带 submesh/材质的 push-constant 与 GUI 四边形/文本绘制命令顺序，经 RHI 命令编码器录制。</p>
-  <p>参考项目 <code>world_of_claudecraft</code> 通过 <code>SceneRuntimePipelinePayload</code> 把场景运行时提取结果（遍历快照、相机、3D/2D/UI 队列）传入 <code>RenderFrameRequest</code>，由 <code>RenderFrameDirector</code> 适配并驱动 <code>SceneRuntimeWorldUiPass</code>（一 pass 内顺序：3D → 2D → UI）。</p>
+  <p>场景运行时可通过带 contract name/version 的 <code>RenderFrameRequest</code> payload 接入 renderer。payload 的生产者、消费者与版本必须匹配；示例集成不代表其他游戏或 backend 自动具有相同能力。</p>
   <pre><code><span class="tk-com">// 自定义管线 payload 契约（renderer/SceneRuntimePipelinePayload v1）</span>
 <span class="tk-type">RenderFrameRequest</span> req;
 req.view    = { extent, colorFormat, frameIndex, deltaSeconds };
@@ -191,7 +191,7 @@ req.pipelinePayloadContractVersion = 1;</code></pre>
       <text x="34" y="187" fill="#57606a">原生能力解释 · 后端分配意图 · 描述符翻译 · 管线编译策略 · 同步降级 · 表面获取/呈现语义</text>
 
       <rect x="20" y="206" width="223" height="36" rx="8" fill="#fdecea" stroke="#b42318"/>
-      <text x="32" y="229" fill="#1f2328">Vulkan 后端（私有）</text>
+      <text x="32" y="229" fill="#1f2328">Null / Vulkan</text>
       <rect x="258" y="206" width="223" height="36" rx="8" fill="#fdecea" stroke="#b42318"/>
       <text x="270" y="229" fill="#1f2328">Metal 后端（私有）</text>
       <rect x="496" y="206" width="224" height="36" rx="8" fill="#fdecea" stroke="#b42318"/>
@@ -214,34 +214,34 @@ req.pipelinePayloadContractVersion = 1;</code></pre>
     <li><strong>原生优先（native-first）</strong>：semantics 层通过「能力 + 策略数据」暴露后端原生潜力（如 Vulkan 描述符索引、Metal 参数缓冲、WebGPU 浏览器限制），<strong>不把特性削平到最小公分母</strong>。</li>
   </ul>
 
-  <h3>5.3 核心哲学：四条内部路径</h3>
-  <p>这是 RHI 最反直觉也最重要的一条原则：<strong>上层只声明「需要什么能力」，后端/平台分支完全发生在 RHI 内部</strong>。当 L2 收到一个引擎级请求时，内部从四条路径中选一条：</p>
+  <h3>5.3 核心哲学：显式 lowering 结果</h3>
+  <p>上层表达 L2 意图，不观察 native handle 或 backend-only 参数。每项可选能力都必须依据可追溯的 capability 和版本化 lowering contract，在执行前确定唯一结果：</p>
   <table>
     <thead><tr><th>路径</th><th>含义</th><th>对上层可见性</th></tr></thead>
     <tbody>
-      <tr><td><code>native</code></td><td>后端原生支持，直接用</td><td rowspan="2">不可见</td></tr>
-      <tr><td><code>emulated</code></td><td>后端无原生能力，RHI 内部模拟（如 WebGPU 的 push constant 用系统描述符 + 上传环模拟）</td></tr>
-      <tr><td><code>degraded</code></td><td>能力降级但保持正确（如 Vulkan 缺描述符索引时，描述符表确定性降级为有界描述符）</td><td>必须确定性，并<strong>经遥测上报</strong></td></tr>
-      <tr><td><code>diagnostic failure</code></td><td>资源语义未知，或降级会改变正确性</td><td>强制失败并给出诊断（而非猜测）</td></tr>
+      <tr><td><code>Native</code></td><td>执行受 contract 约束的 native payload。</td><td>由能力状态与诊断可观察</td></tr>
+      <tr><td><code>Equivalent / Emulated</code></td><td>仅当 contract/test 证明保持 L2 语义时允许，例如受契约约束的 WebGPU push-constant upload-ring lowering。</td><td>由能力状态与诊断可观察</td></tr>
+      <tr><td><code>Prototype / Legacy</code></td><td>有版本、边界、预算且由调用方显式 opt-in；不得伪装为通用能力。</td><td>必须显式可见</td></tr>
+      <tr><td><code>DiagnosticFailure</code></td><td>能力、映射或语义无法证明时确定性拒绝。</td><td>必须返回稳定诊断</td></tr>
     </tbody>
   </table>
   <div class="callout note">
-    <p><strong>由此得到硬结论：</strong><code>renderer</code>、<code>GUI</code>、<code>samples</code>、<code>render_graph</code> 不得在代码里按后端名分支（不得写 <code>if (backend == Vulkan)</code>）。WebGPU 的 push constant 模拟、soft secondary 的 CPU 重放、描述符表的降级，全部由 L2 内部决定并隐藏。上层只声明需求（feature requirements），RHI 经 <code>semantics-to-L2 fallback bridge</code> 给出单一 fallback 计划。</p>
+    <p><strong>硬约束：</strong>RHI、renderer、RenderGraph、UI、sample、game 与 asset pipeline 不得用 backend 局部修复绕过 L2 contract。CPU replay、degraded 状态或接口存在都不自动证明语义等价；不满足已声明 lowering 的路径必须失败关闭，或由显式、版本化 Prototype/Legacy opt-in 开启。</p>
   </div>
 
   <h3>5.4 L2 决策链：从设备初始化到每帧编译</h3>
-  <p>§5.3 讲了四条路径（native / emulated / degraded / diagnostic），本节讲清这些决策<strong>何时产生、如何传递、在哪消费</strong>。</p>
+  <p>本节讲清 capability 与 lowering 决策<strong>何时产生、如何传递、在哪消费</strong>。Null、Vulkan、Metal、WebGPU 是共享 L2 必检 profile；WebGL1 的 ordered-graphics profile 单独 opt-in，不能继承这些 backend 的能力声明。</p>
 
   <h4>设备初始化（一次性）</h4>
-  <p>每个后端在 <code>capabilities()</code> 构造时，用 <code>NativeBackendCapabilityContract</code>（静态原生特性列表）调用 <code>chooseFeatureFallback</code>，为每个 <code>EngineFeature</code> 产出一个 <code>FallbackMode</code>。决策汇总为 <code>EngineFallbackPlan</code>，经 <code>plan.applyTo(caps)</code> 写入 <code>caps.features.*</code> 布尔字段。</p>
+  <p>backend 先从规范保证或 native runtime query 建立 capability contract，再按功能、格式与资源 ABI 生成并消费 lowering decision。聚合的 <code>DeviceCapabilities</code> 布尔值用于快速 gate；execution status、fallback plan 和实际 payload 也必须一致，不能只看布尔值宣称 backend 已验证。</p>
   <pre><code>NativeBackendCapabilityContract(backend)
   → chooseFeatureFallback(contract, feature)     → NATIVE / EMULATED / DEGRADED / FAIL
   → buildNativeEngineFallbackPlan(contract, requirements)
   → plan.applyTo(caps)
   → <strong>caps.features.*</strong>  (布尔能力门控，缓存到 DeviceCapabilities，每帧不重复)</code></pre>
-  <p><code>applyTo</code> 把 <code>Degraded</code> 和 <code>DiagnosticFailure</code> 映射为 <code>false</code>，<code>Native</code> 和 <code>Emulated</code> 映射为 <code>true</code>。上层只需查一个布尔值，不需要知道 fallback mode 或 backend 身份。</p>
+  <p>能力布尔值只是必要的 fast gate，不足以证明实际执行路径。上层不得把 <code>Degraded</code> 当作等价成功；resource state、sync、lifetime、内存预算或可见结果可能变化时必须拒绝，除非调用方显式 opt-in 到版本化 Prototype/Legacy contract。</p>
   <div class="callout warn">
-    <p><strong>易错点：</strong><code>caps.features.*</code>（L2 决策输出）不是 <code>caps.memory.*</code>（裸硬件事实）。以 <code>transientAliasing</code> 为例：Metal 有 <code>memory.transientAliasing = true</code>（MTLHeap 存在），但 <code>features.transientAliasing = false</code>（L2 判定 DEGRADED）。renderer 必须读 <code>features.</code>，不是 <code>memory.</code>。</p>
+    <p><strong>易错点：</strong><code>caps.features.*</code> 不是 <code>caps.memory.*</code> 的别名；裸 native fact 不能替代 feature lowering。Metal transient aliasing 必须由真实 heap placement、预算、lifetime 和 completion probe/contract gate 决定，不能只凭 <code>MTLHeap</code> 存在推断可用。当前各 backend 结果以 <a href="../RHI_CAPABILITY_MATRIX.md">能力矩阵</a>为准。</p>
   </div>
 
   <h4>每帧链路：L2 决策在编译期消费</h4>
@@ -251,37 +251,36 @@ req.pipelinePayloadContractVersion = 1;</code></pre>
               payload adapters → RenderFrameIntent → pass providers → FrameGraph passes
             ↓
             FrameGraph::compile()
-              <strong>① lowerSubpassGraph()</strong>     — 读 caps.features.subpassInputAttachment
-                 NATIVE   → 单个多 subpass PassRecord（Vulkan, Null）
-                 DEGRADED → 拆为独立 PassRecord（Metal, WebGPU）
+              <strong>① lowerSubpassGraph()</strong>     — 消费已验证的 subpass lowering decision
+                 Native / Equivalent → 执行对应 contract payload
+                 otherwise           → 确定性失败
               <strong>② FrameGraphCompiler::compile()</strong>
                  validate → cull → resource lifetimes → barrier plan
                  → alias plan               — 读 caps.features.transientAliasing
-                    NATIVE   → 计算 alias groups（lifetime + key + overlap）
-                    DEGRADED → 跳过，aliasPlan 为空
+                    Native   → 仅在预算、lifetime 与 backend contract 成立时计算 alias groups
+                    otherwise → 不执行 aliasing 或确定性失败
             ↓
             CompiledFrameGraph
               pass order + barrier batches + aliasPlan + load/store
             ↓
             allocateTransientTextures(compiled)
-              aliasPlan 空 → resourcePool_->acquireTexture()（池回收）
-              aliasPlan 非空 → createMemoryHeap() per group + createPlacedTexture()
-              <strong>（无 capability gate — 纯粹由 compiled aliasPlan 驱动）</strong>
+              aliasPlan → backend-private allocation consumes validated lowering plan
+              <strong>（allocation failure is diagnostic; no placeholder success）</strong>
             ↓
             FrameGraphExecutor::execute(compiled)
               replayPassBarriers() → beginRenderPass() → callbacks → queue->submit()
 
 <span class="tk-com">Backend</span>    RHI 虚函数分发 → vulkan / webgpu / metal 命令录制
-              （无 backend enum 分支 — 后端差异在编译期经 caps 消解）</code></pre>
+              （backend-private executor 验证并消费已选 lowering；不匹配则诊断失败）</code></pre>
 
   <table>
-    <thead><tr><th>L2 消费点</th><th>读取的 capability</th><th>NATIVE 行为</th><th>DEGRADED 行为</th></tr></thead>
+    <thead><tr><th>L2 消费点</th><th>输入</th><th>允许结果</th></tr></thead>
     <tbody>
-      <tr><td><code>lowerSubpassGraph</code></td><td><code>features.subpassInputAttachment</code></td><td>多 subpass PassRecord</td><td>拆分为独立 PassRecord</td></tr>
-      <tr><td><code>FrameGraphCompiler</code>（alias plan）</td><td><code>features.transientAliasing</code></td><td>计算 alias groups</td><td>跳过 — aliasPlan 为空</td></tr>
+      <tr><td><code>lowerSubpassGraph</code></td><td>subpass capability + versioned lowering decision</td><td>Native / Equivalent payload，或确定性诊断失败</td></tr>
+      <tr><td><code>FrameGraphCompiler</code>（alias plan）</td><td>alias capability + lifetime/budget validation</td><td>仅生成获准计划；backend allocation 失败时不得返回占位资源</td></tr>
     </tbody>
   </table>
-  <p>核心原则：<strong>L2 决策塑造 compiled graph 结构；executor 是 capability-blind 的</strong>。当后端对某特性是 DEGRADED 时，编译器产出不同的图结构（空 aliasPlan / 拆分 pass），执行器只看到编译结果，不做任何运行时 capability 检查。</p>
+  <p>FrameGraph 编译结果是执行计划，但 backend executor 仍必须验证并消费与之匹配的 capability/lowering decision。若运行时条件与计划不一致，必须以诊断失败，不能静默换路或返回占位资源。</p>
 
   <h3>5.5 后端中立的硬约束</h3>
   <div class="callout">
@@ -304,12 +303,12 @@ src/rhi/descriptor_cache.h    <span class="tk-com">// DescriptorArena/Descriptor
   <ul>
     <li><strong>描述符模型</strong>：公共词汇是 <code>DescriptorLayout</code> / <code>DescriptorSet</code> / <code>DescriptorTable</code> / <code>DescriptorArena</code> / <code>PipelineLayout</code> / <code>PushConstantRange</code>。WebGPU 的 bind group、Metal 的 argument binding、Vulkan 的 descriptor set 都只是后端的映射目标。<code>DescriptorArena</code> 容量受限，分配失败确定性返回诊断而非热路径中静默扩容；<code>reset()</code> 开启新分配代（generation），旧代分配出的 set/table 变为 <em>stale</em> 并拒绝再写入/绑定。</li>
     <li><strong>可变帧槽（≥2）</strong>：契约使用<strong>至少两个</strong>逻辑帧槽，请求图像数量由帧槽数决定（要求 <code>&gt;= 2</code>，默认仍 2 以向后兼容）；即便平台需要更多原生缓冲，L2 依旧只暴露约定的帧在途，并针对原生差异报诊断。帧局部的描述符 arena、上传环、命令池、延迟销毁、瞬时资源都按帧序号取模帧槽数索引。</li>
-    <li><strong>命令模型</strong>：以 <code>CommandEncoder</code> + 类型化 pass 编码器（<code>RenderPassEncoder</code> / <code>ComputePassEncoder</code> / <code>TransferPassEncoder</code>）录制；<code>soft secondary command buffer</code> 是 L2 概念（Vulkan 可降级为原生次级命令缓冲，WebGPU 在能力允许时映射 render bundle 或 CPU 重放）。Null 后端在录制期做确定性校验：拒绝在 pass 打开时做资源转换、<code>finish()</code> 时未闭合 pass、重复 <code>end()</code>、draw/dispatch 前未绑管线——把后端专属规则挡在 L2 之下，给上层确定性失败而非原生 UB。</li>
-    <li><strong>同步与帧资源生命周期</strong>：L2 拥有队列提交、获取、呈现、帧槽同步契约。新增原生同步原语 <code>GpuFence</code> / <code>GpuSemaphore</code> / <code>GpuTimelineSemaphore</code>（L2 语义，无原生句柄暴露）；<code>GpuQueue::submit</code> 增加接受 <code>GpuFence*</code>（或 timeline semaphore）的重载，帧资源经 fence-gated 回收在信号后释放。上层不接收原生 semaphore/fence/promise，也<strong>无需阻塞等待</strong>。WebGPU/Null 的同步为模拟实现，经 <code>NativeSync</code> 能力确定性上报。帧局部资源延迟销毁：帧序列号 <code>N</code> 最后使用的资源，在 <code>N+2</code> 完成后才释放；延迟销毁登记在入队前就拒绝序列号算术溢出。</li>
+    <li><strong>命令模型</strong>：以 <code>CommandEncoder</code> 与类型化 pass encoder 录制。secondary command、render bundle 与 CPU replay 是否可用取决于显式 lowering；CPU replay 不能证明 native GPU 语义。Null 是 reference validator，不是 GPU 执行证据。</li>
+    <li><strong>同步与帧资源生命周期</strong>：Fence、semaphore、timeline 与 completion 只有真实满足 completion/order/lifetime 语义时才可声明可用。Vulkan、Metal、WebGPU 的公开工厂和 queue-private sync 有不同边界；WebGPU callback 仅用于 backend-owned retirement，不等于 L2 timeline。WebGL1 的 flush/present 也不构成 GPU completion。请以能力矩阵为准，不依赖固定的 <code>N+2</code> 帧延迟或 host no-op wait 来推断安全回收。</li>
     <li><strong>PSO / 描述符缓存（热路径零重建）</strong>：L2 提供 <code>PipelineCache</code> 与 <code>DescriptorCache</code>。管线与描述符集合按稳定 key（<code>stableRenderPipelineStateKey</code> / <code>stableComputePipelineStateKey</code> / <code>stablePipelineLayoutKey</code> 及描述符布局 hash）缓存，<code>device.pipelineCache().acquireRenderPipeline(...)</code> 仅在 miss 时创建、命中即复用，并按帧 <code>onFrameComplete()</code> + fence-gated 淘汰陈旧项。每 pass 每帧的 pipeline/描述符/纹理重建被消除。</li>
-    <li><strong>统一 uniform 环缓冲</strong>：每帧 uniform 不再 <code>createBuffer(256)</code>，改用 <code>FrameGraphUniformRingBuffer</code>，按帧槽做 256 字节对齐的 bump 分配，<code>onFrameComplete(frameSlot)</code> 回卷；避免热路径每帧分配。</li>
-    <li><strong>push-constant 硬上限</strong>：RHI 在帧计划阶段由 <code>validatePushConstants</code> 校验 <code>pushConstantSizeBytes &gt; 256</code> → 确定性抛错（不是警告）。上层仍应遵循 §2.4（09 章）的 256 字节预算打包纪律，但越界现在会在录制前即失败。</li>
-    <li><strong>别名内存与能力降级</strong>：RenderGraph 的瞬时分配支持 aliased memory——Vulkan 走 <code>VK_IMAGE_CREATE_ALIAS_BIT</code> + 共享设备内存，Metal 走 heap 别名。L2 语义层经 <code>chooseFeatureFallback</code> 判定 <code>TransientAliasing</code> 的 fallback mode（Vulkan/Null=NATIVE，Metal/WebGPU=DEGRADED），<code>applyTo(caps)</code> 将 DEGRADED 映射为 <code>caps.features.transientAliasing = false</code>。<strong>FrameGraph 编译器</strong>在编译期读此字段：NATIVE → 计算 alias groups；DEGRADED → 跳过，aliasPlan 为空。<code>allocateTransientTextures</code> 执行器无 capability gate，纯粹由 compiled aliasPlan 驱动（空→池回收，非空→heap+placed）。<code>TextureDesc</code> 新增 <code>sampleCount</code> 字段，进入别名分组 key 与 subresource range 默认推导。</li>
+    <li><strong>统一 uniform 环缓冲</strong>：<code>FrameGraphUniformRingBuffer</code> 为每个帧槽预分配 backing buffer，并按 256 字节对齐进行有界 bump allocation。游标只能由带原始 completion issuer 的 <code>resetOrdered()</code> 凭证回收；旧的 <code>onFrameComplete()</code> 不构成 GPU completion 证明，会确定性拒绝。</li>
+    <li><strong>push-constant 硬上限</strong>：RHI 在帧计划阶段由 <code>validatePushConstants</code> 为 <code>pushConstantSizeBytes &gt; 256</code> 产生确定性诊断，执行计划不准提交；目标 backend 还需通过自己的能力与 payload gate。</li>
+    <li><strong>别名内存</strong>：Transient aliasing 由共享 L2 contract、lifetime/size/peak-budget 验证、真实 completion 与 backend allocation payload 共同决定。失败时不得返回 size-only heap 或 placeholder texture。Vulkan、Metal、WebGPU 与 WebGL1 的当前结论见能力矩阵。</li>
   </ul>
 
   <h3>5.7 公共对象模型（引擎侧 API）</h3>
@@ -374,17 +373,17 @@ device.queue().submit(*cb);</code></pre>
     </tbody>
   </table>
   <div class="callout warn">
-    <p><strong>阶梯不可跳：</strong><code>Contract Complete ≠ Backend Validated</code>、<code>Prototype Complete ≠ Backend Validated</code>、<code>Backend Validated ≠ Platform Validated</code>、<code>Platform Validated ≠ Production Ready</code>。<code>Production Ready</code> 不能由单次后端冒烟、过期阶段说明或仅契约通过来宣告。RHI 当前整体仍 <strong>未达 Production Ready</strong>，卡在 Pending Confirmation / 外部平台验证（macOS Metal runtime/hash、iOS Metal 生命周期、Android Vulkan 生命周期及更广硬件/驱动矩阵）。</p>
+    <p><strong>阶梯不可跳：</strong><code>Contract Complete</code>、<code>Prototype Complete</code>、<code>Backend Validated</code>、<code>Platform Validated</code> 与 <code>Production Ready</code> 表示不同证据等级。能力按 feature/backend/platform 分别评估；请查看当前 <a href="../RHI_CAPABILITY_MATRIX.md">RHI Capability Matrix</a> 和 <a href="../docs/platform-build-matrix.md">Platform Build Matrix</a>，不要沿用本教程旧的整体 readiness 或待验证清单。</p>
   </div>
 
   <h2>6. Shader</h2>
   <p>着色器子系统（Slang 统一着色语言、多后端编译、反射缓存与 Pipeline 校验、以及<strong>统一内存对齐</strong>约定）已从渲染管线独立成章，详见 <a href="09-shader.html">09 Shader</a>。它与本页 §5 的 RHI 共享同一条设计哲学：<strong>上层写一次，后端分支在底层完成</strong>——你只面对 Slang 与反射元数据，不接触任何原生着色器方言。</p>
   <div class="callout note">
-    <p>想了解 arp 的<strong>统一内存对齐</strong>（std140 规则、CPU 镜像结构体字节核算、256 字节 push-constant 预算、RHI 两层校验），直接读 <a href="09-shader.html">第 09 章</a>。</p>
+    <p>想了解 arp 的<strong>shader ABI 与矩阵布局</strong>（CPU 镜像、反射/contract test、256 字节 L2 push-constant 上限），直接读 <a href="09-shader.html">第 09 章</a>。</p>
   </div>
 
-  <h2>参考实例：world_of_claudecraft 的管线用法</h2>
-  <p>该项目把天空盒、网格、植被、生物、灯光等作为 <code>Component</code>，在 <code>extract()</code> 中推送自带类型的 <code>RenderExtractPayload</code>（如 <code>"wocc.mesh"</code>、<code>"wocc.sky"</code>、<code>"wocc.light"</code>）。WoCC 渲染提取器收集这些 payload，经 <code>SceneRuntimePipelinePayload</code> 进入渲染管线，再由 <code>UiBarComponent</code>/<code>UiTextComponent</code> 的 <code>"wocc.hudbar"</code>/<code>"wocc.hudtext"</code> payload 进入 HUD 画布。具体组件定义见 <a href="02-gameobject-component.html">02 GameObject+Component</a> 与 <a href="05-ui.html">05 UI</a>。</p>
+  <h2>示例与当前能力边界</h2>
+  <p>仓库示例覆盖不同的集成路径，并非同一个通用渲染能力样板。Windows/Vulkan 游戏示例与 Build a Queen 的 WebGL1 ordered-graphics Prototype 有不同的资源、执行与验证契约；在评估功能或扩展 renderer 前，先确认目标 backend 的 <a href="../RHI_CAPABILITY_MATRIX.md">能力单元格及其证据</a>。</p>
 
   <h2>快速上手清单</h2>
   <ol>

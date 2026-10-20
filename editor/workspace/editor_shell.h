@@ -326,6 +326,7 @@ private:
     void visible(const core::pmr::String& source, bool value);
     void filter(const core::pmr::String& prefix, const core::pmr::String& query);
     core::pmr::Vector<SceneHierarchyEntry> visibleSceneHierarchyEntries() const;
+    bool iconSourceRect(std::string_view resourceId, ui::LayoutRect& sourceRect) const;
     void refreshFileSystem();
     void updateFileSlots();
     bool navigateTo(const std::filesystem::path& path);

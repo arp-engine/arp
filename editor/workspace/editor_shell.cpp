@@ -42,6 +42,17 @@ std::string_view componentIcon(std::string_view typeName)
     return "icon-node";
 }
 
+bool EditorShell::iconSourceRect(std::string_view resourceId, ui::LayoutRect& sourceRect) const
+{
+    for (const auto& texture : loaded_.document().textures()) {
+        if (std::string_view(texture.resourceId.data(), texture.resourceId.size()) == resourceId) {
+            sourceRect = texture.sourceRect;
+            return sourceRect.valid();
+        }
+    }
+    return false;
+}
+
 void appendIndex(core::pmr::String& text, std::size_t index)
 {
     char buffer[std::numeric_limits<std::size_t>::digits10 + 2u];
@@ -1416,9 +1427,13 @@ void EditorShell::updateWorkspaceChrome()
         visible(name, sceneMode && presentationState_.dock() == "Inspector");
     if (!sceneMode) {
         text("selected_name", "ReflectionProbe2");
-        if (auto* selectedIcon = runtime().canvas().findWidget(id("selected_icon")))
+        if (auto* selectedIcon = runtime().canvas().findWidget(id("selected_icon"))) {
+            ui::LayoutRect sourceRect;
             selectedIcon->setTextureResourceId(
                 core::pmr::String("icon-probe", &core::defaultCpuMemoryResource()));
+            if (iconSourceRect("icon-probe", sourceRect))
+                selectedIcon->setTextureSourceRect(sourceRect);
+        }
     }
 
     if (auto* viewport = runtime().canvas().findWidget(id("viewport"))) {
@@ -1454,6 +1469,9 @@ void EditorShell::refreshSceneInspector()
         }
         selectedIcon->setTextureResourceId(
             core::pmr::String(icon, &core::defaultCpuMemoryResource()));
+        ui::LayoutRect sourceRect;
+        if (iconSourceRect(icon, sourceRect))
+            selectedIcon->setTextureSourceRect(sourceRect);
     }
     std::size_t componentCount = 0;
     for (const auto& component : object->components())
@@ -1478,12 +1496,17 @@ void EditorShell::refreshSceneInspector()
     sceneInspectorWidgetIds_.clear();
     const auto createInspectorIcon =
         [&](std::string_view source, std::string_view resource, float x, float y, float size) {
+            ui::LayoutRect sourceRect;
+            if (!iconSourceRect(resource, sourceRect))
+                return;
             ui::UiControlDesc desc;
             desc.type = ui::UiControlType::Image;
             desc.widget.name.assign(source.data(), source.size());
             desc.widget.localRect = ui::LayoutRect::fromOriginSize(x, y, size, size);
             desc.widget.styleId = "image";
             desc.widget.textureResourceId.assign(resource.data(), resource.size());
+            desc.widget.textureSourceRect = sourceRect;
+            desc.widget.hasTextureSourceRect = true;
             desc.widget.acceptsPointerInput = false;
             const auto created = runtime().createControl(std::move(desc), id("inspector_content"));
             if (!created.ok())
@@ -1617,8 +1640,14 @@ void EditorShell::refreshSceneInspector()
             headerDesc.widget.localRect = ui::LayoutRect::fromOriginSize(6.0f, rowY, 226.0f, 25.0f);
             headerDesc.widget.styleId = "section";
             headerDesc.widget.fontToken = "font.editor";
-            headerDesc.widget.text = "      ";
-            headerDesc.widget.text.append(componentTitle.data(), componentTitle.size());
+            ui::UiControlDesc titleDesc;
+            titleDesc.type = ui::UiControlType::Label;
+            titleDesc.widget.name = headerSource + "_title";
+            titleDesc.widget.localRect = ui::LayoutRect::fromOriginSize(50.0f, rowY, 176.0f, 25.0f);
+            titleDesc.widget.styleId = "text";
+            titleDesc.widget.fontToken = "font.editor";
+            titleDesc.widget.text.assign(componentTitle.data(), componentTitle.size());
+            titleDesc.widget.acceptsPointerInput = false;
             const auto headerCreated =
                 runtime().createControl(core::makeUnique<EditorAction>(*this, toggleSource),
                     std::move(headerDesc),
@@ -1626,6 +1655,13 @@ void EditorShell::refreshSceneInspector()
             if (headerCreated.ok()) {
                 sceneInspectorWidgetIds_.push_back(headerCreated.widgetId());
                 presentationState_.registerSource(headerCreated.widgetId().value(), headerSource);
+            }
+            const auto titleCreated =
+                runtime().createControl(std::move(titleDesc), id("inspector_content"));
+            if (titleCreated.ok()) {
+                sceneInspectorWidgetIds_.push_back(titleCreated.widgetId());
+                presentationState_.registerSource(
+                    titleCreated.widgetId().value(), headerSource + "_title");
             }
             const auto disclosureIconSource = headerSource + "_disclosure_icon";
             createInspectorIcon(disclosureIconSource,
