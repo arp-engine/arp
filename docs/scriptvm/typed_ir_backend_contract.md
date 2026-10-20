@@ -5,8 +5,6 @@
 **Current schema:** `TypedIrVersion = 7`, `SemanticAbiVersion = 1`
 **Product status:** ScriptVM AOT remains `Implementation In Progress`
 
-[简体中文规范](typed_ir_backend_contract.zh-CN.md)
-
 This document is the normative contract between the ArpScript frontend and
 every execution backend. It takes the useful verification model from C# and
 ECMA-335 CIL, but it does not make ArpScript a CLR language and does not make
