@@ -1,5 +1,9 @@
 # arp-engine
 
+<p align="center">
+  <img src="assets/arp-social-preview.png" alt="ARP Engine GitHub social preview" width="100%" />
+</p>
+
 > AI Render Pipeline - a contract-driven, cross-platform engine and rendering framework.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
