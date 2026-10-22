@@ -37,6 +37,22 @@ public:
 
     void overrideQueue(rhi::GpuQueue* queue) { queueOverride_ = queue; }
 
+    using ShutdownDrain = rhi::semantics::ShutdownDrainReport (*)(
+        void*, const rhi::semantics::ShutdownDrainRequest&);
+
+    void overrideShutdownDrain(void* context, ShutdownDrain drain)
+    {
+        shutdownDrainContext_ = context;
+        shutdownDrain_ = drain;
+    }
+
+    rhi::semantics::ShutdownDrainReport drainForShutdown(
+        const rhi::semantics::ShutdownDrainRequest& request) override
+    {
+        return shutdownDrain_ ? shutdownDrain_(shutdownDrainContext_, request)
+                              : GpuDevice::drainForShutdown(request);
+    }
+
     // Explicit negative accepted-candidate injection; never production authority.
     using AcceptedComputeFactory = core::UniquePtr<rhi::ComputePipeline> (*)(void*,
         const rhi::ComputePipelineDesc&,
@@ -354,6 +370,8 @@ private:
     AcceptedComputeFactory acceptedComputeFactory_ = nullptr;
     AcceptedGraphicsFactory acceptedGraphicsFactory_ = nullptr;
     rhi::GpuQueue* queueOverride_ = nullptr;
+    void* shutdownDrainContext_ = nullptr;
+    ShutdownDrain shutdownDrain_ = nullptr;
     bool failFenceCreation_ = false;
     bool failTexturePlacementQuery_ = false;
     std::uint64_t bufferWriteAttempts_ = 0u;

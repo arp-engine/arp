@@ -170,9 +170,16 @@ RenderSystem createDefaultRenderSystem(WindowSystem&,
     const PlatformWindow&,
     const std::pmr::string& name,
     rhi::PresentationMode mode,
-    const rhi::semantics::UploadStagingBudgetV1*,
-    const rhi::semantics::DirectObjectBudget*)
+    const rhi::semantics::UploadStagingBudgetV1* uploadStagingBudgetOverride,
+    const rhi::semantics::DirectObjectBudget* directObjectBudgetOverride)
 {
+    if (uploadStagingBudgetOverride || directObjectBudgetOverride) {
+        auto impl = core::makeUnique<RenderSystem::Impl>();
+        impl->diagnostics = uploadStagingBudgetOverride
+            ? "RHI-UPLOAD-STAGING-BUDGET-WEBGL-UNSUPPORTED"
+            : "RHI-DIRECT-OBJECT-BUDGET-WEBGL-UNSUPPORTED";
+        return RenderSystem(std::move(impl));
+    }
     RenderSystemDesc desc;
     desc.applicationName = name;
     desc.presentationMode = mode;

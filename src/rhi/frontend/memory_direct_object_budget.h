@@ -39,6 +39,7 @@ struct DirectObjectBudgetStats {
     std::uint64_t currentDescriptors = 0u;
     std::uint64_t peakDescriptors = 0u;
     std::uint64_t descriptorRejectionCount = 0u;
+    std::uint64_t currentDescriptorReservations = 0u;
 };
 
 enum class DirectObjectBudgetKind : std::uint8_t {
@@ -51,8 +52,9 @@ enum class DirectObjectBudgetKind : std::uint8_t {
 class DirectObjectBudgetLease final {
 public:
     DirectObjectBudgetLease() noexcept = default;
-    DirectObjectBudgetLease(
-        std::shared_ptr<core::AtomicCapacityBudget> budget, std::uint64_t units) noexcept;
+    DirectObjectBudgetLease(std::shared_ptr<core::AtomicCapacityBudget> budget,
+        std::uint64_t units,
+        std::shared_ptr<std::atomic<std::uint64_t>> liveReservations = {}) noexcept;
     ~DirectObjectBudgetLease();
 
     DirectObjectBudgetLease(const DirectObjectBudgetLease&) = delete;
@@ -64,6 +66,7 @@ private:
     void release() noexcept;
 
     std::shared_ptr<core::AtomicCapacityBudget> budget_;
+    std::shared_ptr<std::atomic<std::uint64_t>> liveReservations_;
     std::uint64_t units_ = 0u;
 };
 
@@ -80,6 +83,7 @@ public:
             pipelineObjects_ =
                 core::makeShared<core::AtomicCapacityBudget>(budget_.pipelineObjectCapacity);
             descriptors_ = core::makeShared<core::AtomicCapacityBudget>(budget_.descriptorCapacity);
+            descriptorReservations_ = core::makeShared<std::atomic<std::uint64_t>>(0u);
         }
     }
 
@@ -91,12 +95,18 @@ private:
     DirectObjectBudget budget_;
     std::shared_ptr<core::AtomicCapacityBudget> pipelineObjects_;
     std::shared_ptr<core::AtomicCapacityBudget> descriptors_;
+    std::shared_ptr<std::atomic<std::uint64_t>> descriptorReservations_;
 };
 
 inline DirectObjectBudgetLease::DirectObjectBudgetLease(
-    std::shared_ptr<core::AtomicCapacityBudget> budget, const std::uint64_t units) noexcept
-    : budget_(std::move(budget)), units_(units)
-{}
+    std::shared_ptr<core::AtomicCapacityBudget> budget,
+    const std::uint64_t units,
+    std::shared_ptr<std::atomic<std::uint64_t>> liveReservations) noexcept
+    : budget_(std::move(budget)), liveReservations_(std::move(liveReservations)), units_(units)
+{
+    if (budget_ && units_ != 0u && liveReservations_)
+        liveReservations_->fetch_add(1u, std::memory_order_acq_rel);
+}
 
 inline DirectObjectBudgetLease::~DirectObjectBudgetLease()
 {
@@ -104,7 +114,8 @@ inline DirectObjectBudgetLease::~DirectObjectBudgetLease()
 }
 
 inline DirectObjectBudgetLease::DirectObjectBudgetLease(DirectObjectBudgetLease&& other) noexcept
-    : budget_(std::move(other.budget_)), units_(other.units_)
+    : budget_(std::move(other.budget_)), liveReservations_(std::move(other.liveReservations_)),
+      units_(other.units_)
 {
     other.units_ = 0u;
 }
@@ -115,6 +126,7 @@ inline DirectObjectBudgetLease& DirectObjectBudgetLease::operator=(
     if (this != &other) {
         release();
         budget_ = std::move(other.budget_);
+        liveReservations_ = std::move(other.liveReservations_);
         units_ = other.units_;
         other.units_ = 0u;
     }
@@ -123,9 +135,13 @@ inline DirectObjectBudgetLease& DirectObjectBudgetLease::operator=(
 
 inline void DirectObjectBudgetLease::release() noexcept
 {
-    if (budget_ && units_ != 0u)
+    if (budget_ && units_ != 0u) {
         budget_->release(units_);
+        if (liveReservations_)
+            liveReservations_->fetch_sub(1u, std::memory_order_acq_rel);
+    }
     budget_.reset();
+    liveReservations_.reset();
     units_ = 0u;
 }
 
@@ -141,7 +157,9 @@ inline DirectObjectBudgetReservation DirectObjectBudgetTracker::reserve(
     auto budget = descriptor ? descriptors_ : pipelineObjects_;
     if (units == 0u || !budget || !budget->tryAcquire(units))
         return {};
-    return {true, DirectObjectBudgetLease(std::move(budget), units)};
+    return {true,
+        DirectObjectBudgetLease(
+            std::move(budget), units, descriptor ? descriptorReservations_ : nullptr)};
 }
 
 inline DirectObjectBudgetStats DirectObjectBudgetTracker::stats() const noexcept
@@ -158,6 +176,7 @@ inline DirectObjectBudgetStats DirectObjectBudgetTracker::stats() const noexcept
     result.currentDescriptors = descriptors_->used();
     result.peakDescriptors = descriptors_->peak();
     result.descriptorRejectionCount = descriptors_->rejectionCount();
+    result.currentDescriptorReservations = descriptorReservations_->load(std::memory_order_acquire);
     return result;
 }
 

@@ -87,7 +87,8 @@ TerrainVegetationGpuUpload::Result TerrainVegetationGpuUpload::prepare(rhi::GpuD
     return prepareWithQuota(device, std::move(source), desc, nullptr);
 }
 
-TerrainVegetationGpuUpload::Result TerrainVegetationGpuUpload::prepareWithQuota(rhi::GpuDevice& device,
+TerrainVegetationGpuUpload::Result TerrainVegetationGpuUpload::prepareWithQuota(
+    rhi::GpuDevice& device,
     std::shared_ptr<const TerrainVegetationDrawSnapshot> source,
     const Desc& desc,
     std::shared_ptr<core::CpuMemoryQuota> quota)
@@ -155,6 +156,7 @@ TerrainVegetationGpuUpload::Result TerrainVegetationGpuUpload::prepareWithQuota(
         }
         candidate->source_ = std::move(source);
         candidate->validatorOnly_ = decision_.validatorOnly;
+        candidate->device_ = &device;
         candidate->tiles_.reserve(candidate->source_->tiles.size());
         core::pmr::Vector<core::UniquePtr<rhi::GpuBuffer>> uploads{
             &core::defaultCpuMemoryResource()};

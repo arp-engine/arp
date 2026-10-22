@@ -1,5 +1,6 @@
 #include "renderer/volumetric_fog/volumetric_fog_feature.h"
 
+#include "core/math/matrix_validation.h"
 #include "renderer/raster_viewport.h"
 #include "renderer/renderer_common.h"
 #include "renderer/shader_package_reflection.h"
@@ -22,23 +23,9 @@ bool finite(core::Vec3 v)
     return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
 }
 
-bool finite(const core::Mat4& m)
-{
-    for (auto v : m.m)
-        if (!std::isfinite(v))
-            return false;
-    return true;
-}
-
 bool inverseValid(const core::Mat4& matrix, const core::Mat4& inv)
 {
-    if (!finite(matrix) || !finite(inv))
-        return false;
-    const auto check = core::multiply(matrix, inv);
-    for (std::size_t i = 0; i < 16; ++i)
-        if (std::fabs(check.m[i] - (i % 5 == 0 ? 1.0f : 0.0f)) > 0.002f)
-            return false;
-    return true;
+    return core::isApproximateInverse(matrix, inv, 0.002f);
 }
 } // namespace
 
@@ -55,6 +42,7 @@ FogResult VolumetricFogFeature::create(const FogCreateContext& context)
     extent_ = context.extent;
     config_ = context.config;
     cameraId_ = context.cameraId;
+    spatialAmbient_ = context.spatialAmbient;
     shaderDirectory_ = context.shaderDirectory;
     volumeUpload_.reserve(config_.maxLocalVolumes);
     auto result = createPipelines();
@@ -68,8 +56,11 @@ FogResult VolumetricFogFeature::create(const FogCreateContext& context)
 FogResult VolumetricFogFeature::createPipelines()
 {
     using D = rhi::DescriptorType;
-    const char* names[] = {
-        "fog_inject", "fog_scatter", "fog_temporal", "fog_integrate", "fog_composite"};
+    const char* names[] = {"fog_inject",
+        spatialAmbient_ ? "fog_scatter_spatial" : "fog_scatter",
+        "fog_temporal",
+        "fog_integrate",
+        "fog_composite"};
     const core::pmr::Vector<D> types[] = {
         {D::UniformBuffer, D::ReadOnlyStorageBuffer, D::StorageBuffer},
         {D::UniformBuffer, D::ReadOnlyStorageBuffer, D::SampledTexture, D::StorageBuffer},
@@ -89,6 +80,15 @@ FogResult VolumetricFogFeature::createPipelines()
             rhi::DescriptorBindingDesc binding{b, types[i][b], stage};
             binding.depthTexture = (i == 1 && b == 2) || (i == 2 && b == 4) || (i == 4 && b == 3);
             p.bindings.bindings.push_back(binding);
+        }
+        if (i == 1 && spatialAmbient_) {
+            const D spatialTypes[] = {D::SampledTexture,
+                D::SampledTexture,
+                D::Sampler,
+                D::ReadOnlyStorageBuffer,
+                D::UniformBuffer};
+            for (std::uint32_t b = 0; b < 5; ++b)
+                p.bindings.bindings.push_back({4u + b, spatialTypes[b], stage});
         }
         rhi::PipelineLayoutDesc layout;
         layout.descriptorLayouts.push_back(p.bindings);
@@ -147,8 +147,9 @@ FogResult VolumetricFogFeature::createPipelines()
 
 FogResult VolumetricFogFeature::createSlots()
 {
-    arena_ = device_->createDescriptorArena(
-        {"Fog.Descriptors", config_.framesInFlight * 5u, config_.framesInFlight * 20u});
+    arena_ = device_->createDescriptorArena({"Fog.Descriptors",
+        config_.framesInFlight * 5u,
+        config_.framesInFlight * (spatialAmbient_ ? 25u : 20u)});
     if (!arena_)
         return FogResult::failure("FOG-DESCRIPTOR-BUDGET");
     slots_.resize(config_.framesInFlight);
@@ -170,14 +171,21 @@ FogResult VolumetricFogFeature::createSlots()
             d.usage = d.usage | rhi::ResourceUsage::CopySrc;
         return core::shareUnique(device_->createBuffer(d));
     };
+    emptyHistory_ = buffer("Fog.EmptyHistory", kFogHistoryStride, true);
+    if (!emptyHistory_)
+        return FogResult::failure("FOG-BUFFER-CREATE");
+    const std::array<std::byte, kFogHistoryStride> empty{};
+    const auto initialized = device_->writeBuffer(*emptyHistory_, empty.data(), empty.size());
+    if (!initialized.success)
+        return FogResult::failure("FOG-HISTORY-INITIALIZE");
     for (auto& slot : slots_) {
         slot.authoredVolumes.reserve(config_.maxLocalVolumes);
         slot.constants = buffer("Fog.Constants", sizeof(FogConstants), true, true);
         slot.volumes = buffer(
             "Fog.Volumes", std::uint64_t(config_.maxLocalVolumes) * sizeof(FogGpuVolume), true);
         slot.medium = buffer("Fog.Medium", grid_.cells * 32u, false);
-        slot.scattering = buffer("Fog.Scattering", grid_.cells * 16u, false);
-        slot.history = buffer("Fog.History", grid_.cells * 32u, false);
+        slot.scattering = buffer("Fog.Scattering", grid_.cells * kFogScatteringStride, false);
+        slot.history = buffer("Fog.History", grid_.cells * kFogHistoryStride, false);
         slot.integrated = buffer("Fog.Integrated", grid_.cells * 16u, false, false, true);
         if (!slot.constants || !slot.volumes || !slot.medium || !slot.scattering || !slot.history
             || !slot.integrated)
@@ -246,6 +254,7 @@ void VolumetricFogFeature::release() noexcept
     if (device_ && !idle())
         device_->waitIdle();
     slots_.clear();
+    emptyHistory_.reset();
     arena_.reset();
     for (auto& p : pipelines_)
         p = Pipeline{};
@@ -330,8 +339,19 @@ FogResult VolumetricFogFeature::contributeGraph(const FogGraphContext& context, 
     if (context.cameraId != cameraId_)
         return FogResult::failure("FOG-CAMERA-IDENTITY");
     if (!finite(context.ambientRadiance) || context.ambientRadiance.x < 0
-        || context.ambientRadiance.y < 0 || context.ambientRadiance.z < 0)
+        || context.ambientRadiance.y < 0 || context.ambientRadiance.z < 0
+        || !std::isfinite(context.ambientIntensity) || context.ambientIntensity < 0)
         return FogResult::failure("FOG-AMBIENT-RADIANCE");
+    const auto& spatial = context.spatialAmbient;
+    if (spatialAmbient_
+        && (!spatial.irradiance.id || !spatial.moments.id || !spatial.states.id
+            || !spatial.constants.id || !spatial.sampler.isValid()))
+        return FogResult::failure("FOG-SPATIAL-AMBIENT-INPUT");
+    if (spatialAmbient_
+        && (context.graph.textureDesc(spatial.irradiance).format != rhi::TextureFormat::Rgba16Float
+            || context.graph.textureDesc(spatial.moments).format
+                != rhi::TextureFormat::Rgba16Float))
+        return FogResult::failure("FOG-SPATIAL-AMBIENT-FORMAT");
     if (!std::isfinite(context.nearPlane) || context.nearPlane <= 0
         || config_.distance <= context.nearPlane || !std::isfinite(context.time)
         || !finite(context.cameraPosition))
@@ -412,7 +432,7 @@ FogResult VolumetricFogFeature::contributeGraph(const FogGraphContext& context, 
         && old.sceneRevision == context.sceneRevision && context.time >= old.time
         && old.historyProjection.m == historyProjection.m
         && old.parameters.depthTime.x == context.nearPlane;
-    p.grid = {grid_.width, grid_.height, grid_.depth, 0};
+    p.grid = {grid_.width, grid_.height, grid_.depth, config_.stratifiedShadows ? 0u : 1u};
     p.depthTime = {
         context.nearPlane, config_.distance, context.time, history ? context.time - old.time : 0};
     p.cameraPosition = {
@@ -424,10 +444,13 @@ FogResult VolumetricFogFeature::contributeGraph(const FogGraphContext& context, 
             d.scatteringColor.x, d.scatteringColor.y, d.scatteringColor.z, d.anisotropy};
     }
     const auto dir = core::normalize(light.worldDirection);
+    p.globalMedium.w = context.ambientIntensity;
     p.lightDirectionIntensity = {dir.x, dir.y, dir.z, light.intensity};
     p.lightColor = {light.color.x, light.color.y, light.color.z, shadow.depthBias};
-    p.ambientRadiance = {
-        context.ambientRadiance.x, context.ambientRadiance.y, context.ambientRadiance.z, 0};
+    p.ambientRadiance = {context.ambientRadiance.x,
+        context.ambientRadiance.y,
+        context.ambientRadiance.z,
+        spatialAmbient_ && spatial.ready ? 1.0f : 0.0f};
     p.shadowSelection = {shadow.selectionOrigin.x,
         shadow.selectionOrigin.y,
         shadow.selectionOrigin.z,
@@ -508,9 +531,8 @@ FogResult VolumetricFogFeature::contributeGraph(const FogGraphContext& context, 
     bindBuffer(*slot.sets[1], 3, D::StorageBuffer, *slot.scattering);
     bindBuffer(*slot.sets[2], 1, D::ReadOnlyStorageBuffer, *slot.medium);
     bindBuffer(*slot.sets[2], 2, D::ReadOnlyStorageBuffer, *slot.scattering);
-    // With history disabled the shader never dereferences this binding. Reuse
-    // the initialized, same-stride medium buffer rather than undefined history.
-    const auto historyInput = history ? slots_[previous].history : slot.medium;
+    // FogPhaseHistory/1: initialized same-stride sentinel, never read without history.
+    const auto historyInput = history ? slots_[previous].history : emptyHistory_;
     bindBuffer(*slot.sets[2], 3, D::ReadOnlyStorageBuffer, *historyInput);
     bindBuffer(*slot.sets[2], 5, D::StorageBuffer, *slot.history);
     bindBuffer(*slot.sets[3], 1, D::ReadOnlyStorageBuffer, *slot.history);
@@ -534,18 +556,36 @@ FogResult VolumetricFogFeature::contributeGraph(const FogGraphContext& context, 
         .execute([this, index](render_graph::RenderContext& c) {
             recordCompute(c, 0, index, grid_.depth);
         });
-    graph.addPass("Fog.Scatter")
-        .kind(render_graph::PassKind::Compute)
-        .queue(render_graph::QueueRole::Graphics)
-        .read(constants, rhi::ResourceState::ShaderRead)
-        .read(medium, rhi::ResourceState::ShaderRead)
-        .read(shadowHandle, rhi::ResourceState::ShaderRead)
-        .write(scattering, rhi::ResourceState::ShaderWrite)
-        .execute([this, index, shadowHandle, &graph](render_graph::RenderContext& c) {
-            bindTexture(
-                slots_[index], 0, *slots_[index].sets[1], 2, graph.texture(shadowHandle), true);
-            recordCompute(c, 1, index, grid_.depth);
-        });
+    auto scatter = graph.addPass("Fog.Scatter")
+                       .kind(render_graph::PassKind::Compute)
+                       .queue(render_graph::QueueRole::Graphics)
+                       .read(constants, rhi::ResourceState::ShaderRead)
+                       .read(medium, rhi::ResourceState::ShaderRead)
+                       .read(shadowHandle, rhi::ResourceState::ShaderRead)
+                       .write(scattering, rhi::ResourceState::ShaderWrite);
+    if (spatialAmbient_) {
+        scatter.read(spatial.irradiance, rhi::ResourceState::ShaderRead)
+            .read(spatial.moments, rhi::ResourceState::ShaderRead)
+            .read(spatial.states, rhi::ResourceState::ShaderRead)
+            .read(spatial.constants, rhi::ResourceState::ShaderRead);
+    }
+    scatter.execute([this, index, shadowHandle, spatial, &graph](render_graph::RenderContext& c) {
+        bindTexture(slots_[index], 0, *slots_[index].sets[1], 2, graph.texture(shadowHandle), true);
+        if (spatialAmbient_) {
+            auto& slot = slots_[index];
+            auto& set = *slot.sets[1];
+            bindTexture(slot, 4, set, 4, graph.texture(spatial.irradiance), false);
+            bindTexture(slot, 5, set, 5, graph.texture(spatial.moments), false);
+            require(set.write({6u,
+                rhi::DescriptorType::Sampler,
+                spatial.sampler,
+                rhi::DescriptorResourceKind::Sampler}));
+            bindBuffer(
+                set, 7, rhi::DescriptorType::ReadOnlyStorageBuffer, graph.buffer(spatial.states));
+            bindBuffer(set, 8, rhi::DescriptorType::UniformBuffer, graph.buffer(spatial.constants));
+        }
+        recordCompute(c, 1, index, grid_.depth);
+    });
     auto temporal = graph.addPass("Fog.Temporal")
                         .kind(render_graph::PassKind::Compute)
                         .queue(render_graph::QueueRole::Graphics)

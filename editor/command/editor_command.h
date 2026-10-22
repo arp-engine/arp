@@ -359,8 +359,25 @@ struct BuildTerrainResourceCommand {
 
 struct CompleteTerrainResourceBuildCommand {};
 
+struct ShowTerrainBrowserCommand {
+    bool visible = true;
+};
+
+struct SelectTerrainPreviewCommand {
+    core::pmr::String previewId;
+    std::uint64_t expectedGeneration = 0;
+};
+
+struct OpenTerrainPreviewCommand {
+    core::pmr::String previewId;
+    std::uint64_t expectedGeneration = 0;
+};
+
 using EditorCommandPayload = std::variant<BuildTerrainResourceCommand,
     CompleteTerrainResourceBuildCommand,
+    ShowTerrainBrowserCommand,
+    SelectTerrainPreviewCommand,
+    OpenTerrainPreviewCommand,
     ActivateControlCommand,
     SetTextValueCommand,
     EditorInputCommand,

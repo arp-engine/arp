@@ -286,6 +286,7 @@ private:
     friend class VulkanOriginalBindlessGraphicsExecutionView;
     friend class VulkanOriginalBindlessComputeExecutionView;
     friend class VulkanOriginalTextureUploadCommand;
+    friend class VulkanRhiRetainedCommand;
     friend void drainVulkanRhiSubmittedCommandsForShutdown();
     friend const char* waitIdleAndRetireVulkanRhiSubmittedCommands(
         const std::shared_ptr<VulkanRhiRuntime>&);

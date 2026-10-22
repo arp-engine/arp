@@ -166,8 +166,10 @@ rhi::ValidationResult validateVulkanReflectionArtifact(const rhi::ShaderPackageD
 
 class VulkanRhiPipelineLayout final : public rhi::PipelineLayout {
 public:
-    explicit VulkanRhiPipelineLayout(rhi::PipelineLayoutDesc desc)
-        : desc_(std::move(desc)), pushConstantBytes_(countPushConstantBytes(desc_))
+    explicit VulkanRhiPipelineLayout(
+        rhi::PipelineLayoutDesc desc, rhi::semantics::DirectObjectBudgetLease budgetLease)
+        : desc_(std::move(desc)), pushConstantBytes_(countPushConstantBytes(desc_)),
+          budgetLease_(std::move(budgetLease))
     {}
 
     const rhi::PipelineLayoutDesc& desc() const override { return desc_; }
@@ -191,6 +193,7 @@ public:
 private:
     rhi::PipelineLayoutDesc desc_;
     std::uint32_t pushConstantBytes_ = 0;
+    rhi::semantics::DirectObjectBudgetLease budgetLease_;
 };
 
 rhi::PipelineValidationReport basePipelineReport(const rhi::PipelineLayout* layout,
@@ -245,6 +248,28 @@ rhi::PipelineValidationReport basePipelineReport(const rhi::PipelineLayout* layo
     return report;
 }
 
+VulkanRhiRetainedGraphicsPipelineState captureRetainedGraphics(
+    const rhi::RenderPipelineDesc& d) noexcept
+{
+    VulkanRhiRetainedGraphicsPipelineState result;
+    result.stages = d.vertexShader.stage
+        | (d.fragmentShader.entryPoint.empty() ? rhi::ShaderStage::None : d.fragmentShader.stage);
+    const auto pass = rhi::OriginalBindlessGraphicsPassContract::capturePipeline(d);
+    result.color = pass.colors[0];
+    const auto color = rhi::effectiveColorTargetAt(d, 0u);
+    result.fullscreenColor = pass.singleSubpass && pass.colorCount == 1u && pass.samples == 1u
+        && pass.depth == rhi::TextureFormat::Unknown && d.vertexBuffers.empty()
+        && d.topology == rhi::PrimitiveTopology::TriangleList && d.cullMode == rhi::CullMode::None
+        && d.dynamicViewportScissor && !d.hasViewport && !d.hasScissor && !color.blendEnabled
+        && color.writeMask == rhi::ColorWriteMask::All && !color.resolveTargetRequired
+        && !d.depthStencil.depthTestEnabled && !d.depthStencil.depthWriteEnabled
+        && !d.depthStencil.stencilEnabled && !d.depthStencil.depthBiasEnabled
+        && !d.multisample.alphaToCoverageEnabled && (d.multisample.sampleMask & 1u)
+        && d.patchControlPointCount == 0u && d.tessellationControlShader.entryPoint.empty()
+        && d.tessellationEvaluationShader.entryPoint.empty();
+    return result;
+}
+
 class VulkanRhiRenderPipeline final : public rhi::RenderPipeline {
 public:
     VulkanRhiRenderPipeline(const rhi::PipelineLayout* layout,
@@ -263,7 +288,7 @@ public:
           nativePayload_(std::move(nativePayload)), authorization_(std::move(authorization)),
           activeStages_(activeStages), topology_(topology), passState_(passState),
           vertexBuffers_(rhi::RenderPipelineStateCopy::copy(definition).vertexBuffers),
-          graphicsEntries_(entries)
+          graphicsEntries_(entries), retainedGraphics_(captureRetainedGraphics(definition))
     {}
 
     const rhi::PipelineLayout* layout() const override { return layout_; }
@@ -332,6 +357,11 @@ public:
 
     std::shared_ptr<VulkanRhiNativeResourcePayload> nativePayload() const { return nativePayload_; }
 
+    const auto* retainedGraphicsState() const noexcept
+    {
+        return authorization_ ? nullptr : &retainedGraphics_;
+    }
+
     const auto* originalBindlessPassState() const noexcept
     {
         return authorization_ ? &passState_ : nullptr;
@@ -349,6 +379,7 @@ private:
     const rhi::OriginalBindlessGraphicsPassContract::PipelineState passState_;
     const core::pmr::Vector<rhi::VertexBufferLayoutDesc> vertexBuffers_;
     const rhi::BindlessGraphicsPipelineEntries graphicsEntries_;
+    const VulkanRhiRetainedGraphicsPipelineState retainedGraphics_;
 };
 
 class VulkanRhiComputePipeline final : public rhi::ComputePipeline {
@@ -399,13 +430,13 @@ private:
 } // namespace
 
 arp::core::UniquePtr<rhi::PipelineLayout> createVulkanRhiPipelineLayout(
-    const rhi::PipelineLayoutDesc& desc)
+    const rhi::PipelineLayoutDesc& desc, rhi::semantics::DirectObjectBudgetLease budgetLease)
 {
     if (!rhi::validatePipelineLayout(desc).success) {
         return nullptr;
     }
     return arp::core::makeUnique<VulkanRhiPipelineLayout>(
-        arp::rhi::PipelineLayoutStateCopy::copy(desc));
+        arp::rhi::PipelineLayoutStateCopy::copy(desc), std::move(budgetLease));
 }
 
 rhi::PipelineValidationReport validateVulkanRhiRenderPipeline(const rhi::RenderPipelineDesc& desc)
@@ -572,6 +603,13 @@ vulkanRhiBindlessGraphicsPassPipelineState(const rhi::RenderPipeline& pipeline) 
 {
     const auto* original = dynamic_cast<const VulkanRhiRenderPipeline*>(&pipeline);
     return original ? original->originalBindlessPassState() : nullptr;
+}
+
+const VulkanRhiRetainedGraphicsPipelineState* vulkanRhiRetainedGraphicsPipelineState(
+    const rhi::RenderPipeline& pipeline) noexcept
+{
+    const auto* original = dynamic_cast<const VulkanRhiRenderPipeline*>(&pipeline);
+    return original ? original->retainedGraphicsState() : nullptr;
 }
 
 arp::core::UniquePtr<rhi::ComputePipeline> createVulkanRhiComputePipeline(

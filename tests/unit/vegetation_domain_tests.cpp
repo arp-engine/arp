@@ -1,6 +1,7 @@
 #include "3d/vegetation/foliage_geometry_profile.h"
 #include "3d/vegetation/static_instance.h"
 #include "3d/vegetation/template.h"
+#include "3d/vegetation/template_geometry_contract.h"
 
 #include <cassert>
 #include <cstddef>
@@ -27,6 +28,17 @@ int main()
     placement.rotation[1] = std::numeric_limits<float>::infinity();
     assert(!placement.hasValidTransform());
     static_assert(sizeof(InstanceVertex) == 60u);
+    VegetationTemplate geometry;
+    assert(TemplateGeometryContract::validate(geometry));
+    geometry.vertices.resize(3u);
+    geometry.indices = {0u, 1u, 2u};
+    geometry.sections.push_back({0u, 3u, 7u});
+    assert(!TemplateGeometryContract::validate(geometry));
+    geometry.indices.back() = 3u;
+    assert(TemplateGeometryContract::validate(geometry));
+    geometry.indices.back() = 2u;
+    geometry.sections.front().firstIndex = 1u;
+    assert(TemplateGeometryContract::validate(geometry));
     static_assert(sizeof(InstanceDataGpu) == 64u);
     static_assert(offsetof(InstanceDataGpu, speciesLodState) == 48u);
     static_assert(sizeof(WindFieldParameters) == 64u);

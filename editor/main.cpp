@@ -7,10 +7,12 @@ int main(int argc, char** argv)
 {
     bool hidden = false, after = false, hover = false, viewportPipelineSmoke = false;
     bool viewportRuntimeSmoke = false, terrainResourceSmoke = false;
+    bool terrainAssets = false;
     bool remoteBindAddressSpecified = false;
     std::uint16_t remotePort = 0;
     std::string_view remoteBindAddress = "127.0.0.1";
     std::filesystem::path projectRoot, openScript;
+    std::string_view openTerrain;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--smoke") == 0)
             hidden = true;
@@ -23,12 +25,16 @@ int main(int argc, char** argv)
         else if (std::strcmp(argv[i], "--terrain-resource-smoke") == 0) {
             terrainResourceSmoke = true;
             viewportPipelineSmoke = true;
+        } else if (std::strcmp(argv[i], "--terrain-assets") == 0) {
+            terrainAssets = true;
         } else if (std::strcmp(argv[i], "--viewport-runtime-smoke") == 0)
             viewportRuntimeSmoke = true;
         else if (std::strcmp(argv[i], "--project-root") == 0 && i + 1 < argc)
             projectRoot = argv[++i];
         else if (std::strcmp(argv[i], "--open-script") == 0 && i + 1 < argc)
             openScript = argv[++i];
+        else if (std::strcmp(argv[i], "--open-terrain") == 0 && i + 1 < argc)
+            openTerrain = argv[++i];
         else if (std::strcmp(argv[i], "--remote-port") == 0 && i + 1 < argc) {
             char* end = nullptr;
             const auto parsed = std::strtoul(argv[++i], &end, 10);
@@ -44,7 +50,7 @@ int main(int argc, char** argv)
             std::fprintf(stderr,
                 "Usage: arp_editor [--smoke] [--after] [--hover] [--viewport-pipeline-smoke] "
                 "[--viewport-runtime-smoke] [--terrain-resource-smoke] [--project-root PATH] "
-                "[--open-script PATH] [--remote-port PORT] "
+                "[--open-script PATH] [--open-terrain PREVIEW_MATERIAL_UUID] [--terrain-assets] [--remote-port PORT] "
                 "[--remote-bind-address IPv4]\n");
             return 2;
         }
@@ -74,5 +80,7 @@ int main(int argc, char** argv)
         remoteBindAddress,
         viewportPipelineSmoke,
         viewportRuntimeSmoke,
-        terrainResourceSmoke);
+        terrainResourceSmoke,
+        openTerrain,
+        terrainAssets);
 }

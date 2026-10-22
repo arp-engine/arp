@@ -11,6 +11,8 @@ struct FogCreateContext {
     FogConfig config;
     core::pmr::String shaderDirectory;
     std::uint64_t cameraId = 1u;
+    // Explicit FogSpatialAmbient/1 Prototype opt-in; requires DDGI inputs every frame.
+    bool spatialAmbient = false;
 };
 
 enum class FogShadowCascadeSelection : std::uint32_t { ViewDepth, DistanceFromOrigin };
@@ -49,6 +51,15 @@ struct FogGraphContext {
     // FogIsotropicAmbient/1: mean incident linear radiance; zero disables.
     // Isotropic single scattering, without sky occlusion or multiple scattering.
     core::Vec3 ambientRadiance{};
+    // Explicit lighting control for uniform and spatial ambient alike; neutral is 1.
+    float ambientIntensity = 1.0f;
+
+    struct SpatialAmbient {
+        render_graph::TextureHandle irradiance, moments;
+        render_graph::BufferHandle states, constants;
+        rhi::GpuResourceId sampler;
+        bool ready = false;
+    } spatialAmbient;
 };
 
 struct FogOutputs {
@@ -97,7 +108,7 @@ private:
     struct FrameSlot {
         std::shared_ptr<rhi::GpuBuffer> constants, volumes, medium, scattering, history, integrated;
         std::array<core::UniquePtr<rhi::DescriptorSet>, 5> sets;
-        std::array<core::UniquePtr<rhi::GpuTextureView>, 4> views;
+        std::array<core::UniquePtr<rhi::GpuTextureView>, 6> views;
         std::shared_ptr<const rhi::GpuFence> completion;
         FogConstants parameters{};
         core::pmr::Vector<FogGpuVolume> authoredVolumes;
@@ -133,11 +144,13 @@ private:
     std::uint64_t cameraId_ = 0u;
     std::array<Pipeline, 5> pipelines_;
     core::UniquePtr<rhi::DescriptorArena> arena_;
+    std::shared_ptr<rhi::GpuBuffer> emptyHistory_;
     core::pmr::Vector<FrameSlot> slots_;
     core::pmr::Vector<FogGpuVolume> volumeUpload_;
     std::uint32_t previousSlot_ = 0u, pendingSlot_ = 0u, pendingPrevious_ = 0u;
     std::uint64_t generation_ = 0u;
     bool historyValid_ = false, pending_ = false;
+    bool spatialAmbient_ = false;
 };
 
 } // namespace arp::renderer::fog

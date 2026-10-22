@@ -68,6 +68,15 @@ int main()
     assert(stats.configured && stats.currentPipelineObjects == 2u && stats.peakPipelineObjects == 2u
         && stats.pipelineRejectionCount == 1u && stats.currentDescriptors == 4u
         && stats.peakDescriptors == 4u && stats.descriptorRejectionCount == 1u);
+    assert(stats.currentDescriptorReservations == 1u);
+    auto sharedGeneration =
+        arp::core::makeShared<DirectObjectBudgetLease>(std::move(descriptors.lease));
+    auto retainedGeneration = sharedGeneration;
+    sharedGeneration.reset();
+    assert(tracker.stats().currentDescriptorReservations == 1u
+        && tracker.stats().currentDescriptors == 4u);
+    retainedGeneration.reset();
+    assert(!tracker.stats().currentDescriptorReservations && !tracker.stats().currentDescriptors);
     firstPipeline.lease = {};
     assert(tracker.reserve(DirectObjectBudgetKind::ComputePipeline).success);
     return 0;

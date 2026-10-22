@@ -52,10 +52,17 @@ public:
         std::uint64_t firstRevision = 1u,
         std::uint64_t firstEnlistmentEpoch = 1u) noexcept
         : value_(initial), sequence_(firstRevision), enlistments_(firstEnlistmentEpoch),
-          revision_(sequence_.tryAcquire()), snapshot_(value_, this, [](void* context) noexcept {
-              auto& self = *static_cast<VersionedMutationValue*>(context);
-              self.revision_ = self.invalidated_ ? 0u : self.sequence_.tryAcquire();
-          })
+          revision_(sequence_.tryAcquire()),
+          snapshot_(
+              value_,
+              this,
+              [](void* context) noexcept {
+                  auto& self = *static_cast<VersionedMutationValue*>(context);
+                  self.revision_ = self.invalidated_ ? 0u : self.sequence_.tryAcquire();
+              },
+              [](void* context) noexcept {
+                  static_cast<VersionedMutationValue*>(context)->invalidate();
+              })
     {}
 
     VersionedMutationValue(const VersionedMutationValue&) = delete;

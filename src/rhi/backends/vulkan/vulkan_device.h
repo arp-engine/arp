@@ -1,16 +1,28 @@
 #pragma once
 #include "core/memory/cpu_allocator.h"
+#include "rhi/frontend/memory_direct_object_budget.h"
+#include "rhi/frontend/memory_upload_staging_budget.h"
 #include "rhi/gpu_device.h"
 #include "rhi/semantics/native_backend_capabilities.h"
 #include "rhi/semantics/render_output_observation.h"
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+
+namespace arp::rhi::common {
+class CommandRetentionStorage;
+}
 
 namespace arp::rhi_vulkan {
 
 class VulkanRhiRuntime;
+class VulkanRhiRetainedCommand;
+
+// Explicit backend-private prototype. Does not publish public L2 capability.
+core::UniquePtr<VulkanRhiRetainedCommand> prepareVulkanRhiRetainedCommand(
+    rhi::GpuDevice&, core::UniquePtr<rhi::common::CommandRetentionStorage>, core::pmr::String&);
 
 struct VulkanRhiDeviceDesc {
     std::pmr::string label;
@@ -30,6 +42,8 @@ struct VulkanRhiDeviceDesc {
     bool allowPerDrawPipelineCreation = false;
     bool allowPerFrameShaderCompilation = false;
     rhi::semantics::PushConstantLoweringPlan pushConstantLoweringPlan;
+    rhi::semantics::DirectObjectBudget directObjectBudget;
+    std::optional<rhi::semantics::UploadStagingBudgetV1> uploadStagingBudget;
 };
 
 struct VulkanRhiDeviceReport {

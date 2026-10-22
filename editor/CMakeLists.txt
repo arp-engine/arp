@@ -12,6 +12,9 @@ add_library(arp_editor_shell STATIC
     workspace/project_browser_model.cpp
     workspace/project_browser.cpp
     workspace/editor_project_resources.cpp
+    workspace/editor_terrain_preview.cpp
+    workspace/editor_terrain_browser.cpp
+    workspace/editor_shell_terrain.cpp
     workspace/editor_terrain_build.cpp
     workspace/editor_scene_component_registry.cpp
     workspace/editor_scene_document.cpp
@@ -113,6 +116,15 @@ else()
 endif()
 target_compile_options(arp_editor_scene_viewport_contract_tests PRIVATE -UNDEBUG)
 add_test(NAME arp_editor_scene_viewport_contract_tests COMMAND arp_editor_scene_viewport_contract_tests)
+add_executable(arp_editor_terrain_preview_tests tests/terrain_preview_tests.cpp)
+target_compile_definitions(arp_editor_terrain_preview_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
+target_compile_options(arp_editor_terrain_preview_tests PRIVATE -UNDEBUG)
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_editor_terrain_preview_tests PRIVATE arp_editor_viewport_renderer arp_editor_shell arp_ui_runtime arp_resource arp_scriptvm_host_plugin_runtime arp_3d arp_renderer arp_rhi_semantics arp_rhi arp_2d_resources)
+else()
+    target_link_libraries(arp_editor_terrain_preview_tests PRIVATE "$<LINK_GROUP:RESCAN,arp_editor_viewport_renderer,arp_editor_shell,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_renderer,arp_2d_resources>" arp_rhi_semantics arp_rhi)
+endif()
+add_test(NAME arp_editor_terrain_preview_tests COMMAND arp_editor_terrain_preview_tests)
 add_executable(arp_editor_scene_viewport_sprite_pass_contract_tests
     tests/scene_viewport_sprite_pass_contract_tests.cpp)
 target_include_directories(arp_editor_scene_viewport_sprite_pass_contract_tests PRIVATE

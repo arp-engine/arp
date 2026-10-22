@@ -7,6 +7,7 @@
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 #include "rhi/frontend/bindless_binding_preparation.h"
 #include "rhi/frontend/bindless_snapshot.h"
+#include "rhi/frontend/command_retention_storage.h"
 #include "rhi/frontend/transfer_recorded_staging_upload.h"
 
 #include <array>
@@ -84,13 +85,15 @@ struct VulkanRhiNativeCommandPayload::Impl {
     std::uint32_t retainedRenderPassCount = 0;
     core::pmr::Vector<VkImageMemoryBarrier> pendingImageBarriers;
     core::pmr::Vector<VkBufferMemoryBarrier> pendingBufferBarriers;
-    std::vector<VkMemoryBarrier> pendingMemoryBarriers;
+    core::pmr::Vector<VkMemoryBarrier> pendingMemoryBarriers;
     VkPipelineStageFlags pendingSourceStages = 0;
     VkPipelineStageFlags pendingDestinationStages = 0;
     VkBuffer scratchIndexBuffer = VK_NULL_HANDLE;
     std::shared_ptr<void> scratchIndexAllocationPayload;
     std::uint32_t scratchIndexCapacity = 0;
     core::pmr::Vector<std::shared_ptr<VulkanRhiNativeResourcePayload>> retainedResources;
+    core::UniquePtr<rhi::common::CommandRetentionStorage> recordingRetention;
+    core::UniquePtr<core::MutationJournal> retainedResourceStates;
     core::UniquePtr<rhi::RecordedStagingUploadJournal> stagingUploads;
     // Populated only by indexed recording after semantic authorization. Opaque
     // objects own the typed snapshot/state, native storage and budget leases.

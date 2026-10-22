@@ -2,6 +2,7 @@
 
 #include "core/memory/cpu_allocator.h"
 #include "rhi/frontend/memory_staging_upload_pool.h"
+#include "rhi/frontend/memory_upload_staging_budget.h"
 
 #include <algorithm>
 #include <limits>
@@ -72,8 +73,19 @@ VulkanRhiStagingUploadPool::~VulkanRhiStagingUploadPool() = default;
 VulkanRhiStagingUploadSlice VulkanRhiStagingUploadPool::allocate(
     const VulkanRhiStagingUploadRequest& request)
 {
-    const auto alignment =
-        rhi::resolveStagingAlignment(request.alignmentBytes, desc_.alignmentBytes);
+    const auto rejectPolicy = [&](const char* id) {
+        if (policyRejections_ != std::numeric_limits<std::uint32_t>::max())
+            ++policyRejections_;
+        return fail(id, id);
+    };
+    if (request.alignmentBytes != 0u
+        && !rhi::semantics::isUploadStagingPowerOfTwo(request.alignmentBytes))
+        return rejectPolicy(core::kFrameRetiredPageSliceDiagnosticAlignmentInvalid);
+    if (!rhi::semantics::isUploadStagingPowerOfTwo(desc_.alignmentBytes))
+        return rejectPolicy(rhi::semantics::kUploadStagingBudgetDiagnosticAlignment);
+    if (desc_.maxRequestBytes != 0u && request.sizeBytes > desc_.maxRequestBytes)
+        return rejectPolicy("ARP-RHI-STAGING-REQUEST-LIMIT");
+    const auto alignment = std::max(request.alignmentBytes, desc_.alignmentBytes);
     const auto allocation = ledger_->slices.allocate(
         core::FrameRetiredPageSliceRequest{
             request.sizeBytes, alignment, request.frameSerial, request.label.c_str()},
@@ -191,6 +203,8 @@ VulkanRhiStagingUploadPoolStats VulkanRhiStagingUploadPool::buildStats() const
     const auto coreStats = ledger_->slices.stats();
     VulkanRhiStagingUploadPoolStats stats;
     rhi::fillStagingCommonStats(coreStats, stats);
+    stats.failedAllocationCount += std::min(
+        policyRejections_, std::numeric_limits<std::uint32_t>::max() - stats.failedAllocationCount);
     stats.nativeHandlesHiddenFromUpperLayer = true;
     return stats;
 }

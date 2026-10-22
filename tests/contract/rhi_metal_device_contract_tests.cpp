@@ -1273,6 +1273,12 @@ int main()
             assert(!arp::rhi_metal::createMetalRhiHostDiagnosticDevice(host, version));
         auto fixture = arp::rhi_metal::createMetalRhiHostDiagnosticDevice(host, 1u);
         assert(fixture && !fixture->capabilities().core.graphics);
+        const auto numeric = fixture->capabilities().computeResources;
+        assert(!numeric.maxComputeWorkgroupSizeZ && !numeric.maxComputeWorkgroupCountX
+            && !numeric.maxComputeWorkgroupCountY && !numeric.maxComputeWorkgroupCountZ
+            && !numeric.maxUniformBufferBindingsPerStage
+            && !numeric.maxUniformBufferBindingSizeBytes
+            && !numeric.maxSampledTextureBindingsPerStage && !numeric.maxTexture2DDimension);
         auto invalid = host;
         invalid.uploadStagingMaxPageCount = 0u;
         assert(!arp::rhi_metal::createMetalRhiHostDiagnosticDevice(invalid, 1u));

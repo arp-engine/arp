@@ -107,6 +107,17 @@ void contracts()
     FogGrid grid;
     assert(planFog(config, {1920, 1080}, device->capabilities(), grid).success);
     assert(grid.width == 160 && grid.height == 90 && grid.depth == 64);
+    assert(grid.budgetBytes
+        == (grid.cells * 128u + sizeof(FogConstants)
+               + std::uint64_t(config.maxLocalVolumes) * sizeof(FogGpuVolume)
+               + 1920ull * 1080u * 8u)
+                * config.framesInFlight
+            + kFogHistoryStride);
+    // History is now the largest binding; admitting only 32 bytes/cell is wrong.
+    auto smallBinding = device->capabilities();
+    smallBinding.computeResources.maxStorageBufferBindingSizeBytes = grid.cells * 32u;
+    FogGrid refused;
+    assert(planFog(config, {1920, 1080}, smallBinding, refused).diagnostic == "FOG-STORAGE-LIMIT");
     config.gpuBudgetBytes = 1;
     assert(planFog(config, {1920, 1080}, device->capabilities(), grid).diagnostic
         == "FOG-MEMORY-BUDGET");
@@ -161,7 +172,7 @@ void contracts()
     assert(std::fabs(sum - 0.3f * integratedLength(0.2f, 8)) < 0.00001f);
 }
 
-void smoke()
+void smoke(bool spatialAmbient = false)
 {
     auto device = rhi::createNullDevice();
     FogConfig config;
@@ -170,13 +181,28 @@ void smoke()
     config.pixelsPerCell = 8;
     VolumetricFogFeature feature;
     assert(!feature.frameReady());
-    auto created = feature.create({*device, {64, 48}, config, ARP_FOG_SHADER_DIR});
+    auto created =
+        feature.create({*device, {64, 48}, config, ARP_FOG_SHADER_DIR, 1u, spatialAmbient});
     if (!created.success)
         std::cerr << created.diagnostic << '\n';
     assert(created.success);
     assert(feature.frameReady());
     scene3d::Scene3DRenderQueue scene;
     scene.setFog({});
+    auto probeSampler = device->createSampler({});
+    auto probeStates = core::shareUnique(device->createBuffer({"Test.ProbeStates",
+        64u,
+        rhi::ResourceUsage::StorageBuffer,
+        rhi::MemoryUsage::CpuToGpu,
+        rhi::ResourceState::ShaderRead}));
+    auto probeConstants = core::shareUnique(device->createBuffer({"Test.ProbeConstants",
+        64u,
+        rhi::ResourceUsage::UniformBuffer,
+        rhi::MemoryUsage::CpuToGpu,
+        rhi::ResourceState::ShaderRead}));
+    const std::array<std::uint32_t, 16> zero{};
+    assert(device->writeBuffer(*probeStates, zero.data(), sizeof(zero)).success);
+    assert(device->writeBuffer(*probeConstants, zero.data(), sizeof(zero)).success);
     for (int frame = 0; frame < 20; ++frame) {
         render_graph::FrameGraph graph(*device);
         auto color = graph.createTransientTexture({"SceneColor",
@@ -196,6 +222,17 @@ void smoke()
                 depth, rhi::ResourceState::DepthAttachment, rhi::LoadOp::Clear, rhi::StoreOp::Store)
             .executeRenderPass([](render_graph::RenderPassContext&) {});
         FogGraphContext context{graph, scene, color, depth};
+        if (spatialAmbient) {
+            FogOutputs rejected;
+            assert(feature.contributeGraph(context, rejected).diagnostic
+                == "FOG-SPATIAL-AMBIENT-INPUT");
+            // Null validates complete resource/graph binding without executing shader math.
+            context.spatialAmbient.irradiance = color;
+            context.spatialAmbient.moments = color;
+            context.spatialAmbient.states = graph.importBufferRef(probeStates);
+            context.spatialAmbient.constants = graph.importBufferRef(probeConstants);
+            context.spatialAmbient.sampler = probeSampler->id();
+        }
         context.view = core::lookAt({0, 2, -8}, {0, 2, 0});
         context.projection = core::perspective(60, 64.0f / 48, 0.1f, 100);
         context.cameraPosition = {0, 2, -8};
@@ -226,6 +263,9 @@ void smoke()
         badAmbient.ambientRadiance.x = -0.01f;
         assert(feature.contributeGraph(badAmbient, outputs).diagnostic == "FOG-AMBIENT-RADIANCE");
         badAmbient.ambientRadiance.x = std::numeric_limits<float>::quiet_NaN();
+        assert(feature.contributeGraph(badAmbient, outputs).diagnostic == "FOG-AMBIENT-RADIANCE");
+        badAmbient.ambientRadiance = context.ambientRadiance;
+        badAmbient.ambientIntensity = -1;
         assert(feature.contributeGraph(badAmbient, outputs).diagnostic == "FOG-AMBIENT-RADIANCE");
         auto badShadow = context;
         badShadow.primaryLight.castShadow = true;
@@ -293,9 +333,10 @@ void smoke()
 int main(int argc, char**)
 {
     try {
-        if (argc > 1)
+        if (argc > 1) {
             smoke();
-        else {
+            smoke(true);
+        } else {
             components();
             contracts();
         }

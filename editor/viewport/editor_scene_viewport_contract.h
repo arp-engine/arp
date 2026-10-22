@@ -12,7 +12,7 @@
 namespace arp::editor {
 
 inline constexpr const char* kEditorSceneViewportContract = "editor/SceneViewportFrame";
-inline constexpr std::uint32_t kEditorSceneViewportContractVersion = 4u;
+inline constexpr std::uint32_t kEditorSceneViewportContractVersion = 5u;
 
 struct EditorSceneViewportRect {
     std::uint32_t x = 0;
@@ -29,6 +29,7 @@ struct EditorSceneViewportDrawItem {
     scene::Transform worldTransform;
     core::pmr::String meshResourceId;
     core::pmr::String materialResourceId;
+    core::pmr::String terrainPreviewMaterialResourceId;
     EditorSceneViewportGeometry geometry = EditorSceneViewportGeometry::Mesh;
     terrain::TerrainTileCoord tile;
 };
@@ -57,6 +58,8 @@ struct EditorSceneViewportFrame {
     std::uint32_t targetHeight = 0;
     EditorSceneViewportRect viewport;
     core::pmr::Vector<EditorSceneViewportDrawItem> drawItems;
+    bool bakedTerrainPreview = false;
+    std::uint64_t omittedVegetationInstances = 0;
 };
 
 enum class EditorSceneViewportDiagnostic {

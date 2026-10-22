@@ -1,5 +1,6 @@
 #ifndef ARP_VOLUMETRIC_FOG_SLANG
 #define ARP_VOLUMETRIC_FOG_SLANG
+#include "renderer/volume/medium_integration.slang"
 
 struct FogGpuVolume
 {
@@ -34,7 +35,10 @@ struct FogConstants
     float4 ambientRadiance; // FogIsotropicAmbient/1: mean incident linear radiance
 };
 struct FogMedium { float4 coefficients; float4 velocity; };
-struct FogHistory { float4 source; float4 metadata; };
+// FogPhaseHistory/1: source.xyz is isotropic ambient, .w extinction;
+// direct.xyz is sun scattering before the view-dependent phase function.
+struct FogScatteringRecord { float4 source; float4 direct; };
+struct FogHistory { float4 source; float4 metadata; float4 direct; };
 uint fogIndex(uint3 cell, uint3 grid) { return (cell.z * grid.y + cell.y) * grid.x + cell.x; }
 float2 fogSampleUv(uint2 cell, FogConstants p)
 { return (float2(cell)+p.extentJitter.zw)/float2(p.grid.xy); }
@@ -57,16 +61,11 @@ float3 fogWorldAt(float2 uv, float depth, FogConstants p)
 }
 float fogSegmentLength(float extinction, float distance)
 {
-    float opticalDepth = extinction * distance;
-    // Taylor form avoids cancellation in the small-optical-depth limit.
-    return abs(opticalDepth) < 0.001
-        ? distance * (1.0 - opticalDepth * 0.5 + opticalDepth * opticalDepth / 6.0)
-        : (1.0-exp(-opticalDepth))/extinction;
+    return arpVolumeSegmentLength(extinction, distance);
 }
 float fogPhase(float cosine, float g)
 {
-    float d = 1.0 + g*g - 2.0*g*cosine;
-    return (1.0-g*g) / (12.566370614359172 * d * sqrt(d));
+    return arpVolumePhase(cosine, g);
 }
 
 // Integrated records live on slice boundaries: entry z is the end of slice z.

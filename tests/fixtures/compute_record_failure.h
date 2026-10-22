@@ -13,7 +13,7 @@ namespace arp::tests {
 // a consumer issuing any further operation after the injected first failure.
 class ComputeRecordFailure final : public rhi::CommandEncoderBase {
 public:
-    enum class Point { Begin, Pipeline, Descriptor, PushConstants, Dispatch, End };
+    enum class Point { Begin, Pipeline, Descriptor, PushConstants, Dispatch, End, Finish };
 
     struct Stats {
         unsigned attempts = 0u;
@@ -35,6 +35,7 @@ public:
 
     unsigned attempts = 0u;
     bool failed = false;
+    bool exposeRecordingIdentity = true;
 
     rhi::ResourceBarrierResult transition(
         rhi::GpuBuffer& buffer, const rhi::ResourceBarrierDesc& desc) override
@@ -46,6 +47,23 @@ public:
         rhi::GpuTexture& texture, const rhi::ResourceBarrierDesc& desc) override
     {
         return inner_->transition(texture, desc);
+    }
+
+    rhi::ResourceBarrierResult memoryBarrier(
+        rhi::GpuBuffer& buffer, const rhi::ResourceMemoryBarrierDesc& desc) override
+    {
+        return inner_->memoryBarrier(buffer, desc);
+    }
+
+    rhi::ResourceBarrierResult memoryBarrier(
+        rhi::GpuTexture& texture, const rhi::ResourceMemoryBarrierDesc& desc) override
+    {
+        return inner_->memoryBarrier(texture, desc);
+    }
+
+    rhi::ResourceBarrierResult aliasBarrier(const rhi::AliasingBarrierDesc& desc) override
+    {
+        return inner_->aliasBarrier(desc);
     }
 
     core::UniquePtr<rhi::RenderPassEncoder> beginRenderPass(
@@ -76,7 +94,19 @@ public:
         return core::makeUnique<Pass>(*this, std::move(pass));
     }
 
-    core::UniquePtr<rhi::CommandBuffer> finish() override { return inner_->finish(); }
+    std::uint64_t recordingIdentity() const noexcept override
+    {
+        return exposeRecordingIdentity ? inner_->recordingIdentity() : 0u;
+    }
+
+    core::UniquePtr<rhi::CommandBuffer> finish() override
+    {
+        if (point_ == Point::Finish) {
+            markCommandFail("TEST-COMMAND-FINISH-FAILED");
+            return nullptr;
+        }
+        return inner_->finish();
+    }
 
     void pushDebugGroup(std::string_view label) override { inner_->pushDebugGroup(label); }
 

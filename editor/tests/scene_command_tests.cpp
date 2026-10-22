@@ -1620,6 +1620,18 @@ int main()
     setMaterialId.stringValue = readyMaterialId;
     assert(shell.submitCommand(setMaterialId).status == editor::EditorResponseStatus::Completed);
     assert(meshComponent->materialResourceId() == setMaterialId.stringValue);
+    assert(shell.submitCommand(editor::ActivateControlCommand("workspace_3D")).status
+        == editor::EditorResponseStatus::Completed);
+    auto materialSource = meshResourceSource;
+    materialSource.resize(materialSource.size() - std::string_view("resourceId").size());
+    materialSource += "materialResourceId";
+    bool materialBindingDisplayed = false;
+    for (const auto widgetId : shell.runtime().canvas().traversal()) {
+        const auto* widget = shell.runtime().canvas().findWidget(widgetId);
+        if (widget && widget->name() == materialSource)
+            materialBindingDisplayed = widget->desc().text == readyMaterialId;
+    }
+    assert(materialBindingDisplayed);
     const auto meshColorProperties = shell.sceneDocument().inspectorProperties(meshObject->id());
     assert(std::any_of(
         meshColorProperties.begin(), meshColorProperties.end(), [&](const auto& property) {

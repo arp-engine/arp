@@ -12,6 +12,9 @@ public:
     void pan(float deltaX, float deltaY, float viewportHeight) noexcept;
     void move(float horizontal, float forward) noexcept;
     void zoom(float wheelDelta) noexcept;
+    // Fit a bounding sphere inside both axes of the existing camera frustum.
+    // Reject objects outside its near/far and navigation-distance contract.
+    bool frameBounds(core::Vec3 minimum, core::Vec3 maximum, float aspectRatio) noexcept;
     core::Vec3 position() const noexcept;
     core::Mat4 viewMatrix() const noexcept;
     core::Mat4 projectionMatrix(float aspectRatio) const noexcept;

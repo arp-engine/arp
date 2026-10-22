@@ -91,6 +91,48 @@ int main()
     accepted.rollback();
     assert(accepted.empty() && !one.record.pending() && !two.record.pending() && !next);
     assert(defaultCpuAllocator().stats().allocationCount == beforeDiscard);
+    {
+        VersionedMutationValue<unsigned> scalar(3u);
+        VersionedMutationArray<unsigned> array(2u, 5u);
+        MutationJournal terminal;
+        const auto before = defaultCpuAllocator().stats().allocationCount;
+        assert(scalar.tryWrite(7u, &terminal)
+            == VersionedMutationValue<unsigned>::WriteResult::Written);
+        assert(array.writeIndices(
+                   1u,
+                   [](std::size_t i) noexcept {
+                       return i;
+                   },
+                   11u,
+                   &terminal)
+            == VersionedMutationArray<unsigned>::WriteResult::Written);
+        assert(a.prepare(terminal)); // Ordinary snapshots cannot be invalidated.
+        first = 19;
+        assert(!terminal.canInvalidate() && !terminal.invalidate());
+        assert(scalar.active() && array.active() && a.pending() && first == 19);
+        terminal.rollback();
+        assert(first == 7 && scalar.value() == 3u && *array.valueAt(0u) == 5u);
+        assert(scalar.tryWrite(13u, &terminal)
+            == VersionedMutationValue<unsigned>::WriteResult::Written);
+        assert(array.writeIndices(
+                   1u,
+                   [](std::size_t i) noexcept {
+                       return i;
+                   },
+                   17u,
+                   &terminal)
+            == VersionedMutationArray<unsigned>::WriteResult::Written);
+        {
+            VersionedMutationValue<unsigned> expired(23u);
+            assert(expired.prepare(terminal));
+        }
+        assert(terminal.canInvalidate() && terminal.invalidate() && terminal.empty());
+        terminal.rollback();
+        assert(!scalar.active() && !array.active() && !scalar.observe() && !array.observe());
+        assert(!scalar.pending() && !array.pending() && scalar.value() == 13u
+            && *array.valueAt(0u) == 17u && !scalar.prepare(terminal));
+        assert(defaultCpuAllocator().stats().allocationCount == before);
+    }
     // Genuine cold factory accounting: success commits all counters; empty
     // results and allocation exceptions restore them while snapshots live.
     unsigned sets = 1u, tables = 2u, descriptors = 3u;

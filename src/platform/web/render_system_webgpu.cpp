@@ -64,6 +64,8 @@ rhi::WebGpuRuntimeProfile makeBrowserRuntimeProfile()
     probe.maxComputeWorkgroupSizeY = limits.maxComputeWorkgroupSizeY;
     probe.maxComputeWorkgroupStorageSize = limits.maxComputeWorkgroupStorageSize;
     probe.maxStorageBuffersPerShaderStage = limits.maxStorageBuffersPerShaderStage;
+    probe.maxComputeWorkgroupSizeZ = limits.maxComputeWorkgroupSizeZ;
+    probe.maxComputeWorkgroupsPerDimension = limits.maxComputeWorkgroupsPerDimension;
     EM_ASM(
         {
             // clang-format off
@@ -186,11 +188,15 @@ RenderSystem createDefaultRenderSystem(WindowSystem&,
     const PlatformWindow& window,
     const std::pmr::string& applicationName,
     const rhi::PresentationMode presentationMode,
-    const rhi::semantics::UploadStagingBudgetV1*,
+    const rhi::semantics::UploadStagingBudgetV1* uploadStagingBudgetOverride,
     const rhi::semantics::DirectObjectBudget* directObjectBudgetOverride)
 {
     auto impl = core::makeUnique<RenderSystem::Impl>();
     impl->backend = rhi::Backend::WebGPU;
+    if (uploadStagingBudgetOverride) {
+        impl->diagnostics = "RHI-UPLOAD-STAGING-BUDGET-WEBGPU-UNSUPPORTED";
+        return RenderSystem(std::move(impl));
+    }
     impl->extent = {
         static_cast<std::uint32_t>(window.pixelWidth()),
         static_cast<std::uint32_t>(window.pixelHeight()),

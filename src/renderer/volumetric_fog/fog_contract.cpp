@@ -46,15 +46,16 @@ FogResult planFog(
     if (g.depth < 2 || xy > std::numeric_limits<std::uint32_t>::max() / g.depth)
         return FogResult::failure("FOG-GRID-OVERFLOW");
     g.cells = xy * g.depth;
-    // Per slot: medium+velocity 32B, scattering 16B, history 32B, integral 16B.
-    const auto slotBytes = g.cells * 96u + sizeof(FogConstants)
-        + std::uint64_t(c.maxLocalVolumes) * sizeof(FogGpuVolume);
+    // FogPhaseHistory/1: medium 32B, split scattering 32B, history 48B, integral 16B.
+    const auto slotBytes = g.cells * (32u + kFogScatteringStride + kFogHistoryStride + 16u)
+        + sizeof(FogConstants) + std::uint64_t(c.maxLocalVolumes) * sizeof(FogGpuVolume);
     const auto pixels64 = std::uint64_t(e.width) * e.height;
-    const auto maxSlotBytes = std::numeric_limits<std::uint64_t>::max() / c.framesInFlight;
+    const auto maxSlotBytes =
+        (std::numeric_limits<std::uint64_t>::max() - kFogHistoryStride) / c.framesInFlight;
     if (slotBytes > maxSlotBytes || pixels64 > (maxSlotBytes - slotBytes) / 8u)
         return FogResult::failure("FOG-GRID-OVERFLOW");
-    g.budgetBytes = (slotBytes + pixels64 * 8u) * c.framesInFlight;
-    if (g.cells * 32u > limits.maxStorageBufferBindingSizeBytes
+    g.budgetBytes = (slotBytes + pixels64 * 8u) * c.framesInFlight + kFogHistoryStride;
+    if (g.cells * kFogHistoryStride > limits.maxStorageBufferBindingSizeBytes
         || std::uint64_t(c.maxLocalVolumes) * sizeof(FogGpuVolume)
             > limits.maxStorageBufferBindingSizeBytes)
         return FogResult::failure("FOG-STORAGE-LIMIT");

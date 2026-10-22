@@ -6,6 +6,7 @@
 #include "editor/workspace/editor_project_resources.h"
 #include "editor/workspace/editor_scene_document.h"
 #include "editor/workspace/editor_scene_persistence.h"
+#include "editor/workspace/editor_terrain_browser.h"
 #include "editor/workspace/editor_terrain_build.h"
 #include "editor/workspace/game_preview_model.h"
 #include "editor/workspace/project_browser_model.h"
@@ -333,6 +334,10 @@ private:
     core::pmr::Vector<SceneHierarchyEntry> visibleSceneHierarchyEntries() const;
     bool iconSourceRect(std::string_view resourceId, ui::LayoutRect& sourceRect) const;
     void refreshFileSystem();
+    bool showTerrainBrowser(bool visible);
+    void updateTerrainBrowserDetails();
+    ui::WidgetId terrainBrowserWidget(std::string_view name) const;
+    EditorCommandOutcome openTerrainPreview(const OpenTerrainPreviewCommand& command);
     void updateFileSlots();
     bool navigateTo(const std::filesystem::path& path);
     void updateFilePathText();
@@ -390,6 +395,9 @@ private:
     std::size_t sceneHierarchyScrollOffset_ = 0u;
     EditorProjectResources projectResources_;
     EditorTerrainBuild terrainBuild_;
+    EditorTerrainBrowser terrainBrowser_;
+    std::size_t terrainBrowserSelection_ = 0;
+    core::pmr::Vector<ui::WidgetId> terrainBrowserWidgets_;
     // Resource-backed scene components are destroyed before their ResourceManager owner.
     EditorSceneDocument sceneDocument_;
 

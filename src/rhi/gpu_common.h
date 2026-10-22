@@ -106,6 +106,16 @@ struct ComputeResourceCapabilities {
     std::uint32_t maxComputeWorkgroupMemoryBytes = 0u;
     std::uint32_t maxStorageBufferBindingsPerStage = 0u;
     std::uint64_t maxStorageBufferBindingSizeBytes = 0u;
+    // ComputeResourceLimits/2: inclusive ceilings; zero is unavailable.
+    // Dispatch counts are groups, distinct from threads per workgroup above.
+    std::uint32_t maxComputeWorkgroupSizeZ = 0u;
+    std::uint32_t maxComputeWorkgroupCountX = 0u;
+    std::uint32_t maxComputeWorkgroupCountY = 0u;
+    std::uint32_t maxComputeWorkgroupCountZ = 0u;
+    std::uint32_t maxUniformBufferBindingsPerStage = 0u;
+    std::uint64_t maxUniformBufferBindingSizeBytes = 0u;
+    std::uint32_t maxSampledTextureBindingsPerStage = 0u;
+    std::uint32_t maxTexture2DDimension = 0u;
 };
 
 struct ExplicitCapabilities {

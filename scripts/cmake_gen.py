@@ -863,6 +863,8 @@ class CmakeWriter:
         self._w("include(cmake/ArpEditor.cmake)")
         self._w("include(cmake/ArpHttpServer.cmake)")
         self._w("include(cmake/ArpVolumetricFog.cmake)")
+        self._w("include(cmake/ArpVolumetricCloud.cmake)")
+        self._w("include(cmake/ArpVulkanCommandRetention.cmake)")
         self._w()
 
         content = "\n".join(self.lines) + "\n"

@@ -987,7 +987,7 @@ root:
     - id: "tab_files"
       type: "Button"
       layer: "tab_files"
-      rect: {"x": 16, "y": 563, "width": 92, "height": 30}
+      rect: {"x": 8, "y": 563, "width": 92, "height": 30}
       style: "tab"
       state: "enabled"
       event: "activate"
@@ -996,7 +996,7 @@ root:
     - id: "tab_history"
       type: "Button"
       layer: "tab_history"
-      rect: {"x": 125, "y": 563, "width": 70, "height": 30}
+      rect: {"x": 100, "y": 563, "width": 65, "height": 30}
       style: "plain"
       state: "enabled"
       event: "activate"
@@ -1005,12 +1005,21 @@ root:
     - id: "files_build_terrain"
       type: "Button"
       layer: "files_build_terrain"
-      rect: {"x": 210, "y": 563, "width": 80, "height": 30}
+      rect: {"x": 166, "y": 563, "width": 52, "height": 30}
       style: "plain"
       state: "enabled"
       event: "activate"
       fontToken: "font.editor"
-      text: "Terrain"
+      text: "Build"
+    - id: "files_terrain_assets"
+      type: "Button"
+      layer: "files_terrain_assets"
+      rect: {"x": 220, "y": 563, "width": 62, "height": 30}
+      style: "plain"
+      state: "enabled"
+      event: "activate"
+      fontToken: "font.editor"
+      text: "Assets"
     - id: "files_back"
       type: "Button"
       layer: "files_back"

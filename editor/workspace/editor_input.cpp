@@ -149,6 +149,12 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
         sceneHierarchyDraggingScrollbar_ = false;
         return;
     }
+    // UI dispatch still handles this floating panel; suppress viewport gestures
+    // and shortcuts behind it. FocusLost above must always release gestures.
+    if (const auto* panel =
+            runtime().canvas().findWidget(terrainBrowserWidget("terrain_browser_panel"));
+        panel && panel->visible())
+        return;
     if (event.kind == Kind::PointerUp && event.button == EditorPointerButton::Right) {
         sceneViewportRightButtonHeld_ = false;
         if (sceneViewportGesture_ == SceneViewportGesture::Look)

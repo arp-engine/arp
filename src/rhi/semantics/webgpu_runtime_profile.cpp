@@ -214,6 +214,8 @@ WebGpuRuntimeProfile buildWebGpuRuntimeProfile(const WebGpuRuntimeProbe& probe)
     profile.limits.maxComputeWorkgroupSizeY = probe.maxComputeWorkgroupSizeY;
     profile.limits.maxComputeWorkgroupStorageSize = probe.maxComputeWorkgroupStorageSize;
     profile.limits.maxStorageBuffersPerShaderStage = probe.maxStorageBuffersPerShaderStage;
+    profile.limits.maxComputeWorkgroupSizeZ = probe.maxComputeWorkgroupSizeZ;
+    profile.limits.maxComputeWorkgroupsPerDimension = probe.maxComputeWorkgroupsPerDimension;
 
     if (!probe.canvasSurface) {
         profile.status = WebGpuRuntimeProfileStatus::DiagnosticFailure;

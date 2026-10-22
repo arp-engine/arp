@@ -10,7 +10,7 @@ target_link_libraries(arp_prototype_command_batch_lowering_tests PRIVATE arp_cor
 target_compile_options(arp_prototype_command_batch_lowering_tests PRIVATE -UNDEBUG)
 add_test(NAME arp_prototype_command_batch_lowering_contract
     COMMAND arp_prototype_command_batch_lowering_tests)
-set(fog_shader_names fog_inject fog_scatter fog_temporal fog_integrate fog_composite
+set(fog_shader_names fog_inject fog_scatter fog_scatter_spatial fog_temporal fog_integrate fog_composite
     fog_demo_scene fog_demo_shadow fog_demo_glass fog_demo_plain_glass fog_demo_present)
 set(fog_shader_dir "${CMAKE_CURRENT_BINARY_DIR}/shaders/volumetric_fog")
 set(fog_shader_outputs)
@@ -32,7 +32,11 @@ foreach(fog_shader IN LISTS fog_shader_names)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
             --module "${fog_shader}" --out-dir "${fog_shader_dir}" ${fog_shader_compiler_args}
         DEPENDS "shaders/${fog_source_dir}/${fog_shader}.slang" shaders/common/volumetric_fog.slang
+            shaders/renderer/volume/medium_integration.slang
             shaders/core/noise3.slang shaders/core/box_geometry.slang
+            shaders/renderer/fog_scatter.slang shaders/renderer/fog_scatter_common.slang
+            shaders/renderer/ddgi_sampling.slang
+            shaders/renderer/ddgi_visibility.slang shaders/renderer/ddgi_depth_cache.slang
             shaders/samples/fog_glass_geometry.slang shaders/samples/fog_scene_geometry.slang
             scripts/compile_shaders.py
         VERBATIM)
@@ -135,6 +139,10 @@ endif()
 add_test(NAME arp_volumetric_fog_example_null
     COMMAND arp_volumetric_fog --backend null --frames 3 --fixed-time 1)
 set_tests_properties(arp_volumetric_fog_example_null PROPERTIES TIMEOUT 60)
+add_test(NAME arp_volumetric_fog_slits_null
+    COMMAND arp_volumetric_fog --backend null --slits --camera side --motion 0.12
+        --point-shadow --pixels 12 --slices 112 --frames 3)
+set_tests_properties(arp_volumetric_fog_slits_null PROPERTIES TIMEOUT 60)
 
 if(APPLE AND TARGET arp_rhi_metal)
     add_executable(arp_volumetric_fog_metal_tests tests/integration/volumetric_fog_metal_tests.mm)

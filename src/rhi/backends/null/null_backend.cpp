@@ -300,7 +300,7 @@ public:
     {
         auto caps =
             makeSharedDeviceCapabilities(Backend::Null, "RHI Null Device", std::pmr::string{});
-        // NullValidatorProfile/1: explicit validator facts, never native proof.
+        // NullValidatorProfile/2: explicit validator facts, never native proof.
         caps.core = {true, true};
         caps.explicitFeatures.explicitBarriers = true;
         caps.swapchain = rhi::SwapchainCapabilities{};
@@ -329,6 +329,14 @@ public:
         caps.computeResources.maxComputeWorkgroupMemoryBytes = 32768u;
         caps.computeResources.maxStorageBufferBindingsPerStage = 8u;
         caps.computeResources.maxStorageBufferBindingSizeBytes = 128u * 1024u * 1024u;
+        caps.computeResources.maxComputeWorkgroupSizeZ = 64u;
+        caps.computeResources.maxComputeWorkgroupCountX = 65535u;
+        caps.computeResources.maxComputeWorkgroupCountY = 65535u;
+        caps.computeResources.maxComputeWorkgroupCountZ = 65535u;
+        caps.computeResources.maxUniformBufferBindingsPerStage = 12u;
+        caps.computeResources.maxUniformBufferBindingSizeBytes = 64u * 1024u;
+        caps.computeResources.maxSampledTextureBindingsPerStage = 16u;
+        caps.computeResources.maxTexture2DDimension = 8192u;
         {
             auto contract = rhi::semantics::nativeBackendCapabilityContract(rhi::Backend::Null);
             rhi::EngineFeatureRequirementSet requirements;

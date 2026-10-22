@@ -2,6 +2,7 @@
 
 #include "3d/authoring_components.h"
 #include "3d/components.h"
+#include "editor/workspace/editor_terrain_preview.h"
 #include "resource/terrain_asset_resource.h"
 
 #include <utility>
@@ -143,11 +144,21 @@ EditorSceneViewportFrameBuildResult buildEditorSceneViewportFrame(const scene::S
                         frame.drawItems.size()};
                     return result;
                 }
-                if (handle.get()->hasSurfaceWeights() || handle.get()->hasVegetation()) {
+                const auto previewHandle =
+                    resources->find<resource::MaterialResource>(terrain->materialResourceId());
+                const auto* preview = previewHandle.ready()
+                    ? dynamic_cast<const EditorTerrainPreviewMaterial*>(previewHandle.get())
+                    : nullptr;
+                if ((handle.get()->hasSurfaceWeights() || handle.get()->hasVegetation())
+                    && !preview) {
                     result.validation = {
                         EditorSceneViewportDiagnostic::TerrainSurfacePreviewUnsupported,
                         frame.drawItems.size()};
                     return result;
+                }
+                if (preview) {
+                    frame.bakedTerrainPreview = true;
+                    frame.omittedVegetationInstances += preview->vegetationInstanceCount;
                 }
                 const auto count = static_cast<std::uint64_t>(handle.get()->tileCountX())
                     * handle.get()->tileCountZ();
@@ -167,6 +178,21 @@ EditorSceneViewportFrameBuildResult buildEditorSceneViewportFrame(const scene::S
                         item.materialResourceId = terrain->materialResourceId();
                         item.geometry = EditorSceneViewportGeometry::TerrainTile;
                         item.tile = {static_cast<std::int32_t>(x), static_cast<std::int32_t>(z)};
+                        if (preview) {
+                            item.terrainPreviewMaterialResourceId = terrain->materialResourceId();
+                            item.materialResourceId =
+                                resolveEditorTerrainPreviewMaterial(*resources,
+                                    item.meshResourceId,
+                                    handle.generation(),
+                                    item.terrainPreviewMaterialResourceId,
+                                    item.tile);
+                            if (item.materialResourceId.empty()) {
+                                result.validation = {
+                                    EditorSceneViewportDiagnostic::TerrainSurfacePreviewUnsupported,
+                                    frame.drawItems.size()};
+                                return result;
+                            }
+                        }
                         frame.drawItems.push_back(std::move(item));
                     }
                 continue;

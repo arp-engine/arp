@@ -9,6 +9,8 @@
 #include "rhi/semantics/bindless_root_program_lowering.h"
 #include "rhi/semantics/command_lowering.h"
 
+#include <cstdio>
+
 namespace arp::test {
 class OriginalCommandNativeLifecycleFixture final {
     using Contract = rhi::OriginalCommandNativeLifecycleContract;
@@ -18,6 +20,11 @@ class OriginalCommandNativeLifecycleFixture final {
 
     static void is(const char* actual, const char* expected)
     {
+        if (!actual || std::string_view(actual) != expected)
+            std::fprintf(stderr,
+                "native lifecycle expected %s, got %s\n",
+                expected,
+                actual ? actual : "success");
         assert(actual && std::string_view(actual) == expected);
     }
 
@@ -133,16 +140,23 @@ public:
                 rhi::semantics::OriginalBindlessRootCallbackColdLowering::lowering(backend);
             assert(cold.preparationAvailable == (backend == rhi::Backend::WebGPU)
                 && bool(cold.diagnostic) == (backend != rhi::Backend::WebGPU));
-            // CallbackCold3 is an existing WebGPU sampled-graphics contract;
-            // a valid version must not be treated as an unsupported version.
-            for (const auto version : {1u, 2u, 3u, 4u, 5u}) {
+            // /6 is the existing general shader-resource cold contract.
+            // Recognized profiles still obey their backend preparation gates.
+            for (const auto version : {1u, 2u, 3u, 4u, 5u, 6u}) {
                 const auto callback =
                     rhi::semantics::OriginalBindlessRootCallbackColdLowering::lowering(
                         backend, version);
                 assert(callback.preparationAvailable == (backend == rhi::Backend::WebGPU)
                     && bool(callback.diagnostic) == (backend != rhi::Backend::WebGPU));
             }
-            for (const auto version : {0u, 6u, UINT32_MAX}) {
+            const auto produced =
+                rhi::semantics::OriginalBindlessRootCallbackColdLowering::lowering(backend, 7u);
+            assert(!produced.preparationAvailable);
+            is(produced.diagnostic,
+                backend == rhi::Backend::Null
+                    ? "RHI-BINDLESS-PRODUCED-GEOMETRY-COLD-NULL-VALIDATOR"
+                    : "RHI-BINDLESS-PRODUCED-GEOMETRY-NATIVE-ADMISSION-REQUIRED");
+            for (const auto version : {0u, 8u, UINT32_MAX}) {
                 const auto callback =
                     rhi::semantics::OriginalBindlessRootCallbackColdLowering::lowering(
                         backend, version);

@@ -67,7 +67,8 @@ TerrainSceneSession::Result TerrainSceneSession::synchronize(scene::Scene& scene
     synchronized_ = false;
     Result result;
     if (desc.maxTerrains != 1u || !desc.maxObjects || !desc.binding.valid()
-        || (gpu_ && desc.binding.mode == renderer::TerrainSceneBinding::PreparationMode::QueryOnly)) {
+        || (gpu_
+            && desc.binding.mode == renderer::TerrainSceneBinding::PreparationMode::QueryOnly)) {
         result.failureStage = FailureStage::Configuration;
         result.diagnostics =
             "ENGINE-TERRAIN-SESSION-CONFIG: explicit single-slot preparation required";

@@ -1,0 +1,23 @@
+type: arp.cloud.cook
+contractVersion: 1
+algorithm: CloudPeriodicSimplex
+algorithmVersion: 2
+colorSpace: linear
+addressMode: repeat
+filter: linear
+weatherChannels: coverage,type,density,zero
+noiseChannels: noise,zero,zero,zero
+seed: 137
+weatherDimension: 32
+shapeDimension: 32
+detailDimension: 16
+weatherFrequency: 4
+shapeFrequency: 4
+detailFrequency: 6
+octaves: 3
+maxOutputBytes: 1048576
+maxNoiseEvaluations: 2000000
+heightProfiles:
+  - ramp: [0.0, 0.08, 0.20, 0.35]
+  - ramp: [0.0, 0.12, 0.55, 0.85]
+  - ramp: [0.0, 0.15, 0.75, 1.0]

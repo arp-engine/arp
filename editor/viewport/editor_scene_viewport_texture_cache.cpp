@@ -49,7 +49,8 @@ EditorSceneViewportTextureCacheResult EditorSceneViewportTextureCache::acquire(
     const auto* source = handle.get();
     const bool expectedSrgb = colorSpace == EditorSceneViewportTextureColorSpace::Srgb;
     if (source->srgb != expectedSrgb || source->decodedSrgb != expectedSrgb
-        || source->usage != (expectedSrgb ? "color" : "data"))
+        || (expectedSrgb ? source->usage != "color"
+                         : source->usage != "data" && source->usage != "normal"))
         return failure(Diagnostic::ColorSpaceMismatch,
             "texture color-space metadata conflicts with the material binding");
     if (source->decodedWidth == 0 || source->decodedHeight == 0

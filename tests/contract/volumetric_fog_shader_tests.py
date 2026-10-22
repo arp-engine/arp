@@ -12,8 +12,13 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--directory', type=Path, required=True)
     args=parser.parse_args()
-    expected={'fog_inject': {1:128,2:32},'fog_scatter': {1:32,3:16},
-        'fog_temporal': {1:32,2:16,3:32,5:32},'fog_integrate': {1:32,2:16},
+    common = (Path(__file__).resolve().parents[2] / 'shaders/common/volumetric_fog.slang').read_text()
+    assert '#include "renderer/volume/medium_integration.slang"' in common
+    assert 'return arpVolumeSegmentLength(extinction, distance);' in common
+    assert 'return arpVolumePhase(cosine, g);' in common
+    expected={'fog_inject': {1:128,2:32},'fog_scatter': {1:32,3:32},
+        'fog_scatter_spatial': {1:32,3:32,7:64},
+        'fog_temporal': {1:32,2:32,3:48,5:48},'fog_integrate': {1:48,2:16},
         'fog_composite': {1:16},'fog_demo_glass': {1:16}}
     for name,strides in expected.items():
         facts=SpirvLayoutFacts(args.directory/(name+'.spv'))
@@ -43,7 +48,7 @@ def main():
         assert 'pushConstantSizeBytes: 0' in (args.directory/(name+'.reflection.yaml')).read_text()
         for suffix in ('.metal','.wgsl'):
             assert (args.directory/(name+suffix)).stat().st_size>0
-    print('VolumetricFog/1 shader ABI: 784B uniform, 128/32/16B strides, matrix layout, three targets')
+    print('FogPhaseHistory/1 shader ABI: 784B uniform, 128/48/32/16B strides, matrix layout, three targets')
 
 
 if __name__=='__main__':main()

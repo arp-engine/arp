@@ -6,6 +6,7 @@
 #include "3d/components.h"
 #include "editor/app/game_preview.h"
 #include "editor/remote/editor_remote_server.h"
+#include "editor/workspace/editor_terrain_preview.h"
 #ifdef DeviceCapabilities
 #undef DeviceCapabilities
 #endif
@@ -193,7 +194,9 @@ int EditorApplication::run(bool hidden,
     std::string_view remoteBindAddress,
     bool viewportPipelineSmoke,
     bool viewportRuntimeSmoke,
-    bool terrainResourceSmoke)
+    bool terrainResourceSmoke,
+    std::string_view openTerrain,
+    bool terrainAssets)
 {
     using namespace arp;
     editor::EditorShell shell;
@@ -217,7 +220,41 @@ int EditorApplication::run(bool hidden,
     auto loaded = shell.load(root / "editor.arpui", effectiveProjectRoot);
     if (!loaded.ok())
         return fail("LOAD", loaded.diagnostic().message);
+    std::size_t openedTerrainTiles = 0;
+    if (!openTerrain.empty()) {
+        const core::pmr::String previewId(openTerrain);
+        const auto previewHandle =
+            shell.projectResources().find<resource::MaterialResource>(previewId);
+        const auto* preview = previewHandle.ready()
+            ? dynamic_cast<const EditorTerrainPreviewMaterial*>(previewHandle.get())
+            : nullptr;
+        if (!preview)
+            return fail("OPEN-TERRAIN", "preview material is absent or not Ready");
+        const auto terrain =
+            shell.projectResources().find<resource::TerrainAssetResource>(preview->terrainId);
+        if (!terrain.ready())
+            return fail("OPEN-TERRAIN", "terrain is not Ready");
+        auto* defaultMesh =
+            shell.sceneDocument().scene().findObjectByName(core::pmr::String("MeshInstance"));
+        if (defaultMesh) {
+            if (shell.submitCommand(SelectSceneObjectCommand{defaultMesh->id().value()}).status
+                    != EditorResponseStatus::Completed
+                || shell.submitCommand(DestroySceneObjectCommand{}).status
+                    != EditorResponseStatus::Completed)
+                return fail("OPEN-TERRAIN", "cannot remove default preview mesh");
+        }
+        OpenTerrainPreviewCommand open;
+        open.previewId = previewId;
+        open.expectedGeneration = previewHandle.generation();
+        if (shell.submitCommand(std::move(open)).status != EditorResponseStatus::Completed)
+            return fail("OPEN-TERRAIN", "shared terrain open command rejected");
+        openedTerrainTiles = preview->tiles.size();
+    }
     scene::GameObjectId tileMapCaptureObject;
+    if (terrainAssets
+        && shell.submitCommand(ShowTerrainBrowserCommand{}).status
+            != EditorResponseStatus::Completed)
+        return fail("TERRAIN-ASSETS", "cannot show terrain asset browser");
     if (!openScript.empty()) {
         const auto scriptPath =
             openScript.is_absolute() ? openScript : shell.projectRoot() / openScript;
@@ -2058,7 +2095,7 @@ int EditorApplication::run(bool hidden,
             if (viewportExtent.width > 0u && viewportExtent.height > 0u) {
                 core::pmr::String viewportDiagnostics(&core::defaultCpuMemoryResource());
 #if defined(ARP_RENDERDOC_APP_AVAILABLE)
-                if (viewportRuntimeSmoke && capture)
+                if ((viewportRuntimeSmoke || !openTerrain.empty()) && capture)
                     capture->StartFrameCapture(nullptr, nullptr);
 #endif
                 const bool renderedViewport = viewportSession.valid()
@@ -2071,7 +2108,7 @@ int EditorApplication::run(bool hidden,
                           viewportExtent,
                           viewportDiagnostics);
 #if defined(ARP_RENDERDOC_APP_AVAILABLE)
-                if (viewportRuntimeSmoke && capture)
+                if ((viewportRuntimeSmoke || !openTerrain.empty()) && capture)
                     capture->EndFrameCapture(nullptr, nullptr);
 #endif
                 viewportRuntimeDiagnostic = viewportDiagnostics;
@@ -2184,6 +2221,21 @@ int EditorApplication::run(bool hidden,
         ++rendered;
         dirty = false;
         if (hidden) {
+            if (!openTerrain.empty()) {
+                if (!viewportAvailableThisFrame
+                    || viewportSession.lastSceneDrawCount() != openedTerrainTiles) {
+                    std::fprintf(stderr,
+                        "terrain draws=%zu expected=%zu viewport=%d diagnostic=%s\n",
+                        viewportSession.lastSceneDrawCount(),
+                        openedTerrainTiles,
+                        int(viewportAvailableThisFrame),
+                        viewportRuntimeDiagnostic.c_str());
+                    return fail("OPEN-TERRAIN", "expected terrain tile draws were not submitted");
+                }
+                std::printf("PASS: terrain preview %zu tile draws; %s\n",
+                    openedTerrainTiles,
+                    viewportRuntimeDiagnostic.c_str());
+            }
             std::printf("PASS: ARP Editor hidden frame: %zu controls, %zu draws, selection=%s\n",
                 shell.runtime().controlCount(),
                 commands.size(),

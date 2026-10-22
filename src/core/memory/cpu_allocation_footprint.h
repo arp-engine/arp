@@ -22,7 +22,7 @@ public:
             diagnostic_ = "CORE-FOOTPRINT-QUOTA-OWNER";
             return;
         }
-        if (!canAddUnsigned(bytes_, info.sizeBytes)) {
+        if (!canAddUnsigned<std::uint64_t>(bytes_, info.sizeBytes)) {
             diagnostic_ = "CORE-FOOTPRINT-OVERFLOW";
             return;
         }

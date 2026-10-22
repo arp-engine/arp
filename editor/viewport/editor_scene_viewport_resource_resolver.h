@@ -6,6 +6,7 @@
 namespace arp::editor {
 
 struct EditorSceneViewportResolvedItem {
+    core::pmr::String terrainPreviewMaterialResourceId;
     core::pmr::String meshResourceId{&core::defaultCpuMemoryResource()};
     core::pmr::String materialResourceId{&core::defaultCpuMemoryResource()};
     core::pmr::String sourceResourceId{&core::defaultCpuMemoryResource()};

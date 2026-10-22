@@ -187,9 +187,11 @@ VulkanBindlessCrossExtension::prepareGraphicsBinding(
         rhi::BindlessBindingDomain::Graphics>(*this, runtime_, std::move(owners), diagnostic);
 }
 
-VulkanBindlessCrossExtension::VulkanBindlessCrossExtension(
-    const VulkanRhiRuntime* runtime, VulkanRhiNativeResourceAllocator* nativeResources)
-    : runtime_(runtime), nativeResources_(nativeResources)
+VulkanBindlessCrossExtension::VulkanBindlessCrossExtension(const VulkanRhiRuntime* runtime,
+    VulkanRhiNativeResourceAllocator* nativeResources,
+    std::shared_ptr<rhi::semantics::DirectObjectBudgetTracker> directObjectBudget)
+    : runtime_(runtime), nativeResources_(nativeResources),
+      directObjectBudget_(std::move(directObjectBudget))
 {
     caps_.deviceIdentity = rhi::allocateGpuResourceId().value;
     if (!runtime || !runtime->valid() || runtime->syntheticRuntime() || !nativeResources_
@@ -515,7 +517,14 @@ core::UniquePtr<rhi::ComputePipeline> VulkanBindlessCrossExtension::createComput
         return {};
 
     const auto layoutDesc = rhi::bindlessPipelineLayout(artifact);
-    auto layout = createVulkanRhiPipelineLayout(layoutDesc);
+    auto layoutReservation = directObjectBudget_
+        ? directObjectBudget_->reserve(rhi::semantics::DirectObjectBudgetKind::PipelineLayout)
+        : rhi::semantics::DirectObjectBudgetReservation{true, {}};
+    if (!layoutReservation.success) {
+        diagnostic = "RHI-DIRECT-PIPELINE-BUDGET";
+        return {};
+    }
+    auto layout = createVulkanRhiPipelineLayout(layoutDesc, std::move(layoutReservation.lease));
     if (!layout) {
         diagnostic = "RHI-VULKAN-BINDLESS-PIPELINE-LAYOUT-INVALID";
         return {};
@@ -532,12 +541,23 @@ core::UniquePtr<rhi::ComputePipeline> VulkanBindlessCrossExtension::createComput
     desc.layout = layout.get();
     desc.shaderPackage = &interface;
     desc.computeShader = interface.entrypoints.front();
+    auto pipelineReservation = directObjectBudget_
+        ? directObjectBudget_->reserve(rhi::semantics::DirectObjectBudgetKind::ComputePipeline)
+        : rhi::semantics::DirectObjectBudgetReservation{true, {}};
+    if (!pipelineReservation.success) {
+        diagnostic = "RHI-DIRECT-PIPELINE-BUDGET";
+        return {};
+    }
     auto native = nativeResources_->createBindlessComputePayload(package, entry);
     if (!native.success || !native.payload) {
         diagnostic = native.diagnostics.empty() ? "RHI-VULKAN-BINDLESS-COMPUTE-PAYLOAD-MISSING"
                                                 : native.diagnostics;
         return {};
     }
+    if (directObjectBudget_)
+        native.payload->directObjectBudgetReleaseToken =
+            core::makeShared<rhi::semantics::DirectObjectBudgetLease>(
+                std::move(pipelineReservation.lease));
     auto pipeline = createVulkanRhiAuthorizedBindlessComputePipeline(
         desc, std::move(native.payload), std::move(authorization), std::move(layout));
     if (!pipeline)
@@ -660,7 +680,14 @@ core::UniquePtr<rhi::RenderPipeline> VulkanBindlessCrossExtension::createRenderP
             return {};
         }
     }
-    auto layout = createVulkanRhiPipelineLayout(layoutDesc);
+    auto layoutReservation = directObjectBudget_
+        ? directObjectBudget_->reserve(rhi::semantics::DirectObjectBudgetKind::PipelineLayout)
+        : rhi::semantics::DirectObjectBudgetReservation{true, {}};
+    if (!layoutReservation.success) {
+        diagnostic = "RHI-DIRECT-PIPELINE-BUDGET";
+        return {};
+    }
+    auto layout = createVulkanRhiPipelineLayout(layoutDesc, std::move(layoutReservation.lease));
     if (!layout) {
         diagnostic = "RHI-VULKAN-BINDLESS-PIPELINE-LAYOUT-INVALID";
         return {};
@@ -679,6 +706,13 @@ core::UniquePtr<rhi::RenderPipeline> VulkanBindlessCrossExtension::createRenderP
     desc.vertexShader = interface.entrypoints[0];
     if (!fragmentEntry.empty())
         desc.fragmentShader = interface.entrypoints[1];
+    auto pipelineReservation = directObjectBudget_
+        ? directObjectBudget_->reserve(rhi::semantics::DirectObjectBudgetKind::RenderPipeline)
+        : rhi::semantics::DirectObjectBudgetReservation{true, {}};
+    if (!pipelineReservation.success) {
+        diagnostic = "RHI-DIRECT-PIPELINE-BUDGET";
+        return {};
+    }
     auto native = nativeResources_->createBindlessRenderPayload(
         authorization->originalPackageOwner(), state, vertexEntry, fragmentEntry, push);
     if (!native.success || !native.payload) {
@@ -691,6 +725,10 @@ core::UniquePtr<rhi::RenderPipeline> VulkanBindlessCrossExtension::createRenderP
         diagnostic = pipelineValidation.diagnostics;
         return {};
     }
+    if (directObjectBudget_)
+        native.payload->directObjectBudgetReleaseToken =
+            core::makeShared<rhi::semantics::DirectObjectBudgetLease>(
+                std::move(pipelineReservation.lease));
     auto pipeline = createVulkanRhiAuthorizedBindlessRenderPipeline(
         desc, std::move(native.payload), std::move(authorization), std::move(layout));
     if (!pipeline)

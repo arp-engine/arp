@@ -1,7 +1,7 @@
 #include "3d/scene_3d_render_extractor.h"
 
-#include <utility>
 #include <cmath>
+#include <utility>
 
 namespace arp::scene3d {
 namespace {
@@ -40,7 +40,8 @@ public:
         if (ignoreForeignPayloads_ && payload.typeId != "scene3d.mesh"
             && payload.typeId != "scene3d.terrain" && payload.typeId != "scene3d.animation"
             && payload.typeId != "scene3d.light" && payload.typeId != "scene3d.disabled"
-            && payload.typeId != "scene3d.volumetric_fog" && payload.typeId != "scene3d.local_fog") {
+            && payload.typeId != "scene3d.volumetric_fog" && payload.typeId != "scene3d.local_fog"
+            && payload.typeId != "scene3d.volumetric_cloud") {
             return;
         }
 
@@ -52,6 +53,18 @@ public:
             acceptAnimation(ctx, payload);
         } else if (payload.typeId == "scene3d.light") {
             acceptLight(ctx, payload);
+        } else if (payload.typeId == "scene3d.volumetric_cloud") {
+            const auto* desc = static_cast<const CloudDesc*>(payload.data);
+            const auto* diagnostic =
+                desc ? CloudLayerValidator::diagnostic(desc->layer) : "CLOUD-DESC-MISSING";
+            if (!desc || diagnostic || desc->densityResource.empty()) {
+                failure_ = {Scene3DDiagnosticCode::InvalidCloud,
+                    diagnostic ? diagnostic : "CLOUD-RESOURCE-MISSING"};
+            } else if (queue_.hasCloud()) {
+                failure_ = {Scene3DDiagnosticCode::DuplicateGlobalCloud, "CLOUD-DUPLICATE-GLOBAL"};
+            } else {
+                queue_.setCloud(*desc);
+            }
         } else if (payload.typeId == "scene3d.volumetric_fog") {
             const auto* desc = static_cast<const VolumetricFogDesc*>(payload.data);
             if (!desc || !validFog(*desc)) {

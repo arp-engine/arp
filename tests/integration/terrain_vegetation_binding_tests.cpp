@@ -1,8 +1,11 @@
 #include "3d/terrain/integration/terrain_scene_session.h"
 #include "renderer/terrain_vegetation_draw_preparation.h"
 #include "resource/internal_asset_package.h"
+#include "rhi/backends/null/null_backend.h"
+#include "tests/fixtures/capability_override_device.h"
 #include "tests/fixtures/terrain_domain_asset.h"
 #include "tests/fixtures/terrain_physics_world.h"
+#include "tests/fixtures/terrain_vegetation_delayed_queue.h"
 #include "tests/fixtures/terrain_vegetation_draw.h"
 
 #include <cassert>
@@ -263,6 +266,108 @@ void validatesConfiguration()
     validatesDrawPreparation();
 }
 
+void validatesGpuSession(const resource::ResourceManager& resources,
+    const renderer::TerrainVegetationBinding::Desc& budget)
+{
+    auto device = rhi::createNullDevice();
+    tests::DelayedValidatorQueue queue;
+    tests::CapabilityOverrideDevice proxy(*device, nullptr);
+    proxy.overrideQueue(&queue);
+    renderer::TerrainVegetationGpuUpload::Desc upload;
+    upload.maxTiles = budget.maxTiles;
+    upload.maxInstances = upload.maxPrototypes = budget.maxInstances;
+    upload.maxCopyBytes = 64u;
+    upload.maxCopyCommands = budget.maxInstances;
+    upload.maxCpuBytes = 64u * 1024u * 1024u;
+    upload.liveGenerations = core::makeShared<core::AtomicCapacityBudget>(2u);
+    upload.liveInstances = core::makeShared<core::AtomicCapacityBudget>(budget.maxInstances * 2u);
+    upload.validatorOptIn = true;
+    renderer::RuntimeScene runtime;
+    auto material = runtime.addMaterial("explicit-gpu-publication-fixture");
+    auto world = makeWorld();
+    scene::Scene scene("gpu-session");
+    scene::Scene next("next-gpu-session");
+    auto& object = scene.createObject("terrain");
+    auto& terrain = object.addComponent<scene3d::TerrainComponent>();
+    terrain.set_resource_id(terrainId);
+    const core::Vec3 translation{100, 5, 200};
+    object.set_local_transform(scene::Transform::fromTranslation(translation));
+    engine::TerrainSceneSession::Desc desc;
+    desc.maxObjects = 8u;
+    desc.maxTerrains = 1u;
+    desc.binding.useAssetTileLayout = true;
+    desc.binding.resolveMaterial = resolveMaterial;
+    desc.binding.context = &material;
+    desc.vegetation = budget;
+    engine::TerrainSceneSession session(resources, runtime, *world, proxy, upload);
+    auto query = desc;
+    query.binding.mode = renderer::TerrainSceneBinding::PreparationMode::QueryOnly;
+    assert(session.synchronize(scene, query).failureStage
+        == engine::TerrainSceneSession::FailureStage::Configuration);
+    auto pending = session.hostStep(scene, 1.0f / 60.0f, desc);
+    assert(!pending.success && pending.pending && !pending.stepped
+        && pending.failureStage == engine::TerrainSceneSession::FailureStage::VegetationGpuBinding);
+    assert(!terrain.desc().terrain.valid() && !world->terrainHeightFieldHandle().valid());
+    assert(!session.worldSurface() && !session.vegetationSnapshot()
+        && !session.vegetationGpuSnapshot());
+    const auto attempts = proxy.bufferCreateAttempts();
+    assert(session.synchronize(scene, desc).pending && proxy.bufferCreateAttempts() == attempts);
+    queue.complete();
+    assert(session.hostStep(scene, 1.0f / 60.0f, desc).stepped);
+    auto firstGpu = session.vegetationGpuSnapshot();
+    const auto firstCpu = session.vegetationSnapshot();
+    assert(firstGpu && firstGpu->validatorOnly() && firstGpu->source()->source == firstCpu);
+    const renderer::TerrainHandle handle{terrain.desc().terrain.id};
+    const auto oldRuntime = *runtime.terrain(handle);
+    const auto lease = world->terrainHeightFieldHandle();
+    core::pmr::Vector<physics::PhysicsBodyHandle> blockers{&core::defaultCpuMemoryResource()};
+    physics::RigidBodyDesc blocker;
+    blocker.motionType = physics::BodyMotionType::Static;
+    blocker.layer = physics::CollisionLayer::Static;
+    for (unsigned i = 0; i < 7u; ++i) {
+        const auto body = world->createBody(blocker, {-500, 10, float(i) * 2}, {});
+        assert(body.valid());
+        blockers.push_back(body);
+    }
+    object.set_local_transform(scene::Transform::fromTranslation({100, 9, 200}));
+    assert(session.synchronize(scene, desc).pending);
+    assert(*runtime.terrain(handle) == oldRuntime && world->terrainHeightFieldHandle() == lease);
+    queue.complete();
+    const auto rejected = session.synchronize(scene, desc);
+    assert(!rejected.success && !rejected.pending
+        && rejected.failureStage == engine::TerrainSceneSession::FailureStage::PhysicsBinding);
+    assert(!session.vegetationGpuSnapshot() && *runtime.terrain(handle) == oldRuntime
+        && world->terrainHeightFieldHandle() == lease);
+    object.set_local_transform(scene::Transform::fromTranslation(translation));
+    assert(session.synchronize(scene, desc).success && session.vegetationGpuSnapshot() == firstGpu
+        && session.vegetationSnapshot() == firstCpu);
+    for (const auto body : blockers)
+        world->destroyBody(body);
+    const auto beforeRetry = proxy.bufferCreateAttempts();
+    object.set_local_transform(scene::Transform::fromTranslation({100, 9, 200}));
+    assert(session.synchronize(scene, desc).success && proxy.bufferCreateAttempts() == beforeRetry);
+    auto secondGpu = session.vegetationGpuSnapshot();
+    assert(secondGpu != firstGpu && secondGpu->source()->source == session.vegetationSnapshot());
+    object.set_local_transform(scene::Transform::fromTranslation({100, 11, 200}));
+    const auto exhausted = session.synchronize(scene, desc);
+    assert(!exhausted.success && !exhausted.pending
+        && exhausted.diagnostics == "VEGETATION-GPU-LIVE-GENERATION-BUDGET");
+    firstGpu.reset();
+    assert(session.synchronize(scene, desc).pending);
+    terrain.set_enabled(false);
+    assert(session.synchronize(scene, desc).success && !session.vegetationGpuSnapshot());
+    assert(!world->terrainHeightFieldHandle().valid() && queue.pending);
+    assert(session.synchronize(next, desc).success && queue.pending);
+    assert(!session.drainAndClear({}).success);
+    queue.complete();
+    assert(session.drainAndClear({}).success && !session.synchronized());
+    assert(upload.liveGenerations->used() == 1u);
+    secondGpu.reset();
+    assert(!upload.liveGenerations->used() && !upload.liveInstances->used());
+    std::puts(
+        "Cooked package -> CPU/GPU session publication -> Jolt rollback PASS (Null validator only)");
+}
+
 void validatesPackage(const std::filesystem::path& package)
 {
     resource::ResourceManager resources;
@@ -278,6 +383,7 @@ void validatesPackage(const std::filesystem::path& package)
         for (std::uint32_t x = 0; x < nx; ++x)
             budget.maxInstances += asset.get()->vegetationFor({int(x), int(z)})->size();
     assert(budget.maxInstances > 0u);
+    validatesGpuSession(resources, budget);
     const core::Vec3 translation{100, 5, 200};
     const auto first = binding.bind(resources, terrainId, asset.generation(), translation, budget);
     assert(first.success && !first.unchanged);

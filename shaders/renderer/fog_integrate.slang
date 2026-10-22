@@ -10,11 +10,14 @@ void computeMain(uint3 id:SV_DispatchThreadID)
     if(any(id.xy>=p.grid.xy)) return;
     float2 uv=(float2(id.xy)+0.5)/float2(p.grid.xy);
     float rayScale=length(fogWorldAt(uv,p.depthTime.y,p)-fogWorldAt(uv,p.depthTime.x,p))/(p.depthTime.y-p.depthTime.x);
+    float3 ray=normalize(fogWorldAt(uv,p.depthTime.y,p)-fogWorldAt(uv,p.depthTime.x,p));
+    float phase=fogPhase(dot(ray,-p.lightDirectionIntensity.xyz),p.globalColorAnisotropy.w);
     float3 light=0;
     float transmittance=1;
     for(uint z=0;z<p.grid.z;++z) {
         uint index=fogIndex(uint3(id.xy,z),p.grid.xyz);
-        float4 cell=FogResolved[index].source;
+        FogHistory record=FogResolved[index];
+        float4 cell=float4(record.source.xyz+record.direct.xyz*phase,record.source.w);
         float distance=(fogSliceDepth(float(z+1),p)-fogSliceDepth(float(z),p))*rayScale;
         light+=transmittance*cell.xyz*fogSegmentLength(cell.w,distance);
         transmittance*=exp(-cell.w*distance);

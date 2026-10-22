@@ -340,12 +340,18 @@ MetalRhiNativeFeatureProbe probeMetalRhiNativeFeatures()
             workgroupSize.width * workgroupSize.height * workgroupSize.depth);
         probe.maxComputeWorkgroupSizeX = static_cast<std::uint32_t>(workgroupSize.width);
         probe.maxComputeWorkgroupSizeY = static_cast<std::uint32_t>(workgroupSize.height);
+        probe.maxComputeWorkgroupSizeZ = static_cast<std::uint32_t>(workgroupSize.depth);
         probe.maxComputeWorkgroupMemoryBytes =
             static_cast<std::uint32_t>(device.maxThreadgroupMemoryLength);
         // Metal guarantees 31 buffer argument slots per shader stage. This is
         // a specification limit, not a platform-name heuristic.
         probe.maxStorageBufferBindingsPerStage = 31u;
         probe.maxStorageBufferBindingSizeBytes = static_cast<std::uint64_t>(device.maxBufferLength);
+        probe.maxUniformBufferBindingsPerStage = 31u;
+        probe.maxUniformBufferBindingSizeBytes = static_cast<std::uint64_t>(device.maxBufferLength);
+        // Apple feature tables (2026-05-21), p7: every listed Apple family
+        // exposes at least 31 direct texture argument entries per function.
+        probe.maxSampledTextureBindingsPerStage = 31u;
         // Apple Metal feature tables, 2026-05-21 footnote1: every Metal3
         // device guarantees at least Apple7's limits. These are conservative
         // ceilings, not a guessed hardware maximum. Physical layers include

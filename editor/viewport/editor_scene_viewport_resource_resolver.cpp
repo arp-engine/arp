@@ -1,5 +1,6 @@
 #include "editor/viewport/editor_scene_viewport_resource_resolver.h"
 
+#include "editor/workspace/editor_terrain_preview.h"
 #include "resource/mesh_asset_resources.h"
 #include "resource/prefab_asset_resources.h"
 #include "resource/terrain_asset_resource.h"
@@ -56,6 +57,7 @@ EditorSceneViewportResourceResolution resolveEditorSceneViewportResources(
         item.materialResourceId = draw.materialResourceId;
         item.geometry = draw.geometry;
         item.tile = draw.tile;
+        item.terrainPreviewMaterialResourceId = draw.terrainPreviewMaterialResourceId;
         if (draw.geometry == EditorSceneViewportGeometry::TerrainTile) {
             const auto terrain =
                 resources.find<resource::TerrainAssetResource>(draw.meshResourceId);
@@ -66,7 +68,14 @@ EditorSceneViewportResourceResolution resolveEditorSceneViewportResources(
                 result.items.push_back(std::move(item));
                 continue;
             }
-            if (terrain.get()->hasSurfaceWeights() || terrain.get()->hasVegetation()) {
+            if ((terrain.get()->hasSurfaceWeights() || terrain.get()->hasVegetation())
+                && (draw.terrainPreviewMaterialResourceId.empty()
+                    || resolveEditorTerrainPreviewMaterial(resources,
+                           draw.meshResourceId,
+                           terrain.generation(),
+                           draw.terrainPreviewMaterialResourceId,
+                           draw.tile)
+                        != draw.materialResourceId)) {
                 item.diagnostic = EditorSceneViewportDiagnostic::TerrainSurfacePreviewUnsupported;
                 result.items.push_back(std::move(item));
                 continue;

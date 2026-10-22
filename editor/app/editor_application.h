@@ -17,7 +17,9 @@ public:
         std::string_view remoteBindAddress = "127.0.0.1",
         bool viewportPipelineSmoke = false,
         bool viewportRuntimeSmoke = false,
-        bool terrainResourceSmoke = false);
+        bool terrainResourceSmoke = false,
+        std::string_view openTerrain = {},
+        bool terrainAssets = false);
 };
 
 } // namespace arp::editor

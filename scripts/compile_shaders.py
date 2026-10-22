@@ -3248,7 +3248,13 @@ SHADER_SOURCES = [
      "renderer/forward_plus_cull.slang",
      ["forwardPlusCullMain"]),
     ("FogInject", "fog_inject", "renderer/fog_inject.slang", ["computeMain"]),
+    ("CloudRaymarch", "cloud_raymarch", "renderer/cloud_raymarch.slang", ["computeMain"]),
+    ("CloudDensitySlice", "cloud_density_slice", "renderer/cloud_density_slice.slang", ["computeMain"]),
+    ("CloudTemporal", "cloud_temporal", "renderer/cloud_temporal.slang", ["computeMain"]),
+    ("CloudComposite", "cloud_composite", "renderer/cloud_composite.slang", ["vertexMain", "fragmentMain"]),
+    ("CloudDemoPresent", "cloud_demo_present", "samples/fog_demo_present.slang", ["vertexMain", "fragmentMain"]),
     ("FogScatter", "fog_scatter", "renderer/fog_scatter.slang", ["computeMain"]),
+    ("FogScatterSpatial", "fog_scatter_spatial", "renderer/fog_scatter_spatial.slang", ["computeMain"]),
     ("FogTemporal", "fog_temporal", "renderer/fog_temporal.slang", ["computeMain"]),
     ("FogIntegrate", "fog_integrate", "renderer/fog_integrate.slang", ["computeMain"]),
     ("FogComposite", "fog_composite", "renderer/fog_composite.slang", ["vertexMain", "fragmentMain"]),
@@ -3338,6 +3344,15 @@ SHADER_SOURCES = [
 SHADER_SHARED_SOURCES = (
     "examples/queen_surface.slang",
     "examples/queen_sky_color.slang",
+    "common/volumetric_fog.slang",
+    "core/noise3.slang",
+    "core/box_geometry.slang",
+    "renderer/fog_scatter_common.slang",
+    "renderer/ddgi_sampling.slang",
+    "renderer/ddgi_visibility.slang",
+    "renderer/ddgi_depth_cache.slang",
+    "samples/fog_scene_geometry.slang",
+    "samples/fog_glass_geometry.slang",
 )
 
 # Shaders that need WGSL push constant binding annotation (keyed by prefix)
@@ -3371,6 +3386,8 @@ WGSL_PUSH_CONSTANT_SHADERS = {
 
 # Shaders that need WGSL vertex output location annotation (keyed by prefix)
 WGSL_VERTEX_LOCATION_SHADERS = {
+    "cloud_composite",
+    "cloud_demo_present",
     "fog_composite",
     "fog_demo_scene", "fog_demo_shadow", "fog_demo_glass", "fog_demo_plain_glass", "fog_demo_present",
     "queen_portable_shadow",

@@ -745,6 +745,36 @@ targets:
     constexpr uint32_t spirvDecorationRowMajor = 4u;
     constexpr uint32_t spirvDecorationColMajor = 5u;
     constexpr uint32_t spirvDecorationMatrixStride = 7u;
+#ifdef ARP_CLOUD_SHADER_DIR
+    {
+        const auto source = readTextFile("shaders/renderer/cloud_common.slang");
+        assert(source.find("row_major float4x4") == source.npos);
+        assert(source.find("column_major float4x4") == source.npos);
+        for (const auto* field : {"inverseViewProjection", "previousViewProjection"}) {
+            assert(source.find(std::pmr::string("    float4x4 ") + field + ";") != source.npos);
+            for (const auto* name :
+                {"cloud_raymarch", "cloud_temporal", "cloud_composite", "cloud_density_slice"}) {
+                const auto path = std::pmr::string(ARP_CLOUD_SHADER_DIR) + "/" + name;
+                const auto bytes = readBinaryFile((path + ".spv").c_str());
+                assert(spirvMemberHasDecoration(
+                    bytes, "CloudGpuConstants_std140", field, spirvDecorationColMajor));
+                assert(!spirvMemberHasDecoration(
+                    bytes, "CloudGpuConstants_std140", field, spirvDecorationRowMajor));
+                const auto reflected = arp::shader::ShaderReflectionCache::loadFromYaml(
+                    readTextFile((path + ".reflection.yaml").c_str()));
+                assert(
+                    reflected.success && reflected.module.reflection.pushConstantSizeBytes == 0u);
+            }
+        }
+        // Asymmetric row-major numerical fixture; GPU ray reconstruction is
+        // additionally compared against this CPU convention in native tests.
+        arp::core::Mat4 m{};
+        m.m = {.5f, .125f, 0, .125f, .0625f, -.5f, 0, .0625f, 0, 0, .5f, .25f, 0, 0, 0, 1};
+        const auto value = arp::core::transformPoint(m, {.25f, -.5f, .75f});
+        assert(std::fabs(value.x - .1875f) < .00001f && std::fabs(value.y - .328125f) < .00001f
+            && std::fabs(value.z - .625f) < .00001f);
+    }
+#endif
 #ifdef ARP_FOG_SHADER_DIR
     {
         const auto source = readTextFile("shaders/common/volumetric_fog.slang");

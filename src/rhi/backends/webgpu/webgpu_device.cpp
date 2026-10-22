@@ -1084,6 +1084,14 @@ public:
         compute.maxComputeWorkgroupInvocations = limits.maxComputeInvocationsPerWorkgroup;
         compute.maxComputeWorkgroupSizeX = limits.maxComputeWorkgroupSizeX;
         compute.maxComputeWorkgroupSizeY = limits.maxComputeWorkgroupSizeY;
+        compute.maxComputeWorkgroupSizeZ = limits.maxComputeWorkgroupSizeZ;
+        compute.maxComputeWorkgroupCountX = limits.maxComputeWorkgroupsPerDimension;
+        compute.maxComputeWorkgroupCountY = limits.maxComputeWorkgroupsPerDimension;
+        compute.maxComputeWorkgroupCountZ = limits.maxComputeWorkgroupsPerDimension;
+        compute.maxUniformBufferBindingsPerStage = limits.maxUniformBuffersPerShaderStage;
+        compute.maxUniformBufferBindingSizeBytes = limits.maxUniformBufferBindingSize;
+        compute.maxSampledTextureBindingsPerStage = limits.maxSampledTexturesPerShaderStage;
+        compute.maxTexture2DDimension = limits.maxTexture2DSize;
         compute.maxComputeWorkgroupMemoryBytes = limits.maxComputeWorkgroupStorageSize;
         compute.maxStorageBufferBindingsPerStage = limits.maxStorageBuffersPerShaderStage;
         compute.maxStorageBufferBindingSizeBytes = limits.maxStorageBufferBindingSize;

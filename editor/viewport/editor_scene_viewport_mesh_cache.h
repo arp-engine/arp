@@ -64,6 +64,8 @@ public:
 
 private:
     struct Entry {
+        core::pmr::String previewId;
+        resource::ResourceGeneration previewGeneration = 0;
         core::pmr::String resourceId{&core::defaultCpuMemoryResource()};
         resource::ResourceGeneration generation = 0;
         EditorSceneViewportGeometry geometry = EditorSceneViewportGeometry::Mesh;

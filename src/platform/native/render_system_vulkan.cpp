@@ -959,7 +959,9 @@ rhi::semantics::vulkan::VulkanDeviceCapabilitySnapshot makeVulkanCapabilitySnaps
 
 arp::core::UniquePtr<rhi::GpuDevice> createRhiVulkanDevice(const std::pmr::string& applicationName,
     const std::shared_ptr<VulkanSurfaceRuntimeOwner>& nativeRuntime,
-    std::pmr::string& diagnostics)
+    std::pmr::string& diagnostics,
+    const rhi::semantics::DirectObjectBudget* directObjectBudgetOverride = nullptr,
+    const rhi::semantics::UploadStagingBudgetV1* uploadStagingBudgetOverride = nullptr)
 {
     if (!nativeRuntime) {
         diagnostics = "RHI-VULKAN-RUNTIME-OWNER-MISSING";
@@ -1010,6 +1012,10 @@ arp::core::UniquePtr<rhi::GpuDevice> createRhiVulkanDevice(const std::pmr::strin
         }
     }
     deviceDesc.memoryBudgetBytes = scaledBudget;
+    if (directObjectBudgetOverride)
+        deviceDesc.directObjectBudget = *directObjectBudgetOverride;
+    if (uploadStagingBudgetOverride)
+        deviceDesc.uploadStagingBudget = *uploadStagingBudgetOverride;
     deviceDesc.runtime = std::move(runtime);
     deviceDesc.enableVmaAllocator = true;
     deviceDesc.requireNativeResourceAllocation = true;
@@ -2436,11 +2442,18 @@ RenderSystem createDefaultRenderSystem(WindowSystem& platform,
     const rhi::semantics::UploadStagingBudgetV1* uploadStagingBudgetOverride,
     const rhi::semantics::DirectObjectBudget* directObjectBudgetOverride)
 {
-    (void)uploadStagingBudgetOverride;
     auto impl = core::makeUnique<RenderSystem::Impl>();
     impl->backend = rhi::Backend::Vulkan;
-    if (directObjectBudgetOverride != nullptr) {
-        impl->diagnostics = "RHI-DIRECT-OBJECT-BUDGET-VULKAN-UNSUPPORTED";
+    if (uploadStagingBudgetOverride) {
+        const auto validation =
+            rhi::semantics::validateUploadStagingBudget(*uploadStagingBudgetOverride);
+        if (!validation.success) {
+            impl->diagnostics = validation.diagnosticId;
+            return RenderSystem(std::move(impl));
+        }
+    }
+    if (directObjectBudgetOverride != nullptr && !directObjectBudgetOverride->valid()) {
+        impl->diagnostics = "RHI-DIRECT-OBJECT-BUDGET-INVALID";
         return RenderSystem(std::move(impl));
     }
     impl->extent = {
@@ -2463,8 +2476,11 @@ RenderSystem createDefaultRenderSystem(WindowSystem& platform,
         return RenderSystem(std::move(impl));
     }
 
-    impl->device =
-        createRhiVulkanDevice(applicationName, impl->nativeVulkanRuntime, impl->diagnostics);
+    impl->device = createRhiVulkanDevice(applicationName,
+        impl->nativeVulkanRuntime,
+        impl->diagnostics,
+        directObjectBudgetOverride,
+        uploadStagingBudgetOverride);
     if (!impl->device) {
         return RenderSystem(std::move(impl));
     }

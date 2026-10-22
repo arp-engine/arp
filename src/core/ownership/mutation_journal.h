@@ -31,6 +31,7 @@ private:
     MutationRecord* next_ = nullptr;
     void* context_ = nullptr;
     void (*restore_)(void*) noexcept = nullptr;
+    void (*invalidate_)(void*) noexcept = nullptr;
 };
 
 class MutationJournal {
@@ -42,13 +43,17 @@ public:
     MutationJournal(const MutationJournal&) = delete;
     MutationJournal& operator=(const MutationJournal&) = delete;
 
-    bool enlist(MutationRecord& record, void* context, void (*restore)(void*) noexcept) noexcept
+    bool enlist(MutationRecord& record,
+        void* context,
+        void (*restore)(void*) noexcept,
+        void (*invalidate)(void*) noexcept = nullptr) noexcept
     {
         if (record.pending())
             return record.ownedBy(*this);
         record.owner_ = this;
         record.context_ = context;
         record.restore_ = restore;
+        record.invalidate_ = invalidate;
         record.next_ = first_;
         if (first_)
             first_->previous_ = &record;
@@ -57,6 +62,28 @@ public:
     }
 
     void commit() noexcept { discard(); }
+
+    bool canInvalidate() const noexcept
+    {
+        for (auto* record = first_; record; record = record->next_)
+            if (!record->invalidate_)
+                return false;
+        return true;
+    }
+
+    // A terminal outcome has no valid saved value to restore. Every participant
+    // must explicitly support invalidation; refusal invokes no callbacks.
+    bool invalidate() noexcept
+    {
+        if (!canInvalidate())
+            return false;
+        while (first_) {
+            auto* record = first_;
+            record->invalidate_(record->context_);
+            record->detach();
+        }
+        return true;
+    }
 
     // Forget saved values without restoring them. Terminally invalidated state
     // uses this operation to relinquish journal ownership without claiming a
@@ -97,6 +124,7 @@ inline void MutationRecord::detach() noexcept
     previous_ = next_ = nullptr;
     context_ = nullptr;
     restore_ = nullptr;
+    invalidate_ = nullptr;
 }
 
 // current must outlive this guard. Copying its bounded value may allocate while
@@ -105,10 +133,12 @@ template <class T> class MutationSnapshot {
 public:
     // The optional observer runs after rollback restores current. Its context
     // must outlive this snapshot; destruction/commit never invokes it.
-    explicit MutationSnapshot(
-        T& current, void* restoreContext = nullptr, void (*afterRestore)(void*) noexcept = nullptr)
+    explicit MutationSnapshot(T& current,
+        void* restoreContext = nullptr,
+        void (*afterRestore)(void*) noexcept = nullptr,
+        void (*onInvalidate)(void*) noexcept = nullptr)
         : current_(current), saved_(copyValue(current, 0)), restoreContext_(restoreContext),
-          afterRestore_(afterRestore)
+          afterRestore_(afterRestore), onInvalidate_(onInvalidate)
     {}
 
     MutationSnapshot(const MutationSnapshot&) = delete;
@@ -128,14 +158,21 @@ public:
         if (record_.pending())
             return record_.ownedBy(journal);
         saved_ = current_;
-        return journal.enlist(record_, this, [](void* context) noexcept {
+        const auto restore = [](void* context) noexcept {
             auto& snapshot = *static_cast<MutationSnapshot*>(context);
             static_assert(std::is_nothrow_swappable_v<T>);
             using std::swap;
             swap(snapshot.current_, snapshot.saved_);
             if (snapshot.afterRestore_)
                 snapshot.afterRestore_(snapshot.restoreContext_);
-        });
+        };
+        void (*invalidate)(void*) noexcept = nullptr;
+        if (onInvalidate_)
+            invalidate = [](void* context) noexcept {
+                auto& snapshot = *static_cast<MutationSnapshot*>(context);
+                snapshot.onInvalidate_(snapshot.restoreContext_);
+            };
+        return journal.enlist(record_, this, restore, invalidate);
     }
 
 private:
@@ -151,6 +188,7 @@ private:
     T saved_;
     void* restoreContext_;
     void (*afterRestore_)(void*) noexcept;
+    void (*onInvalidate_)(void*) noexcept;
     MutationRecord record_;
 };
 

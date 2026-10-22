@@ -10,6 +10,14 @@ namespace arp::rhi_vulkan {
 
 namespace {
 
+bool registryOwnerMatches(const std::weak_ptr<VulkanRhiResourceRegistry>& source,
+    const std::shared_ptr<VulkanRhiResourceRegistry>& expected) noexcept
+{
+    const auto issuing = source.lock();
+    return expected && issuing == expected
+        && core::SharedOwnerProjection::sameOwner(issuing, expected);
+}
+
 rhi::ResourceMemoryClass memoryClassFor(rhi::MemoryUsage usage)
 {
     switch (usage) {
@@ -124,7 +132,25 @@ public:
         return journal ? state_.prepare(*journal) : state_.active() && !state_.pending();
     }
 
+    bool stateCommitted() const noexcept { return state_.active() && !state_.pending(); }
+
+    bool stateAvailable(const core::MutationJournal* journal) const noexcept
+    {
+        return state_.active()
+            && (!state_.pending() || (journal && state_.observePending(*journal).has_value()));
+    }
+
+    bool canTransition(const core::MutationJournal& journal) const noexcept
+    {
+        return state_.canWriteBatch(journal, 1u);
+    }
+
     std::shared_ptr<VulkanRhiNativeResourcePayload> nativePayload() const { return nativePayload_; }
+
+    bool registryMatches(const std::shared_ptr<VulkanRhiResourceRegistry>& registry) const noexcept
+    {
+        return registryOwnerMatches(registry_, registry);
+    }
 
 private:
     rhi::GpuResourceId id_;
@@ -195,6 +221,8 @@ public:
         return journal ? state_.prepare(*journal) : state_.active() && !state_.pending();
     }
 
+    bool stateCommitted() const noexcept { return state_.active() && !state_.pending(); }
+
     const char* recordSubresourceState(const rhi::TextureSubresourceRange& range,
         rhi::ResourceState before,
         rhi::ResourceState after,
@@ -203,7 +231,25 @@ public:
         return state_.write(range, before, after, journal);
     }
 
+    bool stateAvailable(const rhi::TextureSubresourceRange& range,
+        const core::MutationJournal* journal) const noexcept
+    {
+        return state_.active() && state_.uniformState(range).has_value()
+            && (!state_.pending()
+                || (journal && state_.observePending(range, *journal).has_value()));
+    }
+
+    bool canTransition(const core::MutationJournal& journal) const noexcept
+    {
+        return state_.canWriteBatch(journal, 1u);
+    }
+
     std::shared_ptr<VulkanRhiNativeResourcePayload> nativePayload() const { return nativePayload_; }
+
+    bool registryMatches(const std::shared_ptr<VulkanRhiResourceRegistry>& registry) const noexcept
+    {
+        return registryOwnerMatches(registry_, registry);
+    }
 
 private:
     rhi::GpuResourceId id_;
@@ -258,6 +304,11 @@ public:
     const rhi::TextureViewDesc& desc() const override { return desc_; }
 
     std::shared_ptr<VulkanRhiNativeResourcePayload> nativePayload() const { return nativePayload_; }
+
+    bool registryMatches(const std::shared_ptr<VulkanRhiResourceRegistry>& registry) const noexcept
+    {
+        return registryOwnerMatches(registry_, registry);
+    }
 
 private:
     rhi::GpuResourceId id_;
@@ -335,13 +386,16 @@ arp::core::UniquePtr<rhi::GpuTexture> createVulkanRhiTexture(rhi::GpuResourceId 
     std::shared_ptr<VulkanRhiNativeResourcePayload> nativePayload,
     std::shared_ptr<VulkanRhiResourceRegistry> registry)
 {
-    return arp::core::makeUnique<VulkanRhiTexture>(id,
+    auto texture = arp::core::makeUnique<VulkanRhiTexture>(id,
         desc,
         allocationFrom(allocation, desc.memory),
         allocation.releaseToken,
         allocation.originalLifetime.lock(),
         std::move(nativePayload),
-        std::move(registry));
+        registry);
+    if (registry)
+        registry->registerTextureObject(id, *texture);
+    return texture;
 }
 
 arp::core::UniquePtr<rhi::GpuBufferView> createVulkanRhiBufferView(
@@ -426,6 +480,68 @@ std::shared_ptr<VulkanRhiNativeResourcePayload> vulkanRhiNativePayload(const rhi
 {
     const auto* vulkanBuffer = dynamic_cast<const VulkanRhiBuffer*>(&buffer);
     return vulkanBuffer ? vulkanBuffer->nativePayload() : nullptr;
+}
+
+bool vulkanRhiBufferRegistryMatches(const rhi::GpuBuffer& buffer,
+    const std::shared_ptr<VulkanRhiResourceRegistry>& registry) noexcept
+{
+    const auto* vulkanBuffer = dynamic_cast<const VulkanRhiBuffer*>(&buffer);
+    return vulkanBuffer && vulkanBuffer->registryMatches(registry);
+}
+
+bool vulkanRhiBufferStateCommitted(const rhi::GpuBuffer& buffer) noexcept
+{
+    const auto* original = dynamic_cast<const VulkanRhiBuffer*>(&buffer);
+    return original && original->stateCommitted();
+}
+
+bool vulkanRhiBufferStateAvailable(
+    const rhi::GpuBuffer& buffer, const core::MutationJournal* journal) noexcept
+{
+    const auto* original = dynamic_cast<const VulkanRhiBuffer*>(&buffer);
+    return original && original->stateAvailable(journal);
+}
+
+bool vulkanRhiBufferCanTransition(
+    const rhi::GpuBuffer& buffer, const core::MutationJournal& journal) noexcept
+{
+    const auto* original = dynamic_cast<const VulkanRhiBuffer*>(&buffer);
+    return original && original->canTransition(journal);
+}
+
+bool vulkanRhiTextureStateCommitted(const rhi::GpuTexture& texture) noexcept
+{
+    const auto* original = dynamic_cast<const VulkanRhiTexture*>(&texture);
+    return original && original->stateCommitted();
+}
+
+bool vulkanRhiTextureStateAvailable(const rhi::GpuTexture& texture,
+    const rhi::TextureSubresourceRange& range,
+    const core::MutationJournal* journal) noexcept
+{
+    const auto* original = dynamic_cast<const VulkanRhiTexture*>(&texture);
+    return original && original->stateAvailable(range, journal);
+}
+
+bool vulkanRhiTextureCanTransition(
+    const rhi::GpuTexture& texture, const core::MutationJournal& journal) noexcept
+{
+    const auto* original = dynamic_cast<const VulkanRhiTexture*>(&texture);
+    return original && original->canTransition(journal);
+}
+
+bool vulkanRhiTextureRegistryMatches(const rhi::GpuTexture& texture,
+    const std::shared_ptr<VulkanRhiResourceRegistry>& registry) noexcept
+{
+    const auto* native = dynamic_cast<const VulkanRhiTexture*>(&texture);
+    return native && native->registryMatches(registry);
+}
+
+bool vulkanRhiTextureViewRegistryMatches(const rhi::GpuTextureView& view,
+    const std::shared_ptr<VulkanRhiResourceRegistry>& registry) noexcept
+{
+    const auto* native = dynamic_cast<const VulkanRhiTextureView*>(&view);
+    return native && native->registryMatches(registry);
 }
 
 std::shared_ptr<VulkanRhiNativeResourcePayload> vulkanRhiNativePayload(

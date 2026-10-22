@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rhi/backends/vulkan/vulkan_runtime.h"
+#include "rhi/frontend/memory_direct_object_budget.h"
 #include "rhi/gpu_bindless.h"
 
 namespace arp::rhi_vulkan {
@@ -23,8 +24,9 @@ rhi::ValidationResult validateVulkanBindlessComputeRequirements(
 // its completion-gated fault collection. Other stages remain unavailable.
 class VulkanBindlessCrossExtension final : public rhi::BindlessCrossExtension {
 public:
-    VulkanBindlessCrossExtension(
-        const VulkanRhiRuntime* runtime, VulkanRhiNativeResourceAllocator* nativeResources);
+    VulkanBindlessCrossExtension(const VulkanRhiRuntime* runtime,
+        VulkanRhiNativeResourceAllocator* nativeResources,
+        std::shared_ptr<rhi::semantics::DirectObjectBudgetTracker> directObjectBudget = {});
 
     const rhi::BindlessCapabilities& capabilities() const noexcept override { return caps_; }
 
@@ -89,6 +91,7 @@ private:
     friend class VulkanOriginalGeometryContent;
     const VulkanRhiRuntime* runtime_ = nullptr;
     VulkanRhiNativeResourceAllocator* nativeResources_ = nullptr;
+    std::shared_ptr<rhi::semantics::DirectObjectBudgetTracker> directObjectBudget_;
     rhi::BindlessCapabilities caps_;
 };
 

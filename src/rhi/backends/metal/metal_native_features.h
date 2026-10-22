@@ -37,6 +37,10 @@ struct MetalRhiNativeFeatureProbe {
     std::uint32_t maxTextureBindingsPerStage = 0u;
     std::uint32_t maxSamplerBindingsPerStage = 0u;
     bool r32FloatReadWriteTexture = false;
+    std::uint32_t maxComputeWorkgroupSizeZ = 0u;
+    std::uint32_t maxUniformBufferBindingsPerStage = 0u;
+    std::uint64_t maxUniformBufferBindingSizeBytes = 0u;
+    std::uint32_t maxSampledTextureBindingsPerStage = 0u;
 };
 
 /// Probes the exact native substrates used by the Metal lowering contract.

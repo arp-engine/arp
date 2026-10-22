@@ -31,6 +31,8 @@ public:
 
     bool validatorOnly() const noexcept { return validatorOnly_; }
 
+    bool belongsTo(const rhi::GpuDevice& device) const noexcept { return device_ == &device; }
+
 private:
     friend class TerrainVegetationGpuUpload;
     // Leases outlive buffers, including when external readers outlive the ticket.
@@ -38,6 +40,7 @@ private:
     std::shared_ptr<const TerrainVegetationDrawSnapshot> source_;
     core::pmr::Vector<Tile> tiles_{&core::defaultCpuMemoryResource()};
     bool validatorOnly_ = false;
+    const rhi::GpuDevice* device_ = nullptr;
 };
 
 // TerrainVegetationGpuUpload/1. Serialized cold preparation; no draw authority.

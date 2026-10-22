@@ -167,6 +167,17 @@ void EditorPropertyColorPicker::onValueChanged(
 
 void EditorEnumDropdown::onSelectionChanged(std::uint32_t, std::uint32_t selected)
 {
+    if (source_ == "terrain_browser_choice") {
+        if (selected < options_.size()) {
+            SelectTerrainPreviewCommand command;
+            command.previewId = options_[selected].commandValue;
+            for (const auto& entry : shell_.terrainBrowser_.entries())
+                if (entry.previewId == command.previewId)
+                    command.expectedGeneration = entry.previewGeneration;
+            (void)shell_.submitCommand(std::move(command));
+        }
+        return;
+    }
     if (source_ == "scene_component_add") {
         if (selected < options_.size() && !options_[selected].commandValue.empty())
             (void)shell_.submitCommand(AddSceneComponentCommand(std::string_view(
@@ -820,7 +831,19 @@ void EditorShell::activate(const core::pmr::String& source)
             }
         }
     }
-    if (source == "files_build_terrain") {
+    if (source == "files_terrain_assets") {
+        (void)submitCommand(ShowTerrainBrowserCommand{});
+    } else if (source == "terrain_browser_close") {
+        (void)submitCommand(ShowTerrainBrowserCommand{false});
+    } else if (source == "terrain_browser_open") {
+        if (terrainBrowserSelection_ < terrainBrowser_.entries().size()) {
+            const auto& entry = terrainBrowser_.entries()[terrainBrowserSelection_];
+            OpenTerrainPreviewCommand command;
+            command.previewId = entry.previewId;
+            command.expectedGeneration = entry.previewGeneration;
+            (void)submitCommand(std::move(command));
+        }
+    } else if (source == "files_build_terrain") {
         const auto relative =
             core::FilePath::utf8(selectedFilePath_.lexically_relative(projectRoot()));
         BuildTerrainResourceCommand command;

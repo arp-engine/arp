@@ -301,7 +301,29 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
     return std::visit(
         [this](const auto& command) -> EditorCommandOutcome {
             using Command = std::decay_t<decltype(command)>;
-            if constexpr (std::is_same_v<Command, BuildTerrainResourceCommand>) {
+            if constexpr (std::is_same_v<Command, ShowTerrainBrowserCommand>) {
+                if (!showTerrainBrowser(command.visible))
+                    return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
+            } else if constexpr (std::is_same_v<Command, SelectTerrainPreviewCommand>) {
+                EditorTerrainBrowser currentBindings;
+                if (!currentBindings.refresh(projectResources()))
+                    return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
+                for (std::size_t i = 0; i < terrainBrowser_.entries().size(); ++i) {
+                    const auto& entry = terrainBrowser_.entries()[i];
+                    const auto current =
+                        projectResources().find<resource::MaterialResource>(entry.previewId);
+                    if (entry.previewId == command.previewId && current.ready()
+                        && entry.previewGeneration == command.expectedGeneration
+                        && current.generation() == command.expectedGeneration) {
+                        terrainBrowserSelection_ = i;
+                        updateTerrainBrowserDetails();
+                        return {true, true, EditorDiagnosticCode::None};
+                    }
+                }
+                return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
+            } else if constexpr (std::is_same_v<Command, OpenTerrainPreviewCommand>) {
+                return openTerrainPreview(command);
+            } else if constexpr (std::is_same_v<Command, BuildTerrainResourceCommand>) {
                 if (!terrainBuild_.start(projectRoot(),
                         command.authoringPath,
                         command.packagePath,
@@ -741,6 +763,10 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
                     return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
                 if (result == SceneInspectorWriteResult::Changed && captureHistory)
                     recordSceneHistory(history);
+                if (result == SceneInspectorWriteResult::Changed
+                    && valueKind == SceneInspectorPropertyKind::ResourceReference
+                    && sceneDocument_.selectedObject().value() == command.objectId)
+                    sceneInspectorWidgetOwner_ = scene::GameObjectId::invalid();
                 if (result == SceneInspectorWriteResult::Changed
                     && valueKind == SceneInspectorPropertyKind::SceneObjectLinkList
                     && history.beforeProperty.sceneObjectLinkListValue.size()

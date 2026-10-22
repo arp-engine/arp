@@ -10,6 +10,7 @@
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 #include "rhi/backends/vulkan/vulkan_original_device_native_loss.h"
 #include "rhi/backends/vulkan/vulkan_query_pool.h"
+#include "rhi/backends/vulkan/vulkan_retained_command.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 #include "rhi/backends/vulkan/vulkan_staging_upload_pool.h"
 #include "rhi/backends/vulkan/vulkan_swapchain_retirement.h"
@@ -295,6 +296,14 @@ bool makeVulkanTimelineSubmitInfo(rhi::GpuTimelineSemaphore* waitSemaphore,
 
 class VulkanRhiDevice final : public rhi::GpuDevice {
 public:
+    core::UniquePtr<VulkanRhiRetainedCommand> prepareRetainedCommand(
+        core::UniquePtr<rhi::common::CommandRetentionStorage> storage,
+        core::pmr::String& diagnostic)
+    {
+        return VulkanRhiRetainedCommand::prepare(
+            nativeResources_, resourceRegistry_, std::move(storage), diagnostic);
+    }
+
     explicit VulkanRhiDevice(VulkanRhiDeviceDesc desc)
         : desc_(std::move(desc)), allocator_(
                                       {
@@ -310,11 +319,12 @@ public:
                                       : desc_.label + "UploadStagingPool",
                   desc_.uploadStagingPageSizeBytes,
                   desc_.uploadStagingMaxPageCount,
-                  256,
+                  desc_.uploadStagingBudget ? desc_.uploadStagingBudget->alignmentBytes : 256u,
+                  desc_.uploadStagingBudget ? desc_.uploadStagingBudget->maxRequestBytes : 0u,
               },
               allocator_),
           nativeResources_(desc_.runtime, &allocator_), queue_(rhi::GpuQueueRole::Graphics),
-          bindless_(desc_.runtime.get(), &nativeResources_)
+          bindless_(desc_.runtime.get(), &nativeResources_, directObjectBudget_)
     {
         if (desc_.runtime && desc_.runtime->queueFamilyCount() >= 2) {
             hasAsyncCompute_ = true;
@@ -420,6 +430,16 @@ public:
                 properties.limits.maxComputeWorkGroupInvocations;
             compute.maxComputeWorkgroupSizeX = properties.limits.maxComputeWorkGroupSize[0];
             compute.maxComputeWorkgroupSizeY = properties.limits.maxComputeWorkGroupSize[1];
+            compute.maxComputeWorkgroupSizeZ = properties.limits.maxComputeWorkGroupSize[2];
+            compute.maxComputeWorkgroupCountX = properties.limits.maxComputeWorkGroupCount[0];
+            compute.maxComputeWorkgroupCountY = properties.limits.maxComputeWorkGroupCount[1];
+            compute.maxComputeWorkgroupCountZ = properties.limits.maxComputeWorkGroupCount[2];
+            compute.maxUniformBufferBindingsPerStage =
+                properties.limits.maxPerStageDescriptorUniformBuffers;
+            compute.maxUniformBufferBindingSizeBytes = properties.limits.maxUniformBufferRange;
+            compute.maxSampledTextureBindingsPerStage =
+                properties.limits.maxPerStageDescriptorSampledImages;
+            compute.maxTexture2DDimension = properties.limits.maxImageDimension2D;
             compute.maxComputeWorkgroupMemoryBytes = properties.limits.maxComputeSharedMemorySize;
             compute.maxStorageBufferBindingsPerStage =
                 properties.limits.maxPerStageDescriptorStorageBuffers;
@@ -553,7 +573,8 @@ public:
                         staging.peakAllocatedBytes,
                         staging.failedAllocationCount,
                         staging.liveSliceCount,
-                        staging.retiredSliceCount);
+                        staging.retiredSliceCount,
+                        rhi::semantics::PhysicalBudgetChargeRelation::OverlapsResourceAllocation);
             }
         }
         if (descriptorCache_) {
@@ -581,6 +602,25 @@ public:
                         pipelines.rejectionCount,
                         pipelineCache_->entryCount());
             }
+        }
+        if (directObjectBudget_) {
+            const auto direct = directObjectBudget_->stats();
+            report.category(rhi::semantics::PhysicalBudgetCategory::DirectPipelineObjects) =
+                rhi::semantics::observedPhysicalBudgetObservation(
+                    rhi::semantics::PhysicalBudgetUnit::PipelineEntries,
+                    direct.pipelineObjectCapacity,
+                    direct.currentPipelineObjects,
+                    direct.peakPipelineObjects,
+                    direct.pipelineRejectionCount,
+                    direct.currentPipelineObjects);
+            report.category(rhi::semantics::PhysicalBudgetCategory::DirectDescriptorArenas) =
+                rhi::semantics::observedPhysicalBudgetObservation(
+                    rhi::semantics::PhysicalBudgetUnit::Descriptors,
+                    direct.descriptorCapacity,
+                    direct.currentDescriptors,
+                    direct.peakDescriptors,
+                    direct.descriptorRejectionCount,
+                    direct.currentDescriptorReservations);
         }
         return report;
     }
@@ -911,8 +951,10 @@ public:
             // The wrapper removes its own weak registration on every later
             // failure. Before it exists, no registry entry may retain a failed
             // payload's control block under the caller's CPU quota.
-            if (texture)
+            if (texture) {
                 resourceRegistry_->registerTexture(id, result.payload);
+                resourceRegistry_->registerTextureObject(id, *texture);
+            }
             return completeOriginalResourceCreation(std::move(texture));
         } catch (const std::bad_alloc&) {
             reportHeapDiagnostic("RHI-VULKAN-HEAP-HOST-ALLOCATION-FAILED");
@@ -964,7 +1006,11 @@ public:
     arp::core::UniquePtr<rhi::PipelineLayout> createPipelineLayout(
         const rhi::PipelineLayoutDesc& desc) override
     {
-        return createVulkanRhiPipelineLayout(desc);
+        auto reservation =
+            reserveDirectPipeline(rhi::semantics::DirectObjectBudgetKind::PipelineLayout);
+        if (!reservation.success)
+            return nullptr;
+        return createVulkanRhiPipelineLayout(desc, std::move(reservation.lease));
     }
 
     rhi::PipelineValidationReport validateRenderPipeline(
@@ -1002,6 +1048,10 @@ public:
                                                : validation.diagnostics.c_str());
             return nullptr;
         }
+        auto reservation =
+            reserveDirectPipeline(rhi::semantics::DirectObjectBudgetKind::RenderPipeline);
+        if (!reservation.success)
+            return nullptr;
         auto nativePipeline = nativeResources_.createRenderPipeline(desc);
         if (!nativePipeline.success || !nativePipeline.payload) {
             rhi::RhiErrorHandler::get().report(rhi::RhiSeverity::Error,
@@ -1010,6 +1060,10 @@ public:
                     : nativePipeline.diagnostics.c_str());
             return nullptr;
         }
+        if (directObjectBudget_)
+            nativePipeline.payload->directObjectBudgetReleaseToken =
+                core::makeShared<rhi::semantics::DirectObjectBudgetLease>(
+                    std::move(reservation.lease));
         return createVulkanRhiRenderPipeline(desc, nativePipeline.payload);
     }
 
@@ -1034,6 +1088,10 @@ public:
                                                : validation.diagnostics.c_str());
             return nullptr;
         }
+        auto reservation =
+            reserveDirectPipeline(rhi::semantics::DirectObjectBudgetKind::ComputePipeline);
+        if (!reservation.success)
+            return nullptr;
         auto nativePipeline = nativeResources_.createComputePipeline(desc);
         if (!nativePipeline.success || !nativePipeline.payload) {
             rhi::RhiErrorHandler::get().report(rhi::RhiSeverity::Error,
@@ -1042,13 +1100,18 @@ public:
                     : nativePipeline.diagnostics.c_str());
             return nullptr;
         }
+        if (directObjectBudget_)
+            nativePipeline.payload->directObjectBudgetReleaseToken =
+                core::makeShared<rhi::semantics::DirectObjectBudgetLease>(
+                    std::move(reservation.lease));
         return createVulkanRhiComputePipeline(desc, nativePipeline.payload);
     }
 
     arp::core::UniquePtr<rhi::DescriptorArena> createDescriptorArena(
         const rhi::DescriptorArenaDesc& desc) override
     {
-        return createVulkanRhiDescriptorArena(desc, nativeResources_, resourceRegistry_, true);
+        return createVulkanRhiDescriptorArena(
+            desc, nativeResources_, resourceRegistry_, true, directObjectBudget_);
     }
 
     core::UniquePtr<rhi::OriginalConformanceClearExecution> createConformanceClearExecution(
@@ -1341,7 +1404,23 @@ private:
 
     rhi::GpuResourceId nextResourceId() { return rhi::allocateGpuResourceId(); }
 
+    rhi::semantics::DirectObjectBudgetReservation reserveDirectPipeline(
+        rhi::semantics::DirectObjectBudgetKind kind) const
+    {
+        auto reservation = directObjectBudget_
+            ? directObjectBudget_->reserve(kind)
+            : rhi::semantics::DirectObjectBudgetReservation{true, {}};
+        if (!reservation.success)
+            rhi::RhiErrorHandler::get().report(
+                rhi::RhiSeverity::Error, "RHI-DIRECT-PIPELINE-BUDGET");
+        return reservation;
+    }
+
     VulkanRhiDeviceDesc desc_;
+    std::shared_ptr<rhi::semantics::DirectObjectBudgetTracker> directObjectBudget_ =
+        desc_.directObjectBudget.configured()
+        ? core::makeShared<rhi::semantics::DirectObjectBudgetTracker>(desc_.directObjectBudget)
+        : nullptr;
     VulkanRhiQueue queue_;
     VulkanRhiQueue computeQueue_{rhi::GpuQueueRole::Compute};
     bool hasAsyncCompute_ = false;
@@ -1389,6 +1468,19 @@ VulkanRhiDeviceReport describeVulkanRhiDevice(const VulkanRhiDeviceDesc& desc)
     report.perDrawPipelineCreationAllowed = desc.allowPerDrawPipelineCreation;
     report.perFrameShaderCompilationAllowed = desc.allowPerFrameShaderCompilation;
 
+    if (desc.directObjectBudget.configured() && !desc.directObjectBudget.valid()) {
+        report.diagnostics = "RHI-DIRECT-OBJECT-BUDGET-INVALID";
+        return report;
+    }
+    if (desc.uploadStagingBudget) {
+        const auto validation =
+            rhi::semantics::validateUploadStagingBudget(*desc.uploadStagingBudget);
+        if (!validation.success) {
+            report.diagnostics = validation.diagnosticId;
+            return report;
+        }
+    }
+
     if (desc.runtime) {
         const auto runtimeInspection = inspectVulkanRhiRuntime(*desc.runtime);
         if (!runtimeInspection.success) {
@@ -1420,7 +1512,10 @@ VulkanRhiDeviceReport describeVulkanRhiDevice(const VulkanRhiDeviceDesc& desc)
     report.perDrawPipelineCreationAllowed = invariants.perDrawPipelineCreationAllowed;
     report.perFrameShaderCompilationAllowed = invariants.perFrameShaderCompilationAllowed;
 
-    if (desc.uploadStagingPageSizeBytes == 0 || desc.uploadStagingMaxPageCount == 0) {
+    if (!desc.uploadStagingBudget
+        && (desc.uploadStagingPageSizeBytes == 0 || desc.uploadStagingMaxPageCount == 0
+            || desc.uploadStagingPageSizeBytes
+                > std::numeric_limits<std::uint64_t>::max() / desc.uploadStagingMaxPageCount)) {
         report.diagnostics = "Vulkan RHI device requires a bounded upload staging pool budget";
         return report;
     }
@@ -1439,9 +1534,25 @@ arp::core::UniquePtr<rhi::GpuDevice> createVulkanRhiDevice(const VulkanRhiDevice
         return nullptr;
     }
     auto deviceDesc = desc;
+    if (deviceDesc.uploadStagingBudget) {
+        deviceDesc.uploadStagingPageSizeBytes = deviceDesc.uploadStagingBudget->pageSizeBytes;
+        deviceDesc.uploadStagingMaxPageCount = deviceDesc.uploadStagingBudget->maxPageCount;
+    }
     deviceDesc.pushConstantLoweringPlan = rhi::semantics::buildPushConstantLoweringPlan(
         rhi::Backend::Vulkan, desc.capabilityContract);
     return arp::core::makeUnique<VulkanRhiDevice>(std::move(deviceDesc));
+}
+
+core::UniquePtr<VulkanRhiRetainedCommand> prepareVulkanRhiRetainedCommand(rhi::GpuDevice& device,
+    core::UniquePtr<rhi::common::CommandRetentionStorage> storage,
+    core::pmr::String& diagnostic)
+{
+    auto* native = dynamic_cast<VulkanRhiDevice*>(&device);
+    if (!native) {
+        diagnostic = "RHI-VULKAN-RETENTION-DEVICE-REQUIRED";
+        return {};
+    }
+    return native->prepareRetainedCommand(std::move(storage), diagnostic);
 }
 
 VulkanRhiNativeResourceStats inspectVulkanRhiNativeResourceStats(const rhi::GpuDevice& device)

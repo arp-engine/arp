@@ -1,14 +1,13 @@
 #include "rhi/backends/null/null_backend.h"
 #include "tests/fixtures/capability_override_device.h"
-#include "tests/fixtures/terrain_vegetation_gpu_upload.h"
 #include "tests/fixtures/terrain_vegetation_delayed_queue.h"
+#include "tests/fixtures/terrain_vegetation_gpu_upload.h"
 
 #include <cstdio>
 
 namespace {
 using namespace arp;
 using Upload = renderer::TerrainVegetationGpuUpload;
-
 
 void admissionContracts(rhi::GpuDevice& device)
 {

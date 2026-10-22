@@ -22,7 +22,9 @@
 #include "rhi/backends/webgpu/webgpu_bindless_root_cold_admission.h"
 #include "rhi/backends/webgpu/webgpu_device.h"
 #include "rhi/backends/webgpu/webgpu_native_buffer_map_receipt.h"
+#include "rhi/backends/webgpu/webgpu_native_command_preparation.h"
 #include "rhi/frontend/bindless_compute_binding.h"
+#include "rhi/frontend/bindless_root_execution.h"
 #include "rhi/frontend/command_encoder_base.h"
 #include "rhi/gpu_bindless.h"
 #include "rhi/gpu_extensions.h"
@@ -55,9 +57,18 @@ void assertOriginalRootPushUploadFailsClosed()
     budget.pushUpload = {1u, true, 2u, 448u, 512u, 2u, 1u};
     Admission::Requirements requirements;
     const auto* id = Admission::deriveRequirements({}, {}, {}, budget, requirements);
-    assert(id && std::string_view(id) == "RHI-WEBGPU-ROOT-PUSH-UPLOAD-RUNTIME");
+    // The original readback binding is authenticated before native-runtime
+    // admission. An empty binding must not bypass that earlier gate.
+    assert(id && std::string_view(id) == "RHI-ORIGINAL-BUFFER-READBACK-BINDING-OWNER");
     assert(
         !requirements.originalCommands && !requirements.encoders && !requirements.commandBuffers);
+#if !defined(ARP_RHI_WEBGPU_NATIVE_PAYLOADS_HAS_NATIVE)
+    arp::rhi::OriginalBindlessRootExecutionBudget execution;
+    execution.command.program.pushUpload = budget.pushUpload;
+    id = arp::rhi_webgpu::WebGpuNativeCommandPreparation::preflightBindlessRootPushUpload(
+        {}, execution);
+    assert(id && std::string_view(id) == "RHI-WEBGPU-ROOT-PUSH-UPLOAD-RUNTIME");
+#endif
 }
 
 void assertNativeMapReceiptFailsClosed()
@@ -505,7 +516,6 @@ void assertWebGpuCommandsUsePrivateNativePayloads()
     // The only optional payload branches are debug markers. Executable RHI
     // commands must use the fail-closed `if (!nativePayload_)` gate.
     assert(optionalPayloadBranchCount == 3u);
-    assert(deviceSource.find("webGpuNativePayloadFor(commandBuffer)") == std::pmr::string::npos);
     assert(commandSource.find("#include <webgpu/webgpu.h>") == std::pmr::string::npos);
     assert(commandSource.find("WGPUCommandEncoder") == std::pmr::string::npos);
 
@@ -552,8 +562,22 @@ void assertWebGpuCommandsUsePrivateNativePayloads()
     const auto queueEnd = deviceSource.find("class WebGpuTextureReadbackExtensionImpl", queueClass);
     const auto queueSource = deviceSource.substr(queueClass, queueEnd - queueClass);
     assert(queueSource.find("nativePayload->submit") == std::pmr::string::npos);
-    assert(queueSource.find("acceptRecordedCommandOwnership") == std::pmr::string::npos);
-    assert(queueSource.find("markWebGpuRhiCommandBufferSubmitted") == std::pmr::string::npos);
+    // Only the separately opted-in PrototypeCommandBatch may submit native
+    // payloads. The ordinary queue tail must still fail without mutating
+    // recorded ownership or marking a command as submitted.
+    const auto prototypeAdmission = queueSource.find("prototype->prototypeBatchPrepared()");
+    const auto prototypeSubmit = queueSource.find("prototype->submitPrototypeBatch(");
+    const auto ordinaryAdmission = queueSource.find("if (signalFence)", prototypeSubmit);
+    assert(prototypeAdmission != std::pmr::string::npos);
+    assert(prototypeSubmit > prototypeAdmission && prototypeSubmit < ordinaryAdmission);
+    assert(ordinaryAdmission != std::pmr::string::npos);
+    const auto ordinaryQueue = queueSource.substr(ordinaryAdmission);
+    assert(ordinaryQueue.find("webGpuGenericCompletionResourceGraphDiagnostic")
+        != std::pmr::string::npos);
+    assert(ordinaryQueue.find("webGpuNativePayloadFor(commandBuffer)") == std::pmr::string::npos);
+    assert(ordinaryQueue.find("submitPrototypeBatch") == std::pmr::string::npos);
+    assert(ordinaryQueue.find("acceptRecordedCommandOwnership") == std::pmr::string::npos);
+    assert(ordinaryQueue.find("markWebGpuRhiCommandBufferSubmitted") == std::pmr::string::npos);
     const auto nativeSubmitBegin =
         nativeCommandSource.find("bool WebGpuNativeCommandPayload::submit(");
     const auto nativeSubmitEnd =
@@ -994,6 +1018,8 @@ arp::rhi::WebGpuRuntimeProfile makeValidatedWebGpuProfile()
     probe.storageBufferOffsetAlignment = 256;
     probe.maxUniformBufferBindingSize = 65536;
     probe.maxStorageBufferBindingSize = 134217728;
+    probe.maxComputeWorkgroupSizeZ = 64;
+    probe.maxComputeWorkgroupsPerDimension = 65535;
     return arp::rhi::buildWebGpuRuntimeProfile(probe);
 }
 
@@ -1159,6 +1185,15 @@ int main(int argc, char** argv)
 
     const auto profile = makeValidatedWebGpuProfile();
     assert(profile.status == WebGpuRuntimeProfileStatus::PlatformValidated);
+    assert(profile.limits.maxComputeWorkgroupSizeZ == 64);
+    assert(profile.limits.maxComputeWorkgroupsPerDimension == 65535);
+    // Missing numeric facts stay zero, even for a native-device fixture.
+    // This checks propagation only; it does not prove browser execution.
+    WebGpuRuntimeProbe unqueriedNumericProbe;
+    unqueriedNumericProbe.nativeDevice = true;
+    const auto unqueriedNumeric = buildWebGpuRuntimeProfile(unqueriedNumericProbe);
+    assert(!unqueriedNumeric.limits.maxComputeWorkgroupSizeZ
+        && !unqueriedNumeric.limits.maxComputeWorkgroupsPerDimension);
     assert(profile.optionalFeatures.computeDispatch);
     assert(profile.optionalFeatures.storageTextureBinding);
     assert(profile.optionalFeatures.timestampQuery);

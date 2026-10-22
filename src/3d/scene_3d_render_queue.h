@@ -1,5 +1,6 @@
 #pragma once
 
+#include "3d/cloud_component.h"
 #include "3d/components.h"
 #include "3d/fog_components.h"
 #include "core/memory/cpu_allocator.h"
@@ -27,6 +28,8 @@ enum class Scene3DDiagnosticCode {
     MissingCameraMetadata,
     InvalidFog,
     DuplicateGlobalFog,
+    InvalidCloud,
+    DuplicateGlobalCloud,
 };
 
 ASTRUCT(Construct = Default)
@@ -118,6 +121,16 @@ struct Scene3DFogVolumeBinding {
 
 class Scene3DRenderQueue {
 public:
+    void setCloud(const CloudDesc& cloud)
+    {
+        cloud_ = cloud;
+        hasCloud_ = true;
+    }
+
+    bool hasCloud() const noexcept { return hasCloud_; }
+
+    const CloudDesc& cloud() const noexcept { return cloud_; }
+
     void setFog(VolumetricFogDesc fog)
     {
         fog_ = fog;
@@ -187,6 +200,8 @@ public:
     size_t nativeBackendHandleCount() const { return 0; }
 
 private:
+    CloudDesc cloud_;
+    bool hasCloud_ = false;
     VolumetricFogDesc fog_;
     bool hasFog_ = false;
     arp::core::pmr::Vector<Scene3DFogVolumeBinding> fogVolumes_;

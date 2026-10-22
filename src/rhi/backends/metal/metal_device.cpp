@@ -1044,6 +1044,15 @@ public:
         compute.maxComputeWorkgroupInvocations = nativeFeatures.maxComputeWorkgroupInvocations;
         compute.maxComputeWorkgroupSizeX = nativeFeatures.maxComputeWorkgroupSizeX;
         compute.maxComputeWorkgroupSizeY = nativeFeatures.maxComputeWorkgroupSizeY;
+        compute.maxComputeWorkgroupSizeZ = nativeFeatures.maxComputeWorkgroupSizeZ;
+        // ComputeResourceLimits/2: no established Metal dispatch-count fact.
+        // Keep X/Y/Z counts zero; consumers must reject instead of borrowing
+        // a limit from Vulkan/WebGPU or inferring one from MTLSize's type.
+        compute.maxUniformBufferBindingsPerStage = nativeFeatures.maxUniformBufferBindingsPerStage;
+        compute.maxUniformBufferBindingSizeBytes = nativeFeatures.maxUniformBufferBindingSizeBytes;
+        compute.maxSampledTextureBindingsPerStage =
+            nativeFeatures.maxSampledTextureBindingsPerStage;
+        compute.maxTexture2DDimension = nativeFeatures.maxTexture2DDimension;
         compute.maxComputeWorkgroupMemoryBytes = nativeFeatures.maxComputeWorkgroupMemoryBytes;
         compute.maxStorageBufferBindingsPerStage = nativeFeatures.maxStorageBufferBindingsPerStage;
         compute.maxStorageBufferBindingSizeBytes = nativeFeatures.maxStorageBufferBindingSizeBytes;

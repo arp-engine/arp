@@ -18,6 +18,8 @@ struct VulkanRhiStagingUploadPoolDesc {
     std::uint64_t pageSizeBytes = 1024u * 1024u;
     std::uint32_t maxPageCount = 4;
     std::uint64_t alignmentBytes = 256;
+    // Zero uses the explicit page-size bound for legacy backend callers.
+    std::uint64_t maxRequestBytes = 0;
 };
 
 struct VulkanRhiStagingUploadRequest {
@@ -89,6 +91,7 @@ private:
     std::pmr::memory_resource* memoryResource_;
     std::shared_ptr<Ledger> ledger_;
     core::pmr::Vector<Page> pages_;
+    std::uint32_t policyRejections_ = 0;
 };
 
 } // namespace arp::rhi_vulkan

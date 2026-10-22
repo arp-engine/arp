@@ -1,6 +1,7 @@
 #pragma once
 
 #include "3d/scene_3d_render_queue.h"
+#include "renderer/volume/medium_integration.h"
 #include "rhi/gpu_capabilities.h"
 
 #include <array>
@@ -10,6 +11,8 @@
 namespace arp::renderer::fog {
 
 inline constexpr std::uint32_t kFogContractVersion = 1u;
+inline constexpr std::uint32_t kFogScatteringStride = 32u;
+inline constexpr std::uint32_t kFogHistoryStride = 48u;
 enum class FogQuality { Low, Medium, High };
 
 struct FogConfig {
@@ -24,6 +27,7 @@ struct FogConfig {
     float mediumRejection = 0.15f;
     float depthRejection = 0.02f;
     bool temporal = true;
+    bool stratifiedShadows = true;
 };
 
 struct FogGrid {
@@ -81,16 +85,8 @@ static_assert(offsetof(FogConstants, counts) == 736u);
 static_assert(offsetof(FogConstants, shadowSelection) == 752u);
 static_assert(offsetof(FogConstants, ambientRadiance) == 768u);
 
-inline float integratedLength(float extinction, float distance) noexcept
-{
-    return extinction == 0.0f ? distance : -std::expm1(-extinction * distance) / extinction;
-}
-
-inline float henyeyGreenstein(float cosine, float g) noexcept
-{
-    const float d = 1.0f + g * g - 2.0f * g * cosine;
-    return (1.0f - g * g) / (4.0f * 3.14159265358979323846f * d * std::sqrt(d));
-}
+using volume::henyeyGreenstein;
+using volume::integratedLength;
 
 FogResult planFog(const FogConfig& config,
     rhi::Extent2D extent,

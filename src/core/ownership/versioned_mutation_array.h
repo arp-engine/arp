@@ -20,7 +20,10 @@ public:
         std::uint64_t firstRevision = 1u,
         std::uint64_t firstEnlistmentEpoch = 1u)
         : values_(size, initial, &defaultCpuMemoryResource()),
-          stamp_(false, firstRevision, firstEnlistmentEpoch), snapshot_(values_)
+          stamp_(false, firstRevision, firstEnlistmentEpoch),
+          snapshot_(values_, this, nullptr, [](void* context) noexcept {
+              static_cast<VersionedMutationArray*>(context)->invalidate();
+          })
     {}
 
     VersionedMutationArray(const VersionedMutationArray&) = delete;

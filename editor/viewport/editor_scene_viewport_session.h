@@ -65,6 +65,8 @@ public:
 
     bool valid() const noexcept;
 
+    std::size_t lastSceneDrawCount() const noexcept { return lastSceneDrawCount_; }
+
     rhi::Extent2D extent() const noexcept { return composite_.extent(); }
 
     renderer::GuiExternalTextureSetBinding guiBinding() noexcept { return composite_.guiBinding(); }
@@ -98,6 +100,7 @@ private:
         &core::defaultCpuMemoryResource()};
     std::uint64_t renderedStateVersion_ = 0u;
     bool hasRendered_ = false;
+    std::size_t lastSceneDrawCount_ = 0;
     const resource::ResourceManager* renderedResourceOwner_ = nullptr;
 };
 

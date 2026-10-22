@@ -248,7 +248,8 @@ public:
         const core::LifetimeEpoch& arenaGeneration,
         std::shared_ptr<VulkanRhiNativeResourcePayload> nativePayload,
         VulkanRhiNativeResourceAllocator nativeResources,
-        std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry)
+        std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry,
+        std::shared_ptr<rhi::semantics::DirectObjectBudgetLease> generationBudget)
         : allocation_(std::move(allocation)), layout_(std::move(layout)),
           arenaGeneration_(arenaGeneration.ticket()),
           nativePayload_(core::makeShared<VulkanDescriptorStorage>(
@@ -257,7 +258,9 @@ public:
           resourceRegistry_(std::move(resourceRegistry)),
           written_(allocation_.descriptorCapacity, false, &core::defaultCpuMemoryResource()),
           lastWrites_(allocation_.descriptorCapacity, &core::defaultCpuMemoryResource())
-    {}
+    {
+        nativePayload_->directObjectBudgetReleaseToken = std::move(generationBudget);
+    }
 
     const rhi::DescriptorSetAllocation& allocation() const override { return allocation_; }
 
@@ -321,18 +324,23 @@ public:
         return storage ? nativePayload_ : nullptr;
     }
 
-    const char* validateOriginalLossSource(const std::shared_ptr<VulkanRhiRuntime>& runtime,
+    bool contextMatches(const std::shared_ptr<VulkanRhiRuntime>& runtime,
         const std::shared_ptr<VulkanRhiResourceRegistry>& registry) const noexcept
     {
         return runtime && runtime->valid() && !runtime->syntheticRuntime()
-                && core::SharedOwnerProjection::sameOwner(runtime, nativeResources_.runtime())
-                && core::SharedOwnerProjection::sameOwner(registry, resourceRegistry_)
-                && isCurrentAllocation()
-                && nativePayload_->backendVulkanDeviceHandle() == runtime->logicalDevice()
-                && nativePayload_->backendVulkanDescriptorSetHandle()
-                && nativePayload_->backendVulkanDescriptorSetLayoutHandle()
-            ? nullptr
-            : "RHI-VULKAN-DESCRIPTOR-LOSS-SET-SOURCE";
+            && core::SharedOwnerProjection::sameOwner(runtime, nativeResources_.runtime())
+            && core::SharedOwnerProjection::sameOwner(registry, resourceRegistry_)
+            && isCurrentAllocation()
+            && nativePayload_->backendVulkanDeviceHandle() == runtime->logicalDevice()
+            && nativePayload_->backendVulkanDescriptorSetHandle()
+            && nativePayload_->backendVulkanDescriptorSetLayoutHandle();
+    }
+
+    const char* validateOriginalLossSource(const std::shared_ptr<VulkanRhiRuntime>& runtime,
+        const std::shared_ptr<VulkanRhiResourceRegistry>& registry) const noexcept
+    {
+        return contextMatches(runtime, registry) ? nullptr
+                                                 : "RHI-VULKAN-DESCRIPTOR-LOSS-SET-SOURCE";
     }
 
     rhi::ValidationResult writeImpl(const rhi::DescriptorBindingWrite& write) override
@@ -889,12 +897,14 @@ public:
     VulkanRhiDescriptorTable(rhi::DescriptorTableAllocation allocation,
         rhi::DescriptorTableDesc desc,
         const core::LifetimeEpoch& arenaGeneration,
-        std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry)
+        std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry,
+        std::shared_ptr<rhi::semantics::DirectObjectBudgetLease> generationBudget)
         : allocation_(std::move(allocation)), desc_(std::move(desc)),
           arenaGeneration_(arenaGeneration.ticket()),
           written_(desc_.capacity, false, &core::defaultCpuMemoryResource()),
           resourceRegistry_(std::move(resourceRegistry)),
-          writes_(desc_.capacity, &core::defaultCpuMemoryResource())
+          writes_(desc_.capacity, &core::defaultCpuMemoryResource()),
+          generationBudget_(std::move(generationBudget))
     {}
 
     const rhi::DescriptorTableAllocation& allocation() const override { return allocation_; }
@@ -997,6 +1007,7 @@ private:
     core::pmr::Vector<bool> written_;
     std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry_;
     core::pmr::Vector<rhi::DescriptorTableWrite> writes_;
+    std::shared_ptr<rhi::semantics::DirectObjectBudgetLease> generationBudget_;
 };
 
 class VulkanRhiDescriptorArena final : public rhi::DescriptorArena {
@@ -1015,10 +1026,14 @@ public:
     VulkanRhiDescriptorArena(const rhi::DescriptorArenaDesc& desc,
         VulkanRhiNativeResourceAllocator nativeResources,
         std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry,
-        bool requireNativeDescriptorAllocation)
+        bool requireNativeDescriptorAllocation,
+        std::shared_ptr<rhi::semantics::DirectObjectBudgetTracker> directObjectBudget,
+        std::shared_ptr<rhi::semantics::DirectObjectBudgetLease> generationBudget)
         : nativeResources_(std::move(nativeResources)),
           resourceRegistry_(std::move(resourceRegistry)),
-          requireNativeDescriptorAllocation_(requireNativeDescriptorAllocation)
+          requireNativeDescriptorAllocation_(requireNativeDescriptorAllocation),
+          directObjectBudget_(std::move(directObjectBudget)),
+          generationBudget_(std::move(generationBudget))
     {
         stats_.maxSets = desc.maxSets;
         stats_.maxDescriptors = desc.maxDescriptors;
@@ -1026,6 +1041,8 @@ public:
 
     rhi::DescriptorSetAllocation allocateSet(const rhi::DescriptorLayoutDesc& layout) override
     {
+        if (directObjectBudget_ && !generationBudget_)
+            return {false, "RHI-DIRECT-DESCRIPTOR-GENERATION-BUDGET", 0u, 0u};
         if (!generation_.isActive()) {
             return {false, "RHI-DESCRIPTOR-GENERATION-EXHAUSTED", 0u, 0u};
         }
@@ -1065,7 +1082,8 @@ public:
                     return nullptr;
                 }
                 auto nativeDescriptor = nativeResources_.createDescriptorSet(copied.layout);
-                if (requireNativeDescriptorAllocation_ && !nativeDescriptor.success) {
+                if (requireNativeDescriptorAllocation_
+                    && (!nativeDescriptor.success || !nativeDescriptor.payload)) {
                     std::cerr << "[wocc] native createDescriptorSet FAIL: "
                               << nativeDescriptor.diagnostics.c_str() << "\n";
                     return nullptr;
@@ -1075,13 +1093,16 @@ public:
                     generation_,
                     nativeDescriptor.payload,
                     nativeResources_,
-                    resourceRegistry_);
+                    resourceRegistry_,
+                    generationBudget_);
             },
             stats_);
     }
 
     rhi::DescriptorTableAllocation allocateTable(const rhi::DescriptorTableDesc& desc) override
     {
+        if (directObjectBudget_ && !generationBudget_)
+            return {false, "RHI-DIRECT-DESCRIPTOR-GENERATION-BUDGET", 0u, 0u};
         if (!generation_.isActive()) {
             return {false, "RHI-DESCRIPTOR-GENERATION-EXHAUSTED", 0u, 0u};
         }
@@ -1117,8 +1138,11 @@ public:
                 if (!allocation.success) {
                     return nullptr;
                 }
-                return arp::core::makeUnique<VulkanRhiDescriptorTable>(
-                    std::move(allocation), std::move(copied), generation_, resourceRegistry_);
+                return arp::core::makeUnique<VulkanRhiDescriptorTable>(std::move(allocation),
+                    std::move(copied),
+                    generation_,
+                    resourceRegistry_,
+                    generationBudget_);
             },
             stats_);
     }
@@ -1131,6 +1155,17 @@ public:
         stats_.allocatedSets = 0;
         stats_.allocatedTables = 0;
         stats_.allocatedDescriptors = 0;
+        generationBudget_.reset();
+        if (directObjectBudget_ && generation_.isActive()) {
+            auto reservation = directObjectBudget_->reserve(
+                rhi::semantics::DirectObjectBudgetKind::DescriptorArena, stats_.maxDescriptors);
+            if (reservation.success)
+                generationBudget_ = core::makeShared<rhi::semantics::DirectObjectBudgetLease>(
+                    std::move(reservation.lease));
+            else
+                rhi::RhiErrorHandler::get().report(
+                    rhi::RhiSeverity::Error, "RHI-DIRECT-DESCRIPTOR-GENERATION-BUDGET");
+        }
     }
 
     core::LifetimeEpoch::Ticket allocationEpochTicket() const noexcept override
@@ -1144,6 +1179,8 @@ private:
     VulkanRhiNativeResourceAllocator nativeResources_;
     std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry_;
     bool requireNativeDescriptorAllocation_ = false;
+    std::shared_ptr<rhi::semantics::DirectObjectBudgetTracker> directObjectBudget_;
+    std::shared_ptr<rhi::semantics::DirectObjectBudgetLease> generationBudget_;
 };
 
 } // namespace
@@ -1152,16 +1189,31 @@ arp::core::UniquePtr<rhi::DescriptorArena> createVulkanRhiDescriptorArena(
     const rhi::DescriptorArenaDesc& desc,
     VulkanRhiNativeResourceAllocator nativeResources,
     std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry,
-    bool requireNativeDescriptorAllocation)
+    bool requireNativeDescriptorAllocation,
+    std::shared_ptr<rhi::semantics::DirectObjectBudgetTracker> directObjectBudget)
 {
     if (desc.maxSets == 0 || desc.maxDescriptors == 0) {
         return nullptr;
+    }
+    std::shared_ptr<rhi::semantics::DirectObjectBudgetLease> generationBudget;
+    if (directObjectBudget) {
+        auto reservation = directObjectBudget->reserve(
+            rhi::semantics::DirectObjectBudgetKind::DescriptorArena, desc.maxDescriptors);
+        if (!reservation.success) {
+            rhi::RhiErrorHandler::get().report(
+                rhi::RhiSeverity::Error, "RHI-DIRECT-DESCRIPTOR-BUDGET");
+            return nullptr;
+        }
+        generationBudget =
+            core::makeShared<rhi::semantics::DirectObjectBudgetLease>(std::move(reservation.lease));
     }
     return arp::core::makeUnique<VulkanRhiDescriptorArena>(
         arp::rhi::DescriptorStateCopy::copy(desc),
         std::move(nativeResources),
         std::move(resourceRegistry),
-        requireNativeDescriptorAllocation);
+        requireNativeDescriptorAllocation,
+        std::move(directObjectBudget),
+        std::move(generationBudget));
 }
 
 std::shared_ptr<VulkanRhiNativeResourcePayload> prepareVulkanOriginalImageCellDescriptors(
@@ -1185,6 +1237,14 @@ const char* validateVulkanOriginalDescriptorLossSource(const rhi::DescriptorAren
     const auto* original = dynamic_cast<const VulkanRhiDescriptorArena*>(&arena);
     return original ? original->validateOriginalLossSource(runtime, registry)
                     : "RHI-VULKAN-DESCRIPTOR-LOSS-ARENA-SOURCE";
+}
+
+bool vulkanRhiDescriptorSetContextMatches(const rhi::DescriptorSet& set,
+    const std::shared_ptr<VulkanRhiRuntime>& runtime,
+    const std::shared_ptr<VulkanRhiResourceRegistry>& registry) noexcept
+{
+    const auto* original = dynamic_cast<const VulkanRhiDescriptorSet*>(&set);
+    return original && original->contextMatches(runtime, registry);
 }
 
 const char* validateVulkanOriginalDescriptorLossSource(const rhi::DescriptorSet& set,

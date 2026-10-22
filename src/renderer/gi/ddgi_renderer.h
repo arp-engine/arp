@@ -1130,14 +1130,14 @@ public:
         // so all probes start grid-aligned (offset=0, status=None).
         const std::uint32_t probeStateCount = probeCountX * probeCountY * probeCountZ;
         for (int stateIndex = 0; stateIndex < 2; ++stateIndex) {
-            probeStateBuffer_[stateIndex] = device_.createBuffer({
+            probeStateBuffer_[stateIndex] = arp::core::shareUnique(device_.createBuffer({
                 stateIndex == 0 ? "DdgiProbeState0" : "DdgiProbeState1",
                 probeStateCount * sizeof(ProbeState),
                 rhi::ResourceUsage::StorageBuffer | rhi::ResourceUsage::CopySrc
                     | rhi::ResourceUsage::CopyDst,
                 rhi::MemoryUsage::CpuToGpu,
-                rhi::ResourceState::Undefined,
-            });
+                rhi::ResourceState::ShaderRead,
+            }));
             if (!probeStateBuffer_[stateIndex]) {
                 return {false, "DDGI probe-state SSBO creation failed"};
             }
@@ -1463,13 +1463,13 @@ public:
         probeScheduler_ = arp::core::makeUnique<DdgiProbeScheduler>(
             std::array<std::uint32_t, 3>{probeCountX, probeCountY, probeCountZ}, probeStateCount);
         for (std::uint32_t slot = 0u; slot < kDdgiDescriptorSetSlots; ++slot) {
-            samplingConstantsBuffer_[slot] = device_.createBuffer({
+            samplingConstantsBuffer_[slot] = arp::core::shareUnique(device_.createBuffer({
                 slot == 0u ? "DdgiSamplingConstants0" : "DdgiSamplingConstants1",
                 sizeof(DdgiSamplingConstantsGpu),
                 rhi::ResourceUsage::UniformBuffer | rhi::ResourceUsage::CopyDst,
                 rhi::MemoryUsage::CpuToGpu,
-                rhi::ResourceState::Undefined,
-            });
+                rhi::ResourceState::ShaderRead,
+            }));
             if (!samplingConstantsBuffer_[slot]) {
                 return {false, "DDGI sampling constants UBO creation failed"};
             }
@@ -1572,6 +1572,16 @@ public:
     rhi::GpuResourceId probeStateBufferId(int index) const
     {
         return probeStateBuffer_[index]->id();
+    }
+
+    std::shared_ptr<rhi::GpuBuffer> probeStateBuffer(int index) const
+    {
+        return probeStateBuffer_[index];
+    }
+
+    std::shared_ptr<rhi::GpuBuffer> samplingConstantsBuffer(std::uint32_t frameIndex) const
+    {
+        return samplingConstantsBuffer_[frameIndex % kDdgiDescriptorSetSlots];
     }
 
     rhi::GpuResourceId samplingConstantsBufferId(std::uint32_t frameIndex) const
@@ -4434,11 +4444,10 @@ private:
     arp::core::UniquePtr<rhi::GpuBuffer> probeTraceBuffer_;
     // Phase 3: persistent probe-state SSBO (binding 9). Written by the
     // ProbeRelocate pass, read by probe-update + resolve via probeWorldPos.
-    std::array<arp::core::UniquePtr<rhi::GpuBuffer>, 2> probeStateBuffer_;
+    std::array<std::shared_ptr<rhi::GpuBuffer>, 2> probeStateBuffer_;
     std::array<arp::core::UniquePtr<rhi::GpuBuffer>, kDdgiDescriptorSetSlots>
         probeUpdateListBuffer_;
-    std::array<arp::core::UniquePtr<rhi::GpuBuffer>, kDdgiDescriptorSetSlots>
-        samplingConstantsBuffer_;
+    std::array<std::shared_ptr<rhi::GpuBuffer>, kDdgiDescriptorSetSlots> samplingConstantsBuffer_;
     arp::core::UniquePtr<DdgiProbeScheduler> probeScheduler_;
     std::array<std::uint32_t, kDdgiDescriptorSetSlots> scheduledProbeCount_{};
     std::uint32_t lastScheduledProbeBudget_ = 0u;

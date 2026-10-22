@@ -4,6 +4,7 @@
 #include "2d/sprite_animation_component.h"
 #include "2d/sprite_draw_plan.h"
 #include "2d/tile_map_resource_component.h"
+#include "core/text/number_format.h"
 #include "editor/viewport/editor_scene_viewport_frame_builder.h"
 #include "editor/viewport/editor_scene_viewport_material_payload.h"
 #include "editor/viewport/editor_scene_viewport_resource_resolver.h"
@@ -90,6 +91,7 @@ bool EditorSceneViewportSession::renderIfDirty(
 bool EditorSceneViewportSession::render(
     EditorShell& shell, rhi::Extent2D extent, core::pmr::String& diagnostics)
 {
+    lastSceneDrawCount_ = 0;
     if (hasRendered_)
         device_->waitIdle();
     if (!composite_.valid() || composite_.extent().width != extent.width
@@ -261,6 +263,11 @@ bool EditorSceneViewportSession::render(
     const auto totalDrawItems = resolved.items.size() + spritePlan.instances().size();
     if (!resolved.valid()) {
         diagnostics = editorSceneViewportDiagnosticCode(resolved.frameDiagnostic);
+        for (const auto& item : resolved.items)
+            if (item.diagnostic != EditorSceneViewportDiagnostic::None) {
+                diagnostics = editorSceneViewportDiagnosticCode(item.diagnostic);
+                break;
+            }
         return finishEnvironment(shell, frame.frame.sky, diagnostics);
     }
     if (totalDrawItems > config_.maxDrawCalls) {
@@ -286,6 +293,8 @@ bool EditorSceneViewportSession::render(
             item, shaderReflection_, *device_, shell.projectResources(), textureCache_);
         if (!material.valid()) {
             diagnostics = editorSceneViewportMaterialPayloadDiagnosticCode(material.diagnostic);
+            diagnostics += ": ";
+            diagnostics += material.detail;
             return false;
         }
         const auto writes = buildEditorSceneViewportDescriptorWrites(material.payload);
@@ -384,6 +393,7 @@ bool EditorSceneViewportSession::render(
             return false;
         }
         device_->waitIdle();
+        lastSceneDrawCount_ = drawItems.size();
     }
     if (!spritePlan.instances().empty()) {
         auto recorded = spriteRenderer_->record(*composite_.colorTarget(),
@@ -401,6 +411,10 @@ bool EditorSceneViewportSession::render(
             return false;
         }
         device_->waitIdle();
+    }
+    if (frame.frame.bakedTerrainPreview) {
+        diagnostics = "EDITOR-TERRAIN-BAKED-PBR-PREVIEW (Prototype); vegetation draws omitted: ";
+        core::appendUnsigned(diagnostics, frame.frame.omittedVegetationInstances);
     }
     return finishEnvironment(shell, frame.frame.sky, diagnostics);
 }

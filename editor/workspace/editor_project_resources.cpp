@@ -2,6 +2,7 @@
 
 #include "2d/sprite_resources.h"
 #include "core/io/filesystem_path.h"
+#include "editor/workspace/editor_terrain_preview.h"
 #include "resource/internal_asset_package.h"
 #include "resource/prefab_asset_resources.h"
 
@@ -156,6 +157,7 @@ bool parsePhysicsWorldConfig(const YamlNode* node,
 
 bool parsePackagePaths(std::string_view yaml,
     core::pmr::Vector<core::pmr::String>& paths,
+    core::pmr::Vector<core::pmr::String>& terrainPreviews,
     std::optional<physics2d::WorldConfig>& physicsConfig,
     core::pmr::String& diagnostics)
 {
@@ -170,8 +172,8 @@ bool parsePackagePaths(std::string_view yaml,
         diagnostics = "EDITOR-PROJECT-MANIFEST-SCHEMA: root must be a mapping";
         return false;
     }
-    constexpr std::array<std::string_view, 4> allowed{
-        "format", "version", "assetPackages", "physics2d"};
+    constexpr std::array<std::string_view, 5> allowed{
+        "format", "version", "assetPackages", "physics2d", "terrainPreviews"};
     if (!containsOnlyFields(root, allowed)) {
         diagnostics = "EDITOR-PROJECT-MANIFEST-SCHEMA: keys must be known strings";
         return false;
@@ -194,6 +196,24 @@ bool parsePackagePaths(std::string_view yaml,
     }
     if (!parsePhysicsWorldConfig(findValue(root, "physics2d"), physicsConfig, diagnostics))
         return false;
+    if (const auto* previews = findValue(root, "terrainPreviews")) {
+        if (!previews->is_sequence() || previews->size() > kMaxAssetPackages) {
+            diagnostics = "EDITOR-PROJECT-TERRAIN-PREVIEW-SCHEMA";
+            return false;
+        }
+        for (const auto& entry : previews->get_value_ref<const YamlNode::sequence_type&>()) {
+            if (!entry.is_string()) {
+                diagnostics = "EDITOR-PROJECT-TERRAIN-PREVIEW-SCHEMA";
+                return false;
+            }
+            const auto& path = entry.get_value_ref<const YamlNode::string_type&>();
+            if (!core::FilePath::isSafeRelativePath(path)) {
+                diagnostics = "EDITOR-PROJECT-TERRAIN-PREVIEW-PATH";
+                return false;
+            }
+            terrainPreviews.emplace_back(path.data(), path.size());
+        }
+    }
     core::pmr::UnorderedSet<core::pmr::String> unique{&core::defaultCpuMemoryResource()};
     for (const auto& entry : sequence) {
         if (!entry.is_string()) {
@@ -290,9 +310,11 @@ EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
         return result;
     }
     core::pmr::Vector<core::pmr::String> packagePaths{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<core::pmr::String> terrainPreviews{&core::defaultCpuMemoryResource()};
     std::optional<physics2d::WorldConfig> physicsConfig;
     if (!parsePackagePaths(std::string_view(yaml.data(), yaml.size()),
             packagePaths,
+            terrainPreviews,
             physicsConfig,
             result.diagnostics)) {
         lastLoad_ = result;
@@ -347,6 +369,12 @@ EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
         ++result.packageCount;
     }
 
+    for (const auto& preview : terrainPreviews) {
+        if (!loadEditorTerrainPreview(root, preview, *candidate, result.diagnostics)) {
+            lastLoad_ = result;
+            return result;
+        }
+    }
     result.success = true;
     result.physicsWorld2DReady = bool(candidatePhysicsWorld);
     result.diagnostics.clear();

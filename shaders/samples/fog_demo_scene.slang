@@ -5,7 +5,7 @@ struct VertexOutput {float4 position:SV_Position;float3 normal:NORMAL;float3 col
 [shader("vertex")]
 VertexOutput vertexMain(uint id:SV_VertexID)
 {
-    float3 world,normal,color;fogDemoVertex(id,world,normal,color);
+    float3 world,normal,color;fogDemoVertex(id,world,normal,color,DemoParams.lightDirection.w>0.5);
     VertexOutput o;o.position=mul(DemoParams.viewProjection,float4(world,1));o.normal=normal;o.color=color;return o;
 }
 [shader("fragment")]

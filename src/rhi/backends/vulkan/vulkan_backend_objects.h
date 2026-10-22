@@ -64,6 +64,23 @@ rhi::ResourceBarrierResult transitionVulkanRhiTexture(rhi::GpuTexture& texture,
 std::shared_ptr<VulkanRhiNativeResourcePayload> vulkanRhiNativePayload(
     const rhi::GpuBuffer& buffer);
 
+bool vulkanRhiBufferRegistryMatches(
+    const rhi::GpuBuffer&, const std::shared_ptr<VulkanRhiResourceRegistry>&) noexcept;
+
+bool vulkanRhiTextureRegistryMatches(
+    const rhi::GpuTexture&, const std::shared_ptr<VulkanRhiResourceRegistry>&) noexcept;
+bool vulkanRhiTextureViewRegistryMatches(
+    const rhi::GpuTextureView&, const std::shared_ptr<VulkanRhiResourceRegistry>&) noexcept;
+
+bool vulkanRhiBufferStateCommitted(const rhi::GpuBuffer&) noexcept;
+bool vulkanRhiBufferStateAvailable(const rhi::GpuBuffer&, const core::MutationJournal*) noexcept;
+bool vulkanRhiBufferCanTransition(const rhi::GpuBuffer&, const core::MutationJournal&) noexcept;
+bool vulkanRhiTextureStateCommitted(const rhi::GpuTexture&) noexcept;
+bool vulkanRhiTextureStateAvailable(const rhi::GpuTexture&,
+    const rhi::TextureSubresourceRange&,
+    const core::MutationJournal*) noexcept;
+bool vulkanRhiTextureCanTransition(const rhi::GpuTexture&, const core::MutationJournal&) noexcept;
+
 std::shared_ptr<VulkanRhiNativeResourcePayload> vulkanRhiNativePayload(
     const rhi::GpuTexture& texture);
 
@@ -74,7 +91,7 @@ std::shared_ptr<VulkanRhiNativeResourcePayload> vulkanRhiNativePayload(
     const rhi::GpuSampler& sampler);
 
 arp::core::UniquePtr<rhi::PipelineLayout> createVulkanRhiPipelineLayout(
-    const rhi::PipelineLayoutDesc& desc);
+    const rhi::PipelineLayoutDesc& desc, rhi::semantics::DirectObjectBudgetLease budgetLease = {});
 
 rhi::PipelineValidationReport validateVulkanRhiRenderPipeline(const rhi::RenderPipelineDesc& desc);
 
@@ -102,6 +119,17 @@ arp::core::UniquePtr<rhi::RenderPipeline> createVulkanRhiAuthorizedBindlessRende
 const rhi::OriginalBindlessGraphicsPassContract::PipelineState*
 vulkanRhiBindlessGraphicsPassPipelineState(const rhi::RenderPipeline&) noexcept;
 
+// Factory-captured ordinary pipeline facts, independent of canonical bindless
+// authorization. No borrowed definition/package/layout is retained here.
+struct VulkanRhiRetainedGraphicsPipelineState {
+    bool fullscreenColor = false;
+    rhi::TextureFormat color = rhi::TextureFormat::Unknown;
+    rhi::ShaderStage stages = rhi::ShaderStage::None;
+};
+
+const VulkanRhiRetainedGraphicsPipelineState* vulkanRhiRetainedGraphicsPipelineState(
+    const rhi::RenderPipeline&) noexcept;
+
 arp::core::UniquePtr<rhi::ComputePipeline> createVulkanRhiComputePipeline(
     const rhi::ComputePipelineDesc& desc,
     std::shared_ptr<VulkanRhiNativeResourcePayload> nativePayload = {},
@@ -124,10 +152,15 @@ arp::core::UniquePtr<rhi::DescriptorArena> createVulkanRhiDescriptorArena(
     const rhi::DescriptorArenaDesc& desc,
     VulkanRhiNativeResourceAllocator nativeResources,
     std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry,
-    bool requireNativeDescriptorAllocation);
+    bool requireNativeDescriptorAllocation,
+    std::shared_ptr<rhi::semantics::DirectObjectBudgetTracker> directObjectBudget = {});
 
 std::shared_ptr<VulkanRhiNativeResourcePayload> vulkanRhiNativePayload(
     const rhi::DescriptorSet& descriptorSet);
+
+bool vulkanRhiDescriptorSetContextMatches(const rhi::DescriptorSet&,
+    const std::shared_ptr<VulkanRhiRuntime>&,
+    const std::shared_ptr<VulkanRhiResourceRegistry>&) noexcept;
 
 // Cold storage preparation only; does not authorize native recording.
 std::shared_ptr<VulkanRhiNativeResourcePayload> prepareVulkanOriginalImageCellDescriptors(

@@ -1,0 +1,139 @@
+# Explicit bounded editor preview; rock/snow UV size authored here as 2 m.
+# Source terrain and runtime game settings remain untouched.
+type: EditorTerrainPreview
+contractVersion: editor.terrain-preview/v1
+resourceId: 7c023e4a-b5b6-4444-8123-100000000010
+terrainId: c2bb6e6a-4487-4c8a-8c22-8198968fc171
+terrain: assets/terrain/wocc_terrain_asset/terrain.asset.yaml
+vegetationPreview: omit-with-diagnostic
+resolution: 512
+snowLine: 60.0
+snowFeather: 20.0
+maxFileBytes: 536870912
+maxDecodedBytes: 1073741824
+maxPreviewBytes: 83886080
+vegetation:
+  input: legacy-source/v2
+  resourceId: b63cee36-81cb-469f-a56e-0dc2921c0fb2
+  catalog: assets/environment/runtime/wocc_static_vegetation_catalog.yaml
+layers:
+- semantic: grassMoss
+  materialId: 620bb163-a5b3-c8e0-a0b9-1f5e826723af
+  physicalSizeMeters: 2.1
+  normalConvention: opengl
+  albedo:
+    path: assets/environment/runtime/surface/wet_grass_moss_ground/albedo.jpg
+    mime: image/jpeg
+    colorSpace: srgb
+  normal:
+    path: assets/environment/runtime/surface/wet_grass_moss_ground/normal_gl.jpg
+    mime: image/jpeg
+    colorSpace: linear
+  roughness:
+    path: assets/environment/runtime/surface/wet_grass_moss_ground/roughness.jpg
+    mime: image/jpeg
+    colorSpace: linear
+  occlusion:
+    path: assets/environment/runtime/surface/wet_grass_moss_ground/ao.jpg
+    mime: image/jpeg
+    colorSpace: linear
+- semantic: forestFloor
+  materialId: 82a29a42-017c-a261-4010-347f26a8492e
+  physicalSizeMeters: 2.6
+  normalConvention: opengl
+  albedo:
+    path: assets/environment/runtime/surface/leaf_root_forest_ground/albedo.jpg
+    mime: image/jpeg
+    colorSpace: srgb
+  normal:
+    path: assets/environment/runtime/surface/leaf_root_forest_ground/normal_gl.jpg
+    mime: image/jpeg
+    colorSpace: linear
+  roughness:
+    path: assets/environment/runtime/surface/leaf_root_forest_ground/roughness.jpg
+    mime: image/jpeg
+    colorSpace: linear
+  occlusion:
+    path: assets/environment/runtime/surface/leaf_root_forest_ground/ao.jpg
+    mime: image/jpeg
+    colorSpace: linear
+- semantic: wetMud
+  materialId: 8f1ad541-16c5-f2db-4da8-7b7c31111994
+  physicalSizeMeters: 3.5
+  normalConvention: opengl
+  albedo:
+    path: assets/environment/runtime/surface/wet_mud_ground/albedo.jpg
+    mime: image/jpeg
+    colorSpace: srgb
+  normal:
+    path: assets/environment/runtime/surface/wet_mud_ground/normal_gl.jpg
+    mime: image/jpeg
+    colorSpace: linear
+  roughness:
+    path: assets/environment/runtime/surface/wet_mud_ground/roughness.jpg
+    mime: image/jpeg
+    colorSpace: linear
+  occlusion:
+    path: assets/environment/runtime/surface/wet_mud_ground/ao.jpg
+    mime: image/jpeg
+    colorSpace: linear
+- semantic: rockyPath
+  materialId: 9b4aaa6e-6693-8c20-59f8-04534147676f
+  physicalSizeMeters: 2.0
+  normalConvention: opengl
+  albedo:
+    path: assets/environment/runtime/surface/rocky_forest_path/albedo.jpg
+    mime: image/jpeg
+    colorSpace: srgb
+  normal:
+    path: assets/environment/runtime/surface/rocky_forest_path/normal_gl.jpg
+    mime: image/jpeg
+    colorSpace: linear
+  roughness:
+    path: assets/environment/runtime/surface/rocky_forest_path/roughness.jpg
+    mime: image/jpeg
+    colorSpace: linear
+  occlusion:
+    path: assets/environment/runtime/surface/rocky_forest_path/ao.jpg
+    mime: image/jpeg
+    colorSpace: linear
+- semantic: mossyRock
+  materialId: 85ae1fad-f78e-2c34-471c-b190d05ac77b
+  physicalSizeMeters: 2.0
+  normalConvention: opengl
+  albedo:
+    path: assets/environment/runtime/surface/mossy_rock_cliff/albedo.jpg
+    mime: image/jpeg
+    colorSpace: srgb
+  normal:
+    path: assets/environment/runtime/surface/mossy_rock_cliff/normal_gl.jpg
+    mime: image/jpeg
+    colorSpace: linear
+  roughness:
+    path: assets/environment/runtime/surface/mossy_rock_cliff/roughness.jpg
+    mime: image/jpeg
+    colorSpace: linear
+  occlusion:
+    path: assets/environment/runtime/surface/mossy_rock_cliff/ao.jpg
+    mime: image/jpeg
+    colorSpace: linear
+- semantic: dirtySnow
+  materialId: ed5c81db-10f2-dcd7-2fee-2fe637263798
+  physicalSizeMeters: 2.0
+  normalConvention: opengl
+  albedo:
+    path: assets/environment/runtime/surface/dirty_melting_snow/albedo.jpg
+    mime: image/jpeg
+    colorSpace: srgb
+  normal:
+    path: assets/environment/runtime/surface/dirty_melting_snow/normal_gl.jpg
+    mime: image/jpeg
+    colorSpace: linear
+  roughness:
+    path: assets/environment/runtime/surface/dirty_melting_snow/roughness.jpg
+    mime: image/jpeg
+    colorSpace: linear
+  occlusion:
+    path: assets/environment/runtime/surface/dirty_melting_snow/ao.jpg
+    mime: image/jpeg
+    colorSpace: linear

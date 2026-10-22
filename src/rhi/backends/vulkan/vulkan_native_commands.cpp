@@ -6,7 +6,9 @@
 #include "rhi/backends/vulkan/vulkan_native_commands_impl.h"
 #include "rhi/backends/vulkan/vulkan_original_bindless_command.h"
 #include "rhi/backends/vulkan/vulkan_query_pool.h"
+#include "rhi/backends/vulkan/vulkan_retained_command.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
+#include "rhi/frontend/command_retention_validation.h"
 #include "rhi/frontend/transfer_readback_borrowed_retirement.h"
 
 #include <algorithm>
@@ -629,6 +631,8 @@ VulkanRhiNativeCommandPayload::~VulkanRhiNativeCommandPayload()
     if (!impl_->submitted)
         for (auto& fault : impl_->pendingBindlessFaults)
             fault.result->abandon();
+    if (!impl_->submitted && impl_->retainedResourceStates)
+        impl_->retainedResourceStates->rollback();
     if (impl_->timestampQueryPool) {
         if (auto* destroyQueryPool = functionFrom<PFN_vkDestroyQueryPool>(
                 impl_->device.getDeviceProcAddr("vkDestroyQueryPool"))) {
@@ -641,6 +645,10 @@ VulkanRhiNativeCommandPayload::~VulkanRhiNativeCommandPayload()
         destroyVulkanRhiNativeRenderPassResources(
             impl_->device, impl_->retainedRenderPasses[index]);
     }
+    // Private cold passes reference the retained images. Destroy native pass
+    // handles before cancellation drops their admitted image owners.
+    if (!impl_->submitted && impl_->recordingRetention)
+        (void)impl_->recordingRetention->abandonUnsubmitted();
     impl_->scratchIndexAllocationPayload.reset();
     impl_->scratchIndexBuffer = VK_NULL_HANDLE;
     impl_->scratchIndexCapacity = 0;
@@ -768,6 +776,18 @@ bool VulkanRhiNativeCommandPayload::waitSubmittedFenceUntil(
 
 void VulkanRhiNativeCommandPayload::resolveSubmittedCompletion()
 {
+    // The private bounded transfer domain retains its buffers only here.
+    // Retire them before publishing completion; preserve the existing guard
+    // against reentrant retirement while other native owners are released.
+    impl_->retainedResourceStates.reset();
+    if (impl_->recordingRetention) {
+        for (std::uint32_t i = 0u; i < impl_->retainedRenderPassCount; ++i)
+            destroyVulkanRhiNativeRenderPassResources(
+                impl_->device, impl_->retainedRenderPasses[i]);
+        impl_->retainedRenderPassCount = 0u;
+        (void)impl_->recordingRetention->retireAfterCompletion(true);
+        impl_->recordingRetention.reset();
+    }
     impl_->submitFenceCompleted = true;
     // ScopedPresentRetirement/1: only this frame's actual native completion
     // persists after command retirement. Validator and unproven work cannot
@@ -2611,6 +2631,21 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
         diagnostics = "Vulkan RHI native command buffer was already submitted";
         return false;
     }
+    if (impl_->recordingRetention) {
+        const auto& storage = *impl_->recordingRetention;
+        if (storage.quota()->limitBytes() != storage.budget().maxCpuMetadataBytes) {
+            diagnostics = "RHI-COMMAND-RETENTION-CPU-QUOTA-MISMATCH";
+            return false;
+        }
+        if (storage.state() != rhi::common::CommandRetentionStorage::State::Sealed) {
+            diagnostics = "RHI-COMMAND-RETENTION-RECORDING-CLOSED";
+            return false;
+        }
+        if (!impl_->retainedResourceStates || !impl_->retainedResourceStates->canInvalidate()) {
+            diagnostics = "RHI-VULKAN-RETENTION-STATE-INVALIDATION-MISSING";
+            return false;
+        }
+    }
     if ((timeline.waitSemaphore && !timeline.waitSemaphore->nativeHandle())
         || (timeline.signalSemaphore && !timeline.signalSemaphore->nativeHandle())) {
         diagnostics = "RHI-VULKAN-TIMELINE-SYNC-PAYLOAD-MISSING";
@@ -2737,8 +2772,8 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
         return false;
     // Reserve native retirement BEFORE queue invocation for canonical custody.
     // Queue failure is not proof of non-execution and must never roll back.
-    const bool retainBeforeInvocation =
-        impl_->originalBindlessCustody || hasTimelineWait || hasTimelineSignal;
+    const bool retainBeforeInvocation = impl_->originalBindlessCustody || impl_->recordingRetention
+        || hasTimelineWait || hasTimelineSignal;
     if (retainBeforeInvocation
         && !retainSubmittedCommandForAsyncRetirement(shared_from_this(), diagnostics)) {
         return false;
@@ -2750,10 +2785,14 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
         }
     }
     impl_->submittedTimeline = timeline;
+    if (impl_->recordingRetention)
+        (void)impl_->recordingRetention->markSubmitted();
     const auto submitted =
         queueSubmit(impl_->device.graphicsQueue(), 1, &submitInfo, impl_->submitFence);
     impl_->device.captureOriginalDeviceLoss(submitted);
     if (submitted != VK_SUCCESS) {
+        if (impl_->retainedResourceStates)
+            (void)impl_->retainedResourceStates->invalidate();
         if (retainBeforeInvocation) {
             impl_->submitted = true;
             impl_->originalSubmissionUnproven = true;
@@ -2769,6 +2808,10 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
             diagnostics = submitted == VK_ERROR_DEVICE_LOST
                 ? "RHI-VULKAN-ROOT-FENCE-SUBMIT-DEVICE-LOST"
                 : "RHI-VULKAN-ROOT-FENCE-SUBMIT-UNPROVEN";
+        else if (impl_->recordingRetention)
+            diagnostics = submitted == VK_ERROR_DEVICE_LOST
+                ? "RHI-VULKAN-RETENTION-SUBMIT-DEVICE-LOST"
+                : "RHI-VULKAN-RETENTION-SUBMIT-UNPROVEN";
         else if (hasTimelineWait || hasTimelineSignal)
             diagnostics = submitted == VK_ERROR_DEVICE_LOST
                 ? "RHI-VULKAN-TIMELINE-SUBMIT-DEVICE-LOST"
@@ -2778,6 +2821,8 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
         return false;
     }
     impl_->submitted = true;
+    if (impl_->retainedResourceStates)
+        impl_->retainedResourceStates->commit();
     if (acceptedThisAttempt)
         *acceptedThisAttempt = true;
     if (impl_->hasSwapchainFrameSync && impl_->swapchainFrameSyncState) {
@@ -2798,11 +2843,285 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
     return true;
 }
 
+VulkanRhiRetainedCommand::VulkanRhiRetainedCommand(ConstructionKey,
+    std::shared_ptr<VulkanRhiNativeCommandPayload> command,
+    std::shared_ptr<VulkanRhiResourceRegistry> registry)
+    : command_(std::move(command)), registry_(std::move(registry))
+{}
+
+core::UniquePtr<VulkanRhiRetainedCommand> VulkanRhiRetainedCommand::prepare(
+    const VulkanRhiNativeResourceAllocator& resources,
+    std::shared_ptr<VulkanRhiResourceRegistry> registry,
+    core::UniquePtr<rhi::common::CommandRetentionStorage> storage,
+    core::pmr::String& diagnostic)
+{
+    using Storage = rhi::common::CommandRetentionStorage;
+    if (!storage || storage->state() != Storage::State::Recording || storage->resourceOwnerCount()
+        || storage->queryPoolOwnerCount() || !storage->timestamps().empty()
+        || !storage->statistics().empty()) {
+        diagnostic = "RHI-VULKAN-RETENTION-PREPARATION-STATE";
+        return {};
+    }
+    if (storage->quota()->limitBytes() != storage->budget().maxCpuMetadataBytes) {
+        diagnostic = "RHI-COMMAND-RETENTION-CPU-QUOTA-MISMATCH";
+        return {};
+    }
+    if (!registry || !resources.connected() || !resources.runtime()
+        || resources.runtime()->syntheticRuntime() || !resources.runtime()->valid()) {
+        diagnostic = "RHI-VULKAN-RETENTION-NATIVE-RUNTIME-REQUIRED";
+        return {};
+    }
+    try {
+        core::CpuMemoryQuotaScope scope(storage->quota());
+        auto command = createVulkanRhiNativeCommandPayload(resources, diagnostic);
+        if (!command) {
+            if (diagnostic == "RHI-VULKAN-BINDLESS-RETENTION-ALLOCATION-FAILED")
+                diagnostic = "RHI-COMMAND-RETENTION-PREPARATION-ALLOCATION-FAILED";
+            return {};
+        }
+        // Exactly one explicit dependency is encoded and flushed per call.
+        command->impl_->pendingMemoryBarriers.reserve(1u);
+        command->impl_->pendingBufferBarriers.reserve(1u);
+        command->impl_->pendingImageBarriers.reserve(1u);
+        command->impl_->retainedResourceStates = core::makeUnique<core::MutationJournal>();
+        if (!command->prepareOriginalSubmissionFence(diagnostic))
+            return {};
+        auto prepared = core::makeUnique<VulkanRhiRetainedCommand>(
+            ConstructionKey{}, command, std::move(registry));
+        VkFormatProperties depthProperties{};
+        vkGetPhysicalDeviceFormatProperties(
+            resources.runtime()->physicalDevice(), VK_FORMAT_D32_SFLOAT, &depthProperties);
+        prepared->depthFormatFeatures_ = depthProperties.optimalTilingFeatures;
+        prepared->sampledDepthLoadAvailable_ =
+            (depthProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0u;
+        VkFormatProperties colorProperties{};
+        vkGetPhysicalDeviceFormatProperties(
+            resources.runtime()->physicalDevice(), VK_FORMAT_R16G16B16A16_SFLOAT, &colorProperties);
+        prepared->colorFormatFeatures_ = colorProperties.optimalTilingFeatures;
+        command->impl_->recordingRetention = std::move(storage);
+        diagnostic.clear();
+        return prepared;
+    } catch (const std::bad_alloc&) {
+        diagnostic = "RHI-COMMAND-RETENTION-PREPARATION-ALLOCATION-FAILED";
+        return {};
+    } catch (const std::length_error&) {
+        diagnostic = "RHI-COMMAND-RETENTION-PREPARATION-ALLOCATION-FAILED";
+        return {};
+    }
+}
+
+const rhi::common::CommandRetentionStorage*
+VulkanRhiRetainedCommand::retentionStorage() const noexcept
+{
+    return command_->impl_->recordingRetention.get();
+}
+
+bool VulkanRhiRetainedCommand::validateRecording(core::pmr::String& diagnostic) const
+{
+    const auto* storage = retentionStorage();
+    if (failed_ || !storage
+        || storage->state() != rhi::common::CommandRetentionStorage::State::Recording) {
+        diagnostic = "RHI-COMMAND-RETENTION-RECORDING-CLOSED";
+        return false;
+    }
+    if (storage->quota()->limitBytes() != storage->budget().maxCpuMetadataBytes) {
+        diagnostic = "RHI-COMMAND-RETENTION-CPU-QUOTA-MISMATCH";
+        return false;
+    }
+    return true;
+}
+
+std::shared_ptr<VulkanRhiNativeResourcePayload> VulkanRhiRetainedCommand::resolve(
+    const rhi::GpuBuffer& buffer, core::pmr::String& diagnostic) const
+{
+    const auto original = vulkanRhiNativePayload(buffer);
+    const auto registered = registry_->payload(buffer.id());
+    if (!vulkanRhiBufferRegistryMatches(buffer, registry_)
+        || !registry_->bufferObjectMatches(buffer) || !original || !registered
+        || original != registered || !core::SharedOwnerProjection::sameOwner(original, registered)
+        || original->backendVulkanDeviceHandle() != command_->impl_->device.logicalDevice()
+        || !original->backendVulkanBufferHandle()
+        || original->backendVulkanOriginalContentExclusive()) {
+        diagnostic = "RHI-VULKAN-RETENTION-BUFFER-REGISTRATION";
+        return {};
+    }
+    if (!vulkanRhiBufferStateAvailable(buffer, command_->impl_->retainedResourceStates.get())) {
+        diagnostic = "RHI-VULKAN-RETENTION-BUFFER-STATE-UNCOMMITTED";
+        return {};
+    }
+    return original;
+}
+
+bool VulkanRhiRetainedCommand::copy(const rhi::GpuBuffer& source,
+    const rhi::GpuBuffer& destination,
+    const rhi::BufferCopyDesc& desc,
+    core::pmr::String& diagnostic)
+{
+    if (!validateRecording(diagnostic))
+        return false;
+    const auto src = resolve(source, diagnostic);
+    if (!src)
+        return false;
+    const auto dst = resolve(destination, diagnostic);
+    if (!dst)
+        return false;
+    if (desc.sourceBuffer != source.id() || desc.destinationBuffer != destination.id()
+        || source.id() == destination.id()
+        || src->backendVulkanBufferHandle() == dst->backendVulkanBufferHandle()
+        || (source.desc().usage & rhi::ResourceUsage::CopySrc) == rhi::ResourceUsage::None
+        || (destination.desc().usage & rhi::ResourceUsage::CopyDst) == rhi::ResourceUsage::None
+        || source.state() != rhi::ResourceState::CopySrc
+        || destination.state() != rhi::ResourceState::CopyDst || !desc.sizeBytes
+        || (desc.sourceOffsetBytes % 4u) || (desc.destinationOffsetBytes % 4u)
+        || (desc.sizeBytes % 4u) || desc.sourceOffsetBytes > source.desc().sizeBytes
+        || desc.destinationOffsetBytes > destination.desc().sizeBytes
+        || desc.sizeBytes > source.desc().sizeBytes - desc.sourceOffsetBytes
+        || desc.sizeBytes > destination.desc().sizeBytes - desc.destinationOffsetBytes) {
+        diagnostic = "RHI-VULKAN-RETENTION-BUFFER-COPY-DESCRIPTOR";
+        return false;
+    }
+    if (destination.gpuTransferWritesSealed()
+        || registry_->bufferGpuTransferWritesSealed(destination.id())) {
+        diagnostic = "RHI-BUFFER-GPU-WRITES-SEALED";
+        return false;
+    }
+    std::shared_ptr<const void> owners[]{src, dst};
+    auto& storage = *command_->impl_->recordingRetention;
+    if (const auto* id = storage.preflightResources(owners, 2u)) {
+        diagnostic = id;
+        return false;
+    }
+    if (!command_->impl_->device.getDeviceProcAddr("vkCmdCopyBuffer")) {
+        diagnostic = "RHI-VULKAN-RETENTION-COPY-ENTRYPOINT";
+        return false;
+    }
+    (void)storage.retainResources(owners, 2u);
+    if (!command_->recordBufferCopy(*src, *dst, desc, diagnostic)) {
+        failed_ = true;
+        return false;
+    }
+    diagnostic.clear();
+    return true;
+}
+
+bool VulkanRhiRetainedCommand::dependency(const rhi::GpuBuffer& buffer,
+    const rhi::ResourceMemoryBarrierDesc& desc,
+    core::pmr::String& diagnostic)
+{
+    if (!validateRecording(diagnostic))
+        return false;
+    const auto owner = resolve(buffer, diagnostic);
+    if (!owner)
+        return false;
+    const bool transfer = desc.sourceStages == rhi::PipelineStage::Transfer
+        && desc.destinationStages == rhi::PipelineStage::Transfer;
+    const bool compute = desc.sourceStages == rhi::PipelineStage::ComputeShader
+        && desc.destinationStages == rhi::PipelineStage::ComputeShader;
+    const auto allowed = transfer
+        ? rhi::ResourceAccess::TransferRead | rhi::ResourceAccess::TransferWrite
+        : rhi::ResourceAccess::ShaderRead | rhi::ResourceAccess::ShaderWrite;
+    const auto accesses = desc.sourceAccess | desc.destinationAccess;
+    const auto read =
+        transfer ? rhi::ResourceAccess::TransferRead : rhi::ResourceAccess::ShaderRead;
+    const auto write =
+        transfer ? rhi::ResourceAccess::TransferWrite : rhi::ResourceAccess::ShaderWrite;
+    const bool reads = (accesses & read) != rhi::ResourceAccess::None;
+    const bool writes = (accesses & write) != rhi::ResourceAccess::None;
+    const bool stateValid = transfer
+        ? (!reads
+              || ((buffer.desc().usage & rhi::ResourceUsage::CopySrc) != rhi::ResourceUsage::None
+                  && buffer.state() == rhi::ResourceState::CopySrc))
+            && (!writes
+                || ((buffer.desc().usage & rhi::ResourceUsage::CopyDst) != rhi::ResourceUsage::None
+                    && buffer.state() == rhi::ResourceState::CopyDst))
+        : ((buffer.desc().usage
+               & (rhi::ResourceUsage::UniformBuffer | rhi::ResourceUsage::StorageBuffer))
+                  != rhi::ResourceUsage::None
+              && (buffer.state() == rhi::ResourceState::ShaderRead
+                  || buffer.state() == rhi::ResourceState::ShaderWrite)
+              && (!writes
+                  || ((buffer.desc().usage & rhi::ResourceUsage::StorageBuffer)
+                          != rhi::ResourceUsage::None
+                      && buffer.state() == rhi::ResourceState::ShaderWrite)));
+    if (desc.resource != buffer.id() || (!transfer && !compute)
+        || desc.sourceAccess == rhi::ResourceAccess::None
+        || desc.destinationAccess == rhi::ResourceAccess::None
+        || (desc.sourceAccess & allowed) != desc.sourceAccess
+        || (desc.destinationAccess & allowed) != desc.destinationAccess || !stateValid) {
+        diagnostic = "RHI-VULKAN-RETENTION-TRANSFER-DEPENDENCY";
+        return false;
+    }
+    if (writes && (transfer ? buffer.gpuTransferWritesSealed() : buffer.gpuWritesSealed())) {
+        diagnostic = "RHI-BUFFER-GPU-WRITES-SEALED";
+        return false;
+    }
+    std::shared_ptr<const void> owners[]{owner};
+    auto& storage = *command_->impl_->recordingRetention;
+    if (const auto* id = storage.preflightResources(owners, 1u)) {
+        diagnostic = id;
+        return false;
+    }
+    if (!command_->impl_->device.getDeviceProcAddr("vkCmdPipelineBarrier")) {
+        diagnostic = "RHI-VULKAN-RETENTION-BARRIER-ENTRYPOINT";
+        return false;
+    }
+    (void)storage.retainResources(owners, 1u);
+    if (!command_->recordResourceMemoryBarrier(desc, diagnostic)
+        || !command_->flushPendingBarriers(diagnostic)) {
+        failed_ = true;
+        return false;
+    }
+    diagnostic.clear();
+    return true;
+}
+
+bool VulkanRhiRetainedCommand::finish(core::pmr::String& diagnostic)
+{
+    if (!validateRecording(diagnostic))
+        return false;
+    if (!command_->end(diagnostic)) {
+        failed_ = true;
+        return false;
+    }
+    (void)command_->impl_->recordingRetention->sealForSubmission();
+    diagnostic.clear();
+    return true;
+}
+
+bool VulkanRhiRetainedCommand::submit(
+    const VulkanRhiTimelineSubmitInfo& timeline, core::pmr::String& diagnostic)
+{
+    if (failed_) {
+        diagnostic = "RHI-COMMAND-RETENTION-RECORDING-CLOSED";
+        return false;
+    }
+    return command_->submit(timeline, diagnostic);
+}
+
+bool VulkanRhiRetainedCommand::completed()
+{
+    return command_->submittedFenceCompleted();
+}
+
+bool VulkanRhiRetainedCommand::waitUntil(
+    std::chrono::steady_clock::time_point deadline, core::pmr::String& diagnostic)
+{
+    return command_->waitSubmittedFenceUntil(deadline, diagnostic);
+}
+
 std::shared_ptr<VulkanRhiNativeCommandPayload> createVulkanRhiNativeCommandPayload(
     const VulkanRhiNativeResourceAllocator& nativeResources,
     std::pmr::string& diagnostics,
     const rhi::CommandEncoderDesc& retention)
 {
+    if (retention.retentionBudget) {
+        const auto decision = rhi::semantics::CommandRetentionBudgetLowering::plan(
+            *retention.retentionBudget, rhi::CommandRetentionCapabilities{});
+        if (!decision.success) {
+            diagnostics = decision.diagnosticId;
+            return {};
+        }
+    }
     if (!nativeResources.connected() || !nativeResources.runtime()) {
         diagnostics = "Vulkan RHI native command buffer requires a native device";
         return {};

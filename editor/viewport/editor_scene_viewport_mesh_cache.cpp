@@ -1,6 +1,7 @@
 #include "editor/viewport/editor_scene_viewport_mesh_cache.h"
 
 #include "3d/terrain/terrain_streamer.h"
+#include "editor/workspace/editor_terrain_preview.h"
 #include "resource/mesh_asset_resources.h"
 #include "resource/terrain_asset_resource.h"
 
@@ -79,7 +80,14 @@ EditorSceneViewportMeshCacheResult EditorSceneViewportMeshCache::acquire(rhi::Gp
         resource::TerrainAssetTileReadView view;
         if (!terrainHandle.ready() || terrainHandle.generation() != item.meshGeneration
             || !terrainHandle.get()->tileReadView(item.tile, view) || !view.geometryValid()
-            || terrainHandle.get()->hasSurfaceWeights() || terrainHandle.get()->hasVegetation())
+            || ((terrainHandle.get()->hasSurfaceWeights() || terrainHandle.get()->hasVegetation())
+                && (item.terrainPreviewMaterialResourceId.empty()
+                    || resolveEditorTerrainPreviewMaterial(resources,
+                           item.meshResourceId,
+                           terrainHandle.generation(),
+                           item.terrainPreviewMaterialResourceId,
+                           item.tile)
+                        != item.materialResourceId)))
             return failure(EditorSceneViewportMeshCacheDiagnostic::ResourceChanged,
                 "terrain generation or tile changed");
         const auto samples = static_cast<std::uint64_t>(view.samplesPerEdge);
@@ -101,9 +109,15 @@ EditorSceneViewportMeshCacheResult EditorSceneViewportMeshCache::acquire(rhi::Gp
                 "mutable mesh geometry cannot enter the viewport cache");
         geometry = resource->mesh();
     }
+    const auto previewGeneration = item.terrainPreviewMaterialResourceId.empty()
+        ? 0
+        : resources.find<resource::MaterialResource>(item.terrainPreviewMaterialResourceId)
+              .generation();
     for (const auto& entry : entries_) {
         if (entry->resourceId == item.meshResourceId && entry->generation == item.meshGeneration
-            && entry->geometry == item.geometry && entry->tile == item.tile) {
+            && entry->previewId == item.terrainPreviewMaterialResourceId
+            && entry->previewGeneration == previewGeneration && entry->geometry == item.geometry
+            && entry->tile == item.tile) {
             EditorSceneViewportMeshCacheResult result;
             result.mesh = &entry->mesh;
             result.reused = true;
@@ -131,6 +145,22 @@ EditorSceneViewportMeshCacheResult EditorSceneViewportMeshCache::acquire(rhi::Gp
             return failure(EditorSceneViewportMeshCacheDiagnostic::InvalidMeshData,
                 "terrain mesh grid rejected");
         terrainMesh = builder.generateChunkMesh({item.tile.x, item.tile.z}, 0, 0u, 0u);
+        if (!item.terrainPreviewMaterialResourceId.empty()) {
+            const auto root =
+                resources.find<resource::MaterialResource>(item.terrainPreviewMaterialResourceId);
+            const auto* preview = root.ready()
+                ? dynamic_cast<const EditorTerrainPreviewMaterial*>(root.get())
+                : nullptr;
+            if (!preview || preview->resolution < 2)
+                return failure(EditorSceneViewportMeshCacheDiagnostic::ResourceChanged,
+                    "preview material changed");
+            const float scale = float(preview->resolution - 1) / preview->resolution;
+            const float offset = 0.5f / preview->resolution;
+            for (auto& vertex : terrainMesh.vertices) {
+                vertex.uv[0] = vertex.uv[0] * scale + offset;
+                vertex.uv[1] = vertex.uv[1] * scale + offset;
+            }
+        }
         geometry = &terrainMesh;
     }
     if (!geometry || !geometry->validForIndexedDraw())
@@ -150,6 +180,8 @@ EditorSceneViewportMeshCacheResult EditorSceneViewportMeshCache::acquire(rhi::Gp
 
     auto entry = core::makeUnique<Entry>();
     entry->resourceId = item.meshResourceId;
+    entry->previewId = item.terrainPreviewMaterialResourceId;
+    entry->previewGeneration = previewGeneration;
     entry->generation = item.meshGeneration;
     entry->geometry = item.geometry;
     entry->tile = item.tile;

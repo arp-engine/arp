@@ -6,6 +6,7 @@
 #include "core/io/filesystem_path.h"
 #include "core/io/staged_directory.h"
 #include "resource/resource_source_io.h"
+#include "resource/vegetation_catalog_geometry.h"
 #include "resource/vegetation_catalog_layout.h"
 
 #include <charconv>
@@ -73,30 +74,7 @@ void setVertexFields(vegetation::InstanceVertex& v, const std::array<float, vert
 
 void validateGeometry(const Template& value, const VegetationCatalogAssetEntry& asset)
 {
-    require(!value.vertices.empty() && !value.indices.empty() && !value.sections.empty()
-        && value.indices.size() % 3u == 0u);
-    for (const auto& v : value.vertices) {
-        for (const auto f : vertexFields(v))
-            require(std::isfinite(f));
-        require(v.primaryBend >= 0 && v.primaryBend <= 1 && v.flutter >= 0 && v.flutter <= 1
-            && v.stiffness >= 0 && v.stiffness <= 1);
-    }
-    for (auto i : value.indices)
-        require(i < value.vertices.size());
-    std::size_t end = 0;
-    for (const auto& section : value.sections) {
-        require(section.firstIndex == end && section.indexCount && section.indexCount % 3u == 0u
-            && section.indexCount <= value.indices.size() - end);
-        require(std::any_of(asset.materials.begin(), asset.materials.end(), [&](const auto& b) {
-            return b.slot == section.materialSlot;
-        }));
-        end += section.indexCount;
-    }
-    require(end == value.indices.size());
-    for (const auto& binding : asset.materials)
-        require(std::any_of(value.sections.begin(), value.sections.end(), [&](const auto& s) {
-            return s.materialSlot == binding.slot;
-        }));
+    require(!VegetationCatalogGeometryContract::validateBindings(value, asset));
     require(value.materialIndex == value.sections.front().materialSlot);
 }
 

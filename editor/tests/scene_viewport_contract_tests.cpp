@@ -977,7 +977,7 @@ int main()
     const auto builtFrame = editor::buildEditorSceneViewportFrame(
         sceneDocument, sceneSnapshot, 7, 1280, 720, {16, 32, 800, 600});
     assert(builtFrame.valid());
-    assert(builtFrame.frame.contractVersion == 4);
+    assert(builtFrame.frame.contractVersion == 5);
     assert(builtFrame.frame.sceneId == sceneDocument.sceneId());
     assert(builtFrame.frame.stateVersion == 7);
     assert(builtFrame.frame.cameraObjectId == cameraObject->id());

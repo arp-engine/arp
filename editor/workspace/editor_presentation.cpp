@@ -500,12 +500,25 @@ renderer::ui::UiDrawPlanLowerResult EditorShell::drawCommands(
         color(thumb, 0x686868);
         commands.push_back(std::move(thumb));
     }
+    core::pmr::Vector<renderer::ui::UiDrawCommand> terrainBrowserOverlay;
+    commands.erase(std::remove_if(commands.begin(),
+                       commands.end(),
+                       [&](auto& command) {
+                           const auto* widget = runtime().canvas().findWidget(command.widgetId);
+                           if (!widget || !core::startsWith(widget->name(), "terrain_browser_"))
+                               return false;
+                           terrainBrowserOverlay.push_back(std::move(command));
+                           return true;
+                       }),
+        commands.end());
     if (presentationState_.workspace() == "Script") {
         rebuildScriptTabs(commands);
         rebuildScriptCommands(layout, commands);
     } else if (presentationState_.workspace() == "3D") {
         rebuildSceneCommands(layout, commands, viewportTextureResourceId);
     }
+    for (auto& command : terrainBrowserOverlay)
+        commands.push_back(std::move(command));
     return renderer::ui::UiDrawPlanLowerResult::success(std::move(commands));
 }
 

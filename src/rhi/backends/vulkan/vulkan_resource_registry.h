@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/memory/cpu_allocator.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 
 #include <algorithm>
@@ -51,6 +52,22 @@ public:
             entry->second.gpuWriteSeal = buffer.gpuWriteSealToken();
     }
 
+    void registerTextureObject(rhi::GpuResourceId id, const rhi::GpuTexture& texture)
+    {
+        std::scoped_lock lock(mutex_);
+        if (auto entry = entries_.find(id.value); entry != entries_.end()
+            && entry->second.textureObject && !entry->second.textureObjectIdentity)
+            entry->second.textureObjectIdentity = &texture;
+    }
+
+    bool textureObjectMatches(const rhi::GpuTexture& texture) const noexcept
+    {
+        std::scoped_lock lock(mutex_);
+        const auto entry = entries_.find(texture.id().value);
+        return entry != entries_.end() && entry->second.textureObject
+            && entry->second.textureObjectIdentity == &texture;
+    }
+
     bool bufferGpuWritesSealed(rhi::GpuResourceId id) const
     {
         std::scoped_lock lock(mutex_);
@@ -59,6 +76,18 @@ public:
             return seal && seal->writableDescriptorSealed();
         }
         return false;
+    }
+
+    bool bufferObjectMatches(const rhi::GpuBuffer& buffer) const noexcept
+    {
+        std::scoped_lock lock(mutex_);
+        const auto entry = entries_.find(buffer.id().value);
+        if (entry == entries_.end())
+            return false;
+        const auto registered = entry->second.gpuWriteSeal.lock();
+        const auto actual = buffer.gpuWriteSealToken().lock();
+        return registered && registered == actual
+            && core::SharedOwnerProjection::sameOwner(registered, actual);
     }
 
     bool bufferGpuTransferWritesSealed(rhi::GpuResourceId id) const
@@ -71,11 +100,14 @@ public:
         return false;
     }
 
-    bool textureViewParentIsLive(rhi::GpuResourceId id) const
+    bool textureViewParentIsLive(
+        rhi::GpuResourceId id, rhi::GpuResourceId expectedParent = {}) const
     {
         std::scoped_lock lock(mutex_);
         const auto entry = entries_.find(id.value);
         if (entry == entries_.end())
+            return false;
+        if (expectedParent.isValid() && entry->second.parentTexture != expectedParent)
             return false;
         const auto view = entry->second.payload.lock();
         if (!view || !view->backendVulkanTextureViewDescAvailable())
@@ -122,6 +154,7 @@ private:
         std::weak_ptr<VulkanRhiNativeResourcePayload> payload;
         rhi::GpuResourceId parentTexture;
         bool textureObject = false;
+        const rhi::GpuTexture* textureObjectIdentity = nullptr;
         std::weak_ptr<const rhi::GpuBufferWriteSealState> gpuWriteSeal;
     };
 

@@ -7,6 +7,10 @@ namespace arp::editor {
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kVerticalFovDegrees = 60.0f;
+constexpr float kNearPlane = 0.05f;
+constexpr float kFarPlane = 10000.0f;
+constexpr float kMaxNavigationDistance = 5000.0f;
+constexpr float kFrameViewportCoverage = 0.9f;
 
 float radians(float degrees) noexcept
 {
@@ -81,7 +85,33 @@ void EditorSceneViewportCamera::zoom(float wheelDelta) noexcept
 {
     if (!std::isfinite(wheelDelta))
         return;
-    distance_ = std::clamp(distance_ * std::pow(0.86f, wheelDelta), 0.05f, 5000.0f);
+    distance_ =
+        std::clamp(distance_ * std::pow(0.86f, wheelDelta), kNearPlane, kMaxNavigationDistance);
+}
+
+bool EditorSceneViewportCamera::frameBounds(
+    core::Vec3 minimum, core::Vec3 maximum, float aspectRatio) noexcept
+{
+    if (!std::isfinite(minimum.x) || !std::isfinite(minimum.y) || !std::isfinite(minimum.z)
+        || !std::isfinite(maximum.x) || !std::isfinite(maximum.y) || !std::isfinite(maximum.z)
+        || maximum.x < minimum.x || maximum.y < minimum.y || maximum.z < minimum.z
+        || !std::isfinite(aspectRatio) || aspectRatio <= 0)
+        return false;
+    const double dx = double(maximum.x) - minimum.x;
+    const double dy = double(maximum.y) - minimum.y;
+    const double dz = double(maximum.z) - minimum.z;
+    const double radius = std::hypot(dx, dy, dz) * 0.5;
+    const double halfAngle = std::atan(std::tan(radians(kVerticalFovDegrees * 0.5f))
+        * std::min(1.0, double(aspectRatio)) * kFrameViewportCoverage);
+    const double distance = radius / std::sin(halfAngle);
+    if (radius <= 0 || !std::isfinite(distance) || distance > kMaxNavigationDistance
+        || distance - radius < kNearPlane || distance + radius >= kFarPlane)
+        return false;
+    target_ = {float(double(minimum.x) + dx * 0.5),
+        float(double(minimum.y) + dy * 0.5),
+        float(double(minimum.z) + dz * 0.5)};
+    distance_ = float(distance);
+    return true;
 }
 
 core::Vec3 EditorSceneViewportCamera::eye() const noexcept
@@ -105,7 +135,7 @@ core::Mat4 EditorSceneViewportCamera::viewMatrix() const noexcept
 
 core::Mat4 EditorSceneViewportCamera::projectionMatrix(float aspectRatio) const noexcept
 {
-    return core::perspective(kVerticalFovDegrees, aspectRatio, 0.05f, 10000.0f);
+    return core::perspective(kVerticalFovDegrees, aspectRatio, kNearPlane, kFarPlane);
 }
 
 core::Mat4 EditorSceneViewportCamera::viewProjectionMatrix(float aspectRatio) const noexcept

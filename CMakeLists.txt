@@ -807,6 +807,7 @@ add_library(arp_assets
     src/assets/image_decoder.cpp
     src/assets/ktx2_bc7.cpp
     src/assets/tangent_generation.cpp
+    src/assets/terrain/terrain_surface_preview.cpp
     modules/asset/unity_asset_database.cpp
     src/assets/virtualized_geometry.cpp
     3rd/bc7enc/bc7enc.c
@@ -815,6 +816,11 @@ target_include_directories(arp_assets
     PUBLIC src 3rd/stb 3rd/fkYAML/include 3rd/bc7enc
     PRIVATE modules/asset)
 target_link_libraries(arp_assets PUBLIC arp_animation arp_asset_import_deps arp_core)
+
+add_executable(arp_terrain_surface_preview_tests tests/unit/terrain_surface_preview_tests.cpp)
+target_link_libraries(arp_terrain_surface_preview_tests PRIVATE arp_assets)
+target_compile_options(arp_terrain_surface_preview_tests PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>)
+add_test(NAME arp_terrain_surface_preview_tests COMMAND arp_terrain_surface_preview_tests)
 
 add_library(arp_network
     src/network/endpoint.cpp
@@ -1069,8 +1075,10 @@ add_library(arp_renderer
     src/renderer/terrain_vegetation_runtime.cpp
     src/renderer/terrain_vegetation_binding.cpp
     src/renderer/terrain_vegetation_draw_preparation.cpp
+    src/renderer/terrain_vegetation_geometry_preparation.cpp
     src/renderer/terrain_vegetation_gpu_upload.cpp
     src/renderer/terrain_vegetation_gpu_publication.cpp
+    src/renderer/terrain_vegetation_submission.cpp
     src/renderer/terrain_vegetation_rhi_runtime.cpp
     src/renderer/vegetation_scene_runtime.cpp
     src/renderer/ui/ui_atlas_texture_resource.cpp
@@ -6579,6 +6587,29 @@ else()
     target_compile_options(arp_terrain_vegetation_gpu_publication_tests PRIVATE -UNDEBUG)
 endif()
 add_test(NAME arp_terrain_vegetation_gpu_publication_tests COMMAND arp_terrain_vegetation_gpu_publication_tests)
+add_executable(arp_terrain_vegetation_submission_tests tests/integration/terrain_vegetation_submission_tests.cpp)
+target_include_directories(arp_terrain_vegetation_submission_tests PRIVATE . src)
+target_link_libraries(arp_terrain_vegetation_submission_tests PRIVATE arp_renderer arp_render_graph ${ARP_RENDERER_RHI_LINK_LIBS})
+if(MSVC)
+    target_compile_options(arp_terrain_vegetation_submission_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_terrain_vegetation_submission_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_terrain_vegetation_submission_tests COMMAND arp_terrain_vegetation_submission_tests)
+add_executable(arp_terrain_vegetation_geometry_tests tests/integration/terrain_vegetation_geometry_tests.cpp)
+target_include_directories(arp_terrain_vegetation_geometry_tests PRIVATE . src)
+target_link_libraries(arp_terrain_vegetation_geometry_tests PRIVATE arp_renderer ${ARP_RENDERER_RHI_LINK_LIBS})
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_terrain_vegetation_geometry_tests PRIVATE arp_resource arp_scriptvm_host_plugin_runtime arp_3d)
+else()
+    target_link_libraries(arp_terrain_vegetation_geometry_tests PRIVATE "$<LINK_GROUP:RESCAN,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d>")
+endif()
+if(MSVC)
+    target_compile_options(arp_terrain_vegetation_geometry_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_terrain_vegetation_geometry_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_terrain_vegetation_geometry_tests COMMAND arp_terrain_vegetation_geometry_tests)
 if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     add_executable(arp_terrain_vegetation_vulkan_hidden_smoke
         tests/smoke/terrain_vegetation_vulkan_hidden_smoke.cpp
@@ -6594,8 +6625,47 @@ if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     endif()
     add_test(NAME arp_terrain_vegetation_vulkan_hidden_smoke COMMAND arp_terrain_vegetation_vulkan_hidden_smoke)
     set_tests_properties(arp_terrain_vegetation_vulkan_hidden_smoke PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+    add_executable(arp_terrain_vegetation_publication_vulkan_hidden_smoke
+        tests/smoke/terrain_vegetation_publication_vulkan_hidden_smoke.cpp
+        src/platform/common/platform_lifecycle_state.cpp)
+    target_include_directories(arp_terrain_vegetation_publication_vulkan_hidden_smoke PRIVATE . src)
+    target_link_libraries(arp_terrain_vegetation_publication_vulkan_hidden_smoke PRIVATE
+        arp_platform arp_renderer arp_render_graph arp_rhi arp_rhi_semantics)
+    target_compile_options(arp_terrain_vegetation_publication_vulkan_hidden_smoke PRIVATE -UNDEBUG)
+    target_link_options(arp_terrain_vegetation_publication_vulkan_hidden_smoke PRIVATE -static-libstdc++ -static-libgcc)
+    if(WIN32 AND EXISTS "C:/Program Files/RenderDoc/renderdoc_app.h")
+        target_include_directories(arp_terrain_vegetation_publication_vulkan_hidden_smoke PRIVATE "C:/Program Files/RenderDoc")
+        target_compile_definitions(arp_terrain_vegetation_publication_vulkan_hidden_smoke PRIVATE ARP_RENDERDOC_APP_AVAILABLE=1)
+    endif()
+    add_test(NAME arp_terrain_vegetation_publication_vulkan_hidden_smoke COMMAND arp_terrain_vegetation_publication_vulkan_hidden_smoke)
+    set_tests_properties(arp_terrain_vegetation_publication_vulkan_hidden_smoke PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+    add_executable(arp_terrain_vegetation_submission_vulkan_hidden_smoke
+        tests/smoke/terrain_vegetation_submission_vulkan_hidden_smoke.cpp
+        src/platform/common/platform_lifecycle_state.cpp)
+    target_include_directories(arp_terrain_vegetation_submission_vulkan_hidden_smoke PRIVATE . src)
+    target_link_libraries(arp_terrain_vegetation_submission_vulkan_hidden_smoke PRIVATE
+        arp_platform arp_renderer arp_render_graph arp_rhi arp_rhi_semantics)
+    target_compile_options(arp_terrain_vegetation_submission_vulkan_hidden_smoke PRIVATE -UNDEBUG)
+    target_link_options(arp_terrain_vegetation_submission_vulkan_hidden_smoke PRIVATE -static-libstdc++ -static-libgcc)
+    if(WIN32 AND EXISTS "C:/Program Files/RenderDoc/renderdoc_app.h")
+        target_include_directories(arp_terrain_vegetation_submission_vulkan_hidden_smoke PRIVATE "C:/Program Files/RenderDoc")
+        target_compile_definitions(arp_terrain_vegetation_submission_vulkan_hidden_smoke PRIVATE ARP_RENDERDOC_APP_AVAILABLE=1)
+    endif()
+    add_test(NAME arp_terrain_vegetation_submission_vulkan_hidden_smoke COMMAND arp_terrain_vegetation_submission_vulkan_hidden_smoke)
+    set_tests_properties(arp_terrain_vegetation_submission_vulkan_hidden_smoke PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
 endif()
 if(NOT EMSCRIPTEN)
+    add_test(NAME arp_terrain_vegetation_geometry_package_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/vegetation_cooked_package_smoke.py"
+        --tool "$<TARGET_FILE:arp_vegetation_catalog_cooked_tests>" --workspace "${CMAKE_CURRENT_BINARY_DIR}"
+        --reader "$<TARGET_FILE:arp_terrain_vegetation_geometry_tests>")
+    set_tests_properties(arp_terrain_vegetation_geometry_package_smoke PROPERTIES TIMEOUT 90)
+    add_test(NAME arp_terrain_vegetation_geometry_cli_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/vegetation_cooked_package_smoke.py"
+        --tool "$<TARGET_FILE:arp_vegetation_catalog_cooked_tests>" --workspace "${CMAKE_CURRENT_BINARY_DIR}"
+        --terrain-tool "$<TARGET_FILE:arp_terrain_asset_tool>" --authoring --spatial-weights
+        --reader "$<TARGET_FILE:arp_terrain_vegetation_geometry_tests>")
+    set_tests_properties(arp_terrain_vegetation_geometry_cli_smoke PROPERTIES TIMEOUT 120)
     add_test(NAME arp_terrain_vegetation_session_smoke
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/vegetation_cooked_package_smoke.py"
         --tool "$<TARGET_FILE:arp_vegetation_catalog_cooked_tests>" --workspace "${CMAKE_CURRENT_BINARY_DIR}"
@@ -7590,6 +7660,26 @@ if(SLANGC_EXECUTABLE)
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/samples/feature_lab_color_probe.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/samples/webgpu_compute_smoke.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/common/forward_plus_lighting.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/common/volumetric_fog.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/core/noise3.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/core/box_geometry.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/fog_inject.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/fog_scatter.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/fog_scatter_spatial.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/fog_scatter_common.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/fog_temporal.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/fog_integrate.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/fog_composite.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/ddgi_sampling.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/ddgi_visibility.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/ddgi_depth_cache.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/samples/fog_scene_geometry.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/samples/fog_glass_geometry.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/samples/fog_demo_scene.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/samples/fog_demo_shadow.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/samples/fog_demo_glass.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/samples/fog_demo_plain_glass.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/samples/fog_demo_present.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/forward_plus_cull.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/forward_plus_debug.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/wocc/fxaa.slang"
@@ -8189,6 +8279,8 @@ include(cmake/BindlessTerrainGeometryFixture.cmake)
 include(cmake/BindlessNativeSceneLifecycle.cmake)
 include(cmake/BindlessGraphicsDepthFixture.cmake)
 include(cmake/ArpVolumetricFog.cmake)
+include(cmake/ArpVolumetricCloud.cmake)
+include(cmake/ArpVulkanCommandRetention.cmake)
 
 # Terrain/vegetation/LOD dependency governance regressions.
 add_executable(arp_lod_profile_tests tests/unit/lod_profile_tests.cpp)

@@ -41,6 +41,11 @@ struct Options {
     bool hidden = false, enabled = true, local = true, noise = true, shadow = true, temporal = true,
          inside = false, homogeneous = false;
     bool prototypeBatch = false;
+    bool slits = false;
+    bool pointShadow = false;
+    std::uint32_t pixels = 0, slices = 0;
+    core::pmr::String camera = "toward";
+    float motion = 0;
     std::uint32_t frames = 120, captureFrame = 30, seed = 123, resizeFrame = UINT32_MAX,
                   disableFrame = UINT32_MAX;
     float fixedTime = -1;
@@ -66,6 +71,14 @@ Options parse(int argc, char** argv)
                 throw std::runtime_error("invalid integer");
             return v;
         };
+        const auto real = [&]() {
+            const auto s = value();
+            float v = 0;
+            const auto r = std::from_chars(s.data(), s.data() + s.size(), v);
+            if (r.ec != std::errc{} || r.ptr != s.data() + s.size() || !std::isfinite(v))
+                throw std::runtime_error("invalid real");
+            return v;
+        };
         if (a == "--hidden")
             o.hidden = true;
         else if (a == "--no-fog")
@@ -78,6 +91,8 @@ Options parse(int argc, char** argv)
             o.shadow = false;
         else if (a == "--no-temporal")
             o.temporal = false;
+        else if (a == "--point-shadow")
+            o.pointShadow = true;
         else if (a == "--camera-inside")
             o.inside = true;
         else if (a == "--homogeneous") {
@@ -85,7 +100,20 @@ Options parse(int argc, char** argv)
             o.local = false;
             o.shadow = false;
             o.temporal = false;
-        } else if (a == "--resize-frame")
+        } else if (a == "--slits") {
+            o.slits = true;
+            o.local = false;
+        } else if (a == "--pixels")
+            o.pixels = integer();
+        else if (a == "--slices")
+            o.slices = integer();
+        else if (a == "--camera") {
+            o.camera = core::pmr::String(value());
+            if (o.camera != "toward" && o.camera != "side" && o.camera != "away")
+                throw std::runtime_error("invalid camera preset");
+        } else if (a == "--motion")
+            o.motion = real();
+        else if (a == "--resize-frame")
             o.resizeFrame = integer();
         else if (a == "--disable-frame")
             o.disableFrame = integer();
@@ -254,6 +282,9 @@ int run(Options o)
     config.distance = 100;
     config.quality = o.quality;
     config.temporal = o.temporal;
+    config.stratifiedShadows = !o.pointShadow;
+    config.pixelsPerCell = o.pixels;
+    config.depthSlices = o.slices;
     fog::VolumetricFogFeature feature;
     if (o.enabled)
         requireFog(feature.create({*device, extent, config, ARP_FOG_SHADER_DIR}));
@@ -269,6 +300,12 @@ int run(Options o)
         fd.heightFalloff = 0;
         fd.scatteringColor = {0.6f, 0.7f, 0.8f};
         fd.anisotropy = 0;
+    }
+    if (o.slits) {
+        fd.density = 0.025f;
+        fd.heightFalloff = 0;
+        fd.scatteringColor = {1, 1, 1};
+        fd.anisotropy = 0.18f;
     }
     environment.addComponent<scene3d::VolumetricFogComponent>(fd);
     for (std::uint32_t i = 0; i < 2 && o.local; ++i) {
@@ -288,6 +325,8 @@ int run(Options o)
     scene3d::LightComponentDesc light;
     light.type = scene3d::LightType::Directional;
     light.direction = core::normalize(core::Vec3{-25, -45, -20});
+    if (o.slits)
+        light.direction = core::normalize(core::Vec3{0, -0.35f, -1});
     light.intensity = 12;
     light.castShadow = o.shadow;
     sunlight.addComponent<scene3d::LightComponent>(light);
@@ -296,15 +335,30 @@ int run(Options o)
     if (!extracted.ok())
         throw std::runtime_error(core::toStdString(extracted.diagnostic().message));
     const auto& scene = extracted.queue();
-    const auto eye = o.inside ? core::Vec3{0, 3, 20} : core::Vec3{0, 5, -18};
-    const auto view = core::lookAt(eye, {0, 4, 40});
+    auto eye = o.inside ? core::Vec3{0, 3, 20} : core::Vec3{0, 5, -18};
+    auto target = core::Vec3{0, 4, 40};
+    if (o.slits) {
+        eye = o.camera == "side" ? core::Vec3{24, 4, 0}
+            : o.camera == "away" ? core::Vec3{0, 4, 18}
+                                 : core::Vec3{0, 4, -18};
+        target = o.camera == "side" ? core::Vec3{0, 3, 4}
+            : o.camera == "away"    ? core::Vec3{0, 3, -10}
+                                    : core::Vec3{0, 3, 12};
+    }
+    const auto initialEye = eye;
+    auto view = core::lookAt(eye, target);
     auto projection = core::perspective(60, float(extent.width) / extent.height, 0.1f, 180);
     rhi::semantics::applyProjectionYConvention(projection.m.data(), device->backend());
     auto lightVP =
         core::multiply(core::orthographic(48, 48, 1, 140), core::lookAt({25, 45, 45}, {0, 0, 25}));
+    if (o.slits)
+        lightVP = core::multiply(
+            core::orthographic(100, 100, 0.1f, 200), core::lookAt({0, 35, 100}, {0, 0, 0}));
     rhi::semantics::applyViewProjectionYConvention(lightVP.m.data(), device->backend());
+    const std::uint32_t shadowSize = o.slits ? 2048u : 1024u;
+    const std::uint32_t vertexCount = o.slits ? 5u * 36u : 6144u + 32u * 36u;
     DemoConstants sceneConstants{core::multiply(projection, view),
-        {light.direction.x, light.direction.y, light.direction.z, 0}};
+        {light.direction.x, light.direction.y, light.direction.z, o.slits ? 1.0f : 0.0f}};
     DemoConstants shadowConstants{lightVP, sceneConstants.lightDirection};
     auto sceneUbo = device->createBuffer({"Demo.Camera",
         sizeof(DemoConstants),
@@ -329,7 +383,7 @@ int run(Options o)
         true);
     shadow.create(*device,
         "fog_demo_shadow",
-        {1024, 1024},
+        {shadowSize, shadowSize},
         rhi::TextureFormat::Unknown,
         {"Shadow", {{0, D::UniformBuffer, S::Vertex}}},
         true);
@@ -424,6 +478,17 @@ int run(Options o)
         }
         flight.graph.reset();
         flight.colorView.reset();
+        if (o.motion != 0) {
+            // The camera UBO is shared by both flights; retire both before writing it.
+            if (!flights[0].ready() || !flights[1].ready()) {
+                std::this_thread::yield();
+                continue;
+            }
+            eye = initialEye + core::Vec3{o.motion * float(frame), 0, 0};
+            view = core::lookAt(eye, target);
+            sceneConstants.viewProjection = core::multiply(projection, view);
+            require(device->writeBuffer(*sceneUbo, &sceneConstants, sizeof(sceneConstants)));
+        }
         flight.graph = core::makeUnique<render_graph::FrameGraph>(*device);
         auto& graph = *flight.graph;
         if (o.prototypeBatch) {
@@ -450,7 +515,7 @@ int run(Options o)
             rhi::TextureUsage::RenderAttachment | rhi::TextureUsage::Sampled,
             rhi::MemoryUsage::GpuOnly});
         auto shadowDepth = graph.createTransientTexture({"Demo.Shadow",
-            {1024, 1024, 1},
+            {shadowSize, shadowSize, 1},
             rhi::TextureFormat::D32Float,
             rhi::TextureUsage::RenderAttachment | rhi::TextureUsage::Sampled,
             rhi::MemoryUsage::GpuOnly});
@@ -461,26 +526,28 @@ int run(Options o)
                     rhi::ResourceState::DepthAttachment,
                     rhi::LoadOp::Clear,
                     rhi::StoreOp::Store)
-                .executeRenderPass([&shadow, slot](render_graph::RenderPassContext& c) {
-                    require(renderer::bindRasterPipeline(
-                        c.renderPass(), *shadow.pipeline, {1024, 1024}));
-                    require(c.renderPass().bindDescriptorSet(0, *shadow.sets[slot]));
-                    require(c.renderPass().draw(6144 + 32 * 36, 1, 0, 0));
-                });
+                .executeRenderPass(
+                    [&shadow, slot, shadowSize, vertexCount](render_graph::RenderPassContext& c) {
+                        require(renderer::bindRasterPipeline(
+                            c.renderPass(), *shadow.pipeline, {shadowSize, shadowSize}));
+                        require(c.renderPass().bindDescriptorSet(0, *shadow.sets[slot]));
+                        require(c.renderPass().draw(vertexCount, 1, 0, 0));
+                    });
         graph.addPass("Demo.Opaque")
             .writeAttachment(color,
                 rhi::ResourceState::ColorAttachment,
                 rhi::LoadOp::Clear,
                 rhi::StoreOp::Store,
                 {},
-                {0.3f, 0.5f, 0.8f, 1})
+                o.slits ? rhi::Color{0.015f, 0.02f, 0.025f, 1} : rhi::Color{0.3f, 0.5f, 0.8f, 1})
             .writeAttachment(
                 depth, rhi::ResourceState::DepthAttachment, rhi::LoadOp::Clear, rhi::StoreOp::Store)
-            .executeRenderPass([&opaque, slot, extent](render_graph::RenderPassContext& c) {
-                require(renderer::bindRasterPipeline(c.renderPass(), *opaque.pipeline, extent));
-                require(c.renderPass().bindDescriptorSet(0, *opaque.sets[slot]));
-                require(c.renderPass().draw(6144 + 32 * 36, 1, 0, 0));
-            });
+            .executeRenderPass(
+                [&opaque, slot, extent, vertexCount](render_graph::RenderPassContext& c) {
+                    require(renderer::bindRasterPipeline(c.renderPass(), *opaque.pipeline, extent));
+                    require(c.renderPass().bindDescriptorSet(0, *opaque.sets[slot]));
+                    require(c.renderPass().draw(vertexCount, 1, 0, 0));
+                });
         fog::FogOutputs fogOutput;
         auto finalColor = color;
         if (o.enabled) {
@@ -503,32 +570,34 @@ int run(Options o)
             requireFog(result);
             historyFrames += fogOutput.historyUsed ? 1u : 0u;
             finalColor = fogOutput.color;
-            graph.addPass("Demo.Transparent")
-                .read(fogOutput.constants, rhi::ResourceState::ShaderRead)
-                .read(fogOutput.integrated, rhi::ResourceState::ShaderRead)
-                .writeAttachment(finalColor,
-                    rhi::ResourceState::ColorAttachment,
-                    rhi::LoadOp::Load,
-                    rhi::StoreOp::Store)
-                .writeAttachment(depth,
-                    rhi::ResourceState::DepthAttachment,
-                    rhi::LoadOp::Load,
-                    rhi::StoreOp::Store)
-                .executeRenderPass([&glass, &graph, fogOutput, slot, extent](
-                                       render_graph::RenderPassContext& c) {
-                    require(glass.sets[slot]->write({0,
-                        D::UniformBuffer,
-                        graph.buffer(fogOutput.constants).id(),
-                        rhi::DescriptorResourceKind::Buffer}));
-                    require(glass.sets[slot]->write({1,
-                        D::ReadOnlyStorageBuffer,
-                        graph.buffer(fogOutput.integrated).id(),
-                        rhi::DescriptorResourceKind::Buffer}));
-                    require(renderer::bindRasterPipeline(c.renderPass(), *glass.pipeline, extent));
-                    require(c.renderPass().bindDescriptorSet(0, *glass.sets[slot]));
-                    require(c.renderPass().draw(6, 1, 0, 0));
-                });
-        } else {
+            if (!o.slits)
+                graph.addPass("Demo.Transparent")
+                    .read(fogOutput.constants, rhi::ResourceState::ShaderRead)
+                    .read(fogOutput.integrated, rhi::ResourceState::ShaderRead)
+                    .writeAttachment(finalColor,
+                        rhi::ResourceState::ColorAttachment,
+                        rhi::LoadOp::Load,
+                        rhi::StoreOp::Store)
+                    .writeAttachment(depth,
+                        rhi::ResourceState::DepthAttachment,
+                        rhi::LoadOp::Load,
+                        rhi::StoreOp::Store)
+                    .executeRenderPass([&glass, &graph, fogOutput, slot, extent](
+                                           render_graph::RenderPassContext& c) {
+                        require(glass.sets[slot]->write({0,
+                            D::UniformBuffer,
+                            graph.buffer(fogOutput.constants).id(),
+                            rhi::DescriptorResourceKind::Buffer}));
+                        require(glass.sets[slot]->write({1,
+                            D::ReadOnlyStorageBuffer,
+                            graph.buffer(fogOutput.integrated).id(),
+                            rhi::DescriptorResourceKind::Buffer}));
+                        require(
+                            renderer::bindRasterPipeline(c.renderPass(), *glass.pipeline, extent));
+                        require(c.renderPass().bindDescriptorSet(0, *glass.sets[slot]));
+                        require(c.renderPass().draw(6, 1, 0, 0));
+                    });
+        } else if (!o.slits) {
             graph.addPass("Demo.TransparentWithoutFog")
                 .writeAttachment(finalColor,
                     rhi::ResourceState::ColorAttachment,

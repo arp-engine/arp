@@ -51,6 +51,8 @@ struct WebGpuRuntimeProbe {
     std::uint32_t maxComputeWorkgroupSizeY = 0;
     std::uint32_t maxComputeWorkgroupStorageSize = 0;
     std::uint32_t maxStorageBuffersPerShaderStage = 0;
+    std::uint32_t maxComputeWorkgroupSizeZ = 0;
+    std::uint32_t maxComputeWorkgroupsPerDimension = 0;
 };
 
 struct WebGpuRequiredRuntimeFeatures {
@@ -96,6 +98,8 @@ struct WebGpuRuntimeLimits {
     std::uint32_t maxComputeWorkgroupSizeY = 0;
     std::uint32_t maxComputeWorkgroupStorageSize = 0;
     std::uint32_t maxStorageBuffersPerShaderStage = 0;
+    std::uint32_t maxComputeWorkgroupSizeZ = 0;
+    std::uint32_t maxComputeWorkgroupsPerDimension = 0;
 };
 
 struct WebGpuRuntimeProfile {

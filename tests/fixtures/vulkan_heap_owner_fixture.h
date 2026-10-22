@@ -15,13 +15,19 @@ public:
     static core::UniquePtr<rhi::GpuDevice> makeDevice(
         const std::shared_ptr<rhi_vulkan::VulkanRhiRuntime>& runtime,
         bool enableAliasing = true,
-        std::uint64_t budget = 64u * 1024u * 1024u)
+        std::uint64_t budget = 64u * 1024u * 1024u,
+        const rhi::semantics::DirectObjectBudget* directObjectBudget = nullptr,
+        const rhi::semantics::UploadStagingBudgetV1* uploadStagingBudget = nullptr)
     {
         rhi_vulkan::VulkanRhiDeviceDesc desc;
         desc.label = "heap owner";
         desc.runtime = runtime;
         desc.memoryBudgetBytes = budget;
         desc.enableTransientAliasing = enableAliasing;
+        if (directObjectBudget)
+            desc.directObjectBudget = *directObjectBudget;
+        if (uploadStagingBudget)
+            desc.uploadStagingBudget = *uploadStagingBudget;
         rhi::semantics::vulkan::VulkanDeviceCapabilitySnapshot snapshot;
         snapshot.queriedFromNativeDevice = runtime->valid();
         snapshot.queriedExtendedFeatures = runtime->coreQueueCapabilityDiagnostic() == nullptr;

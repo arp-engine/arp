@@ -373,12 +373,12 @@ std::uint16_t VegetationCatalogResourceData::familyVariantCount(
 
 std::uint16_t VegetationCatalogResourceData::templateIdFor(std::string_view id) const noexcept
 {
-    const auto it = templateIdsByAssetId.find(
-        core::pmr::String(id.data(), id.size(), &core::defaultCpuMemoryResource()));
-    if (it == templateIdsByAssetId.end()) {
-        return std::numeric_limits<std::uint16_t>::max();
-    }
-    return it->second;
+    // C++17 unordered_map lookup cannot consume string_view without creating
+    // an owned key. Keep this noexcept resource lookup allocation-free.
+    for (const auto& entry : templateIdsByAssetId)
+        if (entry.first == id)
+            return entry.second;
+    return std::numeric_limits<std::uint16_t>::max();
 }
 
 ResourceLoadResult VegetationCatalogResource::load(

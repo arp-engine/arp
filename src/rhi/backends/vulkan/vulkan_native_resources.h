@@ -64,6 +64,9 @@ public:
     // The base outlives derived native allocation owners during destruction.
     // Retained commands/views keep this budget charge alongside the payload.
     std::shared_ptr<void> allocationReleaseToken;
+    // Shared with arena generations or owned by one pipeline bundle. The
+    // base dies after native destruction, including command-retained payloads.
+    std::shared_ptr<void> directObjectBudgetReleaseToken;
     virtual ~VulkanRhiNativeResourcePayload() = default;
 
     virtual VkDevice backendVulkanDeviceHandle() const { return VK_NULL_HANDLE; }
