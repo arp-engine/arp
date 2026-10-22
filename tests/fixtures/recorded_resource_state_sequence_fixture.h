@@ -1,5 +1,5 @@
 #pragma once
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/frontend/resource_state_sequence.h"
 
 #include <array>

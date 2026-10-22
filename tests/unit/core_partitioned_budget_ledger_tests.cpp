@@ -1,4 +1,4 @@
-#include "core/partitioned_budget_ledger.h"
+#include "core/memory/partitioned_budget_ledger.h"
 #include "tests/fixtures/cpu_quota_factory_fixture.h"
 
 #include <cassert>

@@ -1,6 +1,6 @@
 #include "assets/assimp_model_importer.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #ifndef ARP_HAS_ASSIMP
 #define ARP_HAS_ASSIMP 0

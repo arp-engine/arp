@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
 
 #include <cstdint>
@@ -10,9 +10,9 @@ namespace ui {
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct DocumentComponentEditorProperties {
-    APROP(Editor)
+    APROP(Serialize, Editor)
     core::pmr::String documentSource{&core::defaultCpuMemoryResource()};
-    APROP(Editor)
+    APROP(Serialize, Editor)
     std::uint32_t layer = 0;
 };
 } // namespace ui

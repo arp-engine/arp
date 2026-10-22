@@ -1,6 +1,6 @@
 #include "renderer/render_graph/frame_graph_uniform_ring_buffer.h"
 
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "rhi/gpu_device.h"
 
 #include <stdexcept>

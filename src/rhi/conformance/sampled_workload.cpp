@@ -1,7 +1,7 @@
 #include "rhi/conformance/sampled_workload.h"
 
-#include "core/sha256.h"
-#include "core/yaml_contract.h"
+#include "core/encoding/yaml_contract.h"
+#include "core/hash/sha256.h"
 
 #include <algorithm>
 #include <utility>

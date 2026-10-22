@@ -1,6 +1,6 @@
 #include "rhi/backends/webgpu/webgpu_conformance_clear.h"
 
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/backends/webgpu/webgpu_backend_objects.h"
 #include "rhi/backends/webgpu/webgpu_conformance_sampled_inputs.h"
 #include "rhi/backends/webgpu/webgpu_native_command_payload_impl.h"

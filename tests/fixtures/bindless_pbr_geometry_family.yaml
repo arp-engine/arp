@@ -68,3 +68,17 @@ pushConstants:
   - vertex
   webGpuGroup: 3
   webGpuBinding: 0
+
+initializedGraphics:
+  contractVersion: 2
+  prototypeOptIn: true
+  interfaces:
+  - identity: 1
+    vertexEntries: [meshColorVertex, skinColorVertex, grassColorVertex, canopyColorVertex]
+    fragmentEntries: [familyColorMain]
+  - identity: 2
+    vertexEntries: [meshDepthVertex, skinDepthVertex, grassDepthVertex, canopyDepthVertex]
+    fragmentEntries: [familyDepthMain]
+  - identity: 3
+    vertexEntries: [meshShadowVertex, skinShadowVertex, grassShadowVertex, canopyShadowVertex]
+    fragmentEntries: [familyShadowMain]

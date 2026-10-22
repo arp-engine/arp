@@ -6,6 +6,7 @@
 #include "editor/workspace/editor_project_resources.h"
 #include "editor/workspace/editor_scene_document.h"
 #include "editor/workspace/editor_scene_persistence.h"
+#include "editor/workspace/editor_terrain_build.h"
 #include "editor/workspace/game_preview_model.h"
 #include "editor/workspace/project_browser_model.h"
 #include "editor/workspace/script_document_session.h"
@@ -166,6 +167,10 @@ public:
         EditorCommandOrigin origin = EditorCommandOrigin::LocalUi,
         std::uint64_t correlationId = 0);
     EditorResponse submitCommand(EditorCommandEnvelope command);
+
+    void pollTasks();
+
+    bool terrainBuildPending() const noexcept { return terrainBuild_.pending(); }
 
     std::uint64_t stateVersion() const noexcept { return commandDispatcher_.stateVersion(); }
 
@@ -384,6 +389,7 @@ private:
         &core::defaultCpuMemoryResource()};
     std::size_t sceneHierarchyScrollOffset_ = 0u;
     EditorProjectResources projectResources_;
+    EditorTerrainBuild terrainBuild_;
     // Resource-backed scene components are destroyed before their ResourceManager owner.
     EditorSceneDocument sceneDocument_;
 

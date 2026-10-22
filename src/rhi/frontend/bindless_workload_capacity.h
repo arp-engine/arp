@@ -1,6 +1,6 @@
 #pragma once
-#include "core/atomic_capacity_reservation.h"
-#include "core/quota_bound_shared_identity.h"
+#include "core/memory/atomic_capacity_reservation.h"
+#include "core/ownership/quota_bound_shared_identity.h"
 #include "rhi/semantics/bindless_workload_capacity.h"
 
 namespace arp::rhi {

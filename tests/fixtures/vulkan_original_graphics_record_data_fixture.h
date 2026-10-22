@@ -1,6 +1,6 @@
 #pragma once
+#include "3d/vegetation/template.h"
 #include "original_bindless_buffer_range_fixture.h"
-#include "pcg/foliage_instance_batch.h"
 #include "vulkan_original_graphics_buffer_data_fixture.h"
 
 #include <cstddef>
@@ -21,11 +21,11 @@ class VulkanOriginalGraphicsRecordDataFixture final {
     };
 
     static_assert(sizeof(Material) == 32u && offsetof(Material, resources) == 16u);
-    static_assert(sizeof(pcg::InstanceDataGpu) == 64u
-        && offsetof(pcg::InstanceDataGpu, positionScale) == 0u
-        && offsetof(pcg::InstanceDataGpu, yawPhaseIdLod) == 16u
-        && offsetof(pcg::InstanceDataGpu, extraTransform) == 32u
-        && offsetof(pcg::InstanceDataGpu, speciesLodState) == 48u);
+    static_assert(sizeof(vegetation::InstanceDataGpu) == 64u
+        && offsetof(vegetation::InstanceDataGpu, positionScale) == 0u
+        && offsetof(vegetation::InstanceDataGpu, yawPhaseIdLod) == 16u
+        && offsetof(vegetation::InstanceDataGpu, extraTransform) == 32u
+        && offsetof(vegetation::InstanceDataGpu, speciesLodState) == 48u);
     static_assert(sizeof(Output) == 48u && offsetof(Output, metadata) == 16u
         && offsetof(Output, signedValues) == 32u);
 
@@ -67,7 +67,7 @@ public:
     {
         assert(table.tableId >= 1u && table.tableId <= 3u);
         const auto stride = table.tableId == 1u ? sizeof(Material)
-            : table.tableId == 2u               ? sizeof(pcg::InstanceDataGpu)
+            : table.tableId == 2u               ? sizeof(vegetation::InstanceDataGpu)
                                                 : sizeof(Output);
         assert(table.bufferLayout.elementStrideBytes == stride
             && table.bufferLayout.minBindingSizeBytes == stride);
@@ -95,7 +95,7 @@ public:
             assert(range.sizeBytes == sizeof(value));
             std::memcpy(data, &value, sizeof(value));
         } else if (table.tableId == 2u) {
-            assert(range.sizeBytes == 2u * sizeof(pcg::InstanceDataGpu));
+            assert(range.sizeBytes == 2u * sizeof(vegetation::InstanceDataGpu));
             for (std::uint32_t element = 0u; element < 2u; ++element) {
                 const auto value = instance(index, element);
                 std::memcpy(data + element * sizeof(value), &value, sizeof(value));
@@ -137,7 +137,7 @@ public:
                 assert(!std::memcmp(data, &expected, sizeof(expected)));
                 ++counts[0];
             } else if (binding == 2u) {
-                assert(bytes == 2u * sizeof(pcg::InstanceDataGpu));
+                assert(bytes == 2u * sizeof(vegetation::InstanceDataGpu));
                 for (std::uint32_t element = 0u; element < 2u; ++element) {
                     const auto expected = instance(index, element);
                     assert(!std::memcmp(
@@ -172,15 +172,16 @@ private:
             {index, 5u, 7u, 9u}};
     }
 
-    static pcg::InstanceDataGpu instance(std::uint32_t index, std::uint32_t element) noexcept
+    static vegetation::InstanceDataGpu instance(std::uint32_t index, std::uint32_t element) noexcept
     {
-        pcg::InstanceDataGpu value{
+        vegetation::InstanceDataGpu value{
             {static_cast<float>(index + 1u), static_cast<float>(element + 2u), 3.f, 1.f},
             {0.125f, 0.25f, static_cast<float>(index), static_cast<float>(element)},
             {5.f, 6.f, 7.f, 8.f},
             {}};
-        pcg::packInstanceMetadataFloat(value.speciesLodState[0], 0x00040302u + index + element);
-        pcg::packInstanceMetadataFloat(value.speciesLodState[1], 0x87654321u);
+        vegetation::packInstanceMetadataFloat(
+            value.speciesLodState[0], 0x00040302u + index + element);
+        vegetation::packInstanceMetadataFloat(value.speciesLodState[1], 0x87654321u);
         return value;
     }
 };

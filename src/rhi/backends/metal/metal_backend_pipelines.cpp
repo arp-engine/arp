@@ -1,6 +1,6 @@
-#include "core/cpu_allocator.h"
-#include "core/number_format.h"
-#include "core/stable_hash.h"
+#include "core/hash/stable_hash.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/text/number_format.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_binding_validation.h"
 #include "rhi/backends/metal/metal_bindless_validation.h"
@@ -11,7 +11,7 @@
 #include "rhi/backends/metal/metal_original_pipeline.h"
 #include "rhi/backends/metal/metal_zero_base_indirect_consumer_pipeline.h"
 #include "rhi/backends/metal/metal_zero_base_indirect_pipeline.h"
-#include "rhi/frontend/bindless_scene_content.h"
+#include "rhi/frontend/bindless_initialized_graphics.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "rhi/frontend/bindless_snapshot.h"
 #include "rhi/frontend/pipeline_push_constant_abi_identity.h"
@@ -948,7 +948,8 @@ public:
         if (!selected || !original || selected->slot != physical->metalSlot
             || selected->targetType >= selected->target.nodes().size()
             || !selected->relation.comparedPairs
-            || selected->relation.matrixColumns != original->matrices.size()
+            || selected->relation.matrixColumns
+                != original->matrices.size() + original->matrixPaths.size()
             || selected->relation.arrayWrappers != original->wrappers.size()
             || selected->relation.occupiedBytes != range.sourceOccupiedBytes
             || source->sourceTypes().nodes()[original->sourceType].occupiedExtentBytes
@@ -2747,8 +2748,7 @@ core::UniquePtr<rhi::RenderPipeline> buildRetainedMetalGraphicsPipeline(
         diagnostic = authored.diagnostics;
         return {};
     }
-    const auto scene =
-        rhi::OriginalBindlessSceneContentContract::selectEntries(vertexEntry, fragmentEntry);
+    const auto scene = rhi::selectBindlessInitializedGraphics(*package, vertexEntry, fragmentEntry);
     if (scene.diagnostic)
         return fail(scene.diagnostic);
     if (scene.recognized)

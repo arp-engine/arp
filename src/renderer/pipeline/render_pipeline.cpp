@@ -1,6 +1,6 @@
 #include "renderer/pipeline/render_pipeline.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/render_frame.h"
 
 #include <stdexcept>

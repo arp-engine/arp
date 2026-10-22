@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
-#include "core/lifetime_epoch.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/lifetime_epoch.h"
 #include "rhi/frontend/descriptor_buffer_binding_range.h"
 #include "rhi/frontend/descriptor_completed_texture.h"
 #include "rhi/frontend/descriptor_original_buffer_range.h"

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "3d/scene_3d_render_queue.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scene/camera.h"
 #include "scene/scene.h"
 #include "scene/scene_traversal_snapshot.h"

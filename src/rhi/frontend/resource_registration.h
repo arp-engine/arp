@@ -1,7 +1,7 @@
 #pragma once
-#include "core/atomic_capacity.h"
-#include "core/lifetime_epoch.h"
-#include "core/monotonic_id_sequence.h"
+#include "core/memory/atomic_capacity.h"
+#include "core/ownership/lifetime_epoch.h"
+#include "core/ownership/monotonic_id_sequence.h"
 #include "rhi/frontend/resource_device_lifetime.h"
 #include "rhi/frontend/resource_device_native_loss.h"
 #include "rhi/semantics/resource_lowering.h"

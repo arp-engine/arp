@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/deployment/renderer_fallback_bridge.h"
 
 #include <cstdint>

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
 #include "resource/resource_manager.h"
 
@@ -44,6 +44,8 @@ struct InternalAssetPackageDesc {
     core::pmr::String name{&core::defaultCpuMemoryResource()};
     core::pmr::String status{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<InternalAssetPackageEntry> entries{&core::defaultCpuMemoryResource()};
+    // Explicit opt-in to resource.package.closure/v1; never inferred from file existence.
+    core::pmr::String closurePath{&core::defaultCpuMemoryResource()};
 };
 
 struct InternalAssetPackageValidationResult {
@@ -63,7 +65,9 @@ public:
 
 class ARP_API InternalAssetPackageReader final {
 public:
-    InternalAssetPackageValidationResult read(const std::filesystem::path& packageDirectory) const;
+    InternalAssetPackageValidationResult read(const std::filesystem::path& packageDirectory,
+        std::size_t maxMetadataBytes = 0u,
+        std::size_t maxResources = 0u) const;
 
     ResourceLoadResult load(const std::filesystem::path& packageDirectory,
         ResourceManager& manager,

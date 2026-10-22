@@ -1,5 +1,5 @@
 #pragma once
-#include "core/shared_owner_projection.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "shader/single_entry_shader_artifact.h"
 
 namespace arp::shader {

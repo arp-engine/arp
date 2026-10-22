@@ -5,6 +5,10 @@
 
 namespace arp::scriptvm {
 
+// Private generated-frame layout and lowering revision. Include it in artifact
+// identity so frames produced by different generators cannot be interchanged.
+inline constexpr std::string_view kDirectNativeLoweringRevisionV5 = "native-regions-1";
+
 struct DirectNativeCodegenOptionsV5 {
     core::pmr::String packageId{&core::defaultCpuMemoryResource()};
     std::uint32_t packageVersion = 1u;

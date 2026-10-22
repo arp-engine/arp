@@ -1,4 +1,4 @@
-#include "core/shared_owner_projection.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/backends/webgl/webgl_execution.h"
 #include "rhi/backends/webgl/webgl_resources_internal.h"
 

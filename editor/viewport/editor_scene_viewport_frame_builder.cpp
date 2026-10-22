@@ -1,6 +1,8 @@
 #include "editor/viewport/editor_scene_viewport_frame_builder.h"
 
+#include "3d/authoring_components.h"
 #include "3d/components.h"
+#include "resource/terrain_asset_resource.h"
 
 #include <utility>
 
@@ -42,7 +44,9 @@ EditorSceneViewportFrameBuildResult buildEditorSceneViewportFrame(const scene::S
     std::uint64_t stateVersion,
     std::uint32_t targetWidth,
     std::uint32_t targetHeight,
-    EditorSceneViewportRect physicalViewport)
+    EditorSceneViewportRect physicalViewport,
+    const resource::ResourceManager* resources,
+    std::size_t maxDrawItems)
 {
     EditorSceneViewportFrameBuildResult result;
     auto& frame = result.frame;
@@ -66,6 +70,30 @@ EditorSceneViewportFrameBuildResult buildEditorSceneViewportFrame(const scene::S
     if (!snapshot.ok()) {
         result.validation = {EditorSceneViewportDiagnostic::InvalidSceneSnapshot, 0};
         return result;
+    }
+
+    for (const auto& node : snapshot.nodes()) {
+        if (!node.activeInHierarchy)
+            continue;
+        const auto* object = scene.findObject(node.objectId);
+        if (object == nullptr) {
+            result.validation = {EditorSceneViewportDiagnostic::InvalidSceneSnapshot, 0};
+            return result;
+        }
+        for (const auto& component : object->components()) {
+            const auto* sky = dynamic_cast<const scene3d::SkyComponent*>(component.get());
+            if (sky == nullptr || !component->enabled())
+                continue;
+            frame.sky.present = true;
+            frame.sky.zenith = sky->zenith_color();
+            frame.sky.horizon = sky->horizon_color();
+            frame.sky.sunDirection = sky->sun_direction();
+            frame.sky.sunColor = sky->sun_color();
+            frame.sky.domeRadius = sky->dome_radius();
+            break;
+        }
+        if (frame.sky.present)
+            break;
     }
 
     const auto cameras = scene::CameraResolver{}.resolve(scene, snapshot);
@@ -101,6 +129,48 @@ EditorSceneViewportFrameBuildResult buildEditorSceneViewportFrame(const scene::S
         for (const auto& component : object->components()) {
             if (!component->enabled())
                 continue;
+            const auto* terrain = dynamic_cast<const scene3d::TerrainComponent*>(component.get());
+            if (terrain && !terrain->resourceId().empty()) {
+                if (!resources || !maxDrawItems) {
+                    result.validation = {EditorSceneViewportDiagnostic::GeometryBudgetExceeded,
+                        frame.drawItems.size()};
+                    return result;
+                }
+                const auto handle =
+                    resources->find<resource::TerrainAssetResource>(terrain->resourceId());
+                if (!handle.ready()) {
+                    result.validation = {EditorSceneViewportDiagnostic::TerrainResourceInvalid,
+                        frame.drawItems.size()};
+                    return result;
+                }
+                if (handle.get()->hasSurfaceWeights() || handle.get()->hasVegetation()) {
+                    result.validation = {
+                        EditorSceneViewportDiagnostic::TerrainSurfacePreviewUnsupported,
+                        frame.drawItems.size()};
+                    return result;
+                }
+                const auto count = static_cast<std::uint64_t>(handle.get()->tileCountX())
+                    * handle.get()->tileCountZ();
+                if (frame.drawItems.size() > maxDrawItems
+                    || count > maxDrawItems - frame.drawItems.size()) {
+                    result.validation = {EditorSceneViewportDiagnostic::GeometryBudgetExceeded,
+                        frame.drawItems.size()};
+                    return result;
+                }
+                for (std::uint32_t z = 0u; z < handle.get()->tileCountZ(); ++z)
+                    for (std::uint32_t x = 0u; x < handle.get()->tileCountX(); ++x) {
+                        EditorSceneViewportDrawItem item;
+                        item.objectId = node.objectId;
+                        item.componentId = terrain->id();
+                        item.worldTransform = node.worldTransform;
+                        item.meshResourceId = terrain->resourceId();
+                        item.materialResourceId = terrain->materialResourceId();
+                        item.geometry = EditorSceneViewportGeometry::TerrainTile;
+                        item.tile = {static_cast<std::int32_t>(x), static_cast<std::int32_t>(z)};
+                        frame.drawItems.push_back(std::move(item));
+                    }
+                continue;
+            }
             const auto* mesh = dynamic_cast<const scene3d::MeshComponent*>(component.get());
             if (mesh == nullptr)
                 continue;
@@ -110,6 +180,11 @@ EditorSceneViewportFrameBuildResult buildEditorSceneViewportFrame(const scene::S
             item.worldTransform = node.worldTransform;
             item.meshResourceId = mesh->resourceId();
             item.materialResourceId = mesh->materialResourceId();
+            if (maxDrawItems && frame.drawItems.size() >= maxDrawItems) {
+                result.validation = {
+                    EditorSceneViewportDiagnostic::GeometryBudgetExceeded, frame.drawItems.size()};
+                return result;
+            }
             frame.drawItems.push_back(std::move(item));
         }
     }

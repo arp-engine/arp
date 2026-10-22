@@ -6,7 +6,7 @@
 // by index/name with arguments. Source-text compilation (compileSource) is
 // added in later phases once the lexer/parser/sema/compiler are in place.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/interpreter/bytecode.h"
 #include "scriptvm/interpreter/vm.h"
 #include "scriptvm/runtime/diagnostics.h"

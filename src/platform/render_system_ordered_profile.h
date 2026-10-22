@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/shared_owner_projection.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "platform/render_system_ordered_graphics.h"
 #include "rhi/frontend/memory_cache_budget.h"
 #include "shader/single_entry_shader_artifact.h"

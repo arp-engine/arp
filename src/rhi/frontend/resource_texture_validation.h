@@ -1,5 +1,5 @@
 #pragma once
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/frontend/completed_color_texture_view.h"
 #include "rhi/frontend/resource_native_allocation_observation.h"
 #include "rhi/frontend/resource_state_validation.h"
@@ -408,7 +408,10 @@ public:
 
     static constexpr std::uint32_t graphicsReadVersion(std::uint32_t profile) noexcept
     {
-        return profile == 3u ? 18u : profile == 2u ? 17u : profile == 1u ? 10u : 8u;
+        return profile == 3u                 ? 18u
+            : profile == 2u                  ? 17u
+            : profile == 1u || profile == 4u ? 10u
+                                             : 8u;
     }
 
     static constexpr const char* validateRootProfile(std::uint32_t version,
@@ -441,6 +444,11 @@ public:
             return "RHI-COMPLETED-SHADER-TEXTURE-PENDING-VERSION";
         if (!optIn)
             return "RHI-COMPLETED-SHADER-TEXTURE-PENDING-OPT-IN";
+        if (rootCompletedReadVersion == 4u)
+            return version == 6u && bindlessRootProfile && !originalGeneralProfile
+                    && !finiteGeneralProfile && contentPlanVersion == 9u
+                ? nullptr
+                : "RHI-COMPLETED-SHADER-TEXTURE-PENDING-PROFILE";
         if (version == 9u && contentPlanVersion == 19u)
             return bindlessRootProfile && !originalGeneralProfile && !finiteGeneralProfile
                     && rootCompletedReadVersion == 3u

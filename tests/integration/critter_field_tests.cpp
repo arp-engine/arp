@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <limits>
 
 namespace {
 
@@ -176,6 +177,95 @@ void different_seeds_different_behavior()
     assert(differ);
 }
 
+class GroundSurface final : public arp::terrain::TerrainSurface {
+public:
+    const TerrainHeightField& field;
+    mutable unsigned probes = 0u;
+    arp::terrain::TerrainSurfaceQueryStatus status = arp::terrain::TerrainSurfaceQueryStatus::Ready;
+    float invalidHeight = 0.0f;
+    unsigned invalidProbe = 0u;
+
+    explicit GroundSurface(const TerrainHeightField& source) : field(source) {}
+
+    arp::terrain::TerrainBounds bounds() const noexcept override { return {-180, 180, -180, 900}; }
+
+    std::uint64_t generation() const noexcept override { return 1u; }
+
+    arp::terrain::TerrainSurfaceQuery sample(float x, float z) const override
+    {
+        const unsigned probe = probes++ % 3u;
+        arp::terrain::TerrainSurfaceQuery result;
+        result.status = status;
+        result.sample.height = invalidProbe == probe + 1u ? invalidHeight : field.sample(x, z);
+        return result;
+    }
+};
+
+void standard_surface_preserves_simulation()
+{
+    const auto hf = TerrainHeightField::makeDefaultWoCC(-0.5f);
+    GroundSurface surface(hf);
+    CritterField legacy, standard;
+    legacy.initialize(123u);
+    standard.initialize(123u);
+    for (unsigned tick = 0; tick < 100u; ++tick) {
+        legacy.update(0, 0, 0.1f, hf);
+        standard.update(0, 0, 0.1f, surface);
+        for (unsigned i = 0; i < CritterField::kCount; ++i) {
+            const auto& a = legacy.critters()[i];
+            const auto& b = standard.critters()[i];
+            assert(a.x == b.x && a.z == b.z && a.heading == b.heading);
+            assert(a.speed == b.speed && a.turnT == b.turnT && a.hopPhase == b.hopPhase);
+            assert(a.baseY == b.baseY && a.moving == b.moving && a.visible == b.visible);
+            assert(a.species == b.species);
+        }
+    }
+}
+
+void missing_and_nonfinite_probes_hide_with_bounded_work()
+{
+    const auto hf = TerrainHeightField::makeDefaultWoCC(-0.5f);
+    GroundSurface surface(hf);
+    CritterField field;
+    field.initialize(1u);
+    field.update(0, 0, 0.1f, surface);
+    bool wasVisible = false;
+    for (const auto& c : field.critters())
+        wasVisible |= c.visible;
+    assert(wasVisible);
+    const auto rejected = [&] {
+        surface.probes = 0u;
+        field.update(0, 0, 0.1f, surface);
+        for (const auto& c : field.critters())
+            assert(!c.visible);
+        // At most one validity test plus eight relocation attempts per animal,
+        // each using three probes. No retry loop depends on resource readiness.
+        assert(surface.probes <= CritterField::kCount * 9u * 3u);
+    };
+    for (const auto status : {arp::terrain::TerrainSurfaceQueryStatus::OutOfBounds,
+             arp::terrain::TerrainSurfaceQueryStatus::TileUnavailable,
+             arp::terrain::TerrainSurfaceQueryStatus::InvalidData}) {
+        surface.status = status;
+        rejected();
+    }
+    surface.status = arp::terrain::TerrainSurfaceQueryStatus::Ready;
+    for (const float height : {std::numeric_limits<float>::quiet_NaN(),
+             std::numeric_limits<float>::infinity(),
+             -std::numeric_limits<float>::infinity()}) {
+        surface.invalidHeight = height;
+        for (unsigned probe = 1u; probe <= 3u; ++probe) {
+            surface.invalidProbe = probe;
+            rejected();
+        }
+    }
+    surface.invalidProbe = 0u;
+    field.update(0, 0, 0.1f, surface);
+    bool recovered = false;
+    for (const auto& c : field.critters())
+        recovered |= c.visible;
+    assert(recovered);
+}
+
 } // namespace
 
 int main()
@@ -187,5 +277,7 @@ int main()
     critters_stay_within_world_bounds();
     determinism_same_seed_same_behavior();
     different_seeds_different_behavior();
+    standard_surface_preserves_simulation();
+    missing_and_nonfinite_probes_hide_with_bounded_work();
     return 0;
 }

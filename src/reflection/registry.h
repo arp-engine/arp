@@ -9,11 +9,12 @@
 // indirectSetter) via indirectValueTraits.
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/class_info.h"
 #include "reflection/db.h"
 #include "reflection/enum.h"
 #include "reflection/function.h"
+#include "reflection/internal/collection_access.h"
 #include "reflection/object.h"
 #include "reflection/property.h"
 #include "reflection/type.h"
@@ -45,6 +46,14 @@ public:
     }
 
     class_info* info() const { return cls_; }
+
+    class_& reference(NameView name, ReferenceKind kind, NameView target, bool required = true)
+    {
+        auto value = cls_->get_field(name);
+        if (value.template is<reflection::property>())
+            value.template cast<reflection::property&>().setReference(kind, target, required);
+        return *this;
+    }
 
     class_& def_property(NameView name,
         const typeinfo* type,
@@ -95,6 +104,7 @@ public:
         if (cls_ == nullptr)
             return *this;
         using GetterResult = std::decay_t<std::invoke_result_t<Getter, C*>>;
+        detail::registerCollectionAccess<GetterResult>();
         return def_property(name,
             type_of<GetterResult>(),
             object(function(std::forward<Getter>(getter))),
@@ -145,6 +155,7 @@ public:
         if (cls_ == nullptr)
             return *this;
         using Indirect = detail::indirectValueTraits<T>;
+        detail::registerCollectionAccess<T>();
         object getter;
         object setter;
         object pointerSetter;
@@ -237,7 +248,10 @@ public:
     {
         if (cls_ == nullptr)
             return *this;
-        return def(name, object(enumeration(name, values)));
+        enumeration members(name, values);
+        type_of<Enum>()->setEnumValues(members.values());
+        type_of<const Enum>()->setEnumValues(members.values());
+        return def(name, object(std::move(members)));
     }
 
     template <typename Enum>
@@ -245,7 +259,10 @@ public:
     {
         if (cls_ == nullptr)
             return *this;
-        return def(name, object(enumeration(name, values)));
+        enumeration members(name, values);
+        type_of<Enum>()->setEnumValues(members.values());
+        type_of<const Enum>()->setEnumValues(members.values());
+        return def(name, object(std::move(members)));
     }
 
     template <typename B> class_& inherit()

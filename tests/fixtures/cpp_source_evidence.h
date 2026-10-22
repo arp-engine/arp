@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/string_utils.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/text/string_utils.h"
 
 #include <algorithm>
 #include <string_view>

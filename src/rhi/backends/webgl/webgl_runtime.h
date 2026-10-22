@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/lifetime_epoch.h"
+#include "core/ownership/lifetime_epoch.h"
 #include "rhi/semantics/webgl_context_ownership.h"
 #include "rhi/semantics/webgl_context_recovery.h"
 #include "rhi/semantics/webgl_surface_lifecycle.h"

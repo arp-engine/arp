@@ -1,7 +1,7 @@
 #pragma once
-#include "core/external_object_slot.h"
+#include "core/ownership/external_object_slot.h"
 #include "core/runtime/completion_evidence_batch.h"
-#include "core/utf8.h"
+#include "core/text/utf8.h"
 #include "rhi/backends/webgpu/webgpu_native_error_scope_batch.h"
 #include "rhi/backends/webgpu/webgpu_native_string_view.h"
 #include "rhi/frontend/query_creation.h"

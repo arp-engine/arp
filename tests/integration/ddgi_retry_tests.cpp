@@ -1,6 +1,6 @@
 #include "fixtures/recorded_resource_state_checks.h"
 #include "rhi/backends/null/null_backend.h"
-#include "tools/render_feature_lab/postprocess_fixture.h"
+#include "tests/fixtures/postprocess_fixture.h"
 
 #include <cassert>
 #include <iostream>
@@ -8,7 +8,7 @@
 int main()
 {
     using namespace arp;
-    using namespace tools::render_feature_lab;
+    using namespace tests::postprocess;
     {
         auto device = rhi::createNullDevice();
         tests::checkRecordedResourceStates(*device);

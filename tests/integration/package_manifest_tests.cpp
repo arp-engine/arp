@@ -1,5 +1,5 @@
-#include "core/cpu_allocator.h"
-#include "core/package_manifest.h"
+#include "core/memory/cpu_allocator.h"
+#include "engine/distribution/package_manifest.h"
 
 #include <cassert>
 #include <string>

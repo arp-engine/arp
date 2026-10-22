@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/initialized_byte_buffer.h"
+#include "core/memory/initialized_byte_buffer.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 #include "rhi/conformance/sampled_execution.h"
 #include "shader/graphics_shader_module_artifact.h"

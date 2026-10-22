@@ -42,7 +42,7 @@ TerrainVegetationRhiRuntime::Result TerrainVegetationRhiRuntime::activate(
     candidate.terrainGeneration = source.terrainGeneration;
     candidate.prototypes.reserve(source.prototypes.size());
     for (const auto& prototype : source.prototypes) {
-        core::pmr::Vector<pcg::InstanceDataGpu> instances{&core::defaultCpuMemoryResource()};
+        core::pmr::Vector<vegetation::InstanceDataGpu> instances{&core::defaultCpuMemoryResource()};
         if (!lowerTerrainVegetationInstancesForCull(prototype, instances, result.diagnostics))
             return result;
         if (instances.empty())
@@ -51,7 +51,7 @@ TerrainVegetationRhiRuntime::Result TerrainVegetationRhiRuntime::activate(
         gpuPrototype.prototypeId = prototype.prototypeId;
         gpuPrototype.instanceCount = static_cast<std::uint32_t>(instances.size());
         gpuPrototype.instanceBuffer = device.createBuffer({"TerrainVegetationCullInstances",
-            instances.size() * sizeof(pcg::InstanceDataGpu),
+            instances.size() * sizeof(vegetation::InstanceDataGpu),
             rhi::ResourceUsage::StorageBuffer | rhi::ResourceUsage::CopyDst,
             rhi::MemoryUsage::CpuToGpu,
             rhi::ResourceState::ShaderRead});
@@ -61,7 +61,7 @@ TerrainVegetationRhiRuntime::Result TerrainVegetationRhiRuntime::activate(
         }
         const auto written = device.writeBuffer(*gpuPrototype.instanceBuffer,
             instances.data(),
-            instances.size() * sizeof(pcg::InstanceDataGpu));
+            instances.size() * sizeof(vegetation::InstanceDataGpu));
         if (!written.success) {
             result.diagnostics = "TERRAIN-VEGETATION-RHI-BUFFER-UPLOAD-FAILED: ";
             result.diagnostics += written.diagnostics;

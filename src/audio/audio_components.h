@@ -20,11 +20,11 @@ struct AudioSourceComponentDesc {
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct AudioSourceEditorProperties {
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float volume = 1.0f;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     bool loop = false;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     bool playOnEnable = true;
 };
 

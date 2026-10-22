@@ -18,6 +18,16 @@ bool sampleWeights(void*, float, float, arp::pcg::TerrainBakeWeights& out)
     return true;
 }
 
+bool sampleLatticeWeights(
+    void*, std::uint64_t x, std::uint64_t z, arp::resource::TerrainBakeWeights& out)
+{
+    if (x >= 2u || z >= 2u)
+        return false;
+    out.pageA = {static_cast<std::uint8_t>(x + 2u * z), 0u, 0u, 0u};
+    out.pageB = {0u, 0u, 0u, static_cast<std::uint8_t>(11u + x + 2u * z)};
+    return true;
+}
+
 bool bakeVegetation(void*,
     arp::terrain::TerrainTileCoord coord,
     arp::core::pmr::Vector<arp::resource::TerrainStaticVegetationInstance>& out,
@@ -79,6 +89,20 @@ int main()
         == baked.asset.tiles.front().vegetation.front().variationSeed);
 
     request.sampleWeights = nullptr;
+    assert(!arp::pcg::bakeTerrainAsset(request).success);
+    request.sampleLatticeWeights = sampleLatticeWeights;
+    request.asset.bounds = {100.0f, 102.0f, -200.0f, -198.0f};
+    const auto lattice = arp::pcg::bakeTerrainAsset(request);
+    assert(lattice.success && lattice.asset.tiles[0].weightPageA[12] == 3u
+        && lattice.asset.tiles[0].weightPageB[15] == 14u);
+    // Selecting both coordinate contracts is ambiguous and must fail.
+    request.sampleWeights = sampleWeights;
+    assert(!arp::pcg::bakeTerrainAsset(request).success);
+    request.sampleWeights = nullptr;
+    request.sampleLatticeWeights =
+        [](void*, std::uint64_t, std::uint64_t, arp::resource::TerrainBakeWeights&) {
+            return false;
+        };
     assert(!arp::pcg::bakeTerrainAsset(request).success);
     return 0;
 }

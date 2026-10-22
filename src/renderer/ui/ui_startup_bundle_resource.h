@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/ui/ui_atlas_texture_resource.h"
 #include "resource/resource_manager.h"
 #include "ui/ui_atlas_image_resource.h"

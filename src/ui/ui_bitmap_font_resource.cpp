@@ -1,8 +1,8 @@
 #include "ui/ui_bitmap_font_resource.h"
 
-#include "core/sha256.h"
-#include "core/utf8.h"
-#include "core/yaml_contract.h"
+#include "core/encoding/yaml_contract.h"
+#include "core/hash/sha256.h"
+#include "core/text/utf8.h"
 #include "resource/resource_source_io.h"
 
 #include <algorithm>

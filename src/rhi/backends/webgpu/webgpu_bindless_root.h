@@ -1,5 +1,5 @@
 #pragma once
-#include "core/shared_identity_projection.h"
+#include "core/ownership/shared_identity_projection.h"
 #include "rhi/backends/webgpu/webgpu_native_payloads.h"
 #include "rhi/backends/webgpu/webgpu_original_geometry_content.h"
 #include "rhi/frontend/bindless_root_initialized_shader.h"

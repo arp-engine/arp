@@ -1,4 +1,4 @@
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "renderer/gi/ddgi_renderer.h"
 #include "rhi/backends/null/null_backend.h"
 #include "tests/fixtures/capability_override_device.h"

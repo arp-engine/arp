@@ -1,11 +1,24 @@
 #pragma once
-#include "core/yaml_contract.h"
+#include "core/encoding/yaml_contract.h"
+#include "reflection/serialization.h"
 #include "resource/resource_manager.h"
+#include "scene/component_factory.h"
 #include "scene/scene.h"
 
 #include <algorithm>
 
 namespace arp::scene {
+ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
+
+struct SceneObjectAuthoringProperties {
+    APROP(Serialize, Editor)
+    core::pmr::String name{&core::defaultCpuMemoryResource()};
+    APROP(Serialize, Editor)
+    bool active = true;
+};
+
+ARP_API bool initializeSceneAuthoringReflection();
+
 struct SceneObjectBinding {
     std::uint64_t localId = 0;
     GameObjectId objectId;
@@ -33,70 +46,28 @@ private:
     const Scene& scene_;
 };
 
-class SceneComponentCodec {
-public:
-    virtual ~SceneComponentCodec() = default;
-    virtual const char* type() const = 0;
-    enum class Phase { Components, Bodies, Colliders, Joints };
-
-    virtual Phase phase() const { return Phase::Components; }
-
-    virtual bool accepts(const Component&) const = 0;
-    virtual bool attach(GameObject&,
-        const core::YamlContract::Node&,
-        const SceneObjectBindings&,
-        resource::ResourceManager&,
-        core::pmr::String&) const = 0;
-    virtual bool encode(const Component&,
-        const SceneObjectBindings&,
-        core::YamlContract::Node&,
-        core::pmr::String&) const = 0;
-
-    // Called only after every component has been attached. Enables local
-    // forward references without depending on authored object/component order.
-    virtual bool restore(GameObject&,
-        const core::YamlContract::Node&,
-        const SceneObjectBindings&,
-        core::pmr::String&) const
-    {
-        return true;
-    }
-};
-
-class SceneCodecRegistry final {
-public:
-    bool add(core::UniquePtr<SceneComponentCodec>);
-    const SceneComponentCodec* find(std::string_view) const;
-    const SceneComponentCodec* find(const Component&) const;
-
-private:
-    core::pmr::Vector<core::UniquePtr<SceneComponentCodec>> codecs_;
-};
-
 class SceneDocumentResource : public resource::ResourceBase {
 public:
+    core::UniquePtr<Scene> instantiate(
+        resource::ResourceManager&, const SceneComponentFactory&, core::pmr::String&) const;
+    GameObjectId instantiateInto(Scene&,
+        GameObjectId,
+        resource::ResourceManager&,
+        const SceneComponentFactory&,
+        core::pmr::String&) const;
+    static bool encode(const Scene&,
+        const SceneComponentFactory&,
+        const char*,
+        const core::pmr::String&,
+        core::pmr::String&,
+        core::pmr::String&);
     resource::ResourceLoadResult load(
         resource::ResourceManager&, const resource::ResourceLoadContext&) override;
     bool collectFileReadIntents(resource::ResourceManager&,
         core::pmr::Vector<resource::ResourceFileReadIntent>&,
         core::pmr::String&) const override;
-    // Caller publishes the candidate only after success. No live scene mutation.
-    core::UniquePtr<Scene> instantiate(
-        resource::ResourceManager&, const SceneCodecRegistry&, core::pmr::String& diagnostic) const;
-    GameObjectId instantiateInto(Scene&,
-        GameObjectId parent,
-        resource::ResourceManager&,
-        const SceneCodecRegistry&,
-        core::pmr::String& diagnostic) const;
 
     const auto& yaml() const { return yaml_; }
-
-    static bool encode(const Scene&,
-        const SceneCodecRegistry&,
-        const char* documentType,
-        const core::pmr::String& resourceId,
-        core::pmr::String& yaml,
-        core::pmr::String& diagnostic);
 
 protected:
     SceneDocumentResource(core::pmr::String id,
@@ -108,9 +79,9 @@ protected:
 
 private:
     bool populate(Scene&,
-        GameObjectId root,
+        GameObjectId,
         resource::ResourceManager&,
-        const SceneCodecRegistry&,
+        const SceneComponentFactory&,
         core::pmr::String&) const;
     core::pmr::String path_, documentType_, yaml_;
     std::size_t maxBytes_;
@@ -151,16 +122,22 @@ struct SceneObjectLink {
 };
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
+
 struct ObjectLinksEditorEntry {
-    APROP(Editor)
+    APROP(Serialize, Editor)
     core::pmr::String name{&core::defaultCpuMemoryResource()};
-    APROP(Editor, Doc = "sceneObject:*:required")
+    APROP(Serialize,
+        Editor,
+        SceneObjectReference,
+        ReferenceTarget = "*",
+        Doc = "sceneObject:*:required")
     std::uint64_t targetObjectId = 0;
 };
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
+
 struct ObjectLinksEditorProperties {
-    APROP(Editor, Doc = "sceneObjectLinkList")
+    APROP(Serialize, Editor, Doc = "sceneObjectLinkList")
     core::pmr::Vector<ObjectLinksEditorEntry> links{&core::defaultCpuMemoryResource()};
 };
 
@@ -212,23 +189,4 @@ public:
     }
 };
 
-class ObjectLinksCodec final : public SceneComponentCodec {
-public:
-    const char* type() const override { return "arp.object-links/1"; }
-
-    bool accepts(const Component& c) const override
-    {
-        return dynamic_cast<const ObjectLinksComponent*>(&c) != nullptr;
-    }
-
-    bool attach(GameObject&,
-        const core::YamlContract::Node&,
-        const SceneObjectBindings&,
-        resource::ResourceManager&,
-        core::pmr::String&) const override;
-    bool encode(const Component&,
-        const SceneObjectBindings&,
-        core::YamlContract::Node&,
-        core::pmr::String&) const override;
-};
 } // namespace arp::scene

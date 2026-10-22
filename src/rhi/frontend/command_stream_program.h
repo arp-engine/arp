@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/preflight_replay.h"
-#include "core/unsigned_range.h"
+#include "core/algorithm/preflight_replay.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/frontend/command_geometry_fetch.h"
 #include "rhi/frontend/command_state.h"
 #include "rhi/frontend/command_usage.h"

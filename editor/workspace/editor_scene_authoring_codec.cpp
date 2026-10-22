@@ -1,6 +1,8 @@
 #include "editor/workspace/editor_scene_authoring_codec.h"
 
-#include "core/yaml_contract.h"
+#include "core/encoding/yaml_contract.h"
+#include "reflection/serialization.h"
+#include "scene/scene_asset_resource.h"
 #include "scene/transform.h"
 
 #include <algorithm>
@@ -12,71 +14,53 @@ namespace {
 using Node = core::YamlContract::Node;
 using Yaml = core::YamlContract;
 
-double readNumber(const Node& value)
-{
-    if (!value.is_integer() && !value.is_float_number())
-        Yaml::fail();
-    const auto result = value.get_value<double>();
-    if (!std::isfinite(result))
-        Yaml::fail();
-    return result;
-}
-
 bool exactMappingSize(const Node& value, std::size_t expected)
 {
-    return value.is_mapping()
-        && value.get_value_ref<const Node::mapping_type&>().size() == expected;
+    return value.is_mapping() && value.size() == expected;
 }
 
-void setVector(Node& node, const core::Vec3& value)
-{
-    node = Node::mapping();
-    node["x"] = value.x;
-    node["y"] = value.y;
-    node["z"] = value.z;
-}
+// Inspector references have already been remapped to document-local identities.
+// This context preserves those identities through the common field archive.
+class LocalReferenceContext final : public reflection::SerializationContext {
+public:
+    bool writeReference(const reflection::property& property,
+        const reflection::object& value,
+        Node& output,
+        core::pmr::String&) const override
+    {
+        if (property.reference().kind != reflection::ReferenceKind::SceneObject)
+            return false;
+        const auto id = value.cast<std::uint64_t>();
+        if (!id || id > INT64_MAX)
+            return false;
+        output = static_cast<Node::integer_type>(id);
+        return true;
+    }
 
-core::Vec3 readVector(const Node& node)
-{
-    if (!exactMappingSize(node, 3u))
-        Yaml::fail();
-    return {static_cast<float>(Yaml::number(node, "x")),
-        static_cast<float>(Yaml::number(node, "y")),
-        static_cast<float>(Yaml::number(node, "z"))};
-}
+    bool readReference(const reflection::property& property,
+        const Node& input,
+        reflection::object& value,
+        core::pmr::String&) const override
+    {
+        if (property.reference().kind != reflection::ReferenceKind::SceneObject)
+            return false;
+        const auto id = Yaml::uint64(input);
+        if (!id)
+            return false;
+        value = reflection::object(id);
+        return true;
+    }
+};
 
-void setVector(Node& node, const core::Vec2& value)
+template <class T> bool readValue(const Node& input, T& output)
 {
-    node = Node::mapping();
-    node["x"] = value.x;
-    node["y"] = value.y;
-}
-
-core::Vec2 readVector2(const Node& node)
-{
-    if (!exactMappingSize(node, 2u))
-        Yaml::fail();
-    return {static_cast<float>(Yaml::number(node, "x")),
-        static_cast<float>(Yaml::number(node, "y"))};
-}
-
-void setColor(Node& node, const core::Vec4& value)
-{
-    node = Node::mapping();
-    node["r"] = value.x;
-    node["g"] = value.y;
-    node["b"] = value.z;
-    node["a"] = value.w;
-}
-
-core::Vec4 readColor(const Node& node)
-{
-    if (!exactMappingSize(node, 4u))
-        Yaml::fail();
-    return {static_cast<float>(Yaml::number(node, "r")),
-        static_cast<float>(Yaml::number(node, "g")),
-        static_cast<float>(Yaml::number(node, "b")),
-        static_cast<float>(Yaml::number(node, "a"))};
+    LocalReferenceContext references;
+    reflection::SerializationArchive archive({}, &references);
+    reflection::object value;
+    if (!archive.readValue(input, reflection::type_of<T>(), value))
+        return false;
+    output = value.cast<T>();
+    return true;
 }
 
 const char* kindName(SceneInspectorPropertyKind kind)
@@ -113,94 +97,66 @@ const char* kindName(SceneInspectorPropertyKind kind)
     }
 }
 
-bool encodeProperty(const SceneInspectorProperty& property,
-    Node& output,
-    std::uint64_t sceneObjectLocalId = 0)
+bool encodeProperty(
+    const SceneInspectorProperty& property, Node& output, std::uint64_t sceneObjectLocalId = 0)
 {
     const auto* kind = kindName(property.kind);
     if (!kind || !property.editable)
         return false;
     output = Node::mapping();
     output["kind"] = kind;
+
+    reflection::object value;
     switch (property.kind) {
     case SceneInspectorPropertyKind::Boolean:
-        output["value"] = property.booleanValue;
+        value = reflection::object(property.booleanValue);
         break;
     case SceneInspectorPropertyKind::Integer:
     case SceneInspectorPropertyKind::Enumeration:
-        output["value"] = property.integerValue;
+        value = reflection::object(property.integerValue);
         break;
     case SceneInspectorPropertyKind::UnsignedInteger:
-        output["value"] = property.unsignedIntegerValue;
-        break;
-    case SceneInspectorPropertyKind::SceneObjectReference:
-        if (sceneObjectLocalId == 0u && !property.resourceOptional)
-            return false;
-        output["value"] = sceneObjectLocalId;
+        value = reflection::object(property.unsignedIntegerValue);
         break;
     case SceneInspectorPropertyKind::Number:
-        if (!std::isfinite(property.numberValue))
-            return false;
-        output["value"] = property.numberValue;
+        value = reflection::object(property.numberValue);
         break;
     case SceneInspectorPropertyKind::Vector2:
-        if (!std::isfinite(property.vector2Value.x) || !std::isfinite(property.vector2Value.y))
-            return false;
-        setVector(output["value"], property.vector2Value);
-        break;
-    case SceneInspectorPropertyKind::Vector2List:
-        if (property.vector2ListValue.size() > kMaxSceneInspectorVector2ListElements)
-            return false;
-        output["value"] = Node::sequence();
-        for (const auto& point : property.vector2ListValue) {
-            if (!std::isfinite(point.x) || !std::isfinite(point.y))
-                return false;
-            Node encodedPoint;
-            setVector(encodedPoint, point);
-            output["value"].get_value_ref<Node::sequence_type&>().push_back(
-                std::move(encodedPoint));
-        }
-        break;
-    case SceneInspectorPropertyKind::SceneObjectLinkList:
-        if (property.sceneObjectLinkListValue.size() > kMaxSceneInspectorObjectLinks)
-            return false;
-        output["value"] = Node::sequence();
-        for (const auto& link : property.sceneObjectLinkListValue) {
-            if (link.name.empty() || link.name.size() > 128u || link.targetObjectId == 0u)
-                return false;
-            Node encodedLink = Node::mapping();
-            encodedLink["name"] = std::string(link.name.data(), link.name.size());
-            encodedLink["target"] = link.targetObjectId;
-            output["value"].get_value_ref<Node::sequence_type&>().push_back(
-                std::move(encodedLink));
-        }
+        value = reflection::object(property.vector2Value);
         break;
     case SceneInspectorPropertyKind::Vector3:
-        if (!std::isfinite(property.vector3Value.x) || !std::isfinite(property.vector3Value.y)
-            || !std::isfinite(property.vector3Value.z))
-            return false;
-        setVector(output["value"], property.vector3Value);
+        value = reflection::object(property.vector3Value);
         break;
     case SceneInspectorPropertyKind::Color4:
-        if (!std::isfinite(property.color4Value.x) || !std::isfinite(property.color4Value.y)
-            || !std::isfinite(property.color4Value.z) || !std::isfinite(property.color4Value.w))
-            return false;
-        setColor(output["value"], property.color4Value);
+        value = reflection::object(property.color4Value);
+        break;
+    case SceneInspectorPropertyKind::Vector2List:
+        value = reflection::object(property.vector2ListValue);
         break;
     case SceneInspectorPropertyKind::String:
     case SceneInspectorPropertyKind::ResourceReference:
-        if (property.stringValue.size() > 512u)
-            return false;
-        output["value"] = Node::mapping();
-        if (property.stringValue.empty())
-            output["value"]["empty"] = true;
-        else
-            output["value"]["text"] =
-                std::string(property.stringValue.data(), property.stringValue.size());
+        value = reflection::object(property.stringValue);
         break;
+    case SceneInspectorPropertyKind::SceneObjectReference:
+        if ((!sceneObjectLocalId && !property.resourceOptional) || sceneObjectLocalId > INT64_MAX)
+            return false;
+        value = reflection::object(static_cast<std::int64_t>(sceneObjectLocalId));
+        break;
+    case SceneInspectorPropertyKind::SceneObjectLinkList: {
+        core::pmr::Vector<scene::ObjectLinksEditorEntry> links{&core::defaultCpuMemoryResource()};
+        for (const auto& item : property.sceneObjectLinkListValue)
+            links.push_back({item.name, item.targetObjectId});
+        value = reflection::object(std::move(links));
+        break;
+    }
     default:
         return false;
     }
+    LocalReferenceContext references;
+    reflection::SerializationArchive archive({}, &references);
+    if (!archive.writeValue(value, output["value"]))
+        return false;
+
     return true;
 }
 
@@ -246,8 +202,8 @@ bool writeProperty(EditorSceneDocument& document,
     const auto& value = Yaml::required(encoded, "value");
     bool booleanValue = false;
     int integerValue = 0;
-    std::uint32_t unsignedValue = 0;
-    float numberValue = 0.0f;
+    std::uint64_t unsignedValue = 0;
+    double numberValue = 0.0f;
     core::Vec2 vector2Value{};
     core::pmr::Vector<core::Vec2> vector2ListValue(&core::defaultCpuMemoryResource());
     core::pmr::Vector<SceneInspectorObjectLink> sceneObjectLinkListValue{
@@ -256,118 +212,85 @@ bool writeProperty(EditorSceneDocument& document,
     core::Vec4 colorValue{};
     core::pmr::String stringValue{&core::defaultCpuMemoryResource()};
     std::uint64_t sceneObjectReferenceValue = 0;
+
     switch (property.kind) {
     case SceneInspectorPropertyKind::Boolean:
-        if (!value.is_boolean())
+        if (!readValue(value, booleanValue))
             return false;
-        booleanValue = value.get_value<bool>();
         break;
     case SceneInspectorPropertyKind::Integer:
     case SceneInspectorPropertyKind::Enumeration:
-        if (!value.is_integer())
+        if (!readValue(value, integerValue))
             return false;
-        {
-            const auto raw = value.get_value<Node::integer_type>();
-            if (raw < INT32_MIN || raw > INT32_MAX)
-                return false;
-            integerValue = static_cast<int>(raw);
-        }
         break;
     case SceneInspectorPropertyKind::UnsignedInteger:
-        if (!value.is_integer())
+        if (!readValue(value, unsignedValue))
             return false;
-        {
-            const auto raw = Yaml::uint64(value);
-            if (raw > UINT32_MAX)
-                return false;
-            unsignedValue = static_cast<std::uint32_t>(raw);
-        }
-        break;
-    case SceneInspectorPropertyKind::SceneObjectReference:
-        if (!value.is_integer())
-            return false;
-        {
-            const auto localId = Yaml::uint64(value);
-            if (localId == 0u && !property.resourceOptional)
-                return false;
-            if (localId != 0u) {
-                const auto target = std::find_if(records.begin(), records.end(),
-                    [localId](const auto& record) { return record.localId == localId; });
-                if (target == records.end())
-                    return false;
-                sceneObjectReferenceValue = target->runtimeId.value();
-            }
-        }
         break;
     case SceneInspectorPropertyKind::Number:
-        numberValue = static_cast<float>(readNumber(value));
+        if (!readValue(value, numberValue))
+            return false;
         break;
     case SceneInspectorPropertyKind::Vector2:
-        vector2Value = readVector2(value);
-        break;
-    case SceneInspectorPropertyKind::Vector2List:
-        if (!value.is_sequence()
-            || value.get_value_ref<const Node::sequence_type&>().size()
-                > kMaxSceneInspectorVector2ListElements)
+        if (!readValue(value, vector2Value))
             return false;
-        vector2ListValue.reserve(value.get_value_ref<const Node::sequence_type&>().size());
-        for (const auto& point : value.get_value_ref<const Node::sequence_type&>())
-            vector2ListValue.push_back(readVector2(point));
-        break;
-    case SceneInspectorPropertyKind::SceneObjectLinkList:
-        if (!value.is_sequence()
-            || value.get_value_ref<const Node::sequence_type&>().size()
-                > kMaxSceneInspectorObjectLinks)
-            return false;
-        for (const auto& encodedLink : value.get_value_ref<const Node::sequence_type&>()) {
-            if (!exactMappingSize(encodedLink, 2u))
-                return false;
-            const auto name = Yaml::text(encodedLink, "name");
-            const auto localId = Yaml::uint64(Yaml::required(encodedLink, "target"));
-            const auto target = std::find_if(records.begin(), records.end(),
-                [localId](const auto& record) { return record.localId == localId; });
-            if (name.empty() || name.size() > 128u || localId == 0u || target == records.end())
-                return false;
-            sceneObjectLinkListValue.emplace_back();
-            auto& link = sceneObjectLinkListValue.back();
-            link.name = name;
-            link.targetObjectId = target->runtimeId.value();
-        }
         break;
     case SceneInspectorPropertyKind::Vector3:
-        vectorValue = readVector(value);
+        if (!readValue(value, vectorValue))
+            return false;
         break;
     case SceneInspectorPropertyKind::Color4:
-        colorValue = readColor(value);
+        if (!readValue(value, colorValue))
+            return false;
         break;
+    case SceneInspectorPropertyKind::Vector2List:
+        if (!readValue(value, vector2ListValue)
+            || vector2ListValue.size() > kMaxSceneInspectorVector2ListElements)
+            return false;
+        break;
+    case SceneInspectorPropertyKind::SceneObjectReference: {
+        std::int64_t id = 0;
+        if (!readValue(value, id) || id < 0 || (!id && !property.resourceOptional))
+            return false;
+        if (id) {
+            const auto target =
+                std::find_if(records.begin(), records.end(), [id](const auto& record) {
+                    return record.localId == std::uint64_t(id);
+                });
+            if (target == records.end())
+                return false;
+            sceneObjectReferenceValue = target->runtimeId.value();
+        }
+        break;
+    }
+    case SceneInspectorPropertyKind::SceneObjectLinkList: {
+        core::pmr::Vector<scene::ObjectLinksEditorEntry> links{&core::defaultCpuMemoryResource()};
+        if (!readValue(value, links) || links.size() > kMaxSceneInspectorObjectLinks)
+            return false;
+        for (const auto& link : links) {
+            const auto target =
+                std::find_if(records.begin(), records.end(), [&](const auto& record) {
+                    return record.localId == link.targetObjectId;
+                });
+            if (target == records.end() || link.name.empty() || link.name.size() > 128)
+                return false;
+            sceneObjectLinkListValue.push_back({link.name, target->runtimeId.value()});
+        }
+        break;
+    }
     case SceneInspectorPropertyKind::String:
     case SceneInspectorPropertyKind::ResourceReference:
-        if (!value.is_mapping() || value.get_value_ref<const Node::mapping_type&>().size() != 1u)
+        if (!readValue(value, stringValue) || stringValue.size() > 512)
             return false;
-        if (value.contains("empty")) {
-            if (!Yaml::boolean(value, "empty"))
-                return false;
-        } else if (value.contains("text")) {
-            stringValue = Yaml::text(value, "text");
-            if (stringValue.empty())
-                return false;
-        } else
+        if (property.kind == SceneInspectorPropertyKind::ResourceReference && !stringValue.empty()
+            && (!validator || !validator(context, property.resourceType, stringValue)))
             return false;
-        if (stringValue.size() > 512u)
-            return false;
-        if (property.kind == SceneInspectorPropertyKind::ResourceReference
-            && !stringValue.empty()) {
-            if (!validator
-                || !validator(context,
-                    std::string_view(property.resourceType.data(), property.resourceType.size()),
-                    std::string_view(stringValue.data(), stringValue.size())))
-                return false;
-        }
         break;
     default:
         return false;
     }
-    return validateOnly || document.setComponentProperty(objectId,
+    return validateOnly
+        || document.setComponentProperty(objectId,
                componentId,
                std::string_view(property.name.data(), property.name.size()),
                property.kind,
@@ -438,15 +361,10 @@ bool EditorSceneAuthoringCodec::encode(
             }
             node["childIndex"] = static_cast<std::uint64_t>(childIndex);
             const auto transform = object->transform().localTransform();
-            Node t = Node::mapping();
-            setVector(t["translation"], transform.translation);
-            setVector(t["scale"], transform.scale);
-            Node rotation = Node::mapping();
-            rotation["x"] = transform.rotation.x;
-            rotation["y"] = transform.rotation.y;
-            rotation["z"] = transform.rotation.z;
-            rotation["w"] = transform.rotation.w;
-            t["rotation"] = std::move(rotation);
+            Node t;
+            reflection::SerializationArchive transformArchive;
+            if (!transformArchive.writeFields(reflection::object(object->local_transform()), t))
+                return false;
             node["transform"] = std::move(t);
             Node components = Node::sequence();
             const auto inspector = document.inspectorProperties(object->id());
@@ -466,7 +384,8 @@ bool EditorSceneAuthoringCodec::encode(
                 Node properties = Node::mapping();
                 std::size_t propertyCount = 0;
                 for (const auto& property : inspector) {
-                    if (property.componentId != component->id().value() || !property.editable)
+                    if (property.componentId != component->id().value() || !property.editable
+                        || !property.serializable)
                         continue;
                     if (++propertyCount > maxPropertiesPerComponent) {
                         diagnostic = "EDITOR-SCENE-PROPERTY-LIMIT";
@@ -475,14 +394,13 @@ bool EditorSceneAuthoringCodec::encode(
                     Node value;
                     const auto objectReferenceLocalId =
                         property.kind == SceneInspectorPropertyKind::SceneObjectReference
-                        ? local(scene::GameObjectId::fromValue(
-                              property.sceneObjectReferenceValue))
+                        ? local(scene::GameObjectId::fromValue(property.sceneObjectReferenceValue))
                         : 0u;
                     auto encodedProperty = property;
                     if (property.kind == SceneInspectorPropertyKind::SceneObjectLinkList) {
                         for (auto& link : encodedProperty.sceneObjectLinkListValue) {
-                            const auto localId = local(
-                                scene::GameObjectId::fromValue(link.targetObjectId));
+                            const auto localId =
+                                local(scene::GameObjectId::fromValue(link.targetObjectId));
                             if (localId == 0u) {
                                 diagnostic = "EDITOR-SCENE-OBJECT-LINK-EXTERNAL";
                                 return false;
@@ -507,7 +425,7 @@ bool EditorSceneAuthoringCodec::encode(
             node["components"] = std::move(components);
             root["objects"].get_value_ref<Node::sequence_type&>().push_back(std::move(node));
         }
-        const auto serialized = Node::serialize(root);
+        const auto serialized = Yaml::serialize(root);
         if (serialized.size() > maxDocumentBytes) {
             diagnostic = "EDITOR-SCENE-DOCUMENT-LIMIT";
             return false;
@@ -534,9 +452,14 @@ bool EditorSceneAuthoringCodec::decode(std::string_view yaml,
     }
     const char* stage = "root";
     try {
-        const auto root = Node::deserialize(core::pmr::String(yaml.data(), yaml.size()));
+        const auto root = Yaml::parseSingleDocument(yaml);
         if (!exactMappingSize(root, 5u)) {
             diagnostic = "EDITOR-SCENE-ROOT-STRUCTURE";
+            return false;
+        }
+        if (Yaml::uint32(root, "contractVersion") == 1) {
+            diagnostic =
+                "ARP-SCENE-MIGRATION-REQUIRED: run python tools/migrate_scene_v1.py source destination";
             return false;
         }
         if (Yaml::text(root, "type") != "arp.editor-scene"
@@ -551,11 +474,12 @@ bool EditorSceneAuthoringCodec::decode(std::string_view yaml,
         }
         EditorSceneDocument candidate(false);
         candidate.setResourceManagerProvider(destination.resourceManagerProvider());
-    candidate.setPhysicsWorld2DProvider(destination.physicsWorld2DProvider());
+        candidate.setPhysicsWorld2DProvider(destination.physicsWorld2DProvider());
         candidate.setSchemaOnlyComponentCreation(validateOnly);
         candidate.scene().setName(Yaml::text(root, "name"));
         core::pmr::Vector<ObjectRecord> records{&core::defaultCpuMemoryResource()};
         records.reserve(objects.size());
+
         struct PendingObjectReference {
             std::uint64_t objectId = 0;
             std::uint64_t componentId = 0;
@@ -563,6 +487,7 @@ bool EditorSceneAuthoringCodec::decode(std::string_view yaml,
             core::pmr::String propertyName{&core::defaultCpuMemoryResource()};
             const Node* encoded = nullptr;
         };
+
         core::pmr::Vector<PendingObjectReference> pendingObjectReferences{
             &core::defaultCpuMemoryResource()};
         std::size_t componentCount = 0;
@@ -594,17 +519,9 @@ bool EditorSceneAuthoringCodec::decode(std::string_view yaml,
                 return false;
             }
             auto transform = scene::Transform::identity();
-            transform.translation = readVector(Yaml::required(t, "translation"));
-            transform.scale = readVector(Yaml::required(t, "scale"));
-            const auto& rotation = Yaml::required(t, "rotation");
-            if (!exactMappingSize(rotation, 4u)) {
-                diagnostic = "EDITOR-SCENE-ROTATION-STRUCTURE";
+            reflection::SerializationArchive transformArchive;
+            if (!transformArchive.readFields(t, reflection::object(&transform)))
                 return false;
-            }
-            transform.rotation = {static_cast<float>(Yaml::number(rotation, "x")),
-                static_cast<float>(Yaml::number(rotation, "y")),
-                static_cast<float>(Yaml::number(rotation, "z")),
-                static_cast<float>(Yaml::number(rotation, "w"))};
             const auto finiteVec = [](const core::Vec3& v) {
                 return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
             };
@@ -672,12 +589,21 @@ bool EditorSceneAuthoringCodec::decode(std::string_view yaml,
                     diagnostic = "EDITOR-SCENE-PROPERTY-LIMIT";
                     return false;
                 }
+                std::size_t expectedProperties = 0;
+                for (const auto& property : inspector)
+                    if (property.componentId == component->id().value() && property.editable
+                        && property.serializable)
+                        ++expectedProperties;
+                if (mapping.size() != expectedProperties) {
+                    diagnostic = "EDITOR-SCENE-MISSING-AUTHORING-FIELD";
+                    return false;
+                }
                 for (const auto& [rawName, encoded] : mapping) {
                     const auto ownedPropertyName = Yaml::text(rawName);
                     const std::string_view propertyName(
                         ownedPropertyName.data(), ownedPropertyName.size());
                     const auto* property = findProperty(inspector, componentType, propertyName);
-                    if (!property || !property->editable
+                    if (!property || !property->serializable || !property->editable
                         || property->componentId != component->id().value()) {
                         diagnostic = "EDITOR-SCENE-PROPERTY-INVALID: ";
                         diagnostic.append(type.data(), type.size());
@@ -714,12 +640,13 @@ bool EditorSceneAuthoringCodec::decode(std::string_view yaml,
             }
         }
         for (const auto& pending : pendingObjectReferences) {
-            const auto properties = candidate.inspectorProperties(
-                scene::GameObjectId::fromValue(pending.objectId));
+            const auto properties =
+                candidate.inspectorProperties(scene::GameObjectId::fromValue(pending.objectId));
             const auto* property = findProperty(properties,
                 std::string_view(pending.componentType.data(), pending.componentType.size()),
                 std::string_view(pending.propertyName.data(), pending.propertyName.size()));
-            if (!property || property->componentId != pending.componentId || !writeProperty(candidate,
+            if (!property || property->componentId != pending.componentId
+                || !writeProperty(candidate,
                     scene::GameObjectId::fromValue(pending.objectId),
                     scene::ComponentId::fromValue(pending.componentId),
                     *property,

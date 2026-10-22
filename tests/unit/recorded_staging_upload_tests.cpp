@@ -1,8 +1,8 @@
-#include "core/cpu_allocator.h"
-#include "core/mutation_journal.h"
-#include "core/page_slice_allocator.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/mutation_journal.h"
 #include "rhi/frontend/command_recorded_state.h"
 #include "rhi/frontend/memory_upload_staging_readiness.h"
+#include "rhi/frontend/page_slice_allocator.h"
 #include "rhi/frontend/transfer_recorded_staging_upload.h"
 
 #include <array>

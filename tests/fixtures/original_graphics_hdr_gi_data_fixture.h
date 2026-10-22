@@ -1,6 +1,6 @@
 #pragma once
-#include "core/ibl_bake.h"
 #include "original_graphics_color_gi_data_fixture.h"
+#include "renderer/gi/ibl_bake.h"
 
 #include <cstring>
 

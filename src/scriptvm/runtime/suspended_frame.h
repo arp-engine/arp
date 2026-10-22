@@ -4,7 +4,7 @@
 // after this complete state has been materialized; native PCs are not part of
 // the contract.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/runtime/diagnostics.h"
 #include "scriptvm/runtime/source_pos.h"
 #include "scriptvm/runtime/value.h"

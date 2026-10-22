@@ -1,6 +1,6 @@
 #pragma once
-#include "core/diagnostic_error.h"
-#include "core/versioned_mutation_array.h"
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/ownership/versioned_mutation_array.h"
 #include "rhi/frontend/resource_recorded_state_domain.h"
 #include "rhi/frontend/resource_state_validation.h"
 #include "rhi/frontend/resource_texture_state_range.h"

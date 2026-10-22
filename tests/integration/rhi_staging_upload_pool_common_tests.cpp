@@ -10,9 +10,9 @@
 //
 // Status: Contract Complete.
 
-#include "core/cpu_allocator.h"
-#include "core/page_slice_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/frontend/memory_staging_upload_pool.h"
+#include "rhi/frontend/page_slice_allocator.h"
 
 #include <cassert>
 #include <cstdint>

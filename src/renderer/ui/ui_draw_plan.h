@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/gpu_common.h"
 #include "rhi/semantics/semantic_report_backend_admission.h"
 #include "ui/ui.h"

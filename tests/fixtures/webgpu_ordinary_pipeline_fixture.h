@@ -1,5 +1,5 @@
 #pragma once
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "cpu_quota_factory_fixture.h"
 #include "graphics_shader_module_artifact_fixture.h"
 #include "rhi/backends/webgpu/webgpu_backend_objects.h"

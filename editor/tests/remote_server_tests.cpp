@@ -1,20 +1,21 @@
+#include "2d/components.h"
+#include "2d/particle_emitter_component.h"
+#include "2d/physics_components.h"
+#include "2d/sprite_animation_component.h"
+#include "2d/tile_map_resource_component.h"
+#include "3d/animator_component.h"
+#include "3d/components.h"
 #include "editor/remote/editor_remote_server.h"
 #include "editor/workspace/editor_scene_authoring_codec.h"
 #include "editor/workspace/editor_shell.h"
-#include "2d/components.h"
-#include "2d/particle_emitter_component.h"
-#include "2d/scene_runtime_codec.h"
-#include "3d/animator_component.h"
-#include "3d/components.h"
-#include "physics2d/components.h"
+#include "network/http/client.h"
+#include "network/io_service.h"
+#include "network/socket_runtime.h"
 #include "resource/internal_asset_package.h"
 #include "resource/prefab_asset_resources.h"
 #include "scene/runtime_components.h"
 #include "scene/scene_asset_resource.h"
 #include "tests/fixtures/tile_map_fixture.h"
-#include "network/http/client.h"
-#include "network/io_service.h"
-#include "network/socket_runtime.h"
 
 #include <algorithm>
 #include <cassert>
@@ -249,8 +250,8 @@ bool runEditorCli(arp::editor::EditorRemoteServer& remote,
     CloseHandle(process.hProcess);
     return completed && exitCode == 0;
 #elif defined(ARP_EDITOR_CLI_EXECUTABLE)
-    std::vector<std::string> command{ARP_EDITOR_CLI_EXECUTABLE,
-        "--url", std::string(endpoint), "--token", std::string(token)};
+    std::vector<std::string> command{
+        ARP_EDITOR_CLI_EXECUTABLE, "--url", std::string(endpoint), "--token", std::string(token)};
     for (const auto argument : arguments)
         command.emplace_back(argument);
     std::vector<char*> argv;
@@ -315,8 +316,9 @@ int main()
         {0.0f, -9.8f}, 32u, 64u, 16u, 128u, 256u, 128u, 32u, 4u, 1.0f / 60.0f};
     auto physicsWorld = core::makeShared<physics2d::PhysicsWorld2D>(physicsConfig);
     assert(physicsWorld->valid());
-    shell.sceneDocument().setPhysicsWorld2DProvider(
-        [physicsWorld] { return physicsWorld; });
+    shell.sceneDocument().setPhysicsWorld2DProvider([physicsWorld] {
+        return physicsWorld;
+    });
     editor::EditorRemoteServer invalidBind;
     constexpr std::string_view token = "loopback-test-token-0123456789-0123456789";
     assert(!invalidBind.start(shell, token, 0, "localhost"));
@@ -407,8 +409,7 @@ int main()
         R"json({"jsonrpc":"2.0","id":40,"method":"tools/list"})json",
         true,
         "2025-11-25");
-    assert(mcpTools.first == 200
-        && mcpTools.second.find("scene.inspector.get") != std::string::npos
+    assert(mcpTools.first == 200 && mcpTools.second.find("scene.inspector.get") != std::string::npos
         && mcpTools.second.find("scene.hierarchy.get") != std::string::npos
         && mcpTools.second.find("scene.component.catalog.get") != std::string::npos
         && mcpTools.second.find("scene.component.add") != std::string::npos
@@ -422,7 +423,8 @@ int main()
         == editor::EditorResponseStatus::Completed);
     assert(shell.submitCommand(editor::AddSceneComponentCommand("MeshComponent")).status
         == editor::EditorResponseStatus::Completed);
-    assert(shell.submitCommand(editor::AddSceneComponentCommand("ParticleEmitter2DComponent")).status
+    assert(
+        shell.submitCommand(editor::AddSceneComponentCommand("ParticleEmitter2DComponent")).status
         == editor::EditorResponseStatus::Completed);
     assert(shell.submitCommand(editor::AddSceneComponentCommand("AnimatorComponent")).status
         == editor::EditorResponseStatus::Completed);
@@ -430,14 +432,15 @@ int main()
         {0.0f, -9.8f}, 32, 64, 16, 128, 256, 128, 32, 4, 1.0f / 60.0f};
     auto remotePhysicsWorld = core::makeShared<physics2d::PhysicsWorld2D>(remotePhysicsConfig);
     assert(remotePhysicsWorld->valid());
-    shell.sceneDocument().setPhysicsWorld2DProvider(
-        [remotePhysicsWorld] { return remotePhysicsWorld; });
+    shell.sceneDocument().setPhysicsWorld2DProvider([remotePhysicsWorld] {
+        return remotePhysicsWorld;
+    });
     assert(shell.submitCommand(editor::AddSceneComponentCommand("RigidBody2DComponent")).status
         == editor::EditorResponseStatus::Completed);
     assert(shell.submitCommand(editor::AddSceneComponentCommand("Collider2DComponent")).status
         == editor::EditorResponseStatus::Completed);
-    auto* inspectorObject = shell.sceneDocument().scene().findObject(
-        shell.sceneDocument().selectedObject());
+    auto* inspectorObject =
+        shell.sceneDocument().scene().findObject(shell.sceneDocument().selectedObject());
     assert(inspectorObject);
     auto* inspectorMesh = inspectorObject->getComponent<scene3d::MeshComponent>();
     auto* inspectorParticleEmitter =
@@ -460,16 +463,16 @@ int main()
     assert(shell.sceneDocument().select(scene::GameObjectId::fromValue(inspectorObjectId)));
     assert(shell.submitCommand(editor::AddSceneComponentCommand("Joint2DComponent")).status
         == editor::EditorResponseStatus::Completed);
-    inspectorObject = shell.sceneDocument().scene().findObject(
-        scene::GameObjectId::fromValue(inspectorObjectId));
+    inspectorObject =
+        shell.sceneDocument().scene().findObject(scene::GameObjectId::fromValue(inspectorObjectId));
     auto* inspectorJoint = inspectorObject->getComponent<physics2d::Joint2DComponent>();
     assert(inspectorJoint && !inspectorJoint->handle());
     const auto jointComponentId = inspectorJoint->id().value();
     const auto restJointBodyA = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.property.set\",\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(jointComponentId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(jointComponentId)
             + ",\"property\":\"bodyA\",\"kind\":\"sceneObjectReference\",\"value\":"
             + std::to_string(inspectorObjectId) + "}",
         true);
@@ -477,26 +480,29 @@ int main()
     const auto mcpJointBodyB = send(network::http::Method::Post,
         "/mcp",
         "{\"jsonrpc\":\"2.0\",\"id\":54,\"method\":\"tools/call\",\"params\":{\"name\":\"scene.component.property.set\",\"arguments\":{\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(jointComponentId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(jointComponentId)
             + ",\"property\":\"bodyB\",\"kind\":\"sceneObjectReference\",\"value\":"
             + std::to_string(jointBodyObjectId) + "}}}",
         true,
         "2025-11-25");
     assert(mcpJointBodyB.first == 200 && inspectorJoint->handle());
-    const auto bodyBObject = shell.sceneDocument().scene().findObject(
-        scene::GameObjectId::fromValue(jointBodyObjectId));
-    const auto bodyBComponentId = bodyBObject->getComponent<physics2d::RigidBody2DComponent>()->id();
+    const auto bodyBObject =
+        shell.sceneDocument().scene().findObject(scene::GameObjectId::fromValue(jointBodyObjectId));
+    const auto bodyBComponentId =
+        bodyBObject->getComponent<physics2d::RigidBody2DComponent>()->id();
     const auto bodyRemovalVersion = shell.stateVersion();
-    assert(shell.submitCommand(
-               editor::RemoveSceneComponentCommand{jointBodyObjectId, bodyBComponentId.value()})
-               .status == editor::EditorResponseStatus::Failed);
+    assert(shell
+               .submitCommand(
+                   editor::RemoveSceneComponentCommand{jointBodyObjectId, bodyBComponentId.value()})
+               .status
+        == editor::EditorResponseStatus::Failed);
     assert(shell.stateVersion() == bodyRemovalVersion && inspectorJoint->handle());
     const auto mcpJointUndo = send(network::http::Method::Post,
-               "/mcp",
-               R"json({"jsonrpc":"2.0","id":55,"method":"tools/call","params":{"name":"scene.undo","arguments":{}}})json",
-               true,
-               "2025-11-25");
+        "/mcp",
+        R"json({"jsonrpc":"2.0","id":55,"method":"tools/call","params":{"name":"scene.undo","arguments":{}}})json",
+        true,
+        "2025-11-25");
     assert(mcpJointUndo.first == 200
         && mcpJointUndo.second.find("\"isError\":false") != std::string::npos);
     assert(inspectorJoint->bodyBObjectId() == 0 && !inspectorJoint->handle());
@@ -504,11 +510,14 @@ int main()
                "/api/v1/commands",
                R"json({"schemaVersion":1,"command":"scene.redo"})json",
                true)
-               .first == 200);
+               .first
+        == 200);
     assert(inspectorJoint->handle());
-    assert(shell.submitCommand(editor::RemoveSceneComponentCommand{
-               inspectorObjectId, jointComponentId})
-               .status == editor::EditorResponseStatus::Completed);
+    assert(
+        shell
+            .submitCommand(editor::RemoveSceneComponentCommand{inspectorObjectId, jointComponentId})
+            .status
+        == editor::EditorResponseStatus::Completed);
     assert(shell.sceneDocument().select(scene::GameObjectId::fromValue(inspectorObjectId)));
     const auto inspectorProperties = shell.sceneDocument().inspectorProperties(
         scene::GameObjectId::fromValue(inspectorObjectId));
@@ -535,29 +544,25 @@ int main()
     const auto missingAnimationDependency = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.add\",\"objectId\":"
-            + std::to_string(inspectorObjectId)
-            + ",\"type\":\"SpriteAnimationComponent\"}",
+            + std::to_string(inspectorObjectId) + ",\"type\":\"SpriteAnimationComponent\"}",
         true);
     assert(missingAnimationDependency.first == 500
         && shell.stateVersion() == beforeMissingAnimationDependency);
     const auto spriteRendererAdd = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.add\",\"objectId\":"
-            + std::to_string(inspectorObjectId)
-            + ",\"type\":\"SpriteRendererComponent\"}",
+            + std::to_string(inspectorObjectId) + ",\"type\":\"SpriteRendererComponent\"}",
         true);
     assert(spriteRendererAdd.first == 200);
     const auto spriteAnimationAdd = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.add\",\"objectId\":"
-            + std::to_string(inspectorObjectId)
-            + ",\"type\":\"SpriteAnimationComponent\"}",
+            + std::to_string(inspectorObjectId) + ",\"type\":\"SpriteAnimationComponent\"}",
         true);
     assert(spriteAnimationAdd.first == 200);
-    auto* animationObject = shell.sceneDocument().scene().findObject(
-        scene::GameObjectId::fromValue(inspectorObjectId));
-    assert(animationObject
-        && animationObject->getComponent<scene2d::SpriteRendererComponent>());
+    auto* animationObject =
+        shell.sceneDocument().scene().findObject(scene::GameObjectId::fromValue(inspectorObjectId));
+    assert(animationObject && animationObject->getComponent<scene2d::SpriteRendererComponent>());
     auto* spriteAnimation = animationObject->getComponent<scene2d::SpriteAnimationComponent>();
     assert(spriteAnimation && !spriteAnimation->valid());
     const auto spriteAnimationId = spriteAnimation->id().value();
@@ -567,16 +572,15 @@ int main()
             + std::to_string(inspectorObjectId) + "}",
         true);
     assert(animationInspector.first == 200
-        && animationInspector.second.find("\"componentId\":"
-               + std::to_string(spriteAnimationId)) != std::string::npos
+        && animationInspector.second.find("\"componentId\":" + std::to_string(spriteAnimationId))
+            != std::string::npos
         && animationInspector.second.find("\"path\":\"speed\"") != std::string::npos
-        && animationInspector.second.find("\"path\":\"eventBudget\"")
-            != std::string::npos);
+        && animationInspector.second.find("\"path\":\"eventBudget\"") != std::string::npos);
     const auto animationSpeedSet = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.property.set\",\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(spriteAnimationId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(spriteAnimationId)
             + ",\"property\":\"speed\",\"kind\":\"number\",\"value\":1.75}",
         true);
     assert(animationSpeedSet.first == 200 && spriteAnimation->speed() == 1.75);
@@ -594,8 +598,8 @@ int main()
         && animationRedo.second.find("\"isError\":false") != std::string::npos
         && spriteAnimation->speed() == 1.75);
 
-    const auto baseColor = std::find_if(inspectorProperties.begin(), inspectorProperties.end(),
-        [&](const auto& property) {
+    const auto baseColor = std::find_if(
+        inspectorProperties.begin(), inspectorProperties.end(), [&](const auto& property) {
             return property.componentId == inspectorMeshId && property.name == "baseColor";
         });
     assert(baseColor != inspectorProperties.end());
@@ -610,30 +614,27 @@ int main()
             != std::string::npos
         && inspectorQuery.second.find("\"path\":\"baseColor\"") != std::string::npos
         && inspectorQuery.second.find("\"kind\":\"color4\"") != std::string::npos
-        && inspectorQuery.second.find("\"path\":\"velocitySpread\"")
-            != std::string::npos
+        && inspectorQuery.second.find("\"path\":\"velocitySpread\"") != std::string::npos
         && inspectorQuery.second.find("\"kind\":\"vector2\"") != std::string::npos
-        && inspectorQuery.second.find("\"resourceType\":\"MeshAssetResource\"")
-            != std::string::npos
+        && inspectorQuery.second.find("\"resourceType\":\"MeshAssetResource\"") != std::string::npos
         && inspectorQuery.second.find("<None>") != std::string::npos);
-    assert(inspectorQuery.second.find("\"componentId\":"
-               + std::to_string(inspectorAnimatorId)) != std::string::npos
-        && inspectorQuery.second.find("\"path\":\"prefabResourceId\"")
+    assert(inspectorQuery.second.find("\"componentId\":" + std::to_string(inspectorAnimatorId))
             != std::string::npos
-        && inspectorQuery.second.find("\"path\":\"defaultStateName\"")
-            != std::string::npos);
+        && inspectorQuery.second.find("\"path\":\"prefabResourceId\"") != std::string::npos
+        && inspectorQuery.second.find("\"path\":\"defaultStateName\"") != std::string::npos);
     const auto animatorPrefabSet = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.property.set\",\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(inspectorAnimatorId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(inspectorAnimatorId)
             + ",\"property\":\"prefabResourceId\",\"kind\":\"resourceReference\",\"value\":\""
             + animatorPrefabId + "\"}",
         true);
     assert(animatorPrefabSet.first == 200
         && inspectorAnimator->editorAuthoringProperties()
                 .cast<const scene3d::AnimatorEditorProperties&>()
-                .prefabResourceId == std::string_view(animatorPrefabId)
+                .prefabResourceId
+            == std::string_view(animatorPrefabId)
         && inspectorAnimator->evaluate(scene3d::AnimatorEvaluationRequest{}).ok());
     const auto animatorPrefabUndo = send(network::http::Method::Post,
         "/mcp",
@@ -643,8 +644,8 @@ int main()
     assert(animatorPrefabUndo.first == 200
         && animatorPrefabUndo.second.find("\"isError\":false") != std::string::npos);
     assert(inspectorAnimator->editorAuthoringProperties()
-                .cast<const scene3d::AnimatorEditorProperties&>()
-                .prefabResourceId.empty());
+            .cast<const scene3d::AnimatorEditorProperties&>()
+            .prefabResourceId.empty());
     const auto animatorPrefabRedo = send(network::http::Method::Post,
         "/api/v1/commands",
         R"json({"schemaVersion":1,"command":"scene.redo"})json",
@@ -652,24 +653,26 @@ int main()
     assert(animatorPrefabRedo.first == 200
         && inspectorAnimator->editorAuthoringProperties()
                 .cast<const scene3d::AnimatorEditorProperties&>()
-                .prefabResourceId == std::string_view(animatorPrefabId)
+                .prefabResourceId
+            == std::string_view(animatorPrefabId)
         && inspectorAnimator->evaluate(scene3d::AnimatorEvaluationRequest{}).ok());
     const auto animatorStateSet = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.property.set\",\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(inspectorAnimatorId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(inspectorAnimatorId)
             + ",\"property\":\"defaultStateName\",\"kind\":\"string\",\"value\":\"walk\"}",
         true);
     assert(animatorStateSet.first == 200
         && inspectorAnimator->editorAuthoringProperties()
                 .cast<const scene3d::AnimatorEditorProperties&>()
-                .defaultStateName == "walk");
+                .defaultStateName
+            == "walk");
     const auto animatorStateMcpSet = send(network::http::Method::Post,
         "/mcp",
         "{\"jsonrpc\":\"2.0\",\"id\":49,\"method\":\"tools/call\",\"params\":{\"name\":\"scene.component.property.set\",\"arguments\":{\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(inspectorAnimatorId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(inspectorAnimatorId)
             + ",\"property\":\"defaultStateName\",\"kind\":\"string\",\"value\":\"idle\"}}}",
         true,
         "2025-11-25");
@@ -677,7 +680,8 @@ int main()
         && animatorStateMcpSet.second.find("\"isError\":false") != std::string::npos
         && inspectorAnimator->editorAuthoringProperties()
                 .cast<const scene3d::AnimatorEditorProperties&>()
-                .defaultStateName == "idle");
+                .defaultStateName
+            == "idle");
     const auto animatorStateUndo = send(network::http::Method::Post,
         "/api/v1/commands",
         R"json({"schemaVersion":1,"command":"scene.undo"})json",
@@ -685,7 +689,8 @@ int main()
     assert(animatorStateUndo.first == 200
         && inspectorAnimator->editorAuthoringProperties()
                 .cast<const scene3d::AnimatorEditorProperties&>()
-                .defaultStateName == "walk");
+                .defaultStateName
+            == "walk");
     const auto animatorStateRedo = send(network::http::Method::Post,
         "/mcp",
         R"json({"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"scene.redo","arguments":{}}})json",
@@ -694,31 +699,34 @@ int main()
     assert(animatorStateRedo.first == 200
         && inspectorAnimator->editorAuthoringProperties()
                 .cast<const scene3d::AnimatorEditorProperties&>()
-                .defaultStateName == "idle");
+                .defaultStateName
+            == "idle");
     core::pmr::String animatorSceneYaml(&core::defaultCpuMemoryResource());
     core::pmr::String animatorSceneDiagnostic(&core::defaultCpuMemoryResource());
     assert(editor::EditorSceneAuthoringCodec::encode(
         shell.sceneDocument(), animatorSceneYaml, animatorSceneDiagnostic));
     editor::EditorSceneDocument animatorRoundTrip;
-    animatorRoundTrip.setResourceManagerProvider(
-        [&shell] { return &shell.projectResources(); });
-    animatorRoundTrip.setPhysicsWorld2DProvider(
-        [physicsWorld] { return physicsWorld; });
+    animatorRoundTrip.setResourceManagerProvider([&shell] {
+        return &shell.projectResources();
+    });
+    animatorRoundTrip.setPhysicsWorld2DProvider([physicsWorld] {
+        return physicsWorld;
+    });
     assert(editor::EditorSceneAuthoringCodec::decode(
         std::string_view(animatorSceneYaml.data(), animatorSceneYaml.size()),
         animatorRoundTrip,
         &isReadyResource,
         &shell.projectResources(),
         animatorSceneDiagnostic));
-    auto* roundTripObject = animatorRoundTrip.scene().findObject(
-        scene::GameObjectId::fromValue(inspectorObjectId));
+    auto* roundTripObject =
+        animatorRoundTrip.scene().findObject(scene::GameObjectId::fromValue(inspectorObjectId));
     assert(roundTripObject);
-    auto* roundTripAnimator =
-        roundTripObject->getComponent<scene3d::AnimatorComponent>();
+    auto* roundTripAnimator = roundTripObject->getComponent<scene3d::AnimatorComponent>();
     assert(roundTripAnimator
         && roundTripAnimator->editorAuthoringProperties()
                 .cast<const scene3d::AnimatorEditorProperties&>()
-                .defaultStateName == "idle"
+                .defaultStateName
+            == "idle"
         && std::string_view(roundTripAnimator->editorAuthoringProperties()
                    .cast<const scene3d::AnimatorEditorProperties&>()
                    .prefabResourceId)
@@ -728,28 +736,25 @@ int main()
     const auto restVector2Property = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.property.set\",\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(inspectorParticleEmitterId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(inspectorParticleEmitterId)
             + ",\"property\":\"velocitySpread\",\"kind\":\"vector2\",\"value\":{\"x\":1.25,\"y\":2.5}}",
         true);
-    assert(restVector2Property.first == 200
-        && shell.stateVersion() == beforeRemoteVector2 + 1);
-    const auto remoteParticleProperties =
-        inspectorParticleEmitter->editorAuthoringProperties();
-    const auto& remoteParticleValues = remoteParticleProperties
-                                           .cast<const scene2d::ParticleEmitter2DEditorProperties&>();
+    assert(restVector2Property.first == 200 && shell.stateVersion() == beforeRemoteVector2 + 1);
+    const auto remoteParticleProperties = inspectorParticleEmitter->editorAuthoringProperties();
+    const auto& remoteParticleValues =
+        remoteParticleProperties.cast<const scene2d::ParticleEmitter2DEditorProperties&>();
     assert(remoteParticleValues.velocitySpread.x == 1.25f
         && remoteParticleValues.velocitySpread.y == 2.5f);
-    const auto propertyCommand = [&](std::string_view commandName, float red,
-                                     bool withIdempotencyKey = false) {
-        return std::string("{\"schemaVersion\":1,\"command\":\"")
-            + std::string(commandName) + "\",\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(inspectorMeshId)
-            + ",\"property\":\"baseColor\",\"kind\":\"color4\",\"value\":{\"r\":"
-            + std::to_string(red) + ",\"g\":0.25,\"b\":0.5,\"a\":1.0}"
-            + (withIdempotencyKey ? ",\"idempotencyKey\":\"remote-color\"" : "") + "}";
-    };
+    const auto propertyCommand =
+        [&](std::string_view commandName, float red, bool withIdempotencyKey = false) {
+            return std::string("{\"schemaVersion\":1,\"command\":\"") + std::string(commandName)
+                + "\",\"objectId\":" + std::to_string(inspectorObjectId)
+                + ",\"componentId\":" + std::to_string(inspectorMeshId)
+                + ",\"property\":\"baseColor\",\"kind\":\"color4\",\"value\":{\"r\":"
+                + std::to_string(red) + ",\"g\":0.25,\"b\":0.5,\"a\":1.0}"
+                + (withIdempotencyKey ? ",\"idempotencyKey\":\"remote-color\"" : "") + "}";
+        };
     const auto beforeRemoteProperty = shell.stateVersion();
     const auto restProperty = send(network::http::Method::Post,
         "/api/v1/commands",
@@ -757,8 +762,9 @@ int main()
         true);
     assert(restProperty.first == 200 && shell.stateVersion() == beforeRemoteProperty + 1);
     assert(inspectorMesh->editorAuthoringProperties()
-            .cast<const scene3d::MeshComponentEditorProperties&>()
-            .baseColor.x == 0.75f);
+               .cast<const scene3d::MeshComponentEditorProperties&>()
+               .baseColor.x
+        == 0.75f);
     const auto committedPropertyVersion = shell.stateVersion();
     const auto restPropertyReplay = send(network::http::Method::Post,
         "/api/v1/commands",
@@ -769,38 +775,38 @@ int main()
         "/api/v1/commands",
         propertyCommand("scene.component.property.set", 0.8f, true),
         true);
-    assert(conflictingPropertyReplay.first == 409
-        && shell.stateVersion() == committedPropertyVersion);
+    assert(
+        conflictingPropertyReplay.first == 409 && shell.stateVersion() == committedPropertyVersion);
     const auto beforeRejectedProperty = shell.stateVersion();
     const auto vector2TypeMismatch = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.property.set\",\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(inspectorMeshId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(inspectorMeshId)
             + ",\"property\":\"baseColor\",\"kind\":\"vector2\",\"value\":{\"x\":0.1,\"y\":0.2}}",
         true);
     assert(vector2TypeMismatch.first == 500 && shell.stateVersion() == beforeRejectedProperty);
     const auto rejectedProperty = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.property.set\",\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(inspectorMeshId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(inspectorMeshId)
             + ",\"property\":\"baseColor\",\"kind\":\"number\",\"value\":0.1}",
         true);
     assert(rejectedProperty.first == 500 && shell.stateVersion() == beforeRejectedProperty);
     const auto malformedProperty = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.property.set\",\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(inspectorMeshId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(inspectorMeshId)
             + ",\"property\":\"baseColor\",\"kind\":\"color4\",\"value\":{\"r\":1e100,\"g\":0.25,\"b\":0.5,\"a\":1.0}}",
         true);
     assert(malformedProperty.first == 400 && shell.stateVersion() == beforeRejectedProperty);
     const auto mcpPropertyWrite = send(network::http::Method::Post,
         "/mcp",
         "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/call\",\"params\":{\"name\":\"scene.component.property.set\",\"arguments\":{\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(inspectorMeshId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(inspectorMeshId)
             + ",\"property\":\"baseColor\",\"kind\":\"color4\",\"value\":{\"r\":0.8,\"g\":0.25,\"b\":0.5,\"a\":1.0}}}}",
         true,
         "2025-11-25");
@@ -808,7 +814,8 @@ int main()
         && mcpPropertyWrite.second.find("\"isError\":false") != std::string::npos
         && inspectorMesh->editorAuthoringProperties()
                 .cast<const scene3d::MeshComponentEditorProperties&>()
-                .baseColor.x == 0.8f);
+                .baseColor.x
+            == 0.8f);
     const auto restPropertyUndo = send(network::http::Method::Post,
         "/api/v1/commands",
         R"json({"schemaVersion":1,"command":"scene.undo"})json",
@@ -822,54 +829,48 @@ int main()
     assert(mcpPropertyRedo.first == 200
         && mcpPropertyRedo.second.find("\"isError\":false") != std::string::npos);
     assert(inspectorMesh->editorAuthoringProperties()
-            .cast<const scene3d::MeshComponentEditorProperties&>()
-            .baseColor.x == 0.8f);
+               .cast<const scene3d::MeshComponentEditorProperties&>()
+               .baseColor.x
+        == 0.8f);
     const auto mcpInspector = send(network::http::Method::Post,
         "/mcp",
         "{\"jsonrpc\":\"2.0\",\"id\":43,\"method\":\"tools/call\",\"params\":{\"name\":\"scene.inspector.get\",\"arguments\":{\"objectId\":"
             + std::to_string(inspectorObjectId) + "}}}",
         true,
         "2025-11-25");
-    assert(mcpInspector.first == 200 && mcpInspector.second.find("\"isError\":false")
-            != std::string::npos
+    assert(mcpInspector.first == 200
+        && mcpInspector.second.find("\"isError\":false") != std::string::npos
         && mcpInspector.second.find("\"r\":0.8") != std::string::npos);
     const auto colliderPointsBody =
         "{\"schemaVersion\":1,\"command\":\"scene.component.property.set\",\"objectId\":"
-        + std::to_string(inspectorObjectId) + ",\"componentId\":"
-        + std::to_string(inspectorCollider->id().value())
+        + std::to_string(inspectorObjectId)
+        + ",\"componentId\":" + std::to_string(inspectorCollider->id().value())
         + ",\"property\":\"points\",\"kind\":\"vector2List\",\"value\":["
           "{\"x\":-1,\"y\":-0.5},{\"x\":1,\"y\":-0.5},{\"x\":0,\"y\":1}],"
           "\"idempotencyKey\":\"remote-collider-points\"}";
     const auto beforeColliderPoints = shell.stateVersion();
-    const auto restColliderPoints = send(network::http::Method::Post,
-        "/api/v1/commands",
-        colliderPointsBody,
-        true);
+    const auto restColliderPoints =
+        send(network::http::Method::Post, "/api/v1/commands", colliderPointsBody, true);
     assert(restColliderPoints.first == 200 && shell.stateVersion() == beforeColliderPoints + 1
         && inspectorCollider->desc().points.size() == 3u
         && inspectorCollider->desc().points[2].y == 1.0f);
     const auto colliderPointsVersion = shell.stateVersion();
-    const auto replayColliderPoints = send(network::http::Method::Post,
-        "/api/v1/commands",
-        colliderPointsBody,
-        true);
+    const auto replayColliderPoints =
+        send(network::http::Method::Post, "/api/v1/commands", colliderPointsBody, true);
     assert(replayColliderPoints.first == 200 && shell.stateVersion() == colliderPointsVersion);
     auto conflictingColliderPointsBody = colliderPointsBody;
     const auto firstPointX = conflictingColliderPointsBody.find("\"x\":-1");
     assert(firstPointX != std::string::npos);
     conflictingColliderPointsBody.replace(firstPointX + 4u, 2u, "-2");
-    const auto conflictingColliderPoints = send(network::http::Method::Post,
-        "/api/v1/commands",
-        conflictingColliderPointsBody,
-        true);
-    assert(conflictingColliderPoints.first == 409
-        && shell.stateVersion() == colliderPointsVersion
+    const auto conflictingColliderPoints =
+        send(network::http::Method::Post, "/api/v1/commands", conflictingColliderPointsBody, true);
+    assert(conflictingColliderPoints.first == 409 && shell.stateVersion() == colliderPointsVersion
         && inspectorCollider->desc().points[0].x == -1.0f);
     const auto mcpColliderPoints = send(network::http::Method::Post,
         "/mcp",
         "{\"jsonrpc\":\"2.0\",\"id\":46,\"method\":\"tools/call\",\"params\":{\"name\":\"scene.component.property.set\",\"arguments\":{\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(inspectorCollider->id().value())
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(inspectorCollider->id().value())
             + ",\"property\":\"points\",\"kind\":\"vector2List\",\"value\":[{\"x\":-2,\"y\":-1},{\"x\":2,\"y\":-1},{\"x\":0,\"y\":2}]}}}",
         true,
         "2025-11-25");
@@ -880,8 +881,7 @@ int main()
         "/api/v1/commands",
         R"json({"schemaVersion":1,"command":"scene.undo"})json",
         true);
-    assert(colliderPointsUndo.first == 200
-        && inspectorCollider->desc().points[0].x == -1.0f);
+    assert(colliderPointsUndo.first == 200 && inspectorCollider->desc().points[0].x == -1.0f);
     const auto colliderPointsRedo = send(network::http::Method::Post,
         "/mcp",
         R"json({"jsonrpc":"2.0","id":47,"method":"tools/call","params":{"name":"scene.redo","arguments":{}}})json",
@@ -896,8 +896,7 @@ int main()
             + std::to_string(inspectorObjectId) + "}",
         true);
     assert(colliderPointsSnapshot.first == 200
-        && colliderPointsSnapshot.second.find("\"kind\":\"vector2List\"")
-            != std::string::npos
+        && colliderPointsSnapshot.second.find("\"kind\":\"vector2List\"") != std::string::npos
         && colliderPointsSnapshot.second.find("\"y\":2") != std::string::npos);
     editor::RemoveSceneComponentCommand removeRemoteCollider;
     removeRemoteCollider.objectId = inspectorObjectId;
@@ -906,11 +905,9 @@ int main()
         == editor::EditorResponseStatus::Completed);
     editor::RemoveSceneComponentCommand removeRemoteBody;
     removeRemoteBody.objectId = inspectorObjectId;
-    removeRemoteBody.componentId = inspectorObject->getComponent<physics2d::RigidBody2DComponent>()
-                                       ->id()
-                                       .value();
-    assert(shell.submitCommand(removeRemoteBody).status
-        == editor::EditorResponseStatus::Completed);
+    removeRemoteBody.componentId =
+        inspectorObject->getComponent<physics2d::RigidBody2DComponent>()->id().value();
+    assert(shell.submitCommand(removeRemoteBody).status == editor::EditorResponseStatus::Completed);
     const auto mcpHierarchy = send(network::http::Method::Post,
         "/mcp",
         R"json({"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":"scene.hierarchy.get","arguments":{}}})json",
@@ -927,22 +924,23 @@ int main()
         && mcpCatalog.second.find("\"typeName\":\"MeshComponent\"") != std::string::npos);
 
     const auto beforeRemoteComponentAdd = shell.stateVersion();
-    const auto componentAddBody = "{\"schemaVersion\":1,\"command\":\"scene.component.add\",\"objectId\":"
+    const auto componentAddBody =
+        "{\"schemaVersion\":1,\"command\":\"scene.component.add\",\"objectId\":"
         + std::to_string(inspectorObjectId)
         + ",\"type\":\"TimerComponent\",\"idempotencyKey\":\"remote-component-add\"}";
-    const auto restComponentAdd = send(
-        network::http::Method::Post, "/api/v1/commands", componentAddBody, true);
+    const auto restComponentAdd =
+        send(network::http::Method::Post, "/api/v1/commands", componentAddBody, true);
     assert(restComponentAdd.first == 200 && shell.stateVersion() == beforeRemoteComponentAdd + 1);
-    auto* remoteAddedObject = shell.sceneDocument().scene().findObject(
-        scene::GameObjectId::fromValue(inspectorObjectId));
-    assert(remoteAddedObject && remoteAddedObject->components().back()->scriptTypeName()
+    auto* remoteAddedObject =
+        shell.sceneDocument().scene().findObject(scene::GameObjectId::fromValue(inspectorObjectId));
+    assert(remoteAddedObject
+        && remoteAddedObject->components().back()->scriptTypeName()
             == std::string_view("TimerComponent"));
     const auto remoteTimerId = remoteAddedObject->components().back()->id().value();
     const auto committedComponentAddVersion = shell.stateVersion();
-    const auto replayComponentAdd = send(
-        network::http::Method::Post, "/api/v1/commands", componentAddBody, true);
-    assert(replayComponentAdd.first == 200
-        && shell.stateVersion() == committedComponentAddVersion
+    const auto replayComponentAdd =
+        send(network::http::Method::Post, "/api/v1/commands", componentAddBody, true);
+    assert(replayComponentAdd.first == 200 && shell.stateVersion() == committedComponentAddVersion
         && remoteAddedObject->components().back()->id().value() == remoteTimerId);
     const auto conflictingComponentAdd = send(network::http::Method::Post,
         "/api/v1/commands",
@@ -955,8 +953,8 @@ int main()
     const auto mcpComponentRemove = send(network::http::Method::Post,
         "/mcp",
         "{\"jsonrpc\":\"2.0\",\"id\":46,\"method\":\"tools/call\",\"params\":{\"name\":\"scene.component.remove\",\"arguments\":{\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(remoteTimerId) + "}}}",
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(remoteTimerId) + "}}}",
         true,
         "2025-11-25");
     assert(mcpComponentRemove.first == 200
@@ -979,15 +977,16 @@ int main()
         && remoteAddedObject->components().back()->scriptTypeName()
             != std::string_view("TimerComponent"));
 
-    const auto configuredAddBody = "{\"schemaVersion\":1,\"command\":\"scene.component.add\",\"objectId\":"
+    const auto configuredAddBody =
+        "{\"schemaVersion\":1,\"command\":\"scene.component.add\",\"objectId\":"
         + std::to_string(inspectorObjectId)
         + ",\"type\":\"TimerComponent\",\"properties\":[{\"property\":\"eventName\",\"kind\":\"string\",\"value\":\"remote.started\"},{\"property\":\"seconds\",\"kind\":\"number\",\"value\":1.25},{\"property\":\"startOnEnable\",\"kind\":\"boolean\",\"value\":true}],\"idempotencyKey\":\"configured-component-add\"}";
     const auto beforeConfiguredAdd = shell.stateVersion();
-    const auto configuredAdd = send(
-        network::http::Method::Post, "/api/v1/commands", configuredAddBody, true);
+    const auto configuredAdd =
+        send(network::http::Method::Post, "/api/v1/commands", configuredAddBody, true);
     assert(configuredAdd.first == 200 && shell.stateVersion() == beforeConfiguredAdd + 1);
-    remoteAddedObject = shell.sceneDocument().scene().findObject(
-        scene::GameObjectId::fromValue(inspectorObjectId));
+    remoteAddedObject =
+        shell.sceneDocument().scene().findObject(scene::GameObjectId::fromValue(inspectorObjectId));
     auto* configuredTimer = remoteAddedObject->components().back()->scriptTypeName()
             == std::string_view("TimerComponent")
         ? static_cast<scene::TimerComponent*>(remoteAddedObject->components().back().get())
@@ -996,13 +995,14 @@ int main()
     const auto configuredTimerId = configuredTimer->id();
     const auto configuredTimerProperties = shell.sceneDocument().inspectorProperties(
         scene::GameObjectId::fromValue(inspectorObjectId));
-    assert(std::any_of(configuredTimerProperties.begin(), configuredTimerProperties.end(),
+    assert(std::any_of(configuredTimerProperties.begin(),
+        configuredTimerProperties.end(),
         [&](const auto& property) {
             return property.componentId == configuredTimer->id().value()
                 && property.name == "seconds" && property.numberValue == 1.25f;
         }));
-    const auto configuredAddReplay = send(
-        network::http::Method::Post, "/api/v1/commands", configuredAddBody, true);
+    const auto configuredAddReplay =
+        send(network::http::Method::Post, "/api/v1/commands", configuredAddBody, true);
     assert(configuredAddReplay.first == 200 && shell.stateVersion() == beforeConfiguredAdd + 1);
     const auto conflictingConfiguredAdd = send(network::http::Method::Post,
         "/api/v1/commands",
@@ -1010,38 +1010,38 @@ int main()
             + std::to_string(inspectorObjectId)
             + ",\"type\":\"TimerComponent\",\"properties\":[{\"property\":\"eventName\",\"kind\":\"string\",\"value\":\"remote.started\"},{\"property\":\"seconds\",\"kind\":\"number\",\"value\":1.5},{\"property\":\"startOnEnable\",\"kind\":\"boolean\",\"value\":true}],\"idempotencyKey\":\"configured-component-add\"}",
         true);
-    assert(conflictingConfiguredAdd.first == 409
-        && shell.stateVersion() == beforeConfiguredAdd + 1);
+    assert(
+        conflictingConfiguredAdd.first == 409 && shell.stateVersion() == beforeConfiguredAdd + 1);
     const auto malformedConfiguredAdd = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.add\",\"objectId\":"
             + std::to_string(inspectorObjectId)
             + ",\"type\":\"MeshComponent\",\"properties\":[{\"property\":\"baseColor\",\"kind\":\"number\",\"value\":0.5}]}",
         true);
-    assert(malformedConfiguredAdd.first == 500
-        && shell.stateVersion() == beforeConfiguredAdd + 1);
+    assert(malformedConfiguredAdd.first == 500 && shell.stateVersion() == beforeConfiguredAdd + 1);
     const auto configuredAddUndo = send(network::http::Method::Post,
         "/mcp",
         R"json({"jsonrpc":"2.0","id":58,"method":"tools/call","params":{"name":"scene.undo","arguments":{}}})json",
         true,
         "2025-11-25");
-    assert(configuredAddUndo.first == 200
-        && !remoteAddedObject->findComponent(configuredTimerId));
+    assert(configuredAddUndo.first == 200 && !remoteAddedObject->findComponent(configuredTimerId));
     const auto configuredAddRedo = send(network::http::Method::Post,
         "/api/v1/commands",
         R"json({"schemaVersion":1,"command":"scene.redo"})json",
         true);
     assert(configuredAddRedo.first == 200);
-    remoteAddedObject = shell.sceneDocument().scene().findObject(
-        scene::GameObjectId::fromValue(inspectorObjectId));
+    remoteAddedObject =
+        shell.sceneDocument().scene().findObject(scene::GameObjectId::fromValue(inspectorObjectId));
     configuredTimer = remoteAddedObject->components().back()->scriptTypeName()
             == std::string_view("TimerComponent")
         ? static_cast<scene::TimerComponent*>(remoteAddedObject->components().back().get())
         : nullptr;
     assert(configuredTimer);
-    assert(shell.submitCommand(editor::RemoveSceneComponentCommand{
-               inspectorObjectId, configuredTimer->id().value()})
-               .status == editor::EditorResponseStatus::Completed);
+    assert(shell
+               .submitCommand(editor::RemoveSceneComponentCommand{
+                   inspectorObjectId, configuredTimer->id().value()})
+               .status
+        == editor::EditorResponseStatus::Completed);
 
     assert(tests::loadSpriteFixture(shell.projectResources())
         && tests::loadTileFixture(shell.projectResources()));
@@ -1052,22 +1052,21 @@ int main()
             + std::to_string(inspectorObjectId)
             + ",\"type\":\"TileMapResourceComponent\",\"properties\":[{\"property\":\"tileMapResourceId\",\"kind\":\"string\",\"value\":\""
             + tests::tileMapId
-            + "\"},{\"property\":\"maxResidentChunks\",\"kind\":\"unsignedInteger\",\"value\":2},{\"property\":\"maxVisibleCells\",\"kind\":\"unsignedInteger\",\"value\":12},{\"property\":\"firstObjectId\",\"kind\":\"unsignedInteger\",\"value\":100}]}" ,
+            + "\"},{\"property\":\"maxResidentChunks\",\"kind\":\"unsignedInteger\",\"value\":2},{\"property\":\"maxVisibleCells\",\"kind\":\"unsignedInteger\",\"value\":12},{\"property\":\"firstObjectId\",\"kind\":\"unsignedInteger\",\"value\":100}]}",
         true);
     assert(tileMapAdd.first == 200 && shell.stateVersion() == tileMapAddVersion + 1);
-    auto* tileMapObject = shell.sceneDocument().scene().findObject(
-        scene::GameObjectId::fromValue(inspectorObjectId));
-    auto* remoteTileMap = tileMapObject
-        ? tileMapObject->getComponent<scene2d::TileMapResourceComponent>()
-        : nullptr;
-    assert(remoteTileMap && remoteTileMap->runtime()
-        && remoteTileMap->desc().maxVisibleCells == 12u);
+    auto* tileMapObject =
+        shell.sceneDocument().scene().findObject(scene::GameObjectId::fromValue(inspectorObjectId));
+    auto* remoteTileMap =
+        tileMapObject ? tileMapObject->getComponent<scene2d::TileMapResourceComponent>() : nullptr;
+    assert(
+        remoteTileMap && remoteTileMap->runtime() && remoteTileMap->desc().maxVisibleCells == 12u);
     const auto remoteTileMapId = remoteTileMap->id().value();
     const auto mcpTileMapBudget = send(network::http::Method::Post,
         "/mcp",
         "{\"jsonrpc\":\"2.0\",\"id\":60,\"method\":\"tools/call\",\"params\":{\"name\":\"scene.component.property.set\",\"arguments\":{\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(remoteTileMapId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(remoteTileMapId)
             + ",\"property\":\"maxVisibleCells\",\"kind\":\"unsignedInteger\",\"value\":16}}}",
         true,
         "2025-11-25");
@@ -1097,29 +1096,28 @@ int main()
         && mcpTileMapInspector.second.find("\"value\":16") != std::string::npos
         && mcpTileMapInspector.second.find(tests::tileMapId) != std::string::npos
         && mcpTileMapInspector.second.find("<Unavailable:") == std::string::npos);
-    assert(shell.submitCommand(editor::RemoveSceneComponentCommand{
-               inspectorObjectId, remoteTileMapId})
-               .status == editor::EditorResponseStatus::Completed);
+    assert(
+        shell.submitCommand(editor::RemoveSceneComponentCommand{inspectorObjectId, remoteTileMapId})
+            .status
+        == editor::EditorResponseStatus::Completed);
 
     const auto objectLinksAdd = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.add\",\"objectId\":"
-            + std::to_string(inspectorObjectId)
-            + ",\"type\":\"ObjectLinksComponent\"}",
+            + std::to_string(inspectorObjectId) + ",\"type\":\"ObjectLinksComponent\"}",
         true);
     assert(objectLinksAdd.first == 200);
-    inspectorObject = shell.sceneDocument().scene().findObject(
-        scene::GameObjectId::fromValue(inspectorObjectId));
-    auto* objectLinks = inspectorObject
-        ? inspectorObject->getComponent<scene::ObjectLinksComponent>()
-        : nullptr;
+    inspectorObject =
+        shell.sceneDocument().scene().findObject(scene::GameObjectId::fromValue(inspectorObjectId));
+    auto* objectLinks =
+        inspectorObject ? inspectorObject->getComponent<scene::ObjectLinksComponent>() : nullptr;
     assert(objectLinks && objectLinks->links.empty());
     const auto objectLinksComponentId = objectLinks->id().value();
     const auto objectLinksRestSet = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.property.set\",\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(objectLinksComponentId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(objectLinksComponentId)
             + ",\"property\":\"links\",\"kind\":\"sceneObjectLinkList\",\"value\":[{\"name\":\"spawn\",\"target\":"
             + std::to_string(jointBodyObjectId) + "}]}",
         true);
@@ -1129,8 +1127,8 @@ int main()
     const auto objectLinksMcpSet = send(network::http::Method::Post,
         "/mcp",
         "{\"jsonrpc\":\"2.0\",\"id\":63,\"method\":\"tools/call\",\"params\":{\"name\":\"scene.component.property.set\",\"arguments\":{\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(objectLinksComponentId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(objectLinksComponentId)
             + ",\"property\":\"links\",\"kind\":\"sceneObjectLinkList\",\"value\":[{\"name\":\"home\",\"target\":"
             + std::to_string(jointBodyObjectId) + "}]}}}",
         true,
@@ -1155,12 +1153,11 @@ int main()
     const auto invalidObjectLinks = send(network::http::Method::Post,
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.property.set\",\"objectId\":"
-            + std::to_string(inspectorObjectId) + ",\"componentId\":"
-            + std::to_string(objectLinksComponentId)
+            + std::to_string(inspectorObjectId)
+            + ",\"componentId\":" + std::to_string(objectLinksComponentId)
             + ",\"property\":\"links\",\"kind\":\"sceneObjectLinkList\",\"value\":[{\"name\":\"home\",\"target\":"
             + std::to_string(jointBodyObjectId)
-            + "},{\"name\":\"home\",\"target\":"
-            + std::to_string(jointBodyObjectId) + "}]}",
+            + "},{\"name\":\"home\",\"target\":" + std::to_string(jointBodyObjectId) + "}]}",
         true);
     if (invalidObjectLinks.first != 200 || shell.stateVersion() != beforeInvalidObjectLinks
         || objectLinks->links.size() != 1u || objectLinks->links.front().name != "home")
@@ -1187,9 +1184,8 @@ int main()
         && mcpConfiguredMeshAdd.second.find("\"isError\":false") != std::string::npos);
     const auto* mcpConfiguredObject = shell.sceneDocument().scene().findObject(
         scene::GameObjectId::fromValue(configuredObjectId));
-    const auto* mcpConfiguredMesh = mcpConfiguredObject
-        ? mcpConfiguredObject->getComponent<scene3d::MeshComponent>()
-        : nullptr;
+    const auto* mcpConfiguredMesh =
+        mcpConfiguredObject ? mcpConfiguredObject->getComponent<scene3d::MeshComponent>() : nullptr;
     assert(mcpConfiguredMesh && mcpConfiguredMesh->desc().baseColorTint.x == 0.25f
         && mcpConfiguredMesh->desc().baseColorTint.z == 0.75f);
 
@@ -1242,45 +1238,56 @@ int main()
     constexpr std::string_view cliText = "edited through arp_editor_cli\n";
     const auto documentIdText = std::to_string(documentId);
     const std::string cliTextArgument(cliText);
-    assert(runEditorCli(remote, cliEndpoint, token,
-        {"script.replace", documentIdText, cliTextArgument}));
+    assert(runEditorCli(
+        remote, cliEndpoint, token, {"script.replace", documentIdText, cliTextArgument}));
     assert(shell.scriptText() == cliText);
     const auto inspectorObjectIdText = std::to_string(inspectorObjectId);
     const auto inspectorMeshIdText = std::to_string(inspectorMeshId);
-    assert(runEditorCli(remote, cliEndpoint, token,
-        {"scene.inspector.get", inspectorObjectIdText}));
+    assert(
+        runEditorCli(remote, cliEndpoint, token, {"scene.inspector.get", inspectorObjectIdText}));
     assert(runEditorCli(remote, cliEndpoint, token, {"scene.hierarchy.get"}));
     assert(runEditorCli(remote, cliEndpoint, token, {"scene.component.catalog.get"}));
-    assert(runEditorCli(remote, cliEndpoint, token,
+    assert(runEditorCli(remote,
+        cliEndpoint,
+        token,
         {"scene.component.add",
             inspectorObjectIdText,
             "TimerComponent",
             "[{\"property\":\"eventName\",\"kind\":\"string\",\"value\":\"cli.started\"},{\"property\":\"seconds\",\"kind\":\"number\",\"value\":2}]"}));
-    auto* cliComponentObject = shell.sceneDocument().scene().findObject(
-        scene::GameObjectId::fromValue(inspectorObjectId));
+    auto* cliComponentObject =
+        shell.sceneDocument().scene().findObject(scene::GameObjectId::fromValue(inspectorObjectId));
     auto* cliConfiguredTimer = cliComponentObject->components().back()->scriptTypeName()
             == std::string_view("TimerComponent")
         ? static_cast<scene::TimerComponent*>(cliComponentObject->components().back().get())
         : nullptr;
     assert(cliConfiguredTimer);
     const auto cliConfiguredTimerId = cliConfiguredTimer->id();
-    assert(shell.submitCommand(editor::RemoveSceneComponentCommand{
-               inspectorObjectId, cliConfiguredTimerId.value()})
-               .status == editor::EditorResponseStatus::Completed);
-    assert(runEditorCli(remote, cliEndpoint, token,
+    assert(shell
+               .submitCommand(editor::RemoveSceneComponentCommand{
+                   inspectorObjectId, cliConfiguredTimerId.value()})
+               .status
+        == editor::EditorResponseStatus::Completed);
+    assert(runEditorCli(remote,
+        cliEndpoint,
+        token,
         {"scene.component.add", inspectorObjectIdText, "AudioListenerComponent"}));
-    cliComponentObject = shell.sceneDocument().scene().findObject(
-        scene::GameObjectId::fromValue(inspectorObjectId));
-    assert(cliComponentObject && cliComponentObject->components().back()->scriptTypeName()
+    cliComponentObject =
+        shell.sceneDocument().scene().findObject(scene::GameObjectId::fromValue(inspectorObjectId));
+    assert(cliComponentObject
+        && cliComponentObject->components().back()->scriptTypeName()
             == std::string_view("AudioListenerComponent"));
     const auto cliAudioListenerId =
         std::to_string(cliComponentObject->components().back()->id().value());
-    assert(runEditorCli(remote, cliEndpoint, token,
+    assert(runEditorCli(remote,
+        cliEndpoint,
+        token,
         {"scene.component.remove", inspectorObjectIdText, std::string_view(cliAudioListenerId)}));
     assert(!cliComponentObject->findComponent(
         scene::ComponentId::fromValue(std::stoull(cliAudioListenerId))));
     const auto beforeCliProperty = shell.stateVersion();
-    assert(runEditorCli(remote, cliEndpoint, token,
+    assert(runEditorCli(remote,
+        cliEndpoint,
+        token,
         {"scene.component.property.set",
             inspectorObjectIdText,
             inspectorMeshIdText,
@@ -1290,25 +1297,30 @@ int main()
     assert(shell.stateVersion() == beforeCliProperty + 1
         && inspectorMesh->editorAuthoringProperties()
                 .cast<const scene3d::MeshComponentEditorProperties&>()
-                .baseColor.x == 0.2f);
+                .baseColor.x
+            == 0.2f);
     assert(runEditorCli(remote, cliEndpoint, token, {"scene.undo"}));
     assert(inspectorMesh->editorAuthoringProperties()
-            .cast<const scene3d::MeshComponentEditorProperties&>()
-            .baseColor.x == 0.8f);
+               .cast<const scene3d::MeshComponentEditorProperties&>()
+               .baseColor.x
+        == 0.8f);
     assert(runEditorCli(remote, cliEndpoint, token, {"scene.redo"}));
     assert(inspectorMesh->editorAuthoringProperties()
-            .cast<const scene3d::MeshComponentEditorProperties&>()
-            .baseColor.x == 0.2f);
+               .cast<const scene3d::MeshComponentEditorProperties&>()
+               .baseColor.x
+        == 0.2f);
     assert(shell.submitCommand(editor::CreateSceneObjectCommand("CliReparentParent")).status
         == editor::EditorResponseStatus::Completed);
     const auto parentObjectId = shell.sceneDocument().selectedObject().value();
     assert(shell.submitCommand(editor::CreateSceneObjectCommand("CliReparentChild")).status
         == editor::EditorResponseStatus::Completed);
     const auto childObjectId = shell.sceneDocument().selectedObject().value();
-    assert(runEditorCli(remote, cliEndpoint, token,
+    assert(runEditorCli(remote,
+        cliEndpoint,
+        token,
         {"scene.reparent", std::to_string(childObjectId), std::to_string(parentObjectId), "0"}));
-    const auto* reparentedChild = shell.sceneDocument().scene().findObject(
-        scene::GameObjectId::fromValue(childObjectId));
+    const auto* reparentedChild =
+        shell.sceneDocument().scene().findObject(scene::GameObjectId::fromValue(childObjectId));
     assert(reparentedChild && reparentedChild->parentId().value() == parentObjectId);
 
     const auto mcpInvalid = send(network::http::Method::Post, "/mcp", "{}", true);

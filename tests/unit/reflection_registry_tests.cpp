@@ -611,7 +611,8 @@ int main()
                                                   "  items:\n"
                                                   "    - type: ReflectedListItem\n"
                                                   "      fields:\n"
-                                                  "        value: 7\n");
+                                                  "        value: 7\n",
+        {SerializationProfile::LegacyAllPropertiesV1});
     assert(listResult.success);
     auto* listRoot = listResult.value.cast<ReflectedListRoot*>();
     assert(listRoot != nullptr);

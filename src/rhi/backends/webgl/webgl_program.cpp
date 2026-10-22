@@ -1,5 +1,5 @@
-#include "core/number_format.h"
-#include "core/sha256.h"
+#include "core/hash/sha256.h"
+#include "core/text/number_format.h"
 #include "rhi/backends/webgl/webgl_program_internal.h"
 
 #include <algorithm>

@@ -175,6 +175,21 @@ class ArgumentBufferLoweringTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "depth"):
             get_webgpu_binding_space_lowering(bindings, self.path)
 
+    def test_scalar_depth_load_in_condition_preserves_color_and_coordinate_swizzles(self):
+        self.path.write_text(
+            "@binding(0) @group(0) var Depth_0 : texture_2d<f32>;\n"
+            "@binding(1) @group(0) var Color_0 : texture_2d<f32>;\n"
+            "fn probe() { if (z <= (textureLoad((Depth_0), ((coord)).xy, ((coord)).z).x)) { } "
+            "let c = textureLoad((Color_0), xy, 0).x; "
+            "let d = select(0.0, 1.0, textureLoad((Depth_0), nested(xy, 2), 0).x < z); }\n",
+            encoding="utf-8")
+        set_wgsl_depth_texture_type(self.path, "Depth_0")
+        output = self.path.read_text(encoding="utf-8")
+        self.assertIn("var Depth_0 : texture_depth_2d", output)
+        self.assertIn("textureLoad((Depth_0), ((coord)).xy, ((coord)).z)))", output)
+        self.assertIn("textureLoad((Depth_0), nested(xy, 2), 0) < z", output)
+        self.assertIn("textureLoad((Color_0), xy, 0).x", output)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,7 +17,7 @@
 //     BinaryExpr, UnaryExpr, CallExpr, IndexExpr, FieldExpr,
 //     ListLit, DictLit, LambdaExpr, SelectorExpr
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/runtime/source_pos.h"
 
 #include <cstddef>

@@ -1,8 +1,8 @@
+#include "3d/terrain/terrain_runtime.h"
 #include "assets/asset_pipeline.h"
 #include "renderer/renderer_result.h"
 #include "renderer/runtime_scene.h"
 #include "renderer/terrain_gpu_runtime.h"
-#include "renderer/terrain_runtime.h"
 #include "tests/fixtures/flat_terrain_surface.h"
 
 #include <cassert>
@@ -51,9 +51,9 @@ int main()
     assert(next.id != registered.id);
     assert(scene.meshAsset(registered) == nullptr);
 
-    auto terrainRuntime = std::make_shared<TerrainRuntime>();
+    auto terrainRuntime = arp::core::makeShared<arp::terrain::TerrainRuntime>();
     terrainRuntime->setTerrainSurface(std::make_shared<FlatTerrainSurface>());
-    TerrainRuntime::Desc terrainDesc;
+    arp::terrain::TerrainRuntime::Desc terrainDesc;
     terrainDesc.worldHalfExtent = 64.0f;
     terrainDesc.activeRadius = 1u;
     terrainDesc.maxChunkGenerationsPerUpdate = 1u;
@@ -61,11 +61,12 @@ int main()
     std::size_t generatedChunks = 0u;
     std::size_t unloadedChunks = 0u;
     terrainRuntime->setChunkGeneratedCallback(
-        [&generatedChunks](const arp::pcg::ChunkGenRequest&, const arp::assets::MeshAsset& mesh) {
+        [&generatedChunks](
+            const arp::terrain::ChunkGenRequest&, const arp::assets::MeshAsset& mesh) {
             assert(mesh.validForIndexedDraw());
             ++generatedChunks;
         });
-    terrainRuntime->setChunkUnloadedCallback([&unloadedChunks](arp::pcg::ChunkCoord) {
+    terrainRuntime->setChunkUnloadedCallback([&unloadedChunks](arp::terrain::ChunkCoord) {
         ++unloadedChunks;
     });
     const auto terrain = scene.registerTerrain(terrainRuntime);
@@ -80,9 +81,9 @@ int main()
     assert(scene.terrain(terrain) == nullptr);
     assert(!scene.updateTerrain(terrain, terrainRuntime));
 
-    auto failedTerrainRuntime = std::make_shared<TerrainRuntime>();
+    auto failedTerrainRuntime = arp::core::makeShared<arp::terrain::TerrainRuntime>();
     failedTerrainRuntime->setTerrainSurface(std::make_shared<FlatTerrainSurface>());
-    assert(failedTerrainRuntime->initialize(terrainDesc, [](const arp::pcg::ChunkGenRequest&) {
+    assert(failedTerrainRuntime->initialize(terrainDesc, [](const arp::terrain::ChunkGenRequest&) {
         return arp::assets::MeshAsset{};
     }));
     assert(failedTerrainRuntime->update(0.0f, 0.0f, 0.0f, 1.0f, 0.016f));
@@ -104,7 +105,7 @@ int main()
         ++uploads;
         return true;
     };
-    const arp::pcg::ChunkCoord firstCoord{0, 0};
+    const arp::terrain::ChunkCoord firstCoord{0, 0};
     assert(gpuRuntime.syncChunk(firstCoord, gpuMesh, 0, 1u, 7u, upload, update, replace));
     assert(gpuRuntime.activeSlotCount() == 1u);
     assert(uploads == 1u);

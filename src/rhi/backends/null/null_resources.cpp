@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "null_backend_internal.h"
 #include "rhi/frontend/descriptor_resource_validation.h"
 #include "rhi/frontend/heap_placement_contract.h"

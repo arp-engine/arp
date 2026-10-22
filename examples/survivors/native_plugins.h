@@ -1,6 +1,7 @@
 #pragma once
-#include "physics2d/physics_world_2d.h"
+#include "physics/2d/physics_world_2d.h"
 #include "scene/script_component_module.h"
+#include "scriptvm/plugin/plugin_runtime_scope.h"
 bool arp_add_arp_scene_static_plugin(arp::scriptvm::StaticPluginCatalog&);
 bool arp_add_arp_scene2d_static_plugin(arp::scriptvm::StaticPluginCatalog&);
 

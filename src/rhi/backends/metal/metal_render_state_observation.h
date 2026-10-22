@@ -1,5 +1,5 @@
 #pragma once
-#include "core/stable_hash.h"
+#include "core/hash/stable_hash.h"
 #include "rhi/backends/metal/metal_native_pipelines.h"
 
 namespace arp::rhi_metal {

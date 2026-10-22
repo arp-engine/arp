@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "gui/gui.h"
 #include "renderer/renderer_result.h"
 #include "renderer/ui/ui_draw_plan.h"

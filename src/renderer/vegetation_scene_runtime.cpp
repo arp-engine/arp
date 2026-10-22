@@ -1,9 +1,10 @@
 #include "renderer/vegetation_scene_runtime.h"
 
+#include "3d/vegetation/mesh_adapter.h"
 #include "assets/glb_static_mesh_importer.h"
-#include "core/sha256.h"
-#include "core/stable_hash.h"
-#include "core/triangle_cluster_builder.h"
+#include "assets/mesh/triangle_cluster_builder.h"
+#include "core/hash/sha256.h"
+#include "core/hash/stable_hash.h"
 
 #include <algorithm>
 #include <cmath>
@@ -39,6 +40,28 @@ core::pmr::String stringValue(const fkyaml::node& n)
         &core::defaultCpuMemoryResource());
 }
 
+assets::MeshSectionSpatialPartition staticScenePartition(const fkyaml::node& root)
+{
+    assets::MeshSectionSpatialPartition partition;
+    if (!root.contains("staticSpatialPartition"))
+        return partition;
+    const auto& policy = root["staticSpatialPartition"];
+    if (!policy.is_mapping() || !policy.contains("contractVersion")
+        || !policy["contractVersion"].is_integer()
+        || policy["contractVersion"].get_value<std::int64_t>() != 1)
+        throw std::runtime_error("VEGETATION-STATIC-PARTITION-CONTRACT-INVALID");
+    if (!policy.contains("maxTrianglesPerSection") || !policy.contains("maxSections")
+        || !policy["maxTrianglesPerSection"].is_integer() || !policy["maxSections"].is_integer())
+        throw std::runtime_error("VEGETATION-STATIC-PARTITION-LIMIT-INVALID");
+    const auto triangles = policy["maxTrianglesPerSection"].get_value<std::int64_t>();
+    const auto sections = policy["maxSections"].get_value<std::int64_t>();
+    if (triangles <= 0 || triangles > UINT32_MAX || sections <= 0 || sections > UINT32_MAX)
+        throw std::runtime_error("VEGETATION-STATIC-PARTITION-LIMIT-INVALID");
+    partition.maxTrianglesPerSection = static_cast<std::uint32_t>(triangles);
+    partition.maxSections = static_cast<std::uint32_t>(sections);
+    return partition;
+}
+
 fkyaml::node validatedManifest(const std::filesystem::path& manifest)
 {
     std::ifstream input(manifest);
@@ -51,6 +74,7 @@ fkyaml::node validatedManifest(const std::filesystem::path& manifest)
     if (!hashMatches(localPath(manifest.parent_path(), root["staticScene"]),
             stringValue(root["staticSceneSha256"])))
         throw std::runtime_error("VEGETATION-STATIC-SCENE-HASH-MISMATCH");
+    (void)staticScenePartition(root);
     return root;
 }
 
@@ -93,10 +117,21 @@ bool resolveVegetationStaticScene(const std::filesystem::path& manifest,
     std::filesystem::path& staticScene,
     core::pmr::String& diagnostics)
 {
+    assets::MeshSectionSpatialPartition partition;
+    return resolveVegetationStaticScene(manifest, staticScene, partition, diagnostics);
+}
+
+bool resolveVegetationStaticScene(const std::filesystem::path& manifest,
+    std::filesystem::path& staticScene,
+    assets::MeshSectionSpatialPartition& partition,
+    core::pmr::String& diagnostics)
+{
     staticScene.clear();
+    partition = {};
     try {
         const auto root = validatedManifest(manifest);
         staticScene = localPath(manifest.parent_path(), root["staticScene"]);
+        partition = staticScenePartition(root);
         diagnostics.clear();
         return true;
     } catch (const std::exception& error) {
@@ -214,11 +249,14 @@ bool VegetationSceneRuntime::initialize(
                         != lod["triangles"].get_value<std::uint64_t>() * 3)
                     throw std::runtime_error("VEGETATION-MODEL-INVALID");
                 Model model;
-                const auto vertices = pcg::convertToInstanceVertices(imported.mesh, nullptr, false);
+                const auto vertices =
+                    vegetation::convertToInstanceVertices(imported.mesh, nullptr, false);
+                for (const auto& vertex : vertices)
+                    p.deformationEnvelope.include(vertex);
                 model.vertices = upload(device,
                     "VegetationPrototypeVertices",
                     vertices.data(),
-                    vertices.size() * sizeof(pcg::InstanceVertex),
+                    vertices.size() * sizeof(vegetation::InstanceVertex),
                     rhi::ResourceUsage::VertexBuffer);
                 for (const auto& section : imported.mesh.submeshes) {
                     auto sourceSlot = section.materialSlot;
@@ -365,7 +403,8 @@ core::runtime::WorkStatus VegetationSceneRuntime::readPage(void* context)
             TerrainVegetationPrototypePage page;
             page.prototypeId = record.prototypeId;
             page.instances.push_back(record);
-            core::pmr::Vector<pcg::InstanceDataGpu> lowered(&core::defaultCpuMemoryResource());
+            core::pmr::Vector<vegetation::InstanceDataGpu> lowered(
+                &core::defaultCpuMemoryResource());
             if (!lowerTerrainVegetationInstancesForCull(page, lowered, chunk.diagnostics))
                 return core::runtime::WorkStatus::Failed;
             Placement placement;
@@ -529,10 +568,10 @@ bool VegetationSceneRuntime::refreshGroups(Chunk& chunk,
             // Both sides use the same deformation class throughout a transition.
             gpu.yawPhaseIdLod[3] =
                 float(transition.active() ? std::min(transition.current, transition.target) : lod);
-            pcg::setInstanceMetadata(gpu, 0, 0, 0, 0, lod, prototype.castsShadow ? 0 : 2, 0);
+            vegetation::setInstanceMetadata(gpu, 0, 0, 0, 0, lod, prototype.castsShadow ? 0 : 2, 0);
             if (transition.active()) {
                 gpu.speciesLodState[2] = transition.started;
-                pcg::packInstanceMetadataFloat(gpu.speciesLodState[3],
+                vegetation::packInstanceMetadataFloat(gpu.speciesLodState[3],
                     0x80000000u | (incoming ? 0x40000000u : 0u)
                         | ((std::uint32_t(gpu.yawPhaseIdLod[2]) & 0x3fffu) << 16)
                         | std::uint32_t(std::round(transitionSeconds_ * 1000.f)));
@@ -552,7 +591,7 @@ bool VegetationSceneRuntime::refreshGroups(Chunk& chunk,
             || a.sceneVisible != b.sceneVisible || a.instances.size() != b.instances.size()
             || std::memcmp(a.instances.data(),
                    b.instances.data(),
-                   a.instances.size() * sizeof(pcg::InstanceDataGpu))
+                   a.instances.size() * sizeof(vegetation::InstanceDataGpu))
                 != 0;
     }
     if (!changed)
@@ -565,7 +604,7 @@ bool VegetationSceneRuntime::refreshGroups(Chunk& chunk,
         group.buffer = upload(device,
             "VegetationChunkInstances",
             group.instances.data(),
-            group.instances.size() * sizeof(pcg::InstanceDataGpu),
+            group.instances.size() * sizeof(vegetation::InstanceDataGpu),
             rhi::ResourceUsage::VertexBuffer);
         if (!group.buffer) {
             diagnostics = "VEGETATION-INSTANCE-UPLOAD-FAILED";

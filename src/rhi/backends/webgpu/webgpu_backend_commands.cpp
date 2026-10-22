@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/webgpu/webgpu_backend_objects.h"
 #include "rhi/backends/webgpu/webgpu_native_indirect_processor.h"
 #include "rhi/backends/webgpu/webgpu_native_payloads.h"
@@ -76,6 +76,12 @@ bool hasTextureUsage(rhi::TextureUsage usage, rhi::TextureUsage flag)
 class WebGpuRhiCommandBuffer final : public rhi::RecordedStateCommandBuffer,
                                      public rhi::BindlessCommandBufferExtension {
 public:
+    ~WebGpuRhiCommandBuffer() override
+    {
+        if (!submitted_ && nativePayload_)
+            nativePayload_->discardPrototypeBatch();
+    }
+
     WebGpuRhiCommandBuffer(std::uint32_t commandCount,
         std::shared_ptr<WebGpuNativeCommandPayload> nativePayload,
         std::shared_ptr<WebGpuRhiStagingUploadPool> stagingUploadPool,
@@ -88,6 +94,11 @@ public:
     {}
 
     std::uint32_t commandCount() const override { return commandCount_; }
+
+    std::shared_ptr<rhi::GpuFence> ownedSubmissionFence() const override
+    {
+        return nativePayload_ ? nativePayload_->prototypeBatchFence() : nullptr;
+    }
 
     void* queryInterface(std::string_view extension) noexcept override
     {
@@ -226,7 +237,7 @@ public:
                     nativePipeline, authorization, diagnostics)))
             return commandFail(diagnostics, commandCount_);
         if (!nativePipeline
-            || !nativePayload_->recordGraphicsPipelineBind(*nativePipeline, diagnostics)) {
+            || !nativePayload_->recordGraphicsPipelineBind(nativePipeline, diagnostics)) {
             return commandFail(diagnostics, commandCount_);
         }
         activeAuthorization_ = authorization;
@@ -285,16 +296,7 @@ public:
         if (!snapshot->faultLatchBuffer() || !snapshot->faultReadbackBuffer())
             return commandFail("RHI-BINDLESS-FAULT-READBACK-UNAVAILABLE", commandCount_);
 
-        rhi::RenderPipelineDesc state;
-        state.colorTargets.reserve(activePipelineReport_.colorFormats.size());
-        for (const auto format : activePipelineReport_.colorFormats) {
-            rhi::ColorTargetState target;
-            target.format = format;
-            state.colorTargets.push_back(target);
-        }
-        state.depthStencil.format = activePipelineReport_.depthStencilFormat;
-        state.multisample.sampleCount = activePipelineReport_.sampleCount;
-        valid = rhi::validateBindlessRenderPass(state, passDesc_);
+        valid = rhi::validateBindlessRenderPass(activePipelineReport_, passDesc_);
         if (!valid.success)
             return commandFail(valid.diagnostics, commandCount_);
 
@@ -1037,7 +1039,7 @@ public:
                 return commandFail(diagnostics, commandCount_);
         }
         if (!nativePipeline
-            || !nativePayload_->recordComputePipelineBind(*nativePipeline, diagnostics))
+            || !nativePayload_->recordComputePipelineBind(nativePipeline, diagnostics))
             return commandFail(diagnostics, commandCount_);
         activeAuthorization_ = std::move(authorization);
         boundDescriptors_.reset();
@@ -2694,7 +2696,19 @@ arp::core::UniquePtr<rhi::CommandEncoder> createWebGpuRhiCommandEncoder(
     std::shared_ptr<WebGpuRhiStagingUploadPool> stagingUploadPool,
     std::shared_ptr<WebGpuProducerCompletionOwner> processorCompletion)
 {
-    if (!rhi::semantics::commandRetentionRequestAllowed(desc, rhi::CommandRetentionCapabilities{}))
+    rhi::PrototypeCommandBatchContract::Decision prototypeDecision;
+    if (desc.prototypeBatch) {
+        prototypeDecision = rhi::PrototypeCommandBatchContract::lowering(
+            rhi::Backend::WebGPU, *desc.prototypeBatch, webGpuNativePrototypeBatchCapabilities());
+        if (desc.retentionBudget || !nativePayloadPolicy.enabled)
+            prototypeDecision = {};
+        if (!prototypeDecision.executable) {
+            rhi::RhiErrorHandler::get().report(
+                rhi::RhiSeverity::Error, prototypeDecision.diagnostic);
+            return {};
+        }
+    } else if (!rhi::semantics::commandRetentionRequestAllowed(
+                   desc, rhi::CommandRetentionCapabilities{}))
         return {};
     const auto stagingSubmissionSerial =
         stagingUploadPool ? stagingUploadPool->beginSubmission() : 0u;
@@ -2713,7 +2727,8 @@ arp::core::UniquePtr<rhi::CommandEncoder> createWebGpuRhiCommandEncoder(
             stagingSubmissionSerial,
             std::move(commandStats),
             rhi::semantics::hasExecutableOptionalNativeFeature(
-                capabilityContract, rhi::semantics::NativeBackendFeature::TimestampQueries),
+                capabilityContract, rhi::semantics::NativeBackendFeature::TimestampQueries)
+                && !desc.prototypeBatch,
             diagnostics,
             desc.maxBindlessSnapshots + desc.maxBindlessIndirectProcessors,
             desc.maxBindlessPipelines,
@@ -2722,6 +2737,13 @@ arp::core::UniquePtr<rhi::CommandEncoder> createWebGpuRhiCommandEncoder(
             desc.maxBindlessSnapshots);
         if (nativePayloadPolicy.required && !nativePayload) {
             return nullptr;
+        }
+        if (desc.prototypeBatch
+            && (!nativePayload
+                || !nativePayload->preparePrototypeBatch(
+                    prototypeDecision, registry, diagnostics, nativePayload))) {
+            rhi::RhiErrorHandler::get().report(rhi::RhiSeverity::Error, diagnostics.c_str());
+            return {};
         }
     }
     return arp::core::makeUnique<WebGpuRhiCommandEncoder>(std::move(registry),

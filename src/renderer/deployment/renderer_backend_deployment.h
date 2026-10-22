@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/deployment/native_renderer_deployment_bridge.h"
 #include "renderer/deployment/renderer_webgpu_deployment_bridge.h"
 

@@ -57,8 +57,8 @@
 // Vulkan follows in Phase 8 (RenderDoc capture). Metal/WebGPU remain
 // DiagnosticFailure per the four-backend contract.
 
-#include "core/cpu_allocator.h"
-#include "core/math.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/render_graph/render_graph.h"
 #include "renderer/renderer_result.h"
 #include "renderer/shader_package_reflection.h"
@@ -103,8 +103,10 @@ public:
 
     ~SsrRenderer() { destroy(); }
 
-    renderer::RendererResult create(
-        const std::pmr::string& shaderPath, std::uint32_t width, std::uint32_t height)
+    renderer::RendererResult create(const std::pmr::string& shaderPath,
+        std::uint32_t width,
+        std::uint32_t height,
+        bool materialResolve = false)
     {
         reset();
 
@@ -136,6 +138,7 @@ public:
 
         width_ = width;
         height_ = height;
+        materialResolve_ = materialResolve;
 
         // --- Pipeline layout: set 0 with all SSR bindings ---
         // Set 0 bindings (shared by both passes; trace uses 0/1/2/3/5/6,
@@ -189,6 +192,17 @@ public:
                 rhi::DescriptorType::SampledTexture,
                 rhi::ShaderStage::Compute}, // SceneNormalTexture
         };
+
+        if (materialResolve_) {
+            auto hitBinding = ssrSetLayout.bindings[3];
+            hitBinding.binding = 8u;
+            ssrSetLayout.bindings.push_back(hitBinding);
+            for (const auto binding : {9u, 10u})
+                ssrSetLayout.bindings.push_back(
+                    {binding, rhi::DescriptorType::SampledTexture, rhi::ShaderStage::Fragment});
+            ssrSetLayout.bindings[7].stages =
+                rhi::ShaderStage::Compute | rhi::ShaderStage::Fragment;
+        }
 
         rhi::PipelineLayoutDesc layoutDesc;
         layoutDesc.descriptorLayouts.push_back(ssrSetLayout);
@@ -290,7 +304,7 @@ public:
         descriptorArena_ = device_.createDescriptorArena({
             "SsrDescriptorArena",
             kSsrDescriptorSetSlots * 2u,
-            kSsrDescriptorSetSlots * 2u * 8u,
+            kSsrDescriptorSetSlots * 2u * (materialResolve_ ? 11u : 8u),
         });
         if (!descriptorArena_) {
             return {false, "SSR descriptor arena creation failed"};
@@ -374,6 +388,17 @@ public:
         if (!sampledView) {
             return {false, "SSR reflection sampled view creation failed"};
         }
+        if (materialResolve_) {
+            texDesc.label = "SsrHit";
+            auto hit = device_.createTexture(texDesc);
+            if (!hit)
+                return {false, "SSR-HIT-TEXTURE-CREATE-FAILED"};
+            auto hitView = device_.createTextureView(*hit, storageViewDesc);
+            if (!hitView)
+                return {false, "SSR-HIT-VIEW-CREATE-FAILED"};
+            hitTexture_ = core::shareUnique(std::move(hit));
+            hitStorageView_ = std::move(hitView);
+        }
         reflectionTexture_ = std::shared_ptr<rhi::GpuTexture>(std::move(tex));
         reflectionStorageView_ = std::move(storageView);
         reflectionSampledView_ = std::move(sampledView);
@@ -452,6 +477,8 @@ public:
         reflectionStorageView_.reset();
         reflectionSampledView_.reset();
         reflectionTexture_.reset();
+        hitStorageView_.reset();
+        hitTexture_.reset();
 
         rhi::TextureDesc texDesc;
         texDesc.label = "SsrReflection";
@@ -498,6 +525,17 @@ public:
             ready_ = false;
             return {false, "SSR reflection sampled view resize failed"};
         }
+        if (materialResolve_) {
+            texDesc.label = "SsrHit";
+            auto hit = device_.createTexture(texDesc);
+            if (!hit)
+                return {false, "SSR-HIT-TEXTURE-CREATE-FAILED"};
+            auto hitView = device_.createTextureView(*hit, storageViewDesc);
+            if (!hitView)
+                return {false, "SSR-HIT-VIEW-CREATE-FAILED"};
+            hitTexture_ = core::shareUnique(std::move(hit));
+            hitStorageView_ = std::move(hitView);
+        }
         reflectionTexture_ = std::shared_ptr<rhi::GpuTexture>(std::move(tex));
         reflectionStorageView_ = std::move(storageView);
         reflectionSampledView_ = std::move(sampledView);
@@ -508,6 +546,8 @@ public:
     // importTextureRef into the FrameGraph so the trace pass can write it
     // (via StorageView) and the composite pass can read it (via SampledView).
     std::shared_ptr<rhi::GpuTexture> reflectionTexture() const { return reflectionTexture_; }
+
+    std::shared_ptr<rhi::GpuTexture> hitTexture() const { return hitTexture_; }
 
     bool ready() const { return ready_; }
 
@@ -578,6 +618,25 @@ public:
                 return {false, result.diagnostics};
         }
 
+        if (materialResolve_) {
+            for (const auto& write : std::array<rhi::DescriptorBindingWrite, 3>{
+                     {{8u,
+                          rhi::DescriptorType::StorageTexture,
+                          hitStorageView_->id(),
+                          rhi::DescriptorResourceKind::TextureView},
+                         {9u,
+                             rhi::DescriptorType::SampledTexture,
+                             sceneColorView.id(),
+                             rhi::DescriptorResourceKind::TextureView},
+                         {10u,
+                             rhi::DescriptorType::SampledTexture,
+                             sceneColorView.id(),
+                             rhi::DescriptorResourceKind::TextureView}}}) {
+                const auto written = traceSets_[slot]->write(write);
+                if (!written.success)
+                    return {false, written.diagnostics};
+            }
+        }
         auto computePass = context.commands().beginComputePass({"SsrTrace"});
         if (!computePass)
             return {false, context.commands().lastValidation().diagnostics};
@@ -612,7 +671,11 @@ public:
         rhi::GpuTextureView& sceneColorView,
         rhi::GpuTextureView& sceneDepthView,
         const SsrPushConstants& pc,
-        std::uint32_t frameIndex)
+        std::uint32_t frameIndex,
+        const rhi::GpuTextureView* resolvedReflection = nullptr,
+        const rhi::GpuTextureView* sceneNormal = nullptr,
+        const rhi::GpuTextureView* environmentSpecular = nullptr,
+        const rhi::GpuTextureView* specularResponse = nullptr)
     {
         if (!ready_)
             return {false, "SSR-RECORD-NOT-READY"};
@@ -642,7 +705,7 @@ public:
                 rhi::DescriptorResourceKind::TextureView},
             {4u,
                 rhi::DescriptorType::SampledTexture,
-                reflectionSampledView_->id(),
+                resolvedReflection ? resolvedReflection->id() : reflectionSampledView_->id(),
                 rhi::DescriptorResourceKind::TextureView},
             {5u,
                 rhi::DescriptorType::SampledTexture,
@@ -654,7 +717,7 @@ public:
                 rhi::DescriptorResourceKind::TextureView},
             {7u,
                 rhi::DescriptorType::SampledTexture,
-                sceneColorView.id(),
+                sceneNormal ? sceneNormal->id() : sceneColorView.id(),
                 rhi::DescriptorResourceKind::TextureView},
         };
         for (const auto& write : writes) {
@@ -663,6 +726,27 @@ public:
                 return {false, result.diagnostics};
         }
 
+        if (materialResolve_) {
+            if (!environmentSpecular || !specularResponse || !sceneNormal)
+                return {false, "SSR-MATERIAL-INPUTS-MISSING"};
+            for (const auto& write : std::array<rhi::DescriptorBindingWrite, 3>{
+                     {{8u,
+                          rhi::DescriptorType::StorageTexture,
+                          dummyStorageView_->id(),
+                          rhi::DescriptorResourceKind::TextureView},
+                         {9u,
+                             rhi::DescriptorType::SampledTexture,
+                             environmentSpecular->id(),
+                             rhi::DescriptorResourceKind::TextureView},
+                         {10u,
+                             rhi::DescriptorType::SampledTexture,
+                             specularResponse->id(),
+                             rhi::DescriptorResourceKind::TextureView}}}) {
+                const auto written = compositeSets_[slot]->write(write);
+                if (!written.success)
+                    return {false, written.diagnostics};
+            }
+        }
         auto& pass = rctx.renderPass();
         auto result = renderer::bindRasterPipeline(pass, *compositePipeline_, {width_, height_});
         if (result.success)
@@ -704,6 +788,8 @@ private:
         reflectionStorageView_.reset();
         reflectionSampledView_.reset();
         reflectionTexture_.reset();
+        hitStorageView_.reset();
+        hitTexture_.reset();
         dummyStorageView_.reset();
         dummyStorageTexture_.reset();
         dummySampledView_.reset();
@@ -718,6 +804,9 @@ private:
     std::uint32_t width_ = 0u;
     std::uint32_t height_ = 0u;
     bool ready_ = false;
+    bool materialResolve_ = false;
+    std::shared_ptr<rhi::GpuTexture> hitTexture_;
+    arp::core::UniquePtr<rhi::GpuTextureView> hitStorageView_;
 
     arp::core::UniquePtr<rhi::ComputePipeline> tracePipeline_;
     arp::core::UniquePtr<rhi::RenderPipeline> compositePipeline_;

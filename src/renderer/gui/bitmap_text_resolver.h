@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/utf8.h"
+#include "core/text/utf8.h"
 #include "renderer/renderer_result.h"
 #include "renderer/ui/ui_draw_plan.h"
 #include "ui/ui_bitmap_font_resource.h"

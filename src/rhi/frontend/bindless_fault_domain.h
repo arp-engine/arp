@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/atomic_capacity.h"
+#include "core/memory/atomic_capacity.h"
 #include "rhi/gpu_device.h"
 
 namespace arp::rhi {

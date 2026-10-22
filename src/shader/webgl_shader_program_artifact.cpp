@@ -1,6 +1,6 @@
 #include "shader/webgl_shader_program_artifact.h"
 
-#include "core/number_format.h"
+#include "core/text/number_format.h"
 
 #include <algorithm>
 

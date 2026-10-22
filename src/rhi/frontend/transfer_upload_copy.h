@@ -1,5 +1,5 @@
 #pragma once
-#include "core/shared_owner_projection.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/frontend/transfer_upload_copy_mapping.h"
 #include "rhi/semantics/transfer_lowering.h"
 

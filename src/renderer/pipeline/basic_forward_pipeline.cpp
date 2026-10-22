@@ -1,6 +1,6 @@
 #include "renderer/pipeline/basic_forward_pipeline.h"
 
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "rhi/frontend/descriptor_set_validation.h"
 
 namespace arp::renderer {

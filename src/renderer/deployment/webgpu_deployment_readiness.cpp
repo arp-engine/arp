@@ -1,6 +1,6 @@
 #include "renderer/deployment/webgpu_deployment_readiness.h"
 
-#include "core/diagnostic_builder.h"
+#include "core/diagnostics/diagnostic_builder.h"
 #include "renderer/deployment/renderer_deployment_evidence_admission.h"
 
 namespace arp::renderer::deployment {

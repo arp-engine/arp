@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/render_graph/compiled_frame_graph.h"
 #include "renderer/render_graph/rhi_frame_plan.h"
 #include "rhi/backends/null/null_backend.h"

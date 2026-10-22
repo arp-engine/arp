@@ -1,7 +1,7 @@
 #pragma once
 #include "2d/components.h"
 #include "2d/sprite_resources.h"
-#include "core/callback.h"
+#include "core/concurrency/callback.h"
 #include "renderer/ui/sprite_text_layout.h"
 
 #include <cmath>
@@ -10,13 +10,18 @@ namespace arp::scene2d {
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct SpriteTextEditorProperties {
-    APROP(Editor, Doc = "resource:SpriteFontResource:optional")
+    APROP(Serialize,
+        Editor,
+        ResourceReference,
+        OptionalReference,
+        ReferenceTarget = "SpriteFontResource",
+        Doc = "resource:SpriteFontResource:optional")
     core::pmr::String fontResourceId{&core::defaultCpuMemoryResource()};
-    APROP(Editor)
+    APROP(Serialize, Editor)
     core::pmr::String text{&core::defaultCpuMemoryResource()};
-    APROP(Editor, Doc = "color:rgba")
+    APROP(Serialize, Editor, Doc = "color:rgba")
     core::Vec4 tint{1, 1, 1, 1};
-    APROP(Editor)
+    APROP(Serialize, Editor)
     int layer = 100;
 };
 

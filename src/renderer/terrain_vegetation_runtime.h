@@ -1,8 +1,9 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/runtime/gpu_resource_retire_queue.h"
-#include "pcg/foliage_instance_batch.h"
+#include "3d/vegetation/instance_layout.h"
+#include "core/container/array_view.h"
+#include "core/memory/cpu_allocator.h"
+#include "renderer/runtime/gpu_resource_retire_queue.h"
 #include "resource/terrain_asset_resource.h"
 
 #include <cstddef>
@@ -23,6 +24,10 @@ struct TerrainVegetationPrototypePage final {
     core::pmr::Vector<resource::TerrainStaticVegetationInstance> instances{
         &core::defaultCpuMemoryResource()};
 };
+
+// Preserve record order within each prototype; return prototypes sorted by ID.
+core::pmr::Vector<TerrainVegetationPrototypePage> groupTerrainVegetationInstances(
+    core::ArrayView<vegetation::StaticVegetationInstance> instances);
 
 struct TerrainVegetationPage final {
     terrain::TerrainTileCoord tile;
@@ -54,7 +59,7 @@ bool buildTerrainVegetationGpuInstances(const TerrainVegetationPrototypePage& pa
 /// vegetation cull and instance-draw ABI. The lowerer fails when the legacy
 /// ABI cannot preserve the authored transform.
 bool lowerTerrainVegetationInstancesForCull(const TerrainVegetationPrototypePage& page,
-    core::pmr::Vector<pcg::InstanceDataGpu>& outInstances,
+    core::pmr::Vector<vegetation::InstanceDataGpu>& outInstances,
     core::pmr::String& diagnostics);
 
 // Shared decoder for the established 48-byte little-endian placement layout.

@@ -1,7 +1,7 @@
 #include "animation/blend_tree.h"
 
 #include "animation/pose_blend.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
 #include <cmath>

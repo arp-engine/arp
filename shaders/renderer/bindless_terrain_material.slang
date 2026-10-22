@@ -83,6 +83,11 @@ bool arpSampleTerrainWeightPages(ArpBindlessRecord_TerrainRecords material,
         pageB = TerrainArrays_sampleGrad(material.routing.y, material.routing.w,
             uv, page.routing.x, dx, dy, fault);
         if (!valid || fault) { pageA = 0.0; pageB = 0.0; return false; }
+        // Coverage and surface composition share the same sampled-weight
+        // domain. Invalid weights must not leave a depth/shadow silhouette.
+        if (!arpTerrainWeightPagesValid(pageA, pageB)) {
+            arpBindlessReportFault(); pageA = 0.0; pageB = 0.0; return false;
+        }
         covered = true;
         return true;
     }
@@ -144,8 +149,7 @@ bool arpSampleTerrainSurface(ArpBindlessRecord_TerrainRecords material,
     output = (ArpBindlessTerrainSurface)0;
     if (!all(isfinite(gradients.position)) || !all(isfinite(gradients.dx))
         || !all(isfinite(gradients.dy)) || !all(isfinite(inputNormal)) || !all(isfinite(inputTangent))
-        || !all(isfinite(pageA)) || !all(isfinite(pageB)) || any(pageA < 0.0) || any(pageA > 1.0)
-        || any(pageB < 0.0) || any(pageB > 1.0) || !isfinite(rain) || rain < 0.0 || rain > 1.0
+        || !arpTerrainWeightPagesValid(pageA, pageB) || !isfinite(rain) || rain < 0.0 || rain > 1.0
         || !isfinite(shoreWetness) || shoreWetness < 0.0 || shoreWetness > 1.0) {
         arpBindlessReportFault(); return false;
     }

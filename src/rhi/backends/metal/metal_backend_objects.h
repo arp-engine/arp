@@ -1,7 +1,7 @@
 #pragma once
-#include "core/cpu_allocator.h"
-#include "core/lifetime_epoch.h"
-#include "core/mutation_journal.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/lifetime_epoch.h"
+#include "core/ownership/mutation_journal.h"
 #include "rhi/backends/metal/metal_allocator.h"
 #include "rhi/backends/metal/metal_backend_queries.h"
 #include "rhi/backends/metal/metal_native_commands.h"

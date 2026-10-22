@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "resource/resource_manager.h"
 #include "rhi/gpu_device.h"
 
@@ -63,6 +63,17 @@ public:
         std::string_view resourceId,
         resource::ResourceGeneration generation,
         EditorSceneViewportTextureColorSpace colorSpace);
+
+    // Caller must complete all device work before releasing borrowed bindings.
+    void clearAfterDeviceIdle()
+    {
+        entries_.clear();
+        ownerDevice_ = nullptr;
+        ownerResources_ = nullptr;
+        sampler_.reset();
+        residentDecodedBytes_ = 0u;
+    }
+
     std::size_t residentTextureCount() const noexcept;
     std::uint64_t residentDecodedBytes() const noexcept;
 

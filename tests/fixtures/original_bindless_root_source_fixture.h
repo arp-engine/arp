@@ -11,6 +11,12 @@
 #include "rhi/frontend/command_transfer_validation.h"
 
 namespace arp::test {
+template <class T, class = void> struct OriginalRootSceneAllocationFixture : std::false_type {};
+
+template <class T>
+struct OriginalRootSceneAllocationFixture<T, std::void_t<decltype(T::sceneStream)>>
+    : std::bool_constant<T::sceneStream> {};
+
 template <class T, class = void> struct OriginalBindlessFixtureCpuBudget {
     static constexpr std::uint64_t bytes = 65536u;
 };
@@ -301,7 +307,20 @@ inline void validateOriginalBindlessRootSource(
     auto* extension =
         static_cast<BindlessCrossExtension*>(device->queryInterface(kExtensionBindlessCross));
     assert(extension);
-    const auto& artifact = package->artifact();
+    auto artifact = package->artifact();
+    if constexpr (OriginalRootSceneAllocationFixture<Execute>::value) {
+        if (device->backend() != Backend::Null) {
+            const char* allocationDiagnostic = nullptr;
+            const auto resident =
+                extension->queryOriginalMixedSnapshotAllocation(artifact, 2u, allocationDiagnostic);
+            if (allocationDiagnostic)
+                std::fprintf(stderr, "scene snapshot allocation: %s\n", allocationDiagnostic);
+            assert(resident >= artifact.snapshotBytes && !allocationDiagnostic);
+            // Only the cold resident envelope changes. Authorization reproduces
+            // it against the immutable package; layout/content remain original.
+            artifact.snapshotBytes = resident;
+        }
+    }
     const bool graphics =
         std::any_of(package->modules().begin(), package->modules().end(), [&](const auto& module) {
             return module.entry == vertexEntry;

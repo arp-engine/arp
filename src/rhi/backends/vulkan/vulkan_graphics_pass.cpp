@@ -1,6 +1,6 @@
 #include "rhi/backends/vulkan/vulkan_graphics_pass.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_bindless.h"
 #include "rhi/frontend/bindless_graphics_binding.h"
 #include "rhi/frontend/bindless_shader_package.h"
@@ -183,16 +183,7 @@ public:
             return commandFail("RHI-BINDLESS-FAULT-READBACK-UNAVAILABLE", commandCount_);
         }
 
-        rhi::RenderPipelineDesc pipelineState;
-        pipelineState.colorTargets.reserve(activePipelineReport_.colorFormats.size());
-        for (const auto format : activePipelineReport_.colorFormats) {
-            rhi::ColorTargetState target;
-            target.format = format;
-            pipelineState.colorTargets.push_back(target);
-        }
-        pipelineState.depthStencil.format = activePipelineReport_.depthStencilFormat;
-        pipelineState.multisample.sampleCount = activePipelineReport_.sampleCount;
-        valid = rhi::validateBindlessRenderPass(pipelineState, passDesc_);
+        valid = rhi::validateBindlessRenderPass(activePipelineReport_, passDesc_);
         if (!valid.success)
             return commandFail(valid.diagnostics, commandCount_);
 
@@ -219,7 +210,9 @@ public:
                 *nativeSet, snapshot->setIndex(), nullptr, 0u, diagnostics)) {
             return commandFail(diagnostics, commandCount_);
         }
-        nativePayload_->retainResource(nativeSet);
+        // The bounded indexedSnapshots owner already retains the immutable set
+        // and its native payload through completion. Do not duplicate it in
+        // the ordinary recording resource vector (which can allocate here).
         const auto tracked =
             boundDescriptors_.bindSet(snapshot->setIndex(), *descriptors, nullptr, 0u);
         if (!tracked.success)

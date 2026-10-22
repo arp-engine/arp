@@ -21,7 +21,7 @@
 //   - Identifiers
 //   - Newline (logical line end), Indent, Dedent, Eof
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/runtime/diagnostics.h"
 #include "scriptvm/runtime/source_pos.h"
 

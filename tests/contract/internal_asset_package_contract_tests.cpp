@@ -165,6 +165,8 @@ int main()
         const auto package = makePackage();
         const auto written =
             arp::resource::InternalAssetPackageWriter().write(package, packagePath("valid"));
+        if (!written.success)
+            std::cerr << written.diagnostics << '\n';
         assert(written.success);
 
         const auto read = arp::resource::InternalAssetPackageReader().read(packagePath("valid"));
@@ -364,15 +366,15 @@ int main()
         assert(packageLoaded.success);
         const auto prefabHandle = packageManager.find<arp::resource::PrefabResource>(kPrefabId);
         assert(prefabHandle.ready());
-        const auto runtimeHandle = packageManager.find<arp::resource::PrefabRuntimePayloadResource>(
-            kRuntimePayloadId);
+        const auto runtimeHandle =
+            packageManager.find<arp::resource::PrefabRuntimePayloadResource>(kRuntimePayloadId);
         assert(runtimeHandle.ready());
         assert(runtimeHandle.get()->runtimeAsset);
         assert(runtimeHandle.get()->controllerAsset);
         assert(runtimeHandle.get()->runtimeAsset->mesh.validForIndexedDraw());
         assert(runtimeHandle.get()->controllerAsset->states.size() == 2u);
-        const auto controllerHandle = packageManager.find<arp::resource::AnimatorControllerResource>(
-            kAnimatorControllerId);
+        const auto controllerHandle =
+            packageManager.find<arp::resource::AnimatorControllerResource>(kAnimatorControllerId);
         assert(controllerHandle.ready());
         assert(controllerHandle.get()->controllerAsset);
         assert(controllerHandle.get()->controllerAsset->transitions.size() == 1u);
@@ -423,10 +425,11 @@ int main()
             "resources/runtime-payload.arpres.yaml",
             noDependencies,
             escapedPayload);
-        const auto escapedPackage = arp::resource::InternalAssetPackageWriter().write(package, root);
+        const auto escapedPackage =
+            arp::resource::InternalAssetPackageWriter().write(package, root);
         assert(escapedPackage.success);
-        const auto escapedLoad = arp::resource::loadPrefabRuntimePayloadFromPackage(
-            root, text("prefab/runtime"));
+        const auto escapedLoad =
+            arp::resource::loadPrefabRuntimePayloadFromPackage(root, text("prefab/runtime"));
         assert(!escapedLoad.success);
         assertContains(escapedLoad.diagnostics, "not a safe relative package path");
 
@@ -441,8 +444,8 @@ int main()
         const auto mismatchedPackage =
             arp::resource::InternalAssetPackageWriter().write(package, root);
         assert(mismatchedPackage.success);
-        const auto mismatchedLoad = arp::resource::loadPrefabRuntimePayloadFromPackage(
-            root, text("prefab/runtime"));
+        const auto mismatchedLoad =
+            arp::resource::loadPrefabRuntimePayloadFromPackage(root, text("prefab/runtime"));
         assert(!mismatchedLoad.success);
         assertContains(mismatchedLoad.diagnostics, "blob byte size mismatch");
 
@@ -471,8 +474,8 @@ int main()
         const auto malformedPackage =
             arp::resource::InternalAssetPackageWriter().write(package, root);
         assert(malformedPackage.success);
-        const auto malformedLoad = arp::resource::loadPrefabRuntimePayloadFromPackage(
-            root, text("prefab/runtime"));
+        const auto malformedLoad =
+            arp::resource::loadPrefabRuntimePayloadFromPackage(root, text("prefab/runtime"));
         assert(!malformedLoad.success);
         assertContains(malformedLoad.diagnostics, "runtime payload state bindings are invalid");
     }

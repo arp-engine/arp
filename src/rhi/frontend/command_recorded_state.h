@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/mutation_journal.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/mutation_journal.h"
 #include "rhi/frontend/transfer_recorded_staging_upload.h"
 #include "rhi/gpu_commands.h"
 

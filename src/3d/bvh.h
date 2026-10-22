@@ -20,7 +20,7 @@
 // implementations that need Frustum / Aabb interop include additional
 // headers, keeping the base layer minimal.
 
-#include "core/math.h"
+#include "core/math/math.h"
 
 #include <cstdint>
 #include <vector>

@@ -1,7 +1,7 @@
 #include "rhi/backends/webgpu/webgpu_device.h"
 
-#include "core/cpu_allocator.h"
-#include "core/diagnostic_builder.h"
+#include "core/diagnostics/diagnostic_builder.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/null/dummy_sync.h"
 #include "rhi/backends/webgpu/webgpu_allocator.h"
 #include "rhi/backends/webgpu/webgpu_backend_objects.h"
@@ -315,6 +315,27 @@ public:
         uint64_t signalValue,
         rhi::GpuFence* signalFence) override
     {
+        auto prototype = webGpuNativePayloadFor(commandBuffer);
+        if (prototype && prototype->prototypeBatchPrepared()) {
+            if (prototype->prototypeBatchSubmitted())
+                return {false, "RHI-PROTOTYPE-BATCH-ONE-SHOT-SUBMISSION", 0};
+            if (waitSemaphore || signalSemaphore)
+                return {false, "RHI-PROTOTYPE-BATCH-TIMELINE-UNSUPPORTED", 0};
+            core::pmr::String diagnostics;
+            const bool success =
+                prototype->submitPrototypeBatch(prototype, signalFence, commandStats_, diagnostics);
+            const bool accepted = prototype->prototypeBatchSubmitted();
+            if (accepted) {
+                markWebGpuRhiCommandBufferSubmitted(commandBuffer);
+                if (!rhi::acceptRecordedCommandOwnership(commandBuffer))
+                    return {false,
+                        "RHI-PROTOTYPE-BATCH-RECORDED-OWNERSHIP",
+                        commandBuffer.commandCount(),
+                        true};
+                ++submitCount_;
+            }
+            return {success, std::move(diagnostics), commandBuffer.commandCount(), accepted};
+        }
         if (signalFence)
             return {false, "RHI-WEBGPU-PUBLIC-FENCE-RESOURCE-GRAPH-UNAVAILABLE", 0};
         // WebGPU core has no queue-side timeline wait/signal primitive. A
@@ -608,7 +629,7 @@ public:
             inputs.readbacks,
             nativeRoots,
             inputs.producedGeometry,
-            inputs.scene);
+            inputs.initializedGraphics);
         if (!admission)
             return fail();
         auto storage = WebGpuCanonicalReadbackResultStorage::prepareOriginalBuffer(
@@ -1011,6 +1032,7 @@ public:
         auto caps =
             rhi::makeSharedDeviceCapabilities(rhi::Backend::WebGPU, "RHI WebGPU", desc_.label);
         const bool nativeAvailable = webGpuNativeDeviceAvailable() && !webGpuNativeDeviceLost();
+        caps.prototypeCommandBatch = webGpuNativePrototypeBatchCapabilities();
         // A writable profile can restrict the actual device; it cannot replace it.
         caps.core.graphics = nativeAvailable
             && desc_.runtimeProfile.requiredFeatures.sampledTextures

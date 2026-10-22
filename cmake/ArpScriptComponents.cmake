@@ -1,5 +1,10 @@
 # Scene/ArpScript component integration; independent of game logic.
-add_library(arp_script_components STATIC src/scene/script_component_module.cpp src/scene/script_component_codec.cpp)
+add_library(arp_script_components STATIC src/scene/script_component_module.cpp src/scene/script_component_persistence.cpp)
+arp_reflection_generate(
+    TARGET arp_script_components MODULE script_component_authoring
+    OUT_JSON "${CMAKE_CURRENT_BINARY_DIR}/generated/reflection/script_component_authoring/schema.json"
+    OUT_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/reflection/script_component_authoring/schema.cpp"
+    HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/src/scene/script_component_persistence.h")
 target_include_directories(arp_script_components PUBLIC src)
 target_link_libraries(arp_script_components PUBLIC arp_scene_assets arp_scriptvm_interpreter arp_scriptvm_ir arp_scriptvm_frontend arp_scriptvm_runtime arp_scriptvm_aot_tooling)
 add_library(arp_scene_script_reflection STATIC $<TARGET_OBJECTS:arp_script_plugin_scene_static>)

@@ -44,6 +44,42 @@ class BrowserProcessRetirementTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'BROWSER-CONTRACT-PROCESS-EXIT: 9'):
                 runner.wait_for_browser_result(threading.Event(), mock.Mock(returncode=9, poll=lambda: 9), directory, 900)
 
+    def test_child_crash_is_preserved_outside_profile_and_still_fails(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as output:
+            reports = pathlib.Path(directory) / 'Crashpad' / 'reports'
+            reports.mkdir(parents=True)
+            (reports / 'fixture-crash.dmp').write_bytes(b'actual crash bytes')
+            with self.assertRaisesRegex(RuntimeError, 'BROWSER-CONTRACT-CHILD-CRASH'):
+                runner.wait_for_browser_result(threading.Event(), mock.Mock(), directory, 900,
+                                               crash_output=output)
+            self.assertEqual((pathlib.Path(output) / 'fixture-crash.dmp').read_bytes(),
+                             b'actual crash bytes')
+
+    def test_crash_writer_finishes_before_evidence_copy_and_retirement(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as output:
+            reports = pathlib.Path(directory) / 'Crashpad' / 'reports'
+            reports.mkdir(parents=True)
+            crash = reports / 'fixture-crash.dmp'
+            crash.touch()
+            with mock.patch.object(runner.time, 'sleep',
+                                   side_effect=lambda unused: crash.write_bytes(b'complete dump')), \
+                    self.assertRaisesRegex(RuntimeError, 'BROWSER-CONTRACT-CHILD-CRASH'):
+                runner.wait_for_browser_result(threading.Event(), mock.Mock(), directory, 900,
+                                               crash_output=output)
+            self.assertEqual((pathlib.Path(output) / crash.name).read_bytes(), b'complete dump')
+
+    def test_unfinished_crash_writer_cannot_extend_original_workload_deadline(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as output:
+            reports = pathlib.Path(directory) / 'Crashpad' / 'reports'
+            reports.mkdir(parents=True)
+            (reports / 'fixture-crash.dmp').touch()
+            with mock.patch.object(runner.time, 'monotonic', side_effect=[0., .75, 1.]), \
+                    mock.patch.object(runner.time, 'sleep') as sleep, \
+                    self.assertRaisesRegex(RuntimeError, 'BROWSER-CONTRACT-CHILD-CRASH'):
+                runner.wait_for_browser_result(threading.Event(), mock.Mock(), directory, 1,
+                                               crash_output=output)
+            sleep.assert_not_called()
+
     def test_result_wait_uses_original_deadline(self):
         ready = mock.Mock()
         ready.is_set.return_value = False

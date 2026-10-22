@@ -1,5 +1,5 @@
 #pragma once
-#include "core/utf8.h"
+#include "core/text/utf8.h"
 #include "rhi/frontend/query_pool_arguments.h"
 #include "rhi/semantics/query_lowering.h"
 

@@ -30,7 +30,8 @@ EditorSceneViewportDrawExecutionResult recordEditorSceneViewportPass(rhi::GpuDev
     rhi::GpuTexture& depthTarget,
     const EditorSceneViewportRect& viewport,
     const core::pmr::Vector<EditorSceneViewportDrawItemSubmission>& items,
-    const EditorSceneViewportDrawBudget budget)
+    const EditorSceneViewportDrawBudget budget,
+    const bool preserveAttachments)
 {
     if (device.backend() == rhi::Backend::Null)
         return fail("ARP-EDITOR-VIEWPORT-NULL-RECORDING-ONLY");
@@ -89,14 +90,14 @@ EditorSceneViewportDrawExecutionResult recordEditorSceneViewportPass(rhi::GpuDev
     passDesc.colorAttachments.push_back({"EditorSceneViewportColor",
         colorTarget.id(),
         colorTarget.desc().format,
-        rhi::LoadOp::Clear,
+        preserveAttachments ? rhi::LoadOp::Load : rhi::LoadOp::Clear,
         rhi::StoreOp::Store});
     passDesc.colorAttachments.back().clearColor = {0.075f, 0.09f, 0.12f, 1.0f};
     passDesc.hasDepthStencilAttachment = true;
     passDesc.depthStencilAttachment = {"EditorSceneViewportDepth",
         depthTarget.id(),
         depthTarget.desc().format,
-        rhi::LoadOp::Clear,
+        preserveAttachments ? rhi::LoadOp::Load : rhi::LoadOp::Clear,
         rhi::StoreOp::Store,
         rhi::LoadOp::DontCare,
         rhi::StoreOp::DontCare,

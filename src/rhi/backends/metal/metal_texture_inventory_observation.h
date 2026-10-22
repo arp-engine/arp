@@ -1,5 +1,5 @@
 #pragma once
-#include "core/shared_owner_projection.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/frontend/bindless_image_and_indirect_validation.h"
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/unsigned_element_span.h"
+#include "core/encoding/unsigned_element_span.h"
 
 namespace arp::shader {
 

@@ -1,5 +1,6 @@
 #pragma once
-#include "physics2d/physics_world_2d.h"
+#include "physics/2d/physics_world_2d.h"
+#include "scene/transform.h"
 #include "scriptvm/aot/script_value_memory_accountant.h"
 
 namespace arp::scene2d {

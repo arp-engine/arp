@@ -1,9 +1,11 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "renderer/terrain_runtime.h"
+#include "3d/terrain/terrain_runtime.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cstdint>
+#include <limits>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -120,13 +122,13 @@ public:
         return entry != nullptr ? entry->asset : nullptr;
     }
 
-    TerrainHandle registerTerrain(std::shared_ptr<TerrainRuntime> runtime)
+    TerrainHandle registerTerrain(std::shared_ptr<terrain::TerrainRuntime> runtime)
     {
         terrainRuntimes_.push_back(std::move(runtime));
         return TerrainHandle{static_cast<uint32_t>(terrainRuntimes_.size())};
     }
 
-    bool updateTerrain(TerrainHandle handle, std::shared_ptr<TerrainRuntime> runtime)
+    bool updateTerrain(TerrainHandle handle, std::shared_ptr<terrain::TerrainRuntime> runtime)
     {
         auto* entry = mutableTerrain(handle);
         if (entry == nullptr)
@@ -137,7 +139,7 @@ public:
 
     bool unloadTerrain(TerrainHandle handle) { return updateTerrain(handle, nullptr); }
 
-    const std::shared_ptr<TerrainRuntime>* terrain(TerrainHandle handle) const
+    const std::shared_ptr<terrain::TerrainRuntime>* terrain(TerrainHandle handle) const
     {
         if (!handle.valid() || handle.id > terrainRuntimes_.size()) {
             return nullptr;
@@ -193,6 +195,24 @@ public:
     size_t instanceCount() const { return instances_.size(); }
 
 private:
+    friend class TerrainSceneBinding;
+    friend class SceneTerrainPreparation;
+
+    // Cold capacity preparation only; no handles or residency are published.
+    bool reserveTerrainRegistrations(std::size_t count)
+    {
+        if (terrainRuntimes_.size() > std::numeric_limits<std::uint32_t>::max()
+            || count > std::numeric_limits<std::uint32_t>::max() - terrainRuntimes_.size()
+            || count > terrainRuntimes_.max_size() - terrainRuntimes_.size())
+            return false;
+        try {
+            terrainRuntimes_.reserve(terrainRuntimes_.size() + count);
+        } catch (const std::bad_alloc&) {
+            return false;
+        }
+        return true;
+    }
+
     RuntimeMeshAsset* mutableMesh(MeshHandle handle)
     {
         if (!handle.valid() || handle.id > meshes_.size()) {
@@ -202,7 +222,7 @@ private:
         return entry.resident ? &entry : nullptr;
     }
 
-    std::shared_ptr<TerrainRuntime>* mutableTerrain(TerrainHandle handle)
+    std::shared_ptr<terrain::TerrainRuntime>* mutableTerrain(TerrainHandle handle)
     {
         if (!handle.valid() || handle.id > terrainRuntimes_.size()) {
             return nullptr;
@@ -212,7 +232,8 @@ private:
     }
 
     std::pmr::vector<RuntimeMeshAsset> meshes_;
-    std::pmr::vector<std::shared_ptr<TerrainRuntime>> terrainRuntimes_;
+    core::pmr::Vector<std::shared_ptr<terrain::TerrainRuntime>> terrainRuntimes_{
+        &core::defaultCpuMemoryResource()};
     std::pmr::vector<std::pmr::string> textures_;
     std::pmr::vector<RuntimeMaterialDesc> materials_;
     std::pmr::vector<RuntimeLightDesc> lights_;

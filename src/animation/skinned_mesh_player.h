@@ -4,8 +4,8 @@
 #include "animation/skeleton.h"
 #include "assets/glb_animated_mesh_importer.h"
 #include "core/api.h"
-#include "core/cpu_allocator.h"
-#include "core/math.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <string>
 #include <vector>

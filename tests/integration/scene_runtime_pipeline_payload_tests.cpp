@@ -1,5 +1,5 @@
 #include "3d/scene_3d_render_queue.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/pipeline/custom_render_frame_workload.h"
 #include "renderer/pipeline/render_pipeline.h"
 #include "renderer/pipeline/scene_runtime_pipeline_payload.h"

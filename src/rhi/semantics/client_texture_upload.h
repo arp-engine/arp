@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/array_view.h"
+#include "core/container/array_view.h"
 #include "rhi/gpu_common.h"
 
 namespace arp::rhi::semantics {

@@ -1,4 +1,4 @@
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "renderer/render_graph/compiled_frame_graph.h"
 #include "renderer/render_graph/frame_graph_compiler.h"
 #include "renderer/render_graph/frame_graph_executor.h"

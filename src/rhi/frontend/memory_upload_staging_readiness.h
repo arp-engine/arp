@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/page_slice_allocator.h"
+#include "rhi/frontend/page_slice_allocator.h"
 
 #include <cstdint>
 #include <string_view>

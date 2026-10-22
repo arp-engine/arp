@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cassert>
 #include <filesystem>
@@ -81,8 +81,8 @@ int main()
         "Platform Validated is not claimed",
         "Production Ready is not claimed",
         "Backend-private implementation",
-        "src/platform/render_system_vulkan.cpp",
-        "src/platform/render_system_webgpu.cpp",
+        "src/platform/native/render_system_vulkan.cpp",
+        "src/platform/web/render_system_webgpu.cpp",
         "src/platform/render_system.h",
         "src/renderer/renderers.h",
         "src/renderer/ui/gui_renderer.h",

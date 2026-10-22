@@ -1,7 +1,8 @@
 #pragma once
-#include "core/callback.h"
-#include "core/yaml_contract.h"
+#include "core/concurrency/callback.h"
+#include "core/encoding/yaml_contract.h"
 #include "scriptvm/compile/ast.h"
+#include "scriptvm/runtime/serialization_descriptor.h"
 #include "scriptvm/runtime/value.h"
 
 namespace arp::scriptvm {
@@ -79,117 +80,81 @@ public:
     bool encode(
         const TypeNode& type, const Value& value, Node& node, const EncodeReference& reference)
     {
-        if (!take())
+        const auto descriptor = serializationDescriptor(type);
+        if (!descriptor)
             return false;
-        if (type.kind == TypeKind::Optional) {
-            if (isNil(value)) {
-                node = Node();
-                return true;
-            }
-            return type.elem && encode(*type.elem, value, node, reference);
-        }
-        if (type.kind == TypeKind::Class)
-            return reference(type, value, node);
-        if (type.kind == TypeKind::List) {
-            if (!type.elem || !value.is<reflection::hlist>() || !depth_)
-                return false;
-            --depth_;
-            node = Node::sequence();
-            for (const auto& item : value.cast<const reflection::hlist&>()) {
-                Node child;
-                if (!encode(*type.elem, item, child, reference))
-                    return false;
-                node.get_value_ref<Node::sequence_type&>().push_back(std::move(child));
-            }
-            ++depth_;
-            return true;
-        }
-        if (type.name == "int" && value.is<int>()) {
-            node = value.cast<int>();
-            return true;
-        }
-        if (type.name == "int64" && value.is<std::int64_t>()) {
-            node = value.cast<std::int64_t>();
-            return true;
-        }
-        if (type.name == "float" && value.is<double>() && std::isfinite(value.cast<double>())) {
-            node = value.cast<double>();
-            return true;
-        }
-        if (type.name == "bool" && value.is<bool>()) {
-            node = value.cast<bool>();
-            return true;
-        }
-        if (type.name == "string" && value.is<core::pmr::String>()) {
-            node = value.cast<const core::pmr::String&>().c_str();
-            return true;
-        }
-        return false;
+        ReferenceContext context(reference, {});
+        reflection::SerializationArchive archive(
+            {reflection::SerializationProfile::Authoring, depth_, remaining_, remaining_},
+            &context);
+        const bool ok = archive.writeValue(*descriptor, value, node);
+        remaining_ -= std::min(remaining_, archive.valuesConsumed());
+        return ok;
     }
 
     bool decode(
         const TypeNode& type, const Node& node, Value& value, const DecodeReference& reference)
     {
-        if (!take())
+        const auto descriptor = serializationDescriptor(type);
+        if (!descriptor)
             return false;
-        if (type.kind == TypeKind::Optional) {
-            if (node.is_null()) {
-                value = makeNil();
-                return true;
-            }
-            return type.elem && decode(*type.elem, node, value, reference);
-        }
-        if (type.kind == TypeKind::Class)
-            return reference(type, node, value);
-        if (type.kind == TypeKind::List) {
-            if (!type.elem || !node.is_sequence() || !depth_)
-                return false;
-            --depth_;
-            reflection::hlist list;
-            const auto& children = node.get_value_ref<const Node::sequence_type&>();
-            if (children.size() > remaining_)
-                return false;
-            list.reserve(children.size());
-            for (const auto& child : children) {
-                Value item;
-                if (!decode(*type.elem, child, item, reference))
-                    return false;
-                list.push_back(std::move(item));
-            }
-            ++depth_;
-            value = Value{std::move(list)};
-            return true;
-        }
-        if (type.name == "int" && node.is_integer()) {
-            const auto n = node.get_value<Node::integer_type>();
-            if (n < INT32_MIN || n > INT32_MAX)
-                return false;
-            value = makeInt(int(n));
-            return true;
-        }
-        if (type.name == "int64" && node.is_integer()) {
-            value = makeInt64(node.get_value<Node::integer_type>());
-            return true;
-        }
-        if (type.name == "float" && (node.is_integer() || node.is_float_number())) {
-            const double n = node.get_value<double>();
-            if (!std::isfinite(n))
-                return false;
-            value = makeFloat(n);
-            return true;
-        }
-        if (type.name == "bool" && node.is_boolean()) {
-            value = makeBool(node.get_value<bool>());
-            return true;
-        }
-        if (type.name == "string" && node.is_string()) {
-            value = makeString(core::YamlContract::text(node));
-            return true;
-        }
-        return false;
+        ReferenceContext context({}, reference);
+        reflection::SerializationArchive archive(
+            {reflection::SerializationProfile::Authoring, depth_, remaining_, remaining_},
+            &context);
+        const bool ok = archive.readValue(*descriptor, node, value);
+        remaining_ -= std::min(remaining_, archive.valuesConsumed());
+        return ok;
     }
 
 private:
+    class ReferenceContext final : public reflection::SerializationContext {
+    public:
+        ReferenceContext(EncodeReference encode, DecodeReference decode)
+            : encode_(std::move(encode)), decode_(std::move(decode))
+        {}
+
+        bool writeReference(
+            const reflection::property&, const Value&, Node&, core::pmr::String&) const override
+        {
+            return false;
+        }
+
+        bool readReference(
+            const reflection::property&, const Node&, Value&, core::pmr::String&) const override
+        {
+            return false;
+        }
+
+        bool writeReference(const Descriptor& descriptor,
+            const Value& value,
+            Node& node,
+            core::pmr::String&) const override
+        {
+            TypeNode type;
+            type.kind = TypeKind::Class;
+            type.name = descriptor.referenceType;
+            type.reflectedClass = descriptor.referenceClass;
+            return encode_ && encode_(type, value, node);
+        }
+
+        bool readReference(const Descriptor& descriptor,
+            const Node& node,
+            Value& value,
+            core::pmr::String&) const override
+        {
+            TypeNode type;
+            type.kind = TypeKind::Class;
+            type.name = descriptor.referenceType;
+            type.reflectedClass = descriptor.referenceClass;
+            return decode_ && decode_(type, node, value);
+        }
+
+    private:
+        EncodeReference encode_;
+        DecodeReference decode_;
+    };
+
     bool take()
     {
         if (!remaining_)

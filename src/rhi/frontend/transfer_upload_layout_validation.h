@@ -1,5 +1,5 @@
 #pragma once
-#include "core/memory_budget_ledger.h"
+#include "rhi/frontend/memory_budget_ledger.h"
 #include "rhi/frontend/resource_texture_extent.h"
 #include "rhi/frontend/resource_texture_resource_layout.h"
 #include "rhi/frontend/transfer_upload_input.h"

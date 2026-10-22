@@ -10,6 +10,7 @@
 #include "scriptvm/interpreter/bytecode.h"
 #include "scriptvm/interpreter/eval.h"
 #include "scriptvm/interpreter/vm.h"
+#include "scriptvm/plugin/plugin_runtime_scope.h"
 #include "scriptvm/runtime/module_registry.h"
 #include "scriptvm/runtime/value.h"
 

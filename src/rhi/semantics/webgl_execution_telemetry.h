@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/memory_budget_ledger.h"
+#include "rhi/frontend/memory_budget_ledger.h"
 #include "rhi/gpu_common.h"
 #include "rhi/semantics/webgl_memory_budget.h"
 

@@ -42,6 +42,23 @@ def main() -> int:
     if interpreter is None or "src/scriptvm/interpreter/bytecode.cpp" not in interpreter.srcs:
         fail("Interpreter target does not own bytecode")
 
+    plugin_build = modules.get("arp_scriptvm_plugin_build")
+    if plugin_build is None or set(plugin_build.srcs) != {
+            "src/scriptvm/plugin/compiler_toolchain_layout.cpp",
+            "src/scriptvm/plugin/immutable_build_input_snapshot.cpp"}:
+        fail("plugin build support is not owned by scriptvm/plugin")
+    if "arp_scriptvm_plugin_build" not in modules["arp_scriptvm_runtime"].deps:
+        fail("plugin runtime is missing its build-support dependency")
+    registry_header = (root / "src/scriptvm/runtime/module_registry.h").read_text(encoding="utf-8")
+    registry_source = (root / "src/scriptvm/runtime/module_registry.cpp").read_text(encoding="utf-8")
+    for name in ("ScriptPluginRegistrar", "ScriptPluginServiceRegistry", "StaticPluginCatalog", "ScriptPluginRuntimeScope"):
+        if re.search(r"class\s+(?:ARP_API\s+)?" + name + r"\b", registry_header):
+            fail(f"plugin type is still defined in the mixed registry: {name}")
+        if name + "::" in registry_source:
+            fail(f"plugin implementation is still defined in the mixed registry: {name}")
+    if (root / "src/tooling").exists():
+        fail("retired generic tooling source directory remains")
+
     tests = build._discover_test_modules()
     forbidden_targets = {
         "arp_scriptvm_test_runtime",

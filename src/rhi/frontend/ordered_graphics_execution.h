@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/array_view.h"
+#include "core/container/array_view.h"
 #include "rhi/conformance/original_output.h"
 #include "rhi/gpu_device.h"
 #include "rhi/semantics/client_texture_upload.h"

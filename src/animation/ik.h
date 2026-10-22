@@ -15,7 +15,7 @@
 // return success=false rather than producing NaN.
 
 #include "core/api.h"
-#include "core/math.h"
+#include "core/math/math.h"
 
 namespace animation {
 

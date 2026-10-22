@@ -7,7 +7,7 @@
 #include "rhi/backends/webgpu/webgpu_attachment_operation_lowering.h"
 #include "rhi/backends/webgpu/webgpu_native_string_view.h"
 #endif
-#include "core/bounded_sequence.h"
+#include "core/container/bounded_sequence.h"
 #include "rhi/frontend/command_arguments.h"
 
 namespace arp::rhi_webgpu {

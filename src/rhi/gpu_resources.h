@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/frontend/allocation_lifetime.h"
 #include "rhi/frontend/resource_registration.h"
 #include "rhi/frontend/resource_state_control.h"

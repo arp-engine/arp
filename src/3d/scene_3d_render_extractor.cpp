@@ -1,6 +1,7 @@
 #include "3d/scene_3d_render_extractor.h"
 
 #include <utility>
+#include <cmath>
 
 namespace arp::scene3d {
 namespace {
@@ -38,7 +39,8 @@ public:
 
         if (ignoreForeignPayloads_ && payload.typeId != "scene3d.mesh"
             && payload.typeId != "scene3d.terrain" && payload.typeId != "scene3d.animation"
-            && payload.typeId != "scene3d.light" && payload.typeId != "scene3d.disabled") {
+            && payload.typeId != "scene3d.light" && payload.typeId != "scene3d.disabled"
+            && payload.typeId != "scene3d.volumetric_fog" && payload.typeId != "scene3d.local_fog") {
             return;
         }
 
@@ -50,6 +52,27 @@ public:
             acceptAnimation(ctx, payload);
         } else if (payload.typeId == "scene3d.light") {
             acceptLight(ctx, payload);
+        } else if (payload.typeId == "scene3d.volumetric_fog") {
+            const auto* desc = static_cast<const VolumetricFogDesc*>(payload.data);
+            if (!desc || !validFog(*desc)) {
+                failure_ = {Scene3DDiagnosticCode::InvalidFog, "FOG-INVALID-GLOBAL"};
+            } else if (queue_.hasFog()) {
+                failure_ = {Scene3DDiagnosticCode::DuplicateGlobalFog, "FOG-DUPLICATE-GLOBAL"};
+            } else {
+                queue_.setFog(*desc);
+            }
+        } else if (payload.typeId == "scene3d.local_fog") {
+            const auto* desc = static_cast<const LocalFogVolumeDesc*>(payload.data);
+            if (!desc || !validFog(*desc) || !ctx.worldTransform) {
+                failure_ = {Scene3DDiagnosticCode::InvalidFog, "FOG-INVALID-VOLUME"};
+                return;
+            }
+            const auto& t = *ctx.worldTransform;
+            if (!validFogTransform(t)) {
+                failure_ = {Scene3DDiagnosticCode::InvalidFog, "FOG-SINGULAR-TRANSFORM"};
+                return;
+            }
+            queue_.addFogVolume({ctx.owner ? ctx.owner->id() : scene::GameObjectId{}, *desc, t});
         } else if (payload.typeId == "scene3d.disabled") {
             // A renderable 3D component self-reported as disabled/inactive.
             // Mirror the original is3DComponent()-filtered disabled telemetry.

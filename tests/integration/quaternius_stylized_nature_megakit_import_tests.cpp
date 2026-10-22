@@ -1,6 +1,6 @@
 #include "assets/glb_static_mesh_importer.h"
-#include "core/cpu_allocator.h"
-#include "core/file_io.h"
+#include "core/io/file_io.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/serialization.h"
 #include "resource/mesh_asset_resources.h"
 #include "resource/resource_manager.h"
@@ -166,26 +166,26 @@ void vegetation_catalog_resource_builds_template_registry()
 
     const auto* commonTree = data.findAsset("quaternius.commontree_1");
     assert(commonTree != nullptr);
-    assert(commonTree->templateCategory == arp::pcg::TemplateCategory::TreeMaturePine);
+    assert(commonTree->templateCategory == arp::vegetation::TemplateCategory::TreeMaturePine);
     const auto* pine = data.findAsset("quaternius.pine_1");
     assert(pine != nullptr);
-    assert(pine->templateCategory == arp::pcg::TemplateCategory::TreeYoungPine);
+    assert(pine->templateCategory == arp::vegetation::TemplateCategory::TreeYoungPine);
     const auto* deadTree = data.findAsset("quaternius.deadtree_1");
     assert(deadTree != nullptr);
-    assert(deadTree->templateCategory == arp::pcg::TemplateCategory::TreeYoungFir);
+    assert(deadTree->templateCategory == arp::vegetation::TemplateCategory::TreeYoungFir);
     const auto* rock = data.findAsset("quaternius.rockpath_round_small_1");
     assert(rock != nullptr);
-    assert(rock->templateCategory == arp::pcg::TemplateCategory::RockMossy02);
+    assert(rock->templateCategory == arp::vegetation::TemplateCategory::RockMossy02);
     const auto* grass = data.findAsset("quaternius.grass_common_short");
     assert(grass != nullptr);
-    assert(grass->templateCategory == arp::pcg::TemplateCategory::FoliageGrass);
+    assert(grass->templateCategory == arp::vegetation::TemplateCategory::FoliageGrass);
 
     const auto* commonTreeTemplate = data.findTemplate("quaternius.commontree_1");
     assert(commonTreeTemplate != nullptr);
     assert(commonTreeTemplate->vertices.size() > 0u);
     assert(commonTreeTemplate->indices.size() > 0u);
     assert(commonTreeTemplate->sections.size() > 0u);
-    assert(commonTreeTemplate->category == arp::pcg::TemplateCategory::TreeMaturePine);
+    assert(commonTreeTemplate->category == arp::vegetation::TemplateCategory::TreeMaturePine);
 }
 
 } // namespace

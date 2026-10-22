@@ -1,5 +1,5 @@
 #pragma once
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/semantics/transfer_dependency_lowering.h"
 
 #include <cassert>

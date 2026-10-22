@@ -1,6 +1,9 @@
+#include "2d/scene_component_persistence.h"
 #include "2d/sprite_animator.h"
+#include "2d/tile_map_resource_component.h"
 #include "platform/render_system.h"
 #include "renderer/scene_2d_pipeline.h"
+#include "scene/scene_asset_resource.h"
 #include "tests/fixtures/physics2d_scene.h"
 #include "tests/fixtures/renderdoc_capture.h"
 #include "tests/fixtures/scene_2d_fixture.h"
@@ -8,6 +11,45 @@
 
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+
+namespace {
+arp::core::UniquePtr<arp::scene::Scene> persistedScene(const arp::scene::Scene& source,
+    arp::resource::ResourceManager& resources,
+    arp::core::SharedPtr<arp::physics2d::PhysicsWorld2D> world)
+{
+    using namespace arp;
+    scene::SceneComponentFactory factory;
+    assert(scene2d::registerScene2DPersistence(factory, resources, std::move(world)));
+    const core::pmr::String id = "00000000-0000-4000-8000-000000009999";
+    core::pmr::String yaml, diagnostic;
+    if (!scene::SceneDocumentResource::encode(
+            source, factory, "arp.scene-asset", id, yaml, diagnostic)) {
+        std::fprintf(stderr, "%s\n", diagnostic.c_str());
+        return {};
+    }
+    const auto folder = std::filesystem::current_path() / "build" / "scene-reflection-smoke";
+    std::filesystem::create_directories(folder);
+    const auto file = folder / "scene.yaml";
+    {
+        std::ofstream stream(file, std::ios::binary);
+        stream.write(yaml.data(), yaml.size());
+    }
+    const auto loaded = resources.load<scene::SceneAssetResource>(
+        {}, id, core::toPmrString(file.string()), 262144, 128);
+    if (!loaded.success) {
+        std::fprintf(stderr, "%s\n", loaded.diagnostics.c_str());
+        return {};
+    }
+    auto candidate = resources.find<scene::SceneAssetResource>(id).get()->instantiate(
+        resources, factory, diagnostic);
+    if (!candidate)
+        std::fprintf(stderr, "%s\n", diagnostic.c_str());
+    assert(resources.unload(id).success);
+    return candidate;
+}
+} // namespace
 
 int main(int argc, char** argv)
 {
@@ -63,20 +105,32 @@ int main(int argc, char** argv)
             if (auto* sprite = object->getComponent<scene2d::SpriteRendererComponent>())
                 sprite->setSpriteResource(*animator.spriteId());
     }
-    auto& scene = physics ? showcase.scene : spriteScene;
+    auto restoredScene =
+        persistedScene(physics ? showcase.scene : spriteScene, resources, showcase.world);
+    assert(restoredScene);
+    auto& scene = *restoredScene;
     scene2d::SceneSpriteExtractor extractor(resources, 16);
     assert(extractor.extract(scene, scene.extractTraversalSnapshot({16})));
     scene2d::SpriteDrawPlan plan(16);
-    physics2d::PhysicsWorld2D tilePhysics({{0, 0}, 8, 32, 4, 64, 64, 32, 16, 4, 1.f / 60.f});
+    auto tilePhysics = core::makeShared<physics2d::PhysicsWorld2D>(
+        physics2d::WorldConfig{{0, 0}, 8, 32, 4, 64, 64, 32, 16, 4, 1.f / 60.f});
     if (tiles)
         assert(tests::loadTileFixture(resources));
-    core::UniquePtr<scene2d::TileMapRuntime> tileRuntime;
+    core::UniquePtr<scene::Scene> restoredTiles;
+    scene2d::TileMapRuntime* tileRuntime = nullptr;
     if (tiles) {
-        tileRuntime = core::makeUnique<scene2d::TileMapRuntime>(resources,
+        scene::Scene tileScene;
+        tileScene.createObject("tiles").addComponent<scene2d::TileMapResourceComponent>(resources,
             resources.find<scene2d::TileMapResource>(tests::tileMapId),
             tilePhysics,
             scene2d::TileMapRuntimeDesc{2, 12, 100});
-        assert(tileRuntime->updateResidency({-2, -1, 4, 2}) && tileRuntime->extract(.125));
+        restoredTiles = persistedScene(tileScene, resources, tilePhysics);
+        assert(restoredTiles);
+        tileRuntime = restoredTiles->findObjectByName("tiles")
+                          ->getComponent<scene2d::TileMapResourceComponent>()
+                          ->runtime();
+        assert(tileRuntime && tileRuntime->updateResidency({-2, -1, 4, 2})
+            && tileRuntime->extract(.125));
     }
     const auto& draws = tiles ? tileRuntime->items() : extractor.items();
     if (!plan.build(resources, draws)) {

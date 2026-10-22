@@ -1,5 +1,5 @@
 #pragma once
-#include "core/strided_index_range.h"
+#include "core/algorithm/strided_index_range.h"
 #include "rhi/backends/webgpu/webgpu_native_ordinary_recording.h"
 #include "rhi/backends/webgpu/webgpu_native_ordinary_submission.h"
 #include "rhi/backends/webgpu/webgpu_readback_results.h"

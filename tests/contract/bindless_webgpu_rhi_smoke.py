@@ -3,6 +3,7 @@ import argparse
 import functools
 import http.server
 import json
+import math
 import pathlib
 import re
 import struct
@@ -21,6 +22,128 @@ from bindless_finite_lifecycle_evidence import NativeProgressEvidence, inspect_f
 from implicit_sampling_reference import load_reference_contract, validate_reference_result
 from pbr_implicit_sampling_reference import load_pbr_reference_contract, validate_pbr_reference_result
 from terrain27_implicit_sampling_reference import load_terrain27_reference_contract, validate_terrain27_reference_result
+sys.path.insert(0, str(ROOT / "tests/tools"))
+from bindless_scene_attachment_oracle import expected_color as expected_scene_color
+
+
+def validate_scene_lifecycle_report(result, family):
+    """Validate the finite public scene receipt without granting visual parity."""
+    if (family not in ("pbr", "terrain") or result.get("success") is not True
+            or result.get("scenario") != "original-bindless-scene-lifecycle"
+            or result.get("sceneFamily") != family or result.get("diagnostics")
+            or result.get("nativeErrors") or result.get("productionReady") is not False
+            or result.get("publicBindlessExecutionAvailable") is not False
+            or result.get("numericEquivalencePassed") is not False
+            or result.get("attachmentNumericPassed") is not False
+            or result.get("executionPassed") is not True
+            or result.get("retirementPassed") is not True
+            or result.get("progressTransport", {}).get("complete") is not True):
+        raise ValueError("BINDLESS-SCENE-LIFECYCLE-SCOPE")
+    progress = NativeProgressEvidence(result).messages
+    families = ("terrain",) if family == "terrain" else ("mesh", "skin", "grass", "canopy")
+    expected = [f"BINDLESS_WEBGPU_SCENE_PUBLIC_LIFECYCLE entry={name}{stage}Vertex "
+                f"outcome={outcome} results={2 if stage == 'Color' else 1}"
+                for name in families for stage in ("Color", "Depth", "Shadow")
+                for outcome in ("cancelled-unpublished", "completed")]
+    receipts = [message for message in progress if message.startswith("BINDLESS_WEBGPU_SCENE_PUBLIC_LIFECYCLE ")]
+    if sorted(receipts) != sorted(expected):
+        raise ValueError("BINDLESS-SCENE-LIFECYCLE-RECEIPTS")
+    # One genuine geometry family exercises failures in color/depth/shadow.
+    # Reject missing/duplicate cases and any publication after a failure.
+    representative = "terrain" if family == "terrain" else "mesh"
+    failures = ("cold-cancel", "recording-error", "submission-error", "reverse",
+                "pending-cancel", "caller-drop", "throw-after", "throw-before", "retired-lifetime", "material-range-rejected")
+    expected_failures = [f"BINDLESS_WEBGPU_SCENE_FAILURE_LIFECYCLE entry={representative}{stage}Vertex "
+                         f"scenario={scenario} outcome={'completed' if scenario == 'reverse' else 'unpublished'} "
+                         f"{'caller-conformance ' if scenario == 'material-range-rejected' else ''}"
+                         f"results={2 if stage == 'Color' else 1}"
+                         for stage in ("Color", "Depth", "Shadow") for scenario in failures]
+    failure_receipts = [message for message in progress if message.startswith("BINDLESS_WEBGPU_SCENE_FAILURE_LIFECYCLE ")]
+    if sorted(failure_receipts) != sorted(expected_failures):
+        raise ValueError("BINDLESS-SCENE-LIFECYCLE-FAILURE-RECEIPTS")
+    numeric = [message for message in progress if message.startswith("BINDLESS_SCENE_GEOMETRY_WORDS ")]
+    if len(numeric) != len(families):
+        raise ValueError("BINDLESS-SCENE-GEOMETRY-RECEIPTS")
+    seen_entries = set()
+    numeric_by_entry = {}
+    for message in numeric:
+        match = re.fullmatch(r"BINDLESS_SCENE_GEOMETRY_WORDS entry=([a-z]+ColorVertex) words=([0-9]+(?:,[0-9]+)*)", message)
+        if not match or match[1] not in {name + "ColorVertex" for name in families} or match[1] in seen_entries:
+            raise ValueError("BINDLESS-SCENE-GEOMETRY-ENTRY")
+        seen_entries.add(match[1])
+        words = [int(word) for word in match[2].split(",")]
+        if len(words) != 92 or any(word > 0xffffffff for word in words):
+            raise ValueError("BINDLESS-SCENE-GEOMETRY-SIZE")
+        values = struct.unpack("<92f", struct.pack("<92I", *words))
+        numeric_by_entry[match[1]] = values
+        corners = set()
+        for pixel in range(4):
+            first = pixel * 23
+            data = values[first:first + 23]
+            if any(not math.isfinite(value) for lane, value in enumerate(data)
+                   if family == "terrain" or lane not in range(18, 22)):
+                raise ValueError("BINDLESS-SCENE-GEOMETRY-NONFINITE")
+            x, y, z = data[:3]
+            close = lambda a, b: abs(a - b) <= 1e-5
+            if not (close(abs(x), .5) and close(abs(y), .5) and close(z, .5)):
+                raise ValueError("BINDLESS-SCENE-GEOMETRY-WORLD")
+            corners.add((x > 0, y > 0))
+            for clip in ((11, 15, 19) if family == "terrain" else (6, 10, 14)):
+                if not all(close(actual, expected) for actual, expected in zip(data[clip:clip + 4], (x, y, .5, 1.))):
+                    raise ValueError("BINDLESS-SCENE-GEOMETRY-TEMPORAL")
+            if family != "terrain" and (any(words[first + lane] for lane in range(18, 22)) or not close(data[22], 0.)):
+                raise ValueError("BINDLESS-SCENE-GEOMETRY-METADATA")
+        if len(corners) != 4:
+            raise ValueError("BINDLESS-SCENE-GEOMETRY-COVERAGE")
+    fault_words = [message for message in progress if message.startswith("BINDLESS_SCENE_FAULT_WORD ")]
+    expected_faults = [f"BINDLESS_SCENE_FAULT_WORD entry={name}{stage}Vertex scenario=success word=0"
+                       for name in families for stage in ("Color", "Depth", "Shadow")]
+    expected_faults += [f"BINDLESS_SCENE_FAULT_WORD entry={representative}{stage}Vertex scenario={scenario} word={fault}"
+                        for stage in ("Color", "Depth", "Shadow") for scenario, fault in (("reverse", 0),)]
+    if sorted(fault_words) != sorted(expected_faults):
+        raise ValueError("BINDLESS-SCENE-FAULT-WORDS")
+    attachments = [message for message in progress if message.startswith("BINDLESS_SCENE_ATTACHMENT_BYTES ")]
+    expected_attachments = {(name + stage + "Vertex", 0) for name in families for stage in ("Color", "Depth", "Shadow")}
+    seen_attachments = set()
+    for message in attachments:
+        match = re.fullmatch(r"BINDLESS_SCENE_ATTACHMENT_BYTES entry=([a-z]+)(Color|Depth|Shadow)Vertex "
+                             r"fault=([01]) format=(d32|rgba16f) bytes=([0-9]+(?:,[0-9]+)*) observer=completed-native-diagnostic", message)
+        entry = match[1] + match[2] + "Vertex" if match else ""
+        fault = int(match[3]) if match else 0
+        if (entry, fault) not in expected_attachments or (entry, fault) in seen_attachments:
+            raise ValueError("BINDLESS-SCENE-ATTACHMENT-ENTRY")
+        seen_attachments.add((entry, fault))
+        depth = match[2] != "Color"
+        values = [int(value) for value in match[5].split(",")]
+        if match[4] != ("d32" if depth else "rgba16f") or len(values) != (16 if depth else 32) or any(value > 255 for value in values):
+            raise ValueError("BINDLESS-SCENE-ATTACHMENT-SIZE-FORMAT")
+        packed = bytes(values)
+        if depth:
+            if struct.unpack("<4f", packed) != ((1. if fault else .5),) * 4:
+                raise ValueError("BINDLESS-SCENE-ATTACHMENT-DEPTH")
+        else:
+            color = struct.unpack("<16e", packed)
+            geometry = numeric_by_entry[entry]
+            for pixel in range(4):
+                expected = ((0., 0., 0., 1.) if fault else
+                            expected_scene_color(family == "terrain", geometry[pixel * 23 + 1]))
+                if any(not math.isfinite(actual) or abs(actual - target) > abs(target) / 1024 + .00002
+                       for actual, target in zip(color[pixel * 4:pixel * 4 + 4], expected)):
+                    raise ValueError("BINDLESS-SCENE-ATTACHMENT-MATERIAL")
+    if seen_attachments != expected_attachments:
+        raise ValueError("BINDLESS-SCENE-ATTACHMENT-MISSING")
+    for marker in (
+            "BINDLESS_SCENE_DEVICE_PLAN_OK sealed-package queried-adapter actual-device before-rhi no-capability-grant",
+            "BINDLESS_WEBGPU_SCENE_RETIRE_OK original-owners-expired budgets-zero scopes3-drained no-visual-or-numeric-equivalence-grant"):
+        if progress.count(marker) != 1:
+            raise ValueError("BINDLESS-SCENE-LIFECYCLE-RETIREMENT")
+    plan = result.get("plannedDevice", {})
+    required, actual = plan.get("requiredLimits", {}), plan.get("actualLimits", {})
+    if plan.get("createdBeforeRhi") is not True or not required or set(required) != set(actual):
+        raise ValueError("BINDLESS-SCENE-LIFECYCLE-DEVICE-PLAN")
+    if any(type(value) is not int or value <= 0 or type(actual[key]) is not int
+           or actual[key] < value for key, value in required.items()):
+        raise ValueError("BINDLESS-SCENE-LIFECYCLE-DEVICE-LIMIT")
 
 
 def validate_wocc_ibl_report(result, input_directory):
@@ -195,8 +318,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--browser", required=True)
     parser.add_argument("--runner", type=pathlib.Path, required=True)
+    parser.add_argument("--package-root", type=pathlib.Path,
+                        help="Host publication directory when the runner is staged separately")
     parser.add_argument("--original-bindless-root-preparation", action="store_true")
     parser.add_argument("--original-root-geometry-execution-only", action="store_true")
+    parser.add_argument("--original-root-scene-family", choices=("pbr", "terrain"))
     parser.add_argument("--original-root-sampled-execution-only", action="store_true")
     parser.add_argument("--original-root-array-execution-only", action="store_true")
     parser.add_argument("--original-root-composed-execution-only", action="store_true")
@@ -271,6 +397,13 @@ def main():
     parser.add_argument("--general-graphics-physical-loss",
         choices=("queue-uncertain","recording-shutdown","partial-push","recording-exception"))
     args = parser.parse_args()
+    if args.original_root_scene_family and (not args.original_bindless_root_preparation or any((
+            args.original_root_geometry_execution_only, args.original_root_sampled_execution_only,
+            args.original_root_array_execution_only, args.original_root_composed_execution_only,
+            args.original_root_matrix_execution_only, args.original_root_push_execution_only,
+            args.original_root_storage_execution_only, args.original_root_wocc_ibl,
+            args.original_root_implicit_parity, args.original_root_terrain27))):
+        parser.error("--original-root-scene-family requires the exclusive original Root scene cohort")
     if args.original_root_wocc_ibl and (not args.original_bindless_root_preparation or any((
             args.original_root_geometry_execution_only, args.original_root_sampled_execution_only, args.original_root_array_execution_only,
             args.original_root_composed_execution_only, args.original_root_matrix_execution_only,
@@ -420,18 +553,19 @@ def main():
             or args.typed_target_finite_loss_scenario or args.canonical_upload_scope_uncertainty):
         parser.error("shader usage values is an independent contract scenario")
     args.output.mkdir(parents=True, exist_ok=True)
+    package_root = args.package_root or args.runner
     public_manifest = read_bindless_publication(
-        args.runner / "bindless-rhi-fixture/public-compute/WebGpuPublicCompute.emulated.bindless.yaml")
+        package_root / "bindless-rhi-fixture/public-compute/WebGpuPublicCompute.emulated.bindless.yaml")
     public_graphics_manifest = read_bindless_publication(
-        args.runner / "bindless-rhi-fixture/public-graphics/WebGpuPublicGraphics.emulated.bindless.yaml")
-    producer_manifest = read_bindless_publication(args.runner /
+        package_root / "bindless-rhi-fixture/public-graphics/WebGpuPublicGraphics.emulated.bindless.yaml")
+    producer_manifest = read_bindless_publication(package_root /
         "bindless-rhi-fixture/zero-base-producer/ArpZeroBaseIndirectProducer.emulated.bindless.yaml")
-    indirect_consumer_manifest = read_bindless_publication(args.runner /
+    indirect_consumer_manifest = read_bindless_publication(package_root /
         "bindless-rhi-fixture/indirect-consumer/BindlessIndirectConsumer.emulated.bindless.yaml")
     ready = threading.Event()
-    reference_contract = load_reference_contract(args.runner, args.original_root_array_execution_only) if args.original_root_implicit_parity else None
-    pbr_reference_contract = load_pbr_reference_contract(args.runner) if args.original_root_pbr_material else None
-    terrain_reference_contract = load_terrain27_reference_contract(args.runner) if args.original_root_terrain27 else None
+    reference_contract = load_reference_contract(package_root, args.original_root_array_execution_only) if args.original_root_implicit_parity else None
+    pbr_reference_contract = load_pbr_reference_contract(package_root) if args.original_root_pbr_material else None
+    terrain_reference_contract = load_terrain27_reference_contract(package_root) if args.original_root_terrain27 else None
     result = {}
     journal = BrowserProgressJournal()
     progress = journal.observations
@@ -445,6 +579,12 @@ def main():
             if self.path != "/progress-contract.js":
                 return super().do_GET()
             body = ("window.BrowserProgressLimits=" + json.dumps(journal.limits) + ";").encode()
+            if args.original_root_scene_family:
+                # Share the original host deadline, including elapsed setup.
+                # Callback chains must drain genuinely; no per-wait reset.
+                remaining_ms = max(0.0, args.timeout_seconds - (time.monotonic() - started)) * 1000.0
+                body += ("window.BindlessSceneCompletionDeadline=performance.now()+"
+                         + json.dumps(remaining_ms) + ";").encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/javascript")
             self.send_header("Content-Length", str(len(body)))
@@ -497,6 +637,8 @@ def main():
         query.append("original-bindless-root-preparation")
     if args.original_root_geometry_execution_only:
         query.append("original-root-geometry-execution-only")
+    if args.original_root_scene_family:
+        query.append("original-root-scene-family=" + args.original_root_scene_family)
     if args.original_root_sampled_execution_only:
         query.append("original-root-sampled-execution-only")
     if args.original_root_array_execution_only:
@@ -643,7 +785,8 @@ def main():
                 browser = subprocess.Popen(command, stdout=log, stderr=log,
                     creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
                 try:
-                    if not wait_for_browser_result(ready, browser, profile, args.timeout_seconds):
+                    if not wait_for_browser_result(ready, browser, profile, args.timeout_seconds,
+                                                   crash_output=args.output / "crashes"):
                         raise RuntimeError(
                             "RHI WebGPU pipeline smoke timed out; progress=" + json.dumps(progress))
                 except RuntimeError as error:
@@ -694,7 +837,7 @@ def main():
                         "publicIndirectInstanceConsumer", "publicEmulatedAllowlist", "publicGraphicsEmulatedAllowlist"):
                 result.pop(key, None)
             root_manifest = read_bindless_publication(
-                args.runner / "bindless-rhi-fixture/original-root/MetalComputeBuffers.emulated.bindless.yaml")
+                package_root / "bindless-rhi-fixture/original-root/MetalComputeBuffers.emulated.bindless.yaml")
             result["originalRootPreparationPackageIdentity"] = root_manifest["shaderPackageIdentity"]
             result["originalRootPreparationScope"] = {
                 "contractVersion": 1, "stages": ["Compute"],
@@ -840,6 +983,20 @@ def main():
                 "executionValidated": validated, "completionValidated": validated,
                 "fullScenePublicExecutionAvailable": False, "productionReady": False}
         (args.output / "report.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    if args.original_root_scene_family:
+        try:
+            validate_scene_lifecycle_report(result, args.original_root_scene_family)
+            validated = True
+        except (ValueError, TypeError, KeyError) as error:
+            result["success"] = False
+            result.setdefault("diagnostics", []).append(str(error))
+            validated = False
+        result["sceneLifecycleScope"] = {"family": args.original_root_scene_family,
+            "executionValidated": validated, "numericEquivalenceValidated": False,
+            "attachmentNumericValidated": False, "productionReady": False}
+        (args.output / "report.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+        print(json.dumps(result, indent=2))
+        return 0 if validated else 1
     if args.original_root_wocc_ibl:
         for key in ("publicComputePackageIdentity", "publicGraphicsPackageIdentity",
                     "preparedZeroBaseProducerPackageIdentity", "processorIntentConsumerPackageIdentity",

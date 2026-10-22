@@ -1,6 +1,7 @@
 #pragma once
-#include "core/shared_owner_projection.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/gpu_common.h"
+#include "rhi/semantics/bindless_closure_extensions.h"
 
 #include <array>
 
@@ -46,19 +47,8 @@ public:
 
     static constexpr Decision lowering(Backend backend, std::uint32_t version) noexcept
     {
-        if (version != 1u)
-            return {false, false, false, "RHI-BINDLESS-SNAPSHOT-SCOPE-VERSION"};
-        switch (backend) {
-        case Backend::Null:
-            return {true, true, false, nullptr};
-        case Backend::Vulkan:
-        case Backend::Metal:
-        case Backend::WebGPU:
-            return {true, false, false, nullptr};
-        case Backend::WebGL:
-            return {false, false, false, "RHI-WEBGL1-BINDLESS-SNAPSHOT-SCOPE-UNSUPPORTED"};
-        }
-        return {};
+        return semantics::BindlessClosureExtensionLowering::snapshot_scope<Decision>(
+            backend, version);
     }
 
     // A projection may include non-Root entries, represented by nullptr. This

@@ -20,7 +20,7 @@
 // window; no hidden event thread is spawned.
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "platform/platform_lifecycle_state.h"
 
 #include <cstdint>

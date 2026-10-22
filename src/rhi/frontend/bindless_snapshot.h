@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/atomic_capacity.h"
-#include "core/lifetime_epoch.h"
+#include "core/memory/atomic_capacity.h"
+#include "core/ownership/lifetime_epoch.h"
 #include "rhi/frontend/bindless_fault_domain.h"
 #include "rhi/frontend/resource_leases.h"
 #include "rhi/gpu_bindless.h"

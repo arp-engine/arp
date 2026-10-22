@@ -1,7 +1,7 @@
 #include "rhi/backends/metal/metal_native_resources.h"
 
-#include "core/cpu_allocator.h"
-#include "core/shared_owner_projection.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/backends/metal/buffer_validation.h"
 #include "rhi/backends/metal/metal_native_format.h"
 #include "rhi/backends/metal/metal_native_runtime.h"

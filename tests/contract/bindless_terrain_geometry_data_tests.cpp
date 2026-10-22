@@ -1,5 +1,5 @@
-#include "core/cpu_allocator.h"
-#include "rhi/frontend/bindless_terrain_geometry.h"
+#include "core/memory/cpu_allocator.h"
+#include "renderer/bindless/bindless_terrain_geometry.h"
 
 #include <cassert>
 #include <limits>
@@ -9,8 +9,8 @@
 int main()
 {
     using namespace arp;
-    using C = rhi::BindlessTerrainGeometryContract;
-    rhi::BindlessTerrainGeometryParameters64 value;
+    using C = renderer::BindlessTerrainGeometryContract;
+    renderer::BindlessTerrainGeometryParameters64 value;
     value.pages = {0u, 2u, 2u, 0u};
     value.foamParameters = {0.f, 0.75f, 1.f, 2.f};
     value.weather[0u] = 0.3f;

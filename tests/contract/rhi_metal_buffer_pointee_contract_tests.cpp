@@ -1,4 +1,4 @@
-#include "core/strided_index_range.h"
+#include "core/algorithm/strided_index_range.h"
 #include "rhi/backends/metal/buffer_validation.h"
 #include "rhi/backends/metal/metal_binding_facts.h"
 #include "rhi/backends/metal/metal_native_descriptors.h"

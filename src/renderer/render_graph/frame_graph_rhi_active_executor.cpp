@@ -1,5 +1,5 @@
-#include "core/cpu_allocator.h"
-#include "core/diagnostic_builder.h"
+#include "core/diagnostics/diagnostic_builder.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/render_graph/compiled_frame_graph.h"
 #include "renderer/render_graph/frame_graph_uniform_ring_buffer.h"
 #include "renderer/render_graph/rhi_frame_plan.h"

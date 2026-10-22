@@ -1,5 +1,5 @@
-#include "core/lifetime_epoch.h"
-#include "core/monotonic_id_sequence.h"
+#include "core/ownership/lifetime_epoch.h"
+#include "core/ownership/monotonic_id_sequence.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/backends/webgpu/webgpu_backend_objects.h"
 #include "tests/fixtures/descriptor_liveness_contract.h"

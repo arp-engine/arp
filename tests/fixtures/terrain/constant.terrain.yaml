@@ -1,0 +1,14 @@
+type: TerrainAssetAuthoring
+contractVersion: terrain.authoring/v1
+resourceId: 3f6fbcca-17d2-46a6-9817-2af357399301
+alias: terrain/standard-constant
+minX: 11.0
+minZ: -7.0
+tileCountX: 2
+tileCountZ: 1
+samplesPerEdge: 3
+tileWorldSize: 2.0
+maxDecodedBytes: 72
+input:
+  type: constant/v1
+  height: 3.5

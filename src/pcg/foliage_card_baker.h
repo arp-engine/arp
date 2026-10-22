@@ -15,9 +15,9 @@
 /// 弯曲、叶片数量和簇形，不只改变 yaw/scale".
 ///
 /// The baker also converts tree variant meshes (from NamedVariant) and rock
-/// variant meshes into InstanceVertex format for the shared template registry.
+/// variant meshes into vegetation::InstanceVertex format for the shared template registry.
 
-#include "pcg/foliage_instance_batch.h"
+#include "3d/vegetation/template.h"
 
 #include <cstdint>
 #include <vector>
@@ -44,15 +44,15 @@ struct CardTemplateDesc {
 /// Generate a single card template from a CardTemplateDesc. Produces
 /// crossed quads (or tri-blade) with per-vertex wind weights.
 /// The card is centered at origin, base at y=0, extending upward.
-std::vector<InstanceVertex> bakeCardTemplate(const CardTemplateDesc& desc);
+core::pmr::Vector<vegetation::InstanceVertex> bakeCardTemplate(const CardTemplateDesc& desc);
 
 /// Generate N deterministic card templates for a foliage atlas.
 /// Each template varies width, height, bend, and blade count.
 /// Template index 0 is always the "primary" card; subsequent indices are
 /// variations.
 struct AtlasTemplateSet {
-    std::vector<std::vector<InstanceVertex>> templates;
-    std::vector<std::vector<uint32_t>> indices;
+    core::pmr::Vector<core::pmr::Vector<vegetation::InstanceVertex>> templates;
+    core::pmr::Vector<core::pmr::Vector<uint32_t>> indices;
 };
 
 /// Bake a set of grass card templates from the grass_blade_atlas.
@@ -99,9 +99,9 @@ AtlasTemplateSet bakeProceduralGrassTemplates();
 /// Build indices for a crossed-quad (2 intersecting quads = 4 triangles).
 /// vertexCountPerBlade = 4 (2 quads x 2 verts each). Actually for a
 /// crossed quad we have 8 vertices (2 quads x 4 verts) and 12 indices.
-inline std::vector<uint32_t> crossedQuadIndices(uint32_t baseVertex, uint32_t quadCount)
+inline core::pmr::Vector<uint32_t> crossedQuadIndices(uint32_t baseVertex, uint32_t quadCount)
 {
-    std::vector<uint32_t> idx;
+    core::pmr::Vector<uint32_t> idx;
     idx.reserve(quadCount * 6);
     for (uint32_t q = 0; q < quadCount; ++q) {
         const uint32_t v0 = baseVertex + q * 4;
@@ -116,9 +116,9 @@ inline std::vector<uint32_t> crossedQuadIndices(uint32_t baseVertex, uint32_t qu
 }
 
 /// Build indices for a triangle blade (single triangle from base to tip).
-inline std::vector<uint32_t> triangleBladeIndices(uint32_t baseVertex, uint32_t bladeCount)
+inline core::pmr::Vector<uint32_t> triangleBladeIndices(uint32_t baseVertex, uint32_t bladeCount)
 {
-    std::vector<uint32_t> idx;
+    core::pmr::Vector<uint32_t> idx;
     idx.reserve(bladeCount * 3);
     for (uint32_t b = 0; b < bladeCount; ++b) {
         const uint32_t v0 = baseVertex + b * 3;

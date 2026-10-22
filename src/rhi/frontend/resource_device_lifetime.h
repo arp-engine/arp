@@ -1,6 +1,6 @@
 #pragma once
-#include "core/lifetime_epoch.h"
-#include "core/shared_owner_projection.h"
+#include "core/ownership/lifetime_epoch.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/frontend/resource_device_validation.h"
 
 #include <atomic>

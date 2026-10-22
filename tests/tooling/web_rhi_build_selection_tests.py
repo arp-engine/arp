@@ -523,12 +523,12 @@ class WebRhiBuildSelectionTests(unittest.TestCase):
 
     def test_generated_webgpu_edges_consume_selected_product(self):
         writer = self.writer()
-        attributes = dict(srcs=["src/platform/render_system.cpp"], include_dirs=[],
+        attributes = dict(srcs=["src/platform/common/render_system.cpp"], include_dirs=[],
                           deps=[], compile_defs={}, link_flags=[], platform_link_flags={},
                           platform_deps={}, platform_srcs={}, apple_frameworks=[])
         writer._emit_library(SimpleNamespace(name="arp_rhi_webgpu", **attributes))
         attributes["platform_deps"] = {"web": ["arp_rhi_webgpu"]}
-        attributes["platform_srcs"] = {"web": ["src/platform/render_system_webgpu.cpp"]}
+        attributes["platform_srcs"] = {"web": ["src/platform/web/render_system_webgpu.cpp"]}
         writer._emit_library(SimpleNamespace(name="arp_platform", **attributes))
         writer._emit_rhi_linkage()
         # Record emitted CMake edges using CMake's own conditional evaluator.

@@ -1,6 +1,6 @@
 #include "resource/resource_contract.h"
 
-#include "core/sha1.h"
+#include "core/hash/sha1.h"
 
 #include <charconv>
 

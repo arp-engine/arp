@@ -3,6 +3,7 @@
 #include "cpu_quota_factory_fixture.h"
 #include "original_bindless_depth_stream_fixture.h"
 #include "original_bindless_root_assembly_fixture.h"
+#include "original_workload_resource_inspection_fixture.h"
 #include "rhi/frontend/bindless_root_execution.h"
 #include "rhi/semantics/bindless_original_preparation_lowering.h"
 
@@ -185,6 +186,11 @@ public:
             snapshot, binding, inventory, device, quota, id);
         check(id);
         assert(root);
+        // Reserve the original inventory before any graph caches its owners.
+        // Public fence execution requires this reservation on every path.
+        auto workloadCapacity = execute
+            ? OriginalWorkloadResourceInspectionFixture::prepareRetention(inventory, device)
+            : nullptr;
         BackendFixture::verifyNativeProofs(root, snapshot, proof);
         auto nativeQuota = core::makeShared<core::CpuMemoryQuota>(quota->limitBytes());
         const auto count = static_cast<std::uint32_t>(root->elements().size() + 1u);

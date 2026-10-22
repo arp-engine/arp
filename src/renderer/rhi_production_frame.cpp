@@ -1,7 +1,7 @@
 #include "renderer/rhi_production_frame.h"
 
-#include "core/cpu_allocator.h"
-#include "core/diagnostic_builder.h"
+#include "core/diagnostics/diagnostic_builder.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/shader_package_reflection.h"
 #include "rhi/gpu_common.h"
 

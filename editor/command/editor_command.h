@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/math.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 #include "editor/workspace/editor_scene_inspector.h"
 
 #include <atomic>
@@ -234,9 +234,9 @@ struct SetSceneComponentPropertyCommand {
     ScenePropertyValueKind valueKind = ScenePropertyValueKind::Number;
     bool booleanValue = false;
     int integerValue = 0;
-    std::uint32_t unsignedIntegerValue = 0;
+    std::uint64_t unsignedIntegerValue = 0;
     std::uint64_t sceneObjectReferenceValue = 0;
-    float numberValue = 0.0f;
+    double numberValue = 0.0f;
     core::Vec2 vector2Value{};
     core::pmr::Vector<core::Vec2> vector2ListValue{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<SceneInspectorObjectLink> sceneObjectLinkListValue{
@@ -350,7 +350,18 @@ struct SceneComponentCatalogSnapshot {
         &core::defaultCpuMemoryResource()};
 };
 
-using EditorCommandPayload = std::variant<ActivateControlCommand,
+// Project-scoped offline preparation; no scene Undo entry. Completion publishes
+// a complete candidate only if the project manifest has not changed.
+struct BuildTerrainResourceCommand {
+    core::pmr::String authoringPath{&core::defaultCpuMemoryResource()};
+    core::pmr::String packagePath{&core::defaultCpuMemoryResource()};
+};
+
+struct CompleteTerrainResourceBuildCommand {};
+
+using EditorCommandPayload = std::variant<BuildTerrainResourceCommand,
+    CompleteTerrainResourceBuildCommand,
+    ActivateControlCommand,
     SetTextValueCommand,
     EditorInputCommand,
     SetInspectorScrollCommand,

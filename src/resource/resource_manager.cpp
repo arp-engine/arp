@@ -1,6 +1,6 @@
 #include "resource/resource_manager.h"
 
-#include "core/stable_hash.h"
+#include "core/hash/stable_hash.h"
 #include "reflection/serialization.h"
 #include "resource/resource_contract.h"
 #include "resource/resource_graph_plan.h"

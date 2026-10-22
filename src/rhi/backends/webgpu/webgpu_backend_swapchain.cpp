@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/webgpu/webgpu_backend_objects.h"
 #include "rhi/backends/webgpu/webgpu_native_payloads.h"
 #include "rhi/backends/webgpu/webgpu_original_canvas.h"

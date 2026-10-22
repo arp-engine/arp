@@ -1,6 +1,6 @@
 #pragma once
-#include "core/shared_owner_projection.h"
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/gpu_capabilities.h"
 #include "rhi/gpu_pipeline.h"
 #include "rhi/semantics/pipeline_creation_lowering.h"

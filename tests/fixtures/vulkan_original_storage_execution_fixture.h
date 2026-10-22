@@ -1,5 +1,6 @@
 #pragma once
 #include "original_storage_execution_fixture.h"
+#include "vulkan_completed_texture_readback_fixture.h"
 #include "vulkan_original_root_terminal_fixture.h"
 
 namespace arp::test {
@@ -103,114 +104,22 @@ struct VulkanStorageExecutionBackendFixture {
     static std::array<std::uint16_t, 20u> readPixels(const rhi::GpuTexture& texture)
     {
         using namespace rhi;
-        using namespace rhi_vulkan;
-        assert(runtime && (texture.desc().usage & TextureUsage::CopySrc) != TextureUsage::None);
-        const auto image = vulkanRhiNativePayload(texture);
-        assert(image);
-        const auto device = runtime->logicalDevice();
-        assert(device == image->backendVulkanDeviceHandle());
-        BufferDesc desc;
-        desc.label = "Storage completed native observation";
-        desc.sizeBytes = 40u;
-        desc.usage = ResourceUsage::CopyDst;
-        desc.memory = MemoryUsage::GpuToCpu;
-        VulkanRhiAllocatorDesc allocationDesc;
-        allocationDesc.label = desc.label;
-        const char* queryDiagnostic = nullptr;
-        VulkanRhiNativeResourceAllocator query(runtime);
-        allocationDesc.memoryBudgetBytes = query.queryBufferAllocationBytes(desc, queryDiagnostic);
-        assert(allocationDesc.memoryBudgetBytes && !queryDiagnostic);
-        VulkanRhiAllocator allocator(allocationDesc, runtime);
-        VulkanRhiNativeResourceAllocator resources(runtime, &allocator);
-        auto output = resources.createBuffer(desc);
-        assert(output.success && output.payload && output.payload->backendMappedData());
-        VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-        poolInfo.queueFamilyIndex = runtime->graphicsQueueFamilyIndex();
-        VkCommandPool pool = VK_NULL_HANDLE;
-        assert(vkCreateCommandPool(device, &poolInfo, nullptr, &pool) == VK_SUCCESS);
-        VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-        allocate.commandPool = pool;
-        allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocate.commandBufferCount = 1u;
-        VkCommandBuffer command = VK_NULL_HANDLE;
-        assert(vkAllocateCommandBuffers(device, &allocate, &command) == VK_SUCCESS);
-        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        assert(vkBeginCommandBuffer(command, &begin) == VK_SUCCESS);
-        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        barrier.image = image->backendVulkanImageHandle();
-        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 1u, 2u, 0u, 1u};
-        barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vkCmdPipelineBarrier(command,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0u,
-            0u,
-            nullptr,
-            0u,
-            nullptr,
-            1u,
-            &barrier);
-        std::array<VkBufferImageCopy, 2u> copies{};
-        for (unsigned i = 0u; i != 2u; ++i) {
-            copies[i].bufferOffset = i ? 32u : 0u;
-            copies[i].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i + 1u, 0u, 1u};
-            copies[i].imageExtent = {i ? 1u : 2u, i ? 1u : 2u, 1u};
+        std::array<semantics::TextureUploadPackedMip, 2u> mips;
+        for (std::size_t i = 0u; i < mips.size(); ++i) {
+            auto& mip = mips[i];
+            mip.range = defaultTextureSubresourceRange(texture.desc());
+            mip.range.baseMipLevel = i + 1u;
+            mip.range.mipLevelCount = 1u;
+            mip.extent = {i ? 1u : 2u, i ? 1u : 2u, 1u};
+            mip.packedOffset = i ? 32u : 0u;
+            mip.packedBytesPerRow = i ? 8u : 16u;
+            mip.rowCount = i ? 1u : 2u;
         }
-        vkCmdCopyImageToBuffer(command,
-            barrier.image,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            output.payload->backendVulkanBufferHandle(),
-            copies.size(),
-            copies.data());
-        std::swap(barrier.oldLayout, barrier.newLayout);
-        std::swap(barrier.srcAccessMask, barrier.dstAccessMask);
-        vkCmdPipelineBarrier(command,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0u,
-            0u,
-            nullptr,
-            0u,
-            nullptr,
-            1u,
-            &barrier);
-        VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        host.buffer = output.payload->backendVulkanBufferHandle();
-        host.offset = 0u;
-        host.size = desc.sizeBytes;
-        host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-        host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        vkCmdPipelineBarrier(command,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_HOST_BIT,
-            0u,
-            0u,
-            nullptr,
-            1u,
-            &host,
-            0u,
-            nullptr);
-        assert(vkEndCommandBuffer(command) == VK_SUCCESS);
-        VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        VkFence fence = VK_NULL_HANDLE;
-        assert(vkCreateFence(device, &fenceInfo, nullptr, &fence) == VK_SUCCESS);
-        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        submit.commandBufferCount = 1u;
-        submit.pCommandBuffers = &command;
-        assert(vkQueueSubmit(runtime->graphicsQueue(), 1u, &submit, fence) == VK_SUCCESS);
-        assert(vkWaitForFences(device, 1u, &fence, VK_TRUE, 15000000000ull) == VK_SUCCESS);
-        core::pmr::String diagnostic;
-        assert(output.payload->backendInvalidateMappedRead(0u, desc.sizeBytes, diagnostic));
+        const auto bytes = VulkanCompletedTextureReadbackFixture::read(
+            texture, runtime, mips, 40u, ResourceState::ShaderRead);
         std::array<std::uint16_t, 20u> values;
-        std::memcpy(values.data(), output.payload->backendMappedData(), sizeof(values));
-        vkDestroyFence(device, fence, nullptr);
-        vkDestroyCommandPool(device, pool, nullptr);
+        assert(bytes.size() == sizeof(values));
+        std::memcpy(values.data(), bytes.data(), sizeof(values));
         return values;
     }
 };

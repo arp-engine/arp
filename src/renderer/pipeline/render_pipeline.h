@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/global_illumination.h"
 #include "renderer/render_graph/render_graph.h"
 #include "renderer/renderer_result.h"

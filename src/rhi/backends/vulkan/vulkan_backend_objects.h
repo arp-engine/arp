@@ -1,5 +1,5 @@
 #pragma once
-#include "core/mutation_journal.h"
+#include "core/ownership/mutation_journal.h"
 #include "rhi/backends/vulkan/vulkan_allocator.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 #include "rhi/backends/vulkan/vulkan_resource_registry.h"

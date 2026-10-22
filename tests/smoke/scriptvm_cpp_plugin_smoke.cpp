@@ -1,5 +1,5 @@
-#include "core/process_runner.h"
-#include "scriptvm/runtime/cpp_plugin_importer.h"
+#include "core/system/process_runner.h"
+#include "scriptvm/plugin/cpp_plugin_importer.h"
 
 #include <cstdio>
 #include <filesystem>

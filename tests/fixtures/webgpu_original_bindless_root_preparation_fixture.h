@@ -445,9 +445,9 @@ private:
             *static_cast<bool*>(userdata) = true;
         };
         Receipt receipt;
-        assert(storage->validateBufferMapReceipt(receipt));
+        assert(storage->validateBufferMapReceipt(receipt, 0u));
         assert(!receipt.prepareCold(payload->buffer, result->byteCapacity(), &delivered, callback)
-            && !storage->validateBufferMapReceipt(receipt) && !delivered
+            && !storage->validateBufferMapReceipt(receipt, 0u) && !delivered
             && receipt.phase() == Receipt::Phase::Prepared && !receipt.nativeMapSucceeded());
         const auto bytes = payload->sizeBytes;
         ++payload->sizeBytes;

@@ -1,6 +1,8 @@
-#include "core/int32_divisor.h"
-#include "core/math.h"
-#include "core/mesh_translation.h"
+#include "3d/camera_parameters.h"
+#include "assets/mesh/mesh_translation.h"
+#include "core/math/int32_divisor.h"
+#include "core/math/math.h"
+#include "core/math/unsigned_range.h"
 
 #include <cmath>
 #include <cstdio>
@@ -8,6 +10,11 @@
 #include <random>
 
 namespace {
+
+static_assert(arp::core::canAddUnsigned<std::uint64_t>(UINT64_MAX, 0u));
+static_assert(!arp::core::canAddUnsigned<std::uint64_t>(UINT64_MAX, 1u));
+static_assert(arp::core::canAddUnsigned<std::uint32_t>(UINT32_MAX - 1u, 1u));
+static_assert(!arp::core::canAddUnsigned<std::uint32_t>(1u, UINT32_MAX));
 
 bool near(float lhs, float rhs, float epsilon = 0.0001f)
 {
@@ -164,14 +171,14 @@ int main()
     requireNear("Mat4 identity point z", identityPoint.z, 4.0f);
 
     const auto homogeneousMatrix = arp::core::Mat4::translation({5.0f, -2.0f, 1.0f});
-    const auto homogeneousPoint = arp::core::transformHomogeneous(
-        homogeneousMatrix, arp::core::Vec4{2.0f, 3.0f, 4.0f, 1.0f});
+    const auto homogeneousPoint =
+        arp::core::transformHomogeneous(homogeneousMatrix, arp::core::Vec4{2.0f, 3.0f, 4.0f, 1.0f});
     requireNear("Mat4 homogeneous point x", homogeneousPoint.x, 7.0f);
     requireNear("Mat4 homogeneous point y", homogeneousPoint.y, 1.0f);
     requireNear("Mat4 homogeneous point z", homogeneousPoint.z, 5.0f);
     requireNear("Mat4 homogeneous point w", homogeneousPoint.w, 1.0f);
-    const auto homogeneousVector = arp::core::transformHomogeneous(
-        homogeneousMatrix, arp::core::Vec4{2.0f, 3.0f, 4.0f, 0.0f});
+    const auto homogeneousVector =
+        arp::core::transformHomogeneous(homogeneousMatrix, arp::core::Vec4{2.0f, 3.0f, 4.0f, 0.0f});
     requireNear("Mat4 homogeneous vector x", homogeneousVector.x, 2.0f);
     requireNear("Mat4 homogeneous vector y", homogeneousVector.y, 3.0f);
     requireNear("Mat4 homogeneous vector z", homogeneousVector.z, 4.0f);

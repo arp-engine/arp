@@ -1,6 +1,6 @@
 #pragma once
 #include "assets/asset_pipeline.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <limits>
 #include <stdexcept>

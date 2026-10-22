@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/math.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
 #include "scene/component.h"
 
@@ -13,64 +13,64 @@ namespace arp::scene3d {
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct TerrainAuthoringEditorProperties {
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float halfExtent = 300.0f;
 };
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct WaterSurfaceEditorProperties {
-    APROP(Editor)
+    APROP(Serialize, Editor)
     std::int32_t segments = 128;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float waterLevel = 4.0f;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float uvScale = 4.0f;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float shoreMargin = 0.5f;
 };
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct RoadNetworkEditorProperties {
-    APROP(Editor)
+    APROP(Serialize, Editor)
     bool generationEnabled = false;
 };
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct CritterFieldEditorProperties {
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float worldMaxX = 300.0f;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float worldMinZ = -300.0f;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float worldMaxZ = 300.0f;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float waterLevel = 4.0f;
 };
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct SkyEditorProperties {
-    APROP(Editor)
+    APROP(Serialize, Editor)
     core::Vec3 sunDirection{90.0f, 140.0f, 30.0f};
-    APROP(Editor)
+    APROP(Serialize, Editor)
     core::Vec3 zenith{0.35f, 0.47f, 0.60f};
-    APROP(Editor)
+    APROP(Serialize, Editor)
     core::Vec3 horizon{0.82f, 0.85f, 0.88f};
-    APROP(Editor)
+    APROP(Serialize, Editor)
     core::Vec3 sunColor{0.92f, 0.90f, 0.85f};
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float domeRadius = 560.0f;
 };
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct CampfireEditorProperties {
-    APROP(Editor)
+    APROP(Serialize, Editor)
     core::Vec3 position{};
-    APROP(Editor)
+    APROP(Serialize, Editor)
     core::Vec3 particleOrigin{};
 };
 

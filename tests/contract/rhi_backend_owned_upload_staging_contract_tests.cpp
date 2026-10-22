@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/frontend/memory_lifetime_validation.h"
 #include "rhi/semantics/native_backend_capabilities.h"
 #include "rhi/semantics/native_command_lowering.h"

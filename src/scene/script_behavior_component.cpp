@@ -62,7 +62,8 @@ void ScriptBehaviorComponent::onDisable(const SceneUpdateContext& context)
 
 void ScriptBehaviorComponent::onDestroy(const SceneUpdateContext& context)
 {
-    invoke("on_destroy", context);
+    if (!restoring())
+        invoke("on_destroy", context);
     if (instance_.is<arp::reflection::instance>()) {
         auto* instance = instance_.ptr<arp::reflection::instance>();
         instance->invalidate();

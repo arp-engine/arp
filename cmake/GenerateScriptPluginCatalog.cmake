@@ -59,8 +59,8 @@ string(REGEX REPLACE "[^A-Za-z0-9_]" "_" _symbol "${_module}")
 set(_content "")
 string(APPEND _content
     "#include <utility>\n"
-    "#include \"scriptvm/runtime/module_registry.h\"\n"
-    "#include \"scriptvm/runtime/cpp_plugin_api.h\"\n"
+    "#include \"scriptvm/plugin/static_plugin_catalog.h\"\n"
+    "#include \"scriptvm/plugin/cpp_plugin_api.h\"\n"
     "extern \"C\" int ${_entry}(ArpScriptPluginHostV2*);\n"
     "bool arp_add_${_symbol}_static_plugin(arp::scriptvm::StaticPluginCatalog& catalog) {\n"
     "    arp::scriptvm::ScriptPluginDescriptor descriptor;\n"

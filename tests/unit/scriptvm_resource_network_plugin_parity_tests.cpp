@@ -3,7 +3,7 @@
 #include "network/network_module.h"
 #include "resource/resource_manager.h"
 #include "resource/resource_module.h"
-#include "scriptvm/runtime/cpp_plugin_api.h"
+#include "scriptvm/plugin/cpp_plugin_api.h"
 #include "scriptvm/runtime/module_registry.h"
 
 #include <cassert>

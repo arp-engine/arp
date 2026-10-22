@@ -1,8 +1,8 @@
 #pragma once
 #include "rhi/frontend/bindless_graphics_pass_preparation.h"
+#include "rhi/frontend/bindless_initialized_graphics.h"
 #include "rhi/frontend/bindless_root_initialized_shader.h"
 #include "rhi/frontend/bindless_root_readback_sequence.h"
-#include "rhi/frontend/bindless_scene_content.h"
 #include "rhi/frontend/command_buffer_readback.h"
 #include "rhi/frontend/command_geometry_content.h"
 #include "rhi/semantics/bindless_graphics_execution_lowering.h"
@@ -25,7 +25,7 @@ struct OriginalBindlessGraphicsExecutionInputs {
     const std::shared_ptr<const OriginalInitializedGeometrySource>* initializedShader = nullptr;
     std::size_t initializedShaderCount = 0u;
     OriginalBindlessRootReadbackSequence::Input readbacks;
-    OriginalBindlessSceneContentInputs scene;
+    OriginalBindlessInitializedGraphicsInputs initializedGraphics;
 };
 
 struct OriginalBindlessGraphicsExecutionBudget {

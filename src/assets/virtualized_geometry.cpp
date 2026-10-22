@@ -1,6 +1,6 @@
 #include "assets/virtualized_geometry.h"
 
-#include "core/diagnostic_builder.h"
+#include "core/diagnostics/diagnostic_builder.h"
 
 #include <algorithm>
 #include <cmath>

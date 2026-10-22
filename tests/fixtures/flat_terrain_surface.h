@@ -1,6 +1,6 @@
 #pragma once
 
-#include "terrain/terrain_surface.h"
+#include "3d/terrain/terrain_surface.h"
 
 namespace arp::tests {
 

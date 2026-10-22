@@ -1,6 +1,6 @@
 #include "shader/wgsl_buffer_declaration_layout.h"
 
-#include "core/memory_budget_ledger.h"
+#include "rhi/frontend/memory_budget_ledger.h"
 
 #include <algorithm>
 #include <charconv>

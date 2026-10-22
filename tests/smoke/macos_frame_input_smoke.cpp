@@ -1,8 +1,8 @@
 #include "../fixtures/frame_input_lifecycle_checks.h"
-#include "core/runtime/render_thread.h"
 #include "platform/render_system.h"
 #include "platform/window.h"
 #include "renderer/pipeline/render_pipeline.h"
+#include "renderer/runtime/render_thread.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_native_resources.h"
 

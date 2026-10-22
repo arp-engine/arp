@@ -1,4 +1,4 @@
-#include "core/stable_hash.h"
+#include "core/hash/stable_hash.h"
 
 #include <cassert>
 #include <cstdint>

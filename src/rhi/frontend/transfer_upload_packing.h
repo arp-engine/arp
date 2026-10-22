@@ -1,5 +1,5 @@
 #pragma once
-#include "core/preflight_replay.h"
+#include "core/algorithm/preflight_replay.h"
 #include "rhi/frontend/transfer_upload_layout_validation.h"
 
 namespace arp::rhi {

@@ -1,6 +1,6 @@
 #include "rhi/backends/metal/metal_original_bindless_graphics_pass.h"
 
-#include "core/shared_identity_projection.h"
+#include "core/ownership/shared_identity_projection.h"
 #include "rhi/backends/metal/metal_device.h"
 
 namespace arp::rhi_metal {

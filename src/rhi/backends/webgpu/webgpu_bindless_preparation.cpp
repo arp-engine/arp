@@ -4,8 +4,8 @@
 #include "rhi/backends/webgpu/webgpu_completed_texture_publication.h"
 #include "rhi/backends/webgpu/webgpu_native_ordinary_physical_groups.h"
 #include "rhi/backends/webgpu/webgpu_native_payloads.h"
+#include "rhi/frontend/bindless_initialized_graphics.h"
 #include "rhi/frontend/bindless_root_callback.h"
-#include "rhi/frontend/bindless_scene_content.h"
 #include "rhi/frontend/descriptor_buffer_write_validation.h"
 #include "rhi/frontend/descriptor_set_validation.h"
 #include "rhi/semantics/bindless_entry_access.h"
@@ -47,7 +47,7 @@ const rhi::BindlessPackageModule* selectIssuedModule(
     return selected;
 }
 
-bool issuedSceneProfile(const WebGpuNativeIssuedPipelineContract& issued,
+bool issuedInitializedGraphicsProfile(const WebGpuNativeIssuedPipelineContract& issued,
     const rhi::BindlessAuthorization& authorization) noexcept
 {
     if (issued.stages().size() != 2u)
@@ -66,8 +66,8 @@ bool issuedSceneProfile(const WebGpuNativeIssuedPipelineContract& issued,
     }
     if (!vertex || !fragment)
         return false;
-    const auto scene =
-        rhi::OriginalBindlessSceneContentContract::selectEntries(vertex->entry, fragment->entry);
+    const auto scene = rhi::semantics::BindlessInitializedGraphicsContract::select(
+        vertex->initializedGraphics, fragment->initializedGraphics);
     return scene.recognized && !scene.diagnostic;
 }
 
@@ -109,7 +109,7 @@ const char* inspectWebGpuOriginalBindlessBindingActivity(
     active = false;
     const bool produced = rhi::OriginalBindlessRootNativeExecutionContract::hasExecutionPlan(
         authorization.plan(), 16u);
-    const bool scene = issuedSceneProfile(issued, authorization);
+    const bool scene = issuedInitializedGraphicsProfile(issued, authorization);
     if (produced || scene) {
         const auto& package = authorization.package();
         if ((produced && package.gpuVisibilityConsumerContractVersion() != 2u)
@@ -233,7 +233,7 @@ rhi::ValidationResult prepareWebGpuOriginalBindlessPhysicalGroup(
     if (!active && logicalSet != authorization.package().artifact().set
         && (rhi::OriginalBindlessRootNativeExecutionContract::hasExecutionPlan(
                 authorization.plan(), 16u)
-            || issuedSceneProfile(issued, authorization))) {
+            || issuedInitializedGraphicsProfile(issued, authorization))) {
         if (mapping != issued.sets().end()
             || std::any_of(issued.facts().begin(), issued.facts().end(), [&](const auto& fact) {
                    return fact.mapping.logicalSet == logicalSet;

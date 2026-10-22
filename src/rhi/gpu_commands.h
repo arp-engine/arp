@@ -1,10 +1,11 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/frontend/indirect_sequence_range.h"
 #include "rhi/gpu_descriptors.h"
 #include "rhi/gpu_pipeline.h"
+#include "rhi/prototype_command_batch.h"
 
 #include <cstdint>
 #include <memory>
@@ -18,6 +19,7 @@ namespace arp::rhi {
 class QueryPool;
 class BindlessPreparedGraphicsBinding;
 class BindlessAccessDeclarations;
+class GpuFence;
 
 struct CommandEncoderDesc {
     std::pmr::string label;
@@ -32,6 +34,7 @@ struct CommandEncoderDesc {
     std::uint32_t maxBindlessGraphicsAccesses = 0;
     // Explicit optional contract. Absence grants no ordinary retention bound.
     std::optional<CommandRetentionBudget> retentionBudget;
+    std::optional<PrototypeCommandBatchBudget> prototypeBatch;
 };
 
 enum class LoadOp { Load, Clear, DontCare };
@@ -443,6 +446,10 @@ public:
     virtual void* queryInterface(std::string_view) noexcept { return nullptr; }
 
     virtual std::uint32_t commandCount() const = 0;
+
+    // An exact command-owned native completion, prepared before submission.
+    // Empty retains the existing caller-fence contract. Never host signaled.
+    virtual std::shared_ptr<GpuFence> ownedSubmissionFence() const { return {}; }
 };
 
 class ARP_API RenderBundle {

@@ -1,6 +1,6 @@
 #include "2d/scene_2d_render_queue.h"
 #include "3d/scene_3d_render_queue.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/pipeline/scene_runtime_pipeline_payload.h"
 #include "renderer/pipeline/scene_runtime_render_pipeline.h"
 #include "renderer/render_graph/render_graph.h"

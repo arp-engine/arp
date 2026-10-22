@@ -1,6 +1,6 @@
 #pragma once
-#include "core/cpu_allocator.h"
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cstddef>
 #include <cstdint>

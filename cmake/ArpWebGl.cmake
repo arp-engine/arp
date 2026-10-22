@@ -670,7 +670,7 @@ add_test(NAME arp_rhi_fallback_status_admission_contract_tests
 
 add_executable(arp_renderer_deployment_evidence_contract_tests
     tests/contract/renderer_deployment_evidence_contract_tests.cpp
-    src/platform/render_system_frame_loop.cpp)
+    src/platform/common/render_system_frame_loop.cpp)
 target_link_libraries(arp_renderer_deployment_evidence_contract_tests PRIVATE
     arp_renderer_deployment)
 arp_add_mingw_static_runtime(arp_renderer_deployment_evidence_contract_tests)
@@ -723,7 +723,7 @@ endif()
 
 add_executable(arp_render_system_rhi_production_migration_tests
     tests/integration/render_system_rhi_production_migration_tests.cpp
-    src/platform/render_system_rhi_production_migration.cpp)
+    src/platform/common/render_system_rhi_production_migration.cpp)
 target_include_directories(arp_render_system_rhi_production_migration_tests PRIVATE src)
 target_link_libraries(arp_render_system_rhi_production_migration_tests PRIVATE arp_rhi arp_core)
 target_compile_definitions(arp_render_system_rhi_production_migration_tests PRIVATE ARP_STATIC_LINK=1)

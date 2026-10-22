@@ -1,7 +1,7 @@
 #include "editor/workspace/project_browser_model.h"
 
-#include "core/filesystem_path.h"
-#include "core/string_utils.h"
+#include "core/io/filesystem_path.h"
+#include "core/text/string_utils.h"
 
 #include <algorithm>
 #include <system_error>

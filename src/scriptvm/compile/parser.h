@@ -14,7 +14,7 @@
 // On error, fills ParseResult::error with a diagnostic (code, message, line, col).
 // The parser does minimal error recovery -- it reports the first error and stops.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/compile/ast.h"
 #include "scriptvm/compile/lexer.h"
 #include "scriptvm/runtime/diagnostics.h"

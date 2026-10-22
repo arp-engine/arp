@@ -1,6 +1,6 @@
 #include "rhi/backends/metal/metal_closed_consumer_images.h"
 
-#include "core/monotonic_id_sequence.h"
+#include "core/ownership/monotonic_id_sequence.h"
 #include "rhi/backends/metal/metal_device.h"
 #include "rhi/backends/metal/metal_native_commands.h"
 #include "rhi/gpu_extensions.h"

@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8"><link rel="icon" href="data:,"><title>Prototype command batch native contract</title>
+<canvas id="canvas" width="64" height="64"></canvas>
+<script>
+const messages=[],nativeErrors=[];let sent=false;
+async function finish(code){if(sent)return;sent=true;await new Promise(r=>setTimeout(r,100));
+nativeErrors.push(...(Module.webGpuUncapturedErrors||[]));
+const result={success:code===0,messages,nativeErrors,productionReady:false};
+await fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(result)});}
+var Module={canvas:document.getElementById('canvas'),print:s=>messages.push(String(s)),
+printErr:s=>nativeErrors.push(String(s)),onExit:finish,onAbort:s=>{nativeErrors.push(String(s));finish(1);}};
+window.addEventListener('error',e=>{nativeErrors.push(e.message);finish(1);});
+window.addEventListener('unhandledrejection',e=>{nativeErrors.push(String(e.reason));finish(1);});
+</script><script src="arp_prototype_command_batch_tests.js"></script>

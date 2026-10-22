@@ -1,8 +1,8 @@
 #pragma once
-#include "core/base64.h"
-#include "core/shared_owner_projection.h"
-#include "core/unsigned_element_span.h"
-#include "core/unsigned_range.h"
+#include "core/encoding/base64.h"
+#include "core/encoding/unsigned_element_span.h"
+#include "core/math/unsigned_range.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "rhi/frontend/command_draw_validation.h"
 #include "rhi/frontend/command_indirect_commands.h"

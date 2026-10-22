@@ -3,7 +3,7 @@
 #include "3d/authoring_components.h"
 #include "3d/collider_component.h"
 #include "3d/components.h"
-#include "physics/physics_types.h"
+#include "physics/3d/physics_types.h"
 #include "resource/terrain_asset_resource.h"
 #include "scene/camera.h"
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/backends/vulkan/vulkan_heap_placement.h"
 #include "tests/fixtures/cpu_quota_factory_fixture.h"
 #include "tests/fixtures/vulkan_heap_owner_fixture.h"

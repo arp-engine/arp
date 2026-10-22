@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor/viewport/editor_scene_viewport_contract.h"
+#include "resource/resource_manager.h"
 #include "scene/scene.h"
 
 namespace arp::editor {
@@ -17,6 +18,8 @@ ARP_API EditorSceneViewportFrameBuildResult buildEditorSceneViewportFrame(const 
     std::uint64_t stateVersion,
     std::uint32_t targetWidth,
     std::uint32_t targetHeight,
-    EditorSceneViewportRect physicalViewport);
+    EditorSceneViewportRect physicalViewport,
+    const resource::ResourceManager* resources = nullptr,
+    std::size_t maxDrawItems = 0u);
 
 } // namespace arp::editor

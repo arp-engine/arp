@@ -1,13 +1,13 @@
 #include "3d/collider_component.h"
 #include "3d/components.h"
-#include "core/math.h"
+#include "core/math/math.h"
 #include "reflection/reflection.h"
 #include "scene/camera.h"
 #include "scene/diagnostics.h"
 #include "scene/scene.h"
 #include "scene/script_behavior_component.h"
 #include "scene/transform.h"
-#include "scriptvm/runtime/cpp_plugin_api.h"
+#include "scriptvm/plugin/cpp_plugin_api.h"
 
 #include <array>
 #include <cassert>

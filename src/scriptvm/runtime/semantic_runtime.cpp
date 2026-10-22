@@ -974,8 +974,8 @@ public:
         return success;
     }
 
-    static bool reuseList(
-        ExecutionSlot& local, ExecutionSlotBuffer& operands, int count, std::size_t limit)
+    template <class Operands>
+    static bool reuseList(ExecutionSlot& local, Operands& operands, int count, std::size_t limit)
     {
         if (count < 0 || static_cast<std::size_t>(count) > limit
             || operands.size() < static_cast<std::size_t>(count))
@@ -992,9 +992,9 @@ public:
         return true;
     }
 
-    template <bool CacheBorrowed = false>
+    template <bool CacheBorrowed = false, class Operands>
     static void commitList(arp::reflection::hlist& list,
-        ExecutionSlotBuffer& operands,
+        Operands& operands,
         int count,
         const IntegerValueCacheBorrow* cache = nullptr)
     {
@@ -1007,8 +1007,9 @@ public:
         }
     }
 
+    template <class Operands>
     static bool reuseDictionary(ExecutionSlot& local,
-        ExecutionSlotBuffer& operands,
+        Operands& operands,
         int pairCount,
         std::size_t limit,
         PrivateDictionaryWriteScratch& scratch)
@@ -1021,8 +1022,9 @@ public:
         return true;
     }
 
+    template <class Operands>
     static bool prepareDictionary(ExecutionSlot& local,
-        ExecutionSlotBuffer& operands,
+        Operands& operands,
         int pairCount,
         std::size_t limit,
         PrivateDictionaryWriteScratch& scratch)
@@ -1066,7 +1068,7 @@ public:
             // Only the stock integer cache can materialize keys here without
             // changing invocation-quota order. Boxed, native or other keys replay.
             const auto* scalar = keySlot.inlineScalar();
-            const auto* integer = scalar ? scalar->ptr<int>() : nullptr;
+            const auto* integer = scalar ? scalar->template ptr<int>() : nullptr;
             if (!integer || !intValueUsesCache(*integer)) {
                 scratch.clear();
                 return false;
@@ -1096,8 +1098,8 @@ public:
         return true;
     }
 
-    template <bool CacheBorrowed = false>
-    static void commitDictionary(ExecutionSlotBuffer& operands,
+    template <bool CacheBorrowed = false, class Operands>
+    static void commitDictionary(Operands& operands,
         const PrivateDictionaryWriteScratch& scratch,
         std::size_t start,
         const IntegerValueCacheBorrow* cache = nullptr)
@@ -1144,12 +1146,20 @@ public:
 
 ScriptSemanticRuntime::PrivateConstructionBorrow::~PrivateConstructionBorrow()
 {
-    if (targets_)
-        targets_->clear();
+    reset();
 }
 
-bool ScriptSemanticRuntime::PrivateConstructionBorrow::bind(ExecutionSlot& local,
-    ExecutionSlotBuffer& operands,
+void ScriptSemanticRuntime::PrivateConstructionBorrow::reset()
+{
+    if (targets_)
+        targets_->clear();
+    targets_ = nullptr;
+    list_ = nullptr;
+}
+
+template <class Operands>
+bool ScriptSemanticRuntime::PrivateConstructionBorrow::bindOperands(ExecutionSlot& local,
+    Operands& operands,
     int count,
     std::size_t limit,
     bool dictionary,
@@ -1191,7 +1201,8 @@ bool ScriptSemanticRuntime::PrivateConstructionBorrow::bind(ExecutionSlot& local
     return true;
 }
 
-bool ScriptSemanticRuntime::PrivateConstructionBorrow::commit(ExecutionSlotBuffer& operands) const
+template <class Operands>
+bool ScriptSemanticRuntime::PrivateConstructionBorrow::commitOperands(Operands& operands) const
 {
     assert(list_ || targets_);
     const auto required = static_cast<std::size_t>(count_) * (targets_ ? 2u : 1u);
@@ -1200,7 +1211,7 @@ bool ScriptSemanticRuntime::PrivateConstructionBorrow::commit(ExecutionSlotBuffe
     for (int i = 0; i != count_; ++i) {
         const auto source =
             start_ + static_cast<std::size_t>(i) * (targets_ ? 2u : 1u) + (targets_ ? 1u : 0u);
-        if (!operands[source].scalarPointer<int>())
+        if (!operands[source].template scalarPointer<int>())
             return false;
     }
     // Actual key carriers and payloads remain observable. The closed interval
@@ -1219,6 +1230,37 @@ bool ScriptSemanticRuntime::PrivateConstructionBorrow::commit(ExecutionSlotBuffe
     return true;
 }
 
+bool ScriptSemanticRuntime::PrivateConstructionBorrow::bind(ExecutionSlot& local,
+    ExecutionSlotBuffer& operands,
+    int count,
+    std::size_t limit,
+    bool dictionary,
+    PrivateDictionaryWriteScratch& scratch)
+{
+    return bindOperands(local, operands, count, limit, dictionary, scratch);
+}
+
+bool ScriptSemanticRuntime::PrivateConstructionBorrow::bind(ExecutionSlot& local,
+    ExecutionSlotStackView& operands,
+    int count,
+    std::size_t limit,
+    bool dictionary,
+    PrivateDictionaryWriteScratch& scratch)
+{
+    return bindOperands(local, operands, count, limit, dictionary, scratch);
+}
+
+bool ScriptSemanticRuntime::PrivateConstructionBorrow::commit(ExecutionSlotBuffer& operands) const
+{
+    return commitOperands(operands);
+}
+
+bool ScriptSemanticRuntime::PrivateConstructionBorrow::commit(
+    ExecutionSlotStackView& operands) const
+{
+    return commitOperands(operands);
+}
+
 bool ScriptSemanticRuntime::reuseUniqueList(
     ExecutionSlot& local, ExecutionSlotBuffer& operands, int count, std::size_t limit)
 {
@@ -1232,6 +1274,33 @@ bool ScriptSemanticRuntime::reuseUniqueDictionary(ExecutionSlot& local,
     PrivateDictionaryWriteScratch& scratch)
 {
     return ContainerConstruction::reuseDictionary(local, operands, pairCount, limit, scratch);
+}
+
+bool ScriptSemanticRuntime::reuseUniqueList(
+    ExecutionSlot& local, ExecutionSlotStackView& operands, int count, std::size_t limit)
+{
+    return ContainerConstruction::reuseList(local, operands, count, limit);
+}
+
+bool ScriptSemanticRuntime::reuseUniqueDictionary(ExecutionSlot& local,
+    ExecutionSlotStackView& operands,
+    int pairCount,
+    std::size_t limit,
+    PrivateDictionaryWriteScratch& scratch)
+{
+    return ContainerConstruction::reuseDictionary(local, operands, pairCount, limit, scratch);
+}
+
+SemanticOperationResult ScriptSemanticRuntime::makeList(
+    ExecutionSlotStackView& operands, int count, std::size_t limit)
+{
+    return ContainerConstruction::list(operands, count, limit);
+}
+
+SemanticOperationResult ScriptSemanticRuntime::makeDict(
+    ExecutionSlotStackView& operands, int count, std::size_t limit)
+{
+    return ContainerConstruction::dict(operands, count, limit);
 }
 
 SemanticOperationResult ScriptSemanticRuntime::makeList(
@@ -1544,45 +1613,15 @@ bool ScriptSemanticRuntime::IntegerIndexBorrow::bind(const ExecutionSlot& base)
     return true;
 }
 
-Value* ScriptSemanticRuntime::IntegerIndexBorrow::find(const Value& key, int payload) const
+Value* ScriptSemanticRuntime::IntegerIndexBorrow::findUncached(const Value& key, int payload) const
 {
     assert(dictionary_ != nullptr);
-    const Value* element;
-    if (!cache_.find(payload, element)) {
-        const auto found = dictionary_->find(key);
-        element = found == dictionary_->end() ? nullptr : &found->second;
-        cache_.insert(payload, element);
-    }
+    const auto found = dictionary_->find(key);
+    const Value* element = found == dictionary_->end() ? nullptr : &found->second;
+    cache_.insert(payload, element);
     // Addresses originate in this mutable dictionary. Only its lookup relation
     // is borrowed as immutable; replacing mapped Value does not invalidate it.
     return const_cast<Value*>(element);
-}
-
-const Value* ScriptSemanticRuntime::IntegerIndexBorrow::read(const ExecutionSlot& index) const
-{
-    const int* raw = index.scalarPointer<int>();
-    if (!raw || (!index.inlineScalar() && index.boxed().is_native_reference()))
-        return nullptr;
-    if (list_)
-        return *raw >= 0 && static_cast<std::size_t>(*raw) < list_->size()
-            ? &(*list_)[static_cast<std::size_t>(*raw)]
-            : nullptr;
-    if (!dictionary_)
-        return nullptr;
-    const Value* key = index.inlineScalar() ? integers_.find(*raw) : &index.boxed();
-    const int* payload = key ? ActualIntegerPayload::checkedPointer(*key) : nullptr;
-    return payload ? find(*key, *payload) : nullptr;
-}
-
-bool ScriptSemanticRuntime::IntegerIndexBorrow::readInteger(
-    const ExecutionSlot& index, int& value) const
-{
-    const auto* element = read(index);
-    const int* payload = element ? ActualIntegerPayload::checkedPointer(*element) : nullptr;
-    if (!payload)
-        return false;
-    value = *payload;
-    return true;
 }
 
 Value* ScriptSemanticRuntime::IntegerIndexBorrow::destination(const ExecutionSlot& index) const
@@ -1607,6 +1646,7 @@ bool ScriptSemanticRuntime::IntegerIndexUpdate::bind(
 {
     destination_ = nullptr;
     source_ = nullptr;
+    integers_ = borrow.integers_;
     const Value* element;
     Value* destination;
     if (!borrow.resolve(index, element, destination))
@@ -1614,13 +1654,7 @@ bool ScriptSemanticRuntime::IntegerIndexUpdate::bind(
     // Both replaced and read carriers must be nonnative integers. In particular
     // a host-modified cached list index can select a different write element;
     // releasing an arbitrary object there must never occur inside this borrow.
-    const auto* actual = ActualIntegerPayload::qualify(*element);
-    if (!actual || (destination != element && !ActualIntegerPayload::qualify(*destination)))
-        return false;
-    source = *actual;
-    destination_ = destination;
-    source_ = element;
-    return true;
+    return bindResolved(element, destination, source);
 }
 
 bool ScriptSemanticRuntime::IntegerIndexBorrow::resolve(
@@ -1629,9 +1663,9 @@ bool ScriptSemanticRuntime::IntegerIndexBorrow::resolve(
     const int* raw = index.scalarPointer<int>();
     if (!raw)
         return false;
-    const Value* key = index.inlineScalar() ? integers_.find(*raw) : &index.boxed();
-    if (!key)
-        return false;
+    if (index.inlineScalar())
+        return resolveInteger(*raw, source, destination);
+    const Value* key = &index.boxed();
     const auto* actual = ActualIntegerPayload::qualify(*key);
     if (!actual)
         return false;
@@ -1665,6 +1699,7 @@ bool ScriptSemanticRuntime::IntegerIndexUpdate::bind(
 {
     destination_ = nullptr;
     source_ = nullptr;
+    integers_ = {};
     const int* rawIndex = index.scalarPointer<int>();
     if (!rawIndex)
         return false;
@@ -1714,12 +1749,23 @@ bool ScriptSemanticRuntime::IntegerIndexUpdate::bind(
     return true;
 }
 
-void ScriptSemanticRuntime::IntegerIndexUpdate::commit(int value) const
+bool ScriptSemanticRuntime::ReadonlyIndexBorrow::bind(const ExecutionSlot& base)
 {
-    assert(destination_ != nullptr);
-    // Never mutate a shared/cached scalar payload in place. The original store
-    // replaces the destination carrier with makeInt's actual cached result.
-    *destination_ = makeInt(value);
+    strings_ = nullptr;
+    cache_.clear();
+    if (integers_.bind(base))
+        return true;
+    const auto* carrier = base.boxedCarrier();
+    const auto* dictionary =
+        carrier ? exactValuePayload<arp::reflection::hdict>(*carrier) : nullptr;
+    if (!dictionary || !std::all_of(dictionary->begin(), dictionary->end(), [](const auto& item) {
+            const auto* metadata = item.first.class_();
+            return exactValuePayload<core::pmr::String>(item.first) && metadata
+                && metadata->hasBuiltinOrdering();
+        }))
+        return false;
+    strings_ = dictionary;
+    return true;
 }
 
 SemanticOperationResult ScriptSemanticRuntime::storeIndex(Value base, Value index, Value value)

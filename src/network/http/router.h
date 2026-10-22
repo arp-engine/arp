@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/path_pattern.h"
+#include "core/text/path_pattern.h"
 #include "network/http/message.h"
 
 namespace arp::network::http {

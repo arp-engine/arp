@@ -1,6 +1,6 @@
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_allocator.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 #include "rhi/backends/vulkan/vulkan_texture_descriptor.h"

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/memory_budget_ledger.h"
+#include "core/memory/cpu_allocator.h"
+#include "rhi/frontend/memory_budget_ledger.h"
 #include "rhi/gpu_resources.h"
 
 #include <cstdint>

@@ -1,5 +1,5 @@
 #pragma once
-#include "rhi/frontend/bindless_scene_content.h"
+#include "bindless_scene_conformance_contract.h"
 #include "rhi/frontend/command_geometry_content.h"
 #include "rhi/gpu_extensions.h"
 
@@ -7,6 +7,8 @@
 #include <cstdio>
 
 namespace arp::test {
+using namespace renderer;
+
 // Shared family bytes and original lease factories. Null checks value/owner
 // composition only. Platform callers explicitly request real public immutable
 // initialization and pass the retained actors to their original closure.
@@ -66,11 +68,11 @@ class BindlessSceneBufferDataFixture {
 
 public:
     static constexpr bool originalBufferFactories = true;
-    static constexpr std::uint64_t resultBytes =
-        2u * 2u * rhi::BindlessPbrGeometryContract::numericLanesPerPixel * sizeof(std::uint32_t);
+    static constexpr std::uint64_t resultBytes = 2u * 2u
+        * arp::test::BindlessGeometryNumericContract::numericLanesPerPixel * sizeof(std::uint32_t);
     bool initializeNative = false;
-    rhi::OriginalBindlessSceneContentInputs::Family family =
-        rhi::OriginalBindlessSceneContentInputs::Family::Mesh;
+    arp::test::BindlessSceneConformanceInputs::Family family =
+        arp::test::BindlessSceneConformanceInputs::Family::Mesh;
     const Artifact* artifact = nullptr;
 
     struct State {
@@ -130,7 +132,7 @@ public:
     bool terrain() const
     {
         assert(artifact);
-        return family == rhi::OriginalBindlessSceneContentInputs::Family::Terrain;
+        return family == arp::test::BindlessSceneConformanceInputs::Family::Terrain;
     }
 
     Bytes tableBytes(const Snapshot& snapshot, std::uint32_t table) const
@@ -238,8 +240,9 @@ public:
             BindlessPbrGeometryFrame400 frame;
             frame.renderViewProjection = frame.currentViewProjection =
                 frame.previousViewProjection = frame.shadowViewProjection = identity;
-            frame.outputExtent = {2u, 2u, BindlessPbrGeometryContract::numericLanesPerPixel, 1u};
-            require(BindlessPbrGeometryContract::validateFrame(frame, 2u, 2u, resultBytes));
+            frame.outputExtent = {
+                2u, 2u, BindlessGeometryNumericContract::numericLanesPerPixel, 1u};
+            require(BindlessGeometryNumericContract::validateFrame(frame, 2u, 2u, resultBytes));
             return bytes(frame);
         }
         if (binding == 1u)
@@ -266,9 +269,9 @@ public:
     {
         const bool writable = table.tableId == (terrain() ? 7u : 4u);
         desc.sizeBytes = writable ? resultBytes
-            : !terrain()          ? 2u * sizeof(rhi::BindlessPbrMaterial96)
-            : table.tableId == 4u ? sizeof(rhi::BindlessTerrainMaterial240)
-            : table.tableId == 5u ? sizeof(rhi::BindlessTerrainPage32)
+            : !terrain()          ? 2u * sizeof(renderer::BindlessPbrMaterial96)
+            : table.tableId == 4u ? sizeof(renderer::BindlessTerrainMaterial240)
+            : table.tableId == 5u ? sizeof(renderer::BindlessTerrainPage32)
                                   : 4u * sizeof(std::uint32_t);
         desc.memory = writable ? rhi::MemoryUsage::GpuOnly : rhi::MemoryUsage::CpuToGpu;
         if (writable)

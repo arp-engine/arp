@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/lifetime_epoch.h"
+#include "core/ownership/lifetime_epoch.h"
 #include "rhi/conformance/sampled_workload.h"
 #include "rhi/conformance/storage_mrt_workload.h"
 #include "rhi/gpu_resource_types.h"

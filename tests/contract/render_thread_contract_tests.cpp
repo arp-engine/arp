@@ -15,8 +15,8 @@
 // return false after N frames (simulating a close-requested / fatal error).
 // Stays in the core layer (depends only on arp_core) -- does not pull in WoCC.
 
-#include "core/runtime/render_thread.h"
-#include "core/runtime/spsc_frame_double_buffer.h"
+#include "core/concurrency/spsc_frame_double_buffer.h"
+#include "renderer/runtime/render_thread.h"
 
 #include <atomic>
 #include <cassert>

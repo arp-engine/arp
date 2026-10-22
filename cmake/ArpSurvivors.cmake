@@ -1,8 +1,16 @@
 # 2D runtime acceptance; standalone game does not depend on editor/WOCC.
 add_subdirectory(3rd/box2d-3.1.1 ${CMAKE_BINARY_DIR}/_deps/box2d)
-add_library(arp_physics2d STATIC src/physics2d/physics_world_2d.cpp)
+add_library(arp_physics2d STATIC src/physics/2d/physics_world_2d.cpp)
 target_include_directories(arp_physics2d PUBLIC src)
-target_link_libraries(arp_physics2d PUBLIC arp_core PRIVATE box2d)
+target_link_libraries(arp_physics2d PUBLIC arp_core arp_reflection PRIVATE box2d)
+add_test(NAME arp_physics_dependency_contract_tests
+    COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/physics_dependency_contract_tests.py" "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME arp_scene_migration_tests
+    COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/scene_migration_tests.py")
+add_test(NAME arp_scene_serialization_architecture_tests
+    COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/scene_serialization_architecture_tests.py")
+add_test(NAME arp_serialization_codegen_tests
+    COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/serialization_codegen_tests.py" "$<TARGET_FILE:arp_reflect_codegen>")
 add_executable(arp_physics2d_tests tests/contract/physics2d_tests.cpp)
 target_include_directories(arp_physics2d_tests PRIVATE src)
 target_compile_options(arp_physics2d_tests PRIVATE -UNDEBUG)
@@ -13,7 +21,25 @@ target_sources(arp_2d_resources PRIVATE src/ui/ui_bitmap_font_resource.cpp)
 target_include_directories(arp_2d_resources PUBLIC src)
 target_link_libraries(arp_2d_resources PUBLIC arp_resource arp_assets arp_physics2d)
 add_library(arp_2d_renderer STATIC src/renderer/scene_2d_renderer.cpp src/renderer/scene_2d_ordered.cpp)
-add_library(arp_scene_assets STATIC src/scene/scene_asset_resource.cpp)
+add_library(arp_scene_assets STATIC src/scene/scene_asset_resource.cpp src/scene/scene_reflection_persistence.cpp)
+arp_reflection_generate(
+    TARGET arp_scene_assets MODULE scene_authoring
+    OUT_JSON "${CMAKE_CURRENT_BINARY_DIR}/generated/reflection/scene_authoring/schema.json"
+    OUT_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/reflection/scene_authoring/schema.cpp"
+    HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/src/core/math/math.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/scene/transform.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/scene/scene_asset_resource.h")
+target_sources(arp_2d_resources PRIVATE src/2d/scene_component_persistence.cpp)
+arp_reflection_generate(
+    TARGET arp_2d_resources MODULE scene2d_authoring
+    OUT_JSON "${CMAKE_CURRENT_BINARY_DIR}/generated/reflection/scene2d_authoring/schema.json"
+    OUT_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/reflection/scene2d_authoring/schema.cpp"
+    HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/src/physics/2d/physics_world_2d.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/2d/bounds.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/2d/components.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/2d/physics_components.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/2d/sprite_animation_component.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/2d/tile_map_resource_component.h")
 target_include_directories(arp_scene_assets PUBLIC src)
 target_link_libraries(arp_scene_assets PUBLIC arp_scene arp_resource)
 target_include_directories(arp_2d_renderer PUBLIC src)
@@ -56,20 +82,24 @@ add_executable(arp_scene_2d_services_tests tests/contract/scene_2d_services_test
 target_include_directories(arp_scene_2d_services_tests PRIVATE . src)
 target_compile_definitions(arp_scene_2d_services_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(arp_scene_2d_services_tests PRIVATE -UNDEBUG)
-target_link_libraries(arp_scene_2d_services_tests PRIVATE arp_2d_resources)
+target_link_libraries(arp_scene_2d_services_tests PRIVATE arp_2d_resources
+    "$<LINK_GROUP:RESCAN,arp_resource,arp_scriptvm_host_plugin_runtime>")
+arp_add_mingw_static_runtime(arp_scene_2d_services_tests)
 add_test(NAME arp_scene_2d_services_tests COMMAND arp_scene_2d_services_tests)
 add_executable(arp_scene_2d_codec_tests tests/contract/scene_2d_codec_tests.cpp)
 target_include_directories(arp_scene_2d_codec_tests PRIVATE . src)
 target_compile_definitions(arp_scene_2d_codec_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(arp_scene_2d_codec_tests PRIVATE -UNDEBUG)
-target_link_libraries(arp_scene_2d_codec_tests PRIVATE arp_2d_resources arp_2d arp_scene_assets)
+target_link_libraries(arp_scene_2d_codec_tests PRIVATE arp_2d_resources arp_2d arp_scene_assets
+    "$<LINK_GROUP:RESCAN,arp_resource,arp_scriptvm_host_plugin_runtime>")
 arp_add_mingw_static_runtime(arp_scene_2d_codec_tests)
 add_test(NAME arp_scene_2d_codec_tests COMMAND arp_scene_2d_codec_tests)
 add_executable(arp_scene_2d_world_tests tests/contract/scene_2d_world_tests.cpp)
 target_include_directories(arp_scene_2d_world_tests PRIVATE . src)
 target_compile_definitions(arp_scene_2d_world_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(arp_scene_2d_world_tests PRIVATE -UNDEBUG)
-target_link_libraries(arp_scene_2d_world_tests PRIVATE arp_2d_resources arp_2d arp_scene_assets)
+target_link_libraries(arp_scene_2d_world_tests PRIVATE arp_2d_resources arp_2d arp_scene_assets
+    "$<LINK_GROUP:RESCAN,arp_resource,arp_scriptvm_host_plugin_runtime>")
 add_test(NAME arp_scene_2d_world_tests COMMAND arp_scene_2d_world_tests)
 add_executable(arp_scene_2d_runtime_contract_tests tests/contract/scene_2d_runtime_contract_tests.cpp)
 target_include_directories(arp_scene_2d_runtime_contract_tests PRIVATE src)
@@ -135,7 +165,7 @@ add_test(NAME arp_survivors_null_smoke COMMAND arp_survivors --null-smoke --seed
 set_tests_properties(arp_survivors_null_smoke PROPERTIES TIMEOUT 30)
 
 if(WIN32)
-    target_sources(arp_survivors PRIVATE src/platform/platform_lifecycle_state.cpp src/platform/renderdoc_capture_scope.cpp)
+    target_sources(arp_survivors PRIVATE src/platform/common/platform_lifecycle_state.cpp src/platform/common/renderdoc_capture_scope.cpp)
     target_include_directories(arp_survivors PRIVATE "C:/Program Files/RenderDoc")
     target_compile_definitions(arp_survivors PRIVATE ARP_RENDERDOC_APP_AVAILABLE=1)
     target_link_libraries(arp_survivors PRIVATE arp_2d_renderer arp_platform
@@ -158,12 +188,12 @@ if(WIN32)
     set_tests_properties(arp_survivors_death_smoke PROPERTIES TIMEOUT 45)
     add_custom_command(TARGET arp_survivors POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/examples/survivors/assets" "$<TARGET_FILE_DIR:arp_survivors>/assets")
-    add_executable(arp_scene_2d_vulkan_hidden_smoke tests/smoke/scene_2d_vulkan_hidden_smoke.cpp src/platform/platform_lifecycle_state.cpp)
+    add_executable(arp_scene_2d_vulkan_hidden_smoke tests/smoke/scene_2d_vulkan_hidden_smoke.cpp src/platform/common/platform_lifecycle_state.cpp)
     target_include_directories(arp_scene_2d_vulkan_hidden_smoke PRIVATE . src "C:/Program Files/RenderDoc")
     target_compile_definitions(arp_scene_2d_vulkan_hidden_smoke PRIVATE
         ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" ARP_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders" ARP_RENDERDOC_APP_AVAILABLE=1)
     target_compile_options(arp_scene_2d_vulkan_hidden_smoke PRIVATE -UNDEBUG)
-    target_link_libraries(arp_scene_2d_vulkan_hidden_smoke PRIVATE arp_2d_renderer arp_physics2d arp_platform arp_rhi arp_rhi_semantics
+    target_link_libraries(arp_scene_2d_vulkan_hidden_smoke PRIVATE arp_scene_assets arp_2d_renderer arp_physics2d arp_platform arp_rhi arp_rhi_semantics
         "$<LINK_GROUP:RESCAN,arp_gui,arp_ui_runtime,arp_resource>" arp_scriptvm_runtime arp_scriptvm_ir arp_scriptvm_frontend arp_scriptvm_interpreter arp_scriptvm_aot_tooling)
     arp_add_mingw_static_runtime(arp_scene_2d_vulkan_hidden_smoke)
     add_dependencies(arp_scene_2d_vulkan_hidden_smoke arp_compile_shaders)

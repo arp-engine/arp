@@ -1,3 +1,10 @@
+set(ARP_SCRIPT_PLUGIN_SOURCES
+    src/scriptvm/plugin/cpp_plugin_importer.cpp
+    src/scriptvm/plugin/plugin_services.cpp
+    src/scriptvm/plugin/plugin_registrar.cpp
+    src/scriptvm/plugin/static_plugin_catalog.cpp
+    src/scriptvm/plugin/plugin_runtime_scope.cpp)
+
 add_library(arp_scriptvm_direct_native_runtime
     src/scriptvm/aot/aot_v5.cpp
     src/scriptvm/aot/script_value_memory_accountant.cpp)
@@ -26,23 +33,24 @@ target_link_libraries(arp_scriptvm_semantic_runtime_aot_only PUBLIC
     arp_scriptvm_semantic_runtime_core_aot)
 
 add_library(arp_scriptvm_host_plugin_runtime
-    src/scriptvm/aot/aot_dynamic_package.cpp
+    src/scriptvm/plugin/aot_dynamic_package.cpp
     # Release/Web validate the signed AOT manifest with a runtime-only parser.
     # Keep the source compiler and AOT builder out of this target.
     src/scriptvm/aot/aot_manifest_runtime.cpp
-    src/scriptvm/runtime/cpp_plugin_importer.cpp
+    ${ARP_SCRIPT_PLUGIN_SOURCES}
     src/scriptvm/runtime/module_registration.cpp
     src/scriptvm/runtime/module_registry.cpp)
 target_compile_definitions(arp_scriptvm_host_plugin_runtime PRIVATE
     ARP_BUILDING_DLL=1 ARP_SCRIPT_AOT_ONLY_RUNTIME=1)
 target_include_directories(arp_scriptvm_host_plugin_runtime PUBLIC src)
 target_link_libraries(arp_scriptvm_host_plugin_runtime PUBLIC
+    arp_scriptvm_plugin_build
     arp_core arp_reflection arp_scriptvm_direct_native_runtime
     arp_scriptvm_semantic_runtime_core_aot
     arp_fkyaml_headers)
 
 add_library(arp_scriptvm_runtime OBJECT
-    src/scriptvm/runtime/cpp_plugin_importer.cpp
+    ${ARP_SCRIPT_PLUGIN_SOURCES}
     src/scriptvm/runtime/module_registration.cpp
     src/scriptvm/runtime/module_registry.cpp
     src/scriptvm/runtime/semantic_runtime.cpp
@@ -50,6 +58,7 @@ add_library(arp_scriptvm_runtime OBJECT
     src/scriptvm/runtime/generator_bridge.cpp)
 target_include_directories(arp_scriptvm_runtime PUBLIC src)
 target_link_libraries(arp_scriptvm_runtime PUBLIC
+    arp_scriptvm_plugin_build
     arp_core arp_reflection arp_fkyaml_headers)
 
 add_library(arp_scriptvm_ir OBJECT
@@ -88,7 +97,7 @@ add_library(arp_scriptvm_editor_runtime STATIC
     $<TARGET_OBJECTS:arp_scriptvm_interpreter>)
 target_include_directories(arp_scriptvm_editor_runtime PUBLIC src)
 target_link_libraries(arp_scriptvm_editor_runtime PUBLIC
-    arp_core arp_reflection arp_fkyaml_headers)
+    arp_core arp_reflection arp_scriptvm_plugin_build arp_fkyaml_headers)
 
 add_library(arp_scriptvm_aot_tooling OBJECT
     src/scriptvm/aot/aot_codegen_v5.cpp

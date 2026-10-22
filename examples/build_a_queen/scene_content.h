@@ -1,8 +1,8 @@
 #pragma once
 #include "animation/skinned_mesh_player.h"
 #include "assets/glb_animated_mesh_importer.h"
-#include "core/array_view.h"
-#include "core/math.h"
+#include "core/container/array_view.h"
+#include "core/math/math.h"
 #include "game.h"
 #include "renderer/renderer_result.h"
 #include "rhi/gpu_resources.h"

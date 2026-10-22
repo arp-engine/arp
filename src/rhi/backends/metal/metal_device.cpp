@@ -1,6 +1,6 @@
 #include "rhi/backends/metal/metal_device.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/metal/metal_allocator.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_bindless_validation.h"
@@ -697,10 +697,16 @@ protected:
         if (!caps_.limitsQueried || !registry_
             || !describeMetalRhiNativeRuntimeBoundary().runtimeAvailableOnThisPlatform)
             return 0u;
-        // The dedicated-buffer allocator's ResourceAllocation ledger charges
-        // exactly the requested length; native creation verifies buffer.length.
-        diagnostic = nullptr;
-        return desc.sizeBytes;
+        // Cold, bounded probe of the same storage policy used by createBuffer.
+        // allocatedSize can exceed length. Release this unregistered probe
+        // before reserving/creating any published original buffer.
+        const auto probe =
+            createMetalRhiNativeBufferPayload(desc, metalRhiMemoryPolicyFor(desc.memory));
+        if (!probe) {
+            diagnostic = "RHI-METAL-BINDLESS-SNAPSHOT-ALLOCATION-PROBE";
+            return 0u;
+        }
+        return observeMetalRhiNativeBufferAllocation(probe->resource, desc.sizeBytes, diagnostic);
     }
 
     std::shared_ptr<const rhi::BindlessPreparedComputeBinding> prepareComputeBinding(

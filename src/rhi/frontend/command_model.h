@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/ordered_span_cursor.h"
+#include "core/algorithm/ordered_span_cursor.h"
 #include "rhi/gpu_common.h"
 
 #include <array>

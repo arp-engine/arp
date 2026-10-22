@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/deployment/renderer_webgpu_deployment_bridge.h"
 #include "rhi/semantics/webgpu_canvas_lifecycle_bridge.h"
 

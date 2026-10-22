@@ -3,7 +3,7 @@ contractVersion: 1
 encoding: Rgba16FloatLittleEndian
 cubeFaceOrder: '+X,-X,+Y,-Y,+Z,-Z'
 payloadBytes: 655328
-baker: core/ibl_bake.h
+baker: renderer/gi/ibl_bake.h
 provenance: bindless-wocc-ibl-shared-metal1-vulkan1
 resources:
   - role: horizon

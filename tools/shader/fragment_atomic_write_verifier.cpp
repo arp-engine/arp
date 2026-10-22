@@ -1,5 +1,5 @@
-#include "core/ascii_token_cursor.h"
-#include "core/file_io.h"
+#include "core/io/file_io.h"
+#include "core/text/ascii_token_cursor.h"
 #include "shader/fragment_atomic_write_proof.h"
 #include "shader/spirv_buffer_declaration_layout.h"
 

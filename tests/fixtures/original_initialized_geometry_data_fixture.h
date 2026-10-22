@@ -87,8 +87,9 @@ template <class Actor, class Base> struct OriginalInitializedGeometryDataFixture
             assert(!id && allocation >= desc.sizeBytes && allocation <= this->nativeStagingCeiling);
             const auto prepare = [&](const auto& owners) {
                 return std::dynamic_pointer_cast<const Content>(
-                    extension->prepareOriginalInitializedBuffer(
-                        device, {desc, bytes, desc.sizeBytes, budget, owners}, id));
+                    extension->prepareOriginalInitializedBuffer(device,
+                        {desc, bytes, static_cast<std::size_t>(desc.sizeBytes), budget, owners},
+                        id));
             };
             const auto leaseBaseline = leaseQuota->liveBytes();
             auto alias = q;

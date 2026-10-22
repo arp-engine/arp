@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "platform/render_system_legacy_rhi_hot_path.h"
 #include "rhi/conformance/matrix.h"
 

@@ -3,7 +3,7 @@
 
 #include "reflection/builtin.h"
 
-#include "core/string_utils.h"
+#include "core/text/string_utils.h"
 #include "reflection/function.h"
 #include "reflection/instance.h"
 #include "reflection/native_reference.h"

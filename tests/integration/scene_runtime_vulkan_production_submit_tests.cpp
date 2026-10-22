@@ -1,6 +1,6 @@
 #include "2d/scene_2d.h"
 #include "3d/scene_3d.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "platform/render_system.h"
 #include "renderer/scene_runtime_frame.h"
 #include "renderer/scene_runtime_frame_rhi_planner.h"

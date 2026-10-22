@@ -1,5 +1,5 @@
 #include "reflection/reflection.h"
-#include "scriptvm/runtime/cpp_plugin_api.h"
+#include "scriptvm/plugin/cpp_plugin_api.h"
 
 namespace arp::reflection::generated {
 bool register_arp_scene3d_reflection(arp::scriptvm::ModuleRegistration*);

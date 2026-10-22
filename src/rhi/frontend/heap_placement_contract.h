@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/frontend/transfer_upload_destination_validation.h"
 
 namespace arp::rhi {

@@ -1,7 +1,7 @@
 #pragma once
-#include "core/atomic_capacity.h"
-#include "core/shared_owner_projection.h"
-#include "core/versioned_mutation_value.h"
+#include "core/memory/atomic_capacity.h"
+#include "core/ownership/shared_owner_projection.h"
+#include "core/ownership/versioned_mutation_value.h"
 #include "rhi/frontend/transfer_upload_packing.h"
 
 namespace arp::rhi_webgpu {

@@ -4,6 +4,7 @@ if(NOT TARGET arp_bindless_terrain_record_fixture)
 endif()
 set(bindless_terrain_geometry_dir "${CMAKE_BINARY_DIR}/bindless-terrain-geometry")
 set(bindless_terrain_geometry_libraries
+    shaders/core/checked_arithmetic.slang
     shaders/core/instance_transform.slang shaders/core/foliage_geometry.slang
     shaders/core/skinning_geometry.slang shaders/core/pbr_geometry.slang
     shaders/renderer/bindless_pbr_geometry.slang shaders/core/terrain_surface.slang

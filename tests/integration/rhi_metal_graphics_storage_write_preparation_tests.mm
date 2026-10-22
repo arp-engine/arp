@@ -1,5 +1,5 @@
 #include "../fixtures/metal_ordinary_graphics_write_fixture.h"
-#include "core/mutation_journal.h"
+#include "core/ownership/mutation_journal.h"
 #include "rhi/backends/metal/metal_ordinary_graphics_write.h"
 
 #import <Metal/Metal.h>

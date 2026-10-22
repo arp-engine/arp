@@ -1,4 +1,4 @@
-#include "core/diagnostic_builder.h"
+#include "core/diagnostics/diagnostic_builder.h"
 #include "rhi/conformance/matrix.h"
 #include "rhi/semantics/conformance_evidence_admission.h"
 

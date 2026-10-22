@@ -1,6 +1,6 @@
 #include "rhi/semantics/native_backend_capabilities.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 namespace arp::rhi::semantics {
 

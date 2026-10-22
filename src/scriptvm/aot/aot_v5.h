@@ -3,7 +3,7 @@
 // Strict production AOT contract. Unlike the legacy AOT test contract this
 // descriptor cannot carry bytecode, Typed IR operations, or an executor entry.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/aot/script_value_memory_accountant.h"
 #include "scriptvm/runtime/diagnostics.h"
 #include "scriptvm/runtime/source_pos.h"
@@ -263,7 +263,7 @@ private:
         &core::defaultCpuMemoryResource()};
     core::pmr::Vector<int> canonicalHandlerPcs_{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<std::size_t> canonicalHandlerDepths_{&core::defaultCpuMemoryResource()};
-    Value canonicalSuspendedValue_;
+    Value canonicalSuspendedValue_ = Value::undefined();
     SourcePos canonicalSource_;
     std::uint32_t canonicalPc_ = 0u;
     int canonicalDelegatedSourceSlot_ = -1;
@@ -324,7 +324,7 @@ struct DirectNativeResumeStateV5 {
     std::uint32_t pc = 0u;
     std::uint32_t commitState = 0u;
     core::UniquePtr<DirectNativeFrameV5> frame;
-    Value injectionValue;
+    Value injectionValue = Value::undefined();
     // Set only by generated code when the suspended frame owns an awaitable
     // with an explicit injection callback. It is consumed at the same Await
     // operation boundary and never implies arbitrary-PC deoptimization.
@@ -415,6 +415,38 @@ struct DirectNativeExecutionContext {
     }
 
     ARP_API bool enterFunction(const char* functionId, VmError* error);
+
+    bool exceedsMemoryLimit() const noexcept
+    {
+        if (memoryBudgetFailed)
+            return true;
+        const auto live = memoryQuota ? memoryQuota->liveBytes() : 0u;
+        return budget.maxMemoryBytes == 0u ? live != 0u : live > budget.maxMemoryBytes;
+    }
+
+    // Inline successful synchronous entry; the existing ABI owns diagnostics.
+    bool enterNativeFunction(const char* functionId, VmError* error)
+    {
+        if (!exceedsMemoryLimit() && recursionDepth < budget.recursionLimit) {
+            ++recursionDepth;
+            return true;
+        }
+        return enterFunction(functionId, error);
+    }
+
+    void leaveNativeFunction() noexcept
+    {
+        assert(recursionDepth != 0u);
+        --recursionDepth;
+    }
+
+    bool enterLeafFunction(const char* functionId, VmError* error)
+    {
+        return enterNativeFunction(functionId, error);
+    }
+
+    void leaveLeafFunction() noexcept { leaveNativeFunction(); }
+
     ARP_API bool ensureGlobals(std::size_t count, VmError* error);
     ARP_API bool synchronizeMemoryRoots(const ScriptValueSpan* spans,
         std::size_t spanCount,

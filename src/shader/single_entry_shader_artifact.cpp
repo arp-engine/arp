@@ -1,9 +1,9 @@
 #include "shader/single_entry_shader_artifact.h"
 
-#include "core/artifact_path.h"
-#include "core/file_io.h"
-#include "core/sha256.h"
-#include "core/yaml_contract.h"
+#include "core/encoding/yaml_contract.h"
+#include "core/hash/sha256.h"
+#include "core/io/artifact_path.h"
+#include "core/io/file_io.h"
 #include "shader/fragment_atomic_write_proof.h"
 #include "shader/shader_artifact_reflection_contract.h"
 #include "shader/shader_pipeline_reflection_validator.h"

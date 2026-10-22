@@ -1,6 +1,6 @@
 #include "shader/shader_compiler.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cctype>
 #include <cstdio>

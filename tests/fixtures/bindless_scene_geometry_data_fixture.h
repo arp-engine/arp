@@ -7,6 +7,8 @@
 #include <cstring>
 
 namespace arp::test {
+using namespace renderer;
+
 // FamilyInput has a declared location schema. Pack only attributes retained by
 // the actual immutable entry, checking each format instead of guessing a stride.
 // Native callers retain the public initialization actors, Null checks bytes only.
@@ -27,7 +29,7 @@ struct BindlessSceneGeometryDataFixture : OriginalBindlessRootFixtureExecution,
 
     void configureAdmission(rhi::OriginalCommandAdmissionBudget& budget) const
     {
-        budget.maxPushBytes = sizeof(rhi::BindlessPbrGeometryDraw16);
+        budget.maxPushBytes = sizeof(renderer::BindlessPbrGeometryDraw16);
     }
 
     rhi::VertexBufferLayoutDesc vertexLayout() const
@@ -106,7 +108,12 @@ struct BindlessSceneGeometryDataFixture : OriginalBindlessRootFixtureExecution,
         return result;
     }
 
-    static core::pmr::Vector<std::uint8_t> indexBytes() { return {0u, 0u, 2u, 0u, 1u, 0u}; }
+    // Match WOCC's actual mesh/vegetation index ABI. The same three indices
+    // remain explicit little-endian uint32 data on every validation platform.
+    static core::pmr::Vector<std::uint8_t> indexBytes()
+    {
+        return {0u, 0u, 0u, 0u, 2u, 0u, 0u, 0u, 1u, 0u, 0u, 0u};
+    }
 
     void configureGeometryPipeline(rhi::RenderPipelineDesc& state) const
     {
@@ -132,7 +139,7 @@ struct BindlessSceneGeometryDataFixture : OriginalBindlessRootFixtureExecution,
             if (i)
                 definition = C::Staging::IndexContentIntent{1u,
                     true,
-                    IndexFormat::Uint16,
+                    IndexFormat::Uint32,
                     core::UnsignedElementSpan::ByteOrder::LittleEndian,
                     3u};
             if (initializeNative) {

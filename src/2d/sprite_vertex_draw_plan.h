@@ -1,8 +1,8 @@
 #pragma once
 
 #include "2d/sprite_draw_plan.h"
-#include "core/diagnostic_error.h"
-#include "core/quad_geometry.h"
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/math/quad_geometry.h"
 
 #include <limits>
 

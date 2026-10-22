@@ -2,7 +2,7 @@
 
 #include "assets/asset_pipeline.h"
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -51,6 +51,15 @@ struct ImportedGlbMaterialAssets {
 };
 
 ARP_API bool parseJson(const std::pmr::string& text, JsonValue& out);
+
+struct JsonParseLimits final {
+    std::uint32_t maxDepth = 0, maxValues = 0;
+    bool strictAscii = false;
+};
+
+// Opt-in bounded, duplicate-free ASCII JSON for deterministic source contracts.
+// Unicode escapes are rejected explicitly by this subset, never replaced.
+ARP_API bool parseJson(const std::pmr::string& text, JsonValue& out, JsonParseLimits limits);
 ARP_API bool readFile(const std::filesystem::path& path, std::pmr::string& out);
 ARP_API bool readGlbChunks(
     const std::pmr::string& bytes, GlbChunks& chunks, std::pmr::string& diagnostics);

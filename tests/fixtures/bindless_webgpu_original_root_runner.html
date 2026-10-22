@@ -10,6 +10,7 @@
 var progress=[], diagnostics=[], reported=false;
 var storageOnly=new URLSearchParams(location.search).has('original-root-storage-execution-only');
 var geometryOnly=new URLSearchParams(location.search).has('original-root-geometry-execution-only');
+var sceneFamily=new URLSearchParams(location.search).get('original-root-scene-family');
 var sampledOnly=new URLSearchParams(location.search).has('original-root-sampled-execution-only');
 var arrayOnly=new URLSearchParams(location.search).has('original-root-array-execution-only');
 var composedOnly=new URLSearchParams(location.search).has("original-root-composed-execution-only");
@@ -26,6 +27,34 @@ var transport=new BrowserProgressTransport(progress,BrowserProgressLimits,
   error=>{diagnostics.push(String(error));report(false);});
 async function report(success) {
   if(reported)return; reported=true;
+  if(sceneFamily!==null) {
+    const families=sceneFamily==='pbr'?['mesh','skin','grass','canopy']:sceneFamily==='terrain'?['terrain']:[];
+    const expected=families.flatMap(family=>['Color','Depth','Shadow'].flatMap(pass=>['cancelled-unpublished','completed'].map(outcome=>
+      'BINDLESS_WEBGPU_SCENE_PUBLIC_LIFECYCLE entry='+family+pass+'Vertex outcome='+outcome+' results='+(pass==='Color'?2:1))));
+    const receipts=progress.filter(message=>message.startsWith('BINDLESS_WEBGPU_SCENE_PUBLIC_LIFECYCLE '));
+    const representative=sceneFamily==='terrain'?'terrain':'mesh';
+    const failureCases=['cold-cancel','recording-error','submission-error','reverse','pending-cancel','caller-drop','throw-after','throw-before','retired-lifetime','material-range-rejected'];
+    const failureExpected=['Color','Depth','Shadow'].flatMap(pass=>failureCases.map(scenario=>
+      'BINDLESS_WEBGPU_SCENE_FAILURE_LIFECYCLE entry='+representative+pass+'Vertex scenario='+scenario+
+      ' outcome='+(scenario==='reverse'?'completed':'unpublished')+
+      (scenario==='material-range-rejected'?' caller-conformance':'')+' results='+(pass==='Color'?2:1)));
+    const failures=progress.filter(message=>message.startsWith('BINDLESS_WEBGPU_SCENE_FAILURE_LIFECYCLE '));
+    const failed=failures.length===failureExpected.length&&failureExpected.every(message=>failures.filter(value=>value===message).length===1);
+    const attachments=progress.filter(message=>message.startsWith('BINDLESS_SCENE_ATTACHMENT_BYTES '));
+    const observed=attachments.length===families.length*3&&families.every(family=>['Color','Depth','Shadow'].every(pass=>
+      attachments.filter(message=>message.startsWith('BINDLESS_SCENE_ATTACHMENT_BYTES entry='+family+pass+'Vertex fault=0 ')).length===1));
+    const executed=expected.length>0&&receipts.length===expected.length&&expected.every(message=>receipts.filter(value=>value===message).length===1)&&failed&&observed;
+    const retired=progress.filter(message=>message==='BINDLESS_WEBGPU_SCENE_RETIRE_OK original-owners-expired budgets-zero scopes3-drained no-visual-or-numeric-equivalence-grant').length===1;
+    const planned=progress.filter(message=>message==='BINDLESS_SCENE_DEVICE_PLAN_OK sealed-package queried-adapter actual-device before-rhi no-capability-grant').length===1&&Module.arpBindlessDevicePlan?.createdBeforeRhi===true;
+    const output={scenario:'original-bindless-scene-lifecycle',sceneFamily,
+      success:!!success&&executed&&retired&&planned&&diagnostics.length===0&&!(Module.webGpuUncapturedErrors||[]).length,
+      executionPassed:executed,retirementPassed:retired,plannedDevice:Module.arpBindlessDevicePlan,
+      publicBindlessExecutionAvailable:false,productionReady:false,numericEquivalencePassed:false,attachmentNumericPassed:false,
+      diagnostics,progress:progress.slice(),nativeErrors:Module.webGpuUncapturedErrors||[]};
+    transport.flush().catch(error=>{output.success=false;diagnostics.push(String(error));}).then(()=>
+      fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(output)}));
+    return;
+  }
   if(geometryOnly) {
     const executed=['Vertex','Instance'].every(rate=>Array.from({length:11},(_,scenario)=>[0,1].every(fault=>progress.filter(message=>
       message==='BINDLESS_WEBGPU_INITIALIZED_GEOMETRY_EXECUTION_OK rate'+rate+' scenario'+scenario+' fault'+fault+' Geometry1 Root5 Content9 lifecycle12 same-root-journal budgets-returned').length===1)).every(Boolean));
@@ -276,8 +305,10 @@ function recordFailure(error) {
 window.addEventListener('error',event=>recordFailure(event.error||event.message));
 window.addEventListener('unhandledrejection',event=>recordFailure(event.reason));
 var Module={
+  tableBrowserCompletionDeadline:window.BindlessSceneCompletionDeadline||0,
   print(value){const message=String(value);console.log(message);transport.append(message);
-    if(message==='BINDLESS_WEBGPU_INITIALIZED_GEOMETRY_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed'
+    if(message==='BINDLESS_WEBGPU_SCENE_RETIRE_OK original-owners-expired budgets-zero scopes3-drained no-visual-or-numeric-equivalence-grant'
+      ||message==='BINDLESS_WEBGPU_INITIALIZED_GEOMETRY_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed'
       ||message==='BINDLESS_WEBGPU_WOCC_IBL_RETIRE_OK frozen655328 original-owners-expired budgets-zero scopes3-drained'
       ||message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_STORAGE_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed'
       ||message==='BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_MATRIX_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed'
@@ -290,5 +321,24 @@ var Module={
   onExit(code){report(code===0);},
   onAbort(value){diagnostics.push(String(value));report(false);}
 };
+if(sceneFamily!==null) {
+  let plannedDevice;
+  Object.defineProperty(Module,'preinitializedWebGPUDevice',{
+    configurable:true,
+    get(){return plannedDevice;},
+    set(device){
+      plannedDevice=device;
+      const pop=device.popErrorScope;
+      device.popErrorScope=function(){
+        return pop.call(this).then(error=>{
+          // Expected failure cases also enter here. Preserve the actual error
+          // and callback result; this is console evidence, not an execution receipt.
+          if(error)console.log('BINDLESS_SCENE_NATIVE_SCOPE_ERROR '+error.constructor.name+' '+error.message);
+          return error;
+        });
+      };
+    }
+  });
+}
 </script>
 <script src="arp_rhi_webgpu_original_bindless_root_browser_smoke.js"></script>

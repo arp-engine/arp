@@ -1,11 +1,11 @@
 #include "rhi/frontend/bindless_shader_package.h"
 
 #include "bindless_zero_base_identity.h"
-#include "core/artifact_path.h"
-#include "core/file_io.h"
-#include "core/sha256.h"
-#include "core/stable_hash.h"
-#include "core/yaml_contract.h"
+#include "core/encoding/yaml_contract.h"
+#include "core/hash/sha256.h"
+#include "core/hash/stable_hash.h"
+#include "core/io/artifact_path.h"
+#include "core/io/file_io.h"
 #include "rhi/frontend/bindless_storage_image_domain.h"
 #include "rhi/frontend/descriptor_set_validation.h"
 #include "rhi/frontend/pipeline_bindless_interface_merger.h"
@@ -972,6 +972,15 @@ std::shared_ptr<const BindlessShaderPackage> BindlessShaderPackage::load(
         for (const auto& node : modules) {
             BindlessPackageModule module;
             module.entry = Y::text(node, "entry");
+            if (node.contains("initializedGraphics")) {
+                const auto& profile = Y::required(node, "initializedGraphics");
+                module.initializedGraphics = {Y::uint32(profile, "contractVersion"),
+                    Y::uint32(profile, "interfaceIdentity"),
+                    Y::boolean(profile, "prototypeOptIn")};
+                require(!semantics::BindlessInitializedGraphicsContract::validate(
+                            module.initializedGraphics),
+                    "RHI-BINDLESS-PACKAGE-GRAPHICS-PROFILE");
+            }
             const shader::TargetBufferMemoryLoadRequest* ordinaryRequest = nullptr;
             const shader::NativeBufferMemoryLoadRequest* nativeRequest = nullptr;
             if (const auto* request = budget.ordinaryMemory)
@@ -992,6 +1001,12 @@ std::shared_ptr<const BindlessShaderPackage> BindlessShaderPackage::load(
             for (const auto* field : {"bindings", "webGpuBindingSpace", "metalArgumentBuffer"})
                 require(Y::required(node, field) == Y::required(reflectionNode, field),
                     "RHI-BINDLESS-PACKAGE-MODULE-METADATA-MISMATCH");
+            require(node.contains("initializedGraphics")
+                        == reflectionNode.contains("initializedGraphics")
+                    && (!node.contains("initializedGraphics")
+                        || Y::required(node, "initializedGraphics")
+                            == Y::required(reflectionNode, "initializedGraphics")),
+                "RHI-BINDLESS-PACKAGE-GRAPHICS-PROFILE-MISMATCH");
             auto reflected = shader::ShaderReflectionCache::loadFromYaml(
                 core::pmr::String(reflectionText, &core::defaultCpuMemoryResource()));
             require(reflected.success, "RHI-BINDLESS-PACKAGE-REFLECTION-INVALID");
@@ -1011,6 +1026,10 @@ std::shared_ptr<const BindlessShaderPackage> BindlessShaderPackage::load(
                 : stage == "Fragment"                         ? 2u
                 : stage == "Compute"                          ? 4u
                                                               : 0u;
+            require(stageMask == 4u || node.contains("initializedGraphics"),
+                "RHI-BINDLESS-PACKAGE-GRAPHICS-PROFILE-DECLARATION");
+            require(module.initializedGraphics.empty() || (stageMask == 1u || stageMask == 2u),
+                "RHI-BINDLESS-PACKAGE-GRAPHICS-PROFILE-STAGE");
             require(stageMask && (!reflection.pushConstantSizeBytes || budget.push),
                 "RHI-BINDLESS-PACKAGE-ENTRY-ABI");
             if (stageMask == 4u)
@@ -1930,6 +1949,31 @@ const char* BindlessGraphicsPipelineEntries::bufferMemberMemory(ShaderStage stag
     }
     output = candidate;
     return nullptr;
+}
+
+semantics::BindlessInitializedGraphicsContract::Selection selectBindlessInitializedGraphics(
+    const BindlessShaderPackage& package,
+    core::StringView vertex,
+    core::StringView fragment) noexcept
+{
+    const BindlessPackageModule *v = nullptr, *f = nullptr;
+    for (const auto& module : package.modules()) {
+        if (module.entry == vertex)
+            v = &module;
+        if (module.entry == fragment)
+            f = &module;
+    }
+    if (v && !f && fragment.empty() && v->initializedGraphics.empty())
+        return {};
+    if (!v || !f)
+        return {false, "RHI-BINDLESS-INITIALIZED-GRAPHICS-ENTRY"};
+    if (v->reflection.reflection.entryPoints.size() != 1u
+        || f->reflection.reflection.entryPoints.size() != 1u
+        || v->reflection.reflection.entryPoints[0].stage != shader::ShaderStage::Vertex
+        || f->reflection.reflection.entryPoints[0].stage != shader::ShaderStage::Fragment)
+        return {false, "RHI-BINDLESS-INITIALIZED-GRAPHICS-STAGE"};
+    return semantics::BindlessInitializedGraphicsContract::select(
+        v->initializedGraphics, f->initializedGraphics);
 }
 
 const BindlessPackageModule* selectBindlessGraphicsEntryAccess(const BindlessShaderPackage& package,

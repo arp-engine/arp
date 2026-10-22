@@ -1,6 +1,6 @@
 #include "shader/shader_pipeline_reflection_validator.h"
 
-#include "core/sha256.h"
+#include "core/hash/sha256.h"
 #include "shader/shader_reflection_cache.h"
 
 #include <cctype>

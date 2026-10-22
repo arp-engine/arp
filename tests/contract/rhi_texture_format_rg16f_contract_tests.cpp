@@ -18,7 +18,7 @@
 // diagnosticId field); the test asserts mode + diagnostics substring,
 // mirroring the depth_bias_clamp contract test pattern.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/gpu_capabilities.h"
 #include "rhi/gpu_common.h"

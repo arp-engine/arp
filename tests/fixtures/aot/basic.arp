@@ -139,3 +139,251 @@ def delegated_collection_parent() -> int:
     except as error:
         return 8
     return 9
+
+def native_numeric_sequence(n: int) -> int:
+    var x: float = 1.0
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        x = x * 0.5 + 1.0
+        if x > 1.5:
+            total = total + (i & 7)
+        i = i + 1
+    return total
+
+def native_private_rebuild(n: int) -> int:
+    var i: int = 0
+    var total: int = 0
+    var part: string = ""
+    while i < n:
+        var values: [int] = [i, i + 1]
+        var dictionary: {int: int} = {0: i, 1: i + 1}
+        part = "abc" + "xyz"
+        total = total + values[1] + dictionary[0] + len(part)
+        i = i + 1
+    return total
+
+def native_aliases() -> int:
+    var values: [int] = [7, 8]
+    var old_values: [int] = values
+    var text: string = "abc"
+    var old_text: string = text
+    values = [9, 10]
+    text = text + "xyz"
+    return old_values[0] + len(old_text)
+
+def native_leaf_calls(n: int) -> int:
+    var offset: int = 3
+    def step(value: int) -> int:
+        return value + offset
+    return step(n)
+
+class NativeLeafBase:
+    def step(self, value: int) -> int:
+        return value + 1
+
+class NativeLeafDerived(NativeLeafBase):
+    def step(self, value: int) -> int:
+        return value + 2
+
+class NativeLeafInherited(NativeLeafBase):
+    def unused(self, value: int) -> int:
+        return value
+
+def native_virtual_leaf(n: int) -> int:
+    var object: NativeLeafBase = NativeLeafDerived()
+    return object.step(n)
+
+def native_string_lookup(n: int) -> int:
+    var values: {string: int} = {"oak": 3, "pine": 5}
+    var keys: [string] = ["oak", "pine"]
+    var total: int = 0
+    var i: int = 0
+    while i < n:
+        total = total + values[keys[i % 2]]
+        i = i + 1
+    return total
+
+def native_handled_sequence(n: int) -> int:
+    var total: int = 0
+    var i: int = 0
+    while i < n:
+        try:
+            total = total + 12 / (i % 2)
+        except as error:
+            total = total + 1
+        i = i + 1
+    return total
+
+def native_index_update(n: int) -> int:
+    var values: [int] = [0, 0]
+    var dictionary: {int: int} = {0: 0, 1: 0}
+    var old_values: [int] = values
+    var total: int = 0
+    var i: int = 0
+    while i < n:
+        var index: int = i % 2
+        values[index] = values[index] + 1
+        dictionary[index] = dictionary[index] + 2
+        total = total + old_values[index] + dictionary[index]
+        i = i + 1
+    return total
+
+def native_index_guard(n: int) -> int:
+    var values: [int] = [4, 5]
+    return values[n] + 1
+
+def native_missing_key(n: int) -> int:
+    var values: {int: int} = {0: 1}
+    return values[n] + 1
+
+def native_index_alias(n: int) -> int:
+    var values: [int] = [n, 3]
+    var value: int = values[0]
+    return value
+
+def native_rebuild_topology(n: int) -> int:
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        var values: [int] = [i, i + 1]
+        var dictionary: {int: int} = {0: i, 1: i + 1}
+        total = total + values[1] + dictionary[0]
+        if i % 2 == 0:
+            values = [i + 2, i + 3, i + 4]
+            dictionary = {0: i + 2, 2: i + 3}
+            total = total + values[2] + dictionary[2]
+        else:
+            values = [i + 5]
+            dictionary = {0: i + 5}
+            total = total + values[0] + dictionary[0]
+        i = i + 1
+    return total
+
+def native_power_sequence(n: int) -> int:
+    var i: int = 0
+    var total: int = 0
+    while i < n:
+        total = total + (i % 5) ** 2 // 2
+        i = i + 1
+    return total
+
+def native_power_overflow(n: int) -> int:
+    return n ** 31
+
+def native_method_loop(n: int) -> int:
+    var object: NativeLeafBase = NativeLeafDerived()
+    var total: int = 0
+    var i: int = 0
+    while i < n:
+        total = total + object.step(i)
+        i = i + 1
+    return total
+
+def native_closure_loop(n: int) -> int:
+    var offset: int = 3
+    def loop_step(value: int) -> int:
+        return value + offset
+    var total: int = 0
+    var i: int = 0
+    while i < n:
+        total = total + loop_step(i)
+        i = i + 1
+    return total
+
+def native_string_regions(n: int) -> int:
+    var text: string = ""
+    var base: string = "aot_pc_1"
+    var total: int = 0
+    var i: int = 0
+    while i < n:
+        text = text + "x"
+        var part: string = base + "z"
+        total = total + len(text) + len(part)
+        i = i + 1
+    return total
+
+def native_collection_loop(n: int) -> int:
+    var total: int = 0
+    for i in range(n):
+        total = total + i * 2
+    return total
+
+def native_loop_index_failure(n: int) -> int:
+    var values: [int] = [3, 5]
+    var total: int = 0
+    var i: int = 0
+    while i < n:
+        total = total + values[i]
+        i = i + 1
+    return total
+
+def native_loop_overflow(n: int) -> int:
+    var total: int = 1
+    var i: int = 0
+    while i < n:
+        total = total * 1000
+        i = i + 1
+    return total
+
+
+def native_inherited_method_loop(n: int) -> int:
+    var object: NativeLeafBase = NativeLeafInherited()
+    var total: int = 0
+    var i: int = 0
+    while i < n:
+        total = total + object.step(i)
+        i = i + 1
+    return total
+
+
+def native_private_index_loop(n: int) -> int:
+    var values: [int] = [0, 0]
+    var dictionary: {int: int} = {0: 0, 1: 0}
+    var total: int = 0
+    var i: int = 0
+    while i < n:
+        var index: int = i % 2
+        values[index] = values[index] + 1
+        dictionary[index] = dictionary[index] + 2
+        total = total + values[index] + dictionary[index]
+        i = i + 1
+    return total
+
+
+def native_min_modulo(n: int) -> int:
+    return (-2147483647 - 1) % (n - 9)
+
+
+def native_scalar_branches(n: int) -> int:
+    var total: int = 0
+    var i: int = 0
+    while i < n:
+        if i % 2 == 0:
+            total = total + i * 2
+        else:
+            total = total + i
+        i = i + 1
+    return total
+
+
+def native_scalar_nested(n: int) -> int:
+    var total: int = 0
+    var i: int = 0
+    while i < n:
+        var j: int = 0
+        while j < 3:
+            total = total + i + j
+            j = j + 1
+        i = i + 1
+    return total
+
+
+def native_iterated_key_owner(n: int) -> int:
+    var dictionary: {string: int} = {"oak": 3, "pine": 5}
+    var keys: [string] = ["oak"]
+    var sources: [[string]] = [["oak"], ["pine"]]
+    var total: int = 0
+    for keys in sources:
+        total = total + dictionary[keys[0]]
+    return total

@@ -1,8 +1,8 @@
 #pragma once
 #include "2d/components.h"
 #include "2d/sprite_resources.h"
-#include "core/callback.h"
-#include "core/cpu_allocator.h"
+#include "core/concurrency/callback.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/particles/particle_system.h"
 
 #include <cmath>
@@ -11,21 +11,26 @@ namespace arp::scene2d {
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct ParticleEmitter2DEditorProperties {
-    APROP(Editor, Doc = "resource:SpriteResource:optional")
+    APROP(Serialize,
+        Editor,
+        ResourceReference,
+        OptionalReference,
+        ReferenceTarget = "SpriteResource",
+        Doc = "resource:SpriteResource:optional")
     core::pmr::String spriteId{&core::defaultCpuMemoryResource()};
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float lifetimeSeconds = 1.0f;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float size = 1.0f;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     core::Vec2 velocitySpread{};
-    APROP(Editor, Doc = "color:rgba")
+    APROP(Serialize, Editor, Doc = "color:rgba")
     core::Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
-    APROP(Editor)
+    APROP(Serialize, Editor)
     std::uint32_t seed = 1u;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     std::int32_t layer = 0;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     std::int32_t order = 0;
 };
 
@@ -60,15 +65,14 @@ public:
         if (!value.is<ParticleEmitter2DEditorProperties>())
             return false;
         const auto& properties = value.cast<const ParticleEmitter2DEditorProperties&>();
-        if (properties.spriteId.size() > 512u
-            || !std::isfinite(properties.lifetimeSeconds) || properties.lifetimeSeconds <= 0.0f
-            || !std::isfinite(properties.size) || properties.size <= 0.0f
-            || !std::isfinite(properties.velocitySpread.x)
-            || !std::isfinite(properties.velocitySpread.y)
-            || properties.velocitySpread.x < 0.0f || properties.velocitySpread.y < 0.0f
-            || !std::isfinite(properties.color.x) || !std::isfinite(properties.color.y)
-            || !std::isfinite(properties.color.z) || !std::isfinite(properties.color.w)
-            || properties.color.w < 0.0f || properties.color.w > 1.0f)
+        if (properties.spriteId.size() > 512u || !std::isfinite(properties.lifetimeSeconds)
+            || properties.lifetimeSeconds <= 0.0f || !std::isfinite(properties.size)
+            || properties.size <= 0.0f || !std::isfinite(properties.velocitySpread.x)
+            || !std::isfinite(properties.velocitySpread.y) || properties.velocitySpread.x < 0.0f
+            || properties.velocitySpread.y < 0.0f || !std::isfinite(properties.color.x)
+            || !std::isfinite(properties.color.y) || !std::isfinite(properties.color.z)
+            || !std::isfinite(properties.color.w) || properties.color.w < 0.0f
+            || properties.color.w > 1.0f)
             return false;
 
         if (properties.spriteId.empty()) {
@@ -178,10 +182,8 @@ private:
         desc.endSize = 0.0f;
         desc.velocityMin = {-properties.velocitySpread.x, -properties.velocitySpread.y, 0.0f};
         desc.velocityMax = {properties.velocitySpread.x, properties.velocitySpread.y, 0.0f};
-        desc.startColor = {properties.color.x,
-            properties.color.y,
-            properties.color.z,
-            properties.color.w};
+        desc.startColor = {
+            properties.color.x, properties.color.y, properties.color.z, properties.color.w};
         desc.endColor = {properties.color.x, properties.color.y, properties.color.z, 0.0f};
         desc.seed = properties.seed;
         desc.worldSpaceEmission = true;

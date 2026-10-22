@@ -1,7 +1,7 @@
 #include "rhi/backends/webgpu/webgpu_staging_upload_pool.h"
 
-#include "core/cpu_allocator.h"
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/webgpu/webgpu_upload_preparation.h"
 #include "rhi/frontend/memory_upload_staging_readiness.h"
 #include "rhi/frontend/transfer_upload_destination_validation.h"

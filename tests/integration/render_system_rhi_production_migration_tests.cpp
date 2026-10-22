@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "platform/render_system_rhi_production_migration.h"
 
 #include <cassert>

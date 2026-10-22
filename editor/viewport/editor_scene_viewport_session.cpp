@@ -1,8 +1,9 @@
 #include "editor/viewport/editor_scene_viewport_session.h"
 
-#include "2d/scene_runtime_codec.h"
 #include "2d/scene_sprite_extractor.h"
+#include "2d/sprite_animation_component.h"
 #include "2d/sprite_draw_plan.h"
+#include "2d/tile_map_resource_component.h"
 #include "editor/viewport/editor_scene_viewport_frame_builder.h"
 #include "editor/viewport/editor_scene_viewport_material_payload.h"
 #include "editor/viewport/editor_scene_viewport_resource_resolver.h"
@@ -23,6 +24,7 @@ bool EditorSceneViewportSession::initialize(EditorShell& shell,
     rhi::GpuDevice& device,
     const EditorSceneViewportShaderArtifacts& artifacts,
     const EditorSceneViewportShaderArtifacts& spriteArtifacts,
+    const EditorSceneViewportShaderArtifacts& environmentArtifacts,
     rhi::Extent2D extent,
     core::pmr::String& diagnostics)
 {
@@ -46,6 +48,8 @@ bool EditorSceneViewportSession::initialize(EditorShell& shell,
         diagnostics = devicePipeline.backendDiagnostics;
         return false;
     }
+    if (!environment_.initialize(device, environmentArtifacts, diagnostics))
+        return false;
     shaderReflection_ = package.shaderReflection;
     spriteArtifacts_ = spriteArtifacts;
     devicePipeline_ = std::move(devicePipeline);
@@ -64,9 +68,22 @@ bool EditorSceneViewportSession::renderIfDirty(
         diagnostics = "ARP-EDITOR-VIEWPORT-SESSION-EXTENT-INVALID";
         return false;
     }
+    if (renderedResourceOwner_ && renderedResourceOwner_ != &shell.projectResources()) {
+        device_->waitIdle();
+        materialDescriptors_.clear();
+        spriteRenderer_.reset();
+        meshCache_.clearAfterDeviceIdle();
+        textureCache_.clearAfterDeviceIdle();
+        hasRendered_ = false;
+    }
+    renderedResourceOwner_ = &shell.projectResources();
     if (hasRendered_ && renderedStateVersion_ == shell.stateVersion()
-        && composite_.extent().width == extent.width && composite_.extent().height == extent.height)
+        && composite_.extent().width == extent.width
+        && composite_.extent().height == extent.height) {
+        diagnostics = renderedSceneDiagnostics_;
         return true;
+    }
+    diagnostics.clear();
     return render(shell, extent, diagnostics);
 }
 
@@ -90,10 +107,16 @@ bool EditorSceneViewportSession::render(
         shell.stateVersion(),
         extent.width,
         extent.height,
-        {0u, 0u, extent.width, extent.height});
+        {0u, 0u, extent.width, extent.height},
+        &shell.projectResources(),
+        config_.maxDrawCalls);
+    if (!renderEnvironment(shell, false, frame.frame.sky, diagnostics))
+        return false;
     if (!frame.valid()) {
         diagnostics = editorSceneViewportDiagnosticCode(frame.validation.diagnostic);
-        return false;
+        if (frame.validation.diagnostic == EditorSceneViewportDiagnostic::GeometryBudgetExceeded)
+            return false;
+        return finishEnvironment(shell, frame.frame.sky, diagnostics);
     }
 
     scene2d::SceneSpriteExtractor spriteExtractor(
@@ -236,8 +259,11 @@ bool EditorSceneViewportSession::render(
     const auto resolved =
         resolveEditorSceneViewportResources(frame.frame, shell.projectResources());
     const auto totalDrawItems = resolved.items.size() + spritePlan.instances().size();
-    if (!resolved.valid() || totalDrawItems > config_.maxDrawCalls
-        || (resolved.items.empty() && spritePlan.instances().empty())) {
+    if (!resolved.valid()) {
+        diagnostics = editorSceneViewportDiagnosticCode(resolved.frameDiagnostic);
+        return finishEnvironment(shell, frame.frame.sky, diagnostics);
+    }
+    if (totalDrawItems > config_.maxDrawCalls) {
         diagnostics = "ARP-EDITOR-VIEWPORT-SESSION-DRAW-BUDGET-EXCEEDED";
         return false;
     }
@@ -346,7 +372,8 @@ bool EditorSceneViewportSession::render(
             *composite_.depthTarget(),
             {0u, 0u, extent.width, extent.height},
             drawItems,
-            {config_.maxDrawCalls});
+            {config_.maxDrawCalls},
+            true);
         if (!recorded.success()) {
             diagnostics = recorded.diagnostics;
             return false;
@@ -354,62 +381,6 @@ bool EditorSceneViewportSession::render(
         const auto submitted = device_->queue().submit(*recorded.commandBuffer);
         if (!submitted.success) {
             diagnostics = submitted.diagnostics;
-            return false;
-        }
-        device_->waitIdle();
-    } else {
-        auto encoder = device_->createCommandEncoder({"EditorSceneViewportSpriteOnlyClear"});
-        if (!encoder) {
-            diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-ONLY-ENCODER-CREATE-FAILED";
-            return false;
-        }
-        auto transition = encoder->transition(*composite_.colorTarget(),
-            composite_.colorTarget()->state(),
-            rhi::ResourceState::ColorAttachment);
-        if (transition.success)
-            transition = encoder->transition(*composite_.depthTarget(),
-                composite_.depthTarget()->state(),
-                rhi::ResourceState::DepthAttachment);
-        if (!transition.success) {
-            diagnostics = transition.diagnostics;
-            return false;
-        }
-        rhi::RenderPassDesc clearDesc;
-        clearDesc.label = "EditorSceneViewportSpriteOnlyClear";
-        clearDesc.colorTargetName = composite_.colorTarget()->desc().label;
-        clearDesc.colorAttachments.push_back({"EditorSceneViewportSpriteOnlyColor",
-            composite_.colorTarget()->id(),
-            composite_.colorTarget()->desc().format,
-            rhi::LoadOp::Clear,
-            rhi::StoreOp::Store,
-            false,
-            {},
-            {0.075f, 0.09f, 0.12f, 1.0f}});
-        clearDesc.hasDepthStencilAttachment = true;
-        clearDesc.depthStencilAttachment = {"EditorSceneViewportSpriteOnlyDepth",
-            composite_.depthTarget()->id(),
-            composite_.depthTarget()->desc().format,
-            rhi::LoadOp::Clear,
-            rhi::StoreOp::Store,
-            rhi::LoadOp::DontCare,
-            rhi::StoreOp::DontCare,
-            1.0f,
-            0u,
-            false,
-            false};
-        auto clearPass = encoder->beginRenderPass(clearDesc);
-        if (!clearPass || !clearPass->end().success) {
-            diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-ONLY-CLEAR-PASS-FAILED";
-            return false;
-        }
-        auto clearCommands = encoder->finish();
-        if (!clearCommands) {
-            diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-ONLY-COMMAND-FINISH-FAILED";
-            return false;
-        }
-        const auto clearSubmitted = device_->queue().submit(*clearCommands);
-        if (!clearSubmitted.success) {
-            diagnostics = clearSubmitted.diagnostics;
             return false;
         }
         device_->waitIdle();
@@ -431,6 +402,39 @@ bool EditorSceneViewportSession::render(
         }
         device_->waitIdle();
     }
+    return finishEnvironment(shell, frame.frame.sky, diagnostics);
+}
+
+bool EditorSceneViewportSession::renderEnvironment(EditorShell& shell,
+    bool gridPass,
+    const EditorSceneViewportSky& sky,
+    core::pmr::String& diagnostics)
+{
+    auto recorded = environment_.record(*device_,
+        *composite_.colorTarget(),
+        *composite_.depthTarget(),
+        shell.sceneViewportCamera(),
+        gridPass,
+        sky);
+    if (!recorded.success()) {
+        diagnostics = recorded.diagnostics;
+        return false;
+    }
+    const auto submitted = device_->queue().submit(*recorded.commandBuffer);
+    if (!submitted.success) {
+        diagnostics = submitted.diagnostics;
+        return false;
+    }
+    device_->waitIdle();
+    return true;
+}
+
+bool EditorSceneViewportSession::finishEnvironment(
+    EditorShell& shell, const EditorSceneViewportSky& sky, core::pmr::String& diagnostics)
+{
+    if (!renderEnvironment(shell, true, sky, diagnostics))
+        return false;
+    renderedSceneDiagnostics_ = diagnostics;
     renderedStateVersion_ = shell.stateVersion();
     hasRendered_ = true;
     return true;
@@ -439,7 +443,7 @@ bool EditorSceneViewportSession::render(
 bool EditorSceneViewportSession::valid() const noexcept
 {
     return device_ != nullptr && devicePipeline_.valid() && composite_.valid()
-        && (!materialDescriptors_.empty() || (spriteRenderer_ && spriteRenderer_->valid()));
+        && environment_.valid() && hasRendered_;
 }
 
 } // namespace arp::editor

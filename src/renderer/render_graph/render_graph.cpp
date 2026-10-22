@@ -1,8 +1,8 @@
 #include "renderer/render_graph/render_graph.h"
 
-#include "core/cpu_allocator.h"
-#include "core/diagnostic_error.h"
-#include "core/unsigned_range.h"
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/math/unsigned_range.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/render_graph/compiled_frame_graph.h"
 #include "renderer/render_graph/frame_graph_compiler.h"
 #include "renderer/render_graph/frame_graph_executor.h"
@@ -2662,7 +2662,8 @@ void FrameGraphExecutor::executeImpl(const CompiledFrameGraph& compiled,
             throw core::DiagnosticError("RG-CONFORMANCE-COMPLETION-MODE-UNKNOWN");
         }
     }
-    const bool requiresFence = !ordered && !issuerOwnedColdCompletion;
+    auto submissionFence = commandBuffer->ownedSubmissionFence();
+    const bool requiresFence = !ordered && !issuerOwnedColdCompletion && !submissionFence;
     auto ownedSubmissionFence =
         requiresFence ? graph_.device_.createFence() : core::UniquePtr<rhi::GpuFence>{};
     if (requiresFence && !ownedSubmissionFence) {
@@ -2670,7 +2671,6 @@ void FrameGraphExecutor::executeImpl(const CompiledFrameGraph& compiled,
     }
     // Prepare the control block before queue acceptance. Aliasing keeps the
     // core-owned deleter and never allocates after work becomes irrevocable.
-    std::shared_ptr<rhi::GpuFence> submissionFence;
     if (ownedSubmissionFence) {
         auto fenceOwner =
             core::makeShared<core::UniquePtr<rhi::GpuFence>>(std::move(ownedSubmissionFence));

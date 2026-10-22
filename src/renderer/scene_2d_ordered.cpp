@@ -1,5 +1,5 @@
 #include "2d/sprite_vertex_draw_plan.h"
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "renderer/scene_2d_renderer.h"
 #include "rhi/frontend/descriptor_set_validation.h"
 

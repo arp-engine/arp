@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "platform/android_runtime_contract.h"
 #include "renderer/global_illumination.h"
 

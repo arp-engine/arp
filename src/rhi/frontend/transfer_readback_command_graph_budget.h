@@ -1,6 +1,6 @@
 #pragma once
-#include "core/memory_budget_ledger.h"
 #include "rhi/frontend/command_model.h"
+#include "rhi/frontend/memory_budget_ledger.h"
 
 #include <array>
 

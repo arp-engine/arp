@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "shader/shader_compiler.h"
 #include "shader/shader_pipeline_reflection_validator.h"
 #include "shader/shader_reflection_cache.h"
@@ -998,7 +998,7 @@ targets:
         "shadowLightViewProjectionRows",
         spirvDecorationMatrixStride));
 
-    const auto renderSystemSource = readTextFile("src/platform/render_system_vulkan.cpp");
+    const auto renderSystemSource = readTextFile("src/platform/native/render_system_vulkan.cpp");
     assert(renderSystemSource.find("arp::samples::stylized::StylizedSceneRenderer")
         == std::pmr::string::npos);
     assert(renderSystemSource.find("renderer::GuiRenderer") != std::pmr::string::npos);

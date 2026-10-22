@@ -1,9 +1,9 @@
-#include "core/compiler_toolchain_layout.h"
-#include "core/file_io.h"
-#include "core/immutable_build_input_snapshot.h"
-#include "core/process_identity_lock.h"
-#include "core/process_runner.h"
-#include "core/sha256.h"
+#include "core/hash/sha256.h"
+#include "core/io/file_io.h"
+#include "core/system/process_identity_lock.h"
+#include "core/system/process_runner.h"
+#include "scriptvm/plugin/compiler_toolchain_layout.h"
+#include "scriptvm/plugin/immutable_build_input_snapshot.h"
 
 #include <algorithm>
 #include <atomic>
@@ -151,9 +151,16 @@ int main()
             snapshotSource / "nested" / "input.txt", std::ios::binary | std::ios::trunc);
         file << "stable-input";
     }
+    {
+        // A forwarding header can share a stem with its implementation package.
+        // Path-component order and generic-string order differ for this pair.
+        std::ofstream file(snapshotSource / "nested.h", std::ios::binary | std::ios::trunc);
+        file << "forwarding-header";
+    }
     arp::core::ImmutableBuildInputSnapshot snapshot(snapshotRoot);
     arp::core::pmr::String snapshotDiagnostics{&arp::core::defaultCpuMemoryResource()};
     assert(snapshot.captureDirectory("include", snapshotSource, snapshotDiagnostics));
+    assert(snapshot.verifySourcesUnchanged(snapshotDiagnostics));
 
     arp::core::ImmutableBuildInputContract contractA;
     arp::core::ImmutableBuildInputContract contractB;

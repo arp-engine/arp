@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "platform/render_system.h"
 #include "platform/render_system_ordered_profile.h"
 #include "renderer/rhi_draw_plan_bridge.h"

@@ -1,9 +1,10 @@
 #pragma once
 #include "rhi/gpu_resources.h"
+#include "rhi/semantics/bindless_closure_extensions.h"
 
 namespace arp::rhi {
 // Independent cold attachment extension for WebGPU produced streams and
-// explicitly admitted SceneContent/1 direct graphics.
+// explicitly admitted InitializedGraphics/2 direct graphics.
 // Native fence paths retain attachments through their original Pass/2 objects.
 // This intent changes neither their closure profile nor execution authority.
 class OriginalBindlessProducedAttachmentContract final {
@@ -31,20 +32,8 @@ public:
 
     static constexpr Decision lowering(Backend backend, std::uint32_t version) noexcept
     {
-        if (version != 1u)
-            return {false, false, false, "RHI-BINDLESS-PRODUCED-ATTACHMENT-VERSION"};
-        switch (backend) {
-        case Backend::Null:
-            return {false, true, false, "RHI-BINDLESS-PRODUCED-ATTACHMENT-NULL-VALIDATOR"};
-        case Backend::WebGPU:
-            return {true, false, false, nullptr};
-        case Backend::Vulkan:
-        case Backend::Metal:
-            return {false, false, false, "RHI-BINDLESS-PRODUCED-ATTACHMENT-NATIVE-PASS-REQUIRED"};
-        case Backend::WebGL:
-            return {false, false, false, "RHI-WEBGL1-BINDLESS-PRODUCED-ATTACHMENT-UNSUPPORTED"};
-        }
-        return {};
+        return semantics::BindlessClosureExtensionLowering::produced_attachments<Decision>(
+            backend, version);
     }
 
     static constexpr bool acceptsContentControl(std::uint32_t version) noexcept

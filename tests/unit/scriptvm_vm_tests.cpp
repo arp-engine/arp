@@ -7,7 +7,7 @@
 // Test style follows the repo convention (tests/unit/poisson_scatter_tests.cpp):
 // self-contained main() + require() helpers, no third-party framework.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
 #include "scriptvm/interpreter/bytecode.h"
 #include "scriptvm/interpreter/eval.h"

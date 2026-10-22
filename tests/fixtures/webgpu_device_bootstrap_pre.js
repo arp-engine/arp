@@ -85,7 +85,8 @@
       // Terrain loads its authenticated package and runs the C++ planner in
       // main before any GPUDevice exists. Other cohorts retain their bootstrap.
       if (typeof location !== "undefined"
-        && new URLSearchParams(location.search).has("original-root-terrain27")) {
+        && (new URLSearchParams(location.search).has("original-root-terrain27")
+          || new URLSearchParams(location.search).has("original-root-scene-family"))) {
         finishBootstrap();
         return null;
       }

@@ -26,11 +26,11 @@
 //
 // Memory: dynamic containers use core::pmr aliases (AGENTS.md allocator rule).
 
-#include "core/cpu_allocator.h"
-#include "core/math.h"
-#include "physics/physics_event_listener.h"
-#include "physics/physics_types.h"
-#include "physics/physics_world.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
+#include "physics/3d/physics_event_listener.h"
+#include "physics/3d/physics_types.h"
+#include "physics/3d/physics_world.h"
 #include "reflection/reflection_macros.h"
 #include "scene/component.h"
 

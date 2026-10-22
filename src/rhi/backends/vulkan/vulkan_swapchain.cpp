@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
 #include "rhi/backends/vulkan/vulkan_native_commands.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"

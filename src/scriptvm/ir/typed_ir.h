@@ -4,7 +4,7 @@
 //
 // This contract is independent from every backend-private representation.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/runtime/diagnostics.h"
 #include "scriptvm/runtime/source_pos.h"
 

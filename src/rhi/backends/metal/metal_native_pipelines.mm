@@ -1,7 +1,7 @@
 #include "rhi/backends/metal/metal_native_pipelines.h"
 
-#include "core/cpu_allocator.h"
-#include "core/strided_index_range.h"
+#include "core/algorithm/strided_index_range.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/metal/metal_binding_validation.h"
 #include "rhi/backends/metal/metal_buffer_type_layout.h"
 #include "rhi/backends/metal/metal_native_format.h"

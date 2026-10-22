@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/base64.h"
-#include "core/shared_owner_projection.h"
+#include "core/encoding/base64.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/frontend/command_arguments.h"
 #include "rhi/frontend/transfer_copy.h"
 

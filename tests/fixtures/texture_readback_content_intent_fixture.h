@@ -1,5 +1,5 @@
 #pragma once
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/frontend/transfer_readback_content_intent.h"
 
 #include <cassert>

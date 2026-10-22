@@ -10,12 +10,4 @@ generated/
 __pycache__/
 __pycache__/*
 .workbuddy/
-.zcode/
-.superpowers/
 *.rdc
-.DS_Store
-*.log
-*.tmp
-CMakeUserPresets.json
-/AGENTS.md
-/editor/AGENTS.md

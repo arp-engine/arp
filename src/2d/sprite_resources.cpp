@@ -1,7 +1,7 @@
 #include "2d/sprite_resources.h"
 
-#include "core/file_io.h"
-#include "core/yaml_contract.h"
+#include "core/encoding/yaml_contract.h"
+#include "core/io/file_io.h"
 #include "resource/prefab_asset_resources.h"
 #include "resource/resource_source_io.h"
 
@@ -144,13 +144,12 @@ SpriteResource::SpriteResource(
 }
 
 SpriteFontResource::SpriteFontResource()
-    : ResourceBase(makeReference(core::pmr::String(&core::defaultCpuMemoryResource()),
-          resourceTypeName()))
+    : ResourceBase(
+          makeReference(core::pmr::String(&core::defaultCpuMemoryResource()), resourceTypeName()))
 {}
 
 SpriteFontResource::SpriteFontResource(core::pmr::String id, SpriteFontResourceDesc desc)
-    : ResourceBase(makeReference(std::move(id), resourceTypeName())),
-      desc_(std::move(desc))
+    : ResourceBase(makeReference(std::move(id), resourceTypeName())), desc_(std::move(desc))
 {}
 
 resource::ResourceLoadResult SpriteFontResource::load(
@@ -165,12 +164,12 @@ resource::ResourceLoadResult SpriteFontResource::load(
     for (std::size_t glyphIndex = 0; glyphIndex < desc_.glyphs.size(); ++glyphIndex) {
         const auto& glyph = desc_.glyphs[glyphIndex];
         if (glyph.codepoint < 32u || glyph.codepoint > 126u
-            || !resource::isResourceUuid(glyph.spriteResourceId)
-            || !std::isfinite(glyph.advance) || glyph.advance <= 0.0f
-            || std::any_of(desc_.glyphs.begin(), desc_.glyphs.begin() + glyphIndex,
-                   [&](const auto& previous) {
-                       return glyph.codepoint == previous.codepoint;
-               }))
+            || !resource::isResourceUuid(glyph.spriteResourceId) || !std::isfinite(glyph.advance)
+            || glyph.advance <= 0.0f
+            || std::any_of(
+                desc_.glyphs.begin(), desc_.glyphs.begin() + glyphIndex, [&](const auto& previous) {
+                    return glyph.codepoint == previous.codepoint;
+                }))
             return outcome(*this, "ARP-2D-SPRITE-FONT-GLYPH");
 
         auto sprite = manager.find<SpriteResource>(glyph.spriteResourceId);
@@ -185,8 +184,7 @@ resource::ResourceLoadResult SpriteFontResource::load(
 }
 
 namespace {
-core::UniquePtr<resource::ResourceBase> createSpriteFontResource(
-    const reflection::object& payload)
+core::UniquePtr<resource::ResourceBase> createSpriteFontResource(const reflection::object& payload)
 {
     auto* typed = payload.cast<SpriteFontResourceDesc*>();
     return typed ? core::makeUnique<SpriteFontResource>(
@@ -199,8 +197,8 @@ void registerSpriteFontResourceType()
 {
     auto& factory = resource::prefabResourceFactory();
     if (!factory.supports(SpriteFontResource::resourceTypeName()))
-        (void)factory.registerType(SpriteFontResource::resourceTypeName(),
-            &createSpriteFontResource);
+        (void)factory.registerType(
+            SpriteFontResource::resourceTypeName(), &createSpriteFontResource);
 }
 
 resource::ResourceLoadResult SpriteResource::load(

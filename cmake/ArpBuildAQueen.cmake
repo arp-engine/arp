@@ -16,8 +16,8 @@ add_executable(arp_build_a_queen
     examples/build_a_queen/main.cpp
     examples/build_a_queen/hud_renderer.cpp
     examples/build_a_queen/hud_content.cpp
-    src/platform/platform_lifecycle_state.cpp
-    src/platform/renderdoc_capture_scope.cpp)
+    src/platform/common/platform_lifecycle_state.cpp
+    src/platform/common/renderdoc_capture_scope.cpp)
 target_include_directories(arp_build_a_queen PRIVATE . src)
 target_link_libraries(arp_build_a_queen PRIVATE
     arp_build_a_queen_scene arp_platform arp_2d_renderer arp_2d_resources

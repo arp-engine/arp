@@ -63,9 +63,16 @@ private:
 
 // All four current factories pass version-zero unsupported contract facts.
 // This gate runs before native allocation or staging submission mutation.
-inline bool commandRetentionRequestAllowed(
-    const CommandEncoderDesc& desc, const CommandRetentionCapabilities& caps)
+inline bool commandRetentionRequestAllowed(const CommandEncoderDesc& desc,
+    const CommandRetentionCapabilities& caps,
+    Backend backend = Backend::Null)
 {
+    if (desc.prototypeBatch) {
+        const auto decision =
+            PrototypeCommandBatchContract::lowering(backend, *desc.prototypeBatch, {});
+        RhiErrorHandler::get().report(RhiSeverity::Error, decision.diagnostic);
+        return false;
+    }
     if (!desc.retentionBudget)
         return true;
     const auto decision = CommandRetentionBudgetLowering::plan(*desc.retentionBudget, caps);

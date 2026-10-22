@@ -1,5 +1,5 @@
 #pragma once
-#include "core/strided_index_range.h"
+#include "core/algorithm/strided_index_range.h"
 #include "webgpu_error_scope_handoff_fixture.h"
 #include "webgpu_ordinary_submission_fixture.h"
 #include "webgpu_original_texture_readback_mapping_fixture.h"

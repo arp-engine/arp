@@ -1,4 +1,4 @@
-#include "core/math.h"
+#include "core/math/math.h"
 #include "rhi/semantics/webgl_shader_coordinates.h"
 #include "shader/webgl_uniform_snapshots.h"
 

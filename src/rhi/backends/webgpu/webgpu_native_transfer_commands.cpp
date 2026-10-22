@@ -1,5 +1,5 @@
-#include "core/cpu_allocator.h"
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/webgpu/webgpu_native_command_payload_impl.h"
 #include "rhi/backends/webgpu/webgpu_native_transfer_copy_lowering.h"
 #include "rhi/backends/webgpu/webgpu_ordinary_resource_retention.h"

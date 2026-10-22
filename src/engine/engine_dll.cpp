@@ -1,7 +1,7 @@
 // Shared engine lifecycle anchor. Public exports live on the concrete engine
 // interfaces declared in src/* headers via ARP_API.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #if defined(_WIN32)
 #include <windows.h>

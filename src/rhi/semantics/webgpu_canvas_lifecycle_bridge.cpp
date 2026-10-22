@@ -1,7 +1,7 @@
 #include "rhi/semantics/webgpu_canvas_lifecycle_bridge.h"
 
-#include "core/cpu_allocator.h"
-#include "core/diagnostic_builder.h"
+#include "core/diagnostics/diagnostic_builder.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/semantics/frame_lifecycle_transition.h"
 #include "rhi/semantics/webgpu_runtime_capability_bridge.h"
 

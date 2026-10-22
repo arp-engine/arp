@@ -1,6 +1,6 @@
 #include "scriptvm/aot/aot_codegen_v5.h"
 
-#include "core/sha256.h"
+#include "core/hash/sha256.h"
 
 #include <algorithm>
 #include <cctype>
@@ -277,10 +277,1159 @@ core::pmr::Vector<const TypedIrOperationRecord*> flatten(const TypedIrFunction& 
     return result;
 }
 
+class NativeLoopScalarBindings final {
+public:
+    explicit NativeLoopScalarBindings(const TypedIrFunction& function)
+        : kinds(function.localCount, TypedIrType::Any, &core::defaultCpuMemoryResource()),
+          writes(function.localCount, 0u, &core::defaultCpuMemoryResource())
+    {}
+
+    bool contains(int slot) const
+    {
+        return slot >= 0 && static_cast<std::size_t>(slot) < kinds.size()
+            && kinds[slot] != TypedIrType::Any;
+    }
+
+    static String local(int slot)
+    {
+        String name("native_loop_local_", &core::defaultCpuMemoryResource());
+        name += std::to_string(slot);
+        return name;
+    }
+
+    static String dirty(int slot)
+    {
+        String name("native_loop_dirty_", &core::defaultCpuMemoryResource());
+        name += std::to_string(slot);
+        return name;
+    }
+
+    static String operand(int slot)
+    {
+        String result("(", &core::defaultCpuMemoryResource());
+        result += dirty(slot);
+        result += " ? ExecutionSlot(ScriptScalar(";
+        result += local(slot);
+        result += ")) : locals[";
+        result += std::to_string(slot);
+        result += "])";
+        return result;
+    }
+
+    void publish(String& source) const
+    {
+        for (std::size_t slot = 0; slot < kinds.size(); ++slot) {
+            if (!writes[slot])
+                continue;
+            source += "if (";
+            source += dirty(static_cast<int>(slot));
+            source += ") locals[";
+            source += std::to_string(slot);
+            source += "] = ScriptScalar(";
+            source += local(static_cast<int>(slot));
+            source += "); ";
+        }
+    }
+
+    core::pmr::Vector<TypedIrType> kinds;
+    core::pmr::Vector<std::uint8_t> writes;
+    core::pmr::Vector<std::pair<std::size_t, int>> methodSites{&core::defaultCpuMemoryResource()};
+};
+
+struct DynamicMethodCandidate {
+    const TypedIrScriptClassSchema* schema = nullptr;
+    const TypedIrFunction* function = nullptr;
+    std::size_t functionIndex = 0u;
+};
+
+core::pmr::Vector<DynamicMethodCandidate> nativeMethodCandidates(
+    const TypedIrModule& module, const TypedIrOperationRecord& operation)
+{
+    core::pmr::Vector<DynamicMethodCandidate> candidates{&core::defaultCpuMemoryResource()};
+    for (const auto& schema : module.scriptClassSchemas) {
+        const auto method = schema.methods.find(operation.text);
+        if (method == schema.methods.end())
+            continue;
+        const auto target = std::find_if(
+            module.functions.begin(), module.functions.end(), [&method](const auto& candidate) {
+                return candidate.id == method->second;
+            });
+        if (target == module.functions.end() || target->parameterCount != operation.b + 1)
+            continue;
+        candidates.push_back(DynamicMethodCandidate{&schema,
+            &*target,
+            static_cast<std::size_t>(std::distance(module.functions.begin(), target))});
+    }
+    return candidates;
+}
+
+// import is guarded before execution; callbacks, suspension, handler changes
+// and CFG entry points retain the canonical operation-by-operation lowering.
+class NativeScalarSequence final {
+    struct Operand {
+        String name;
+        TypedIrType kind = TypedIrType::Int;
+        String recovery;
+        bool boxedRecovery = false;
+        bool integerConstant = false;
+        int integerValue = 0;
+        bool inlineInteger = false;
+    };
+
+public:
+    NativeScalarSequence(const TypedIrFunction& function,
+        const core::pmr::Vector<const TypedIrOperationRecord*>& operations,
+        const core::pmr::Vector<std::uint8_t>& targets,
+        std::size_t start,
+        bool leaf = false,
+        const core::pmr::Vector<int>* indexedSources = nullptr,
+        const NativeLoopScalarBindings* loopBindings = nullptr,
+        const TypedIrModule* inlineModule = nullptr,
+        bool budgetProven = false)
+        : start_(start), end_(start), leaf_(leaf), loop_(loopBindings != nullptr),
+          budgetProven_(budgetProven)
+    {
+        for (std::size_t pc = start; pc < operations.size(); ++pc) {
+            if (pc != start && targets[pc] != 0u)
+                break;
+            const auto& operation = *operations[pc];
+            const auto opcode = operation.opcode;
+            String line;
+            String name("native_", &core::defaultCpuMemoryResource());
+            name += std::to_string(pc);
+            TypedIrType kind = TypedIrType::Int;
+            if (opcode == TypedIrOpcode::LoadInt || opcode == TypedIrOpcode::LoadBool) {
+                kind = opcode == TypedIrOpcode::LoadBool ? TypedIrType::Bool : TypedIrType::Int;
+                line = "const ";
+                line += cppType(kind);
+                line += " ";
+                line += name;
+                line += " = ";
+                line += kind == TypedIrType::Bool ? (operation.a ? "true" : "false")
+                                                  : std::to_string(operation.i64);
+                line += ";";
+                operands_.push_back({name,
+                    kind,
+                    {},
+                    false,
+                    opcode == TypedIrOpcode::LoadInt,
+                    static_cast<int>(operation.i64)});
+            } else if (opcode == TypedIrOpcode::LoadFloat) {
+                kind = TypedIrType::Float;
+                line = "const std::uint64_t ";
+                line += name;
+                line += "_bits = ";
+                line += std::to_string(static_cast<std::uint64_t>(operation.i64));
+                line += "ULL; double ";
+                line += name;
+                line += "; std::memcpy(&";
+                line += name;
+                line += ", &";
+                line += name;
+                line += "_bits, sizeof(double));";
+                operands_.push_back({name, kind});
+            } else if (opcode == TypedIrOpcode::LoadLocal) {
+                if (inlineModule && loop_ && pc + 1u < operations.size()
+                    && (operations[pc + 1u]->opcode == TypedIrOpcode::CallValue
+                        || operations[pc + 1u]->opcode == TypedIrOpcode::MakeMethodValue)) {
+                    String receiver("locals[", &core::defaultCpuMemoryResource());
+                    receiver += std::to_string(operation.a);
+                    receiver += "]";
+                    operands_.push_back({receiver, TypedIrType::Any, receiver});
+                    end_ = pc + 1u;
+                    continue;
+                }
+                if (pc + 1u < operations.size()
+                    && (operations[pc + 1u]->opcode == TypedIrOpcode::CallValue
+                        || operations[pc + 1u]->opcode == TypedIrOpcode::MakeMethodValue))
+                    break;
+                const auto local = std::find_if(function.locals.begin(),
+                    function.locals.end(),
+                    [&operation](const auto& candidate) {
+                        return candidate.slot == operation.a;
+                    });
+                if ((leaf && operation.a >= function.parameterCount)
+                    || local == function.locals.end() || local->type.nullable)
+                    break;
+                kind = local->type.kind;
+                // Dynamic locals may join an integer expression only after
+                // the same actual-payload guard as a typed imported scalar.
+                if (kind == TypedIrType::Any)
+                    kind = TypedIrType::Int;
+                String recovery("locals[", &core::defaultCpuMemoryResource());
+                recovery += std::to_string(operation.a);
+                recovery += "]";
+                if (!leaf && indexedSources
+                    && (kind == TypedIrType::List || kind == TypedIrType::Dict)
+                    && std::find(indexedSources->begin(), indexedSources->end(), operation.a)
+                        != indexedSources->end()) {
+                    String slot(
+                        std::to_string(operation.a).c_str(), &core::defaultCpuMemoryResource());
+                    guards_ += "const bool ";
+                    guards_ += name;
+                    guards_ += "_ready = frame->indexBorrowReady_";
+                    guards_ += slot;
+                    guards_ += " || (frame->indexBorrowReady_";
+                    guards_ += slot;
+                    guards_ += " = frame->indexBorrow_";
+                    guards_ += slot;
+                    guards_ += ".bind(";
+                    guards_ += recovery;
+                    guards_ += ")); ";
+                    if (!condition_.empty())
+                        condition_ += " && ";
+                    condition_ += name;
+                    condition_ += "_ready";
+                    operands_.push_back({recovery, kind, recovery});
+                } else if (kind == TypedIrType::Int || kind == TypedIrType::Float
+                    || kind == TypedIrType::Bool) {
+                    if (loopBindings && loopBindings->contains(operation.a)) {
+                        line = "const ";
+                        line += cppType(kind);
+                        line += " ";
+                        line += name;
+                        line += " = ";
+                        line += NativeLoopScalarBindings::local(operation.a);
+                        line += ";";
+                        Operand operand{name, kind, NativeLoopScalarBindings::operand(operation.a)};
+                        operand.inlineInteger =
+                            kind == TypedIrType::Int && loopBindings->writes[operation.a];
+                        operands_.push_back(std::move(operand));
+                    } else {
+                        guards_ += "const auto* ";
+                        guards_ += name;
+                        guards_ += leaf ? "_ptr = args[" : "_ptr = locals[";
+                        guards_ += std::to_string(operation.a);
+                        guards_ += "].scalarPointer<";
+                        guards_ += cppType(kind);
+                        guards_ += ">(); ";
+                        if (!condition_.empty())
+                            condition_ += " && ";
+                        condition_ += name;
+                        condition_ += "_ptr != nullptr";
+                        line = "const ";
+                        line += cppType(kind);
+                        line += " ";
+                        line += name;
+                        line += " = *";
+                        line += name;
+                        line += "_ptr;";
+                        operands_.push_back({name, kind, leaf ? String{} : recovery});
+                    }
+                } else if (kind == TypedIrType::String && loop_) {
+                    guards_ += "std::string_view ";
+                    guards_ += name;
+                    guards_ += "; ";
+                    if (!condition_.empty())
+                        condition_ += " && ";
+                    condition_ += recovery + ".stringView(" + name + ")";
+                    operands_.push_back({name, kind, recovery});
+                } else
+                    break;
+            } else if (opcode == TypedIrOpcode::LoadString && !leaf) {
+                kind = TypedIrType::String;
+                line = "const std::string_view ";
+                line += name;
+                line += " = ";
+                line += quote(operation.text);
+                line += ";";
+                String recovery(
+                    "ExecutionSlot::borrowLiteral([]() -> const arp::core::pmr::String& { static const auto literal = [] { arp::core::CpuMemoryQuotaScope scope(nullptr); return arp::core::pmr::String(",
+                    &core::defaultCpuMemoryResource());
+                recovery += quote(operation.text);
+                recovery += ", &arp::core::defaultCpuMemoryResource()); }(); return literal; }())";
+                operands_.push_back({name, kind, recovery});
+            } else if (opcode == TypedIrOpcode::BuiltinLen && !operands_.empty()
+                && operands_.back().kind == TypedIrType::String) {
+                line = "const int ";
+                line += name;
+                line += " = static_cast<int>(";
+                line += operands_.back().name;
+                line += ".size()); if (";
+                line += name;
+                line += " < 0) { ";
+                for (const auto& operand : operands_) {
+                    line += "stack[sp++] = " + slotExpression(operand) + "; ";
+                }
+                line += "context.remainingInstructions += nativeSequenceEnd - ";
+                line += std::to_string(pc);
+                line += loop_ ? "u; goto aot_replay_pc_" : "u; goto aot_pc_";
+                line += std::to_string(pc);
+                line += "; }";
+                operands_.pop_back();
+                operands_.push_back({name, TypedIrType::Int});
+            } else if (opcode == TypedIrOpcode::LoadIndex && indexedSources && !leaf
+                && inputs_ == 0u && operands_.size() >= 2u && (*indexedSources)[pc] >= 0) {
+                const auto& base = operands_[operands_.size() - 2u];
+                const auto& key = operands_.back();
+                if ((base.kind != TypedIrType::List && base.kind != TypedIrType::Dict)
+                    || (key.kind != TypedIrType::Int && key.kind != TypedIrType::String))
+                    break;
+                const bool string = pc + 1u < operations.size()
+                    && (operations[pc + 1u]->opcode == TypedIrOpcode::LoadIndex
+                        || operations[pc + 1u]->opcode == TypedIrOpcode::LoadString);
+                kind = string ? TypedIrType::String : TypedIrType::Int;
+                line = "const auto* ";
+                line += name;
+                const bool stableString =
+                    loop_ && key.boxedRecovery && key.kind == TypedIrType::String;
+                line += "_carrier = ";
+                if (stableString) {
+                    line += "native_string_index_";
+                    line += std::to_string(pc);
+                    line += ".read(";
+                } else {
+                    line += "frame->indexBorrow_";
+                    line += std::to_string((*indexedSources)[pc]);
+                }
+                const bool nativeIndex =
+                    key.kind == TypedIrType::Int && (key.recovery.empty() || key.inlineInteger);
+                line += stableString                                       ? ""
+                    : nativeIndex                                          ? ".readIntegerCarrier("
+                    : key.boxedRecovery && key.kind == TypedIrType::String ? ".readCarrier("
+                                                                           : ".read(ExecutionSlot(";
+                line += nativeIndex ? key.name : slotExpression(key);
+                line += nativeIndex || (key.boxedRecovery && key.kind == TypedIrType::String)
+                    ? "); const auto* "
+                    : ")); const auto* ";
+                line += name;
+                line += "_ptr = ";
+                line += name;
+                line += "_carrier != nullptr ? exactValuePayload<";
+                line += string ? "arp::core::pmr::String" : "int";
+                line += ">(*";
+                line += name;
+                line += "_carrier) : nullptr; if (!";
+                line += name;
+                line += "_ptr) { ";
+                for (const auto& operand : operands_) {
+                    line += "stack[sp++] = ";
+                    line += slotExpression(operand);
+                    line += "; ";
+                }
+                // Replay only the failing index operation. Its completed pure
+                // prefix and exact carriers are reconstructed above.
+                line += "context.remainingInstructions += nativeSequenceEnd - ";
+                line += std::to_string(pc);
+                line += loop_ ? "u; goto aot_replay_pc_" : "u; goto aot_pc_";
+                line += std::to_string(pc);
+                line += "; } const ";
+                line += string ? "std::string_view " : "int ";
+                line += name;
+                line += " = *";
+                line += name;
+                line += "_ptr;";
+                String recovery("*", &core::defaultCpuMemoryResource());
+                recovery += name;
+                recovery += "_carrier";
+                operands_.resize(operands_.size() - 2u);
+                operands_.push_back({name, kind, recovery, true});
+            } else if (opcode == TypedIrOpcode::MakeMethodValue && inlineModule && loop_) {
+                // The canonical AOT method marker retains the real receiver.
+            } else if (opcode == TypedIrOpcode::CallValue && inlineModule && loop_
+                && operation.b >= 0
+                && operands_.size() >= static_cast<std::size_t>(operation.b) + 1u) {
+                const auto count = static_cast<std::size_t>(operation.b);
+                const auto base = operands_.size() - count - 1u;
+                const auto& callable = operands_.back();
+                if (callable.recovery.empty())
+                    break;
+                core::pmr::Vector<Operand> arguments{&core::defaultCpuMemoryResource()};
+                String invocation;
+                invocation +=
+                    "ExecutionSlot " + name + "_result; bool " + name + "_taken = false; { ";
+                bool admitted = false;
+                if (operation.closureCaptureCount == kScriptMethodProvenanceCaptureCount
+                    && !operation.text.empty()) {
+                    arguments.push_back(callable);
+                    for (std::size_t index = 0; index < count; ++index)
+                        arguments.push_back(operands_[base + index]);
+                    const auto boundSite = std::find_if(loopBindings->methodSites.begin(),
+                        loopBindings->methodSites.end(),
+                        [pc](const auto& site) {
+                            return site.first == pc;
+                        });
+                    const bool boundDispatch = boundSite != loopBindings->methodSites.end();
+                    if (!boundDispatch) {
+                        invocation +=
+                            "const auto* instance = exactValuePayload<arp::reflection::instance>(";
+                        invocation += callable.recovery;
+                        invocation +=
+                            ".boxed()); if (instance && instance->alive() && instance->class_()) { const auto& actualClass = instance->class_()->name(); ";
+                    }
+                    std::size_t selector = 0u;
+                    for (const auto& candidate : nativeMethodCandidates(*inlineModule, operation)) {
+                        ++selector;
+                        const auto code = flatten(*candidate.function);
+                        core::pmr::Vector<std::uint8_t> entries(
+                            code.size(), 0u, &core::defaultCpuMemoryResource());
+                        NativeScalarSequence child(*candidate.function, code, entries, 0u, true);
+                        String expression;
+                        if (!child.emitInlineInvocation(expression,
+                                *candidate.function,
+                                code.size(),
+                                arguments,
+                                "nullptr",
+                                name))
+                            continue;
+                        invocation +=
+                            boundDispatch ? "if (native_loop_method_" : "if (actualClass == ";
+                        if (boundDispatch) {
+                            invocation += std::to_string(pc);
+                            invocation += " == ";
+                            invocation += std::to_string(selector);
+                            invocation += "u";
+                        } else
+                            invocation += quote(candidate.schema->className);
+                        invocation += ") { ";
+                        invocation += expression;
+                        invocation += " } ";
+                        admitted = true;
+                    }
+                    if (!boundDispatch)
+                        invocation += "} ";
+                } else if (!operation.closureTargetFunctionId.empty()) {
+                    const auto target =
+                        resolveFunctionIndex(*inlineModule, operation.closureTargetFunctionId);
+                    if (target >= 0) {
+                        for (std::size_t index = 0; index < count; ++index)
+                            arguments.push_back(operands_[base + index]);
+                        const auto& callee = inlineModule->functions[target];
+                        const auto code = flatten(callee);
+                        core::pmr::Vector<std::uint8_t> entries(
+                            code.size(), 0u, &core::defaultCpuMemoryResource());
+                        NativeScalarSequence child(callee, code, entries, 0u, true);
+                        String expression;
+                        if (child.emitInlineInvocation(expression,
+                                callee,
+                                code.size(),
+                                arguments,
+                                "&closure->captures",
+                                name)) {
+                            invocation += "const auto* closure = " + callable.recovery
+                                + ".closure(); if (closure && closure->captures.size() == ";
+                            invocation += std::to_string(operation.closureCaptureCount);
+                            invocation += "u) { " + expression + " } ";
+                            admitted = true;
+                        }
+                    }
+                }
+                if (!admitted)
+                    break;
+                invocation += "} if (!" + name + "_taken) { ";
+                for (const auto& operand : operands_)
+                    invocation += "stack[sp++] = " + slotExpression(operand) + "; ";
+                invocation += "context.remainingInstructions += nativeSequenceEnd - ";
+                invocation += std::to_string(pc);
+                invocation += "u; goto aot_replay_pc_";
+                invocation += std::to_string(pc);
+                invocation += "; } const auto* " + name + "_ptr = " + name
+                    + "_result.scalarPointer<int>(); if (!" + name
+                    + "_ptr || (error && error->code != ScriptDiagnosticCode::None)) { context.remainingInstructions += nativeSequenceEnd - ";
+                invocation += std::to_string(pc + 1u);
+                invocation +=
+                    "u; goto aot_exception_dispatch; } const int " + name + " = *" + name + "_ptr;";
+                line = std::move(invocation);
+                operands_.resize(base);
+                operands_.push_back({name, TypedIrType::Int});
+            } else if (opcode == TypedIrOpcode::LoadCapture && leaf) {
+                kind = TypedIrType::Int;
+                guards_ += "const auto* ";
+                guards_ += name;
+                guards_ += "_cell = captures != nullptr && captures->size() > ";
+                guards_ += std::to_string(operation.a);
+                guards_ += "u ? (*captures)[";
+                guards_ += std::to_string(operation.a);
+                guards_ += "].get() : nullptr; const auto* ";
+                guards_ += name;
+                guards_ += "_ptr = ";
+                guards_ += name;
+                guards_ += "_cell != nullptr ? checkedValuePayload<int>(";
+                guards_ += name;
+                guards_ += "_cell->value) : nullptr; ";
+                if (!condition_.empty())
+                    condition_ += " && ";
+                condition_ += name;
+                condition_ += "_ptr != nullptr";
+                line = "const int ";
+                line += name;
+                line += " = *";
+                line += name;
+                line += "_ptr;";
+                operands_.push_back({name, kind});
+            } else if (!binaryOperation(opcode).empty() || !compareOperation(opcode).empty()) {
+                if (opcode == TypedIrOpcode::ShiftLeft || opcode == TypedIrOpcode::ShiftRight)
+                    break;
+                if (leaf && operands_.size() < 2u)
+                    break;
+                const auto oldInputs = inputs_;
+                const auto oldGuards = guards_.size(), oldCondition = condition_.size(),
+                           oldImports = imports_.size();
+                const core::pmr::Vector<Operand> oldOperands(
+                    operands_, &core::defaultCpuMemoryResource());
+                const auto rollbackInputs = [&] {
+                    inputs_ = oldInputs;
+                    guards_.resize(oldGuards);
+                    condition_.resize(oldCondition);
+                    imports_.resize(oldImports);
+                    operands_ = oldOperands;
+                };
+                while (operands_.size() < 2u) {
+                    String input("native_input_", &core::defaultCpuMemoryResource());
+                    input += std::to_string(inputs_);
+                    ++inputs_;
+                    guards_ += "const auto* ";
+                    guards_ += input;
+                    guards_ += "_ptr = stack[sp - ";
+                    guards_ += std::to_string(inputs_);
+                    guards_ += "u].scalarPointer<int>(); ";
+                    if (!condition_.empty())
+                        condition_ += " && ";
+                    condition_ += input;
+                    condition_ += "_ptr != nullptr";
+                    imports_ += "const int ";
+                    imports_ += input;
+                    imports_ += " = *";
+                    imports_ += input;
+                    imports_ += "_ptr; ";
+                    operands_.insert(operands_.begin(), Operand{input, TypedIrType::Int});
+                }
+                const auto& left = operands_[operands_.size() - 2u];
+                const auto& right = operands_.back();
+                const bool compare = !compareOperation(opcode).empty();
+                const bool strings =
+                    left.kind == TypedIrType::String && right.kind == TypedIrType::String;
+                if ((left.kind == TypedIrType::String || right.kind == TypedIrType::String
+                        || left.kind == TypedIrType::List || left.kind == TypedIrType::Dict
+                        || right.kind == TypedIrType::List || right.kind == TypedIrType::Dict)
+                    && !(strings && compare)) {
+                    rollbackInputs();
+                    break;
+                }
+                if (!compare
+                    && (left.kind == TypedIrType::Bool || right.kind == TypedIrType::Bool)) {
+                    rollbackInputs();
+                    break;
+                }
+                if (compare
+                    && ((left.kind == TypedIrType::Bool) != (right.kind == TypedIrType::Bool))) {
+                    rollbackInputs();
+                    break;
+                }
+                const bool floating =
+                    left.kind == TypedIrType::Float || right.kind == TypedIrType::Float;
+                const bool integerPower = opcode == TypedIrOpcode::Pow
+                    && left.kind == TypedIrType::Int && right.kind == TypedIrType::Int
+                    && right.integerConstant && right.integerValue >= 0;
+                if (!compare
+                    && ((opcode == TypedIrOpcode::Pow && !floating && !integerPower)
+                        || opcode == TypedIrOpcode::ShiftLeft
+                        || opcode == TypedIrOpcode::ShiftRight)) {
+                    rollbackInputs();
+                    break;
+                } // Negative/dynamic integer powers can change the result kind.
+                if (floating
+                    && (opcode == TypedIrOpcode::BitAnd || opcode == TypedIrOpcode::BitOr
+                        || opcode == TypedIrOpcode::BitXor || opcode == TypedIrOpcode::BitClear)) {
+                    rollbackInputs();
+                    break;
+                }
+                kind = compare ? TypedIrType::Bool
+                    : floating ? TypedIrType::Float
+                               : TypedIrType::Int;
+                line = "const auto ";
+                line += name;
+                if (compare) {
+                    if (strings) {
+                        line +=
+                            " = ScriptSemanticRuntime::comparePayload<SemanticCompareOperation::";
+                        line += compareOperation(opcode);
+                        line += ">(";
+                        line += left.name;
+                        line += ", ";
+                        line += right.name;
+                        line += ");";
+                    } else {
+                        line +=
+                            " = ScriptSemanticRuntime::comparePayload<SemanticCompareOperation::";
+                        line += compareOperation(opcode);
+                        line += ">(";
+                        if (floating)
+                            line += "static_cast<double>(";
+                        line += left.name;
+                        if (floating)
+                            line += ")";
+                        line += ", ";
+                        if (floating)
+                            line += "static_cast<double>(";
+                        line += right.name;
+                        if (floating)
+                            line += ")";
+                        line += ");";
+                    }
+                } else {
+                    line += "_result = ScriptSemanticRuntime::";
+                    if (floating)
+                        line += "floatBinary<SemanticBinaryOperation::";
+                    else if (opcode == TypedIrOpcode::FloorDiv || integerPower)
+                        line += "scalarBinary(SemanticBinaryOperation::";
+                    else
+                        line += "intBinary<SemanticBinaryOperation::";
+                    line += binaryOperation(opcode);
+                    if ((opcode == TypedIrOpcode::FloorDiv || integerPower) && !floating) {
+                        // Keep the result type explicit without copying a Value carrier.
+                        line = "ScalarOperationResult ";
+                        line += name;
+                        line +=
+                            "_result; ScriptSemanticRuntime::scalarBinary(SemanticBinaryOperation::";
+                        line += binaryOperation(opcode);
+                        line += ", ScriptScalar(";
+                        line += left.name;
+                        line += "), ScriptScalar(";
+                        line += right.name;
+                        line += "), ";
+                        line += name;
+                        line += "_result);";
+                    } else {
+                        line += ">(";
+                        line += left.name;
+                        line += ", ";
+                        line += right.name;
+                        line += ");";
+                    }
+                    line += " if (!";
+                    line += name;
+                    line += "_result.ok()) { context.remainingInstructions += nativeSequenceEnd - ";
+                    line += std::to_string(pc + 1u);
+                    line += "u; if (error != nullptr) { error->code = ";
+                    line += name;
+                    line += "_result.code; error->message = ";
+                    line += name;
+                    line += leaf ? "_result.message; } return true; } const "
+                                 : "_result.message; } goto aot_exception_dispatch; } const ";
+                    line += cppType(kind);
+                    line += " ";
+                    line += name;
+                    line += " = ";
+                    if (floating) {
+                        line += name;
+                        line += "_result.value.floating();";
+                    } else {
+                        line += "static_cast<int>(";
+                        line += name;
+                        line += "_result.value.integer());";
+                    }
+                }
+                operands_.resize(operands_.size() - 2u);
+                operands_.push_back({name, kind});
+            } else if ((opcode == TypedIrOpcode::Return || opcode == TypedIrOpcode::ReturnInt)
+                && leaf && (operation.a == 1 || opcode == TypedIrOpcode::ReturnInt)
+                && operands_.size() == 1u && pc > start
+                && (!binaryOperation(operations[pc - 1u]->opcode).empty()
+                    || !compareOperation(operations[pc - 1u]->opcode).empty())) {
+                line = "result = ScriptScalar(";
+                line += operands_.back().name;
+                line += "); return true;";
+                returnKind_ = operands_.back().kind;
+                operands_.clear();
+                terminal_ = true;
+                returned_ = true;
+            } else if (opcode == TypedIrOpcode::StoreLocal && !leaf) {
+                if (operands_.empty())
+                    break;
+                const auto destination = std::find_if(function.locals.begin(),
+                    function.locals.end(),
+                    [&operation](const auto& candidate) {
+                        return candidate.slot == operation.a;
+                    });
+                if (destination == function.locals.end()
+                    || (destination->type.kind != operands_.back().kind
+                        && destination->type.kind != TypedIrType::Any)
+                    || (operands_.back().kind != TypedIrType::Int
+                        && operands_.back().kind != TypedIrType::Bool
+                        && operands_.back().kind != TypedIrType::Float))
+                    break;
+                if (loopBindings && loopBindings->contains(operation.a)) {
+                    if (!operands_.back().recovery.empty())
+                        break;
+                    line = NativeLoopScalarBindings::local(operation.a);
+                    line += " = ";
+                    line += operands_.back().name;
+                    line += "; ";
+                    line += NativeLoopScalarBindings::dirty(operation.a);
+                    line += " = true;";
+                } else {
+                    line = "locals[";
+                    line += std::to_string(operation.a);
+                    line += "] = ";
+                    line += slotExpression(operands_.back());
+                    line += ";";
+                }
+                operands_.pop_back();
+                terminal_ = true;
+            } else if (!leaf
+                && (opcode == TypedIrOpcode::JumpIfFalse || opcode == TypedIrOpcode::JumpIfTrue)) {
+                if (operands_.size() != 1u || operands_.back().kind != TypedIrType::Bool)
+                    break;
+                line = "if (";
+                if (opcode == TypedIrOpcode::JumpIfFalse)
+                    line += "!";
+                line += operands_.back().name;
+                line += ") goto aot_pc_";
+                line += std::to_string(operation.a);
+                line += ";";
+                operands_.pop_back();
+                // Branches are only admitted when the expression has no other
+                // stack results, so the target sees the original stack prefix.
+                if (!operands_.empty())
+                    break;
+                terminal_ = true;
+            } else {
+                break;
+            }
+            body_ += line;
+            body_ += "\n";
+            end_ = pc + 1u;
+            if (terminal_)
+                break;
+        }
+    }
+
+    std::size_t emit(String& source) const
+    {
+        if (end_ - start_ < (loop_ ? 1u : 3u))
+            return start_;
+        source += budgetProven_ ? " { "
+            : loop_
+            ? "    if (context.remainingInstructions >= "
+            : "    if (context.operationBoundary == nullptr && frame == &localFrame && context.remainingInstructions >= ";
+        if (!budgetProven_) {
+            source += std::to_string(end_ - start_);
+            source += "u) { ";
+        }
+        source += guards_;
+        source += " if (";
+        source += condition_.empty() ? "true" : condition_;
+        source += ") {\n";
+        source += imports_;
+        if (inputs_ != 0u) {
+            source += " for (std::size_t index = sp - ";
+            source += std::to_string(inputs_);
+            source += "u; index < sp; ++index) stack[index] = ScriptScalar();\n";
+        }
+        source += " sp -= ";
+        source += std::to_string(inputs_);
+        source += "u;\n";
+        emitBody(source);
+        for (const auto& operand : operands_) {
+            source += " stack[sp++] = ";
+            source += slotExpression(operand);
+            source += ";\n";
+        }
+        source += " goto aot_pc_";
+        source += std::to_string(end_);
+        source += "; } }\n";
+        if (loop_) {
+            source += "goto aot_replay_pc_";
+            source += std::to_string(start_);
+            source += ";\n";
+        }
+        return end_;
+    }
+
+    bool emitLeaf(String& source,
+        const String& symbol,
+        const TypedIrFunction& function,
+        std::size_t operationCount) const
+    {
+        if (!leaf_ || !returned_ || end_ != operationCount || function.isGenerator
+            || !function.exceptionRegions.empty())
+            return false;
+        source += "static bool ";
+        source += symbol;
+        source +=
+            "_slot_leaf(DirectNativeExecutionContext& context, const ExecutionSlot* args, const arp::core::pmr::Vector<std::shared_ptr<ScriptCell>>* captures, ExecutionSlot& result, VmError* error) { ";
+        if (function.captureCount != 0) {
+            source += "if (captures == nullptr || captures->size() != ";
+            source += std::to_string(function.captureCount);
+            source += "u) return false; ";
+        }
+        source += guards_;
+        source += " if (!(";
+        source += condition_.empty() ? "true" : condition_;
+        source += ") || context.remainingInstructions < ";
+        source += std::to_string(operationCount);
+        source += "u) return false; ";
+        source += "if (!context.enterLeafFunction(";
+        source += quote(function.id);
+        source +=
+            ", error)) return true; struct Scope { DirectNativeExecutionContext& context; ~Scope() { context.leaveLeafFunction(); } } scope { context };\n";
+        emitBody(source);
+        source += " return false; }\n";
+        return true;
+    }
+
+private:
+    bool emitInlineInvocation(String& source,
+        const TypedIrFunction& function,
+        std::size_t operationCount,
+        const core::pmr::Vector<Operand>& arguments,
+        const char* capturesExpression,
+        const String& name) const
+    {
+        if (!leaf_ || !returned_ || end_ != operationCount || function.isGenerator
+            || !function.exceptionRegions.empty()
+            || function.signature.result.kind != TypedIrType::Int
+            || function.signature.result.nullable || returnKind_ != TypedIrType::Int)
+            return false;
+        String guards = guards_;
+        for (std::size_t index = 0; index < arguments.size(); ++index) {
+            String needle("args[", &core::defaultCpuMemoryResource());
+            needle += std::to_string(index);
+            needle += "].scalarPointer<";
+            const auto begin = guards.find(needle);
+            if (begin == String::npos)
+                continue;
+            const auto end = guards.find(">()", begin);
+            if (end == String::npos
+                || (arguments[index].kind != TypedIrType::Int
+                    && arguments[index].kind != TypedIrType::Float
+                    && arguments[index].kind != TypedIrType::Bool))
+                return false;
+            const String expression = needle + cppType(arguments[index].kind) + ">()";
+            if (guards.compare(begin, expression.size(), expression) != 0)
+                return false;
+            const String replacement = "&(" + arguments[index].name + ")";
+            for (auto pos = guards.find(expression); pos != String::npos;
+                pos = guards.find(expression, pos + replacement.size()))
+                guards.replace(pos, expression.size(), replacement);
+        }
+        if (guards.find("args[") != String::npos)
+            return false;
+        // A selector miss replays the original call, including the general
+        // reflected capture path. The inline expression only borrows actual ints.
+        const String broad = "checkedValuePayload<int>";
+        for (auto pos = guards.find(broad); pos != String::npos; pos = guards.find(broad, pos + 1u))
+            guards.replace(pos, broad.size(), "exactValuePayload<int>");
+        source += name
+            + "_taken = [&](ExecutionSlot& result) -> bool { const arp::core::pmr::Vector<std::shared_ptr<ScriptCell>>* captures = ";
+        source += capturesExpression;
+        source += "; ";
+        if (function.captureCount != 0) {
+            source += "if (!captures || captures->size() != ";
+            source += std::to_string(function.captureCount);
+            source += "u) return false; ";
+        }
+        source += guards;
+        source += "if (!(";
+        source += condition_.empty() ? "true" : condition_;
+        source += ") || context.remainingInstructions < ";
+        source += std::to_string(operationCount);
+        source += "u) return false; if (!context.enterLeafFunction(";
+        source += quote(function.id);
+        source +=
+            ", error)) return true; struct Scope { DirectNativeExecutionContext& context; ~Scope() { context.leaveLeafFunction(); } } scope { context };\n";
+        emitBody(source);
+        source += "return false; }(" + name + "_result);\n";
+        return true;
+    }
+
+    void emitBody(String& source) const
+    {
+        source += "constexpr std::size_t nativeSequenceEnd = ";
+        source += std::to_string(end_);
+        source += "u; context.remainingInstructions -= ";
+        source += std::to_string(end_ - start_);
+        source += "u;\n";
+        source += body_;
+    }
+
+    static String slotExpression(const Operand& operand)
+    {
+        if (!operand.recovery.empty())
+            return operand.recovery;
+        String result("ScriptScalar(", &core::defaultCpuMemoryResource());
+        result += operand.name;
+        result += ")";
+        return result;
+    }
+
+    static const char* cppType(TypedIrType kind)
+    {
+        return kind == TypedIrType::Float ? "double" : kind == TypedIrType::Bool ? "bool" : "int";
+    }
+
+    std::size_t start_, end_;
+    bool terminal_ = false, leaf_ = false, returned_ = false, loop_ = false;
+    bool budgetProven_ = false;
+    TypedIrType returnKind_ = TypedIrType::Any;
+    std::size_t inputs_ = 0u;
+    String guards_, condition_, body_, imports_;
+    core::pmr::Vector<Operand> operands_{&core::defaultCpuMemoryResource()};
+};
+
+bool privateStringLocal(
+    const core::pmr::Vector<const TypedIrOperationRecord*>& operations, int slot);
+
 bool scalarValueType(const TypedIrTypeRef& type)
 {
     return type.kind == TypedIrType::Int || type.kind == TypedIrType::Bool;
 }
+
+// A private string may only be observed by len() or by its own append. This
+// excludes returns, captures, addresses, arguments and assignments to aliases.
+bool privateStringLocal(
+    const core::pmr::Vector<const TypedIrOperationRecord*>& operations, int slot)
+{
+    for (std::size_t pc = 0; pc < operations.size(); ++pc) {
+        const auto& operation = *operations[pc];
+        if (operation.opcode == TypedIrOpcode::AddrLocal && operation.a == slot)
+            return false;
+        if (operation.opcode != TypedIrOpcode::LoadLocal || operation.a != slot)
+            continue;
+        if (pc + 1u < operations.size() && operations[pc + 1u]->opcode == TypedIrOpcode::BuiltinLen)
+            continue;
+        if (pc + 3u < operations.size() && operations[pc + 1u]->opcode == TypedIrOpcode::LoadString
+            && operations[pc + 2u]->opcode == TypedIrOpcode::Add
+            && operations[pc + 3u]->opcode == TypedIrOpcode::StoreLocal
+            && operations[pc + 3u]->a == slot)
+            continue;
+        return false;
+    }
+    return true;
+}
+
+bool privateIndexedLocal(
+    const core::pmr::Vector<const TypedIrOperationRecord*>& operations, int slot)
+{
+    for (std::size_t pc = 0; pc < operations.size(); ++pc) {
+        const auto& operation = *operations[pc];
+        if (operation.opcode == TypedIrOpcode::AddrLocal && operation.a == slot)
+            return false;
+        if (operation.opcode != TypedIrOpcode::LoadLocal || operation.a != slot)
+            continue;
+        if (pc + 1u < operations.size() && operations[pc + 1u]->opcode == TypedIrOpcode::BuiltinLen)
+            continue;
+        if (pc + 2u < operations.size() && operations[pc + 1u]->opcode == TypedIrOpcode::LoadInt
+            && operations[pc + 2u]->opcode == TypedIrOpcode::LoadIndex)
+            continue;
+        return false;
+    }
+    return true;
+}
+
+class NativeIndexUpdateSpan final {
+public:
+    static void emit(String& source,
+        const core::pmr::Vector<const TypedIrOperationRecord*>& operations,
+        std::size_t pc,
+        bool borrowed,
+        const String& index,
+        bool loop = false,
+        bool budgetProven = false,
+        bool inlineIndex = false)
+    {
+        source += budgetProven ? "{ "
+            : loop
+            ? "if (context.remainingInstructions >= 8u) { "
+            : "if (context.operationBoundary == nullptr && frame == &localFrame && context.remainingInstructions >= 8u) { ";
+        source += "ScriptSemanticRuntime::IntegerIndexUpdate update; int previous; ";
+        const String owner(
+            std::to_string(operations[pc]->a).c_str(), &core::defaultCpuMemoryResource());
+        if (borrowed) {
+            source += "if (!frame->indexBorrowReady_" + owner + ") frame->indexBorrowReady_" + owner
+                + " = frame->indexBorrow_" + owner + ".bind(locals[" + owner
+                + "]); if (frame->indexBorrowReady_" + owner + " && frame->indexBorrow_" + owner
+                + (inlineIndex ? ".prepareIntegerUpdate(" : ".prepareUpdate(") + index
+                + ", update, previous)) { ";
+        } else
+            source += "if (update.bind(locals[" + owner + "], " + index + ", previous)) { ";
+        source += "const auto changed = ScriptSemanticRuntime::intBinary<SemanticBinaryOperation::";
+        source += binaryOperation(operations[pc + 6u]->opcode);
+        source += ">(previous, ";
+        source += std::to_string(operations[pc + 5u]->i64);
+        source +=
+            "); if (changed.ok()) { context.remainingInstructions -= 8u; update.commit(static_cast<int>(changed.value.integer())); context.commitSideEffect(resume, ";
+        source += std::to_string(pc + 7u);
+        source += "u); goto aot_pc_";
+        source += std::to_string(pc + 8u);
+        source += "; } } }\n";
+        if (loop) {
+            source += "goto aot_replay_pc_";
+            source += std::to_string(pc);
+            source += ";\n";
+        }
+    }
+
+    static bool matches(
+        const core::pmr::Vector<const TypedIrOperationRecord*>& operations, std::size_t pc)
+    {
+        if (pc + 7u >= operations.size())
+            return false;
+        const auto arithmetic = operations[pc + 6u]->opcode;
+        return operations[pc]->opcode == TypedIrOpcode::LoadLocal
+            && operations[pc + 1u]->opcode == TypedIrOpcode::LoadLocal
+            && operations[pc + 2u]->opcode == TypedIrOpcode::LoadLocal
+            && operations[pc + 2u]->a == operations[pc]->a
+            && operations[pc + 3u]->opcode == TypedIrOpcode::LoadLocal
+            && operations[pc + 3u]->a == operations[pc + 1u]->a
+            && operations[pc + 4u]->opcode == TypedIrOpcode::LoadIndex
+            && operations[pc + 5u]->opcode == TypedIrOpcode::LoadInt
+            && (arithmetic == TypedIrOpcode::Add || arithmetic == TypedIrOpcode::Sub
+                || arithmetic == TypedIrOpcode::Mul || arithmetic == TypedIrOpcode::IntAdd
+                || arithmetic == TypedIrOpcode::IntSub || arithmetic == TypedIrOpcode::IntMul)
+            && operations[pc + 7u]->opcode == TypedIrOpcode::StoreIndex;
+    }
+};
+
+class NativeIndexReadPlan final {
+public:
+    explicit NativeIndexReadPlan(const TypedIrFunction& function,
+        const core::pmr::Vector<const TypedIrOperationRecord*>& operations)
+        : sources(operations.size(), -1, &core::defaultCpuMemoryResource()),
+          locals(function.localCount, 0u, &core::defaultCpuMemoryResource())
+    {
+        if (function.isGenerator || function.captureCount != 0
+            || !function.exceptionRegions.empty())
+            return;
+        for (const auto* operation : operations) {
+            const auto opcode = operation->opcode;
+            const auto& descriptor = typedIrOperationDescriptor(opcode);
+            if (descriptor.callKind != TypedIrCallKind::None || descriptor.suspension
+                || opcode == TypedIrOpcode::LoadField || opcode == TypedIrOpcode::StoreField
+                || opcode == TypedIrOpcode::Deref || opcode == TypedIrOpcode::StoreIndirect
+                || opcode == TypedIrOpcode::LoadGlobal || opcode == TypedIrOpcode::StoreGlobal
+                || opcode == TypedIrOpcode::LoadModule || opcode == TypedIrOpcode::LoadModuleExport
+                || opcode == TypedIrOpcode::AddrCapture || opcode == TypedIrOpcode::AddrGlobal)
+                return;
+        }
+        for (const auto& local : function.locals) {
+            if (local.slot < function.parameterCount || local.slot < 0
+                || (local.type.kind != TypedIrType::List && local.type.kind != TypedIrType::Dict))
+                continue;
+            core::pmr::Vector<std::size_t> reads{&core::defaultCpuMemoryResource()};
+            bool valid = true;
+            for (std::size_t pc = 0; pc < operations.size() && valid; ++pc) {
+                const auto& operation = *operations[pc];
+                // Iteration writes are implicit owner replacements, not stable
+                // mapped-value updates. They must never retain a prior topology.
+                if (operation.opcode == TypedIrOpcode::RangeNext) {
+                    const auto packed = static_cast<std::uint64_t>(operation.i64);
+                    const int key = static_cast<std::int32_t>(packed >> 32u);
+                    const int value = static_cast<std::int32_t>(packed);
+                    if (local.slot == key || local.slot == value) {
+                        valid = false;
+                        break;
+                    }
+                }
+                if (operation.opcode == TypedIrOpcode::RangeInit
+                    && (local.slot == operation.a || local.slot == operation.b)) {
+                    valid = false;
+                    break;
+                }
+                // Cache only a fresh, nonescaping owner. Imported aliases and
+                // arbitrary replacement values retain ordinary indexed access.
+                if (operation.opcode == TypedIrOpcode::StoreLocal && operation.a == local.slot
+                    && (pc == 0u
+                        || (operations[pc - 1u]->opcode != TypedIrOpcode::MakeList
+                            && operations[pc - 1u]->opcode != TypedIrOpcode::MakeDict))) {
+                    valid = false;
+                    break;
+                }
+                if (operation.opcode == TypedIrOpcode::AddrLocal && operation.a == local.slot) {
+                    valid = false;
+                    break;
+                }
+                if (operation.opcode != TypedIrOpcode::LoadLocal || operation.a != local.slot)
+                    continue;
+                if (NativeIndexUpdateSpan::matches(operations, pc)) {
+                    reads.push_back(pc + 4u);
+                    continue;
+                }
+                bool found = false;
+                std::size_t depth = 1u;
+                for (std::size_t next = pc + 1u; next < operations.size(); ++next) {
+                    const auto& index = *operations[next];
+                    if (index.opcode == TypedIrOpcode::LoadIndex && depth == 2u) {
+                        reads.push_back(next);
+                        found = true;
+                        break;
+                    }
+                    if (index.opcode == TypedIrOpcode::LoadIndex && depth > 2u) {
+                        --depth;
+                        continue;
+                    }
+                    if (index.opcode == TypedIrOpcode::LoadInt
+                        || index.opcode == TypedIrOpcode::LoadString) {
+                        ++depth;
+                        continue;
+                    }
+                    if (index.opcode == TypedIrOpcode::LoadLocal) {
+                        const auto scalar = std::find_if(function.locals.begin(),
+                            function.locals.end(),
+                            [&index](const auto& candidate) {
+                                return candidate.slot == index.a;
+                            });
+                        if (scalar == function.locals.end())
+                            break;
+                        ++depth;
+                        continue;
+                    }
+                    if (!binaryOperation(index.opcode).empty() && depth >= 3u) {
+                        --depth;
+                        continue;
+                    }
+                    break;
+                }
+                if (!found)
+                    valid = false;
+            }
+            if (valid && !reads.empty()) {
+                locals[local.slot] = 1u;
+                for (const auto pc : reads)
+                    sources[pc] = local.slot;
+            }
+        }
+    }
+
+    core::pmr::Vector<int> sources;
+    core::pmr::Vector<std::uint8_t> locals;
+};
+
+// Retain real container nodes only inside a call-free, nonescaping function.
+// Every ordinary assignment invalidates all sites for that owner before replay.
+class NativeConstructionPlan final {
+public:
+    NativeConstructionPlan(const core::pmr::Vector<const TypedIrOperationRecord*>& operations,
+        const NativeIndexReadPlan& reads)
+        : owners(operations.size(), -1, &core::defaultCpuMemoryResource())
+    {
+        for (std::size_t pc = 0; pc + 1u < operations.size(); ++pc) {
+            const auto opcode = operations[pc]->opcode;
+            const auto& store = *operations[pc + 1u];
+            if ((opcode == TypedIrOpcode::MakeList || opcode == TypedIrOpcode::MakeDict)
+                && store.opcode == TypedIrOpcode::StoreLocal && store.a >= 0
+                && static_cast<std::size_t>(store.a) < reads.locals.size()
+                && reads.locals[store.a] != 0u && privateIndexedLocal(operations, store.a))
+                owners[pc] = store.a;
+        }
+    }
+
+    void emitReset(String& source, int owner) const
+    {
+        for (std::size_t pc = 0; pc < owners.size(); ++pc) {
+            if (owners[pc] != owner)
+                continue;
+            source += "frame->constructionBorrow_";
+            source += std::to_string(pc);
+            source += ".reset(); frame->constructionReady_";
+            source += std::to_string(pc);
+            source += " = false; ";
+        }
+    }
+
+    core::pmr::Vector<int> owners;
+};
 
 bool scalarOperation(TypedIrOpcode opcode)
 {
@@ -390,6 +1539,10 @@ void emitScalarFunction(String& source,
     const auto operations = flatten(function);
     const auto symbol = scalarSymbols[functionIndex];
     const auto nativeSymbol = scalarNativeSymbols[functionIndex];
+    const bool localBudget =
+        std::none_of(operations.begin(), operations.end(), [](const auto* operation) {
+            return operation->opcode == TypedIrOpcode::Call;
+        });
     source += "static bool ";
     source += nativeSymbol;
     source +=
@@ -398,18 +1551,21 @@ void emitScalarFunction(String& source,
     source += std::to_string(function.parameterCount);
     source +=
         "u || (argCount != 0u && args == nullptr) || result == nullptr) { if (error != nullptr) { error->code = ScriptDiagnosticCode::WrongArgCount; error->message = \"DirectNative scalar argument count mismatch\"; } return false; }\n";
-    source += "    if (!context.enterFunction(";
+    source += "    if (!context.enterNativeFunction(";
     source += quote(function.id);
     source += ", error)) return false;\n";
     source +=
-        "    struct Scope { DirectNativeExecutionContext& context; ~Scope() { context.leaveFunction(); } } scope { context };\n";
-    source += "    std::int64_t locals[";
+        "    struct Scope { DirectNativeExecutionContext& context; ~Scope() { context.leaveNativeFunction(); } } scope { context };\n";
+    if (localBudget)
+        source +=
+            "std::uint64_t nativeBudget = context.remainingInstructions; struct BudgetScope { DirectNativeExecutionContext& context; std::uint64_t& remaining; ~BudgetScope() { context.remainingInstructions = remaining; } } budgetScope { context, nativeBudget };\n";
+    source += "    int locals[";
     source += std::to_string(std::max(1, function.localCount));
     source += "]{};\n";
     source += "    std::uint8_t localKinds[";
     source += std::to_string(std::max(1, function.localCount));
     source += "]{};\n";
-    source += "    std::int64_t stack[";
+    source += "    int stack[";
     source += std::to_string(std::max(1, function.maxStack));
     source += "]{};\n";
     source += "    std::uint8_t stackKinds[";
@@ -419,9 +1575,9 @@ void emitScalarFunction(String& source,
     for (int index = 0; index < function.parameterCount; ++index) {
         source += "    locals[";
         source += std::to_string(index);
-        source += "] = args[";
+        source += "] = static_cast<int>(args[";
         source += std::to_string(index);
-        source += "];\n";
+        source += "]);\n";
         source += "    localKinds[";
         source += std::to_string(index);
         source += "] = ";
@@ -437,8 +1593,13 @@ void emitScalarFunction(String& source,
         source += "aot_scalar_pc_";
         source += std::to_string(pc);
         source += ": {\n";
+        const char* counter = localBudget ? "nativeBudget" : "context.remainingInstructions";
+        source += "        if (";
+        source += counter;
         source +=
-            "        if (context.remainingInstructions == 0u) { if (error != nullptr) { error->code = ScriptDiagnosticCode::ExecutionBudgetExceeded; error->message = \"DirectNative instruction budget exceeded\"; } return false; } --context.remainingInstructions;\n";
+            " == 0u) { if (error != nullptr) { error->code = ScriptDiagnosticCode::ExecutionBudgetExceeded; error->message = \"DirectNative instruction budget exceeded\"; } return false; } --";
+        source += counter;
+        source += ";\n";
         if (opcode == TypedIrOpcode::LoadBool || opcode == TypedIrOpcode::LoadInt) {
             source += "        stack[sp] = ";
             source += opcode == TypedIrOpcode::LoadBool ? (operation.a ? "1" : "0")
@@ -465,25 +1626,10 @@ void emitScalarFunction(String& source,
             || opcode == TypedIrOpcode::IntSub || opcode == TypedIrOpcode::IntMul
             || opcode == TypedIrOpcode::IntDiv || opcode == TypedIrOpcode::IntMod) {
             source +=
-                "        { const std::int64_t rhs = stack[--sp]; const std::int64_t lhs = stack[--sp];";
-            if (opcode == TypedIrOpcode::Div || opcode == TypedIrOpcode::Mod
-                || opcode == TypedIrOpcode::IntDiv || opcode == TypedIrOpcode::IntMod) {
-                source +=
-                    " if (rhs == 0) { if (error != nullptr) { error->code = ScriptDiagnosticCode::DivisionByZero; error->message = \"division by zero\"; } return false; } if (lhs == std::numeric_limits<int>::min() && rhs == -1) { if (error != nullptr) { error->code = ScriptDiagnosticCode::IntegerOverflow; error->message = \"int arithmetic overflow\"; } return false; }";
-            }
-            source += " const std::int64_t value = lhs ";
-            if (opcode == TypedIrOpcode::Add || opcode == TypedIrOpcode::IntAdd)
-                source += "+";
-            else if (opcode == TypedIrOpcode::Sub || opcode == TypedIrOpcode::IntSub)
-                source += "-";
-            else if (opcode == TypedIrOpcode::Mul || opcode == TypedIrOpcode::IntMul)
-                source += "*";
-            else if (opcode == TypedIrOpcode::Div || opcode == TypedIrOpcode::IntDiv)
-                source += "/";
-            else
-                source += "%";
+                "        { const int rhs = static_cast<int>(stack[--sp]); const int lhs = static_cast<int>(stack[--sp]); const auto value = ScriptSemanticRuntime::intBinary<SemanticBinaryOperation::";
+            source += binaryOperation(opcode);
             source +=
-                " rhs; if (value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max()) { if (error != nullptr) { error->code = ScriptDiagnosticCode::IntegerOverflow; error->message = \"int arithmetic overflow\"; } return false; } stack[sp] = value; stackKinds[sp++] = 0u; }\n";
+                ">(lhs, rhs); if (!value.ok()) { if (error) { error->code = value.code; error->message = value.message; } return false; } stack[sp] = value.value.integer(); stackKinds[sp++] = 0u; }\n";
         } else if (opcode == TypedIrOpcode::CmpEq || opcode == TypedIrOpcode::CmpNe
             || opcode == TypedIrOpcode::CmpLt || opcode == TypedIrOpcode::CmpLe
             || opcode == TypedIrOpcode::CmpGt || opcode == TypedIrOpcode::CmpGe
@@ -527,21 +1673,21 @@ void emitScalarFunction(String& source,
         } else if (opcode == TypedIrOpcode::LocalAddIntConst
             || opcode == TypedIrOpcode::LocalSubIntConst
             || opcode == TypedIrOpcode::LocalAddLocal) {
-            source += "        { const std::int64_t value = locals[";
+            source += "        { const std::int64_t value = static_cast<std::int64_t>(locals[";
             source += std::to_string(operation.a);
             if (opcode == TypedIrOpcode::LocalAddLocal) {
-                source += "] + locals[";
+                source += "]) + locals[";
                 source += std::to_string(operation.b);
                 source += "];";
             } else {
-                source += "] ";
+                source += "]) ";
                 source += opcode == TypedIrOpcode::LocalAddIntConst ? "+" : "-";
                 source += " ";
                 source += std::to_string(operation.i64);
                 source += ";";
             }
             source +=
-                " if (value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max()) { if (error != nullptr) { error->code = ScriptDiagnosticCode::IntegerOverflow; error->message = \"int arithmetic overflow\"; } return false; } locals[";
+                " if (value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max()) { if (error != nullptr) { error->code = ScriptDiagnosticCode::IntegerOverflow; error->message = \"integer arithmetic overflow\"; } return false; } locals[";
             source += std::to_string(operation.a);
             source += "] = value; localKinds[";
             source += std::to_string(operation.a);
@@ -610,16 +1756,558 @@ void emitScalarFunction(String& source,
     (void)scalarCandidates;
 }
 
-void emitFailureCheck(String& source, const char* resultName)
+void emitFailureCheck(String& source, const char* resultName, bool collectionStep = false)
 {
     source += "        if (!";
     source += resultName;
     source += ".ok()) { if (error != nullptr) { error->code = ";
     source += resultName;
-    source += ".diagnostic.code; error->message = ";
-    source += resultName;
-    source += ".diagnostic.message; } goto aot_exception_dispatch; }\n";
+    if (collectionStep) {
+        source +=
+            ".code; error->message = \"range over non-iterable\"; } goto aot_exception_dispatch; }\n";
+    } else {
+        source += ".diagnostic.code; error->message = ";
+        source += resultName;
+        source += ".diagnostic.message; } goto aot_exception_dispatch; }\n";
+    }
 }
+
+void emitLeafCallResult(String& source,
+    const String& symbol,
+    const char* arguments,
+    const char* captures,
+    std::size_t nextPc)
+{
+    source += "ExecutionSlot leafResult; if (";
+    source += symbol;
+    source += "_slot_leaf(context, ";
+    source += arguments;
+    source += ", ";
+    source += captures;
+    source +=
+        ", leafResult, error)) { if (error != nullptr && error->code != ScriptDiagnosticCode::None) goto aot_exception_dispatch; for (std::size_t index = leafBase; index < sp; ++index) stack[index] = ScriptScalar(); sp = leafBase; stack[sp++] = std::move(leafResult); goto aot_pc_";
+    source += std::to_string(nextPc);
+    source += "; } ";
+}
+
+const char* pristineLeafCallGate()
+{
+    return "context.operationBoundary == nullptr && frame == &localFrame && frame->childPc == 0xffffffffu && frame->childResume.frame == nullptr && frame->childResume.pc == 0u && frame->childResume.commitState == 0u && !frame->childResume.ownershipTransferred && frame->childResume.injectionKind == DirectNativeInjectionKindV5::None && frame->childResume.suspendKind == DirectNativeSuspendKindV5::None && !frame->childResume.awaitInjectionReady && !frame->childResume.awaitInjectionSupported";
+}
+
+class NativeMethodLeafSequence final {
+public:
+    static std::size_t emit(String& source,
+        const TypedIrModule& module,
+        const core::pmr::Vector<const TypedIrOperationRecord*>& operations,
+        const core::pmr::Vector<std::uint8_t>& targets,
+        std::size_t pc,
+        const core::pmr::Vector<std::uint8_t>& leaves,
+        const core::pmr::Vector<String>& symbols)
+    {
+        if (pc + 2u >= operations.size() || operations[pc]->opcode != TypedIrOpcode::LoadLocal
+            || operations[pc + 1u]->opcode != TypedIrOpcode::MakeMethodValue
+            || operations[pc + 2u]->opcode != TypedIrOpcode::CallValue || targets[pc + 1u]
+            || targets[pc + 2u])
+            return pc;
+        const auto& call = *operations[pc + 2u];
+        if (call.closureCaptureCount != kScriptMethodProvenanceCaptureCount || call.text.empty())
+            return pc;
+        auto candidates = nativeMethodCandidates(module, call);
+        candidates.erase(
+            std::remove_if(candidates.begin(),
+                candidates.end(),
+                [&](const auto& candidate) {
+                    if (!leaves[candidate.functionIndex])
+                        return true;
+                    const auto code = flatten(*candidate.function);
+                    // If a leaf never reads self, dispatch needs the real receiver but
+                    // the expression does not need a second owning copy of its carrier.
+                    return std::any_of(code.begin(), code.end(), [](const auto* operation) {
+                        return (operation->opcode == TypedIrOpcode::LoadLocal
+                                   || operation->opcode == TypedIrOpcode::AddrLocal)
+                            && operation->a == 0;
+                    });
+                }),
+            candidates.end());
+        if (candidates.empty())
+            return pc;
+        source += "    if (";
+        source += pristineLeafCallGate();
+        source += " && context.remainingInstructions >= 3u) { const Value& receiver = locals[";
+        source += std::to_string(operations[pc]->a);
+        source +=
+            "].boxed(); const auto* instance = checkedValuePayload<arp::reflection::instance>(receiver); if (instance && instance->alive() && instance->class_()) { const auto& actualClass = instance->class_()->name(); constexpr std::size_t count = ";
+        source += std::to_string(call.b);
+        source +=
+            "u; const std::size_t leafBase = sp - count; std::array<ExecutionSlot, count + 1u> leafArgs {}; for (std::size_t index = 0; index < count; ++index) leafArgs[index + 1u] = stack[leafBase + index]; ";
+        for (const auto& candidate : candidates) {
+            source += "if (actualClass == ";
+            source += quote(candidate.schema->className);
+            source += ") { context.remainingInstructions -= 3u; ";
+            emitLeafCallResult(
+                source, symbols[candidate.functionIndex], "leafArgs.data()", "nullptr", pc + 3u);
+            source += "context.remainingInstructions += 3u; } ";
+        }
+        source += "} }\n";
+        return pc + 3u;
+    }
+};
+
+class NativeClosureLeafSequence final {
+public:
+    static std::size_t emit(String& source,
+        const TypedIrModule& module,
+        const core::pmr::Vector<const TypedIrOperationRecord*>& operations,
+        const core::pmr::Vector<std::uint8_t>& targets,
+        std::size_t pc,
+        const core::pmr::Vector<std::uint8_t>& leaves,
+        const core::pmr::Vector<String>& symbols)
+    {
+        if (pc + 1u >= operations.size() || operations[pc]->opcode != TypedIrOpcode::LoadLocal
+            || operations[pc + 1u]->opcode != TypedIrOpcode::CallValue || targets[pc + 1u])
+            return pc;
+        const auto& call = *operations[pc + 1u];
+        if (call.closureTargetFunctionId.empty()
+            || call.closureCaptureCount == kScriptMethodProvenanceCaptureCount)
+            return pc;
+        const int target = resolveFunctionIndex(module, call.closureTargetFunctionId);
+        if (target < 0 || !leaves[target])
+            return pc;
+        source += "if (";
+        source += pristineLeafCallGate();
+        source += " && context.remainingInstructions >= 2u) { const auto* closure = locals[";
+        source += std::to_string(operations[pc]->a);
+        source += "].closure(); if (closure && closure->captures.size() == ";
+        source += std::to_string(call.closureCaptureCount);
+        source += "u) { constexpr std::size_t count = ";
+        source += std::to_string(call.b);
+        source +=
+            "u; const std::size_t leafBase = sp - count; context.remainingInstructions -= 2u; ";
+        emitLeafCallResult(
+            source, symbols[target], "stack.data() + leafBase", "&closure->captures", pc + 2u);
+        source += "context.remainingInstructions += 2u; } }\n";
+        return pc + 2u;
+    }
+};
+
+// Promote scalars across an entire natural loop only when every operation can
+// be lowered without callbacks, mutation of carriers, handlers or suspension.
+// A failed proof leaves the original generated operations intact.
+class NativeScalarLoop final {
+public:
+    static bool emit(String& source,
+        const TypedIrModule& module,
+        const TypedIrFunction& function,
+        const core::pmr::Vector<const TypedIrOperationRecord*>& operations,
+        const core::pmr::Vector<std::uint8_t>& targets,
+        const core::pmr::Vector<int>& indexedSources,
+        const core::pmr::Vector<std::uint8_t>& leaves,
+        const core::pmr::Vector<String>& symbols,
+        std::size_t header)
+    {
+        if (function.isGenerator || function.captureCount != 0
+            || !function.exceptionRegions.empty())
+            return false;
+        std::size_t last = header;
+        for (std::size_t pc = header + 1u; pc < operations.size(); ++pc)
+            if (operations[pc]->opcode == TypedIrOpcode::Jump
+                && operations[pc]->a == static_cast<int>(header))
+                last = pc;
+        if (last == header)
+            return false;
+        for (std::size_t pc = 0; pc < operations.size(); ++pc) {
+            if (pc >= header && pc <= last)
+                continue;
+            const auto& operation = *operations[pc];
+            if ((typedIrOperationDescriptor(operation.opcode).conditionalBranch
+                    || operation.opcode == TypedIrOpcode::Jump)
+                && operation.a > static_cast<int>(header) && operation.a <= static_cast<int>(last))
+                return false;
+        }
+        NativeLoopScalarBindings bindings(function);
+        for (std::size_t pc = header + 2u; pc <= last; ++pc) {
+            if (operations[pc]->opcode == TypedIrOpcode::CallValue
+                && operations[pc]->closureCaptureCount == kScriptMethodProvenanceCaptureCount
+                && operations[pc - 1u]->opcode == TypedIrOpcode::MakeMethodValue
+                && operations[pc - 2u]->opcode == TypedIrOpcode::LoadLocal) {
+                const int receiver = operations[pc - 2u]->a;
+                if (std::any_of(operations.begin() + header,
+                        operations.begin() + last + 1u,
+                        [receiver](const auto* operation) {
+                            return operation->opcode == TypedIrOpcode::StoreLocal
+                                && operation->a == receiver;
+                        }))
+                    return false;
+                bindings.methodSites.emplace_back(pc, receiver);
+            }
+        }
+        core::pmr::Vector<int> stringDestinations{&core::defaultCpuMemoryResource()};
+        for (std::size_t pc = header; pc <= last; ++pc) {
+            const auto& operation = *operations[pc];
+            if (operation.opcode != TypedIrOpcode::LoadLocal
+                && operation.opcode != TypedIrOpcode::StoreLocal)
+                continue;
+            if (operation.opcode == TypedIrOpcode::LoadLocal && pc + 1u < operations.size()
+                && (operations[pc + 1u]->opcode == TypedIrOpcode::CallValue
+                    || operations[pc + 1u]->opcode == TypedIrOpcode::MakeMethodValue))
+                continue;
+            const auto local = std::find_if(
+                function.locals.begin(), function.locals.end(), [&](const auto& candidate) {
+                    return candidate.slot == operation.a;
+                });
+            if (local == function.locals.end() || local->type.nullable)
+                return false;
+            const auto kind =
+                local->type.kind == TypedIrType::Any ? TypedIrType::Int : local->type.kind;
+            if (kind == TypedIrType::Int || kind == TypedIrType::Bool
+                || kind == TypedIrType::Float) {
+                bindings.kinds[operation.a] = kind;
+                if (operation.opcode == TypedIrOpcode::StoreLocal)
+                    bindings.writes[operation.a] = 1u;
+            }
+        }
+        // Collection elements keep their original carriers. They are guarded
+        // at each expression use instead of being cached across iterator steps.
+        for (std::size_t pc = header; pc <= last; ++pc) {
+            if (operations[pc]->opcode != TypedIrOpcode::RangeNext)
+                continue;
+            const auto packed = static_cast<std::uint64_t>(operations[pc]->i64);
+            const int key = static_cast<std::int32_t>(packed >> 32u);
+            const int value = static_cast<std::int32_t>(packed);
+            if (key >= 0)
+                bindings.kinds[key] = TypedIrType::Any;
+            if (value >= 0)
+                bindings.kinds[value] = TypedIrType::Any;
+        }
+        String body;
+        bool quotaReplayRequired = false;
+        const bool localBudget = std::none_of(
+            operations.begin() + header, operations.begin() + last + 1u, [](const auto* operation) {
+                return operation->opcode == TypedIrOpcode::Call
+                    || operation->opcode == TypedIrOpcode::CallValue;
+            });
+        bool iterationBudget = localBudget;
+        for (std::size_t pc = header; pc <= last && iterationBudget; ++pc) {
+            const auto& operation = *operations[pc];
+            if ((operation.opcode == TypedIrOpcode::Jump
+                    || typedIrOperationDescriptor(operation.opcode).conditionalBranch)
+                && operation.a > static_cast<int>(header) && operation.a <= static_cast<int>(pc))
+                iterationBudget = false;
+        }
+        for (std::size_t pc = header; pc <= last;) {
+            body += "aot_pc_";
+            body += std::to_string(pc);
+            body += ":;\n";
+            if (pc == header && iterationBudget) {
+                body += "if (context.remainingInstructions < ";
+                body += std::to_string(last - header + 1u);
+                body += "u) goto aot_replay_pc_";
+                body += std::to_string(header);
+                body += ";\n";
+            }
+            if (NativeIndexUpdateSpan::matches(operations, pc) && pc + 7u <= last
+                && indexedSources[pc + 4u] == operations[pc]->a
+                && bindings.contains(operations[pc + 1u]->a)
+                && std::none_of(
+                    targets.begin() + pc + 1u, targets.begin() + pc + 8u, [](auto entry) {
+                        return entry != 0u;
+                    })) {
+                NativeIndexUpdateSpan::emit(body,
+                    operations,
+                    pc,
+                    true,
+                    bindings.writes[operations[pc + 1u]->a]
+                        ? NativeLoopScalarBindings::local(operations[pc + 1u]->a)
+                        : NativeLoopScalarBindings::operand(operations[pc + 1u]->a),
+                    true,
+                    iterationBudget,
+                    bindings.writes[operations[pc + 1u]->a] != 0u);
+                quotaReplayRequired = true;
+                pc += 8u;
+            } else if (pc + 3u <= last && operations[pc]->opcode == TypedIrOpcode::LoadLocal
+                && operations[pc + 1u]->opcode == TypedIrOpcode::LoadString
+                && operations[pc + 2u]->opcode == TypedIrOpcode::Add
+                && operations[pc + 3u]->opcode == TypedIrOpcode::StoreLocal && !targets[pc + 1u]
+                && !targets[pc + 2u] && !targets[pc + 3u]
+                && privateStringLocal(operations, operations[pc + 3u]->a)) {
+                const int destination = operations[pc + 3u]->a;
+                quotaReplayRequired = true;
+                const int input = operations[pc]->a;
+                if (std::find(stringDestinations.begin(), stringDestinations.end(), destination)
+                    == stringDestinations.end())
+                    stringDestinations.push_back(destination);
+                const auto site = std::to_string(destination);
+                if (!iterationBudget) {
+                    body += "if (context.remainingInstructions < 4u) goto aot_replay_pc_";
+                    body += std::to_string(pc);
+                    body += "; ";
+                }
+                body += "{ ";
+                if (input != destination) {
+                    // An independent prefix must remain bound to the same
+                    // immutable carrier for the duration of this region.
+                    for (std::size_t check = header; check <= last; ++check)
+                        if (operations[check]->opcode == TypedIrOpcode::StoreLocal
+                            && operations[check]->a == input)
+                            return false;
+                    body += "std::string_view prefix; if (!locals[";
+                    body += std::to_string(input);
+                    body += "].stringView(prefix)) goto aot_replay_pc_";
+                    body += std::to_string(pc);
+                    body += "; if (!native_string_" + site + ".assign(prefix, ";
+                } else
+                    body += "if (!native_string_" + site + ".append(";
+                body += quote(operations[pc + 1u]->text);
+                body += ")) goto aot_replay_pc_";
+                body += std::to_string(pc);
+                body += "; } context.remainingInstructions -= 4u; goto aot_pc_";
+                body += std::to_string(pc + 4u);
+                body += ";\n";
+                pc += 4u;
+            } else if (operations[pc]->opcode == TypedIrOpcode::RangeNext
+                && !operations[pc]->delegatedGeneratorRange && pc + 1u <= last
+                && operations[pc + 1u]->opcode == TypedIrOpcode::JumpIfFalse && !targets[pc + 1u]) {
+                const auto& operation = *operations[pc];
+                const auto packed = static_cast<std::uint64_t>(operation.i64);
+                const int key = static_cast<std::int32_t>(packed >> 32u);
+                const int value = static_cast<std::int32_t>(packed);
+                if (!iterationBudget) {
+                    body += "if (context.remainingInstructions < 2u) goto aot_replay_pc_";
+                    body += std::to_string(pc);
+                    body += "; ";
+                }
+                body += "{ int index = 0; if (!DirectNativeSlotOperations::integer(locals[";
+                body += std::to_string(operation.b);
+                body +=
+                    "], index) || index == std::numeric_limits<int>::max()) goto aot_replay_pc_";
+                body += std::to_string(pc);
+                body += "; ++index; locals[";
+                body += std::to_string(operation.b);
+                body +=
+                    "] = ScriptScalar(index); --context.remainingInstructions; auto step = ScriptSemanticRuntime::rangeNextCollectionStep(locals[";
+                body += std::to_string(operation.a);
+                body +=
+                    "], index); if (!step.ok()) { if (error) { error->code = step.code; error->message = \"range over non-iterable\"; } goto aot_exception_dispatch; } ";
+                if (key >= 0) {
+                    body += "if (step.hasMore) locals[";
+                    body += std::to_string(key);
+                    body += "] = std::move(step.key); ";
+                }
+                if (value >= 0) {
+                    body += "if (step.hasMore) locals[";
+                    body += std::to_string(value);
+                    body += "] = std::move(step.value); ";
+                }
+                body += "--context.remainingInstructions; if (!step.hasMore) goto aot_pc_";
+                body += std::to_string(operations[pc + 1u]->a);
+                body += "; } goto aot_pc_";
+                body += std::to_string(pc + 2u);
+                body += ";\n";
+                pc += 2u;
+            } else if (operations[pc]->opcode == TypedIrOpcode::Jump) {
+                if (!iterationBudget) {
+                    body += "if (context.remainingInstructions == 0u) goto aot_replay_pc_";
+                    body += std::to_string(pc);
+                    body += "; ";
+                }
+                body += "--context.remainingInstructions; goto aot_pc_";
+                body += std::to_string(operations[pc]->a);
+                body += ";\n";
+                ++pc;
+            } else if (const auto next = NativeMethodLeafSequence::emit(
+                           body, module, operations, targets, pc, leaves, symbols);
+                next != pc) {
+                body += "goto aot_replay_pc_";
+                body += std::to_string(pc);
+                body += ";\n";
+                pc = next;
+            } else if (const auto next = NativeClosureLeafSequence::emit(
+                           body, module, operations, targets, pc, leaves, symbols);
+                next != pc) {
+                body += "goto aot_replay_pc_";
+                body += std::to_string(pc);
+                body += ";\n";
+                pc = next;
+            } else {
+                NativeScalarSequence sequence(function,
+                    operations,
+                    targets,
+                    pc,
+                    false,
+                    &indexedSources,
+                    &bindings,
+                    &module,
+                    iterationBudget);
+                const auto scalarEnd = sequence.emit(body);
+                if (scalarEnd == pc || scalarEnd > last + 1u)
+                    return false;
+                pc = scalarEnd;
+            }
+        }
+        String prefix("native_loop_", &core::defaultCpuMemoryResource());
+        prefix += std::to_string(header);
+        prefix += "_";
+        // Rewrite generated transfers, retaining distinct canonical replay
+        // exits even when the failed operation is inside the promoted region.
+        core::pmr::Vector<String> exits{&core::defaultCpuMemoryResource()};
+        for (std::size_t pos = 0; pos < body.size();) {
+            if (body[pos] == '"') {
+                ++pos;
+                while (pos < body.size()) {
+                    if (body[pos++] == '\\' && pos < body.size())
+                        ++pos;
+                    else if (body[pos - 1u] == '"')
+                        break;
+                }
+                continue;
+            }
+            if (localBudget && body.compare(pos, 29u, "context.remainingInstructions") == 0) {
+                body.replace(pos, 29u, "native_loop_remaining");
+                pos += 21u;
+                continue;
+            }
+            if (body.compare(pos, 7u, "aot_pc_") != 0
+                && body.compare(pos, 14u, "aot_replay_pc_") != 0
+                && body.compare(pos, 22u, "aot_exception_dispatch") != 0) {
+                ++pos;
+                continue;
+            }
+            const auto found = pos;
+            auto end = found;
+            while (end < body.size()
+                && (std::isalnum(static_cast<unsigned char>(body[end])) || body[end] == '_'))
+                ++end;
+            const String label = body.substr(found, end - found);
+            bool internal = false;
+            if (label.compare(0u, 7u, "aot_pc_") == 0) {
+                const auto pc = static_cast<std::size_t>(std::stoull(label.substr(7u).c_str()));
+                internal = pc >= header && pc <= last;
+            }
+            if (!internal && std::find(exits.begin(), exits.end(), label) == exits.end())
+                exits.push_back(label);
+            const String replacement = prefix + label;
+            body.replace(found, end - found, replacement);
+            pos = found + replacement.size();
+        }
+        source += "if (context.operationBoundary == nullptr && frame == &localFrame";
+        if (quotaReplayRequired)
+            source += " && !arp::core::currentCpuMemoryQuota()";
+        source += ") {\n";
+        String condition;
+        for (const auto& site : bindings.methodSites) {
+            const auto id = std::to_string(site.first);
+            source += "std::size_t native_loop_method_";
+            source += id;
+            source +=
+                " = 0u; { const auto* instance = exactValuePayload<arp::reflection::instance>(locals[";
+            source += std::to_string(site.second);
+            source +=
+                "].boxed()); if (instance && instance->alive() && instance->class_()) { const auto& actualClass = instance->class_()->name(); ";
+            std::size_t selector = 0u;
+            for (const auto& candidate : nativeMethodCandidates(module, *operations[site.first])) {
+                ++selector;
+                source += "if (actualClass == ";
+                source += quote(candidate.schema->className);
+                source += ") native_loop_method_";
+                source += id;
+                source += " = ";
+                source += std::to_string(selector);
+                source += "u; ";
+            }
+            source += "} }\n";
+            if (!condition.empty())
+                condition += " && ";
+            condition += "native_loop_method_";
+            condition += id;
+            condition += " != 0u";
+        }
+        for (const auto destination : stringDestinations) {
+            const auto id = std::to_string(destination);
+            source += "auto native_string_" + id
+                + " = ScriptSemanticRuntime::UniqueStringAccess::borrow(locals[" + id + "]);\n";
+            if (!condition.empty())
+                condition += " && ";
+            condition += "static_cast<bool>(native_string_" + id + ")";
+        }
+        for (std::size_t slot = 0; slot < bindings.kinds.size(); ++slot) {
+            if (!bindings.contains(static_cast<int>(slot)))
+                continue;
+            const auto id = std::to_string(slot);
+            const char* type = bindings.kinds[slot] == TypedIrType::Float ? "double"
+                : bindings.kinds[slot] == TypedIrType::Bool               ? "bool"
+                                                                          : "int";
+            source += "const auto* input_";
+            source += id;
+            source += " = locals[";
+            source += id;
+            source += "].scalarPointer<";
+            source += type;
+            source += ">();\n";
+            if (!condition.empty())
+                condition += " && ";
+            condition += "input_";
+            condition += id;
+            condition += " != nullptr";
+            if (bindings.writes[slot]) {
+                condition += " && locals[";
+                condition += id;
+                condition += "].inlineScalar() != nullptr";
+            }
+        }
+        source += "if (";
+        source += condition.empty() ? "true" : condition;
+        source += ") {\n";
+        for (std::size_t pc = header + 1u; pc <= last; ++pc) {
+            if (operations[pc]->opcode != TypedIrOpcode::LoadIndex
+                || operations[pc - 1u]->opcode != TypedIrOpcode::LoadIndex)
+                continue;
+            source += "ScriptSemanticRuntime::StableStringIndexBorrow native_string_index_";
+            source += std::to_string(pc);
+            source += "(frame->indexBorrow_";
+            source += std::to_string(indexedSources[pc]);
+            source += ");\n";
+        }
+        if (localBudget) {
+            source +=
+                "std::uint64_t native_loop_remaining = context.remainingInstructions; struct NativeLoopBudgetScope { DirectNativeExecutionContext& context; std::uint64_t& remaining; ~NativeLoopBudgetScope() { context.remainingInstructions = remaining; } } native_loop_budget_scope { context, native_loop_remaining };\n";
+        }
+        for (std::size_t slot = 0; slot < bindings.kinds.size(); ++slot) {
+            if (!bindings.contains(static_cast<int>(slot)))
+                continue;
+            source += bindings.kinds[slot] == TypedIrType::Float ? "double "
+                : bindings.kinds[slot] == TypedIrType::Bool      ? "bool "
+                                                                 : "int ";
+            source += NativeLoopScalarBindings::local(static_cast<int>(slot));
+            source += " = *input_";
+            source += std::to_string(slot);
+            source += "; bool ";
+            source += NativeLoopScalarBindings::dirty(static_cast<int>(slot));
+            source += " = false;\n";
+        }
+        source += body;
+        for (const auto& label : exits) {
+            source += prefix + label;
+            source += ":; ";
+            bindings.publish(source);
+            source += "goto ";
+            if (label.compare(0u, 14u, "aot_replay_pc_") == 0) {
+                const auto pc = label.substr(14u);
+                if (pc == std::to_string(header).c_str()) {
+                    source += prefix + "fallback";
+                } else {
+                    source += "aot_pc_";
+                    source += pc;
+                }
+            } else
+                source += label;
+            source += ";\n";
+        }
+        source += "} }\n";
+        source += prefix + "fallback:;\n";
+        return true;
+    }
+};
 
 void emitFunction(String& source,
     const TypedIrModule& module,
@@ -627,10 +2315,13 @@ void emitFunction(String& source,
     const core::pmr::Vector<String>& symbols,
     const core::pmr::Vector<String>& scalarSymbols,
     const core::pmr::Vector<std::uint8_t>& scalarCandidates,
+    const core::pmr::Vector<std::uint8_t>& leafCandidates,
     const String& functionIdentity)
 {
     const auto& function = module.functions[functionIndex];
     const auto operations = flatten(function);
+    const NativeIndexReadPlan indexReads(function, operations);
+    const NativeConstructionPlan constructions(operations, indexReads);
     const auto& delegatedSites = function.delegationSites;
     const bool hasDelegatedSites = !delegatedSites.empty();
     const bool hasHandlerState = !function.exceptionRegions.empty();
@@ -645,6 +2336,10 @@ void emitFunction(String& source,
                     || operation->opcode == TypedIrOpcode::Await;
             })
         || hasDelegatedSites;
+    const bool hasDictionaryConstruction =
+        std::any_of(operations.begin(), operations.end(), [](const auto* operation) {
+            return operation->opcode == TypedIrOpcode::MakeDict;
+        });
     const bool hasAwaitState =
         std::any_of(operations.begin(), operations.end(), [](const auto* operation) {
             return operation->opcode == TypedIrOpcode::Await;
@@ -665,6 +2360,18 @@ void emitFunction(String& source,
         source += scalarSymbols[functionIndex];
         source += "(context, args, argCount, error);\n";
     }
+    if (leafCandidates[functionIndex] != 0u) {
+        source +=
+            "    if (context.operationBoundary == nullptr && (suppliedResume == nullptr || (suppliedResume->frame == nullptr && suppliedResume->pc == 0u && suppliedResume->commitState == 0u && !suppliedResume->ownershipTransferred && suppliedResume->injectionKind == DirectNativeInjectionKindV5::None && suppliedResume->suspendKind == DirectNativeSuspendKindV5::None && !suppliedResume->awaitInjectionReady && !suppliedResume->awaitInjectionSupported)) && argCount == ";
+        source += std::to_string(function.parameterCount);
+        source += "u && (argCount == 0u || args != nullptr)) { std::array<ExecutionSlot, ";
+        source += std::to_string(function.parameterCount);
+        source +=
+            "> imports {}; for (std::size_t index = 0; index < argCount; ++index) imports[index] = args[index]; ExecutionSlot result; if (";
+        source += symbols[functionIndex];
+        source +=
+            "_slot_leaf(context, imports.data(), context.activeCaptures, result, error)) return error != nullptr && error->code != ScriptDiagnosticCode::None ? makeNil() : result.takeValue(); }\n";
+    }
     source +=
         "    DirectNativeResumeStateV5 localResume; auto& resume = suppliedResume != nullptr ? *suppliedResume : localResume;\n";
     source +=
@@ -684,12 +2391,37 @@ void emitFunction(String& source,
     if (hasDelegatedSites)
         source += "delegatedChild = makeNil(); ";
     source +=
-        "} void adoptContinuationFrameCharge(std::size_t bytes) noexcept { continuationChargeBytes = bytes; ownsContinuationCharge = true; } DirectNativeExecutionContext* owner = nullptr; std::size_t continuationChargeBytes = sizeof(Frame); bool ownsContinuationCharge = false; std::array<Value, ";
+        "} void adoptContinuationFrameCharge(std::size_t bytes) noexcept { continuationChargeBytes = bytes; ownsContinuationCharge = true; } DirectNativeExecutionContext* owner = nullptr; std::size_t continuationChargeBytes = sizeof(Frame); bool ownsContinuationCharge = false; std::array<ExecutionSlot, ";
     source += std::to_string(std::max(1, function.localCount));
-    source += "> locals {}; std::array<Value, ";
+    source += "> locals {}; std::array<ExecutionSlot, ";
     source += std::to_string(std::max(1, function.maxStack));
     source +=
         "> stack {}; std::size_t sp = 0u; struct Handler { std::uint32_t pc = 0u; std::size_t stackDepth = 0u; ScriptDiagnosticCode filter = ScriptDiagnosticCode::None; }; ";
+    for (std::size_t slot = 0; slot < indexReads.locals.size(); ++slot) {
+        if (indexReads.locals[slot] == 0u)
+            continue;
+        source += "ScriptSemanticRuntime::ReadonlyIndexBorrow indexBorrow_";
+        source += std::to_string(slot);
+        source += "; bool indexBorrowReady_";
+        source += std::to_string(slot);
+        source += " = false; ";
+    }
+    if (hasDictionaryConstruction)
+        source +=
+            "PrivateDictionaryWriteScratch constructionScratch { &arp::core::defaultCpuMemoryResource() }; ";
+    for (std::size_t pc = 0; pc < constructions.owners.size(); ++pc) {
+        if (constructions.owners[pc] < 0)
+            continue;
+        const auto site = std::to_string(pc);
+        source += "PrivateDictionaryWriteScratch constructionTargets_";
+        source += site;
+        source +=
+            " { &arp::core::defaultCpuMemoryResource() }; ScriptSemanticRuntime::PrivateConstructionBorrow constructionBorrow_";
+        source += site;
+        source += "; bool constructionReady_";
+        source += site;
+        source += " = false; ";
+    }
     if (hasHandlerState)
         source +=
             "arp::core::pmr::Vector<Handler> handlers { &arp::core::defaultCpuMemoryResource() }; ";
@@ -698,9 +2430,9 @@ void emitFunction(String& source,
             "arp::core::pmr::Vector<std::shared_ptr<ScriptCell>> captures { &arp::core::defaultCpuMemoryResource() }; ";
     if (hasContinuationState)
         source +=
-            "DirectNativeResumeStateV5 childResume; std::uint32_t childPc = 0xffffffffu; Value pendingValue; ";
+            "DirectNativeResumeStateV5 childResume; std::uint32_t childPc = 0xffffffffu; Value pendingValue = Value::undefined(); ";
     if (hasDelegatedSites)
-        source += "Value delegatedChild; ";
+        source += "Value delegatedChild = Value::undefined(); ";
     source += "};\n";
     source +=
         "    Frame localFrame(&context, false); Frame* frame = &localFrame; const bool resuming = resume.frame != nullptr;\n";
@@ -802,7 +2534,7 @@ void emitFunction(String& source,
     source +=
         "    if (!resuming) for (std::size_t index = 0; index < argCount; ++index) locals[index] = args[index];\n";
     source +=
-        "    auto synchronizeFrameRoots = [&]() { ScriptValueSpan memoryRoots[] = {{locals.data(), locals.size()}, {stack.data(), sp}";
+        "    auto synchronizeFrameRoots = [&]() { ExecutionSlotValues localRoots(locals, 0u, locals.size(), true); ExecutionSlotValues stackRoots(stack, 0u, sp, true); ScriptValueSpan memoryRoots[] = {{localRoots.data(), locals.size()}, {stackRoots.data(), sp}";
     if (hasContinuationState)
         source += ", {&frame->pendingValue, 1u}";
     if (hasDelegatedSites)
@@ -850,6 +2582,16 @@ void emitFunction(String& source,
         source += ";";
     }
     source += " default: break; } }\n";
+    core::pmr::Vector<std::uint8_t> scalarEntryTargets(
+        operations.size(), 0u, &core::defaultCpuMemoryResource());
+    for (const auto* operation : operations) {
+        const auto& descriptor = typedIrOperationDescriptor(operation->opcode);
+        if ((descriptor.conditionalBranch || operation->opcode == TypedIrOpcode::Jump
+                || operation->opcode == TypedIrOpcode::PushHandler)
+            && operation->a >= 0 && static_cast<std::size_t>(operation->a) < operations.size())
+            scalarEntryTargets[static_cast<std::size_t>(operation->a)] = 1u;
+    }
+    std::size_t nativeSequenceEnd = 0u;
     for (std::size_t pc = 0; pc < operations.size(); ++pc) {
         const auto& operation = *operations[pc];
         const auto opcode = operation.opcode;
@@ -858,13 +2600,134 @@ void emitFunction(String& source,
         source += ":\n";
         source +=
             "    if (context.operationBoundary != nullptr && !synchronizeFrameRoots()) return makeNil();\n";
+        NativeScalarLoop::emit(source,
+            module,
+            function,
+            operations,
+            scalarEntryTargets,
+            indexReads.sources,
+            leafCandidates,
+            symbols,
+            pc);
+        if (!hasHandlerState && !function.isGenerator
+            && NativeIndexUpdateSpan::matches(operations, pc)
+            && std::none_of(scalarEntryTargets.begin() + pc + 1u,
+                scalarEntryTargets.begin() + pc + 8u,
+                [](auto target) {
+                    return target != 0u;
+                })) {
+            String index("locals[", &core::defaultCpuMemoryResource());
+            index += std::to_string(operations[pc + 1u]->a);
+            index += "]";
+            NativeIndexUpdateSpan::emit(source,
+                operations,
+                pc,
+                indexReads.locals[static_cast<std::size_t>(operation.a)] != 0u,
+                index);
+            nativeSequenceEnd = pc + 8u;
+        }
+        if (!hasHandlerState && !function.isGenerator && pc + 1u < operations.size()
+            && (opcode == TypedIrOpcode::MakeList || opcode == TypedIrOpcode::MakeDict)
+            && operations[pc + 1u]->opcode == TypedIrOpcode::StoreLocal
+            && scalarEntryTargets[pc + 1u] == 0u
+            && privateIndexedLocal(operations, operations[pc + 1u]->a)) {
+            source +=
+                "    if (context.operationBoundary == nullptr && frame == &localFrame && context.remainingInstructions >= 2u) { ExecutionSlotStackView operands(stack.data(), sp, stack.size()); ";
+            const auto destination = operations[pc + 1u]->a;
+            if (constructions.owners[pc] >= 0) {
+                const auto site = std::to_string(pc);
+                source += "if (!frame->constructionReady_";
+                source += site;
+                source += ") frame->constructionReady_";
+                source += site;
+                source += " = frame->constructionBorrow_";
+                source += site;
+                source += ".bind(locals[";
+                source += std::to_string(destination);
+                source += "], operands, ";
+                source += std::to_string(operation.b);
+                source += ", context.budget.maxContainerValues, ";
+                source += opcode == TypedIrOpcode::MakeDict ? "true" : "false";
+                source += ", frame->constructionTargets_";
+                source += site;
+                source += "); if (frame->constructionReady_";
+                source += site;
+                source += " && frame->constructionBorrow_";
+                source += site;
+                source += ".commit(operands)) { context.remainingInstructions -= 2u; goto aot_pc_";
+                source += std::to_string(pc + 2u);
+                source += "; } ";
+            }
+            constructions.emitReset(source, destination);
+            source += "if (ScriptSemanticRuntime::";
+            source +=
+                opcode == TypedIrOpcode::MakeList ? "reuseUniqueList" : "reuseUniqueDictionary";
+            source += "(locals[";
+            source += std::to_string(operations[pc + 1u]->a);
+            source += "], operands, ";
+            source += std::to_string(operation.b);
+            source += ", context.budget.maxContainerValues";
+            if (opcode == TypedIrOpcode::MakeDict)
+                source += ", frame->constructionScratch";
+            source += ")) { ";
+            if (indexReads.locals[static_cast<std::size_t>(destination)] != 0u) {
+                source += "frame->indexBorrowReady_";
+                source += std::to_string(destination);
+                source += " = false; ";
+            }
+            source += "context.remainingInstructions -= 2u; goto aot_pc_";
+            source += std::to_string(pc + 2u);
+            source += "; } }\n";
+            nativeSequenceEnd = pc + 2u;
+        }
+        if (!hasHandlerState && !function.isGenerator && pc + 3u < operations.size()
+            && opcode == TypedIrOpcode::LoadLocal
+            && operations[pc + 1u]->opcode == TypedIrOpcode::LoadString
+            && operations[pc + 2u]->opcode == TypedIrOpcode::Add
+            && operations[pc + 3u]->opcode == TypedIrOpcode::StoreLocal
+            && scalarEntryTargets[pc + 1u] == 0u && scalarEntryTargets[pc + 2u] == 0u
+            && scalarEntryTargets[pc + 3u] == 0u
+            && privateStringLocal(operations, operations[pc + 3u]->a)) {
+            const int destination = operations[pc + 3u]->a;
+            source +=
+                "    if (context.operationBoundary == nullptr && frame == &localFrame && context.remainingInstructions >= 4u) { ";
+            if (destination != operation.a) {
+                source += "std::string_view prefix; if (locals[";
+                source += std::to_string(operation.a);
+                source +=
+                    "].stringView(prefix) && ScriptSemanticRuntime::assignUniqueString(locals[";
+            } else {
+                source += "if (ScriptSemanticRuntime::appendUniqueString(locals[";
+            }
+            source += std::to_string(destination);
+            source += destination != operation.a ? "], prefix, " : "], ";
+            source += quote(operations[pc + 1u]->text);
+            source += ")) { context.remainingInstructions -= 4u; goto aot_pc_";
+            source += std::to_string(pc + 4u);
+            source += "; } }\n";
+            nativeSequenceEnd = pc + 4u;
+        }
+        if (!function.isGenerator && pc >= nativeSequenceEnd) {
+            nativeSequenceEnd = NativeMethodLeafSequence::emit(
+                source, module, operations, scalarEntryTargets, pc, leafCandidates, symbols);
+        }
+        if (!function.isGenerator && pc >= nativeSequenceEnd) {
+            nativeSequenceEnd = NativeClosureLeafSequence::emit(
+                source, module, operations, scalarEntryTargets, pc, leafCandidates, symbols);
+        }
+        if (!function.isGenerator && pc >= nativeSequenceEnd) {
+            NativeScalarSequence sequence(
+                function, operations, scalarEntryTargets, pc, false, &indexReads.sources);
+            nativeSequenceEnd = sequence.emit(source);
+        }
         // Capture the logical state before the operation-boundary hook. The
         // generated frame is already persistent whenever a migration hook is
         // active, so this is the exact pre-operation state and never a native
         // instruction-pointer snapshot.
         source += "    if (frame != &localFrame) { frame->captureCanonicalState(";
         source += std::to_string(pc);
-        source += "u, locals.data(), locals.size(), stack.data(), sp, ";
+        source +=
+            "u, materializeExecutionSlots(locals, 0u, locals.size()).data(), locals.size(), materializeExecutionSlots(stack, 0u, sp).data(), sp, ";
         if (hasCaptureState)
             source += "frame->captures.data(), frame->captures.size(), ";
         else
@@ -890,37 +2753,92 @@ void emitFunction(String& source,
         source += ", ";
         source += std::to_string(pc);
         source += "u, resume, error)) return makeNil();\n";
+        if (opcode == TypedIrOpcode::Call
+            || (opcode == TypedIrOpcode::CallValue && !operation.closureTargetFunctionId.empty()
+                && (operation.closureCaptureCount != kScriptMethodProvenanceCaptureCount
+                    || operation.text.empty()))) {
+            const auto& targetId = opcode == TypedIrOpcode::Call
+                ? operation.targetId
+                : operation.closureTargetFunctionId;
+            const int targetIndex = resolveFunctionIndex(module, targetId);
+            if (targetIndex >= 0 && leafCandidates[static_cast<std::size_t>(targetIndex)] != 0u) {
+                source += "    if (";
+                source += pristineLeafCallGate();
+                source += ") { constexpr std::size_t count = ";
+                source += std::to_string(operation.b);
+                source += "u; const std::size_t leafBase = sp - count";
+                if (opcode == TypedIrOpcode::CallValue)
+                    source += " - 1u";
+                source += "; ";
+                if (opcode == TypedIrOpcode::Call) {
+                    emitLeafCallResult(source,
+                        symbols[static_cast<std::size_t>(targetIndex)],
+                        "stack.data() + leafBase",
+                        "nullptr",
+                        pc + 1u);
+                } else if (operation.closureCaptureCount == kScriptMethodProvenanceCaptureCount) {
+                    source +=
+                        "const Value& receiver = stack[leafBase + count].boxed(); const auto* leafInstance = checkedValuePayload<arp::reflection::instance>(receiver); if (leafInstance != nullptr && leafInstance->alive()) { std::array<ExecutionSlot, count + 1u> leafArgs {}; leafArgs[0] = receiver; for (std::size_t index = 0; index < count; ++index) leafArgs[index + 1u] = stack[leafBase + index]; ";
+                    emitLeafCallResult(source,
+                        symbols[static_cast<std::size_t>(targetIndex)],
+                        "leafArgs.data()",
+                        "nullptr",
+                        pc + 1u);
+                    source += "} ";
+                } else {
+                    source +=
+                        "const auto* closure = stack[leafBase + count].closure(); if (closure != nullptr && closure->captures.size() == ";
+                    source += std::to_string(operation.closureCaptureCount);
+                    source += "u) { ";
+                    emitLeafCallResult(source,
+                        symbols[static_cast<std::size_t>(targetIndex)],
+                        "stack.data() + leafBase",
+                        "&closure->captures",
+                        pc + 1u);
+                    source += "} ";
+                }
+                source += "}\n";
+            }
+        }
         if (opcode == TypedIrOpcode::LoadNil) {
-            source += "    stack[sp++] = makeNil();\n";
+            source += "    stack[sp++] = ScriptScalar();\n";
         } else if (opcode == TypedIrOpcode::LoadBool) {
-            source += "    stack[sp++] = makeBool(";
+            source += "    stack[sp++] = ScriptScalar(";
             source += operation.a ? "true" : "false";
             source += ");\n";
         } else if (opcode == TypedIrOpcode::LoadInt) {
-            source += "    stack[sp++] = makeInt(";
+            source += "    stack[sp++] = ScriptScalar(static_cast<int>(";
             source += std::to_string(operation.i64);
-            source += ");\n";
+            source += "));\n";
         } else if (opcode == TypedIrOpcode::LoadInt64) {
-            source += "    stack[sp++] = makeInt64(";
+            source += "    stack[sp++] = ScriptScalar(static_cast<std::int64_t>(";
             source += std::to_string(operation.i64);
-            source += "LL);\n";
+            source += "LL));\n";
         } else if (opcode == TypedIrOpcode::LoadFloat) {
             source += "    { const std::uint64_t bits = ";
             source += std::to_string(static_cast<std::uint64_t>(operation.i64));
             source +=
-                "ULL; double value = 0.0; std::memcpy(&value, &bits, sizeof(value)); stack[sp++] = makeFloat(value); }\n";
+                "ULL; double value = 0.0; std::memcpy(&value, &bits, sizeof(value)); stack[sp++] = ScriptScalar(value); }\n";
         } else if (opcode == TypedIrOpcode::LoadString) {
-            source += "    stack[sp++] = makeString(std::string_view(";
+            source +=
+                "    { static const auto literal = [] { arp::core::CpuMemoryQuotaScope literalScope(nullptr); return arp::core::pmr::String(";
             source += quote(operation.text);
-            source += "));\n";
+            source +=
+                ", &arp::core::defaultCpuMemoryResource()); }(); stack[sp++] = ExecutionSlot::borrowLiteral(literal); }\n";
         } else if (opcode == TypedIrOpcode::LoadLocal) {
             source += "    stack[sp++] = locals[";
             source += std::to_string(operation.a);
             source += "];\n";
         } else if (opcode == TypedIrOpcode::StoreLocal) {
+            constructions.emitReset(source, operation.a);
             source += "    locals[";
             source += std::to_string(operation.a);
-            source += "] = stack[--sp];\n";
+            source += "] = std::move(stack[--sp]);\n";
+            if (indexReads.locals[static_cast<std::size_t>(operation.a)] != 0u) {
+                source += "    frame->indexBorrowReady_";
+                source += std::to_string(operation.a);
+                source += " = false;\n";
+            }
         } else if (opcode == TypedIrOpcode::LoadCapture) {
             source += "    if (frame->captures[";
             source += std::to_string(operation.a);
@@ -1017,12 +2935,54 @@ void emitFunction(String& source,
             source += "u); }\n";
         } else if (opcode == TypedIrOpcode::LoadIndex) {
             source +=
-                "    { Value index = std::move(stack[--sp]); Value base = std::move(stack[--sp]); auto semantic = ScriptSemanticRuntime::loadIndex(std::move(base), std::move(index));\n";
+                "    { ExecutionSlot index = std::move(stack[--sp]); ExecutionSlot base = std::move(stack[--sp]); ";
+            const int sourceSlot = indexReads.sources[pc];
+            if (sourceSlot >= 0) {
+                const auto slot = std::to_string(sourceSlot);
+                source +=
+                    "if (context.operationBoundary == nullptr && frame == &localFrame) { if (!frame->indexBorrowReady_";
+                source += slot;
+                source += ") frame->indexBorrowReady_";
+                source += slot;
+                source += " = frame->indexBorrow_";
+                source += slot;
+                source += ".bind(locals[";
+                source += slot;
+                source += "]); if (frame->indexBorrowReady_";
+                source += slot;
+                source += ") { ";
+                const bool arithmeticNext = pc + 1u < operations.size()
+                    && (!binaryOperation(operations[pc + 1u]->opcode).empty()
+                        || !compareOperation(operations[pc + 1u]->opcode).empty());
+                if (arithmeticNext) {
+                    source += "int payload = 0; if (frame->indexBorrow_";
+                    source += slot;
+                    source +=
+                        ".readInteger(index, payload)) { stack[sp++] = ScriptScalar(payload); goto aot_pc_";
+                } else {
+                    source += "if (const auto* value = frame->indexBorrow_";
+                    source += slot;
+                    source += ".read(index)) { stack[sp++] = *value; goto aot_pc_";
+                }
+                source += std::to_string(pc + 1u);
+                source += "; } } } ";
+            }
+            source +=
+                "auto semantic = ScriptSemanticRuntime::loadIndexSlots(base.boxed(), index);\n";
             emitFailureCheck(source, "semantic");
             source += "        stack[sp++] = std::move(semantic.value); }\n";
         } else if (opcode == TypedIrOpcode::StoreIndex) {
+            // General writes may insert a key or invoke general conversion.
+            // Rebind every borrowed relation before the next optimized read.
+            for (std::size_t slot = 0; slot < indexReads.locals.size(); ++slot) {
+                if (indexReads.locals[slot] == 0u)
+                    continue;
+                source += "    frame->indexBorrowReady_";
+                source += std::to_string(slot);
+                source += " = false;\n";
+            }
             source +=
-                "    { Value value = std::move(stack[--sp]); Value index = std::move(stack[--sp]); Value base = std::move(stack[--sp]); context.prepareSideEffect(resume, ";
+                "    { Value value = stack[--sp].takeValue(); Value index = stack[--sp].takeValue(); Value base = stack[--sp].takeValue(); context.prepareSideEffect(resume, ";
             source += std::to_string(pc);
             source +=
                 "u); auto semantic = ScriptSemanticRuntime::storeIndex(std::move(base), std::move(index), std::move(value));\n";
@@ -1031,15 +2991,8 @@ void emitFunction(String& source,
             source += std::to_string(pc);
             source += "u); }\n";
         } else if (opcode == TypedIrOpcode::MakeList || opcode == TypedIrOpcode::MakeDict) {
-            const int operandCount =
-                opcode == TypedIrOpcode::MakeDict ? operation.b * 2 : operation.b;
             source +=
-                "    { arp::core::pmr::Vector<Value> operands { &arp::core::defaultCpuMemoryResource() }; operands.reserve(";
-            source += std::to_string(std::max(0, operandCount));
-            source += "u); constexpr std::size_t count = ";
-            source += std::to_string(std::max(0, operandCount));
-            source +=
-                "u; sp -= count; for (std::size_t index = 0; index < count; ++index) operands.push_back(stack[sp + index]); auto semantic = ScriptSemanticRuntime::";
+                "    { ExecutionSlotStackView operands(stack.data(), sp, stack.size()); auto semantic = ScriptSemanticRuntime::";
             source += opcode == TypedIrOpcode::MakeList ? "makeList" : "makeDict";
             source += "(operands, ";
             source += std::to_string(operation.b);
@@ -1123,7 +3076,7 @@ void emitFunction(String& source,
                     const auto constructorIndex = static_cast<std::size_t>(
                         std::distance(module.functions.begin(), constructor));
                     source +=
-                        " std::array<Value, count + 1u> constructorArgs {}; constructorArgs[0] = instance; for (std::size_t index = 0; index < count; ++index) constructorArgs[index + 1u] = stack[sp + index]; const Value constructorResult = ";
+                        " auto constructorArgs = ExecutionSlotValues<count + 1u>::emptyValues(); constructorArgs[0] = instance; for (std::size_t index = 0; index < count; ++index) constructorArgs[index + 1u] = stack[sp + index]; const Value constructorResult = ";
                     source += symbols[constructorIndex];
                     source +=
                         "(context, constructorArgs.data(), count + 1u, &frame->childResume, error); (void)constructorResult; if (error != nullptr && error->code != ScriptDiagnosticCode::None) return makeNil(); frame->childPc = 0xffffffffu; frame->pendingValue = Value::undefined();";
@@ -1133,9 +3086,9 @@ void emitFunction(String& source,
         } else if (opcode == TypedIrOpcode::RangeInit) {
             source += "    locals[";
             source += std::to_string(operation.a);
-            source += "] = stack[--sp]; locals[";
+            source += "] = std::move(stack[--sp]); locals[";
             source += std::to_string(operation.b);
-            source += "] = makeInt(-1);\n";
+            source += "] = ScriptScalar(-1);\n";
         } else if (opcode == TypedIrOpcode::RangeNext) {
             const int keySlot = static_cast<int>(
                 static_cast<std::int32_t>(static_cast<std::uint64_t>(operation.i64) >> 32u));
@@ -1153,7 +3106,7 @@ void emitFunction(String& source,
                     "]; if (source.is<DirectNativeGeneratorV5>()) { auto* child = source.ptr<DirectNativeGeneratorV5>(); if (child == nullptr || child->state == nullptr || child->state->context == nullptr) { if (error != nullptr) { error->code = ScriptDiagnosticCode::AotSwitchUnsupported; error->message = \"DirectNative yield-from child owner identity is unavailable\"; } goto aot_exception_dispatch; } if (context.lifetimeOwner.lock().get() != child->state->context.get()) { GeneratorIdentityV3 childIdentity; childIdentity.moduleId = child->state->context->moduleId.c_str(); childIdentity.moduleVersion = child->state->context->moduleVersion; childIdentity.artifactIdentity = child->state->context->artifactIdentity.c_str(); if (!context.acceptsGeneratorIdentity(childIdentity)) { if (error != nullptr) { error->code = ScriptDiagnosticCode::AotSwitchUnsupported; error->message = \"DirectNative yield-from child artifact identity negotiation failed\"; } goto aot_exception_dispatch; } } if (isNil(frame->delegatedChild)) { frame->delegatedChild = source; frame->childPc = ";
                 source += std::to_string(pc);
                 source +=
-                    "u; } VmError childError; Value yielded; if (resume.injectionKind == DirectNativeInjectionKindV5::Send) { yielded = sendDirectNativeGeneratorV5(*child, resume.injectionValue, &childError); } else if (resume.injectionKind == DirectNativeInjectionKindV5::Throw) { yielded = throwDirectNativeGeneratorV5(*child, resume.injectionValue, &childError); } else { yielded = resumeDirectNativeGeneratorV5(*child, &childError); } resume.injectionKind = DirectNativeInjectionKindV5::None; resume.injectionValue = makeNil(); if (childError.code == ScriptDiagnosticCode::Suspended) { int delegatedIndex = 0; if (tryGetInt(locals[";
+                    "u; } VmError childError; Value yielded; if (resume.injectionKind == DirectNativeInjectionKindV5::Send) { yielded = sendDirectNativeGeneratorV5(*child, resume.injectionValue, &childError); } else if (resume.injectionKind == DirectNativeInjectionKindV5::Throw) { yielded = throwDirectNativeGeneratorV5(*child, resume.injectionValue, &childError); } else { yielded = resumeDirectNativeGeneratorV5(*child, &childError); } resume.injectionKind = DirectNativeInjectionKindV5::None; resume.injectionValue = makeNil(); if (childError.code == ScriptDiagnosticCode::Suspended) { int delegatedIndex = 0; if (DirectNativeSlotOperations::integer(locals[";
                 source += std::to_string(operation.b);
                 source += "], delegatedIndex)) locals[";
                 source += std::to_string(operation.b);
@@ -1169,13 +3122,13 @@ void emitFunction(String& source,
                 source += "); resume.pc = ";
                 source += std::to_string(pc);
                 source +=
-                    "u; resume.awaitInjectionSupported = child->state->resume.awaitInjectionSupported; resume.suspendKind = DirectNativeSuspendKindV5::Await; if (!synchronizeFrameRoots()) return makeNil(); if (error != nullptr) { *error = std::move(childError); } return makeNil(); } if (childError.code != ScriptDiagnosticCode::None) { if (error != nullptr) *error = std::move(childError); goto aot_exception_dispatch; } resume.awaitInjectionSupported = false; if (child->state->done) { frame->delegatedChild = makeNil(); frame->childPc = 0xffffffffu; stack[sp++] = makeBool(false); } else { locals[";
+                    "u; resume.awaitInjectionSupported = child->state->resume.awaitInjectionSupported; resume.suspendKind = DirectNativeSuspendKindV5::Await; if (!synchronizeFrameRoots()) return makeNil(); if (error != nullptr) { *error = std::move(childError); } return makeNil(); } if (childError.code != ScriptDiagnosticCode::None) { if (error != nullptr) *error = std::move(childError); goto aot_exception_dispatch; } resume.awaitInjectionSupported = false; if (child->state->done) { frame->delegatedChild = makeNil(); frame->childPc = 0xffffffffu; stack[sp++] = ScriptScalar(false); } else { locals[";
                 source += std::to_string(valueSlot);
                 source +=
-                    "] = std::move(yielded); stack[sp++] = makeBool(true); } } else if (const auto* bridge = optionalGeneratorBridgeV3(); bridge != nullptr && bridge->isGenerator != nullptr && bridge->isGenerator(source)) { GeneratorIdentityV3 childIdentity; if (bridge->queryIdentity == nullptr || !bridge->queryIdentity(source, childIdentity) || !context.acceptsGeneratorIdentity(childIdentity)) { if (error != nullptr) { error->code = ScriptDiagnosticCode::AotSwitchUnsupported; error->message = \"DirectNative yield-from child artifact identity negotiation failed\"; } goto aot_exception_dispatch; } if (isNil(frame->delegatedChild)) { frame->delegatedChild = source; frame->childPc = ";
+                    "] = std::move(yielded); stack[sp++] = ScriptScalar(true); } } else if (const auto* bridge = optionalGeneratorBridgeV3(); bridge != nullptr && bridge->isGenerator != nullptr && bridge->isGenerator(source)) { GeneratorIdentityV3 childIdentity; if (bridge->queryIdentity == nullptr || !bridge->queryIdentity(source, childIdentity) || !context.acceptsGeneratorIdentity(childIdentity)) { if (error != nullptr) { error->code = ScriptDiagnosticCode::AotSwitchUnsupported; error->message = \"DirectNative yield-from child artifact identity negotiation failed\"; } goto aot_exception_dispatch; } if (isNil(frame->delegatedChild)) { frame->delegatedChild = source; frame->childPc = ";
                 source += std::to_string(pc);
                 source +=
-                    "u; } VmError childError; Value yielded; if (resume.injectionKind == DirectNativeInjectionKindV5::Send) { yielded = bridge->resumeSend(source, resume.injectionValue, &childError); } else if (resume.injectionKind == DirectNativeInjectionKindV5::Throw) { yielded = bridge->resumeThrow(source, resume.injectionValue, &childError); } else { yielded = bridge->resume(source, &childError); } resume.injectionKind = DirectNativeInjectionKindV5::None; resume.injectionValue = makeNil(); if (childError.code == ScriptDiagnosticCode::Suspended) { int delegatedIndex = 0; if (tryGetInt(locals[";
+                    "u; } VmError childError; Value yielded; if (resume.injectionKind == DirectNativeInjectionKindV5::Send) { yielded = bridge->resumeSend(source, resume.injectionValue, &childError); } else if (resume.injectionKind == DirectNativeInjectionKindV5::Throw) { yielded = bridge->resumeThrow(source, resume.injectionValue, &childError); } else { yielded = bridge->resume(source, &childError); } resume.injectionKind = DirectNativeInjectionKindV5::None; resume.injectionValue = makeNil(); if (childError.code == ScriptDiagnosticCode::Suspended) { int delegatedIndex = 0; if (DirectNativeSlotOperations::integer(locals[";
                 source += std::to_string(operation.b);
                 source += "], delegatedIndex)) locals[";
                 source += std::to_string(operation.b);
@@ -1191,50 +3144,50 @@ void emitFunction(String& source,
                 source += "); resume.pc = ";
                 source += std::to_string(pc);
                 source +=
-                    "u; { const auto* capability = optionalGeneratorBridgeV3Capability(); resume.awaitInjectionSupported = capability != nullptr && capability->isGenerator != nullptr && capability->isGenerator(source) && capability->supportsPendingAwaitInjection != nullptr && capability->supportsPendingAwaitInjection(source); } resume.suspendKind = DirectNativeSuspendKindV5::Await; if (!synchronizeFrameRoots()) return makeNil(); if (error != nullptr) *error = std::move(childError); return makeNil(); } if (childError.code != ScriptDiagnosticCode::None) { if (error != nullptr) *error = std::move(childError); goto aot_exception_dispatch; } resume.awaitInjectionSupported = false; if (bridge->isDone != nullptr && bridge->isDone(source)) { frame->delegatedChild = makeNil(); frame->childPc = 0xffffffffu; stack[sp++] = makeBool(false); } else { locals[";
+                    "u; { const auto* capability = optionalGeneratorBridgeV3Capability(); resume.awaitInjectionSupported = capability != nullptr && capability->isGenerator != nullptr && capability->isGenerator(source) && capability->supportsPendingAwaitInjection != nullptr && capability->supportsPendingAwaitInjection(source); } resume.suspendKind = DirectNativeSuspendKindV5::Await; if (!synchronizeFrameRoots()) return makeNil(); if (error != nullptr) *error = std::move(childError); return makeNil(); } if (childError.code != ScriptDiagnosticCode::None) { if (error != nullptr) *error = std::move(childError); goto aot_exception_dispatch; } resume.awaitInjectionSupported = false; if (bridge->isDone != nullptr && bridge->isDone(source)) { frame->delegatedChild = makeNil(); frame->childPc = 0xffffffffu; stack[sp++] = ScriptScalar(false); } else { locals[";
                 source += std::to_string(valueSlot);
                 source +=
-                    "] = std::move(yielded); stack[sp++] = makeBool(true); } } else { if (resume.injectionKind != DirectNativeInjectionKindV5::None) { if (error != nullptr) { error->code = ScriptDiagnosticCode::AotSwitchUnsupported; error->message = \"DirectNative yield-from injection requires a DirectNative child\"; } resume.injectionKind = DirectNativeInjectionKindV5::None; resume.injectionValue = makeNil(); goto aot_exception_dispatch; } int index = 0; if (!tryGetInt(locals[";
+                    "] = std::move(yielded); stack[sp++] = ScriptScalar(true); } } else { if (resume.injectionKind != DirectNativeInjectionKindV5::None) { if (error != nullptr) { error->code = ScriptDiagnosticCode::AotSwitchUnsupported; error->message = \"DirectNative yield-from injection requires a DirectNative child\"; } resume.injectionKind = DirectNativeInjectionKindV5::None; resume.injectionValue = makeNil(); goto aot_exception_dispatch; } int index = 0; if (!DirectNativeSlotOperations::integer(locals[";
                 source += std::to_string(operation.b);
                 source +=
                     "], index)) { if (error != nullptr) { error->code = ScriptDiagnosticCode::BadCast; error->message = \"range index corrupted\"; } goto aot_exception_dispatch; } ++index; locals[";
                 source += std::to_string(operation.b);
                 source +=
-                    "] = makeInt(index); auto semantic = ScriptSemanticRuntime::rangeNextCollection(source, index);\n";
-                emitFailureCheck(source, "semantic");
+                    "] = ScriptScalar(index); auto semantic = ScriptSemanticRuntime::rangeNextCollectionStep(source, index);\n";
+                emitFailureCheck(source, "semantic", true);
                 if (keySlot >= 0) {
                     source += "        if (semantic.hasMore) locals[";
                     source += std::to_string(keySlot);
-                    source += "] = semantic.key;\n";
+                    source += "] = std::move(semantic.key);\n";
                 }
                 if (valueSlot >= 0) {
                     source += "        if (semantic.hasMore) locals[";
                     source += std::to_string(valueSlot);
-                    source += "] = semantic.value;\n";
+                    source += "] = std::move(semantic.value);\n";
                 }
-                source += "        stack[sp++] = makeBool(semantic.hasMore); } }\n";
+                source += "        stack[sp++] = ScriptScalar(semantic.hasMore); } }\n";
             } else {
-                source += "    { int index = 0; if (!tryGetInt(locals[";
+                source += "    { int index = 0; if (!DirectNativeSlotOperations::integer(locals[";
                 source += std::to_string(operation.b);
                 source +=
                     "], index)) { if (error != nullptr) { error->code = ScriptDiagnosticCode::BadCast; error->message = \"range index corrupted\"; } return makeNil(); } ++index; locals[";
                 source += std::to_string(operation.b);
                 source +=
-                    "] = makeInt(index); auto semantic = ScriptSemanticRuntime::rangeNextCollection(locals[";
+                    "] = ScriptScalar(index); auto semantic = ScriptSemanticRuntime::rangeNextCollectionStep(locals[";
                 source += std::to_string(operation.a);
                 source += "], index);\n";
-                emitFailureCheck(source, "semantic");
+                emitFailureCheck(source, "semantic", true);
                 if (keySlot >= 0) {
                     source += "        if (semantic.hasMore) locals[";
                     source += std::to_string(keySlot);
-                    source += "] = semantic.key;\n";
+                    source += "] = std::move(semantic.key);\n";
                 }
                 if (valueSlot >= 0) {
                     source += "        if (semantic.hasMore) locals[";
                     source += std::to_string(valueSlot);
-                    source += "] = semantic.value;\n";
+                    source += "] = std::move(semantic.value);\n";
                 }
-                source += "        stack[sp++] = makeBool(semantic.hasMore); }\n";
+                source += "        stack[sp++] = ScriptScalar(semantic.hasMore); }\n";
             }
         } else if (opcode == TypedIrOpcode::BuiltinAppend) {
             source +=
@@ -1265,55 +3218,26 @@ void emitFunction(String& source,
             source += std::to_string(pc);
             source += "u); }\n";
         } else if (opcode == TypedIrOpcode::BuiltinLen) {
-            source += "    { auto semantic = ScriptSemanticRuntime::length(stack[--sp]);\n";
+            source +=
+                "    { auto scalar = ScriptSemanticRuntime::lengthScalar(stack[--sp]); SemanticSlotOperationResult semantic; semantic.value = scalar.value; semantic.diagnostic.code = scalar.code; if (!scalar.ok()) semantic.diagnostic.message = scalar.message;\n";
             emitFailureCheck(source, "semantic");
             source += "        stack[sp++] = std::move(semantic.value); }\n";
         } else if (opcode == TypedIrOpcode::Pop) {
             source += "    --sp;\n";
         } else if (!binaryOperation(opcode).empty()) {
-            source += "    { const Value rhs = stack[--sp]; const Value lhs = stack[--sp];";
-            if (opcode == TypedIrOpcode::Add || opcode == TypedIrOpcode::IntAdd
-                || opcode == TypedIrOpcode::Sub || opcode == TypedIrOpcode::IntSub
-                || opcode == TypedIrOpcode::Mul || opcode == TypedIrOpcode::IntMul) {
-                source +=
-                    " if (lhs.is<int>() && rhs.is<int>()) { const std::int64_t left = *lhs.ptr<int>(); const std::int64_t right = *rhs.ptr<int>(); const std::int64_t result = ";
-                if (opcode == TypedIrOpcode::Add || opcode == TypedIrOpcode::IntAdd)
-                    source += "left + right";
-                else if (opcode == TypedIrOpcode::Sub || opcode == TypedIrOpcode::IntSub)
-                    source += "left - right";
-                else
-                    source += "left * right";
-                source +=
-                    "; if (result < std::numeric_limits<int>::min() || result > std::numeric_limits<int>::max()) { if (error != nullptr) { error->code = ScriptDiagnosticCode::IntegerOverflow; error->message = \"int arithmetic overflow\"; } goto aot_exception_dispatch; } stack[sp++] = makeInt(static_cast<int>(result)); } else {";
-            } else {
-                source += " {";
-            }
-            source += " auto semantic = ScriptSemanticRuntime::binary(SemanticBinaryOperation::";
+            source +=
+                "    { ExecutionSlot rhs = std::move(stack[--sp]); ExecutionSlot lhs = std::move(stack[--sp]); auto semantic = DirectNativeSlotOperations::binary<SemanticBinaryOperation::";
             source += binaryOperation(opcode);
-            source += ", lhs, rhs);\n";
+            source += ">(std::move(lhs), std::move(rhs));\n";
             emitFailureCheck(source, "semantic");
-            source += "        stack[sp++] = std::move(semantic.value); } }\n";
+            source += "        stack[sp++] = std::move(semantic.value); }\n";
         } else if (!compareOperation(opcode).empty()) {
             source +=
-                "    { const Value rhs = stack[--sp]; const Value lhs = stack[--sp]; if (lhs.is<int>() && rhs.is<int>()) { const int left = *lhs.ptr<int>(); const int right = *rhs.ptr<int>(); stack[sp++] = makeBool(";
-            if (opcode == TypedIrOpcode::CmpEq || opcode == TypedIrOpcode::IntCmpEq)
-                source += "left == right";
-            else if (opcode == TypedIrOpcode::CmpNe || opcode == TypedIrOpcode::IntCmpNe)
-                source += "left != right";
-            else if (opcode == TypedIrOpcode::CmpLt || opcode == TypedIrOpcode::IntCmpLt)
-                source += "left < right";
-            else if (opcode == TypedIrOpcode::CmpLe || opcode == TypedIrOpcode::IntCmpLe)
-                source += "left <= right";
-            else if (opcode == TypedIrOpcode::CmpGt || opcode == TypedIrOpcode::IntCmpGt)
-                source += "left > right";
-            else
-                source += "left >= right";
-            source +=
-                "); } else { auto semantic = ScriptSemanticRuntime::compare(SemanticCompareOperation::";
+                "    { ExecutionSlot rhs = std::move(stack[--sp]); ExecutionSlot lhs = std::move(stack[--sp]); auto semantic = DirectNativeSlotOperations::compare<SemanticCompareOperation::";
             source += compareOperation(opcode);
-            source += ", lhs, rhs);\n";
+            source += ">(std::move(lhs), std::move(rhs));\n";
             emitFailureCheck(source, "semantic");
-            source += "        stack[sp++] = std::move(semantic.value); } }\n";
+            source += "        stack[sp++] = std::move(semantic.value); }\n";
         } else if (opcode == TypedIrOpcode::Neg || opcode == TypedIrOpcode::Not) {
             source += "    { auto semantic = ScriptSemanticRuntime::";
             source += opcode == TypedIrOpcode::Neg ? "negate" : "logicalNot";
@@ -1332,17 +3256,15 @@ void emitFunction(String& source,
             source += std::to_string(operation.a);
             source += ";\n";
         } else if (opcode == TypedIrOpcode::JumpIfFalse || opcode == TypedIrOpcode::JumpIfTrue) {
-            source +=
-                "    { const Value conditionValue = stack[--sp]; bool condition = false; if (conditionValue.is<bool>()) condition = *conditionValue.ptr<bool>(); else { auto semantic = ScriptSemanticRuntime::convert(SemanticConversionOperation::Bool, conditionValue);\n";
+            source += "    { auto semantic = DirectNativeSlotOperations::condition(stack[--sp]);\n";
             emitFailureCheck(source, "semantic");
-            source +=
-                "        if (!tryGetBool(semantic.value, condition)) return makeNil(); } if (";
+            source += "        const bool condition = *semantic.value.scalarPointer<bool>(); if (";
             source += opcode == TypedIrOpcode::JumpIfFalse ? "!condition" : "condition";
             source += ") goto aot_pc_";
             source += std::to_string(operation.a);
             source += "; }\n";
         } else if (opcode == TypedIrOpcode::JumpIfLocalIntLtConstFalse) {
-            source += "    { int value = 0; if (!tryGetInt(locals[";
+            source += "    { int value = 0; if (!DirectNativeSlotOperations::integer(locals[";
             source += std::to_string(operation.b);
             source += "], value)) return makeNil(); if (!(value < ";
             source += std::to_string(operation.i64);
@@ -1368,27 +3290,27 @@ void emitFunction(String& source,
             || opcode == TypedIrOpcode::LocalAddInt64Const
             || opcode == TypedIrOpcode::LocalSubInt64Const) {
             source +=
-                "    { auto semantic = ScriptSemanticRuntime::binary(SemanticBinaryOperation::";
+                "    { auto semantic = DirectNativeSlotOperations::binary<SemanticBinaryOperation::";
             source += (opcode == TypedIrOpcode::LocalAddIntConst
                           || opcode == TypedIrOpcode::LocalAddInt64Const)
                 ? "Add"
                 : "Sub";
-            source += ", locals[";
+            source += ">(locals[";
             source += std::to_string(operation.a);
             source += "], ";
             source += (opcode == TypedIrOpcode::LocalAddInt64Const
                           || opcode == TypedIrOpcode::LocalSubInt64Const)
-                ? "makeInt64("
-                : "makeInt(";
+                ? "ExecutionSlot(ScriptScalar(static_cast<std::int64_t>("
+                : "ExecutionSlot(ScriptScalar(static_cast<int>(";
             source += std::to_string(operation.i64);
-            source += "));\n";
+            source += "))));\n";
             emitFailureCheck(source, "semantic");
             source += "        locals[";
             source += std::to_string(operation.a);
             source += "] = std::move(semantic.value); }\n";
         } else if (opcode == TypedIrOpcode::LocalAddLocal) {
             source +=
-                "    { auto semantic = ScriptSemanticRuntime::binary(SemanticBinaryOperation::Add, locals[";
+                "    { auto semantic = DirectNativeSlotOperations::binary<SemanticBinaryOperation::Add>(locals[";
             source += std::to_string(operation.a);
             source += "], locals[";
             source += std::to_string(operation.b);
@@ -1402,11 +3324,11 @@ void emitFunction(String& source,
             source += "    { const std::uint64_t bits = ";
             source += std::to_string(static_cast<std::uint64_t>(operation.i64));
             source +=
-                "ULL; double value = 0.0; std::memcpy(&value, &bits, sizeof(value)); auto semantic = ScriptSemanticRuntime::binary(SemanticBinaryOperation::";
+                "ULL; double value = 0.0; std::memcpy(&value, &bits, sizeof(value)); auto semantic = DirectNativeSlotOperations::binary<SemanticBinaryOperation::";
             source += opcode == TypedIrOpcode::LocalAddFloatConst ? "Add" : "Sub";
-            source += ", locals[";
+            source += ">(locals[";
             source += std::to_string(operation.a);
-            source += "], makeFloat(value));\n";
+            source += "], ExecutionSlot(ScriptScalar(value)));\n";
             emitFailureCheck(source, "semantic");
             source += "        locals[";
             source += std::to_string(operation.a);
@@ -1420,7 +3342,7 @@ void emitFunction(String& source,
                 source += "u; sp -= count; const Value result = ";
                 source += symbols[targetIndex];
                 source +=
-                    "(context, stack.data() + sp, count, nullptr, error); if (error != nullptr && error->code != ScriptDiagnosticCode::None) goto aot_exception_dispatch; stack[sp++] = result; }\n";
+                    "(context, materializeExecutionSlots(stack, sp, count).data(), count, nullptr, error); if (error != nullptr && error->code != ScriptDiagnosticCode::None) goto aot_exception_dispatch; stack[sp++] = result; }\n";
             } else {
                 source += "u; if (frame->childPc != ";
                 source += std::to_string(pc);
@@ -1429,7 +3351,7 @@ void emitFunction(String& source,
                 source += "u; } const Value result = ";
                 source += symbols[targetIndex];
                 source +=
-                    "(context, stack.data() + sp, count, &frame->childResume, error); if (error != nullptr && error->code != ScriptDiagnosticCode::None) { if (error->code == ScriptDiagnosticCode::Suspended) { if (!synchronizeFrameRoots()) return makeNil(); return result; } goto aot_exception_dispatch; } frame->childPc = 0xffffffffu; stack[sp++] = result; }\n";
+                    "(context, materializeExecutionSlots(stack, sp, count).data(), count, &frame->childResume, error); if (error != nullptr && error->code != ScriptDiagnosticCode::None) { if (error->code == ScriptDiagnosticCode::Suspended) { if (!synchronizeFrameRoots()) return makeNil(); return result; } goto aot_exception_dispatch; } frame->childPc = 0xffffffffu; stack[sp++] = result; }\n";
             }
         } else if (opcode == TypedIrOpcode::MakeFuncValue) {
             const int targetIndex = resolveFunctionIndex(module, operation.targetId);
@@ -1454,27 +3376,32 @@ void emitFunction(String& source,
         } else if (opcode == TypedIrOpcode::CallValue
             && operation.closureCaptureCount == kScriptMethodProvenanceCaptureCount
             && !operation.text.empty()) {
-            struct DynamicMethodCandidate {
-                const TypedIrScriptClassSchema* schema = nullptr;
-                const TypedIrFunction* function = nullptr;
-                std::size_t functionIndex = 0u;
-            };
-
-            core::pmr::Vector<DynamicMethodCandidate> candidates{&core::defaultCpuMemoryResource()};
-            for (const auto& schema : module.scriptClassSchemas) {
-                const auto method = schema.methods.find(operation.text);
-                if (method == schema.methods.end())
-                    continue;
-                const auto target = std::find_if(module.functions.begin(),
-                    module.functions.end(),
-                    [&method](const auto& candidate) {
-                        return candidate.id == method->second;
-                    });
-                if (target == module.functions.end() || target->parameterCount != operation.b + 1)
-                    continue;
-                candidates.push_back(DynamicMethodCandidate{&schema,
-                    &*target,
-                    static_cast<std::size_t>(std::distance(module.functions.begin(), target))});
+            const auto candidates = nativeMethodCandidates(module, operation);
+            const bool hasLeafCandidate = std::any_of(
+                candidates.begin(), candidates.end(), [&leafCandidates](const auto& candidate) {
+                    return leafCandidates[candidate.functionIndex] != 0u;
+                });
+            if (hasLeafCandidate) {
+                source += "    if (";
+                source += pristineLeafCallGate();
+                source += ") { constexpr std::size_t count = ";
+                source += std::to_string(operation.b);
+                source +=
+                    "u; const std::size_t leafBase = sp - count - 1u; const Value& receiver = stack[leafBase + count].boxed(); const auto* leafInstance = checkedValuePayload<arp::reflection::instance>(receiver); if (leafInstance != nullptr && leafInstance->alive() && leafInstance->class_() != nullptr) { const auto& leafClass = leafInstance->class_()->name(); std::array<ExecutionSlot, count + 1u> leafArgs {}; leafArgs[0] = receiver; for (std::size_t index = 0; index < count; ++index) leafArgs[index + 1u] = stack[leafBase + index]; ";
+                for (const auto& candidate : candidates) {
+                    if (leafCandidates[candidate.functionIndex] == 0u)
+                        continue;
+                    source += "if (leafClass == ";
+                    source += quote(candidate.schema->className);
+                    source += ") { ";
+                    emitLeafCallResult(source,
+                        symbols[candidate.functionIndex],
+                        "leafArgs.data()",
+                        "nullptr",
+                        pc + 1u);
+                    source += "} ";
+                }
+                source += "} }\n";
             }
             source += "    { constexpr std::size_t count = ";
             source += std::to_string(operation.b);
@@ -1483,7 +3410,7 @@ void emitFunction(String& source,
             source += "u) { sp -= count + 1u; frame->childPc = ";
             source += std::to_string(pc);
             source +=
-                "u; } const std::size_t base = sp; const Value& receiver = stack[base + count]; if (!receiver.is<arp::reflection::instance>() || !receiver.ptr<arp::reflection::instance>()->alive() || receiver.ptr<arp::reflection::instance>()->class_() == nullptr) { if (error != nullptr) { error->code = ScriptDiagnosticCode::AotArtifactInvalid; error->message = \"DirectNative dynamic method receiver is invalid\"; } return makeNil(); } const auto& actualClass = receiver.ptr<arp::reflection::instance>()->class_()->name(); std::array<Value, count + 1u> callArgs {}; callArgs[0] = receiver; for (std::size_t index = 0; index < count; ++index) callArgs[index + 1u] = stack[base + index]; Value result = makeNil();";
+                "u; } const std::size_t base = sp; const Value& receiver = stack[base + count]; if (!receiver.is<arp::reflection::instance>() || !receiver.ptr<arp::reflection::instance>()->alive() || receiver.ptr<arp::reflection::instance>()->class_() == nullptr) { if (error != nullptr) { error->code = ScriptDiagnosticCode::AotArtifactInvalid; error->message = \"DirectNative dynamic method receiver is invalid\"; } return makeNil(); } const auto& actualClass = receiver.ptr<arp::reflection::instance>()->class_()->name(); auto callArgs = ExecutionSlotValues<count + 1u>::emptyValues(); callArgs[0] = receiver; for (std::size_t index = 0; index < count; ++index) callArgs[index + 1u] = stack[base + index]; Value result = makeNil();";
             for (std::size_t index = 0; index < candidates.size(); ++index) {
                 source += index == 0u ? " if (actualClass == " : " else if (actualClass == ";
                 source += quote(candidates[index].schema->className);
@@ -1513,7 +3440,7 @@ void emitFunction(String& source,
                 source += "u) { sp -= count + 1u; frame->childPc = ";
                 source += std::to_string(pc);
                 source +=
-                    "u; } const std::size_t base = sp; const Value& receiver = stack[base + count]; if (!receiver.is<arp::reflection::instance>() || !receiver.ptr<arp::reflection::instance>()->alive()) { if (error != nullptr) { error->code = ScriptDiagnosticCode::AotArtifactInvalid; error->message = \"DirectNative method receiver is invalid\"; } return makeNil(); } std::array<Value, count + 1u> callArgs {}; callArgs[0] = receiver; for (std::size_t index = 0; index < count; ++index) callArgs[index + 1u] = stack[base + index]; const Value result = ";
+                    "u; } const std::size_t base = sp; const Value& receiver = stack[base + count]; if (!receiver.is<arp::reflection::instance>() || !receiver.ptr<arp::reflection::instance>()->alive()) { if (error != nullptr) { error->code = ScriptDiagnosticCode::AotArtifactInvalid; error->message = \"DirectNative method receiver is invalid\"; } return makeNil(); } auto callArgs = ExecutionSlotValues<count + 1u>::emptyValues(); callArgs[0] = receiver; for (std::size_t index = 0; index < count; ++index) callArgs[index + 1u] = stack[base + index]; const Value result = ";
                 source += symbols[targetIndex];
                 source += "(context, callArgs.data(), count + 1u, ";
                 source += target->isGenerator ? "nullptr" : "&frame->childResume";
@@ -1532,7 +3459,7 @@ void emitFunction(String& source,
                 source +=
                     "u) { if (error != nullptr) { error->code = ScriptDiagnosticCode::AotArtifactInvalid; error->message = \"DirectNative closure value does not match proven target\"; } return makeNil(); } struct CaptureScope { DirectNativeExecutionContext& context; const arp::core::pmr::Vector<std::shared_ptr<ScriptCell>>* previous; ~CaptureScope() { context.activeCaptures = previous; } } captureScope { context, context.activeCaptures }; context.activeCaptures = &closure->captures; const Value result = ";
                 source += symbols[targetIndex];
-                source += "(context, stack.data() + sp, count, ";
+                source += "(context, materializeExecutionSlots(stack, sp, count).data(), count, ";
                 source += target->isGenerator ? "nullptr" : "&frame->childResume";
                 source +=
                     ", error); if (error != nullptr && error->code != ScriptDiagnosticCode::None) { if (error->code == ScriptDiagnosticCode::Suspended) { if (!synchronizeFrameRoots()) return makeNil(); return result; } goto aot_exception_dispatch; } frame->childPc = 0xffffffffu; stack[sp++] = result; }\n";
@@ -1555,7 +3482,7 @@ void emitFunction(String& source,
             source += binding->origin == TypedIrCallableOrigin::ReflectionMember ? ", &callableBase"
                                                                                  : ", nullptr";
             source +=
-                ", stack.data() + sp, count, result, error)) goto aot_exception_dispatch; context.commitSideEffect(resume, ";
+                ", materializeExecutionSlots(stack, sp, count).data(), count, result, error)) goto aot_exception_dispatch; context.commitSideEffect(resume, ";
             source += std::to_string(pc);
             source += "u); stack[sp++] = std::move(result); }\n";
         } else if (opcode == TypedIrOpcode::Await) {
@@ -1577,7 +3504,8 @@ void emitFunction(String& source,
             if (hasDelegatedSites) {
                 source += "if (frame != &localFrame) { frame->captureCanonicalState(";
                 source += std::to_string(pc + 1u);
-                source += "u, locals.data(), locals.size(), stack.data(), sp, ";
+                source +=
+                    "u, materializeExecutionSlots(locals, 0u, locals.size()).data(), locals.size(), materializeExecutionSlots(stack, 0u, sp).data(), sp, ";
                 if (hasCaptureState)
                     source += "frame->captures.data(), frame->captures.size(), ";
                 else
@@ -1607,21 +3535,47 @@ void emitFunction(String& source,
                 "u; resume.suspendKind = DirectNativeSuspendKindV5::Yield; if (!synchronizeFrameRoots()) return makeNil(); if (error != nullptr) { error->code = ScriptDiagnosticCode::Suspended; error->message = \"yielded\"; } return yielded; }\n";
         } else if (opcode == TypedIrOpcode::Throw) {
             source +=
-                "    { const Value raised = stack[--sp]; if (error != nullptr) { error->code = ScriptDiagnosticCode::UserRaise; if (!tryGetString(raised, error->message)) error->message = \"script raised a non-string value\"; } goto aot_exception_dispatch; }\n";
+                "    { const auto& raised = stack[--sp]; if (error != nullptr) { error->code = ScriptDiagnosticCode::UserRaise; std::string_view text; if (raised.stringView(text)) error->message.assign(text.data(), text.size()); else if (!tryGetString(raised.boxed(), error->message)) error->message = \"script raised a non-string value\"; } goto aot_exception_dispatch; }\n";
         } else if (opcode == TypedIrOpcode::Return || opcode == TypedIrOpcode::ReturnInt) {
             source += "    { Value result = ";
-            source += (opcode == TypedIrOpcode::ReturnInt || operation.a == 1) ? "stack[--sp]"
-                                                                               : "makeNil()";
+            source += (opcode == TypedIrOpcode::ReturnInt || operation.a == 1)
+                ? "stack[--sp].takeValue()"
+                : "makeNil()";
             source +=
                 "; resume.pc = 0u; resume.commitState = 0u; resume.frame.reset(); return result; }\n";
         }
     }
+    source += "aot_pc_";
+    source += std::to_string(operations.size());
+    source += ":\n";
     source +=
         "    if (error != nullptr) { error->code = ScriptDiagnosticCode::AotArtifactInvalid; error->message = \"DirectNative control flow fell through\"; } goto aot_terminal_cleanup;\n";
     source += "aot_exception_dispatch:\n";
     if (hasHandlerState) {
+        String discardedCatch("false", &core::defaultCpuMemoryResource());
+        for (std::size_t pc = 0; pc < operations.size(); ++pc) {
+            const auto& store = *operations[pc];
+            if (store.opcode != TypedIrOpcode::StoreLocal)
+                continue;
+            const bool unread =
+                std::none_of(operations.begin(), operations.end(), [&](const auto* op) {
+                    return (op->opcode == TypedIrOpcode::LoadLocal
+                               || op->opcode == TypedIrOpcode::AddrLocal)
+                        && op->a == store.a;
+                });
+            if (unread) {
+                discardedCatch += " || handler.pc == ";
+                discardedCatch += std::to_string(pc);
+                discardedCatch += "u";
+            }
+        }
+        // A dead catch binding has no observable carrier. Observer/canonical
+        // frames still receive the real error string and full state.
         source +=
-            "    while (!frame->handlers.empty() && error != nullptr && error->code != ScriptDiagnosticCode::None) { const auto handler = frame->handlers.back(); frame->handlers.pop_back(); if (handler.filter != ScriptDiagnosticCode::None && handler.filter != error->code) continue; sp = handler.stackDepth; stack[sp++] = makeString(error->message); error->traceback.clear(); error->code = ScriptDiagnosticCode::None; error->message.clear(); switch (handler.pc) {";
+            "    while (!frame->handlers.empty() && error != nullptr && error->code != ScriptDiagnosticCode::None) { const auto handler = frame->handlers.back(); frame->handlers.pop_back(); if (handler.filter != ScriptDiagnosticCode::None && handler.filter != error->code) continue; sp = handler.stackDepth; if (frame == &localFrame && context.operationBoundary == nullptr && (";
+        source += discardedCatch;
+        source +=
+            ")) stack[sp++] = ScriptScalar(); else stack[sp++] = makeString(error->message); error->traceback.clear(); error->code = ScriptDiagnosticCode::None; error->message.clear(); switch (handler.pc) {";
         for (std::size_t pc = 0; pc < operations.size(); ++pc) {
             source += " case ";
             source += std::to_string(pc);
@@ -1905,6 +3859,8 @@ DirectNativeGeneratedModuleV5 generateDirectNativeModuleV5(
     manifestModule.moduleVersion = module.moduleVersion;
     String artifactSeed(options.packageIdentity, &core::defaultCpuMemoryResource());
     artifactSeed += "\n";
+    artifactSeed += kDirectNativeLoweringRevisionV5;
+    artifactSeed += "\n";
     artifactSeed += module.fingerprint;
     artifactSeed += "\n";
     artifactSeed += options.sourceHash;
@@ -1979,7 +3935,7 @@ DirectNativeGeneratedModuleV5 generateDirectNativeModuleV5(
     result.source = "#include ";
     result.source += quote(options.generatedHeader);
     result.source +=
-        "\n#include \"scriptvm/runtime/semantic_runtime.h\"\n#include <array>\n#include <cstring>\n#include <limits>\n#include <string_view>\n#include <utility>\n\nnamespace {\nusing namespace arp::scriptvm;\n";
+        "\n#include \"scriptvm/runtime/semantic_runtime.h\"\n#include \"scriptvm/aot/native_slot_operations.h\"\n#include \"scriptvm/runtime/execution_slot_values.h\"\n#include <array>\n#include <cstring>\n#include <limits>\n#include <string_view>\n#include <utility>\n\nnamespace {\nusing namespace arp::scriptvm;\n";
     const auto scalarCandidates = scalarFunctionCandidates(module);
     core::pmr::Vector<String> scalarSymbols{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<String> scalarNativeSymbols{&core::defaultCpuMemoryResource()};
@@ -2016,6 +3972,17 @@ DirectNativeGeneratedModuleV5 generateDirectNativeModuleV5(
                 scalarNativeSymbols,
                 scalarCandidates);
     }
+    core::pmr::Vector<std::uint8_t> leafCandidates(
+        module.functions.size(), 0u, &core::defaultCpuMemoryResource());
+    for (std::size_t index = 0; index < module.functions.size(); ++index) {
+        const auto& function = module.functions[index];
+        const auto operations = flatten(function);
+        core::pmr::Vector<std::uint8_t> targets(
+            operations.size(), 0u, &core::defaultCpuMemoryResource());
+        NativeScalarSequence sequence(function, operations, targets, 0u, true);
+        if (sequence.emitLeaf(result.source, symbols[index], function, operations.size()))
+            leafCandidates[index] = 1u;
+    }
     for (std::size_t index = 0; index < module.functions.size(); ++index)
         emitFunction(result.source,
             module,
@@ -2023,6 +3990,7 @@ DirectNativeGeneratedModuleV5 generateDirectNativeModuleV5(
             symbols,
             scalarSymbols,
             scalarCandidates,
+            leafCandidates,
             result.manifest.modules[0].functions[index].functionIdentity);
     result.source += "static const AotFunctionDescriptorV5 functions[] = {\n";
     for (std::size_t index = 0; index < module.functions.size(); ++index) {

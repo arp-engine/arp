@@ -1,8 +1,8 @@
 #pragma once
-#include "core/cpu_allocator.h"
-#include "core/quota_bound_shared_identity.h"
+#include "core/image/strided_image_statistics.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/quota_bound_shared_identity.h"
 #include "core/runtime/completion_signal.h"
-#include "core/strided_image_statistics.h"
 #include "rhi/gpu_bindless.h"
 #include "rhi/gpu_commands.h"
 #include "rhi/gpu_descriptors.h"
@@ -277,6 +277,9 @@ bool webGpuNativeDeviceSupportsIndirectFirstInstance() noexcept;
 /// Sanitized result mailbox for production attachment readback.  The native
 /// WebGPU buffer remains backend-owned; callers only receive numeric samples.
 bool webGpuNativeDeviceAvailable();
+rhi::PrototypeCommandBatchCapabilities webGpuNativePrototypeBatchCapabilities() noexcept;
+std::uint32_t webGpuNativeAcquireExecutionTurn() noexcept;
+bool webGpuNativeExecutionTurnMatches(std::uint32_t) noexcept;
 
 // Registers the exact native device's loss promise. The caller preallocates
 // userdata and transfers it only on true; callback delivery never allocates.
@@ -740,12 +743,29 @@ struct WebGpuNativeCommandPayload : core::SharedObjectIdentity {
     bool finish(std::pmr::string& diagnostics);
     bool submit(std::pmr::string& diagnostics);
     bool finished() const;
+    bool preparePrototypeBatch(const rhi::PrototypeCommandBatchContract::Decision&,
+        std::shared_ptr<WebGpuRhiResourceRegistry>,
+        std::pmr::string&,
+        const std::shared_ptr<WebGpuNativeCommandPayload>&);
+    bool prototypeBatchPrepared() const noexcept;
+    bool prototypeBatchSubmitted() const noexcept;
+    void discardPrototypeBatch() noexcept;
+    std::shared_ptr<rhi::GpuFence> prototypeBatchFence() const;
+    bool submitPrototypeBatch(const std::shared_ptr<WebGpuNativeCommandPayload>&,
+        rhi::GpuFence*,
+        const std::shared_ptr<WebGpuNativeCommandStats>&,
+        std::pmr::string&);
+    bool recordGraphicsPipelineBind(
+        const std::shared_ptr<WebGpuNativeRenderPipelinePayload>&, std::pmr::string&);
+    bool recordComputePipelineBind(
+        const std::shared_ptr<WebGpuNativeComputePipelinePayload>&, std::pmr::string&);
 
 private:
     core::UniquePtr<Impl> impl_;
     friend class WebGpuNativeCommandPreparation;
     friend class WebGpuConformanceClearExecution;
     friend class WebGpuConformanceClearFrame;
+    friend class WebGpuPrototypeBatch;
     friend class WebGpuOrdinaryRecording;
     friend class WebGpuOrdinarySubmission;
     const char* restrictedRecordingDiagnostic() const noexcept;

@@ -23,7 +23,7 @@
 // constraint #1 and the default float4x4 SPIR-V RowMajor decoration consumed
 // by the shaders. No transposition on the C++ side.
 
-#include "core/math.h"
+#include "core/math/math.h"
 
 namespace arp::renderer {
 

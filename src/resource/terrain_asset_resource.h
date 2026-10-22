@@ -1,10 +1,10 @@
 #pragma once
-
-#include "core/cpu_allocator.h"
-#include "core/stable_hash.h"
+#include "3d/terrain/terrain_surface.h"
+#include "3d/vegetation/static_instance.h"
+#include "core/hash/stable_hash.h"
+#include "core/memory/cpu_allocator.h"
 #include "resource/resource_contract.h"
 #include "resource/resource_manager.h"
-#include "terrain/terrain_surface.h"
 
 #include <algorithm>
 #include <array>
@@ -22,6 +22,11 @@ inline constexpr ResourceContractDescriptor kTerrainAssetResourceContract{
     "TerrainAssetResource",
     "terrain.asset/v1",
 };
+
+inline constexpr ResourceContractDescriptor kTerrainAssetResourceV2Contract{
+    "TerrainAssetResource", "terrain.asset/v2"};
+
+enum class TerrainAssetVersion : std::uint8_t { V1, V2 };
 
 enum class TerrainAssetBinaryFormat : std::uint8_t {
     R32SFloat,
@@ -52,13 +57,7 @@ struct TerrainAssetTileDesc final {
     TerrainAssetBlockDesc vegetation;
 };
 
-struct TerrainStaticVegetationInstance final {
-    std::uint32_t prototypeId = 0u;
-    core::Vec3 position{};
-    std::array<float, 4> rotation{0.0f, 0.0f, 0.0f, 1.0f};
-    core::Vec3 scale{1.0f, 1.0f, 1.0f};
-    std::uint32_t variationSeed = 0u;
-};
+using TerrainStaticVegetationInstance = vegetation::StaticVegetationInstance;
 
 struct TerrainAssetBuildTile final {
     terrain::TerrainTileCoord coord;
@@ -70,6 +69,9 @@ struct TerrainAssetBuildTile final {
 };
 
 struct TerrainAssetBuildDesc final {
+    TerrainAssetVersion version = TerrainAssetVersion::V1;
+    bool hasSurfaceWeights = true;
+    bool hasVegetation = true;
     core::pmr::String resourceId{&core::defaultCpuMemoryResource()};
     core::pmr::String alias{&core::defaultCpuMemoryResource()};
     core::pmr::String status{"Contract Complete", &core::defaultCpuMemoryResource()};
@@ -85,6 +87,14 @@ struct TerrainAssetBuildDesc final {
 
 struct TerrainAssetIoResult final {
     bool success = false;
+    core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
+};
+
+struct TerrainAssetManifestIndex final {
+    bool success = false;
+    TerrainAssetVersion version = TerrainAssetVersion::V1;
+    core::pmr::Vector<ResourceDependency> dependencies{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<ResourceFileReadIntent> files{&core::defaultCpuMemoryResource()};
     core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
 };
 
@@ -114,6 +124,12 @@ struct TerrainAssetTileReadView final {
     const std::uint8_t* weightPageB = nullptr;
     std::size_t weightPageBByteCount = 0u;
 
+    bool geometryValid() const noexcept
+    {
+        const auto expected = static_cast<std::size_t>(samplesPerEdge) * samplesPerEdge;
+        return samplesPerEdge >= 2u && heights != nullptr && heightCount == expected;
+    }
+
     bool valid() const noexcept
     {
         const auto expected = static_cast<std::size_t>(samplesPerEdge) * samplesPerEdge;
@@ -127,8 +143,13 @@ struct TerrainAssetTileReadView final {
 /// YAML; every binary block has an explicit byte count and content hash.
 class ARP_API TerrainAssetWriter final {
 public:
+    TerrainAssetIoResult validate(const TerrainAssetBuildDesc& desc) const;
     TerrainAssetIoResult write(
         const TerrainAssetBuildDesc& desc, const std::filesystem::path& outputDirectory) const;
+    TerrainAssetIoResult migrateV1(ResourceManager& dependencies,
+        ResourceReference reference,
+        const std::filesystem::path& sourceManifest,
+        const std::filesystem::path& outputDirectory) const;
 };
 
 class ARP_API TerrainAssetResource final : public ResourceBase, public terrain::TerrainSurface {
@@ -140,6 +161,10 @@ public:
     TerrainAssetResource(const TerrainAssetResource& other);
 
     ResourceLoadResult load(ResourceManager& manager, const ResourceLoadContext& context) override;
+    TerrainAssetManifestIndex inspectManifest(const ResourceLoadContext& context = {}) const;
+    bool collectFileReadIntents(ResourceManager& manager,
+        core::pmr::Vector<ResourceFileReadIntent>& intents,
+        core::pmr::String& diagnostics) const override;
     std::size_t processedByteCount() const noexcept override;
     void appendContentFingerprint(core::StableHash64& hasher) const noexcept override;
 
@@ -184,6 +209,10 @@ public:
 
     float tileWorldSize() const noexcept { return tileWorldSize_; }
 
+    bool hasSurfaceWeights() const noexcept { return hasSurfaceWeights_; }
+
+    bool hasVegetation() const noexcept { return hasVegetation_; }
+
     const core::pmr::Vector<TerrainAssetLayerDesc>& layers() const noexcept { return layers_; }
 
     const core::pmr::String& vegetationCatalogResourceId() const noexcept
@@ -192,6 +221,9 @@ public:
     }
 
 private:
+    friend class TerrainAssetWriter;
+    ResourceLoadResult decode(ResourceManager& manager, const ResourceLoadContext& context);
+
     struct LoadedTile final {
         terrain::TerrainTileCoord coord;
         core::pmr::Vector<float> heights{&core::defaultCpuMemoryResource()};
@@ -207,12 +239,17 @@ private:
     std::uint32_t tileCountZ_ = 0u;
     std::uint32_t samplesPerEdge_ = 0u;
     float tileWorldSize_ = 0.0f;
+    bool hasSurfaceWeights_ = true;
+    bool hasVegetation_ = true;
     std::uint64_t generation_ = 0u;
     TerrainAssetHeightRange heightRange_{};
     core::pmr::String vegetationCatalogResourceId_{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<TerrainAssetLayerDesc> layers_{&core::defaultCpuMemoryResource()};
-    core::pmr::Vector<LoadedTile> tiles_{&core::defaultCpuMemoryResource()};
-    // One immutable copy belongs to each loaded generation. Reusing it keeps
+    using LoadedTiles = core::pmr::Vector<LoadedTile>;
+    std::shared_ptr<LoadedTiles> tiles_ = core::makeShared<LoadedTiles>();
+    // Snapshots share the immutable tile allocation of a loaded generation.
+    // A subsequent load allocates a new candidate before modifying tiles.
+    // Reusing the cached surface keeps
     // high-frequency TerrainSurface queries bounded while preserving the
     // snapshot lifetime across a subsequent resource reload.
     mutable std::mutex snapshotMutex_;

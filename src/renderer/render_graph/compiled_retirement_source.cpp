@@ -1,6 +1,6 @@
-#include "core/bounded_sequence.h"
-#include "core/diagnostic_error.h"
-#include "core/lifetime_epoch.h"
+#include "core/container/bounded_sequence.h"
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/ownership/lifetime_epoch.h"
 #include "renderer/render_graph/compiled_frame_graph.h"
 #include "renderer/render_graph/render_graph.h"
 

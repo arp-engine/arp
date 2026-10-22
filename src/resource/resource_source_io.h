@@ -1,17 +1,19 @@
 #pragma once
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "resource/resource_manager.h"
 
 namespace arp::resource {
 // Shared bounded source boundary. Async loaders must provide every source;
 // synchronous preparation may explicitly allow host IO through the context.
-inline core::BinaryFileReadResult readResourceSource(
-    const core::pmr::String& path, const ResourceLoadContext& context, std::size_t budget)
+inline core::BinaryFileReadResult readResourceSource(const core::pmr::String& path,
+    const ResourceLoadContext& context,
+    std::size_t budget,
+    bool allowEmpty = false)
 {
     if (context.sources)
         if (auto* source = context.sources->find(path)) {
             core::BinaryFileReadResult result;
-            if (source->bytes.empty() || source->bytes.size() > budget) {
+            if ((!allowEmpty && source->bytes.empty()) || source->bytes.size() > budget) {
                 result.diagnostics = "ARP-RESOURCE-SOURCE-BUDGET";
                 return result;
             }

@@ -1,7 +1,7 @@
 #include "renderer/rhi_draw_plan_bridge.h"
 
-#include "core/cpu_allocator.h"
-#include "core/diagnostic_builder.h"
+#include "core/diagnostics/diagnostic_builder.h"
+#include "core/memory/cpu_allocator.h"
 
 namespace arp::renderer {
 

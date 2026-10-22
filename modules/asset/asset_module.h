@@ -1,7 +1,7 @@
 #pragma once
 
 #include "assets/glb_animated_mesh_importer.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
 #include "reflection/reflection_macros.h"
 #include "scriptvm/runtime/value.h"

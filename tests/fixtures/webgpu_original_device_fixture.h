@@ -75,6 +75,8 @@ public:
         desc.label = label;
         desc.runtimeProfile = rhi::buildWebGpuRuntimeProfile(probe);
         auto bridge = rhi::semantics::buildWebGpuRuntimeCapabilityContract(desc.runtimeProfile);
+        if (!bridge.success)
+            std::fprintf(stderr, "%s\n", bridge.diagnostics.c_str());
         assert(bridge.success);
         desc.capabilityContract = std::move(bridge.contract);
         desc.memoryBudgetBytes = memoryBytes;

@@ -1,4 +1,5 @@
 #pragma once
+#include "bindless_scene_attachment_fixture.h"
 #include "bindless_scene_geometry_data_fixture.h"
 #include "bindless_scene_geometry_readback_fixture.h"
 #include "original_bindless_graphics_stream_fixture.h"
@@ -9,6 +10,8 @@
 #include <thread>
 
 namespace arp::test {
+using namespace renderer;
+
 // Platform upload fixtures supply actual completed images. All scene bytes,
 // geometry and command construction are shared with the Null correspondence
 // tests; native actors are issued only through the public immutable factory.
@@ -20,8 +23,73 @@ struct BindlessNativeSceneDataFixture : BindlessSceneGeometryDataFixture, Comple
     using BindlessSceneGeometryDataFixture::configureBuffer;
     using BindlessSceneGeometryDataFixture::configureOrdinaryBuffer;
     using CompletedTextures::completedTexturePublicationVersion;
-    rhi::BindlessPbrGeometryDraw16 draw;
+    renderer::BindlessPbrGeometryDraw16 draw;
     bool cancelBeforeSubmit = false;
+    // Baseline per entry, then finite representative failure cases per pass.
+    enum class Terminal {
+        Baseline,
+        ColdCancel,
+        RetiredRecord,
+        RetiredSubmit,
+        CallerDrop,
+        PendingDrop,
+        RetiredPending,
+        UnknownSubmit,
+        UnknownFence,
+        ShutdownDrain,
+        MaterialRangeRejected
+    };
+    Terminal terminal = Terminal::Baseline;
+    bool retiredDeviceExpected = false;
+
+    bool originalDeviceLifetimeRetired() const noexcept
+    {
+        return retiredDeviceExpected || terminal == Terminal::RetiredRecord
+            || terminal == Terminal::RetiredSubmit || terminal == Terminal::RetiredPending;
+    }
+
+    BindlessSceneAttachmentFixture::Observer observeAttachment = nullptr;
+    using SubmittedObserver = void (*)(rhi::GpuDevice&,
+        std::shared_ptr<const rhi::OriginalBindlessGraphicsExecution>&,
+        const std::shared_ptr<rhi::OriginalCommandStateTransaction>&,
+        const std::shared_ptr<const rhi::OriginalCommandBindlessRootSource>&,
+        rhi::OriginalBindlessGraphicsExecutionIntent,
+        unsigned);
+    SubmittedObserver observeSubmitted = nullptr;
+
+    BindlessNativeSceneDataFixture()
+    {
+        this->initializeTexturePixels = &BindlessSceneAttachmentFixture::initializeTexturePixels;
+    }
+
+    void releaseSceneInputs() const
+    {
+        this->geometry->actors = {};
+        this->geometry->leases = {};
+        this->geometry->resultReadback.reset();
+        // The vector grew inside the source quota. Release its capacity before
+        // the original Root fixture verifies that quota has returned to zero.
+        decltype(this->state->shaderActors){}.swap(this->state->shaderActors);
+    }
+
+    template <class Root>
+    rhi::OriginalBindlessInitializedGraphicsInputs sceneInputs(
+        const Root& root, std::uint64_t commands) const
+    {
+        // Authored fixture: two PBR materials or one terrain material, one
+        // instance and one page. Each resource validation can scan the tables
+        // twice; descriptor lookups scan the full original declaration set.
+        const auto materials = this->terrain() ? 1u : 2u;
+        const auto references = this->terrain() ? 27u : 5u;
+        std::uint64_t declarations = root->elements().size();
+        for (const auto& domain : root->ordinaryDomains())
+            declarations += domain.source->frozenElements().size();
+        const auto tables = root->authorization()->package().artifact().tables.size();
+        const auto lookups = 4u + 3u + 2u * materials;
+        const auto visits = lookups * (declarations + tables)
+            + materials * (2u * references + 1u) * tables + commands * declarations;
+        return {2u, true, visits, commands};
+    }
 
     void configureAdmission(rhi::OriginalCommandAdmissionBudget& budget) const
     {
@@ -39,6 +107,12 @@ struct BindlessNativeSceneDataFixture : BindlessSceneGeometryDataFixture, Comple
         budget.maxCommands += images;
         budget.maxReferences += images;
         budget.maxInputDescriptors += images;
+        // A sampled image has an explicit transition plus scoped Root reads.
+        // Bound each original command's possible observation; graph capture
+        // later counts and stores only the actual canonical observations.
+        const auto observations = images * (1u + budget.maxCommands);
+        budget.maxTextureRanges += observations;
+        budget.maxStateObservations += observations;
         budget.maxCallbackTickets = budget.maxCallbackRegistrations = 0u;
         budget.maxCpuBytes[static_cast<std::size_t>(
             rhi::OriginalCommandAdmissionBudget::CpuDomain::Callback)] = 0u;
@@ -71,14 +145,11 @@ public:
     void operator()(const Root& root, const Inventory& inventory, rhi::GpuDevice* device) const
     {
         if (!device) {
-            data.geometry->actors = {};
-            data.geometry->leases = {};
-            data.geometry->resultReadback.reset();
-            data.state->shaderActors.clear();
+            data.releaseSceneInputs();
             return;
         }
-        rhi::OriginalBindlessSceneContentInputs scene{1u, true, data.family, 4096u, 4096u, 4096u};
-        require(rhi::OriginalBindlessSceneContentContract::validateRootInput(root, scene));
+        arp::test::BindlessSceneConformanceInputs scene{1u, true, data.family, 4096u, 4096u, 4096u};
+        require(arp::test::BindlessSceneConformanceContract::validateRootInput(root, scene));
         OriginalBindlessGraphicsStreamFixture::execute(root, inventory, *device, *this);
     }
 
@@ -91,7 +162,7 @@ public:
 
     const rhi::BindlessShaderArtifact* artifact = nullptr;
     std::shared_ptr<typename Data::Geometry> geometry;
-    rhi::BindlessPbrGeometryDraw16 draw;
+    renderer::BindlessPbrGeometryDraw16 draw;
 
     explicit BindlessNativeSceneExecutionFixture(Data value)
         : data(std::move(value)), artifact(data.artifact), geometry(data.geometry), draw(data.draw)
@@ -113,6 +184,28 @@ public:
         using namespace rhi;
         using Public = OriginalBindlessGraphicsExecution;
         const auto& program = binding->originalProgram();
+        const BindlessSceneConformanceInputs content{1u, true, data.family, 4096u, 4096u, 4096u};
+        const auto* contentId = BindlessSceneConformanceContract::inspectInitialized<Content>(root,
+            inventory,
+            program,
+            data.state->shaderActors.data(),
+            data.state->shaderActors.size(),
+            content);
+        if (data.terminal == Data::Terminal::MaterialRangeRejected) {
+            assert(contentId && core::StringView(contentId) == "RHI-BINDLESS-PBR-GEOMETRY-SELECTION"
+                && tx->journalEmpty());
+            for (std::size_t i = 0u; i < results.count; ++i)
+                assert(!results.bindings[i]->originalResult()->publishedBytes());
+            std::printf(
+                "BINDLESS_NATIVE_SCENE_RANGE_REJECTED entry=%s diagnostic=%s caller-conformance unpublished\n",
+                data.vertex->entry.c_str(),
+                contentId);
+            return;
+        }
+        if (contentId)
+            std::fprintf(
+                stderr, "Caller scene conformance %s: %s\n", data.vertex->entry.c_str(), contentId);
+        require(contentId);
         const auto bytes = tx->originalMetadataQuota()->limitBytes();
         const auto quota = [&] {
             return core::makeShared<core::CpuMemoryQuota>(bytes);
@@ -138,8 +231,20 @@ public:
         budget.intent = {1u, true};
         budget.requireWorkloadRetention = true;
         const auto resources = static_cast<std::uint32_t>(inventory->sources().size());
-        const auto ownerCeiling = inventory->originalBudget().maxGraphOwners;
-        budget.closure = {3u, true, resources, ownerCeiling, ownerCeiling, bytes};
+        // The graph union excludes backend-private custody. Bound the native
+        // projection's resource slots, descriptor-group slots, stage arrays
+        // and pipeline slots separately; Vulkan's projection is a subset.
+        const auto groups = 1u + root->ordinaryDomains().size();
+        const auto nativeOwners = resources * (10u + 2u) + groups * 8u + 9u;
+        // Each entry can retain an initialized actor, its exclusive quota
+        // domains and a completed-depth proof. Four roots cover either backend.
+        const auto actorOwners = resources * (2u + Content::exclusiveCpuQuotaSlots);
+        std::uint32_t ownerCeiling = 0u;
+        assert(nativeOwners + actorOwners + 4u <= UINT32_MAX);
+        require(inventory->cpuOwnerCount(
+            static_cast<std::uint32_t>(nativeOwners + actorOwners + 4u), UINT32_MAX, ownerCeiling));
+        budget.closure = {
+            3u, true, resources, static_cast<std::uint32_t>(nativeOwners), ownerCeiling, bytes};
         budget.closure.maxInitializedGeometryActors = nativeGeometry.size();
         budget.closure.maxInitializedGeometryBytes = geometryBytes;
         budget.closure.initializedShader = {1u,
@@ -160,6 +265,8 @@ public:
         require(id);
         assert(closure);
         const auto closureOwners = closure->retainedOwnerCount();
+        budget.closure.maxNativeOwners = closure->nativeOwnerCount();
+        budget.closure.maxRetainedOwners = closureOwners;
         // Both native profiles have one attachment; this is a finite test
         // ceiling. The actual native pass reports its exact count below.
         const auto nativeCeiling = inventory->originalBudget().maxNativePayloadObjects - 1u;
@@ -177,6 +284,7 @@ public:
         nativeShader.clear();
         nativeGeometry = {};
         assert(!closureQuota->liveBytes() && !passQuota->liveBytes() && !physical->used());
+        physical = core::makeShared<core::AtomicCapacityBudget>(budget.pass.maxNativeObjects);
 
         const auto operations = program->operations().size();
         budget.fetch = {2u, true, operations, 1u, 1u, operations * 2u, 3u};
@@ -207,23 +315,79 @@ public:
         inputs.initializedShader = data.state->shaderActors.data();
         inputs.initializedShaderCount = data.state->shaderActors.size();
         inputs.readbacks = results;
-        inputs.scene = {1u, true, data.family, resources * 4u, resources * 4u, operations};
+        inputs.initializedGraphics = data.sceneInputs(root, operations);
         auto* extension =
             static_cast<BindlessCrossExtension*>(device.queryInterface(kExtensionBindlessCross));
         assert(extension);
         core::pmr::String diagnostic;
         auto missing = inputs;
-        missing.scene = {};
+        missing.initializedGraphics = {};
         assert(!extension->prepareOriginalGraphicsExecution(device, missing, budget, diagnostic)
-            && diagnostic == "RHI-BINDLESS-SCENE-CONTENT-INPUTS-REQUIRED");
+            && diagnostic == "RHI-BINDLESS-INITIALIZED-GRAPHICS-INPUTS-REQUIRED");
         assert(!closureQuota->liveBytes() && !physical->used() && tx->journalEmpty());
+        {
+            core::CpuMemoryQuotaLease pressure(closureQuota, closureQuota->limitBytes());
+            assert(pressure.charged());
+            assert(!extension->prepareOriginalGraphicsExecution(device, inputs, budget, diagnostic)
+                && !diagnostic.empty() && tx->journalEmpty() && !physical->used()
+                && !binding->originalResult()->publishedBytes());
+        }
+        assert(!closureQuota->liveBytes() && !passQuota->liveBytes()
+            && !submissionQuota->liveBytes() && !viewQuota->liveBytes());
         auto issuer =
             extension->prepareOriginalGraphicsExecution(device, inputs, budget, diagnostic);
         require(issuer ? nullptr : diagnostic.c_str());
         assert(issuer && !issuer->recordingProven() && !issuer->submissionCompleted());
-        require(Public::record(issuer, budget.intent));
+        assert(Public::submit(issuer, budget.intent) && tx->journalEmpty());
+        using Terminal = typename Data::Terminal;
+        if (data.terminal == Terminal::ColdCancel) {
+            require(issuer->cancel());
+        } else if (data.terminal == Terminal::CallerDrop) {
+            issuer.reset();
+        } else if (data.terminal == Terminal::RetiredRecord) {
+            device.retireOriginalDeviceLifetime();
+            assert(Public::record(issuer, budget.intent));
+        } else {
+            require(Public::record(issuer, budget.intent));
+            assert(Public::record(issuer, budget.intent));
+            if (data.terminal == Terminal::RetiredSubmit) {
+                device.retireOriginalDeviceLifetime();
+                assert(Public::submit(issuer, budget.intent));
+                issuer.reset();
+            }
+        }
         assert(!binding->originalResult()->publishedBytes());
-        if (data.cancelBeforeSubmit) {
+
+        const bool inFlight = data.terminal >= Terminal::PendingDrop;
+        const bool droppedSuccess =
+            data.terminal == Terminal::PendingDrop || data.terminal == Terminal::ShutdownDrain;
+        if (inFlight) {
+            assert(data.observeSubmitted);
+            data.observeSubmitted(
+                device, issuer, tx, root, budget.intent, static_cast<unsigned>(data.terminal));
+            assert(tx->status()
+                == (droppedSuccess ? OriginalCommandStateTransaction::Status::Committed
+                                   : OriginalCommandStateTransaction::Status::Invalidated));
+            for (std::size_t i = 0u; i < results.count; ++i)
+                assert(bool(results.bindings[i]->originalResult()->publishedBytes())
+                    == droppedSuccess);
+            if (droppedSuccess) {
+                std::uint32_t fault = ~0u;
+                std::memcpy(&fault, binding->originalResult()->publishedBytes(), sizeof(fault));
+                assert(!fault);
+                if (results.count == 2u)
+                    require(BindlessSceneGeometryReadbackFixture::inspect(
+                        results.bindings[1u]->originalResult()->publishedBytes(),
+                        resultBytes,
+                        terrain()));
+            }
+        } else if (data.terminal != Terminal::Baseline) {
+            issuer.reset();
+            assert(tx->status() == OriginalCommandStateTransaction::Status::Abandoned
+                || tx->status() == OriginalCommandStateTransaction::Status::Invalidated);
+            for (std::size_t i = 0u; i < results.count; ++i)
+                assert(!results.bindings[i]->originalResult()->publishedBytes());
+        } else if (data.cancelBeforeSubmit) {
             require(issuer->cancel());
             assert(tx->status() == OriginalCommandStateTransaction::Status::Abandoned);
             for (std::size_t i = 0u; i < results.count; ++i)
@@ -241,19 +405,50 @@ public:
             assert(!fault);
             for (std::size_t i = 0u; i < results.count; ++i)
                 assert(results.bindings[i]->originalResult()->publishedBytes());
+            std::printf("BINDLESS_SCENE_FAULT_WORD entry=%s scenario=%s word=%u\n",
+                data.vertex->entry.c_str(),
+                "success",
+                fault);
             if (results.count == 2u)
-                require(BindlessSceneGeometryReadbackFixture::inspect(
+                require(BindlessSceneGeometryReadbackFixture::inspectAndReport(
+                    data.vertex->entry.c_str(),
                     results.bindings[1u]->originalResult()->publishedBytes(),
                     resultBytes,
                     terrain()));
+            assert(data.observeAttachment);
+            data.observeAttachment(BindlessSceneAttachmentFixture::completedTarget(*inventory),
+                data.vertex->entry.c_str(),
+                terrain(),
+                results.count == 2u ? results.bindings[1u]->originalResult()->publishedBytes()
+                                    : nullptr,
+                false);
         }
         issuer.reset();
+        if (inFlight) {
+            // Fault retirement occurs inside the real completion handler,
+            // before that handler drops its final closure/pass owners. Observe
+            // actual custody drain rather than treating fault release as it.
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (physical->used() || closureQuota->liveBytes() || passQuota->liveBytes()
+                || submissionQuota->liveBytes() || viewQuota->liveBytes()) {
+                assert(std::chrono::steady_clock::now() < deadline);
+                std::this_thread::yield();
+            }
+        }
         assert(!physical->used() && !closureQuota->liveBytes() && !passQuota->liveBytes()
             && !submissionQuota->liveBytes() && !viewQuota->liveBytes());
-        std::printf("BINDLESS_NATIVE_SCENE_PUBLIC_LIFECYCLE entry=%s outcome=%s results=%zu\n",
-            data.vertex->entry.c_str(),
-            data.cancelBeforeSubmit ? "cancelled-unpublished" : "completed",
-            results.count);
+        if (data.terminal == Terminal::Baseline)
+            std::printf("BINDLESS_NATIVE_SCENE_PUBLIC_LIFECYCLE entry=%s outcome=%s results=%zu\n",
+                data.vertex->entry.c_str(),
+                data.cancelBeforeSubmit ? "cancelled-unpublished" : "completed",
+                results.count);
+        else
+            std::printf(
+                "BINDLESS_NATIVE_SCENE_FAILURE_LIFECYCLE entry=%s terminal=%u outcome=%s results=%zu\n",
+                data.vertex->entry.c_str(),
+                static_cast<unsigned>(data.terminal),
+                droppedSuccess ? "completed" : "unpublished",
+                results.count);
     }
 };
 } // namespace arp::test

@@ -1,5 +1,5 @@
 #pragma once
-#include "core/math.h"
+#include "core/math/math.h"
 #include "rhi/frontend/command_sources.h"
 
 #include <algorithm>

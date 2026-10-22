@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "null_backend_internal.h"
 #include "rhi/frontend/pipeline_push_constant_abi_identity.h"
 #include "rhi/frontend/pipeline_state_copy.h"

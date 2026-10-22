@@ -1,6 +1,6 @@
 #pragma once
+#include "core/encoding/yaml_contract.h"
 #include "core/io/atomic_file_service.h"
-#include "core/yaml_contract.h"
 
 namespace arp::core::io {
 // Schema supplies type(), version(), validate(Node, diagnostic). Validation of

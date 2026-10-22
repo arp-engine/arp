@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/bounded_retainer.h"
-#include "core/bounded_sequence.h"
+#include "core/container/bounded_sequence.h"
+#include "core/ownership/bounded_retainer.h"
 #include "rhi/frontend/command_retention_validation.h"
 
 #include <new>

@@ -1,5 +1,5 @@
 #pragma once
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/frontend/command_indirect_commands.h"
 #include "rhi/frontend/visibility/instance64.h"
 #include "rhi/gpu_resource_types.h"

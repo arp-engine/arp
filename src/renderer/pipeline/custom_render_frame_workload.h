@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "gui/gui.h"
 #include "renderer/particles/particle_system.h"
 #include "renderer/particles/particle_texture_resource.h"

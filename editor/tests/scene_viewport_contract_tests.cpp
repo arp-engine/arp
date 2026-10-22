@@ -1,4 +1,5 @@
-#include "2d/scene_runtime_codec.h"
+#include "2d/sprite_animation_component.h"
+#include "2d/tile_map_resource_component.h"
 #include "3d/authoring_components.h"
 #include "3d/collider_component.h"
 #include "3d/components.h"
@@ -16,7 +17,7 @@
 #include "editor/viewport/editor_scene_viewport_texture_cache.h"
 #include "editor/viewport/editor_scene_viewport_texture_source.h"
 #include "editor/workspace/editor_scene_document.h"
-#include "physics/physics_types.h"
+#include "physics/3d/physics_types.h"
 #include "renderer/gui/gui_rhi_draw_commands.h"
 #include "renderer/materials/texture_upload.h"
 #include "resource/mesh_asset_resources.h"
@@ -227,8 +228,74 @@ void loadMaterial(resource::ResourceManager& manager,
 
 } // namespace
 
+void testTerrainGeometryPreview()
+{
+    constexpr const char* terrainId = "3f6fbcca-17d2-46a6-9817-2af357399301";
+    const auto path =
+        std::filesystem::temp_directory_path() / "arp_editor_terrain_geometry_preview";
+    resource::TerrainAssetBuildDesc desc;
+    desc.version = resource::TerrainAssetVersion::V2;
+    desc.resourceId = text(terrainId);
+    desc.hasSurfaceWeights = false;
+    desc.hasVegetation = false;
+    desc.bounds = {-2.0f, 2.0f, -2.0f, 2.0f};
+    desc.tileCountX = desc.tileCountZ = 1u;
+    desc.samplesPerEdge = 3u;
+    desc.tileWorldSize = 4.0f;
+    resource::TerrainAssetBuildTile tile;
+    tile.heights = {0, 0, 0, 0, 2, 0, 0, 0, 0};
+    desc.tiles.push_back(std::move(tile));
+    assert(resource::writeTerrainAsset(desc, path).success);
+    resource::ResourceManager resources;
+    assert(resource::loadTerrainAssetResource(
+        resources, reference(terrainId, "TerrainAssetResource"), path / "terrain.asset.yaml")
+            .success);
+    loadSource(resources);
+    loadShader(resources);
+    loadMaterial(resources);
+    editor::EditorSceneDocument document;
+    auto& scene = document.scene();
+    auto* mesh =
+        scene.findObject(document.selectedObject())->getComponent<scene3d::MeshComponent>();
+    assert(mesh);
+    mesh->set_enabled(false);
+    auto& object = scene.createObject(text("Terrain"));
+    auto& component = object.addComponent<scene3d::TerrainComponent>();
+    component.set_resource_id(text(terrainId));
+    component.set_material_resource_id(text(kMaterialId));
+    const auto snapshot = scene.extractTraversalSnapshot({});
+    const auto frame = editor::buildEditorSceneViewportFrame(
+        scene, snapshot, 1u, 640u, 480u, {0u, 0u, 640u, 480u}, &resources, 1u);
+    assert(frame.valid() && frame.frame.drawItems.size() == 1u);
+    assert(
+        frame.frame.drawItems.front().geometry == editor::EditorSceneViewportGeometry::TerrainTile);
+    const auto resolved = editor::resolveEditorSceneViewportResources(frame.frame, resources);
+    assert(resolved.valid() && resolved.items.front().vertexCount == 9u
+        && resolved.items.front().indexCount == 24u);
+    auto device = rhi::createNullDevice();
+    const auto bytes = 9u * sizeof(assets::MeshVertex) + 24u * sizeof(std::uint32_t);
+    editor::EditorSceneViewportMeshCache cache({1u, bytes});
+    const auto uploaded = cache.acquire(*device, resources, resolved.items.front());
+    assert(uploaded.valid() && uploaded.mesh->vertexCount() == 9u);
+    assert(cache.acquire(*device, resources, resolved.items.front()).reused);
+    editor::EditorSceneViewportMeshCache tooSmall({1u, bytes - 1u});
+    assert(tooSmall.acquire(*device, resources, resolved.items.front()).diagnostic
+        == editor::EditorSceneViewportMeshCacheDiagnostic::BudgetExceeded);
+    auto forged = resolved.items.front();
+    forged.vertexCount = 1u;
+    assert(tooSmall.acquire(*device, resources, forged).diagnostic
+        == editor::EditorSceneViewportMeshCacheDiagnostic::ResolvedMetadataMismatch);
+    auto scaled = frame.frame;
+    scaled.drawItems.front().worldTransform.scale.x = 2.0f;
+    assert(editor::validateEditorSceneViewportFrame(scaled).diagnostic
+        == editor::EditorSceneViewportDiagnostic::TerrainTransformUnsupported);
+    cache.clearAfterDeviceIdle();
+    assert(cache.residentMeshCount() == 0u);
+}
+
 int main()
 {
+    testTerrainGeometryPreview();
     {
         resource::ResourceManager gizmoResources;
         scene::Scene terrainAuthoringScene;
@@ -897,6 +964,11 @@ int main()
     assert(meshComponent != nullptr);
     meshComponent->set_resource_id(text(kMeshId));
     meshComponent->set_material_resource_id(text(kMaterialId));
+    auto& skyComponent = meshObject->addComponent<scene3d::SkyComponent>();
+    skyComponent.set_zenith_color(0.04f, 0.12f, 0.3f);
+    skyComponent.set_horizon_color(0.8f, 0.2f, 0.1f);
+    skyComponent.set_sun_direction(1.0f, 2.0f, 3.0f);
+    skyComponent.set_sun_color(0.3f, 0.5f, 0.7f);
     const auto sceneSnapshot = sceneDocument.extractTraversalSnapshot({});
     const auto invalidExtentFrame = editor::buildEditorSceneViewportFrame(
         sceneDocument, sceneSnapshot, 7, 1280, 720, {16, 32, 800, 0});
@@ -905,7 +977,7 @@ int main()
     const auto builtFrame = editor::buildEditorSceneViewportFrame(
         sceneDocument, sceneSnapshot, 7, 1280, 720, {16, 32, 800, 600});
     assert(builtFrame.valid());
-    assert(builtFrame.frame.contractVersion == 2);
+    assert(builtFrame.frame.contractVersion == 4);
     assert(builtFrame.frame.sceneId == sceneDocument.sceneId());
     assert(builtFrame.frame.stateVersion == 7);
     assert(builtFrame.frame.cameraObjectId == cameraObject->id());
@@ -919,6 +991,20 @@ int main()
     assert(builtFrame.frame.drawItems[0].materialResourceId == kMaterialId);
     assert(builtFrame.frame.cameraProjectionMatrix.m[0]
         == core::perspective(60.0f, 4.0f / 3.0f, 0.1f, 1000.0f).m[0]);
+    assert(builtFrame.frame.sky.present);
+    assert(builtFrame.frame.sky.zenith.x == 0.04f && builtFrame.frame.sky.zenith.y == 0.12f
+        && builtFrame.frame.sky.zenith.z == 0.3f);
+    assert(builtFrame.frame.sky.horizon.x == 0.8f && builtFrame.frame.sky.horizon.y == 0.2f
+        && builtFrame.frame.sky.horizon.z == 0.1f);
+    assert(builtFrame.frame.sky.sunDirection.x == 1.0f
+        && builtFrame.frame.sky.sunDirection.y == 2.0f
+        && builtFrame.frame.sky.sunDirection.z == 3.0f);
+    assert(builtFrame.frame.sky.sunColor.x == 0.3f && builtFrame.frame.sky.sunColor.y == 0.5f
+        && builtFrame.frame.sky.sunColor.z == 0.7f);
+    auto invalidSkyFrame = builtFrame.frame;
+    invalidSkyFrame.sky.domeRadius = 0.0f;
+    assert(editor::validateEditorSceneViewportFrame(invalidSkyFrame).diagnostic
+        == editor::EditorSceneViewportDiagnostic::InvalidSkyParameters);
 
     meshObject->addComponent<scene2d::TileMapResourceComponent>(
         core::SharedCallback<resource::ResourceManager*()>{},

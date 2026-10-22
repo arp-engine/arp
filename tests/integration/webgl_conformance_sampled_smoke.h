@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "platform/render_system_ordered_graphics.h"
 #include "renderer/render_graph/conformance_sampled_recorder.h"
 #include "renderer/render_graph/conformance_storage_mrt_recorder.h"

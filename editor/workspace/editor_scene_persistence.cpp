@@ -1,6 +1,6 @@
 #include "editor/workspace/editor_scene_persistence.h"
 
-#include "core/filesystem_path.h"
+#include "core/io/filesystem_path.h"
 
 #include <system_error>
 
@@ -23,7 +23,7 @@ bool EditorScenePersistence::SceneSchema::validate(
 {
     core::pmr::String yaml(&core::defaultCpuMemoryResource());
     try {
-        const auto serialized = core::YamlContract::Node::serialize(root);
+        const auto serialized = core::YamlContract::serialize(root);
         yaml.assign(serialized.data(), serialized.size());
     } catch (...) {
         diagnostic = "EDITOR-SCENE-YAML-SERIALIZE";

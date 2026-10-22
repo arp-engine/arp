@@ -1,5 +1,5 @@
 #pragma once
-#include "core/utf8.h"
+#include "core/text/utf8.h"
 #include "rhi/backends/webgpu/webgpu_texture_readback_cold_budget_lowering.h"
 
 namespace arp::rhi_webgpu {

@@ -20,7 +20,7 @@
 // creation. The block-aware upload math (bufferRowLength) is exercised by the
 // Vulkan device contract test; here we cover the sizing/creation contract.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/gpu_common.h"
 #include "rhi/gpu_resources.h"

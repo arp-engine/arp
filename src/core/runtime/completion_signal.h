@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/monotonic_id_sequence.h"
+#include "core/ownership/monotonic_id_sequence.h"
 
 namespace arp::core::runtime {
 

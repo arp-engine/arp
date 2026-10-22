@@ -1,5 +1,5 @@
 #pragma once
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/backends/webgpu/webgpu_native_ordinary_graphics_triangle_range.h"
 #include "rhi/backends/webgpu/webgpu_original_transfer_state_validation.h"
 

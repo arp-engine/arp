@@ -1,10 +1,10 @@
-#include "core/atomic_capacity.h"
+#include "core/memory/atomic_capacity.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "rhi/frontend/bindless_snapshot.h"
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/render_graph/frame_graph_resource_pool.h"
 #include "renderer/render_graph/render_graph_types.h"
 #include "rhi/frontend/ordered_graphics_execution.h"

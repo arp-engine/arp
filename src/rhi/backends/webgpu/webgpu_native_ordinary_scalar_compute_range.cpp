@@ -1,6 +1,6 @@
 #include "rhi/backends/webgpu/webgpu_native_ordinary_scalar_compute_range.h"
 
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 
 #include <algorithm>
 

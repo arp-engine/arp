@@ -1,6 +1,6 @@
 #include "../fixtures/compute_fixed_words_wgsl_fixture.h"
 #include "../fixtures/spirv_binary_mutation_fixture.h"
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "rhi/frontend/command_draw_validation.h"
 #include "shader/compute_indirect_producer_proof.h"
 #include "shader/fragment_atomic_write_proof.h"

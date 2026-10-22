@@ -1,5 +1,5 @@
 #pragma once
-#include "core/shared_identity_projection.h"
+#include "core/ownership/shared_identity_projection.h"
 
 #include <array>
 #include <cassert>

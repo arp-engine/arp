@@ -1,5 +1,5 @@
 #include "cpp_math.h"
-#include "scriptvm/runtime/cpp_plugin_api.h"
+#include "scriptvm/plugin/cpp_plugin_api.h"
 
 namespace arp::tests::cpp_plugin {
 

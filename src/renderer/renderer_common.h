@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/render_frame.h"
 #include "renderer/shader_package_reflection.h"
 #include "rhi/gpu_device.h"

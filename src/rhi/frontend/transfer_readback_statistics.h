@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/ibl_bake.h"
-#include "core/strided_image_statistics.h"
+#include "core/image/strided_image_statistics.h"
+#include "core/math/half_float.h"
 #include "rhi/gpu_common.h"
 
 #include <cstring>
@@ -53,7 +53,7 @@ inline core::ImageScalarStatistics analyzeTextureReadback(TextureFormat format,
             if (format == TextureFormat::Rg16Float || format == TextureFormat::Rgba16Float) {
                 std::uint16_t bits;
                 std::memcpy(&bits, pixel, sizeof(bits));
-                return core::ibl::halfToFloat(bits);
+                return core::halfToFloat(bits);
             }
             return canonicalColorLuminance(format, pixel);
         });
@@ -121,7 +121,7 @@ inline core::ImageChannelStatistics analyzeTextureReadbackChannels(TextureFormat
             if (format == TextureFormat::Rg16Float || format == TextureFormat::Rgba16Float) {
                 std::uint16_t bits;
                 std::memcpy(&bits, pixel + channel * sizeof(bits), sizeof(bits));
-                return core::ibl::halfToFloat(bits);
+                return core::halfToFloat(bits);
             }
             const auto index =
                 format == TextureFormat::Bgra8Unorm && channel < 3u ? 2u - channel : channel;

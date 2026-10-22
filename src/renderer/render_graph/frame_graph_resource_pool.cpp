@@ -1,10 +1,10 @@
 #include "renderer/render_graph/frame_graph_resource_pool.h"
 
-#include "core/bounded_retainer.h"
-#include "core/bounded_sequence.h"
-#include "core/cpu_allocator.h"
-#include "core/stable_vector_erase.h"
-#include "core/unsigned_range.h"
+#include "core/algorithm/stable_vector_erase.h"
+#include "core/container/bounded_sequence.h"
+#include "core/math/unsigned_range.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/bounded_retainer.h"
 #include "renderer/render_graph/render_graph.h"
 
 #include <algorithm>

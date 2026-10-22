@@ -1,5 +1,5 @@
 #include "2d/script_value_memory.h"
-#include "core/checked_integer_cast.h"
+#include "core/math/checked_integer_cast.h"
 #include "tests/fixtures/script_component_fixture.h"
 
 #include <cassert>

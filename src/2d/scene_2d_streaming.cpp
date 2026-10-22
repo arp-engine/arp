@@ -1,6 +1,6 @@
 #include "2d/scene_2d_streaming.h"
 
-#include "core/geometry.h"
+#include "core/math/geometry.h"
 
 #include <algorithm>
 #include <utility>

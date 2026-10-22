@@ -383,34 +383,57 @@ elseif(WIN32)
 endif()
 
 add_library(arp_core
-    src/core/base64.cpp
-    src/core/cpu_allocator.cpp
-    src/core/process_runner.cpp
-    src/core/process_identity_lock.cpp
-    src/core/immutable_build_input_snapshot.cpp
-    src/core/compiler_toolchain_layout.cpp
-    src/core/file_io.cpp
+    src/core/encoding/base64.cpp
+    src/core/memory/cpu_allocator.cpp
+    src/core/system/process_runner.cpp
+    src/core/system/process_identity_lock.cpp
+    src/core/io/file_io.cpp
     src/core/io/blocking_file_reader.cpp
     src/core/io/file_service.cpp
     src/core/io/atomic_file_service.cpp
+    src/core/io/staged_directory.cpp
     src/core/io/thread_pool_file_backend.cpp
-    src/core/log.cpp
-    src/core/sha256.cpp
+    src/core/diagnostics/log.cpp
+    src/core/hash/sha256.cpp
     src/core/runtime/async_runtime.cpp
     src/core/runtime/completion_queue.cpp
     src/core/runtime/work_service.cpp
-    src/core/sha1.cpp
-    src/pcg/foliage_card_baker.cpp
-    src/pcg/procedural_textures.cpp
-    src/pcg/world_terrain.cpp
+    src/core/hash/sha1.cpp
 )
 target_include_directories(arp_core PUBLIC src)
 target_link_libraries(arp_core PUBLIC arp_mimalloc)
+
+# Compiler installation and build-input snapshots belong to ScriptVM plugins.
+add_library(arp_scriptvm_plugin_build
+    src/scriptvm/plugin/immutable_build_input_snapshot.cpp
+    src/scriptvm/plugin/compiler_toolchain_layout.cpp)
+target_link_libraries(arp_scriptvm_plugin_build PUBLIC arp_core)
+target_include_directories(arp_scriptvm_plugin_build PUBLIC src)
+
+# Runtime domains have no dependency on procedural generation.
+add_library(arp_lod INTERFACE)
+target_link_libraries(arp_lod INTERFACE arp_core)
+add_library(arp_vegetation INTERFACE)
+target_link_libraries(arp_vegetation INTERFACE arp_lod)
+add_library(arp_terrain src/3d/terrain/terrain_runtime.cpp)
+target_include_directories(arp_terrain PUBLIC src)
+target_link_libraries(arp_terrain PUBLIC arp_lod arp_reflection)
+
+option(ARP_ENABLE_PCG "Build optional procedural generation and baking" ON)
+if(ARP_ENABLE_PCG)
+    add_library(arp_pcg
+        src/pcg/foliage_card_baker.cpp
+        src/pcg/procedural_textures.cpp
+        src/pcg/world_terrain.cpp)
+    target_include_directories(arp_pcg PUBLIC src)
+    target_link_libraries(arp_pcg PUBLIC arp_terrain arp_vegetation)
+endif()
+
 # Bundle manifest verification is intentionally synchronous and hashes every
 # staged file. Keep this security-critical loop optimized in Debug so a full
 # validation remains a practical startup gate without changing the algorithm.
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    set_source_files_properties(src/core/sha256.cpp PROPERTIES
+    set_source_files_properties(src/core/hash/sha256.cpp PROPERTIES
         COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O2>")
 endif()
 
@@ -791,7 +814,7 @@ add_library(arp_assets
 target_include_directories(arp_assets
     PUBLIC src 3rd/stb 3rd/fkYAML/include 3rd/bc7enc
     PRIVATE modules/asset)
-target_link_libraries(arp_assets PUBLIC arp_animation arp_asset_import_deps)
+target_link_libraries(arp_assets PUBLIC arp_animation arp_asset_import_deps arp_core)
 
 add_library(arp_network
     src/network/endpoint.cpp
@@ -858,6 +881,10 @@ add_executable(arp_reflection_native_object_tests
 target_include_directories(arp_reflection_native_object_tests PRIVATE . src)
 target_link_libraries(arp_reflection_native_object_tests PRIVATE arp_reflection)
 
+add_executable(arp_reflection_yaml_serialization_tests tests/unit/reflection_yaml_serialization_tests.cpp)
+target_link_libraries(arp_reflection_yaml_serialization_tests PRIVATE arp_reflection)
+add_test(NAME arp_reflection_yaml_serialization_tests COMMAND arp_reflection_yaml_serialization_tests)
+
 add_executable(arp_reflection_registry_tests
     tests/unit/reflection_registry_tests.cpp)
 target_include_directories(arp_reflection_registry_tests PRIVATE . src)
@@ -869,14 +896,14 @@ target_include_directories(arp_reflection_native_scene_lifetime_smoke PRIVATE . 
 target_link_libraries(arp_reflection_native_scene_lifetime_smoke PRIVATE arp_scene)
 
 add_library(arp_physics
-    src/physics/backends/jolt/jolt_contact_listener_bridge.cpp
-    src/physics/backends/jolt/jolt_physics_world.cpp
-    src/physics/backends/jolt/jolt_shape_factory.cpp
-    src/physics/physics_module.cpp
-    src/physics/physics_types.cpp
+    src/physics/3d/backends/jolt/jolt_contact_listener_bridge.cpp
+    src/physics/3d/backends/jolt/jolt_physics_world.cpp
+    src/physics/3d/backends/jolt/jolt_shape_factory.cpp
+    src/physics/3d/physics_module.cpp
+    src/physics/3d/physics_types.cpp
 )
 target_include_directories(arp_physics PUBLIC src)
-target_link_libraries(arp_physics PUBLIC arp_core arp_scene arp_jolt_headers)
+target_link_libraries(arp_physics PUBLIC arp_core arp_reflection arp_jolt_headers)
 if(MINGW AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
     # Jolt's public definitions advertise SSE4.2, while ThirdParty.cmake
     # intentionally strips its PUBLIC CPU options to avoid affecting the
@@ -891,12 +918,20 @@ add_library(arp_3d
     src/3d/bvh.cpp
     src/3d/collider_component.cpp
     src/3d/components.cpp
+    src/3d/fog_components.cpp
     src/3d/scene_3d_render_extractor.cpp
     src/3d/scene_3d_render_queue.cpp
     src/3d/scene_3d_visibility.cpp
+    src/3d/terrain/terrain_physics_binding.cpp
 )
 target_include_directories(arp_3d PUBLIC src)
 target_link_libraries(arp_3d PUBLIC arp_scene arp_animation arp_physics)
+
+# Terrain scene integration sits above the independent terrain/3D runtime.
+# Keep it out of arp_terrain/arp_3d: renderer already consumes those targets.
+add_library(arp_terrain_scene_runtime src/3d/terrain/integration/terrain_scene_session.cpp)
+target_include_directories(arp_terrain_scene_runtime PUBLIC src)
+target_link_libraries(arp_terrain_scene_runtime PUBLIC arp_renderer arp_3d arp_resource)
 
 add_library(arp_2d
     src/2d/bounds.cpp
@@ -930,6 +965,8 @@ add_library(arp_resource
     src/resource/audio_playback_registry.cpp
     src/resource/environment_asset_resources.cpp
     src/resource/internal_asset_package.cpp
+    src/resource/asset_package_payload.cpp
+    src/resource/asset_package_closure.cpp
     src/resource/mesh_asset_resources.cpp
     src/resource/particle_asset_resources.cpp
     src/resource/prefab_asset_resources.cpp
@@ -938,11 +975,15 @@ add_library(arp_resource
     src/resource/resource_graph_plan.cpp
     src/resource/resource_manager.cpp
     src/resource/resource_module.cpp
+    src/resource/static_mesh_shadow_lod_resource.cpp
     src/resource/terrain_asset_resource.cpp
+    src/resource/terrain_asset_build_service.cpp
     src/resource/vegetation_catalog_resource.cpp
+    src/resource/vegetation_catalog_cooked.cpp
+    src/resource/vegetation_catalog_build_service.cpp
 )
 target_include_directories(arp_resource PUBLIC src tools/unity_import)
-target_link_libraries(arp_resource PUBLIC arp_reflection arp_assets arp_fkyaml_headers arp_audio)
+target_link_libraries(arp_resource PUBLIC arp_reflection arp_assets arp_fkyaml_headers arp_audio arp_vegetation arp_terrain)
 
 add_library(arp_ui_font
     src/ui/ui_font.cpp
@@ -1008,6 +1049,8 @@ add_library(arp_renderer
     src/renderer/frame/scene_runtime_world_ui_pass_provider.cpp
     src/renderer/lighting/forward_plus.cpp
     src/renderer/lighting/forward_plus_feature.cpp
+    src/renderer/volumetric_fog/fog_contract.cpp
+    src/renderer/volumetric_fog/volumetric_fog_feature.cpp
     src/renderer/particles/particle_texture_resource.cpp
     src/renderer/pipeline/render_pipeline.cpp
     src/renderer/pipeline/scene_runtime_pipeline_payload.cpp
@@ -1021,16 +1064,20 @@ add_library(arp_renderer
       src/renderer/terrain_gpu_rhi_uploader.cpp
       src/renderer/gi/ddgi_terrain_surface_gpu.cpp
       src/renderer/terrain_pbr_page_descriptors.cpp
-    src/renderer/terrain_runtime.cpp
     src/renderer/terrain_scene_binding.cpp
+    src/renderer/scene_terrain_preparation.cpp
     src/renderer/terrain_vegetation_runtime.cpp
+    src/renderer/terrain_vegetation_binding.cpp
+    src/renderer/terrain_vegetation_draw_preparation.cpp
+    src/renderer/terrain_vegetation_gpu_upload.cpp
+    src/renderer/terrain_vegetation_gpu_publication.cpp
     src/renderer/terrain_vegetation_rhi_runtime.cpp
     src/renderer/vegetation_scene_runtime.cpp
     src/renderer/ui/ui_atlas_texture_resource.cpp
     src/renderer/ui/ui_startup_bundle_resource.cpp
     src/renderer/visibility/depth_pyramid_renderer.cpp
 )
-target_link_libraries(arp_renderer PUBLIC arp_render_graph arp_renderer_rhi_contracts arp_3d arp_2d arp_ui_runtime arp_assets arp_shader arp_resource)
+target_link_libraries(arp_renderer PUBLIC arp_terrain arp_vegetation arp_render_graph arp_renderer_rhi_contracts arp_3d arp_2d arp_ui_runtime arp_assets arp_shader arp_resource)
 
 add_library(arp_rhi
     src/rhi/backends/null/null_backend.cpp
@@ -1195,24 +1242,24 @@ target_link_libraries(arp_renderer_deployment PUBLIC arp_rhi_semantics)
 # Kept out of arp_platform so contract tests can link them without the full
 # render-system dependency surface.
 add_library(arp_platform_window_mapping
-    src/platform/window_input_mapping.cpp
-    src/platform/input_bridge.cpp
+    src/platform/common/window_input_mapping.cpp
+    src/platform/common/input_bridge.cpp
 )
 target_include_directories(arp_platform_window_mapping PUBLIC src)
 target_link_libraries(arp_platform_window_mapping PUBLIC arp_core arp_input)
 
 add_library(arp_platform
-    src/platform/render_system_ordered_graphics.cpp
-    src/platform/android_runtime_contract.cpp
-    src/platform/ios_runtime_contract.cpp
-    src/platform/render_system.cpp
-    src/platform/audio_lifecycle_bridge.cpp
-    src/platform/platform_lifecycle_state.cpp
-    src/platform/render_system_frame_loop.cpp
-    src/platform/render_system_rhi_active_frame_loop.cpp
-    src/platform/render_system_rhi_dry_run.cpp
-    src/platform/render_system_rhi_production_migration.cpp
-    src/platform/render_system_rhi_startup_readiness.cpp
+    src/platform/common/render_system_ordered_graphics.cpp
+    src/platform/android/android_runtime_contract.cpp
+    src/platform/ios/ios_runtime_contract.cpp
+    src/platform/common/render_system.cpp
+    src/platform/common/audio_lifecycle_bridge.cpp
+    src/platform/common/platform_lifecycle_state.cpp
+    src/platform/common/render_system_frame_loop.cpp
+    src/platform/common/render_system_rhi_active_frame_loop.cpp
+    src/platform/common/render_system_rhi_dry_run.cpp
+    src/platform/common/render_system_rhi_production_migration.cpp
+    src/platform/common/render_system_rhi_startup_readiness.cpp
 )
 target_include_directories(arp_platform PUBLIC src)
 target_link_libraries(arp_platform PUBLIC arp_core arp_input arp_platform_window_mapping arp_gui arp_renderer arp_audio arp_rhi_semantics arp_renderer_deployment)
@@ -1223,15 +1270,17 @@ if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     target_link_libraries(arp_platform PUBLIC arp_rhi_vulkan)
 endif()
 if(ARP_SELECTED_WEB_RHI STREQUAL "webgpu")
-    target_sources(arp_platform PRIVATE src/platform/window_web.cpp src/platform/render_system_native_shared.cpp src/platform/render_system_webgpu.cpp)
+    target_sources(arp_platform PRIVATE src/platform/web/window_web.cpp src/platform/native/render_system_native_shared.cpp src/platform/web/render_system_webgpu.cpp)
 endif()
 if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
-    target_sources(arp_platform PRIVATE src/platform/window_win32.cpp src/platform/window_xcb.cpp src/platform/render_system_vulkan.cpp)
+    target_sources(arp_platform PRIVATE src/platform/native/render_system_vulkan.cpp)
     if(WIN32)
+        target_sources(arp_platform PRIVATE src/platform/windows/window_win32.cpp)
         # vulkan/vulkan.h (with VK_USE_PLATFORM_WIN32_KHR) for the Win32
         # surface path in window_win32.cpp.
         target_link_libraries(arp_platform PUBLIC arp_vulkan_headers gdi32)
     else()
+        target_sources(arp_platform PRIVATE src/platform/linux/window_xcb.cpp)
         find_package(X11 QUIET)
         find_path(XCB_INCLUDE_DIR xcb/xcb.h)
         find_library(XCB_LIBRARY NAMES xcb)
@@ -1246,8 +1295,9 @@ if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     endif()
 endif()
 if(APPLE)
-    target_sources(arp_platform PRIVATE src/platform/window_cocoa.mm src/platform/render_system_native_shared.cpp src/platform/render_system_metal.cpp)
+    target_sources(arp_platform PRIVATE src/platform/native/render_system_native_shared.cpp src/platform/native/render_system_metal.cpp)
     if(NOT IOS)
+        target_sources(arp_platform PRIVATE src/platform/macos/window_cocoa.mm)
         target_link_libraries(arp_platform PUBLIC "-framework AppKit")
     endif()
 endif()
@@ -1373,6 +1423,7 @@ add_library(arp_rhi_webgpu
     src/rhi/backends/webgpu/webgpu_commands.cpp
     src/rhi/backends/webgpu/webgpu_device.cpp
     src/rhi/backends/webgpu/webgpu_native_commands.cpp
+    src/rhi/backends/webgpu/webgpu_prototype_batch.cpp
     src/rhi/backends/webgpu/webgpu_native_resources.cpp
     src/rhi/backends/webgpu/webgpu_native_runtime.cpp
     src/rhi/backends/webgpu/webgpu_native_swapchain.cpp
@@ -1431,7 +1482,7 @@ arp_add_script_plugin(
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     add_executable(arp_rhi_webgpu_device_contract_tests
         tests/contract/rhi_webgpu_device_contract_tests.cpp
-        src/platform/platform_lifecycle_state.cpp)
+        src/platform/common/platform_lifecycle_state.cpp)
     target_include_directories(arp_rhi_webgpu_device_contract_tests PRIVATE . src)
     target_link_libraries(arp_rhi_webgpu_device_contract_tests PRIVATE
         arp_rhi_webgpu arp_rhi_semantics arp_rhi)
@@ -1474,7 +1525,7 @@ add_dependencies(arp_network arp_network_python_reflection_generated)
 target_sources(arp_network PRIVATE "${ARP_NETWORK_MODULE_REFLECTION_CPP}")
 
 set(ARP_CORE_MATH_REFLECTION_HEADER
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/math.h")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/math/math.h")
 arp_reflection_generate(
     TARGET arp_resource
     MODULE core_math
@@ -1483,7 +1534,7 @@ arp_reflection_generate(
     HEADERS "${ARP_CORE_MATH_REFLECTION_HEADER}"
 )
 set(ARP_CORE_CURVE_REFLECTION_HEADER
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/curve.h")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/math/curve.h")
 arp_reflection_generate(
     TARGET arp_resource
     MODULE core_curve
@@ -1580,6 +1631,69 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     target_compile_definitions(arp_terrain_streamer_stitch_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
+add_executable(arp_vegetation_catalog_serialization_tests
+    tests/contract/vegetation_catalog_serialization_tests.cpp)
+target_include_directories(arp_vegetation_catalog_serialization_tests PRIVATE . src)
+target_link_libraries(arp_vegetation_catalog_serialization_tests PRIVATE arp_resource)
+if(MSVC)
+    target_compile_options(arp_vegetation_catalog_serialization_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_vegetation_catalog_serialization_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_vegetation_catalog_serialization_tests COMMAND arp_vegetation_catalog_serialization_tests)
+
+add_executable(arp_static_glb_geometry_contract_tests tests/contract/static_glb_geometry_contract_tests.cpp)
+target_include_directories(arp_static_glb_geometry_contract_tests PRIVATE . src)
+target_link_libraries(arp_static_glb_geometry_contract_tests PRIVATE arp_assets)
+if(MSVC)
+    target_compile_options(arp_static_glb_geometry_contract_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_static_glb_geometry_contract_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_static_glb_geometry_contract_tests COMMAND arp_static_glb_geometry_contract_tests)
+add_test(NAME arp_static_glb_geometry_smoke COMMAND arp_static_glb_geometry_contract_tests
+    "${CMAKE_CURRENT_BINARY_DIR}/strict-geometry-smoke.glb")
+
+add_executable(arp_vegetation_catalog_cooked_tests tests/contract/vegetation_catalog_cooked_tests.cpp)
+target_include_directories(arp_vegetation_catalog_cooked_tests PRIVATE . src)
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_vegetation_catalog_cooked_tests PRIVATE arp_resource arp_scriptvm_host_plugin_runtime arp_3d)
+else()
+    target_link_libraries(arp_vegetation_catalog_cooked_tests PRIVATE "$<LINK_GROUP:RESCAN,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d>")
+endif()
+if(MSVC)
+    target_compile_options(arp_vegetation_catalog_cooked_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_vegetation_catalog_cooked_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_vegetation_catalog_cooked_tests COMMAND arp_vegetation_catalog_cooked_tests)
+if(NOT EMSCRIPTEN)
+    add_test(NAME arp_vegetation_cooked_package_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/vegetation_cooked_package_smoke.py"
+        --tool "$<TARGET_FILE:arp_vegetation_catalog_cooked_tests>" --workspace "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(arp_vegetation_cooked_package_smoke PROPERTIES TIMEOUT 60)
+    add_test(NAME arp_terrain_closed_package_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/vegetation_cooked_package_smoke.py"
+        --tool "$<TARGET_FILE:arp_vegetation_catalog_cooked_tests>" --workspace "${CMAKE_CURRENT_BINARY_DIR}"
+        --terrain-tool "$<TARGET_FILE:arp_terrain_asset_tool>")
+    set_tests_properties(arp_terrain_closed_package_smoke PROPERTIES TIMEOUT 90)
+    add_test(NAME arp_terrain_composed_authoring_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/vegetation_cooked_package_smoke.py"
+        --tool "$<TARGET_FILE:arp_vegetation_catalog_cooked_tests>" --workspace "${CMAKE_CURRENT_BINARY_DIR}"
+        --terrain-tool "$<TARGET_FILE:arp_terrain_asset_tool>" --authoring)
+    set_tests_properties(arp_terrain_composed_authoring_smoke PROPERTIES TIMEOUT 90)
+    add_test(NAME arp_terrain_spatial_weights_authoring_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/vegetation_cooked_package_smoke.py"
+        --tool "$<TARGET_FILE:arp_vegetation_catalog_cooked_tests>" --workspace "${CMAKE_CURRENT_BINARY_DIR}"
+        --terrain-tool "$<TARGET_FILE:arp_terrain_asset_tool>" --authoring --spatial-weights)
+    set_tests_properties(arp_terrain_spatial_weights_authoring_smoke PROPERTIES TIMEOUT 90)
+    add_test(NAME arp_terrain_catalog_authoring_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/vegetation_cooked_package_smoke.py"
+        --tool "$<TARGET_FILE:arp_vegetation_catalog_cooked_tests>" --workspace "${CMAKE_CURRENT_BINARY_DIR}"
+        --terrain-tool "$<TARGET_FILE:arp_terrain_asset_tool>" --authoring --catalog-authoring)
+    set_tests_properties(arp_terrain_catalog_authoring_smoke PROPERTIES TIMEOUT 90)
+endif()
+
 add_executable(arp_terrain_asset_resource_contract_tests
     tests/contract/terrain_asset_resource_contract_tests.cpp
 )
@@ -1588,6 +1702,41 @@ target_link_libraries(arp_terrain_asset_resource_contract_tests PRIVATE arp_reso
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     target_compile_definitions(arp_terrain_asset_resource_contract_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
+
+add_executable(arp_terrain_asset_tool tools/terrain_asset/main.cpp)
+if(NOT EMSCRIPTEN)
+    add_executable(arp_staged_directory_tests tests/unit/staged_directory_tests.cpp)
+    target_link_libraries(arp_staged_directory_tests PRIVATE arp_core)
+    target_compile_options(arp_staged_directory_tests PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>)
+    add_test(NAME arp_staged_directory_tests COMMAND arp_staged_directory_tests)
+endif()
+target_link_libraries(arp_terrain_asset_tool PRIVATE arp_resource)
+target_include_directories(arp_terrain_asset_tool PRIVATE . src)
+add_executable(arp_terrain_asset_build_service_tests tests/contract/terrain_asset_build_service_tests.cpp)
+target_link_libraries(arp_terrain_asset_build_service_tests PRIVATE arp_resource)
+target_include_directories(arp_terrain_asset_build_service_tests PRIVATE . src)
+foreach(_arp_terrain_tool_target IN ITEMS arp_terrain_asset_tool arp_terrain_asset_build_service_tests)
+    if(EMSCRIPTEN OR APPLE)
+        target_link_libraries(${_arp_terrain_tool_target} PRIVATE arp_resource arp_scriptvm_host_plugin_runtime arp_3d)
+    else()
+        target_link_libraries(${_arp_terrain_tool_target} PRIVATE "$<LINK_GROUP:RESCAN,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d>")
+    endif()
+endforeach()
+if(MSVC)
+    target_compile_options(arp_terrain_asset_build_service_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_terrain_asset_build_service_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_terrain_asset_build_service_tests COMMAND arp_terrain_asset_build_service_tests)
+foreach(_arp_terrain_smoke IN ITEMS arp_terrain_asset_authoring_smoke arp_terrain_asset_package_load_smoke)
+    add_test(NAME ${_arp_terrain_smoke} COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/terrain_asset_cli_smoke.py"
+        --tool "$<TARGET_FILE:arp_terrain_asset_tool>"
+        --reader "$<TARGET_FILE:arp_terrain_asset_build_service_tests>"
+        --authoring "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/terrain/constant.terrain.yaml"
+        --workspace "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(${_arp_terrain_smoke} PROPERTIES TIMEOUT 120)
+endforeach()
 
 add_executable(arp_prefab_asset_resource_contract_tests
     tests/contract/prefab_asset_resource_contract_tests.cpp
@@ -1662,10 +1811,114 @@ add_executable(arp_renderer_data_model_tests
     tests/integration/renderer_data_model_tests.cpp
 )
 target_include_directories(arp_renderer_data_model_tests PRIVATE . src)
-target_link_libraries(arp_renderer_data_model_tests PRIVATE arp_renderer)
+target_link_libraries(arp_renderer_data_model_tests PRIVATE arp_renderer arp_rhi arp_rhi_semantics)
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     target_compile_definitions(arp_renderer_data_model_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
+
+add_executable(arp_mesh_section_spatial_partition_tests
+    tests/contract/mesh_section_spatial_partition_tests.cpp)
+target_include_directories(arp_mesh_section_spatial_partition_tests PRIVATE . src)
+target_link_libraries(arp_mesh_section_spatial_partition_tests PRIVATE arp_core arp_rhi arp_rhi_semantics)
+if(MSVC)
+    target_compile_options(arp_mesh_section_spatial_partition_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_mesh_section_spatial_partition_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_mesh_section_spatial_partition_tests COMMAND arp_mesh_section_spatial_partition_tests)
+
+add_executable(arp_static_mesh_source_ranges_tests tests/contract/static_mesh_source_ranges_tests.cpp)
+target_include_directories(arp_static_mesh_source_ranges_tests PRIVATE . src)
+target_link_libraries(arp_static_mesh_source_ranges_tests PRIVATE arp_core arp_rhi arp_rhi_semantics)
+if(MSVC)
+    target_compile_options(arp_static_mesh_source_ranges_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_static_mesh_source_ranges_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_static_mesh_source_ranges_tests COMMAND arp_static_mesh_source_ranges_tests)
+
+add_executable(arp_immutable_mesh_upload_tests tests/contract/immutable_mesh_upload_tests.cpp)
+target_include_directories(arp_immutable_mesh_upload_tests PRIVATE . src)
+target_link_libraries(arp_immutable_mesh_upload_tests PRIVATE arp_core arp_rhi arp_rhi_semantics)
+if(MSVC)
+    target_compile_options(arp_immutable_mesh_upload_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_immutable_mesh_upload_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_immutable_mesh_upload_tests COMMAND arp_immutable_mesh_upload_tests)
+
+add_executable(arp_orthographic_error_projection_tests tests/contract/orthographic_error_projection_tests.cpp)
+target_include_directories(arp_orthographic_error_projection_tests PRIVATE . src)
+target_link_libraries(arp_orthographic_error_projection_tests PRIVATE arp_core)
+if(MSVC)
+    target_compile_options(arp_orthographic_error_projection_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_orthographic_error_projection_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_orthographic_error_projection_tests COMMAND arp_orthographic_error_projection_tests)
+
+add_executable(arp_mesh_source_identity_tests tests/contract/mesh_source_identity_tests.cpp)
+target_include_directories(arp_mesh_source_identity_tests PRIVATE . src)
+target_link_libraries(arp_mesh_source_identity_tests PRIVATE arp_assets arp_reflection)
+if(MSVC)
+    target_compile_options(arp_mesh_source_identity_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_mesh_source_identity_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_mesh_source_identity_tests COMMAND arp_mesh_source_identity_tests)
+
+add_executable(arp_static_mesh_shadow_lod_resource_tests
+    tests/contract/static_mesh_shadow_lod_resource_tests.cpp)
+target_include_directories(arp_static_mesh_shadow_lod_resource_tests PRIVATE . src)
+target_link_libraries(arp_static_mesh_shadow_lod_resource_tests PRIVATE arp_resource)
+if(MSVC)
+    target_compile_options(arp_static_mesh_shadow_lod_resource_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_static_mesh_shadow_lod_resource_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_static_mesh_shadow_lod_resource_tests COMMAND arp_static_mesh_shadow_lod_resource_tests)
+
+add_executable(arp_static_mesh_shadow_lod_plan_tests
+    tests/contract/static_mesh_shadow_lod_plan_tests.cpp)
+target_include_directories(arp_static_mesh_shadow_lod_plan_tests PRIVATE . src)
+target_link_libraries(arp_static_mesh_shadow_lod_plan_tests PRIVATE arp_core)
+if(MSVC)
+    target_compile_options(arp_static_mesh_shadow_lod_plan_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_static_mesh_shadow_lod_plan_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_static_mesh_shadow_lod_plan_tests COMMAND arp_static_mesh_shadow_lod_plan_tests)
+
+add_executable(arp_mesh_source_index_repacking_tests
+    tests/contract/mesh_source_index_repacking_tests.cpp)
+target_include_directories(arp_mesh_source_index_repacking_tests PRIVATE . src)
+target_link_libraries(arp_mesh_source_index_repacking_tests PRIVATE arp_core)
+if(MSVC)
+    target_compile_options(arp_mesh_source_index_repacking_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_mesh_source_index_repacking_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_mesh_source_index_repacking_tests COMMAND arp_mesh_source_index_repacking_tests)
+
+add_executable(arp_projected_depth_order_tests tests/contract/projected_depth_order_tests.cpp)
+target_include_directories(arp_projected_depth_order_tests PRIVATE . src)
+target_link_libraries(arp_projected_depth_order_tests PRIVATE arp_core)
+if(MSVC)
+    target_compile_options(arp_projected_depth_order_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_projected_depth_order_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_projected_depth_order_tests COMMAND arp_projected_depth_order_tests)
+
+add_executable(arp_foliage_deformation_envelope_tests tests/contract/foliage_deformation_envelope_tests.cpp)
+target_include_directories(arp_foliage_deformation_envelope_tests PRIVATE . src)
+target_link_libraries(arp_foliage_deformation_envelope_tests PRIVATE arp_core)
+if(MSVC)
+    target_compile_options(arp_foliage_deformation_envelope_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_foliage_deformation_envelope_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_foliage_deformation_envelope_tests COMMAND arp_foliage_deformation_envelope_tests)
 
 add_executable(arp_physics_l2_contract_tests
     tests/integration/physics_l2_contract_tests.cpp
@@ -1862,6 +2115,10 @@ else()
     target_compile_options(arp_rhi_bindless_contract_tests PRIVATE -UNDEBUG)
 endif()
 add_test(NAME arp_rhi_bindless_contract_tests COMMAND arp_rhi_bindless_contract_tests)
+if(Python3_EXECUTABLE)
+    add_test(NAME arp_bindless_l2_boundary_tests COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/contract/bindless_l2_boundary_test.py")
+endif()
 if(EMSCRIPTEN)
     # Aggregate four-backend fixtures exceed Emscripten's 64KiB default stack.
     # This explicit test-harness ceiling does not alter production GPU budgets.
@@ -4553,6 +4810,18 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
 endif()
 
 if(TARGET arp_rhi_vulkan)
+    add_executable(arp_immutable_mesh_upload_vulkan_tests
+        tests/integration/immutable_mesh_upload_vulkan_tests.cpp)
+    target_include_directories(arp_immutable_mesh_upload_vulkan_tests PRIVATE . src)
+    target_link_libraries(arp_immutable_mesh_upload_vulkan_tests PRIVATE
+        arp_core arp_rhi arp_rhi_semantics arp_rhi_vulkan)
+    if(MSVC)
+        target_compile_options(arp_immutable_mesh_upload_vulkan_tests PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(arp_immutable_mesh_upload_vulkan_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME arp_immutable_mesh_upload_vulkan_tests COMMAND arp_immutable_mesh_upload_vulkan_tests)
+    set_tests_properties(arp_immutable_mesh_upload_vulkan_tests PROPERTIES SKIP_RETURN_CODE 77)
     foreach(vulkan_identity_fixture native_resource swapchain)
         add_executable(arp_rhi_vulkan_${vulkan_identity_fixture}_tests
             tests/integration/rhi_vulkan_${vulkan_identity_fixture}_tests.cpp)
@@ -4591,7 +4860,7 @@ endif()
 
 add_executable(arp_rhi_webgpu_staging_upload_pool_tests
     tests/integration/rhi_webgpu_staging_upload_pool_tests.cpp
-    src/platform/platform_lifecycle_state.cpp
+    src/platform/common/platform_lifecycle_state.cpp
 )
 target_include_directories(arp_rhi_webgpu_staging_upload_pool_tests PRIVATE . src)
 target_link_libraries(arp_rhi_webgpu_staging_upload_pool_tests PRIVATE arp_core arp_rhi arp_rhi_semantics arp_rhi_webgpu)
@@ -5644,62 +5913,6 @@ target_link_libraries(arp_depth_pyramid_contract_tests PRIVATE
 target_compile_definitions(arp_depth_pyramid_contract_tests PRIVATE
     ARP_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders")
 
-add_executable(arp_render_feature_lab
-    src/tools/render_feature_lab/feature_lab_manifest.cpp
-    src/tools/render_feature_lab/forward_plus_fixture.cpp
-    src/tools/render_feature_lab/postprocess_fixture.cpp
-    src/platform/platform_lifecycle_state.cpp
-    src/tools/render_feature_lab/main.cpp
-)
-target_include_directories(arp_render_feature_lab PRIVATE . src ${CMAKE_BINARY_DIR}/shaders)
-target_link_libraries(arp_render_feature_lab PRIVATE
-    arp_renderer
-    arp_platform
-    arp_fkyaml_headers
-    ${ARP_RENDERER_RHI_LINK_LIBS})
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
-    target_compile_definitions(arp_render_feature_lab PRIVATE
-        ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
-        ARP_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders")
-    if(WIN32 AND EXISTS "C:/Program Files/RenderDoc/renderdoc_app.h")
-        target_include_directories(arp_render_feature_lab PRIVATE
-            "C:/Program Files/RenderDoc")
-        target_compile_definitions(arp_render_feature_lab PRIVATE
-            ARP_RENDERDOC_APP_AVAILABLE=1)
-    endif()
-else()
-    set_property(TARGET arp_render_feature_lab APPEND PROPERTY LINK_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/webgpu_storage_format_probe.js"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/webgpu_device_bootstrap_pre.js")
-    target_link_options(arp_render_feature_lab PRIVATE
-        "--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/src/tools/render_feature_lab/feature_lab_query.js"
-        "--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/webgpu_storage_format_probe.js"
-        "--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/webgpu_device_bootstrap_pre.js"
-        "--preload-file=${CMAKE_CURRENT_SOURCE_DIR}/tests/render_feature_lab/cases.yaml@tests/render_feature_lab/cases.yaml"
-        "--preload-file=${CMAKE_BINARY_DIR}/shaders@shaders"
-        "-sALLOW_MEMORY_GROWTH=0"
-        "-sINITIAL_MEMORY=268435456"
-        "-sASYNCIFY"
-        "-sASYNCIFY_STACK_SIZE=262144")
-    add_custom_command(TARGET arp_render_feature_lab POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/tools/render_feature_lab/feature_lab.html"
-            "$<TARGET_FILE_DIR:arp_render_feature_lab>/arp_render_feature_lab.html")
-endif()
-
-add_executable(arp_render_feature_lab_manifest_tests
-    src/tools/render_feature_lab/feature_lab_manifest.cpp
-    tests/render_feature_lab/feature_lab_manifest_tests.cpp
-)
-target_include_directories(arp_render_feature_lab_manifest_tests PRIVATE . src)
-target_link_libraries(arp_render_feature_lab_manifest_tests PRIVATE
-    arp_core
-    arp_fkyaml_headers)
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
-    target_compile_definitions(arp_render_feature_lab_manifest_tests PRIVATE
-        ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-endif()
-
 add_executable(arp_rhi_upload_staging_budget_tests
     tests/unit/rhi_upload_staging_budget_tests.cpp
 )
@@ -5965,7 +6178,7 @@ if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
             --directory "${ARP_CONFORMANCE_STORAGE_MODULE_DIR}")
     set_tests_properties(arp_conformance_storage_mrt_shader_artifact_tests PROPERTIES LABELS "host-contract;shader;conformance")
     add_executable(arp_rhi_conformance_storage_mrt_smoke
-        tests/smoke/rhi_conformance_storage_mrt_smoke.cpp src/platform/platform_lifecycle_state.cpp)
+        tests/smoke/rhi_conformance_storage_mrt_smoke.cpp src/platform/common/platform_lifecycle_state.cpp)
     target_include_directories(arp_rhi_conformance_storage_mrt_smoke PRIVATE . src)
     target_link_libraries(arp_rhi_conformance_storage_mrt_smoke PRIVATE arp_platform arp_render_graph arp_rhi arp_rhi_semantics)
     target_compile_options(arp_rhi_conformance_storage_mrt_smoke PRIVATE -UNDEBUG)
@@ -5999,7 +6212,7 @@ endif()
 
 if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     add_executable(arp_rhi_conformance_sampled_smoke
-        tests/smoke/rhi_conformance_sampled_smoke.cpp src/platform/platform_lifecycle_state.cpp)
+        tests/smoke/rhi_conformance_sampled_smoke.cpp src/platform/common/platform_lifecycle_state.cpp)
     target_include_directories(arp_rhi_conformance_sampled_smoke PRIVATE . src)
     target_link_libraries(arp_rhi_conformance_sampled_smoke PRIVATE arp_platform arp_render_graph arp_rhi arp_rhi_semantics)
     target_compile_options(arp_rhi_conformance_sampled_smoke PRIVATE -UNDEBUG)
@@ -6058,7 +6271,7 @@ if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     endif()
     add_executable(arp_rhi_conformance_clear_smoke
         tests/smoke/rhi_conformance_clear_smoke.cpp
-        src/platform/platform_lifecycle_state.cpp)
+        src/platform/common/platform_lifecycle_state.cpp)
     target_include_directories(arp_rhi_conformance_clear_smoke PRIVATE . src)
     target_link_libraries(arp_rhi_conformance_clear_smoke PRIVATE
         arp_platform arp_render_graph arp_rhi arp_rhi_semantics)
@@ -6087,7 +6300,7 @@ if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     endif()
     add_executable(arp_render_graph_resource_management_vulkan_hidden_smoke
         tests/smoke/render_graph_resource_management_vulkan_hidden_smoke.cpp
-        src/platform/platform_lifecycle_state.cpp)
+        src/platform/common/platform_lifecycle_state.cpp)
     target_include_directories(arp_render_graph_resource_management_vulkan_hidden_smoke PRIVATE . src)
     target_link_libraries(arp_render_graph_resource_management_vulkan_hidden_smoke PRIVATE
         arp_platform arp_render_graph arp_rhi arp_rhi_semantics)
@@ -6112,7 +6325,7 @@ if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
 
     add_executable(arp_terrain_asset_vulkan_hidden_smoke
         tests/smoke/terrain_asset_vulkan_hidden_smoke.cpp
-        src/platform/platform_lifecycle_state.cpp)
+        src/platform/common/platform_lifecycle_state.cpp)
     target_include_directories(arp_terrain_asset_vulkan_hidden_smoke PRIVATE . src)
     target_link_libraries(arp_terrain_asset_vulkan_hidden_smoke PRIVATE
         arp_platform arp_renderer arp_render_graph arp_rhi arp_rhi_semantics)
@@ -6121,7 +6334,7 @@ if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
 
     add_executable(arp_ui_text_vulkan_hidden_smoke
         tests/smoke/ui_text_vulkan_hidden_smoke.cpp
-        src/platform/platform_lifecycle_state.cpp)
+        src/platform/common/platform_lifecycle_state.cpp)
     target_include_directories(arp_ui_text_vulkan_hidden_smoke PRIVATE . src)
     target_compile_definitions(arp_ui_text_vulkan_hidden_smoke PRIVATE
         ARP_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders")
@@ -6285,8 +6498,127 @@ target_include_directories(arp_terrain_scene_binding_tests PRIVATE . src ${CMAKE
 target_link_libraries(arp_terrain_scene_binding_tests PRIVATE
     arp_renderer
     ${ARP_RENDERER_RHI_LINK_LIBS})
+if(MSVC)
+    target_compile_options(arp_terrain_scene_binding_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_terrain_scene_binding_tests PRIVATE -UNDEBUG)
+endif()
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     target_compile_definitions(arp_terrain_scene_binding_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+add_executable(arp_terrain_physics_binding_tests tests/integration/terrain_physics_binding_tests.cpp)
+target_include_directories(arp_terrain_physics_binding_tests PRIVATE . src)
+target_link_libraries(arp_terrain_physics_binding_tests PRIVATE arp_renderer ${ARP_RENDERER_RHI_LINK_LIBS})
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_terrain_physics_binding_tests PRIVATE arp_resource arp_scriptvm_host_plugin_runtime arp_3d)
+else()
+    target_link_libraries(arp_terrain_physics_binding_tests PRIVATE "$<LINK_GROUP:RESCAN,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d>")
+endif()
+if(MSVC)
+    target_compile_options(arp_terrain_physics_binding_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_terrain_physics_binding_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_terrain_physics_binding_tests COMMAND arp_terrain_physics_binding_tests)
+
+if(TARGET arp_pcg)
+    add_executable(arp_critter_field_tests tests/integration/critter_field_tests.cpp)
+    target_include_directories(arp_critter_field_tests PRIVATE . src)
+    target_link_libraries(arp_critter_field_tests PRIVATE arp_pcg)
+    if(MSVC)
+        target_compile_options(arp_critter_field_tests PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(arp_critter_field_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME arp_critter_field_tests COMMAND arp_critter_field_tests)
+endif()
+
+add_executable(arp_terrain_scene_session_tests tests/integration/terrain_scene_session_tests.cpp)
+target_include_directories(arp_terrain_scene_session_tests PRIVATE . src)
+target_link_libraries(arp_terrain_scene_session_tests PRIVATE arp_terrain_scene_runtime ${ARP_RENDERER_RHI_LINK_LIBS})
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_terrain_scene_session_tests PRIVATE arp_resource arp_scriptvm_host_plugin_runtime arp_3d)
+else()
+    target_link_libraries(arp_terrain_scene_session_tests PRIVATE "$<LINK_GROUP:RESCAN,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d>")
+endif()
+if(MSVC)
+    target_compile_options(arp_terrain_scene_session_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_terrain_scene_session_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_terrain_scene_session_tests COMMAND arp_terrain_scene_session_tests)
+add_executable(arp_terrain_vegetation_binding_tests tests/integration/terrain_vegetation_binding_tests.cpp)
+target_include_directories(arp_terrain_vegetation_binding_tests PRIVATE . src)
+target_link_libraries(arp_terrain_vegetation_binding_tests PRIVATE arp_terrain_scene_runtime ${ARP_RENDERER_RHI_LINK_LIBS})
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_terrain_vegetation_binding_tests PRIVATE arp_resource arp_scriptvm_host_plugin_runtime arp_3d)
+else()
+    target_link_libraries(arp_terrain_vegetation_binding_tests PRIVATE "$<LINK_GROUP:RESCAN,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d>")
+endif()
+if(MSVC)
+    target_compile_options(arp_terrain_vegetation_binding_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_terrain_vegetation_binding_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_terrain_vegetation_binding_tests COMMAND arp_terrain_vegetation_binding_tests)
+add_executable(arp_terrain_vegetation_gpu_upload_tests tests/integration/terrain_vegetation_gpu_upload_tests.cpp)
+target_include_directories(arp_terrain_vegetation_gpu_upload_tests PRIVATE . src)
+target_link_libraries(arp_terrain_vegetation_gpu_upload_tests PRIVATE arp_renderer ${ARP_RENDERER_RHI_LINK_LIBS})
+if(MSVC)
+    target_compile_options(arp_terrain_vegetation_gpu_upload_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_terrain_vegetation_gpu_upload_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_terrain_vegetation_gpu_upload_tests COMMAND arp_terrain_vegetation_gpu_upload_tests)
+add_executable(arp_terrain_vegetation_gpu_publication_tests tests/integration/terrain_vegetation_gpu_publication_tests.cpp)
+target_include_directories(arp_terrain_vegetation_gpu_publication_tests PRIVATE . src)
+target_link_libraries(arp_terrain_vegetation_gpu_publication_tests PRIVATE arp_renderer ${ARP_RENDERER_RHI_LINK_LIBS})
+if(MSVC)
+    target_compile_options(arp_terrain_vegetation_gpu_publication_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_terrain_vegetation_gpu_publication_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_terrain_vegetation_gpu_publication_tests COMMAND arp_terrain_vegetation_gpu_publication_tests)
+if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+    add_executable(arp_terrain_vegetation_vulkan_hidden_smoke
+        tests/smoke/terrain_vegetation_vulkan_hidden_smoke.cpp
+        src/platform/common/platform_lifecycle_state.cpp)
+    target_include_directories(arp_terrain_vegetation_vulkan_hidden_smoke PRIVATE . src)
+    target_link_libraries(arp_terrain_vegetation_vulkan_hidden_smoke PRIVATE
+        arp_platform arp_renderer arp_render_graph arp_rhi arp_rhi_semantics)
+    target_compile_options(arp_terrain_vegetation_vulkan_hidden_smoke PRIVATE -UNDEBUG)
+    target_link_options(arp_terrain_vegetation_vulkan_hidden_smoke PRIVATE -static-libstdc++ -static-libgcc)
+    if(WIN32 AND EXISTS "C:/Program Files/RenderDoc/renderdoc_app.h")
+        target_include_directories(arp_terrain_vegetation_vulkan_hidden_smoke PRIVATE "C:/Program Files/RenderDoc")
+        target_compile_definitions(arp_terrain_vegetation_vulkan_hidden_smoke PRIVATE ARP_RENDERDOC_APP_AVAILABLE=1)
+    endif()
+    add_test(NAME arp_terrain_vegetation_vulkan_hidden_smoke COMMAND arp_terrain_vegetation_vulkan_hidden_smoke)
+    set_tests_properties(arp_terrain_vegetation_vulkan_hidden_smoke PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+endif()
+if(NOT EMSCRIPTEN)
+    add_test(NAME arp_terrain_vegetation_session_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/vegetation_cooked_package_smoke.py"
+        --tool "$<TARGET_FILE:arp_vegetation_catalog_cooked_tests>" --workspace "${CMAKE_CURRENT_BINARY_DIR}"
+        --reader "$<TARGET_FILE:arp_terrain_vegetation_binding_tests>")
+    set_tests_properties(arp_terrain_vegetation_session_smoke PROPERTIES TIMEOUT 90)
+    add_test(NAME arp_terrain_vegetation_cli_session_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/vegetation_cooked_package_smoke.py"
+        --tool "$<TARGET_FILE:arp_vegetation_catalog_cooked_tests>" --workspace "${CMAKE_CURRENT_BINARY_DIR}"
+        --terrain-tool "$<TARGET_FILE:arp_terrain_asset_tool>" --authoring --spatial-weights
+        --reader "$<TARGET_FILE:arp_terrain_vegetation_binding_tests>")
+    set_tests_properties(arp_terrain_vegetation_cli_session_smoke PROPERTIES TIMEOUT 120)
+    add_test(NAME arp_terrain_scene_session_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/terrain_asset_cli_smoke.py"
+        --tool "$<TARGET_FILE:arp_terrain_asset_tool>" --reader "$<TARGET_FILE:arp_terrain_scene_session_tests>"
+        --authoring "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/terrain/constant.terrain.yaml"
+        --workspace "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(arp_terrain_scene_session_smoke PROPERTIES TIMEOUT 90)
+    add_test(NAME arp_terrain_physics_scene_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/terrain_asset_cli_smoke.py"
+        --tool "$<TARGET_FILE:arp_terrain_asset_tool>" --reader "$<TARGET_FILE:arp_terrain_physics_binding_tests>"
+        --authoring "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/terrain/constant.terrain.yaml"
+        --workspace "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(arp_terrain_physics_scene_smoke PROPERTIES TIMEOUT 90)
 endif()
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     target_compile_definitions(arp_scriptvm_vm_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
@@ -6575,7 +6907,7 @@ endforeach()
 
 add_executable(arp_ddgi_retry_tests
     tests/integration/ddgi_retry_tests.cpp
-    src/tools/render_feature_lab/postprocess_fixture.cpp)
+    tests/fixtures/postprocess_fixture.cpp)
 target_include_directories(arp_ddgi_retry_tests PRIVATE . src tests "${CMAKE_BINARY_DIR}/shaders")
 target_compile_definitions(arp_ddgi_retry_tests PRIVATE ARP_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders")
 target_link_libraries(arp_ddgi_retry_tests PRIVATE arp_renderer arp_rhi arp_rhi_semantics)
@@ -6589,7 +6921,7 @@ add_test(NAME arp_ddgi_retry_tests COMMAND arp_ddgi_retry_tests)
 if(APPLE AND TARGET arp_rhi_metal)
     add_executable(arp_rhi_metal_ddgi_schedule_tests
         tests/integration/rhi_metal_ddgi_schedule_tests.cpp
-        src/tools/render_feature_lab/postprocess_fixture.cpp)
+        tests/fixtures/postprocess_fixture.cpp)
     target_include_directories(arp_rhi_metal_ddgi_schedule_tests PRIVATE . src tests "${CMAKE_BINARY_DIR}/shaders")
     target_compile_definitions(arp_rhi_metal_ddgi_schedule_tests PRIVATE ARP_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders")
     target_compile_options(arp_rhi_metal_ddgi_schedule_tests PRIVATE -UNDEBUG)
@@ -6713,7 +7045,7 @@ target_compile_definitions(arp_build_split_contract_tests PRIVATE
 
 add_executable(arp_render_system_contract_tests
     tests/contract/render_system_contract_tests.cpp
-    src/platform/platform_lifecycle_state.cpp
+    src/platform/common/platform_lifecycle_state.cpp
 )
 target_include_directories(arp_render_system_contract_tests PRIVATE . src)
 target_link_libraries(arp_render_system_contract_tests PRIVATE arp_platform arp_rhi_semantics)
@@ -6751,10 +7083,10 @@ endif()
 
 if(IOS)
     add_executable(arp_ios_smoke_app MACOSX_BUNDLE
-        src/platform/ios_app/main.mm
-        src/platform/ios_app/ios_app_delegate.mm
-        src/platform/ios_app/ios_metal_view.mm
-        src/platform/ios_runtime_contract.cpp
+        src/platform/ios/app/main.mm
+        src/platform/ios/app/ios_app_delegate.mm
+        src/platform/ios/app/ios_metal_view.mm
+        src/platform/ios/ios_runtime_contract.cpp
     )
     target_include_directories(arp_ios_smoke_app PRIVATE src)
     target_link_libraries(arp_ios_smoke_app PRIVATE
@@ -6765,7 +7097,7 @@ if(IOS)
         "-framework QuartzCore"
     )
     set_target_properties(arp_ios_smoke_app PROPERTIES
-        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/ios_app/Info.plist"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/ios/app/Info.plist"
         XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
         XCODE_GENERATE_SCHEME TRUE
         XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
@@ -6774,10 +7106,10 @@ if(IOS)
         XCODE_ATTRIBUTE_SKIP_INSTALL NO
     )
     target_sources(arp_ios_smoke_app PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/ios_app/Resources/asset_manifest.yaml"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/ios/app/Resources/asset_manifest.yaml"
     )
     set_source_files_properties(
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/ios_app/Resources/asset_manifest.yaml"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/ios/app/Resources/asset_manifest.yaml"
         PROPERTIES MACOSX_PACKAGE_LOCATION Resources
     )
 endif()
@@ -6908,7 +7240,7 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     add_executable(arp_core_process_runner_tests
         tests/unit/core_process_runner_tests.cpp)
     target_include_directories(arp_core_process_runner_tests PRIVATE . src)
-    target_link_libraries(arp_core_process_runner_tests PRIVATE arp_core)
+    target_link_libraries(arp_core_process_runner_tests PRIVATE arp_core arp_scriptvm_plugin_build)
     target_compile_definitions(arp_core_process_runner_tests PRIVATE
         ARP_TEST_CXX_COMPILER="${CMAKE_CXX_COMPILER}")
 endif()
@@ -6951,6 +7283,8 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     endif()
 endif()
 set(ARP_ENGINE_MODULE_TARGETS
+    arp_terrain_scene_runtime
+    arp_terrain
     arp_core
     arp_reflection
     ${ARP_SCRIPT_RUNTIME_TARGETS}
@@ -6981,6 +7315,9 @@ set(ARP_ENGINE_MODULE_TARGETS
 )
 if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     list(APPEND ARP_ENGINE_MODULE_TARGETS arp_rhi_vulkan)
+endif()
+if(ARP_ENABLE_PCG)
+    list(APPEND ARP_ENGINE_MODULE_TARGETS arp_pcg)
 endif()
 foreach(moduleTarget IN LISTS ARP_ENGINE_MODULE_TARGETS)
     target_compile_definitions(${moduleTarget}
@@ -7071,6 +7408,7 @@ if(SLANGC_EXECUTABLE)
         "${CMAKE_BINARY_DIR}/shaders/forward_plus_debug.slang"
         "${CMAKE_BINARY_DIR}/shaders/pbr_scene.slang"
         "${CMAKE_BINARY_DIR}/shaders/editor_viewport_pbr.slang"
+        "${CMAKE_BINARY_DIR}/shaders/editor_viewport_environment.slang"
         "${CMAKE_BINARY_DIR}/shaders/editor_viewport_sprite.slang"
         "${CMAKE_BINARY_DIR}/shaders/wocc_sky.slang"
         "${CMAKE_BINARY_DIR}/shaders/wocc_water.slang"
@@ -7151,9 +7489,13 @@ if(SLANGC_EXECUTABLE)
             "${CMAKE_BINARY_DIR}/shaders/editor_viewport_pbr.wgsl"
             "${CMAKE_BINARY_DIR}/shaders/editor_viewport_pbr.reflection.yaml"
             "${CMAKE_BINARY_DIR}/shaders/editor_viewport_pbr.shader_bindings.h"
+            "${CMAKE_BINARY_DIR}/shaders/editor_viewport_environment.spv"
             "${CMAKE_BINARY_DIR}/shaders/editor_viewport_sprite.spv"
+            "${CMAKE_BINARY_DIR}/shaders/editor_viewport_environment.metal"
             "${CMAKE_BINARY_DIR}/shaders/editor_viewport_sprite.metal"
+            "${CMAKE_BINARY_DIR}/shaders/editor_viewport_environment.wgsl"
             "${CMAKE_BINARY_DIR}/shaders/editor_viewport_sprite.wgsl"
+            "${CMAKE_BINARY_DIR}/shaders/editor_viewport_environment.reflection.yaml"
             "${CMAKE_BINARY_DIR}/shaders/editor_viewport_sprite.reflection.yaml"
             "${CMAKE_BINARY_DIR}/shaders/pbr_scene_terrain.spv"
             "${CMAKE_BINARY_DIR}/shaders/pbr_scene_terrain.metal"
@@ -7323,9 +7665,13 @@ if(SLANGC_EXECUTABLE)
         "${CMAKE_BINARY_DIR}/shaders/editor_viewport_pbr.wgsl"
         "${CMAKE_BINARY_DIR}/shaders/editor_viewport_pbr.reflection.yaml"
         "${CMAKE_BINARY_DIR}/shaders/editor_viewport_pbr.shader_bindings.h"
+        "${CMAKE_BINARY_DIR}/shaders/editor_viewport_environment.spv"
         "${CMAKE_BINARY_DIR}/shaders/editor_viewport_sprite.spv"
+        "${CMAKE_BINARY_DIR}/shaders/editor_viewport_environment.metal"
         "${CMAKE_BINARY_DIR}/shaders/editor_viewport_sprite.metal"
+        "${CMAKE_BINARY_DIR}/shaders/editor_viewport_environment.wgsl"
         "${CMAKE_BINARY_DIR}/shaders/editor_viewport_sprite.wgsl"
+        "${CMAKE_BINARY_DIR}/shaders/editor_viewport_environment.reflection.yaml"
         "${CMAKE_BINARY_DIR}/shaders/editor_viewport_sprite.reflection.yaml"
         "${CMAKE_BINARY_DIR}/shaders/pbr_scene_terrain.spv"
         "${CMAKE_BINARY_DIR}/shaders/pbr_scene_terrain.metal"
@@ -7434,9 +7780,6 @@ if(SLANGC_EXECUTABLE)
     if(TARGET arp_forward_plus_tests)
         add_dependencies(arp_forward_plus_tests arp_compile_shaders)
     endif()
-    if(TARGET arp_render_feature_lab)
-        add_dependencies(arp_render_feature_lab arp_compile_shaders)
-    endif()
     if(TARGET arp_rhi_vulkan_device_contract_tests)
         add_dependencies(arp_rhi_vulkan_device_contract_tests arp_compile_shaders)
     endif()
@@ -7544,6 +7887,10 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     add_test(NAME arp_ios_platform_contract_tests COMMAND arp_ios_platform_contract_tests)
     add_test(NAME arp_platform_window_contract_tests COMMAND arp_platform_window_contract_tests)
     add_test(NAME arp_platform_window_tests COMMAND arp_platform_window_tests)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+        add_test(NAME arp_platform_package_routing_tests COMMAND "${Python3_EXECUTABLE}" -X utf8
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/platform_package_routing_tests.py")
+    endif()
     if(TARGET arp_macos_window_input_smoke)
         add_test(NAME arp_macos_window_input_smoke COMMAND arp_macos_window_input_smoke)
         set_tests_properties(arp_macos_window_input_smoke PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
@@ -7760,7 +8107,7 @@ target_compile_options(arp_ui_control_event_routing_tests PRIVATE -UNDEBUG)
 add_test(NAME arp_ui_control_event_routing_tests COMMAND arp_ui_control_event_routing_tests)
 
 if(WIN32)
-    add_executable(arp_ui_control_input_hidden_smoke tests/smoke/ui_control_input_hidden_smoke.cpp src/platform/window_win32.cpp)
+    add_executable(arp_ui_control_input_hidden_smoke tests/smoke/ui_control_input_hidden_smoke.cpp src/platform/windows/window_win32.cpp)
     target_include_directories(arp_ui_control_input_hidden_smoke PRIVATE . src)
     target_link_libraries(arp_ui_control_input_hidden_smoke PRIVATE arp_ui_runtime arp_platform_window_mapping arp_vulkan_headers gdi32)
     target_compile_options(arp_ui_control_input_hidden_smoke PRIVATE -UNDEBUG)
@@ -7812,7 +8159,7 @@ target_link_libraries(arp_ui_control_events_example PRIVATE arp_ui_runtime arp_r
 add_test(NAME arp_ui_control_events_example COMMAND arp_ui_control_events_example)
 
 if(TARGET arp_ui_text_vulkan_hidden_smoke)
-    add_executable(arp_ui_control_events_vulkan_hidden_smoke tests/smoke/ui_text_vulkan_hidden_smoke.cpp src/platform/platform_lifecycle_state.cpp)
+    add_executable(arp_ui_control_events_vulkan_hidden_smoke tests/smoke/ui_text_vulkan_hidden_smoke.cpp src/platform/common/platform_lifecycle_state.cpp)
     target_include_directories(arp_ui_control_events_vulkan_hidden_smoke PRIVATE . src)
     target_compile_definitions(arp_ui_control_events_vulkan_hidden_smoke PRIVATE ARP_UI_CONTROL_EVENTS_VISUAL=1 ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}" ARP_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders")
     if(EXISTS "C:/Program Files/RenderDoc/renderdoc_app.h")
@@ -7841,3 +8188,65 @@ include(cmake/BindlessPbrGeometryFixture.cmake)
 include(cmake/BindlessTerrainGeometryFixture.cmake)
 include(cmake/BindlessNativeSceneLifecycle.cmake)
 include(cmake/BindlessGraphicsDepthFixture.cmake)
+include(cmake/ArpVolumetricFog.cmake)
+
+# Terrain/vegetation/LOD dependency governance regressions.
+add_executable(arp_lod_profile_tests tests/unit/lod_profile_tests.cpp)
+target_link_libraries(arp_lod_profile_tests PRIVATE arp_lod)
+add_test(NAME arp_lod_profile_tests COMMAND arp_lod_profile_tests)
+add_executable(arp_lod_runtime_smoke tests/smoke/lod_runtime_smoke.cpp)
+target_link_libraries(arp_lod_runtime_smoke PRIVATE arp_lod)
+add_test(NAME arp_lod_runtime_smoke COMMAND arp_lod_runtime_smoke)
+
+add_executable(arp_terrain_mesh_samples_tests tests/unit/terrain_mesh_samples_tests.cpp)
+target_link_libraries(arp_terrain_mesh_samples_tests PRIVATE arp_terrain)
+add_test(NAME arp_terrain_mesh_samples_tests COMMAND arp_terrain_mesh_samples_tests)
+add_executable(arp_runtime_domains_smoke tests/smoke/runtime_domains_smoke.cpp)
+target_include_directories(arp_runtime_domains_smoke PRIVATE .)
+target_link_libraries(arp_runtime_domains_smoke PRIVATE arp_terrain arp_vegetation)
+add_test(NAME arp_runtime_domains_smoke COMMAND arp_runtime_domains_smoke)
+
+add_executable(arp_vegetation_domain_tests tests/unit/vegetation_domain_tests.cpp)
+target_link_libraries(arp_vegetation_domain_tests PRIVATE arp_vegetation)
+add_test(NAME arp_vegetation_domain_tests COMMAND arp_vegetation_domain_tests)
+
+set(ARP_DOMAIN_SMOKE_ASSET_DIR "${CMAKE_CURRENT_BINARY_DIR}/terrain-domain-smoke-asset" CACHE PATH
+    "Offline baked fixture consumed by the PCG-free runtime smoke")
+add_executable(arp_terrain_domain_load_smoke tests/smoke/terrain_domain_load_smoke.cpp)
+target_include_directories(arp_terrain_domain_load_smoke PRIVATE .)
+target_link_libraries(arp_terrain_domain_load_smoke PRIVATE arp_resource arp_terrain arp_vegetation)
+add_test(NAME arp_terrain_domain_load_smoke COMMAND arp_terrain_domain_load_smoke "${ARP_DOMAIN_SMOKE_ASSET_DIR}")
+if(ARP_ENABLE_PCG)
+    target_link_libraries(arp_terrain_heightfield_tests PRIVATE arp_pcg)
+    add_executable(arp_terrain_domain_bake_smoke tests/smoke/terrain_domain_bake_smoke.cpp)
+    target_include_directories(arp_terrain_domain_bake_smoke PRIVATE .)
+    target_link_libraries(arp_terrain_domain_bake_smoke PRIVATE arp_pcg arp_resource)
+    add_test(NAME arp_terrain_domain_bake_smoke COMMAND arp_terrain_domain_bake_smoke "${ARP_DOMAIN_SMOKE_ASSET_DIR}")
+    set_tests_properties(arp_terrain_domain_bake_smoke PROPERTIES FIXTURES_SETUP terrain_domain_asset)
+    set_tests_properties(arp_terrain_domain_load_smoke PROPERTIES FIXTURES_REQUIRED terrain_domain_asset)
+else()
+    set_target_properties(arp_terrain_heightfield_tests PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    set_tests_properties(arp_terrain_heightfield_tests PROPERTIES DISABLED TRUE)
+endif()
+
+foreach(_arp_domain_check IN ITEMS
+    arp_lod_profile_tests arp_lod_runtime_smoke arp_terrain_mesh_samples_tests
+    arp_runtime_domains_smoke arp_vegetation_domain_tests
+    arp_terrain_domain_load_smoke arp_terrain_domain_bake_smoke)
+    if(TARGET ${_arp_domain_check})
+        if(MSVC)
+            target_compile_options(${_arp_domain_check} PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(${_arp_domain_check} PRIVATE -UNDEBUG)
+        endif()
+    endif()
+endforeach()
+
+include(cmake/ArpRuntimeDomainBoundary.cmake)
+
+# Foundation ownership is checked even on hosts without a native GPU.
+add_test(NAME arp_core_package_boundary_tests
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/core_package_boundary_tests.py")
+set_tests_properties(arp_core_package_boundary_tests PROPERTIES LABELS "architecture;core")
+
+include(cmake/CorePackageValidation.cmake)

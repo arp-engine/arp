@@ -1,5 +1,5 @@
-#include "core/cpu_allocator.h"
-#include "core/monotonic_id_sequence.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/monotonic_id_sequence.h"
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
 #include "rhi/backends/vulkan/vulkan_bindless.h"
 #include "rhi/backends/vulkan/vulkan_graphics_pass.h"
@@ -301,7 +301,9 @@ public:
         if (!nativePayload_->recordDescriptorSetBind(
                 *nativeSet, snapshot->setIndex(), nullptr, 0u, diagnostics))
             return commandFail(diagnostics, pass_.commandCount());
-        nativePayload_->retainResource(nativeSet);
+        // The bounded indexedSnapshots owner retains this immutable set and
+        // its native payload through completion; no second resource owner is
+        // needed in the ordinary recording vector.
         const auto tracked =
             boundDescriptors_.bindSet(snapshot->setIndex(), *descriptors, nullptr, 0u);
         if (!tracked.success)
@@ -1544,7 +1546,7 @@ arp::core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoder(
     const rhi::CommandEncoderDesc& retention)
 {
     if (!rhi::semantics::commandRetentionRequestAllowed(
-            retention, rhi::CommandRetentionCapabilities{}))
+            retention, rhi::CommandRetentionCapabilities{}, rhi::Backend::Vulkan))
         return {};
     auto encoder = arp::core::makeUnique<VulkanRhiCommandEncoder>(std::move(nativeResources),
         std::move(resourceRegistry),

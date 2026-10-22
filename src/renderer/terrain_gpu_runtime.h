@@ -1,10 +1,10 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/runtime/gpu_resource_retire_queue.h"
-#include "pcg/terrain_streamer.h"
+#include "3d/terrain/chunk_coord.h"
+#include "3d/terrain/terrain_surface.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/mesh/mesh_gpu_buffer.h"
-#include "terrain/terrain_surface.h"
+#include "renderer/runtime/gpu_resource_retire_queue.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -90,7 +90,7 @@ public:
     using UploadTile =
         std::function<bool(const TerrainGpuTilePayload&, TerrainGpuTileBackendPayload&)>;
 
-    bool syncChunk(pcg::ChunkCoord coord,
+    bool syncChunk(terrain::ChunkCoord coord,
         const assets::MeshAsset& mesh,
         int lodLevel,
         std::uint64_t meshRevision,
@@ -106,15 +106,15 @@ public:
     }
 
     bool retireInactive(
-        const core::pmr::Vector<pcg::ChunkCoord>& activeCoords, std::uint64_t submissionSerial);
+        const core::pmr::Vector<terrain::ChunkCoord>& activeCoords, std::uint64_t submissionSerial);
     std::size_t inactiveSlotCount(
-        const core::pmr::Vector<pcg::ChunkCoord>& activeCoords) const noexcept;
+        const core::pmr::Vector<terrain::ChunkCoord>& activeCoords) const noexcept;
     /// Returns whether syncing this existing coordinate may enter the
     /// update-fallback replacement path and therefore retire one old slot.
     /// It is an upper-bound query only: a successful in-place update consumes
     /// no retirement capacity.
     bool slotMayRequireReplacementRetirement(
-        pcg::ChunkCoord coord, int requestedLodLevel) const noexcept;
+        terrain::ChunkCoord coord, int requestedLodLevel) const noexcept;
 
     /// Upload or atomically replace the three GPU pages for a TerrainAsset
     /// tile. Failure does not disturb an existing tile generation.
@@ -158,8 +158,8 @@ public:
     const TerrainGpuPageTableEntry* pageTableEntry(terrain::TerrainTileCoord coord) const;
     core::pmr::Vector<TerrainGpuPageTableEntry> pageTable() const;
 
-    const Slot* slot(pcg::ChunkCoord coord) const;
-    Slot* slot(pcg::ChunkCoord coord);
+    const Slot* slot(terrain::ChunkCoord coord) const;
+    Slot* slot(terrain::ChunkCoord coord);
 
     std::size_t activeSlotCount() const noexcept { return slots_.size(); }
 
@@ -189,14 +189,14 @@ public:
     /// all page-layer leases together with the retired ownership records.
     void clear();
 
-    core::pmr::Vector<pcg::ChunkCoord> activeCoords() const;
+    core::pmr::Vector<terrain::ChunkCoord> activeCoords() const;
 
 private:
     struct TileSlot final {
         TerrainGpuPageTableEntry pageTableEntry;
     };
 
-    core::pmr::UnorderedMap<pcg::ChunkCoord, Slot> slots_{&core::defaultCpuMemoryResource()};
+    core::pmr::UnorderedMap<terrain::ChunkCoord, Slot> slots_{&core::defaultCpuMemoryResource()};
     core::pmr::UnorderedMap<terrain::TerrainTileCoord, TileSlot, terrain::TerrainTileCoordHash>
         tileSlots_{&core::defaultCpuMemoryResource()};
     arp::core::runtime::GpuResourceRetireQueue<Slot> retireQueue_;

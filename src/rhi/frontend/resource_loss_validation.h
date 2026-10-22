@@ -1,5 +1,5 @@
 #pragma once
-#include "core/shared_owner_projection.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/frontend/resource_device_lifetime.h"
 #include "rhi/frontend/resource_device_native_loss.h"
 #include "rhi/frontend/resource_registration.h"

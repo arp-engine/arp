@@ -1,8 +1,8 @@
 #pragma once
 
+#include "3d/vegetation/template.h"
 #include "assets/asset_pipeline.h"
-#include "core/cpu_allocator.h"
-#include "pcg/foliage_instance_batch.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
 #include "resource/resource_contract.h"
 #include "resource/resource_manager.h"
@@ -54,13 +54,19 @@ struct VegetationCatalogAssetRecord {
 };
 
 struct VegetationCatalogAssetEntry {
+    struct MaterialBinding final {
+        std::uint32_t slot = 0u;
+        core::pmr::String resourceId{&core::defaultCpuMemoryResource()};
+    };
+
     core::pmr::String id{&core::defaultCpuMemoryResource()};
     core::pmr::String source{&core::defaultCpuMemoryResource()};
     core::pmr::String role{&core::defaultCpuMemoryResource()};
     core::pmr::String category{&core::defaultCpuMemoryResource()};
     core::pmr::String heightClass{&core::defaultCpuMemoryResource()};
-    pcg::TemplateCategory templateCategory = pcg::TemplateCategory::ProceduralGrass;
+    vegetation::TemplateCategory templateCategory = vegetation::TemplateCategory::ProceduralGrass;
     std::uint16_t templateId = 0u;
+    core::pmr::Vector<MaterialBinding> materials{&core::defaultCpuMemoryResource()};
 };
 
 struct VegetationSourceCatalog {
@@ -81,26 +87,29 @@ struct VegetationCatalogResourceData {
     VegetationCatalogSourceInfo source;
     VegetationCatalogImportedInfo imported;
     VegetationCatalogValidationInfo validation;
-    pcg::VegetationTemplateConfig templateConfig{};
+    vegetation::VegetationTemplateConfig templateConfig{};
     core::pmr::Vector<VegetationCatalogAssetEntry> assets{&core::defaultCpuMemoryResource()};
-    core::pmr::Vector<pcg::VegetationTemplate> templates{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<vegetation::VegetationTemplate> templates{&core::defaultCpuMemoryResource()};
     core::pmr::UnorderedMap<core::pmr::String, std::uint16_t> templateIdsByAssetId{
         &core::defaultCpuMemoryResource()};
 
     const VegetationCatalogAssetEntry* findAsset(std::string_view id) const noexcept;
-    const pcg::VegetationTemplate* findTemplate(std::string_view id) const noexcept;
+    const vegetation::VegetationTemplate* findTemplate(std::string_view id) const noexcept;
     const VegetationCatalogAssetEntry* findAssetByTemplateId(
         std::uint16_t templateId) const noexcept;
-    std::uint16_t familyBase(pcg::TemplateCategory category) const noexcept;
-    std::uint16_t familyVariantCount(pcg::TemplateCategory category) const noexcept;
+    std::uint16_t familyBase(vegetation::TemplateCategory category) const noexcept;
+    std::uint16_t familyVariantCount(vegetation::TemplateCategory category) const noexcept;
     std::uint16_t templateIdFor(std::string_view id) const noexcept;
 };
+
+enum class VegetationCatalogInput { LegacySourceCatalog, Cooked };
 
 struct VegetationCatalogResourceLoadDesc {
     std::filesystem::path catalogPath;
     core::pmr::String resourceId{&core::defaultCpuMemoryResource()};
     core::pmr::String alias{&core::defaultCpuMemoryResource()};
     core::pmr::String status{&core::defaultCpuMemoryResource()};
+    VegetationCatalogInput input = VegetationCatalogInput::LegacySourceCatalog;
 };
 
 struct VegetationCatalogResource : public ResourceBase {
@@ -119,6 +128,11 @@ struct VegetationCatalogResource : public ResourceBase {
 
     ResourceLoadResult load(
         ResourceManager& resourceManager, const ResourceLoadContext& context) override;
+    bool collectFileReadIntents(ResourceManager& manager,
+        core::pmr::Vector<ResourceFileReadIntent>& intents,
+        core::pmr::String& diagnostics) const override;
+    std::size_t processedByteCount() const noexcept override;
+    void appendContentFingerprint(core::StableHash64& hasher) const noexcept override;
 
     ResourceGraphStage processingStage() const noexcept override
     {
@@ -127,6 +141,10 @@ struct VegetationCatalogResource : public ResourceBase {
 
     std::shared_ptr<VegetationCatalogResourceData> data;
     VegetationCatalogResourceLoadDesc loadDesc;
+
+private:
+    std::size_t cookedBytes_ = 0u;
+    std::uint64_t cookedFingerprint_ = 0u;
 };
 
 struct VegetationCatalogResourceLoadResult {

@@ -20,10 +20,10 @@ BindlessCrossExtension::prepareOriginalGraphicsExecution(GpuDevice& device,
     };
     if (const auto* id = OriginalBindlessGraphicsExecutionContract::validateBudget(budget))
         return fail(id);
-    if (const auto* id = inputs.scene.diagnostic())
+    if (const auto* id = inputs.initializedGraphics.diagnostic())
         return fail(id);
-    if (const auto* id = OriginalBindlessSceneContentContract::validateExecutionBudget(
-            device.backend(), inputs.scene, budget.closure))
+    if (const auto* id = OriginalBindlessInitializedGraphicsContract::validateExecutionBudget(
+            device.backend(), inputs.initializedGraphics, budget.closure))
         return fail(id);
     const auto lowering = semantics::OriginalBindlessGraphicsExecutionLowering::lowering(
         device.backend(), budget.intent.contractVersion);
@@ -39,8 +39,8 @@ BindlessCrossExtension::prepareOriginalGraphicsExecution(GpuDevice& device,
         return fail("RHI-BINDLESS-GRAPHICS-EXECUTION-CAPABILITY");
     if (const auto* id = OriginalCommandBindlessRootSource::validateOriginal(inputs.root))
         return fail(id);
-    if (const auto* id =
-            OriginalBindlessSceneContentContract::validateRootInput(inputs.root, inputs.scene))
+    if (const auto* id = OriginalBindlessInitializedGraphicsContract::validateRootInput(
+            inputs.root, inputs.initializedGraphics))
         return fail(id);
     if (!std::holds_alternative<std::shared_ptr<const BindlessPreparedGraphicsBinding>>(
             inputs.root->originalPrepared())

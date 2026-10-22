@@ -1,5 +1,5 @@
 #pragma once
-#include "core/utf8.h"
+#include "core/text/utf8.h"
 #include "rhi/frontend/transfer_readback_cold_budget.h"
 #include "rhi/frontend/transfer_readback_content_intent.h"
 #include "rhi/semantics/transfer_dependency_lowering.h"

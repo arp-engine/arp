@@ -1,10 +1,10 @@
 #pragma once
+#include "3d/vegetation/template.h"
 #include "cpu_quota_factory_fixture.h"
 #include "original_bindless_graphics_stream_fixture.h"
 #include "original_graphics_push_data_fixture.h"
 #include "original_graphics_runtime_memory_fixture.h"
 #include "original_initialized_geometry_data_fixture.h"
-#include "pcg/foliage_instance_batch.h"
 #include "rhi/backends/webgpu/webgpu_original_geometry_content.h"
 #include "webgpu_async_wait_fixture.h"
 #include "webgpu_native_submission_probe_fixture.h"
@@ -1218,8 +1218,8 @@ private:
     static_assert(sizeof(Material) == 32u && offsetof(Material, resources) == 16u);
     static_assert(sizeof(Output) == 48u && offsetof(Output, metadata) == 16u
         && offsetof(Output, signedValues) == 32u);
-    static_assert(sizeof(pcg::InstanceDataGpu) == 64u
-        && offsetof(pcg::InstanceDataGpu, speciesLodState) == 48u);
+    static_assert(sizeof(vegetation::InstanceDataGpu) == 64u
+        && offsetof(vegetation::InstanceDataGpu, speciesLodState) == 48u);
 
     static std::array<float, 4u> color(std::uint32_t index)
     {
@@ -1242,13 +1242,14 @@ private:
             std::memcpy(data, &value, sizeof(value));
         } else if (table == 2u) {
             for (std::uint32_t element = 0u; element < 2u; ++element) {
-                pcg::InstanceDataGpu value{{float(index + 1u), float(element + 2u), 3.f, 1.f},
+                vegetation::InstanceDataGpu value{
+                    {float(index + 1u), float(element + 2u), 3.f, 1.f},
                     {.125f, .25f, float(index), float(element)},
                     {5.f, 6.f, 7.f, 8.f},
                     {}};
-                pcg::packInstanceMetadataFloat(
+                vegetation::packInstanceMetadataFloat(
                     value.speciesLodState[0], 0x00040302u + index + element);
-                pcg::packInstanceMetadataFloat(value.speciesLodState[1], 0x87654321u);
+                vegetation::packInstanceMetadataFloat(value.speciesLodState[1], 0x87654321u);
                 std::memcpy(data + element * sizeof(value), &value, sizeof(value));
             }
         }
@@ -1497,7 +1498,7 @@ private:
                 assert(snapshotRangeCount(root, binding, index)
                     == range.sizeBytes
                         / (records ? (binding < 2u          ? sizeof(Material)
-                                             : binding < 4u ? sizeof(pcg::InstanceDataGpu)
+                                             : binding < 4u ? sizeof(vegetation::InstanceDataGpu)
                                                             : sizeof(Output))
                                    : (binding < 2u ? 16u : 4u)));
             }

@@ -1,5 +1,5 @@
 #pragma once
-#include "core/ascii_token_cursor.h"
+#include "core/text/ascii_token_cursor.h"
 #include "shader/target_buffer_memory_declarations.h"
 
 namespace arp::shader {

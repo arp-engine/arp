@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/generation_pool.h"
-#include "core/initialized_byte_buffer.h"
+#include "core/container/generation_pool.h"
+#include "core/memory/initialized_byte_buffer.h"
 #include "rhi/backends/webgl/webgl_resources.h"
 #include "rhi/semantics/webgl_execution_telemetry.h"
 

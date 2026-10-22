@@ -1,5 +1,5 @@
 #pragma once
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "shader/spirv_buffer_declaration_layout.h"
 #include "shader/wgsl_buffer_declaration_layout.h"
 #include "spirv_binary_mutation_fixture.h"

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/math.h"
+#include "core/math/math.h"
 
 namespace arp::editor {
 
@@ -35,7 +35,7 @@ private:
     core::Vec3 eye() const noexcept;
     core::Vec3 target_{};
     float yawDegrees_ = -35.0f;
-    float pitchDegrees_ = 25.0f;
+    float pitchDegrees_ = -25.0f;
     float distance_ = 6.0f;
 };
 

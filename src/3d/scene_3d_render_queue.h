@@ -1,7 +1,8 @@
 #pragma once
 
 #include "3d/components.h"
-#include "core/cpu_allocator.h"
+#include "3d/fog_components.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
 #include "scene/camera.h"
 #include "scene/ids.h"
@@ -24,6 +25,8 @@ enum class Scene3DDiagnosticCode {
     InvalidBounds,
     MissingTerrainMetadata,
     MissingCameraMetadata,
+    InvalidFog,
+    DuplicateGlobalFog,
 };
 
 ASTRUCT(Construct = Default)
@@ -107,8 +110,31 @@ struct Scene3DLightBinding {
     bool castShadow = false;
 };
 
+struct Scene3DFogVolumeBinding {
+    arp::scene::GameObjectId objectId;
+    LocalFogVolumeDesc desc;
+    arp::scene::Transform worldTransform;
+};
+
 class Scene3DRenderQueue {
 public:
+    void setFog(VolumetricFogDesc fog)
+    {
+        fog_ = fog;
+        hasFog_ = true;
+    }
+
+    bool hasFog() const { return hasFog_; }
+
+    const VolumetricFogDesc& fog() const { return fog_; }
+
+    void addFogVolume(Scene3DFogVolumeBinding fog) { fogVolumes_.push_back(std::move(fog)); }
+
+    const arp::core::pmr::Vector<Scene3DFogVolumeBinding>& fogVolumes() const
+    {
+        return fogVolumes_;
+    }
+
     void addItem(Scene3DRenderItem item);
     void addCamera(Scene3DCameraBinding camera);
     void addAnimation(Scene3DAnimationBinding animation);
@@ -161,6 +187,9 @@ public:
     size_t nativeBackendHandleCount() const { return 0; }
 
 private:
+    VolumetricFogDesc fog_;
+    bool hasFog_ = false;
+    arp::core::pmr::Vector<Scene3DFogVolumeBinding> fogVolumes_;
     arp::core::pmr::Vector<Scene3DRenderItem> items_;
     arp::core::pmr::Vector<Scene3DCameraBinding> cameras_;
     arp::core::pmr::Vector<Scene3DAnimationBinding> animations_;

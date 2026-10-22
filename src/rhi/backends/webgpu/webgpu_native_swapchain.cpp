@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/webgpu/webgpu_native_payloads.h"
 #include "rhi/backends/webgpu/webgpu_native_string_view.h"
 
@@ -90,6 +90,8 @@ struct WebGpuNativeSwapchainPayload::Impl {
     WGPUInstance instance = nullptr;
     WGPUSurface surface = nullptr;
     std::array<WGPUTexture, 2> currentTexturesBySlot{};
+    std::array<std::uint32_t, 2> acquiredTurns{};
+    std::array<std::weak_ptr<WebGpuNativeTexturePayload>, 2> acquiredPayloads;
     // Bounded exact JS GPUTexture identity, not a caller acquisition counter.
     WGPUTexture lastIssuedCanvas = nullptr;
     bool surfaceConfigured = false;
@@ -97,6 +99,14 @@ struct WebGpuNativeSwapchainPayload::Impl {
 };
 
 #if defined(ARP_RHI_WEBGPU_NATIVE_PAYLOADS_HAS_NATIVE)
+void invalidateAcquiredImages(WebGpuNativeSwapchainPayload::Impl& impl) noexcept
+{
+    for (auto& weak : impl.acquiredPayloads)
+        if (auto image = weak.lock())
+            image->acquiredImageValid = false;
+    impl.acquiredTurns.fill(0);
+}
+
 bool configureSurface(WebGpuNativeSwapchainPayload::Impl& impl, std::pmr::string& diagnostics)
 {
     if (!impl.device || !impl.surface || !validExtent(impl.desc.extent)) {
@@ -136,6 +146,7 @@ WebGpuNativeSwapchainPayload::~WebGpuNativeSwapchainPayload()
     if (!impl_) {
         return;
     }
+    invalidateAcquiredImages(*impl_);
     // The Render Feature Lab captures the canvas after main() returns. The
     // browser owns presentation of the configured surface, so retain its
     // configuration and native references until page teardown when that
@@ -168,6 +179,9 @@ bool WebGpuNativeSwapchainPayload::acquireCanvas(
         return hiddenTabFrameSkip(diagnostics);
     }
     auto& currentTexture = impl_->currentTexturesBySlot[frameSlot];
+    if (auto previous = impl_->acquiredPayloads[frameSlot].lock())
+        previous->acquiredImageValid = false;
+    impl_->acquiredTurns[frameSlot] = webGpuNativeAcquireExecutionTurn();
     releaseTexture(currentTexture);
     auto surfaceTexture = WGPU_SURFACE_TEXTURE_INIT;
     wgpuSurfaceGetCurrentTexture(impl_->surface, &surfaceTexture);
@@ -244,6 +258,9 @@ bool WebGpuNativeSwapchainPayload::discardCanvasFrame(
     // If acquiredImage() transferred ownership, the temporary GpuTexture owns
     // the payload and its destructor releases it. Otherwise release the
     // surface texture still held by the native swapchain payload here.
+    if (auto image = impl_->acquiredPayloads[frameSlot].lock())
+        image->acquiredImageValid = false;
+    impl_->acquiredTurns[frameSlot] = 0;
     releaseTexture(impl_->currentTexturesBySlot[frameSlot]);
     return true;
 #else
@@ -282,6 +299,9 @@ std::shared_ptr<WebGpuNativeTexturePayload> WebGpuNativeSwapchainPayload::takeCa
     payload->texture = currentTexture;
     payload->ownerDevice = impl_->device;
     payload->browserSurfaceTexture = true;
+    payload->acquiredExecutionTurn = impl_->acquiredTurns[frameSlot];
+    payload->acquiredImageValid = payload->acquiredExecutionTurn != 0;
+    impl_->acquiredPayloads[frameSlot] = payload;
     payload->format = nativeTextureFormat(impl_->desc.format);
     payload->dimension = WGPUTextureDimension_2D;
     payload->rhiFormat = impl_->desc.format;
@@ -306,6 +326,7 @@ bool WebGpuNativeSwapchainPayload::resizeCanvas(
         return false;
     }
     const auto previousDesc = impl_->desc;
+    invalidateAcquiredImages(*impl_);
     impl_->desc.extent = extent;
     releaseTexturesBySlot(impl_->currentTexturesBySlot);
     if (impl_->surfaceAvailable && !configureSurface(*impl_, diagnostics)) {
@@ -331,6 +352,7 @@ bool WebGpuNativeSwapchainPayload::surfaceLoss(bool available, std::pmr::string&
         return false;
     }
     const bool previousSurfaceAvailable = impl_->surfaceAvailable;
+    invalidateAcquiredImages(*impl_);
     impl_->surfaceAvailable = available;
     releaseTexturesBySlot(impl_->currentTexturesBySlot);
     if (!available) {

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/interpreter/bytecode.h"
 #include "scriptvm/interpreter/vm.h"
 #include "scriptvm/runtime/artifact_identity.h"

@@ -1,6 +1,8 @@
 #include "editor/viewport/editor_scene_viewport_mesh_cache.h"
 
+#include "3d/terrain/terrain_streamer.h"
 #include "resource/mesh_asset_resources.h"
+#include "resource/terrain_asset_resource.h"
 
 #include <limits>
 
@@ -57,42 +59,89 @@ EditorSceneViewportMeshCacheResult EditorSceneViewportMeshCache::acquire(rhi::Gp
             "mesh cache cannot be reused across device or resource-manager owners");
     }
 
-    const auto handle = resources.find<resource::MeshAssetResource>(item.meshResourceId);
-    if (!handle.ready() || handle.generation() != item.meshGeneration)
-        return failure(EditorSceneViewportMeshCacheDiagnostic::ResourceChanged,
-            "mesh resource is no longer ready at the resolved generation");
-    const auto* resource = handle.get();
-    if (!resource->immutableMeshGeometry())
-        return failure(EditorSceneViewportMeshCacheDiagnostic::MutableGeometryUnsupported,
-            "mutable mesh geometry cannot enter the viewport cache");
-    const auto* geometry = resource->mesh();
-    if (geometry == nullptr || !geometry->validForIndexedDraw())
-        return failure(EditorSceneViewportMeshCacheDiagnostic::InvalidMeshData,
-            "mesh geometry is not valid for indexed drawing");
-    if (geometry->vertices.size() != item.vertexCount || geometry->indices.size() != item.indexCount
-        || geometry->submeshes.size() != item.submeshCount) {
-        return failure(EditorSceneViewportMeshCacheDiagnostic::ResolvedMetadataMismatch,
-            "mesh geometry no longer matches resolved CPU metadata");
+    // Admit from checked counts before constructing any terrain geometry.
+    constexpr auto vertexStride = sizeof(assets::MeshVertex);
+    if (item.vertexCount > std::numeric_limits<std::uint64_t>::max() / vertexStride
+        || item.indexCount > std::numeric_limits<std::uint64_t>::max() / sizeof(std::uint32_t))
+        return failure(
+            EditorSceneViewportMeshCacheDiagnostic::InvalidMeshData, "geometry size overflow");
+    const auto vertexBytes = static_cast<std::uint64_t>(item.vertexCount) * vertexStride;
+    const auto indexBytes = static_cast<std::uint64_t>(item.indexCount) * sizeof(std::uint32_t);
+    if (indexBytes > std::numeric_limits<std::uint64_t>::max() - vertexBytes)
+        return failure(
+            EditorSceneViewportMeshCacheDiagnostic::InvalidMeshData, "geometry size overflow");
+    const auto geometryBytes = vertexBytes + indexBytes;
+    const assets::MeshAsset* geometry = nullptr;
+    assets::MeshAsset terrainMesh;
+    resource::ResourceHandle<resource::TerrainAssetResource> terrainHandle;
+    if (item.geometry == EditorSceneViewportGeometry::TerrainTile) {
+        terrainHandle = resources.find<resource::TerrainAssetResource>(item.meshResourceId);
+        resource::TerrainAssetTileReadView view;
+        if (!terrainHandle.ready() || terrainHandle.generation() != item.meshGeneration
+            || !terrainHandle.get()->tileReadView(item.tile, view) || !view.geometryValid()
+            || terrainHandle.get()->hasSurfaceWeights() || terrainHandle.get()->hasVegetation())
+            return failure(EditorSceneViewportMeshCacheDiagnostic::ResourceChanged,
+                "terrain generation or tile changed");
+        const auto samples = static_cast<std::uint64_t>(view.samplesPerEdge);
+        const auto cells = samples - 1u;
+        if (samples * samples > UINT32_MAX
+            || cells * cells > std::numeric_limits<std::uint64_t>::max() / 6u
+            || item.vertexCount != samples * samples || item.indexCount != cells * cells * 6u
+            || item.submeshCount != 1u)
+            return failure(EditorSceneViewportMeshCacheDiagnostic::ResolvedMetadataMismatch,
+                "terrain tile counts changed");
+    } else {
+        const auto handle = resources.find<resource::MeshAssetResource>(item.meshResourceId);
+        if (!handle.ready() || handle.generation() != item.meshGeneration)
+            return failure(EditorSceneViewportMeshCacheDiagnostic::ResourceChanged,
+                "mesh resource is no longer ready at the resolved generation");
+        const auto* resource = handle.get();
+        if (!resource->immutableMeshGeometry())
+            return failure(EditorSceneViewportMeshCacheDiagnostic::MutableGeometryUnsupported,
+                "mutable mesh geometry cannot enter the viewport cache");
+        geometry = resource->mesh();
     }
-
     for (const auto& entry : entries_) {
-        if (entry->resourceId == item.meshResourceId && entry->generation == item.meshGeneration) {
+        if (entry->resourceId == item.meshResourceId && entry->generation == item.meshGeneration
+            && entry->geometry == item.geometry && entry->tile == item.tile) {
             EditorSceneViewportMeshCacheResult result;
             result.mesh = &entry->mesh;
             result.reused = true;
             return result;
         }
     }
-
-    std::uint64_t geometryBytes = 0;
-    if (!geometryByteSize(*geometry, geometryBytes))
-        return failure(EditorSceneViewportMeshCacheDiagnostic::InvalidMeshData,
-            "mesh geometry byte size overflows the cache accounting type");
     if (entries_.size() >= budget_.maxResidentMeshes
-        || geometryBytes > budget_.maxResidentGeometryBytes - residentGeometryBytes_) {
+        || geometryBytes > budget_.maxResidentGeometryBytes - residentGeometryBytes_)
         return failure(EditorSceneViewportMeshCacheDiagnostic::BudgetExceeded,
             "viewport mesh cache resident budget is exhausted");
+    if (item.geometry == EditorSceneViewportGeometry::TerrainTile) {
+        const auto* asset = terrainHandle.get();
+        const auto surface = asset->snapshotSurface();
+        terrain::TerrainStreamerDesc desc;
+        desc.worldBounds = asset->bounds();
+        desc.chunkSize = asset->tileWorldSize();
+        desc.samplesPerChunk = asset->samplesPerEdge();
+        desc.baseHeight = 0.0f;
+        desc.heightSampler = [surface](float x, float z) {
+            const auto query = surface->sample(x, z);
+            return query.ready() ? query.sample.height : std::numeric_limits<float>::quiet_NaN();
+        };
+        terrain::TerrainStreamer builder;
+        if (!builder.initialize(desc))
+            return failure(EditorSceneViewportMeshCacheDiagnostic::InvalidMeshData,
+                "terrain mesh grid rejected");
+        terrainMesh = builder.generateChunkMesh({item.tile.x, item.tile.z}, 0, 0u, 0u);
+        geometry = &terrainMesh;
     }
+    if (!geometry || !geometry->validForIndexedDraw())
+        return failure(
+            EditorSceneViewportMeshCacheDiagnostic::InvalidMeshData, "invalid indexed geometry");
+    std::uint64_t actualBytes = 0;
+    if (geometry->vertices.size() != item.vertexCount || geometry->indices.size() != item.indexCount
+        || geometry->submeshes.size() != item.submeshCount
+        || !geometryByteSize(*geometry, actualBytes) || actualBytes != geometryBytes)
+        return failure(EditorSceneViewportMeshCacheDiagnostic::ResolvedMetadataMismatch,
+            "resolved geometry counts changed");
 
     auto uploaded = renderer::uploadMeshToRhi(device, *geometry);
     if (!uploaded.success)
@@ -102,6 +151,8 @@ EditorSceneViewportMeshCacheResult EditorSceneViewportMeshCache::acquire(rhi::Gp
     auto entry = core::makeUnique<Entry>();
     entry->resourceId = item.meshResourceId;
     entry->generation = item.meshGeneration;
+    entry->geometry = item.geometry;
+    entry->tile = item.tile;
     entry->mesh = std::move(uploaded.mesh);
     entry->geometryBytes = geometryBytes;
     const auto* cachedMesh = &entry->mesh;

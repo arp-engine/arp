@@ -31,6 +31,8 @@ struct EditorSceneViewportResolvedItem {
     resource::ResourceGeneration materialGeneration = 0;
     resource::ResourceGeneration sourceGeneration = 0;
     resource::ResourceGeneration shaderGeneration = 0;
+    EditorSceneViewportGeometry geometry = EditorSceneViewportGeometry::Mesh;
+    terrain::TerrainTileCoord tile;
     std::size_t vertexCount = 0;
     std::size_t indexCount = 0;
     std::size_t submeshCount = 0;

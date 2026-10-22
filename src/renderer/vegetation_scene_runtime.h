@@ -1,10 +1,13 @@
 #pragma once
 
 #include "3d/bvh.h"
-#include "core/frustum.h"
-#include "core/lod_transition.h"
-#include "core/runtime/gpu_resource_retire_queue.h"
+#include "3d/lod/lod_profile.h"
+#include "3d/lod/lod_transition.h"
+#include "assets/mesh_section_grouping.h"
+#include "core/math/frustum.h"
 #include "core/runtime/work_service.h"
+#include "renderer/foliage_deformation_envelope.h"
+#include "renderer/runtime/gpu_resource_retire_queue.h"
 #include "renderer/terrain_vegetation_runtime.h"
 #include "rhi/gpu_device.h"
 
@@ -16,6 +19,10 @@ namespace arp::renderer {
 // by VegetationScene/v1. Game cooks may retain the authoring bank separately.
 bool resolveVegetationStaticScene(const std::filesystem::path& manifest,
     std::filesystem::path& staticScene,
+    core::pmr::String& diagnostics);
+bool resolveVegetationStaticScene(const std::filesystem::path& manifest,
+    std::filesystem::path& staticScene,
+    assets::MeshSectionSpatialPartition& partition,
     core::pmr::String& diagnostics);
 
 // VegetationScene/v1 is independent of terrain tile resolution. Prototype
@@ -39,9 +46,10 @@ public:
     };
 
     struct Prototype {
+        FoliageDeformationEnvelope deformationEnvelope;
         std::uint32_t id = 0;
         bool castsShadow = false;
-        pcg::LodProfile profile;
+        lod::LodProfile profile;
         core::ScreenDiameterLod screenProfile;
         std::array<std::uint32_t, 4> shadowLods{};
         core::pmr::Vector<Model> models{&core::defaultCpuMemoryResource()};
@@ -52,7 +60,7 @@ public:
         bool sceneVisible = true;
         std::uint64_t stableId = 0, createdSerial = 0;
         scene3d::Aabb bounds;
-        core::pmr::Vector<pcg::InstanceDataGpu> instances{&core::defaultCpuMemoryResource()};
+        core::pmr::Vector<vegetation::InstanceDataGpu> instances{&core::defaultCpuMemoryResource()};
         core::UniquePtr<rhi::GpuBuffer> buffer;
     };
 
@@ -119,7 +127,7 @@ private:
     enum class PageState { Unloaded, Loading, Loaded, Failed };
 
     struct Placement {
-        pcg::InstanceDataGpu gpu;
+        vegetation::InstanceDataGpu gpu;
         std::uint32_t prototypeIndex = 0;
         scene3d::Aabb bounds;
         float screenDiameter = 0;

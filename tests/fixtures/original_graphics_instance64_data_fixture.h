@@ -1,7 +1,7 @@
 #pragma once
-#include "core/math.h"
-#include "pcg/foliage_geometry_profile.h"
-#include "pcg/foliage_instance_batch.h"
+#include "3d/vegetation/foliage_geometry_profile.h"
+#include "3d/vegetation/template.h"
+#include "core/math/math.h"
 #include "rhi/frontend/command_sources.h"
 
 #include <array>
@@ -18,21 +18,21 @@ public:
         "instance64 base1 rotation-normal-tangent metadata-bits wind-current-previous-grass-canopy-rigid";
     using Numeric = std::array<float, 176u>;
     static constexpr std::uint64_t runtimeStride = 64u, runtimeCapacity = 4u;
-    using Instances = std::array<pcg::InstanceDataGpu, 4u>;
+    using Instances = std::array<vegetation::InstanceDataGpu, 4u>;
 
     struct Probe {
         std::array<float, 4u> position, normal, tangent;
         std::array<std::uint32_t, 4u> selectors, offsets;
         std::array<float, 4u> windWeightsAndHeight;
-        pcg::WoccWindFieldUbo currentWind, previousWind;
+        vegetation::WindFieldParameters currentWind, previousWind;
     };
 
-    static_assert(std::is_standard_layout_v<pcg::InstanceDataGpu>);
-    static_assert(sizeof(pcg::InstanceDataGpu) == 64u);
-    static_assert(offsetof(pcg::InstanceDataGpu, positionScale) == 0u);
-    static_assert(offsetof(pcg::InstanceDataGpu, yawPhaseIdLod) == 16u);
-    static_assert(offsetof(pcg::InstanceDataGpu, extraTransform) == 32u);
-    static_assert(offsetof(pcg::InstanceDataGpu, speciesLodState) == 48u);
+    static_assert(std::is_standard_layout_v<vegetation::InstanceDataGpu>);
+    static_assert(sizeof(vegetation::InstanceDataGpu) == 64u);
+    static_assert(offsetof(vegetation::InstanceDataGpu, positionScale) == 0u);
+    static_assert(offsetof(vegetation::InstanceDataGpu, yawPhaseIdLod) == 16u);
+    static_assert(offsetof(vegetation::InstanceDataGpu, extraTransform) == 32u);
+    static_assert(offsetof(vegetation::InstanceDataGpu, speciesLodState) == 48u);
     static_assert(sizeof(Instances) == 256u && sizeof(Probe) == 224u);
     static_assert(offsetof(Probe, selectors) == 48u && offsetof(Probe, offsets) == 64u);
     static_assert(offsetof(Probe, windWeightsAndHeight) == 80u
@@ -61,7 +61,7 @@ public:
             std::copy(positions[i].begin(), positions[i].end(), result[i].positionScale);
             std::copy(angles[i].begin(), angles[i].end(), result[i].yawPhaseIdLod);
             std::copy(extra[i].begin(), extra[i].end(), result[i].extraTransform);
-            pcg::setInstanceMetadata(result[i],
+            vegetation::setInstanceMetadata(result[i],
                 13u + i,
                 31u + i,
                 201u - i,
@@ -69,8 +69,8 @@ public:
                 i,
                 2u,
                 static_cast<std::uint16_t>(0x7fc1u + i));
-            pcg::packInstanceMetadataFloat(result[i].speciesLodState[2], 0x80000000u);
-            pcg::packInstanceMetadataFloat(result[i].speciesLodState[3], 1u + i);
+            vegetation::packInstanceMetadataFloat(result[i].speciesLodState[2], 0x80000000u);
+            vegetation::packInstanceMetadataFloat(result[i].speciesLodState[3], 1u + i);
         }
         return result;
     }
@@ -97,7 +97,7 @@ public:
 
     static Probe ordinary1() { return probe(); }
 
-    static core::Mat4 rotation(const pcg::InstanceDataGpu& instance)
+    static core::Mat4 rotation(const vegetation::InstanceDataGpu& instance)
     {
         const auto yaw = core::Mat4::rotation(
             core::Quat::fromAxisAngle({0.f, 1.f, 0.f}, instance.yawPhaseIdLod[0]));
@@ -108,7 +108,7 @@ public:
             core::multiply(core::Mat4::rotation(core::Quat::fromAxisAngle({1, 0, 0}, pitch)), yaw));
     }
 
-    static core::Vec3 position(const pcg::InstanceDataGpu& instance, const Probe& p)
+    static core::Vec3 position(const vegetation::InstanceDataGpu& instance, const Probe& p)
     {
         const float uniform = instance.positionScale[3];
         const float scaleY =
@@ -207,8 +207,8 @@ public:
         const auto oracle = expected();
         for (std::size_t i = 0u; i < actual.size(); ++i) {
             if (i % 44u >= 16u && i % 44u < 20u) {
-                if (pcg::unpackInstanceMetadataFloat(actual[i])
-                    != pcg::unpackInstanceMetadataFloat(oracle[i]))
+                if (vegetation::unpackInstanceMetadataFloat(actual[i])
+                    != vegetation::unpackInstanceMetadataFloat(oracle[i]))
                     return false;
             } else if (!std::isfinite(actual[i])
                 || std::abs(actual[i] - oracle[i]) > tolerance * (1.f + std::abs(oracle[i])))
@@ -226,9 +226,9 @@ public:
                     "Instance64 lane%zu actual%.9g/%08x expected%.9g/%08x\n",
                     i,
                     actual[i],
-                    pcg::unpackInstanceMetadataFloat(actual[i]),
+                    vegetation::unpackInstanceMetadataFloat(actual[i]),
                     oracle[i],
-                    pcg::unpackInstanceMetadataFloat(oracle[i]));
+                    vegetation::unpackInstanceMetadataFloat(oracle[i]));
         }
         assert(matches(actual));
         std::puts(

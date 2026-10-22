@@ -1,4 +1,4 @@
-#include "core/stable_vector_erase.h"
+#include "core/algorithm/stable_vector_erase.h"
 
 #include <array>
 #include <cassert>

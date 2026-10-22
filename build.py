@@ -136,7 +136,7 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
     # ============================================================
     # 核心库
     # ============================================================
-    core_srcs = _find_srcs("src/core") + _find_srcs("src/pcg")
+    core_srcs = _find_srcs("src/core")
     if core_srcs:
         modules["arp_core"] = ModuleDef(
             "arp_core", "library",
@@ -144,6 +144,15 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
             include_dirs=["src"],
             deps=["arp_mimalloc"],
         )
+
+    plugin_build_srcs = [
+        "src/scriptvm/plugin/compiler_toolchain_layout.cpp",
+        "src/scriptvm/plugin/immutable_build_input_snapshot.cpp",
+    ]
+    if all(_exists(path) for path in plugin_build_srcs):
+        modules["arp_scriptvm_plugin_build"] = ModuleDef(
+            "arp_scriptvm_plugin_build", "library", srcs=plugin_build_srcs,
+            include_dirs=["src"], deps=["arp_core"])
 
     # ============================================================
     # 反射
@@ -160,13 +169,19 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
     # ============================================================
     # 脚本 VM (ArpScript)
     # ============================================================
-    scriptvm_runtime_srcs = _find_srcs("src/scriptvm/runtime")
+    scriptvm_runtime_srcs = _find_srcs("src/scriptvm/runtime") + [
+        "src/scriptvm/plugin/cpp_plugin_importer.cpp",
+        "src/scriptvm/plugin/plugin_services.cpp",
+        "src/scriptvm/plugin/plugin_registrar.cpp",
+        "src/scriptvm/plugin/static_plugin_catalog.cpp",
+        "src/scriptvm/plugin/plugin_runtime_scope.cpp",
+    ]
     if scriptvm_runtime_srcs:
         modules["arp_scriptvm_runtime"] = ModuleDef(
             "arp_scriptvm_runtime", "library",
             srcs=scriptvm_runtime_srcs,
             include_dirs=["src"],
-            deps=["arp_core", "arp_reflection"],
+            deps=["arp_core", "arp_reflection", "arp_scriptvm_plugin_build"],
         )
     scriptvm_ir_srcs = _find_srcs("src/scriptvm/ir")
     if scriptvm_ir_srcs:
@@ -252,6 +267,12 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
             deps=["arp_animation", "arp_asset_import_deps"],
         )
 
+    pcg_srcs = _find_srcs("src/pcg")
+    if pcg_srcs:
+        modules["arp_pcg"] = ModuleDef(
+            "arp_pcg", "library", srcs=pcg_srcs,
+            include_dirs=["src"], deps=["arp_core"])
+
     # ============================================================
     # Unity 导入工具
     # ============================================================
@@ -303,15 +324,15 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
         )
 
     # ============================================================
-    # Physics (L2 contract + Jolt backend)
+    # Physics 3D (L2 contract + Jolt backend; 2D has its own source target)
     # ============================================================
-    physics_srcs = _find_srcs("src/physics")
+    physics_srcs = _find_srcs("src/physics/3d")
     if physics_srcs:
         modules["arp_physics"] = ModuleDef(
             "arp_physics", "library",
             srcs=physics_srcs,
             include_dirs=["src"],
-            deps=["arp_core", "arp_scene", "arp_jolt_headers"],
+            deps=["arp_core", "arp_reflection", "arp_jolt_headers"],
         )
 
     # ============================================================
@@ -414,41 +435,36 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
         )
 
     # ============================================================
-    # Platform (SDL, Vulkan/WebGPU window)
+    # Platform (shared contracts plus explicitly routed OS implementations)
     # ============================================================
-    plat_base = ["android_runtime_contract.cpp", "ios_runtime_contract.cpp",
-                 "render_system.cpp"]
-    plat_srcs = [f"src/platform/{f}" for f in plat_base if _exists(f"src/platform/{f}")]
+    plat_core = (_find_srcs("src/platform/common")
+                 + _find_srcs("src/platform/android")
+                 + _find_srcs("src/platform/ios"))
 
-    # 平台路由: sdl_window.cpp/sdl_window_web.cpp 和 per-backend render_system
-    # (vulkan/webgpu/metal) + 双后端共享的 render_system_native_shared
-    sdl_win = "src/platform/sdl_window.cpp"
-    sdl_web = "src/platform/sdl_window_web.cpp"
-    vulkan_rs = "src/platform/render_system_vulkan.cpp"
-    webgpu_rs = "src/platform/render_system_webgpu.cpp"
-    metal_rs = "src/platform/render_system_metal.cpp"
-    native_shared_rs = "src/platform/render_system_native_shared.cpp"
-
-    plat_extra = _find_srcs("src/platform")
-    plat_extra = [s for s in plat_extra
-                  if s not in plat_srcs
-                  and s not in [sdl_win, sdl_web, vulkan_rs, webgpu_rs, metal_rs,
-                                native_shared_rs]]
-
-    # Core platform sources (non-routed)
-    plat_core = plat_srcs + plat_extra
+    # Shared contracts above remain host-testable; OS windows and GPU execution
+    # sources are selected only by their registered target-platform route.
+    win_window = "src/platform/windows/window_win32.cpp"
+    linux_window = "src/platform/linux/window_xcb.cpp"
+    mac_window = "src/platform/macos/window_cocoa.mm"
+    web_window = "src/platform/web/window_web.cpp"
+    vulkan_rs = "src/platform/native/render_system_vulkan.cpp"
+    webgpu_rs = "src/platform/web/render_system_webgpu.cpp"
+    metal_rs = "src/platform/native/render_system_metal.cpp"
+    native_shared_rs = "src/platform/native/render_system_native_shared.cpp"
 
     modules["arp_platform"] = ModuleDef(
         "arp_platform", "library",
         srcs=plat_core,
         include_dirs=["src"],
-        deps=["arp_core", "arp_gui", "arp_renderer", "arp_audio",
+        deps=["arp_core", "arp_input", "arp_gui", "arp_renderer", "arp_audio",
               "arp_rhi_semantics", "arp_renderer_deployment"],
         platform_srcs={
-            "web": [sdl_web, native_shared_rs, webgpu_rs] if _exists(sdl_web) else [],
-            "vulkan_native": [sdl_win, vulkan_rs] if _exists(sdl_win) else [],
-            "apple": [sdl_win, native_shared_rs, metal_rs]
-                if _exists(sdl_win) else [],
+            "web": [web_window, native_shared_rs, webgpu_rs],
+            "win": [win_window],
+            "linux": [linux_window],
+            "mac": [mac_window],
+            "vulkan_native": [vulkan_rs],
+            "apple": [native_shared_rs, metal_rs],
         },
     )
 
@@ -560,10 +576,10 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
     # target in the same graph as the backend prevents a checked-in pbxproj
     # from drifting away from the authoritative module and shader contracts.
     ios_app_sources = [
-        "src/platform/ios_app/main.mm",
-        "src/platform/ios_app/ios_app_delegate.mm",
-        "src/platform/ios_app/ios_metal_view.mm",
-        "src/platform/ios_runtime_contract.cpp",
+        "src/platform/ios/app/main.mm",
+        "src/platform/ios/app/ios_app_delegate.mm",
+        "src/platform/ios/app/ios_metal_view.mm",
+        "src/platform/ios/ios_runtime_contract.cpp",
     ]
     if all(_exists(source) for source in ios_app_sources):
         modules["arp_ios_smoke_app"] = ModuleDef(
@@ -573,8 +589,8 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
             include_dirs=["src"],
             apple_frameworks=["UIKit", "Metal", "QuartzCore"],
             bundle_identifier="com.animerenderpipeline.metal-smoke",
-            info_plist="src/platform/ios_app/Info.plist",
-            resources=["src/platform/ios_app/Resources/asset_manifest.yaml"],
+            info_plist="src/platform/ios/app/Info.plist",
+            resources=["src/platform/ios/app/Resources/asset_manifest.yaml"],
             condition="BUILD_PLATFORM == 'ios'",
         )
 
@@ -667,7 +683,7 @@ def _discover_test_modules() -> Dict[str, ModuleDef]:
          ["arp_core"]),
         ("tests/integration/terrain_heightfield_tests.cpp",
          "arp_terrain_heightfield_tests",
-         ["arp_core"]),
+         ["arp_pcg"]),
         ("tests/integration/physics_l2_contract_tests.cpp",
          "arp_physics_l2_contract_tests",
          ["arp_physics"],
@@ -757,7 +773,7 @@ def _discover_test_modules() -> Dict[str, ModuleDef]:
          "arp_rhi_webgpu_device_contract_tests",
          ["arp_rhi", "arp_rhi_semantics", "arp_rhi_webgpu"],
          [], [], "BUILD_PLATFORM == 'web'",
-         ["src/platform/platform_lifecycle_state.cpp"]),
+         ["src/platform/common/platform_lifecycle_state.cpp"]),
         # These two contracts inspect the backend source tree and are host
         # tests. Keeping them out of the Emscripten executable set avoids
         # treating Node's incomplete filesystem/runtime as browser evidence.
@@ -769,7 +785,7 @@ def _discover_test_modules() -> Dict[str, ModuleDef]:
          "arp_rhi_webgpu_staging_upload_pool_tests",
          ["arp_core", "arp_rhi", "arp_rhi_semantics", "arp_rhi_webgpu"],
          [], [], "BUILD_PLATFORM != 'web'",
-         ["src/platform/platform_lifecycle_state.cpp"]),
+         ["src/platform/common/platform_lifecycle_state.cpp"]),
         ("tests/contract/rhi_vulkan_device_contract_tests.cpp",
          "arp_rhi_vulkan_device_contract_tests",
          ["arp_rhi", "arp_rhi_semantics", "arp_rhi_vulkan"],

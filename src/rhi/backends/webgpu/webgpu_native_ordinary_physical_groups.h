@@ -1,5 +1,5 @@
 #pragma once
-#include "core/bounded_sequence.h"
+#include "core/container/bounded_sequence.h"
 #include "rhi/backends/webgpu/webgpu_ordinary_descriptor_observation.h"
 #include "rhi/backends/webgpu/webgpu_pipeline_ownership.h"
 

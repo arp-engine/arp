@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/frame/render_pass_provider.h"
 #include "renderer/frame/scene_runtime_world_ui_pass_provider.h"
 

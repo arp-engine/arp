@@ -1,5 +1,5 @@
 #include "../fixtures/original_graphics_skinning256_data_fixture.h"
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "shader/spirv_buffer_declaration_layout.h"
 
 #ifdef NDEBUG

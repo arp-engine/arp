@@ -10,7 +10,7 @@
 /// Per AGENTS.md: native subpass lowering correctness is asserted by contract
 /// test (source + structure), not by eyeballing a frame. RenderDoc visual
 /// validation on a real Vulkan device is a separate Prototype TODO.
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/gpu_commands.h"
 
 #include <cassert>

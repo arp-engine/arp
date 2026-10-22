@@ -26,7 +26,7 @@
 // HTTPS and WSS use the network TLS backend when ARP_NETWORK_TLS_BACKEND is
 // OpenSSL; a None build fails deterministically without plaintext fallback.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "network/endpoint.h"
 #include "network/http/client.h"
 #include "network/http/server.h"
@@ -36,7 +36,7 @@
 #include "network/websocket/client.h"
 #include "reflection/object.h"
 #include "reflection/reflection_macros.h"
-#include "scriptvm/runtime/cpp_plugin_api.h"
+#include "scriptvm/plugin/cpp_plugin_api.h"
 #include "scriptvm/runtime/module_registry.h"
 #include "scriptvm/runtime/value.h"
 

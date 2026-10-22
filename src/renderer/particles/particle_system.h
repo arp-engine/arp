@@ -1,8 +1,8 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/curve.h"
-#include "core/math.h"
+#include "core/math/curve.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
 #include <cstdint>

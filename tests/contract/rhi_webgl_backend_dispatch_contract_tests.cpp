@@ -1,5 +1,5 @@
 #include "2d/runtime_contract.h"
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "rhi/backends/webgpu/webgpu_native_runtime.h"
 #include "rhi/backends/webgpu/webgpu_original_query_binding.h"
 #include "rhi/backends/webgpu/webgpu_original_query_record_reservation.h"

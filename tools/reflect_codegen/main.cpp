@@ -17,6 +17,7 @@ struct PropertyModel {
     std::string cppType;
     std::string access;
     std::string doc;
+    std::string referenceTarget;
     std::vector<std::string> flags;
     bool accessor = false;
     std::size_t getterIndex = 0;
@@ -206,6 +207,9 @@ std::string classDescriptorContract(const ClassModel& cls)
                 value, "setter", cls.methods[property.setterIndex].reflectName);
         }
         appendSortedValues(value, "flag", property.flags);
+        if (!property.referenceTarget.empty())
+            arp::reflection::appendRegistrationContractField(
+                value, "reference-target", property.referenceTarget);
         properties.push_back(std::move(value));
     }
     appendSortedValues(result, "property", properties);
@@ -1136,15 +1140,27 @@ bool parseClass(const std::vector<std::string>& lines,
             continue;
         }
         if (markerStartsWith(line, "APROP")) {
-            const std::size_t fieldIndex = nextMeaningfulLine(lines, index + 1);
+            std::string propertyMarker = line;
+            std::size_t markerEnd = index;
+            const auto open = propertyMarker.find('(');
+            while (open != std::string::npos
+                && matchingParen(propertyMarker, open) == std::string::npos) {
+                if (++markerEnd >= lines.size()) {
+                    diagnostics = "unterminated APROP marker";
+                    return false;
+                }
+                propertyMarker += " " + cleanLine(lines[markerEnd]);
+            }
+            const std::size_t fieldIndex = nextMeaningfulLine(lines, markerEnd + 1);
             if (fieldIndex >= lines.size()) {
                 diagnostics = "APROP must be followed by a field declaration";
                 return false;
             }
             PropertyModel property;
             property.access = currentAccess;
-            property.flags = parseMarkerFlags(line);
-            property.doc = parseMarkerStringValue(line, "Doc");
+            property.flags = parseMarkerFlags(propertyMarker);
+            property.doc = parseMarkerStringValue(propertyMarker, "Doc");
+            property.referenceTarget = parseMarkerStringValue(propertyMarker, "ReferenceTarget");
             if (!parseFieldDeclaration(lines[fieldIndex], property, diagnostics)) {
                 diagnostics += ": ";
                 diagnostics += cleanLine(lines[fieldIndex]);
@@ -1893,6 +1909,9 @@ bool writeJson(const ProgramOptions& options,
                     << jsonEscape(property.access) << "\"";
                 if (!property.doc.empty())
                     out << ", \"doc\": \"" << jsonEscape(property.doc) << "\"";
+                if (!property.referenceTarget.empty())
+                    out << ", \"referenceTarget\": \"" << jsonEscape(property.referenceTarget)
+                        << "\"";
                 out << ", \"source\": \"" << (property.accessor ? "accessor" : "field") << "\"";
                 if (property.accessor) {
                     out << ", \"getter\": \""
@@ -2047,7 +2066,7 @@ bool writeCpp(const ProgramOptions& options,
         out << "#include \"" << jsonEscape(header.path) << "\"\n";
     }
     out << "#include \"reflection/reflection.h\"\n\n";
-    out << "#include \"core/sha256.h\"\n\n";
+    out << "#include \"core/hash/sha256.h\"\n\n";
     out << "#include \"scriptvm/runtime/module_registration.h\"\n\n";
     out << "#include <utility>\n\n";
     out << "namespace arp::reflection::generated {\n\n";
@@ -2118,6 +2137,21 @@ bool writeCpp(const ProgramOptions& options,
                         << cls.cppName << "::" << property.name << ", \""
                         << jsonEscape(property.doc) << "\", "
                         << propertyHintExpression(property.flags) << ");\n";
+                }
+                if (hasFlag(property.flags, "SceneObjectReference")
+                    || hasFlag(property.flags, "ResourceReference")) {
+                    if (property.referenceTarget.empty()) {
+                        diagnostics = "reference requires ReferenceTarget: " + cls.cppName
+                            + "::" + property.name;
+                        return false;
+                    }
+                    out << "        cls.reference(\"" << jsonEscape(property.name)
+                        << "\", ::arp::reflection::ReferenceKind::"
+                        << (hasFlag(property.flags, "SceneObjectReference") ? "SceneObject"
+                                                                            : "Resource")
+                        << ", \"" << jsonEscape(property.referenceTarget) << "\", "
+                        << (hasFlag(property.flags, "OptionalReference") ? "false" : "true")
+                        << ");\n";
                 }
             }
             for (const auto& method : cls.methods) {

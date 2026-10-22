@@ -71,7 +71,7 @@ bool terrainGpuTilePayloadFromAsset(const resource::TerrainAssetResource& asset,
     return outPayload.valid();
 }
 
-bool TerrainGpuRuntime::syncChunk(pcg::ChunkCoord coord,
+bool TerrainGpuRuntime::syncChunk(terrain::ChunkCoord coord,
     const assets::MeshAsset& mesh,
     int lodLevel,
     std::uint64_t meshRevision,
@@ -120,7 +120,7 @@ bool TerrainGpuRuntime::syncChunk(pcg::ChunkCoord coord,
 }
 
 bool TerrainGpuRuntime::retireInactive(
-    const core::pmr::Vector<pcg::ChunkCoord>& activeCoords, std::uint64_t submissionSerial)
+    const core::pmr::Vector<terrain::ChunkCoord>& activeCoords, std::uint64_t submissionSerial)
 {
     std::size_t retireCount = 0u;
     for (const auto& [coord, slot] : slots_) {
@@ -143,7 +143,7 @@ bool TerrainGpuRuntime::retireInactive(
 }
 
 std::size_t TerrainGpuRuntime::inactiveSlotCount(
-    const core::pmr::Vector<pcg::ChunkCoord>& activeCoords) const noexcept
+    const core::pmr::Vector<terrain::ChunkCoord>& activeCoords) const noexcept
 {
     std::size_t count = 0u;
     for (const auto& [coord, slot] : slots_) {
@@ -156,7 +156,7 @@ std::size_t TerrainGpuRuntime::inactiveSlotCount(
 }
 
 bool TerrainGpuRuntime::slotMayRequireReplacementRetirement(
-    const pcg::ChunkCoord coord, const int requestedLodLevel) const noexcept
+    const terrain::ChunkCoord coord, const int requestedLodLevel) const noexcept
 {
     const auto found = slots_.find(coord);
     return found != slots_.end() && found->second.terrainValid
@@ -385,21 +385,21 @@ core::pmr::Vector<TerrainGpuPageTableEntry> TerrainGpuRuntime::pageTable() const
     return entries;
 }
 
-const TerrainGpuRuntime::Slot* TerrainGpuRuntime::slot(pcg::ChunkCoord coord) const
+const TerrainGpuRuntime::Slot* TerrainGpuRuntime::slot(terrain::ChunkCoord coord) const
 {
     const auto it = slots_.find(coord);
     return it != slots_.end() ? &it->second : nullptr;
 }
 
-TerrainGpuRuntime::Slot* TerrainGpuRuntime::slot(pcg::ChunkCoord coord)
+TerrainGpuRuntime::Slot* TerrainGpuRuntime::slot(terrain::ChunkCoord coord)
 {
     const auto it = slots_.find(coord);
     return it != slots_.end() ? &it->second : nullptr;
 }
 
-core::pmr::Vector<pcg::ChunkCoord> TerrainGpuRuntime::activeCoords() const
+core::pmr::Vector<terrain::ChunkCoord> TerrainGpuRuntime::activeCoords() const
 {
-    core::pmr::Vector<pcg::ChunkCoord> coords{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<terrain::ChunkCoord> coords{&core::defaultCpuMemoryResource()};
     coords.reserve(slots_.size());
     for (const auto& entry : slots_) {
         coords.push_back(entry.first);

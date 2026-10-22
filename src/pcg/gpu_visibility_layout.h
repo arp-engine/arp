@@ -1,5 +1,4 @@
 #pragma once
-#include "pcg/foliage_instance_batch.h"
 #include "rhi/frontend/visibility/gpu_visibility_layout.h"
 
 namespace arp::pcg {

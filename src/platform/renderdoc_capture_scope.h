@@ -1,5 +1,5 @@
 #pragma once
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 namespace arp::platform {
 // Optional developer capture hook; no dependency on a RenderDoc installation

@@ -1,6 +1,6 @@
 #pragma once
-#include "core/cpu_allocator.h"
-#include "core/mutation_journal.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/mutation_journal.h"
 #include "rhi/backends/webgpu/webgpu_allocator.h"
 #include "rhi/backends/webgpu/webgpu_native_runtime.h"
 #include "rhi/gpu_device.h"
@@ -18,6 +18,11 @@ class WebGpuRhiStagingUploadPool;
 class WebGpuTransferResourceObservation;
 class WebGpuOrdinaryResourceObservation;
 class WebGpuRhiResourceRegistry;
+
+// Factory-owned bindless raster/pass state only. This observation grants no
+// ordinary full-definition registration or execution authority.
+const rhi::RenderPipelineDesc* webGpuRhiBindlessGraphicsPipelineState(
+    const rhi::RenderPipeline&) noexcept;
 
 // Nonblocking wrapper-owned registry correspondence; no descriptor or command
 // authority is issued by these resource observations.

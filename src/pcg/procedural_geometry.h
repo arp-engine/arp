@@ -16,7 +16,7 @@
 //     base at y=0 (unless noted). The caller bakes world transforms.
 
 #include "assets/asset_pipeline.h"
-#include "core/math.h"
+#include "core/math/math.h"
 #include "pcg/procedural_textures.h" // for TextureRng used by Phase 5a generators
 
 #include <cmath>

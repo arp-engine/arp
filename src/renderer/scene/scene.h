@@ -1,8 +1,9 @@
 #pragma once
 
+#include "3d/camera_parameters.h"
 #include "assets/asset_pipeline.h"
-#include "core/cpu_allocator.h"
-#include "core/math.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
 #include <cmath>

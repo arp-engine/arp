@@ -11,10 +11,15 @@ public:
         class DeviceFactory>
     static void run(const std::shared_ptr<const rhi::BindlessShaderPackage>& package,
         std::uint64_t nativeStagingCeiling,
-        DeviceFactory&& createDevice)
+        BindlessSceneAttachmentFixture::Observer observeAttachment,
+        typename BindlessNativeSceneDataFixture<CompletedTextures>::SubmittedObserver
+            observeSubmitted,
+        unsigned maxTerminal,
+        DeviceFactory&& createDevice,
+        void (*captureScene)(const char*, bool) = nullptr)
     {
         using namespace rhi;
-        using Contract = OriginalBindlessSceneContentContract;
+        using Contract = BindlessSceneConformanceContract;
         using Data = BindlessNativeSceneDataFixture<CompletedTextures>;
         assert(package && package->artifact().execution == BindlessExecution::Native);
         std::size_t entries = 0u;
@@ -32,14 +37,25 @@ public:
                 selected = selection;
             }
             assert(fragment);
-            for (const bool cancel : {true, false}) {
+            const bool representative = selected.family == Contract::Family::Mesh
+                || selected.family == Contract::Family::Terrain;
+            for (unsigned scenario = 0u; scenario < (representative ? maxTerminal + 3u : 2u);
+                ++scenario) {
                 Data data;
                 data.initializeNative = true;
                 data.vertex = &vertex;
                 data.family = selected.family;
                 data.artifact = &package->artifact();
                 data.draw.material = data.terrain() ? 0u : 1u;
-                data.cancelBeforeSubmit = cancel;
+                data.cancelBeforeSubmit = scenario == 1u;
+                if (scenario >= 2u)
+                    data.terminal = static_cast<typename Data::Terminal>(scenario - 1u);
+                if (scenario == maxTerminal + 2u) {
+                    data.terminal = Data::Terminal::MaterialRangeRejected;
+                    data.draw.material = data.terrain() ? 1u : 2u;
+                }
+                data.observeAttachment = observeAttachment;
+                data.observeSubmitted = observeSubmitted;
                 data.mixed2DArrayTextures = true;
                 auto device = createDevice();
                 assert(device
@@ -47,6 +63,8 @@ public:
                         || device->backend() == Backend::Metal));
                 data.nativeStagingCeiling = nativeStagingCeiling;
                 BindlessNativeSceneExecutionFixture<Closure, Pass, Content, Data> observer(data);
+                if (captureScene && scenario == 0u)
+                    captureScene(vertex.entry.c_str(), true);
                 validateOriginalBindlessRootSource(package,
                     std::move(device),
                     "unused",
@@ -60,6 +78,8 @@ public:
                     OrdinaryRootMutation::None,
                     TextureFormat::Rgba16Float,
                     true);
+                if (captureScene && scenario == 0u)
+                    captureScene(vertex.entry.c_str(), false);
             }
             ++entries;
         }

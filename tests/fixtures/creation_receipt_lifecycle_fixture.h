@@ -1,5 +1,5 @@
 #pragma once
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "core/runtime/creation_receipt_lifecycle.h"
 
 #include <cassert>

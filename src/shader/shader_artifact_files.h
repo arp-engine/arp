@@ -1,8 +1,8 @@
 #pragma once
-#include "core/artifact_path.h"
-#include "core/file_io.h"
-#include "core/sha256.h"
-#include "core/yaml_contract.h"
+#include "core/encoding/yaml_contract.h"
+#include "core/hash/sha256.h"
+#include "core/io/artifact_path.h"
+#include "core/io/file_io.h"
 
 #include <array>
 #include <filesystem>

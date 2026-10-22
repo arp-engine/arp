@@ -1,7 +1,7 @@
 #include "scriptvm/runtime/value.h"
 
-#include "core/checked_integer_cast.h"
-#include "core/cpu_allocator.h"
+#include "core/math/checked_integer_cast.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
 #include "scriptvm/interpreter/frame.h"
 

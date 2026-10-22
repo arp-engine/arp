@@ -24,8 +24,8 @@
 // Plan reference: Track C P1 - Poisson cluster scatter + species palette.
 // Status gate: Prototype Complete.
 
+#include "3d/vegetation/template.h"
 #include "pcg/biome_weights.h"
-#include "pcg/foliage_instance_batch.h"
 #include "pcg/vegetation_distribution.h"
 
 #include <algorithm>
@@ -49,7 +49,7 @@ enum class SpeciesLayer : uint8_t {
 /// A single species entry in the palette. Each entry maps a biome context
 /// to a template family + placement parameters.
 struct SpeciesEntry {
-    /// Stable species identifier (P0 InstanceData.speciesId field).
+    /// Stable species identifier (P0 vegetation::InstanceData.speciesId field).
     /// Must fit in uint8 (0..255). The palette loader assigns these
     /// sequentially; the contract test asserts uniqueness.
     uint8_t speciesId = 0;
@@ -65,8 +65,8 @@ struct SpeciesEntry {
 
     /// Template category the placement path maps this species to. The
     /// caller (buildChunkVegetationInstances) resolves this to a concrete
-    /// templateId via the VegetationTemplateConfig + variant roll.
-    TemplateCategory category = TemplateCategory::ProceduralGrass;
+    /// templateId via the vegetation::VegetationTemplateConfig + variant roll.
+    vegetation::TemplateCategory category = vegetation::TemplateCategory::ProceduralGrass;
 
     /// Per-biome density multiplier. The placement path multiplies the
     /// base scatter density by this factor when deciding whether to emit
@@ -155,7 +155,7 @@ struct SpeciesPalette {
 };
 
 /// Result of a species selection query. The placement path uses this to
-/// resolve a concrete templateId + InstanceData.
+/// resolve a concrete templateId + vegetation::InstanceData.
 struct SpeciesSelection {
     /// Index into SpeciesPalette.species, or -1 if no species was eligible
     /// (the placement should be dropped).
@@ -358,7 +358,7 @@ inline SpeciesSelection selectSpecies(const SpeciesPalette& palette,
 }
 
 /// Resolve a SpeciesEntry + biome sample + ageClass to a concrete
-/// InstanceData scale, applying the species' custom age distribution if
+/// vegetation::InstanceData scale, applying the species' custom age distribution if
 /// present. Pure function of (entry, placement, seed).
 inline float resolveScale(
     const SpeciesEntry& sp, const VegetationPlacement& placement, uint32_t seed) noexcept

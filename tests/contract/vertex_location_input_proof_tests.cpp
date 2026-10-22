@@ -1,5 +1,5 @@
 #include "../fixtures/spirv_binary_mutation_fixture.h"
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "shader/compute_indirect_producer_proof.h"
 #include "shader/vertex_location_input_proof.h"
 

@@ -1,4 +1,4 @@
-#include "rhi/frontend/bindless_terrain_material.h"
+#include "renderer/bindless/bindless_terrain_material.h"
 
 #include <cassert>
 #include <cstring>
@@ -11,6 +11,7 @@
 int main()
 {
     using namespace arp::rhi;
+    using namespace arp::renderer;
     using Contract = BindlessTerrainMaterialContract;
     constexpr auto generation = (std::uint64_t{5u} << 32u) | 7u;
     Contract::Values values;

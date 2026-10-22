@@ -1,6 +1,6 @@
 #pragma once
-#include "core/cpu_allocator.h"
-#include "core/monotone_threshold_search.h"
+#include "core/algorithm/monotone_threshold_search.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <array>
 #include <cassert>

@@ -5,10 +5,10 @@
 // on a heightfield terrain. Contact events are also exercised. These tests
 // establish the Backend Validated status for the physics layer (AGENTS.md §7).
 
-#include "physics/physics_module.h"
-#include "physics/physics_types.h"
-#include "physics/physics_world.h"
-#include "physics/terrain_surface_adapter.h"
+#include "3d/terrain/terrain_surface_physics_adapter.h"
+#include "physics/3d/physics_module.h"
+#include "physics/3d/physics_types.h"
+#include "physics/3d/physics_world.h"
 
 #include <cassert>
 #include <cmath>

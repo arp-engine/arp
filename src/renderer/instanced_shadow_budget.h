@@ -1,8 +1,8 @@
 #pragma once
 
-#include "core/diagnostic_error.h"
-#include "core/index_runs.h"
-#include "core/math.h"
+#include "core/algorithm/index_runs.h"
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/math/math.h"
 
 #include <cmath>
 #include <utility>

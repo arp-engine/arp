@@ -3,10 +3,12 @@
 #include "original_command_upload_stream_builder_fixture.h"
 #include "original_graphics_content_visit_budget_fixture.h"
 #include "original_graphics_push_data_fixture.h"
-#include "rhi/frontend/bindless_pbr_geometry.h"
+#include "renderer/bindless/bindless_pbr_geometry.h"
 #include "rhi/frontend/bindless_root_readback_sequence.h"
 
 namespace arp::test {
+using namespace renderer;
+
 template <class T, class = void> struct OriginalBindlessSceneStreamFixture : std::false_type {};
 
 template <class T>
@@ -158,6 +160,8 @@ public:
                      {static_cast<std::uint32_t>(inventory->originalLeaseIndex(numericSource))}),
                     *ResourceDependencyArguments::capture(K::BufferBarrier, barrier)});
         };
+        if constexpr (scene)
+            append(K::RetainIndexedSnapshot, {rootIndex});
         bufferBarrier(ResourceState::ShaderWrite,
             ResourceState::CopyDst,
             shader,
@@ -171,12 +175,26 @@ public:
             ResourceAccess::TransferWrite,
             shader,
             rw);
+        const auto sampledInSelectedFragment = [&](std::size_t index) {
+            if constexpr (scene) {
+                BindlessResourceAccess access;
+                std::size_t source = SIZE_MAX;
+                bool active = false;
+                require(root->readOriginalShaderDeclaration(
+                    index, ShaderStage::Fragment, access, source, active, 4u));
+                return active;
+            }
+            return true;
+        };
         if constexpr (OriginalBindlessCompletedTextureFixture<Execute>::value) {
-            for (const auto& element : root->elements()) {
+            for (std::size_t index = 0u; index < root->elements().size(); ++index) {
+                const auto& element = root->elements()[index];
                 const auto* sampled =
                     std::get_if<std::shared_ptr<const OriginalCommandTextureViewSource>>(
                         &element.owner);
                 if (!sampled || !*sampled)
+                    continue;
+                if (!sampledInSelectedFragment(index))
                     continue;
                 const auto& parent = (*sampled)->originalParentLease();
                 assert(parent->originalObject()->state() == ResourceState::CopyDst);
@@ -344,12 +362,14 @@ public:
         using PushBlock = std::
             conditional_t<scene, BindlessPbrGeometryDraw16, OriginalGraphicsPushDataFixture::Block>;
         std::array<PushBlock, pushUpdates> pushes{};
-        if constexpr (OriginalBindlessPushFixtureTraits<Execute>::value)
-            for (std::uint32_t i = 0u; i < pushUpdates; ++i)
+        if constexpr (OriginalBindlessPushFixtureTraits<Execute>::value) {
+            for (std::uint32_t i = 0u; i < pushUpdates; ++i) {
                 if constexpr (scene)
                     pushes[i] = observe.draw;
                 else
                     pushes[i] = OriginalGraphicsPushDataFixture::block(observe.fault, i);
+            }
+        }
         std::uint32_t pushIndex = 0u, scissorIndex = 0u;
         constexpr auto pushStages = scene
             ? ShaderStage::Vertex
@@ -364,7 +384,8 @@ public:
                       c.kind, CommandScalarArguments::VertexBinding{0u, scene ? 0u : 16u})
                 : c.kind == K::BindIndexBuffer
                 ? CommandScalarArguments::capture(c.kind,
-                      CommandScalarArguments::IndexBinding{IndexFormat::Uint16, scene ? 0u : 2u})
+                      CommandScalarArguments::IndexBinding{
+                          scene ? IndexFormat::Uint32 : IndexFormat::Uint16, scene ? 0u : 2u})
                 : c.kind == K::DrawIndexed
                 ? CommandScalarArguments::capture(
                       c.kind, CommandScalarArguments::DrawIndexed{3u, 1u, 0u, 0, scene ? 0u : 1u})
@@ -408,6 +429,8 @@ public:
         // The original argument store, rather than caller memory, owns the bytes.
         std::memset(pushes.data(), 0xCD, sizeof(pushes));
         OriginalCommandStateAdmissionBudget state{1u, true, 1u, 512u, 64u, 16u, 256u, bytes};
+        if constexpr (scene)
+            state.maxStateObservations = inventory->originalBudget().maxStateObservations;
         state.maxRetainedOwners =
             std::max(state.maxRetainedOwners, inventory->originalBudget().maxGraphOwners);
         state.maxTextureRanges = inventory->originalBudget().maxTextureRanges;
@@ -585,10 +608,14 @@ public:
             content.bindlessGeometryContractVersion = geometry ? 1u : 0u;
             content.bindlessGeometryOptIn = geometry;
             if constexpr (OriginalBindlessCompletedTextureFixture<Execute>::value) {
-                for (const auto& element : root->elements())
+                for (std::size_t index = 0u; index < root->elements().size(); ++index) {
+                    const auto& element = root->elements()[index];
+                    if (!sampledInSelectedFragment(index))
+                        continue;
                     if (std::holds_alternative<
                             std::shared_ptr<const OriginalCommandTextureViewSource>>(element.owner))
                         ++content.maxCompletedControls;
+                }
                 if (completedReadContractVersion == 3u)
                     for (const auto& domain : root->ordinaryDomains())
                         for (const auto& element : domain.source->frozenElements())
@@ -597,7 +624,9 @@ public:
                                     element.resourceOwner))
                                 ++content.maxCompletedControls;
                 content.maxSampledSteps = content.maxCompletedControls;
-                content.bindlessCompletedReadContractVersion = completedReadContractVersion;
+                content.bindlessCompletedReadContractVersion = scene
+                    ? (device.backend() == Backend::WebGPU ? 4u : 0u)
+                    : completedReadContractVersion;
                 OriginalGraphicsContentVisitBudgetFixture::configure(content,
                     commands.size(),
                     graph->textureEntries().size(),
@@ -754,6 +783,20 @@ public:
                 4096u,
                 {1u, true, count, count, count, resultBytes, resultBytes, bytes}};
             require(OriginalBindlessRootReadbackSequence::inspectInput(binding, readbacks));
+            for (std::size_t i = 0u; i < count; ++i) {
+                const auto& result = results[i];
+                assert(OriginalBindlessRootReadbackSequence::containsCopyDestination(
+                    binding, readbacks, result->commandIndex(), result->originalReadbackSource()));
+                assert(!OriginalBindlessRootReadbackSequence::containsCopyDestination(
+                    binding, readbacks, result->commandIndex(), result->originalCopySource()));
+                assert(!OriginalBindlessRootReadbackSequence::containsCopyDestination(
+                    binding, readbacks, SIZE_MAX, result->originalReadbackSource()));
+                if (count == 2u)
+                    assert(!OriginalBindlessRootReadbackSequence::containsCopyDestination(binding,
+                        readbacks,
+                        result->commandIndex(),
+                        results[1u - i]->originalReadbackSource()));
+            }
             observe(root, inventory, binding, tx, device, readbacks);
         } else
             observe(root, inventory, binding, tx, device);

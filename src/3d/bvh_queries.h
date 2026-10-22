@@ -11,7 +11,7 @@
 // BVH traversal logic is agnostic to the query type.
 
 #include "3d/bvh.h"
-#include "core/frustum.h"
+#include "core/math/frustum.h"
 
 #include <vector>
 

@@ -12,6 +12,7 @@ add_library(arp_editor_shell STATIC
     workspace/project_browser_model.cpp
     workspace/project_browser.cpp
     workspace/editor_project_resources.cpp
+    workspace/editor_terrain_build.cpp
     workspace/editor_scene_component_registry.cpp
     workspace/editor_scene_document.cpp
     workspace/editor_scene_inspector.cpp
@@ -50,8 +51,9 @@ arp_reflection_generate(
         "${ARP_EDITOR_ENGINE_ROOT}/src/scene/runtime_components.h"
         "${ARP_EDITOR_ENGINE_ROOT}/src/ui/document_component_editor_properties.h"
         "${ARP_EDITOR_ENGINE_ROOT}/src/2d/screen_canvas_component.h"
-        "${ARP_EDITOR_ENGINE_ROOT}/src/2d/scene_runtime_codec.h"
-        "${ARP_EDITOR_ENGINE_ROOT}/src/physics2d/components.h"
+        "${ARP_EDITOR_ENGINE_ROOT}/src/2d/sprite_animation_component.h"
+        "${ARP_EDITOR_ENGINE_ROOT}/src/2d/tile_map_resource_component.h"
+        "${ARP_EDITOR_ENGINE_ROOT}/src/2d/physics_components.h"
         "${ARP_EDITOR_ENGINE_ROOT}/src/3d/animator_component.h"
         "${ARP_EDITOR_ENGINE_ROOT}/src/scene/scene_asset_resource.h")
 target_include_directories(arp_editor_shell PUBLIC "${ARP_EDITOR_ENGINE_ROOT}" "${ARP_EDITOR_ENGINE_ROOT}/src")
@@ -67,6 +69,7 @@ add_library(arp_editor_viewport_renderer STATIC
     viewport/editor_scene_viewport_pipeline_contract.cpp
     viewport/editor_scene_viewport_composite.cpp
     viewport/editor_scene_viewport_sprite_renderer.cpp
+    viewport/editor_scene_viewport_environment.cpp
     viewport/editor_scene_viewport_session.cpp
     viewport/editor_scene_viewport_shader_package.cpp)
 target_include_directories(arp_editor_viewport_renderer PUBLIC
@@ -151,6 +154,13 @@ if(TARGET arp_compile_shaders)
 endif()
 add_test(NAME arp_editor_scene_viewport_pipeline_contract_tests
     COMMAND arp_editor_scene_viewport_pipeline_contract_tests)
+add_executable(arp_editor_scene_viewport_environment_tests tests/scene_viewport_environment_tests.cpp)
+target_compile_definitions(arp_editor_scene_viewport_environment_tests PRIVATE
+    ARP_EDITOR_ENVIRONMENT_SHADER_ROOT="${CMAKE_BINARY_DIR}/shaders")
+target_link_libraries(arp_editor_scene_viewport_environment_tests PRIVATE arp_editor_viewport_renderer arp_shader arp_rhi)
+target_compile_options(arp_editor_scene_viewport_environment_tests PRIVATE -UNDEBUG)
+add_dependencies(arp_editor_scene_viewport_environment_tests arp_compile_shaders)
+add_test(NAME arp_editor_scene_viewport_environment_tests COMMAND arp_editor_scene_viewport_environment_tests)
 add_executable(arp_editor_command_tests tests/command_tests.cpp)
 target_compile_definitions(arp_editor_command_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
 if(EMSCRIPTEN OR APPLE)
@@ -223,7 +233,7 @@ add_executable(arp_editor main.cpp
     app/editor_application.cpp
     app/game_preview.cpp
     ui/editor_ui_assets.cpp
-    "${ARP_EDITOR_ENGINE_ROOT}/src/platform/platform_lifecycle_state.cpp")
+    "${ARP_EDITOR_ENGINE_ROOT}/src/platform/common/platform_lifecycle_state.cpp")
 target_include_directories(arp_editor PRIVATE "${ARP_EDITOR_ENGINE_ROOT}" "${ARP_EDITOR_ENGINE_ROOT}/src")
 if(EMSCRIPTEN)
     set(ARP_EDITOR_WEB_MONO_FONT "" CACHE FILEPATH "Monospace font file preloaded by the ARP Editor Web build")
@@ -281,7 +291,7 @@ else()
             "${ARP_EDITOR_ENGINE_ROOT}/editor/resources/arp_editor.ico")
         set(ARP_EDITOR_ICON_RC "${CMAKE_CURRENT_BINARY_DIR}/arp_editor_icon.rc")
         set(ARP_EDITOR_ICON_CONTRACT_HEADER
-            "${ARP_EDITOR_ENGINE_ROOT}/src/platform/windows_application_icon.h")
+            "${ARP_EDITOR_ENGINE_ROOT}/src/platform/windows/windows_application_icon.h")
         configure_file("${ARP_EDITOR_ENGINE_ROOT}/editor/resources/arp_editor.rc.in"
             "${ARP_EDITOR_ICON_RC}" @ONLY)
         set_source_files_properties("${ARP_EDITOR_ICON_RC}" PROPERTIES
@@ -314,6 +324,9 @@ else()
             COMMAND arp_editor --smoke --viewport-pipeline-smoke)
         set_tests_properties(arp_editor_viewport_pipeline_hidden_smoke PROPERTIES
             TIMEOUT 60 RUN_SERIAL TRUE)
+        add_test(NAME arp_editor_terrain_resource_hidden_smoke
+            COMMAND arp_editor --smoke --terrain-resource-smoke)
+        set_tests_properties(arp_editor_terrain_resource_hidden_smoke PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
         add_test(NAME arp_editor_viewport_runtime_hidden_smoke
             COMMAND arp_editor --smoke --viewport-runtime-smoke
                     --project-root ${ARP_EDITOR_ENGINE_ROOT}/tests/fixtures/editor_tilemap_project)

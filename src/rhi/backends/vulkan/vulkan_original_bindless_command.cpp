@@ -199,8 +199,8 @@ VulkanBindlessCrossExtension::prepareOriginalGraphicsExecutionPayload(GpuDevice&
             {geometry.data(), geometry.size(), shader.data(), shader.size()});
         if (!closure)
             return fail(id);
-        if ((id = OriginalBindlessSceneContentContract::inspectNative(
-                 closure, inputs.readback->originalProgram(), inputs.scene)))
+        if ((id = OriginalBindlessInitializedGraphicsContract::inspectNative(
+                 closure, inputs.readback->originalProgram(), inputs.initializedGraphics)))
             return fail(id);
         auto pass = VulkanOriginalBindlessGraphicsPass::prepareOriginal(closure,
             inputs.transaction,
@@ -844,6 +844,9 @@ std::shared_ptr<VulkanRhiNativeCommandPayload> VulkanOriginalBindlessCommand::pr
                                 && core::SharedOwnerProjection::sameOwner(
                                     entry.resourcePayload.payload,
                                     vulkanRhiNativePayload(*(*lease)->originalObject())));
+                    if (!found && op.kind == K::BufferCopy && i == 1u)
+                        found = OriginalBindlessRootReadbackSequence::containsCopyDestination(
+                            binding, readbackInput, op.commandIndex, *lease);
                     if (!found)
                         return reject("RHI-VULKAN-ROOT-FENCE-BUFFER-CLOSURE");
                     if ((op.kind == K::BindVertexBuffer || op.kind == K::BindIndexBuffer)
@@ -1015,9 +1018,9 @@ const char* VulkanOriginalBindlessCommand::validatePending() const noexcept
     if (lifecycleVersion() != 8u && lifecycleVersion() != 9u && lifecycleVersion() != 14u
         && lifecycleVersion() != 19u)
         return nullptr;
-    for (const auto& entry : closure_->entries_) {
+    const auto validateTexture = [&](const Closure::Entry& entry) noexcept -> const char* {
         if (!entry.parentPayload.image)
-            continue;
+            return nullptr;
         const auto& view = std::get<std::shared_ptr<const OriginalCommandTextureViewSource>>(
             closure_->inventory_->sources()[entry.sourceIndex]);
         const auto& object = *view->originalParentLease()->originalObject();
@@ -1031,7 +1034,7 @@ const char* VulkanOriginalBindlessCommand::validatePending() const noexcept
                         ResourceAccess::ShaderRead},
                     graphicsDepth ? 3u : 2u))
                 return id;
-            continue;
+            return nullptr;
         }
         const auto completed = object.observeOriginalContent();
         if (!completed)
@@ -1045,6 +1048,36 @@ const char* VulkanOriginalBindlessCommand::validatePending() const noexcept
                               : 5u)
                     : 4u))
             return id;
+        return nullptr;
+    };
+    const auto& root = *closure_->originalRoot();
+    if (seal->originalRoot()->hasOriginalBindlessGraphicsGeometryProfile()
+        && root.originalShaderEntryAccessVersion() == 4u) {
+        // Physical descriptor ordinals include samplers/readback slots. Resolve
+        // the authenticated shader declaration's canonical source instead.
+        for (std::size_t i = 0u; i < root.size(); ++i) {
+            BindlessResourceAccess access;
+            std::size_t source = SIZE_MAX;
+            bool active = false;
+            if (const auto* id = root.readOriginalShaderDeclaration(
+                    i, ShaderStage::Vertex | ShaderStage::Fragment, access, source, active, 4u))
+                return id;
+            if (!active || access.kind != BindlessAccessKind::Texture)
+                continue;
+            const auto entry = std::find_if(closure_->entries_.begin(),
+                closure_->entries_.end(),
+                [&](const auto& candidate) noexcept {
+                    return candidate.sourceIndex == source;
+                });
+            if (entry == closure_->entries_.end() || !entry->parentPayload.image)
+                return "RHI-VULKAN-ROOT-PENDING-TEXTURE-SOURCE";
+            if (const auto* id = validateTexture(*entry))
+                return id;
+        }
+    } else {
+        for (const auto& entry : closure_->entries_)
+            if (const auto* id = validateTexture(entry))
+                return id;
     }
     return nullptr;
 }

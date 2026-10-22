@@ -298,6 +298,7 @@ def generate_bindless(document, mode):
     allowed.add("pipelineInterfaceContractVersion")
     allowed.add("ordinaryOpaqueBindings")
     allowed.add("pushConstants")
+    allowed.add("initializedGraphics")
     allowed.add("gpuVisibilityKernelContractVersion")
     allowed.add("gpuVisibilityConsumerContractVersion")
     if set(document) - allowed:
@@ -516,13 +517,14 @@ def generate_bindless(document, mode):
         out.append("#define ARP_SAMPLED_DEPTH(name) DepthTexture2D name")
         out.append("struct ArpBindlessDepthMip { uint value; };")
     if mode == "Native":
-        out += ["uint arpBindlessResourceIndex(uint index) {",
-                "#if defined(ARP_BINDLESS_SPIRV)",
-                "    return NonUniformResourceIndex(index);",
+        # NonUniform is a use-site annotation. Returning its value through an
+        # ordinary function loses the decoration in Slang's SPIR-V lowering.
+        out += ["#if defined(ARP_BINDLESS_SPIRV)",
+                "#define arpBindlessResourceIndex(index) NonUniformResourceIndex(index)",
                 "#elif defined(ARP_BINDLESS_METAL)",
-                "    return index;",
+                "#define arpBindlessResourceIndex(index) (index)",
                 "#else", '#error "Native bindless requires an explicit compiler target contract"',
-                "#endif", "}"]
+                "#endif"]
     out += [f"[[vk::binding({metadata_binding}, {group})]] StructuredBuffer<uint> ArpBindlessSnapshotMetadata;",
         "uint2 arpBindlessSnapshotGeneration() {",
         "    return uint2(ArpBindlessSnapshotMetadata[2], ArpBindlessSnapshotMetadata[3]);", "}",
@@ -740,7 +742,15 @@ def generate_bindless(document, mode):
                 return lines
 
             sampler = tables[table["sampler"]] if sampled else None
-            if mode == "Native":
+            if mode == "Native" and kind == "UniformBuffer" and capacity > 1:
+                # Direct SPIR-V emission loses NonUniform on ConstantBuffer
+                # arrays. Select constant array elements in a bounded switch:
+                # descriptor ABI, per-lane selection, layout and guards stay
+                # identical; no dynamic unmarked descriptor access is emitted.
+                # The declared maxSwitchCases already bounds these operations.
+                out += SlangResourceSwitch(capacity, document["maxSwitchCases"]).emit(
+                    "index", lambda element: body(f"{name}[{element}u]"))
+            elif mode == "Native":
                 valid = f"index < {capacity}u"
                 if sampled:
                     valid += f" && samplerIndex < {sampler['capacity']}u"
@@ -816,6 +826,36 @@ def generate_bindless(document, mode):
     if consumer_version:
         reflection["zeroBaseIndirectConsumerContractVersion"] = consumer_version
     return GeneratedBindless(source, reflection)
+
+
+def initialized_graphics_profiles(document, entry_stage_masks):
+    """Explicit, sealed prototype intent. Entry spelling carries no authority."""
+    intent = document.get("initializedGraphics")
+    if intent is None:
+        return {}
+    if (not isinstance(intent, dict) or intent.get("contractVersion") != 2
+            or intent.get("prototypeOptIn") is not True):
+        reject("INITIALIZED-GRAPHICS-INTENT")
+    interfaces = intent.get("interfaces")
+    if not isinstance(interfaces, list) or not interfaces:
+        reject("INITIALIZED-GRAPHICS-INTERFACES")
+    profiles, identities = {}, set()
+    for item in interfaces:
+        identity = item.get("identity") if isinstance(item, dict) else None
+        if type(identity) is not int or not 0 < identity <= 0xffffffff or identity in identities:
+            reject("INITIALIZED-GRAPHICS-IDENTITY")
+        identities.add(identity)
+        for key, stage in (("vertexEntries", 1), ("fragmentEntries", 2)):
+            entries = item.get(key)
+            if not isinstance(entries, list) or not entries:
+                reject("INITIALIZED-GRAPHICS-ENTRIES")
+            for entry in entries:
+                if not isinstance(entry, str) or entry in profiles or entry_stage_masks.get(entry) != stage:
+                    reject("INITIALIZED-GRAPHICS-STAGE")
+                profiles[entry] = dict(contractVersion=2, interfaceIdentity=identity, prototypeOptIn=True)
+    if set(profiles) != set(entry_stage_masks):
+        reject("INITIALIZED-GRAPHICS-COVERAGE")
+    return profiles
 
 
 def compile_bindless_package(document, source_path, entries, mode, out_dir,
@@ -942,6 +982,7 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
     entry_facts = compiler.derive_entry_point_reflection(source, entries, str(source_path))
     entry_stage_masks = {fact["name"]: {"Vertex": 1, "Fragment": 2, "Compute": 4}[fact["stage"]]
                          for fact in entry_facts}
+    graphics_profiles = initialized_graphics_profiles(document, entry_stage_masks)
     version = subprocess.run([str(slangc), "-version"], check=True,
                              capture_output=True, text=True)
     artifact_files = {}
@@ -979,6 +1020,10 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
             # spelling nor a rehashed YAML dimension proves the target ABI.
             from spirv_layout import SpirvLayoutFacts
             binary_facts = SpirvLayoutFacts(paths["spirv"])
+            if mode == "Native":
+                binary_facts.validate_nonuniform_descriptor_accesses(
+                    {(b["set"], b["binding"]) for b in active
+                     if b["set"] == document["set"] and b["arrayCount"] > 1})
             images = binary_facts.descriptor_image_types()
             if generated.reflection.get("pipelineInterfaceContractVersion"):
                 buffer_declarations = binary_facts.buffer_layouts()
@@ -1072,6 +1117,10 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
                 compiler.validate_wgsl_group0_no_collision(str(paths["wgsl"]))
             msl_space = compiler.get_metal_binding_space_lowering(logical, str(paths["metal"]))
             msl_arrays = compiler.get_metal_argument_buffer_lowering(logical, str(paths["metal"]))
+            active_keys = {(binding["set"], binding["binding"]) for binding in active}
+            if any(binding.get("active") and (binding["set"], binding["binding"]) not in active_keys
+                   for binding in msl_space + msl_arrays):
+                reject("REFLECTION-METAL-ACTIVE-BINDING-MISMATCH")
             if push_contract:
                 slots = {b["metalSlot"] for b in msl_space if b.get("active")
                          and b.get("physicalType") in {"UniformBuffer", "ReadOnlyStorageBuffer", "StorageBuffer"}}
@@ -1103,6 +1152,9 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
                 # those inputs and can copy inputs onto fragment modules.
                 single_entry=True)
             reflection = yaml.safe_load(reflection_path.read_text(encoding="utf-8"))
+            if mode == "Emulated" and entry_stage_masks[entry] == _STAGES["vertex"]:
+                compiler.validate_wgsl_vertex_input_interface(
+                    paths["wgsl"].read_text(encoding="utf-8"), entry, reflection["vertexAttributes"])
             if push_intent and not entry_push:
                 # Binary absence and the declared stage intent agree. Shared
                 # authored source contains the other entries' block; it is not
@@ -1129,6 +1181,12 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
             reflection["bindlessContractVersion"] = "BindlessCross/1"
             reflection["bindlessExecution"] = mode
             reflection["bindlessLoweringSha256"] = lowering_sha256
+            if entry_stage_masks[entry] in (1, 2):
+                # An explicit empty declaration preserves the historical scope.
+                # Old unclassified graphics publications must be rebuilt; they
+                # cannot silently lose their former content admission boundary.
+                reflection["initializedGraphics"] = graphics_profiles.get(entry,
+                    dict(contractVersion=0, interfaceIdentity=0, prototypeOptIn=False))
             reflection_path.write_text(yaml.safe_dump(reflection, sort_keys=False), encoding="utf-8")
             # The whole executable interface, including ordinary fault/readback
             # bindings, is published for budget accounting and layout creation.
@@ -1136,6 +1194,8 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
                                 bindings=reflection["bindings"],
                                 webGpuBindingSpace=reflection["webGpuBindingSpace"],
                                 metalArgumentBuffer=reflection["metalArgumentBuffer"]))
+            if "initializedGraphics" in reflection:
+                modules[-1]["initializedGraphics"] = reflection["initializedGraphics"]
             for path in [persisted_source, reflection_path, paths["spirv"], paths["metal"]] + (
                     [paths["wgsl"]] if mode == "Emulated" else []):
                 artifact_files[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()

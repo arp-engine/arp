@@ -18,7 +18,7 @@ struct VulkanOriginalGeometryDataFixture : VulkanCompletedTextureRootFixture {
     bool instanceRate = false;
     bool executionGeometry = false;
     static constexpr std::uint32_t geometryBufferCount =
-        OriginalBindlessGeometryDataFixture::geometryBufferCount;
+        std::tuple_size<decltype(Initialized::actors)>::value;
 
     void appendGeometrySources(rhi::GpuDevice& device,
         core::pmr::Vector<rhi::OriginalCommandResourceSources::Source>& sources,

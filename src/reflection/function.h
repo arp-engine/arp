@@ -6,7 +6,7 @@
 // fixed-arity invoke() virtuals + invoke_variadic() for dynamic dispatch.
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/def.h"
 #define ARP_REFLECTION_FUNCTION_HEADER_ACTIVE 1
 #include "reflection/object.h"

@@ -1,5 +1,5 @@
 #include "../fixtures/metal_native_identity_fixture.h"
-#include "core/ibl_bake.h"
+#include "core/math/half_float.h"
 #include "renderer/gi/ddgi_renderer.h"
 #include "renderer/shader_package_reflection.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
@@ -212,7 +212,7 @@ public:
         std::array<std::uint8_t, 3u * kTextureUploadRowPitchAlignment> bytes{};
         for (unsigned i = 0u; i < 3u; ++i) {
             for (unsigned channel = 0u; channel < 4u; ++channel) {
-                const auto bits = core::ibl::floatToHalf(colors[i][channel]);
+                const auto bits = core::floatToHalf(colors[i][channel]);
                 std::memcpy(
                     bytes.data() + i * kTextureUploadRowPitchAlignment + channel * sizeof(bits),
                     &bits,

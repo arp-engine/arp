@@ -1,4 +1,4 @@
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "gpu_visibility_frozen_inputs_fixture.h"
 #include "gpu_visibility_indirect_fetch_fixture.h"
 #include "gpu_visibility_root_producer_fixture.h"

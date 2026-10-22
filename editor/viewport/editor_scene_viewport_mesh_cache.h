@@ -50,6 +50,15 @@ public:
         const resource::ResourceManager& resources,
         const EditorSceneViewportResolvedItem& item);
 
+    // Caller must complete all device work before releasing borrowed bindings.
+    void clearAfterDeviceIdle()
+    {
+        entries_.clear();
+        ownerDevice_ = nullptr;
+        ownerResources_ = nullptr;
+        residentGeometryBytes_ = 0u;
+    }
+
     std::size_t residentMeshCount() const noexcept;
     std::uint64_t residentGeometryBytes() const noexcept;
 
@@ -57,6 +66,8 @@ private:
     struct Entry {
         core::pmr::String resourceId{&core::defaultCpuMemoryResource()};
         resource::ResourceGeneration generation = 0;
+        EditorSceneViewportGeometry geometry = EditorSceneViewportGeometry::Mesh;
+        terrain::TerrainTileCoord tile;
         renderer::MeshGpuBuffer mesh;
         std::uint64_t geometryBytes = 0;
     };

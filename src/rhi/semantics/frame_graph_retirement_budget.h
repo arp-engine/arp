@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/budget_vector_preflight.h"
+#include "core/memory/budget_vector_preflight.h"
 #include "rhi/frontend/resource_cache_accounting.h"
 
 #include <limits>

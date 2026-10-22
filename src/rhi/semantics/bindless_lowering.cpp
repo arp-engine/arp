@@ -1,4 +1,4 @@
-#include "core/stable_hash.h"
+#include "core/hash/stable_hash.h"
 #include "rhi/gpu_bindless.h"
 #include "rhi/gpu_commands.h"
 #include "rhi/semantics/bindless_original_execution_lowering.h"
@@ -72,31 +72,66 @@ ValidationResult BindlessFaultReport::validate() const noexcept
     return validateBindlessFaultStatus(status);
 }
 
-ValidationResult validateBindlessRenderPass(
-    const RenderPipelineDesc& pipeline, const RenderPassDesc& pass)
+namespace {
+template <class ColorAt>
+ValidationResult inspectBindlessRenderPass(std::size_t colors,
+    ColorAt colorAt,
+    TextureFormat depth,
+    std::uint32_t samples,
+    bool complex,
+    const RenderPassDesc& pass)
 {
     if (!pass.subpasses.empty() || !pass.subpassDependencies.empty() || pass.layeredRendering
-        || pipeline.subpassIndex || pipeline.renderPassCompatibility.enabled()
-        || pipeline.multisample.sampleCount != 1)
+        || complex || samples != 1u)
         return {false, "RHI-BINDLESS-RENDER-PASS-ABI-UNAVAILABLE"};
-    if (effectiveColorTargetCount(pipeline) != pass.colorAttachments.size()
-        || effectiveDepthStencilFormat(pipeline)
+    if (colors != pass.colorAttachments.size()
+        || depth
             != (pass.hasDepthStencilAttachment ? pass.depthStencilAttachment.format
                                                : TextureFormat::Unknown))
         return {false, "RHI-BINDLESS-RENDER-PASS-FORMAT-MISMATCH"};
     for (std::size_t i = 0; i < pass.colorAttachments.size(); ++i) {
         const auto& attachment = pass.colorAttachments[i];
-        if (!attachment.target.isValid()
-            || attachment.format != effectiveColorTargetAt(pipeline, i).format)
+        if (!attachment.target.isValid() || attachment.format != colorAt(i))
             return {false, "RHI-BINDLESS-RENDER-PASS-FORMAT-MISMATCH"};
         if (attachment.hasResolveTarget)
             return {false, "RHI-BINDLESS-RENDER-PASS-ABI-UNAVAILABLE"};
     }
-    if (pass.hasDepthStencilAttachment && !pass.depthStencilAttachment.target.isValid())
-        return {false, "RHI-BINDLESS-RENDER-PASS-FORMAT-MISMATCH"};
-    if (pass.colorAttachments.empty() && !pass.hasDepthStencilAttachment)
+    if ((pass.hasDepthStencilAttachment && !pass.depthStencilAttachment.target.isValid())
+        || (pass.colorAttachments.empty() && !pass.hasDepthStencilAttachment))
         return {false, "RHI-BINDLESS-RENDER-PASS-FORMAT-MISMATCH"};
     return {true, {}};
+}
+} // namespace
+
+ValidationResult validateBindlessRenderPass(
+    const RenderPipelineDesc& pipeline, const RenderPassDesc& pass)
+{
+    return inspectBindlessRenderPass(
+        effectiveColorTargetCount(pipeline),
+        [&](std::size_t i) {
+            return effectiveColorTargetAt(pipeline, i).format;
+        },
+        effectiveDepthStencilFormat(pipeline),
+        pipeline.multisample.sampleCount,
+        pipeline.subpassIndex || pipeline.renderPassCompatibility.enabled(),
+        pass);
+}
+
+ValidationResult validateBindlessRenderPass(
+    const PipelineValidationReport& pipeline, const RenderPassDesc& pass)
+{
+    // Only an already validated direct pipeline may use this recording view.
+    if (!pipeline.success || pipeline.colorTargetCount != pipeline.colorFormats.size())
+        return {false, "RHI-BINDLESS-PIPELINE-REPORT-INVALID"};
+    return inspectBindlessRenderPass(
+        pipeline.colorFormats.size(),
+        [&](std::size_t i) {
+            return pipeline.colorFormats[i];
+        },
+        pipeline.depthStencilFormat,
+        pipeline.sampleCount,
+        false,
+        pass);
 }
 
 std::size_t bindlessResourceClass(DescriptorType type) noexcept
@@ -185,7 +220,8 @@ std::uint32_t operationMask(DescriptorType type)
 
 std::uint64_t planIdentity(const BindlessCapabilities& caps,
     const BindlessRequirements& request,
-    const BindlessShaderArtifact& artifact)
+    const BindlessShaderArtifact& artifact,
+    std::uint64_t shaderPackageIdentity)
 {
     core::StableHash64 hash;
     const auto append = [&](auto value) {
@@ -193,7 +229,7 @@ std::uint64_t planIdentity(const BindlessCapabilities& caps,
     };
     append(request.contractVersion);
     append(request.deviceIdentity);
-    append(request.shaderPackageIdentity);
+    append(shaderPackageIdentity);
     append(caps.execution);
     append(caps.faultReadbackContractVersion);
     append(caps.indirectInstanceConsumerContractVersion);
@@ -331,9 +367,10 @@ std::uint64_t planIdentity(const BindlessCapabilities& caps,
 }
 } // namespace
 
-BindlessLoweringPlan planBindless(const BindlessCapabilities& caps,
+static BindlessLoweringPlan planBindlessResolved(const BindlessCapabilities& caps,
     const BindlessRequirements& request,
-    const BindlessShaderArtifact& artifact)
+    const BindlessShaderArtifact& artifact,
+    std::uint64_t shaderPackageIdentity)
 {
     BindlessLoweringPlan result;
     auto fail = [&](const char* id) {
@@ -675,8 +712,7 @@ BindlessLoweringPlan planBindless(const BindlessCapabilities& caps,
         return fail("RHI-BINDLESS-EMULATED-NOT-ALLOWED");
     if (!request.deviceIdentity || request.deviceIdentity != caps.deviceIdentity)
         return fail("RHI-BINDLESS-DEVICE-MISMATCH");
-    if (!request.shaderPackageIdentity
-        || request.shaderPackageIdentity != artifact.shaderPackageIdentity
+    if (!shaderPackageIdentity || shaderPackageIdentity != artifact.shaderPackageIdentity
         || (artifact.execution != execution && execution != BindlessExecution::Validator)
         || (artifact.execution != BindlessExecution::Validator
             && artifact.execution != BindlessExecution::Native
@@ -959,7 +995,7 @@ BindlessLoweringPlan planBindless(const BindlessCapabilities& caps,
         originalExecution ? request.originalExecution.contractVersion : 0u;
     result.deviceIdentity = caps.deviceIdentity;
     result.shaderPackageIdentity = artifact.shaderPackageIdentity;
-    result.identity = planIdentity(caps, request, artifact);
+    result.identity = planIdentity(caps, request, artifact, shaderPackageIdentity);
     result.budget = budget;
     result.snapshotBytes = artifact.snapshotBytes;
     result.descriptorCount = descriptorCount;
@@ -970,6 +1006,13 @@ BindlessLoweringPlan planBindless(const BindlessCapabilities& caps,
         : execution == BindlessExecution::Emulated ? "Emulated"
                                                    : "NullValidator";
     return result;
+}
+
+BindlessLoweringPlan planBindless(const BindlessCapabilities& caps,
+    const BindlessRequirements& request,
+    const BindlessShaderArtifact& artifact)
+{
+    return planBindlessResolved(caps, request, artifact, request.shaderPackageIdentity);
 }
 
 BindlessSelection selectBindlessVariant(BindlessPolicy policy,
@@ -989,14 +1032,12 @@ BindlessSelection selectBindlessVariant(BindlessPolicy policy,
         result.diagnosticId = "RHI-BINDLESS-SELECTION-INVALID";
         return result;
     }
-    // Selection occurs at startup/reload, outside recording. The request copy
-    // uses the core memory resource and is never retained by a backend.
-    auto resolved = request;
+    // Resolve only the package identity; all request storage remains borrowed.
     std::uint64_t bestCapacity = std::numeric_limits<std::uint64_t>::max();
     std::uint32_t bestSwitchCases = std::numeric_limits<std::uint32_t>::max();
     for (std::size_t i = 0; i < artifactCount; ++i) {
-        resolved.shaderPackageIdentity = artifacts[i].shaderPackageIdentity;
-        auto plan = planBindless(caps, resolved, artifacts[i]);
+        auto plan =
+            planBindlessResolved(caps, request, artifacts[i], artifacts[i].shaderPackageIdentity);
         if (!plan.success || !plan.executable) {
             if (result.path != BindlessSelectionPath::Indexed)
                 result.diagnosticId = !plan.success ? plan.diagnosticId

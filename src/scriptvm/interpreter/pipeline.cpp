@@ -1,6 +1,6 @@
 #include "scriptvm/interpreter/pipeline.h"
 
-#include "core/sha256.h"
+#include "core/hash/sha256.h"
 
 namespace arp::scriptvm {
 

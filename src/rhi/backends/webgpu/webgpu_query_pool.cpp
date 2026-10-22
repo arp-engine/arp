@@ -1,6 +1,6 @@
 #include "rhi/backends/webgpu/webgpu_query_pool.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/webgpu/webgpu_native_runtime.h"
 
 #include <algorithm>

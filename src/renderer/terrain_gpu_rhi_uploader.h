@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/runtime/gpu_resource_retire_queue.h"
+#include "core/memory/cpu_allocator.h"
+#include "renderer/runtime/gpu_resource_retire_queue.h"
 #include "renderer/terrain_gpu_runtime.h"
 #include "rhi/gpu_device.h"
 

@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/deployment/native_renderer_deployment_bridge.h"
 #include "renderer/rhi_draw_plan_bridge.h"
 

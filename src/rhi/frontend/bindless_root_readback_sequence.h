@@ -189,6 +189,23 @@ public:
         return false;
     }
 
+    // A result destination is retained by its authenticated binding rather
+    // than by the descriptor closure. This grants only that exact copy operand.
+    static bool containsCopyDestination(const Owner& fault,
+        const Input& input,
+        std::size_t command,
+        const std::shared_ptr<const OriginalCommandBufferLease>& destination) noexcept
+    {
+        for (std::size_t i = 0u; i < resultCount(input); ++i) {
+            const auto& binding = resultAt(fault, input, i);
+            const auto& original = binding->originalReadbackSource();
+            if (binding->commandIndex() == command && original.get() == destination.get()
+                && core::SharedOwnerProjection::sameOwner(original, destination))
+                return true;
+        }
+        return false;
+    }
+
     // One finite original map per destination. Even disjoint intervals cannot
     // issue concurrent mapAsync calls for the same physical GPUBuffer.
     static const char* inspectMapDestinations(const Owner& fault, const Input& input) noexcept

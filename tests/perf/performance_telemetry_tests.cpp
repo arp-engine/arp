@@ -1,5 +1,5 @@
-#include "core/cpu_allocator.h"
-#include "core/performance_telemetry.h"
+#include "core/memory/cpu_allocator.h"
+#include "renderer/telemetry/performance_telemetry.h"
 
 #include <cassert>
 #include <cmath>

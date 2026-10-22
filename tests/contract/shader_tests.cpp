@@ -1,5 +1,5 @@
-#include "core/cpu_allocator.h"
-#include "core/math.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 #include "shader/shader_compiler.h"
 #include "shader/shader_pipeline_reflection_validator.h"
 #include "shader/shader_reflection_cache.h"
@@ -745,6 +745,51 @@ targets:
     constexpr uint32_t spirvDecorationRowMajor = 4u;
     constexpr uint32_t spirvDecorationColMajor = 5u;
     constexpr uint32_t spirvDecorationMatrixStride = 7u;
+#ifdef ARP_FOG_SHADER_DIR
+    {
+        const auto source = readTextFile("shaders/common/volumetric_fog.slang");
+        assert(source.find("row_major float4x4") == source.npos);
+        assert(source.find("column_major float4x4") == source.npos);
+        for (const auto* field :
+            {"inverseViewProjection", "view", "previousViewProjection", "previousView"}) {
+            assert(source.find(std::pmr::string("    float4x4 ") + field + ";") != source.npos);
+            const auto bytes = readBinaryFile(ARP_FOG_SHADER_DIR "/fog_temporal.spv");
+            assert(spirvMemberHasDecoration(
+                bytes, "FogConstants_std140", field, spirvDecorationColMajor));
+            assert(!spirvMemberHasDecoration(
+                bytes, "FogConstants_std140", field, spirvDecorationRowMajor));
+        }
+        const auto injection = readBinaryFile(ARP_FOG_SHADER_DIR "/fog_inject.spv");
+        assert(spirvMemberHasDecoration(
+            injection, "FogGpuVolume_std430", "worldToLocal", spirvDecorationColMajor));
+        assert(!spirvMemberHasDecoration(
+            injection, "FogGpuVolume_std430", "worldToLocal", spirvDecorationRowMajor));
+        assert(spirvMemberHasDecoration(
+            injection, "_Array_std140_matrix<float,4,4>4", "data", spirvDecorationColMajor));
+        for (const auto* name :
+            {"fog_demo_scene", "fog_demo_shadow", "fog_demo_glass", "fog_demo_plain_glass"}) {
+            const auto path = std::pmr::string(ARP_FOG_SHADER_DIR) + "/" + name;
+            const auto bytes = readBinaryFile((path + ".spv").c_str());
+            assert(spirvMemberHasDecoration(
+                bytes, "DemoConstants_std140", "viewProjection", spirvDecorationColMajor));
+            assert(!spirvMemberHasDecoration(
+                bytes, "DemoConstants_std140", "viewProjection", spirvDecorationRowMajor));
+        }
+        for (const auto* name :
+            {"fog_inject", "fog_scatter", "fog_temporal", "fog_integrate", "fog_composite"}) {
+            const auto path =
+                std::pmr::string(ARP_FOG_SHADER_DIR) + "/" + name + ".reflection.yaml";
+            const auto reflected =
+                arp::shader::ShaderReflectionCache::loadFromYaml(readTextFile(path.c_str()));
+            assert(reflected.success && reflected.module.reflection.pushConstantSizeBytes == 0);
+        }
+        arp::core::Mat4 matrix{};
+        matrix.m = {.5f, .125f, 0, .125f, .0625f, -.5f, 0, .0625f, 0, 0, .5f, .25f, 0, 0, 0, 1};
+        const auto value = arp::core::transformPoint(matrix, {.25f, -.5f, .75f});
+        assert(std::fabs(value.x - .1875f) < .00001f && std::fabs(value.y - .328125f) < .00001f
+            && std::fabs(value.z - .625f) < .00001f);
+    }
+#endif
 #ifdef ARP_MATRIX_PUSH_FIXTURE_DIR
     {
         const auto source = readTextFile("tests/fixtures/ordinary_graphics_matrix_push.slang");
@@ -1588,7 +1633,8 @@ targets:
             "shadowLightViewProjectionRows",
             spirvDecorationMatrixStride));
 
-        const auto renderSystemSource = readTextFile("src/platform/render_system_vulkan.cpp");
+        const auto renderSystemSource =
+            readTextFile("src/platform/native/render_system_vulkan.cpp");
         assert(renderSystemSource.find("arp::samples::stylized::StylizedSceneRenderer")
             == std::pmr::string::npos);
         assert(renderSystemSource.find("renderer::GuiRenderer") != std::pmr::string::npos);

@@ -1,4 +1,4 @@
-#include "core/atomic_capacity_reservation.h"
+#include "core/memory/atomic_capacity_reservation.h"
 #include "rhi/frontend/bindless_workload_retention.h"
 
 #include <cassert>

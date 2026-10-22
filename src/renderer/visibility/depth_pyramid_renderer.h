@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/render_graph/render_graph.h"
 #include "renderer/renderer_result.h"
 #include "renderer/visibility/depth_pyramid_contract.h"

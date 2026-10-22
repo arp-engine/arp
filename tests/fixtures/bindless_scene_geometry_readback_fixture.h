@@ -1,8 +1,10 @@
 #pragma once
-#include "rhi/frontend/bindless_pbr_geometry.h"
+#include "bindless_geometry_numeric_contract.h"
+#include "renderer/bindless/bindless_pbr_geometry.h"
 
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace arp::test {
@@ -12,8 +14,22 @@ namespace arp::test {
 // requires its separate numerical and attachment comparison.
 class BindlessSceneGeometryReadbackFixture final {
 public:
-    static constexpr auto lanes = rhi::BindlessPbrGeometryContract::numericLanesPerPixel;
+    static constexpr auto lanes = arp::test::BindlessGeometryNumericContract::numericLanesPerPixel;
     using Words = std::array<std::uint32_t, 4u * lanes>;
+
+    static const char* inspectAndReport(
+        const char* entry, const void* bytes, std::uint64_t size, bool terrain) noexcept
+    {
+        if (const auto* id = inspect(bytes, size, terrain))
+            return id;
+        Words words;
+        std::memcpy(words.data(), bytes, sizeof(words));
+        std::printf("BINDLESS_SCENE_GEOMETRY_WORDS entry=%s words=", entry);
+        for (std::size_t i = 0u; i < words.size(); ++i)
+            std::printf(i ? ",%u" : "%u", words[i]);
+        std::puts("");
+        return nullptr;
+    }
 
     static const char* inspect(const void* bytes, std::uint64_t size, bool terrain) noexcept
     {

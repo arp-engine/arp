@@ -523,13 +523,18 @@ public:
         std::shared_ptr<WebGpuNativeRenderPipelinePayload> nativePayload,
         std::shared_ptr<const rhi::BindlessAuthorization> authorization,
         rhi::BindlessGraphicsPipelineEntries entries,
-        const core::pmr::Vector<rhi::VertexBufferLayoutDesc>& vertices)
+        const rhi::RenderPipelineDesc& state)
         : ownedLayout_(std::move(ownedLayout)), layout_(ownedLayout_.get()),
           reflection_(std::move(reflection)), report_(std::move(report)),
           primitiveTopology_(primitiveTopology), nativePayload_(std::move(nativePayload)),
           authorization_(std::move(authorization)), graphicsEntries_(entries),
-          vertexBuffers_(rhi::RenderPipelineStateCopy::copyVertexBuffers(vertices))
-    {}
+          graphicsState_(rhi::RenderPipelineStateCopy::copy(state))
+    {
+        // The composed shader package is temporary; pass/raster observations
+        // must never retain its borrowed pointer. Layout ownership is local.
+        graphicsState_.layout = layout_;
+        graphicsState_.shaderPackage = nullptr;
+    }
 
     const rhi::PipelineLayout* layout() const override { return layout_; }
 
@@ -557,7 +562,14 @@ public:
     const core::pmr::Vector<rhi::VertexBufferLayoutDesc>* bindlessVertexBuffers(
         std::uint32_t version) const noexcept override
     {
-        return version == 1u && authorization_ ? &vertexBuffers_ : nullptr;
+        return version == 1u && authorization_ ? &graphicsState_.vertexBuffers : nullptr;
+    }
+
+    const rhi::RenderPipelineDesc* originalBindlessGraphicsState() const noexcept
+    {
+        return authorization_ && nativePayload_ && nativePayload_->issuedContract()
+            ? &graphicsState_
+            : nullptr;
     }
 
     const rhi::BindlessPackageModule* bindlessShaderModule(
@@ -617,8 +629,7 @@ private:
     std::shared_ptr<WebGpuNativeRenderPipelinePayload> nativePayload_;
     std::shared_ptr<const rhi::BindlessAuthorization> authorization_;
     const rhi::BindlessGraphicsPipelineEntries graphicsEntries_;
-    core::pmr::Vector<rhi::VertexBufferLayoutDesc> vertexBuffers_{
-        &core::defaultCpuMemoryResource()};
+    rhi::RenderPipelineDesc graphicsState_;
 };
 
 class WebGpuRhiComputePipeline final : public rhi::ComputePipeline {
@@ -677,6 +688,13 @@ private:
 };
 
 } // namespace
+
+const rhi::RenderPipelineDesc* webGpuRhiBindlessGraphicsPipelineState(
+    const rhi::RenderPipeline& pipeline) noexcept
+{
+    const auto* original = dynamic_cast<const WebGpuRhiRenderPipeline*>(&pipeline);
+    return original ? original->originalBindlessGraphicsState() : nullptr;
+}
 
 std::uint64_t estimateWebGpuRhiTextureBytes(const rhi::TextureDesc& desc)
 {
@@ -1739,7 +1757,7 @@ arp::core::UniquePtr<rhi::RenderPipeline> createWebGpuRhiAuthorizedBindlessRende
         std::move(nativePayload),
         std::move(authorization),
         entries,
-        state.vertexBuffers);
+        state);
     if (!pipeline)
         diagnostic = "RHI-WEBGPU-BINDLESS-RENDER-PIPELINE-CREATION-FAILED";
     return pipeline;

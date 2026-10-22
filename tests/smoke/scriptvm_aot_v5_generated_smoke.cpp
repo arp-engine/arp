@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/aot/aot_v5.h"
 #include "scriptvm/interpreter/vm.h"
 #include "scriptvm/runtime/value.h"
@@ -302,6 +302,224 @@ int main()
     if (!configureAotOnlyBoundCallV5(instance, &invokeReflectionFixture, nullptr).ok())
         return 16;
     DirectNativeDispatcherV5 dispatcher(std::move(instance));
+    const Value aliasArgs[] = {makeInt(1000000)};
+    error = {};
+    const auto indexedAlias =
+        dispatcher.invoke("arp-fn:basic/native_index_alias", aliasArgs, 1u, &error);
+    if (error.code != ScriptDiagnosticCode::None
+        || indexedAlias.storageIdentity() != aliasArgs[0].storageIdentity())
+        return 212;
+    const Value nativeArgs[] = {makeInt(8)};
+    for (const auto& check : {std::pair{"arp-fn:basic/native_numeric_sequence", 28},
+             std::pair{"arp-fn:basic/native_private_rebuild", 112},
+             std::pair{"arp-fn:basic/native_rebuild_topology", 188},
+             std::pair{"arp-fn:basic/native_power_sequence", 16},
+             std::pair{"arp-fn:basic/native_method_loop", 44},
+             std::pair{"arp-fn:basic/native_inherited_method_loop", 36},
+             std::pair{"arp-fn:basic/native_private_index_loop", 60},
+             std::pair{"arp-fn:basic/native_min_modulo", 0},
+             std::pair{"arp-fn:basic/native_scalar_branches", 40},
+             std::pair{"arp-fn:basic/native_scalar_nested", 108},
+             std::pair{"arp-fn:basic/native_iterated_key_owner", 8},
+             std::pair{"arp-fn:basic/native_closure_loop", 52},
+             std::pair{"arp-fn:basic/native_string_regions", 108},
+             std::pair{"arp-fn:basic/native_collection_loop", 56},
+             std::pair{"arp-fn:basic/native_leaf_calls", 11},
+             std::pair{"arp-fn:basic/native_virtual_leaf", 10},
+             std::pair{"arp-fn:basic/native_string_lookup", 32},
+             std::pair{"arp-fn:basic/native_handled_sequence", 52},
+             std::pair{"arp-fn:basic/native_index_update", 60},
+             std::pair{"arp-fn:basic/native_aliases", 10}}) {
+        error = {};
+        const bool noArguments = std::strcmp(check.first, "arp-fn:basic/native_aliases") == 0;
+        const auto result = dispatcher.invoke(
+            check.first, noArguments ? nullptr : nativeArgs, noArguments ? 0u : 1u, &error);
+        int actual = 0;
+        if (error.code != ScriptDiagnosticCode::None || !tryGetInt(result, actual)
+            || actual != check.second)
+            return 201;
+        const AotFunctionDescriptorV5* function = nullptr;
+        for (std::size_t index = 0; index < module.functionCount; ++index)
+            if (std::strcmp(module.functions[index].functionId, check.first) == 0)
+                function = &module.functions[index];
+        if (!function)
+            return 206;
+        context.operationBoundary = nullptr;
+        context.resetBudget(module.budget);
+        error = {};
+        const auto fused = function->entry(
+            context, noArguments ? nullptr : nativeArgs, noArguments ? 0u : 1u, nullptr, &error);
+        const auto consumed = module.budget.instructionLimit - context.remainingInstructions;
+        context.resetBudget(module.budget);
+        context.operationBoundary =
+            +[](void*, const char*, std::uint32_t, DirectNativeResumeStateV5&, VmError*) {
+                return true;
+            };
+        error = {};
+        const auto observed = function->entry(
+            context, noArguments ? nullptr : nativeArgs, noArguments ? 0u : 1u, nullptr, &error);
+        if (error.code != ScriptDiagnosticCode::None || observed != fused
+            || module.budget.instructionLimit - context.remainingInstructions != consumed)
+            return 207;
+        context.operationBoundary = nullptr;
+        context.resetBudget(module.budget);
+        {
+            arp::core::CpuMemoryQuotaScope quota(context.memoryQuota);
+            error = {};
+            const auto charged = function->entry(context,
+                noArguments ? nullptr : nativeArgs,
+                noArguments ? 0u : 1u,
+                nullptr,
+                &error);
+            if (error.code != ScriptDiagnosticCode::None || charged != fused
+                || module.budget.instructionLimit - context.remainingInstructions != consumed)
+                return 215;
+        }
+        context.resetBudget(module.budget);
+        context.remainingInstructions = consumed - 1u;
+        error = {};
+        function->entry(
+            context, noArguments ? nullptr : nativeArgs, noArguments ? 0u : 1u, nullptr, &error);
+        if (error.code != ScriptDiagnosticCode::ExecutionBudgetExceeded
+            || context.remainingInstructions != 0u)
+            return 208;
+        if (std::strcmp(check.first, "arp-fn:basic/native_numeric_sequence") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_handled_sequence") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_power_sequence") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_string_lookup") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_method_loop") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_inherited_method_loop") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_private_index_loop") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_min_modulo") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_scalar_branches") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_scalar_nested") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_iterated_key_owner") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_closure_loop") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_string_regions") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_collection_loop") == 0
+            || std::strcmp(check.first, "arp-fn:basic/native_virtual_leaf") == 0) {
+            for (std::uint64_t limit = 0u; limit <= consumed; ++limit) {
+                context.operationBoundary = nullptr;
+                context.resetBudget(module.budget);
+                context.remainingInstructions = limit;
+                error = {};
+                const auto fast = function->entry(context, nativeArgs, 1u, nullptr, &error);
+                const auto fastError = error.code;
+                const auto fastRemaining = context.remainingInstructions;
+                context.operationBoundary =
+                    +[](void*, const char*, std::uint32_t, DirectNativeResumeStateV5&, VmError*) {
+                        return true;
+                    };
+                context.resetBudget(module.budget);
+                context.remainingInstructions = limit;
+                error = {};
+                const auto slow = function->entry(context, nativeArgs, 1u, nullptr, &error);
+                if (error.code != fastError || context.remainingInstructions != fastRemaining
+                    || (error.code == ScriptDiagnosticCode::None && fast != slow))
+                    return 213;
+            }
+            context.operationBoundary = nullptr;
+        }
+    }
+    // Every source operation consumes the same budget with numeric fusion and
+    // with a mandatory operation observer. Budget exhaustion must replay the
+    // original prefix instead of consuming an entire fused block up front.
+    for (const char* name : {"arp-fn:basic/native_index_guard",
+             "arp-fn:basic/native_missing_key",
+             "arp-fn:basic/native_loop_index_failure",
+             "arp-fn:basic/native_loop_overflow",
+             "arp-fn:basic/native_power_overflow"}) {
+        const AotFunctionDescriptorV5* function = nullptr;
+        for (std::size_t index = 0; index < module.functionCount; ++index)
+            if (std::strcmp(module.functions[index].functionId, name) == 0)
+                function = &module.functions[index];
+        if (!function)
+            return 209;
+        context.resetBudget(module.budget);
+        error = {};
+        function->entry(context, nativeArgs, 1u, nullptr, &error);
+        const auto expectedError = error;
+        const auto expectedRemaining = context.remainingInstructions;
+        if (error.code == ScriptDiagnosticCode::None)
+            return 210;
+        context.resetBudget(module.budget);
+        context.operationBoundary =
+            +[](void*, const char*, std::uint32_t, DirectNativeResumeStateV5&, VmError*) {
+                return true;
+            };
+        error = {};
+        function->entry(context, nativeArgs, 1u, nullptr, &error);
+        if (error.code != expectedError.code || error.message != expectedError.message
+            || context.remainingInstructions != expectedRemaining) {
+            std::fprintf(stderr,
+                "%s: fused error %d remaining %llu, observed %d remaining %llu\n",
+                name,
+                static_cast<int>(expectedError.code),
+                static_cast<unsigned long long>(expectedRemaining),
+                static_cast<int>(error.code),
+                static_cast<unsigned long long>(context.remainingInstructions));
+            std::fprintf(stderr,
+                "fused: %s; observed: %s\n",
+                expectedError.message.c_str(),
+                error.message.c_str());
+            return 211;
+        }
+        context.operationBoundary = nullptr;
+        const auto consumed = module.budget.instructionLimit - expectedRemaining;
+        for (std::uint64_t limit = 0; limit <= consumed; ++limit) {
+            context.resetBudget(module.budget);
+            context.remainingInstructions = limit;
+            error = {};
+            function->entry(context, nativeArgs, 1u, nullptr, &error);
+            const auto fastError = error;
+            const auto fastRemaining = context.remainingInstructions;
+            context.operationBoundary =
+                +[](void*, const char*, std::uint32_t, DirectNativeResumeStateV5&, VmError*) {
+                    return true;
+                };
+            context.resetBudget(module.budget);
+            context.remainingInstructions = limit;
+            error = {};
+            function->entry(context, nativeArgs, 1u, nullptr, &error);
+            if (error.code != fastError.code || error.message != fastError.message
+                || context.remainingInstructions != fastRemaining)
+                return 214;
+            context.operationBoundary = nullptr;
+        }
+    }
+    const AotFunctionDescriptorV5* numericSequence = nullptr;
+    for (std::size_t index = 0; index < module.functionCount; ++index)
+        if (std::strcmp(module.functions[index].functionId, "arp-fn:basic/native_numeric_sequence")
+            == 0)
+            numericSequence = &module.functions[index];
+    if (!numericSequence)
+        return 202;
+    context.operationBoundary = nullptr;
+    context.resetBudget(module.budget);
+    error = {};
+    const auto fused = numericSequence->entry(context, nativeArgs, 1u, nullptr, &error);
+    if (error.code != ScriptDiagnosticCode::None)
+        return 203;
+    const auto consumed = module.budget.instructionLimit - context.remainingInstructions;
+    context.resetBudget(module.budget);
+    context.operationBoundary =
+        +[](void*, const char*, std::uint32_t, DirectNativeResumeStateV5&, VmError*) {
+            return true;
+        };
+    error = {};
+    const auto observed = numericSequence->entry(context, nativeArgs, 1u, nullptr, &error);
+    if (error.code != ScriptDiagnosticCode::None || observed != fused
+        || module.budget.instructionLimit - context.remainingInstructions != consumed)
+        return 204;
+    context.operationBoundary = nullptr;
+    context.resetBudget(module.budget);
+    context.remainingInstructions = consumed - 1u;
+    error = {};
+    (void)numericSequence->entry(context, nativeArgs, 1u, nullptr, &error);
+    if (error.code != ScriptDiagnosticCode::ExecutionBudgetExceeded
+        || context.remainingInstructions != 0u)
+        return 205;
+    context.resetBudget(module.budget);
     error = {};
     const auto dependencyResult =
         dispatcher.invoke("arp-fn:basic/multiply_from_dependency", args, 2u, &error);

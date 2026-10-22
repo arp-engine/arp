@@ -1,7 +1,7 @@
 #include "gui/gui.h"
 
-#include "core/cpu_allocator.h"
-#include "core/geometry.h"
+#include "core/math/geometry.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
 #include <array>

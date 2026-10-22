@@ -1,6 +1,6 @@
 #include "rhi/backends/webgpu/webgpu_native_runtime.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/webgpu/webgpu_attachment_operation_lowering.h"
 #include "rhi/backends/webgpu/webgpu_native_buffer_map_receipt.h"
 #include "rhi/backends/webgpu/webgpu_native_completion_receipt.h"
@@ -2006,6 +2006,82 @@ bool webGpuNativeDeviceLost() noexcept
 #endif
 }
 
+rhi::PrototypeCommandBatchCapabilities webGpuNativePrototypeBatchCapabilities() noexcept
+{
+    rhi::PrototypeCommandBatchCapabilities caps;
+#if defined(ARP_RHI_WEBGPU_NATIVE_RUNTIME_HAS_NATIVE)
+    if (!webGpuNativeDeviceAvailable() || webGpuNativeDeviceLost())
+        return caps;
+    auto device = emscripten_webgpu_get_device();
+    const bool receipts = device
+        && EM_ASM_INT(
+            {
+                // clang-format off
+        const d = WebGPU.getJsObject($0);
+        return d && d.queue && typeof d.createCommandEncoder === 'function'
+            && typeof d.queue.submit === 'function'
+            && typeof d.queue.onSubmittedWorkDone === 'function'
+            && typeof d.pushErrorScope === 'function' && typeof d.popErrorScope === 'function'
+            && d.lost && typeof d.lost.then === 'function'
+            && typeof queueMicrotask === 'function' && typeof Asyncify !== 'undefined';
+                // clang-format on
+            },
+            device);
+    if (device)
+        wgpuDeviceRelease(device);
+    if (receipts) {
+        caps.contractVersion = rhi::PrototypeCommandBatchContract::version;
+        caps.mode = rhi::PrototypeCommandBatchMode::Prototype;
+        // Versioned implementation guarantees, gated by the actual API facts.
+        caps.boundedRecording = true;
+        caps.nativeCompletion = true;
+        caps.passBoundaryOrdering = true;
+        caps.acquiredImageLeaseValidation = true;
+    }
+#endif
+    return caps;
+}
+
+std::uint32_t webGpuNativeAcquireExecutionTurn() noexcept
+{
+#if defined(ARP_RHI_WEBGPU_NATIVE_RUNTIME_HAS_NATIVE)
+    return static_cast<std::uint32_t>(EM_ASM_INT({
+        // clang-format off
+        if (typeof queueMicrotask !== 'function') return 0;
+        const state = Module.arpRhiExecutionTurn
+            || (Module.arpRhiExecutionTurn = {epoch: 0, active: false});
+        if (!state.active) {
+            if (state.epoch === 0xffffffff) return 0;
+            ++state.epoch;
+            state.active = true;
+            queueMicrotask(() => { state.active = false; });
+        }
+        return state.epoch;
+        // clang-format on
+    }));
+#else
+    return 0;
+#endif
+}
+
+bool webGpuNativeExecutionTurnMatches(std::uint32_t epoch) noexcept
+{
+#if defined(ARP_RHI_WEBGPU_NATIVE_RUNTIME_HAS_NATIVE)
+    return epoch
+        && EM_ASM_INT(
+            {
+                // clang-format off
+        const state = Module.arpRhiExecutionTurn;
+        return !!state && state.active && state.epoch === ($0 >>> 0);
+                // clang-format on
+            },
+            epoch);
+#else
+    (void)epoch;
+    return false;
+#endif
+}
+
 bool webGpuNativeDeviceSupportsStorageTexture(rhi::TextureFormat format)
 {
 #if defined(ARP_RHI_WEBGPU_NATIVE_RUNTIME_HAS_NATIVE)
@@ -2724,34 +2800,5 @@ void setupWebGpuUncapturedErrorCallback()
 #endif // ARP_RHI_WEBGPU_NATIVE_RUNTIME_HAS_NATIVE
 }
 #endif // ARP_WEBGPU_VALIDATION_ENABLED
-
-bool WebGpuNativeCommandPayload::recordPushDebugGroup(
-    std::string_view, std::pmr::string& diagnostic)
-{
-    if (const auto* id = restrictedRecordingDiagnostic()) {
-        diagnostic = id;
-        return false;
-    }
-    return true;
-}
-
-bool WebGpuNativeCommandPayload::recordPopDebugGroup(std::pmr::string& diagnostic)
-{
-    if (const auto* id = restrictedRecordingDiagnostic()) {
-        diagnostic = id;
-        return false;
-    }
-    return true;
-}
-
-bool WebGpuNativeCommandPayload::recordInsertDebugMarker(
-    std::string_view, std::pmr::string& diagnostic)
-{
-    if (const auto* id = restrictedRecordingDiagnostic()) {
-        diagnostic = id;
-        return false;
-    }
-    return true;
-}
 
 } // namespace arp::rhi_webgpu

@@ -1,5 +1,5 @@
 #include "../fixtures/buffer_declaration_type_layout_fixture.h"
-#include "core/ascii_token_cursor.h"
+#include "core/text/ascii_token_cursor.h"
 
 #include <array>
 #include <string_view>

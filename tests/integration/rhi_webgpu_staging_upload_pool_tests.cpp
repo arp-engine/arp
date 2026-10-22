@@ -1,6 +1,6 @@
 #include "../fixtures/cpp_source_evidence.h"
 #include "../fixtures/webgpu_original_texture_upload_source_fixture.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/webgpu/webgpu_device.h"
 #include "rhi/backends/webgpu/webgpu_staging_upload_pool.h"
 #include "rhi/frontend/memory_upload_staging_readiness.h"

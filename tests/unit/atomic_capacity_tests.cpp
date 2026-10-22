@@ -1,4 +1,4 @@
-#include "core/atomic_capacity.h"
+#include "core/memory/atomic_capacity.h"
 
 #include <array>
 #include <cassert>

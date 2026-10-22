@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/array_view.h"
-#include "core/unsigned_range.h"
+#include "core/container/array_view.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/gpu_commands.h"
 #include "rhi/gpu_swapchain.h"
 #include "rhi/semantics/webgl_runtime_profile.h"

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "shader/buffer_declaration_type_layout.h"
 #include "shader/spirv_instruction_view.h"
 

@@ -1,5 +1,5 @@
 #pragma once
-#include "core/versioned_mutation_array.h"
+#include "core/ownership/versioned_mutation_array.h"
 #include "cpu_quota_factory_fixture.h"
 
 #include <cstdio>

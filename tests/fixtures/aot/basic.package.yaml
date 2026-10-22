@@ -25,7 +25,7 @@ modules:
   - id: basic
     version: 1
     source: basic.arp
-    entries: [add, add_then_increment, sum_loop, append_then_length, multiply_from_dependency, dependency_constant, reflected_get, yielded_reflected, closure_accumulate, handled_raise, handled_child_raise, handled_divide_by_zero, count_two, handled_generator_throw, await_then_yield, captured_generator, delegated_child, delegated_await_child, delegated_await_parent, delegated_parent, delegated_dynamic_parent, recursive_delegated, delegated_collection_child, delegated_collection_parent, delegated_import_parent]
+    entries: [add, add_then_increment, sum_loop, append_then_length, multiply_from_dependency, dependency_constant, reflected_get, yielded_reflected, closure_accumulate, handled_raise, handled_child_raise, handled_divide_by_zero, count_two, handled_generator_throw, await_then_yield, captured_generator, delegated_child, delegated_await_child, delegated_await_parent, delegated_parent, delegated_dynamic_parent, recursive_delegated, delegated_collection_child, delegated_collection_parent, delegated_import_parent, native_numeric_sequence, native_private_rebuild, native_aliases, native_leaf_calls, native_virtual_leaf, native_string_lookup, native_handled_sequence, native_index_update, native_index_guard, native_missing_key, native_index_alias, native_rebuild_topology, native_power_sequence, native_power_overflow, native_method_loop, native_closure_loop, native_string_regions, native_collection_loop, native_loop_index_failure, native_loop_overflow, native_inherited_method_loop, native_private_index_loop, native_min_modulo, native_scalar_branches, native_scalar_nested, native_iterated_key_owner]
     dependencies: [math_dep]
   - id: math_dep
     version: 1

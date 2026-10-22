@@ -36,6 +36,22 @@
 
 namespace arp::core {
 
+namespace detail {
+template <std::uint32_t Base> inline float haltonRadicalInverse(std::uint32_t value)
+{
+    static_assert(Base >= 2u);
+    float result = 0.0f;
+    const float invBase = 1.0f / static_cast<float>(Base);
+    float weight = invBase;
+    while (value > 0u) {
+        result += static_cast<float>(value % Base) * weight;
+        value /= Base;
+        weight *= invBase;
+    }
+    return result;
+}
+} // namespace detail
+
 /// Compute the Halton (2,3) low-discrepancy sequence value for the given index.
 // Returns a 2D point in [-1, 1]^2 suitable for sub-pixel jitter. The sequence
 // is deterministic and frame-index-keyed, so two runs with the same index
@@ -46,24 +62,20 @@ namespace arp::core {
 // regular grid patterns a naive round-robin would introduce.
 inline Vec2 halton23(std::uint32_t index)
 {
-    auto radicalInverse = [](std::uint32_t value, std::uint32_t base) -> float {
-        float result = 0.0f;
-        float invBase = 1.0f / static_cast<float>(base);
-        float f = invBase;
-        while (value > 0u) {
-            const std::uint32_t digit = value % base;
-            result += static_cast<float>(digit) * f;
-            value /= base;
-            f *= invBase;
-        }
-        return result;
-    };
-
     // Map [0, 1) -> [-1, 1) so the jitter is symmetric about the pixel center.
     // The 2.0 * x - 1.0 transform preserves the low-discrepancy distribution.
-    const float x = 2.0f * radicalInverse(index, 2u) - 1.0f;
-    const float y = 2.0f * radicalInverse(index, 3u) - 1.0f;
+    const float x = 2.0f * detail::haltonRadicalInverse<2u>(index) - 1.0f;
+    const float y = 2.0f * detail::haltonRadicalInverse<3u>(index) - 1.0f;
     return Vec2{x, y};
+}
+
+/// Three-dimensional sub-cell samples in [0,1), with independent prime bases.
+/// A caller wanting the centered, non-temporal sample uses (0.5,0.5,0.5).
+inline Vec3 halton235(std::uint32_t index)
+{
+    return {detail::haltonRadicalInverse<2u>(index),
+        detail::haltonRadicalInverse<3u>(index),
+        detail::haltonRadicalInverse<5u>(index)};
 }
 
 /// Apply a sub-pixel jitter to a row-major perspective projection matrix.

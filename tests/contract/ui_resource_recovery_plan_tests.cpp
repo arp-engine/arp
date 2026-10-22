@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/ui/ui_atlas_runtime.h"
 #include "renderer/ui/ui_glyph_atlas.h"
 

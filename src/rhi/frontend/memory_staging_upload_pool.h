@@ -21,9 +21,9 @@
 // helpers operate on POD scalars and core types only, so they compile in every
 // backend translation unit (including Metal stubs on non-Apple platforms).
 
-#include "core/cpu_allocator.h"
-#include "core/number_format.h"
-#include "core/page_slice_allocator.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/text/number_format.h"
+#include "rhi/frontend/page_slice_allocator.h"
 
 #include <cstdint>
 #include <string_view>

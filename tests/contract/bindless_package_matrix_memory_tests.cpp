@@ -1,6 +1,6 @@
 #include "../fixtures/cpu_quota_factory_fixture.h"
 #include "../fixtures/original_bindless_root_source_fixture.h"
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "rhi/semantics/bindless_ordinary_memory_lowering.h"
 #include "shader/shader_artifact_files.h"

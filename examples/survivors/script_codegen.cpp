@@ -1,6 +1,7 @@
 #include "content.h"
 #include "native_plugins.h"
 #include "scriptvm/aot/aot_codegen_v5.h"
+#include "scriptvm/plugin/plugin_runtime_scope.h"
 #include "scriptvm/runtime/script_session.h"
 
 #include <cstdio>
@@ -14,8 +15,7 @@ int main(int argc, char** argv)
     core::pmr::String root(argv[1]), diagnostic;
     survivors::GameConfig config;
     survivors::Rules rules;
-    if (!config.load(root, diagnostic)
-        || !rules.load(root, config.maxSourceBytes, diagnostic)) {
+    if (!config.load(root, diagnostic) || !rules.load(root, config.maxSourceBytes, diagnostic)) {
         std::fprintf(stderr, "%s\n", diagnostic.c_str());
         return 1;
     }

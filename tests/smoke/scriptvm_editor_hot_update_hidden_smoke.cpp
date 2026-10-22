@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/editor/editor_hot_update.h"
 #include "tests/scriptvm_interpreter_test_fixture.h"
 

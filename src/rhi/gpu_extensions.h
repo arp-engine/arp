@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
-#include "core/strided_image_statistics.h"
+#include "core/image/strided_image_statistics.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/gpu_resources.h"
 
 #include <cstdint>

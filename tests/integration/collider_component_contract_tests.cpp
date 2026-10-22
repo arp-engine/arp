@@ -12,8 +12,8 @@
 //      (gravity pulls a box down onto the terrain).
 
 #include "3d/collider_component.h"
-#include "physics/physics_module.h"
-#include "physics/physics_world.h"
+#include "physics/3d/physics_module.h"
+#include "physics/3d/physics_world.h"
 
 #include <cassert>
 #include <cstdio>

@@ -1,6 +1,6 @@
 #include "completed_depth_texture_source_fixture.h"
 #pragma once
-#include "core/ibl_bake.h"
+#include "core/math/half_float.h"
 #include "original_command_typed_stream_fixture.h"
 #include "original_command_upload_stream_builder_fixture.h"
 #include "original_depth_table_geometry_composition_contract_fixture.h"
@@ -948,7 +948,7 @@ public:
                     std::uint16_t half;
                     std::memcpy(&half, output + y * 256u + x * 8u + channel * 2u, sizeof(half));
                     const float expected = channel == 3u ? 1.0f : float(x % 3u + 1u) * 0.25f;
-                    assert(core::ibl::halfToFloat(half) == expected);
+                    assert(core::halfToFloat(half) == expected);
                 }
         const auto& inventory = retained.graph->originalInputs()
                                     ->originalScalars()

@@ -1,6 +1,6 @@
 #include "rhi/backends/metal/metal_native_swapchain.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/metal/metal_native_commands.h"
 #include "rhi/backends/metal/metal_native_format.h"
 #include "rhi/backends/metal/metal_native_runtime.h"

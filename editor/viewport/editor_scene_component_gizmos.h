@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
-#include "core/math.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 #include "resource/resource_manager.h"
 #include "scene/ids.h"
 #include "scene/scene.h"

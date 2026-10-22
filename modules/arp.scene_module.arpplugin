@@ -4,7 +4,7 @@ module: arp_scene
 moduleVersion: 1
 source: scene/scene_module.cpp
 entry: arp_register_arp_scene
-exportContractHash: sha256:915612d5bf0d67157bccf3397941abf1229faae2a67d7327b16eb73faf15f4f7
+exportContractHash: sha256:25e2a198e25b72f5c3bb10a18fa74a69a233ffeb2378dd956f6646e6d28560a5
 requiredServices:
   - id: arp.scene.main-scene
     version: 1

@@ -9,7 +9,7 @@ float4 terrainColorMain(FamilyVertex input) : SV_Target0
     bool fault;
     uint count = TerrainResults_query(0u, fault);
     if (fault || any(extent.xy == 0u) || extent.z != 23u || extent.w != 1u
-        || extent.x > 0xffffffffu / extent.y || extent.x * extent.y > count / 23u
+        || !arpUintMultiplyFits(extent.x, extent.y) || extent.x * extent.y > count / 23u
         || any(input.position.xy < 0.0) || any(input.position.xy >= float2(extent.xy))) {
         arpBindlessReportFault(); discard;
     }

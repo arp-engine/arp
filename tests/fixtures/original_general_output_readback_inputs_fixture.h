@@ -1,6 +1,6 @@
 #pragma once
-#include "core/ibl_bake.h"
-#include "core/strided_image_statistics.h"
+#include "core/image/strided_image_statistics.h"
+#include "core/math/half_float.h"
 #include "original_command_readback_result_contract_fixture.h"
 #include "original_command_upload_stream_builder_fixture.h"
 #include "original_descriptor_buffer_binding_fixture.h"
@@ -1193,7 +1193,7 @@ private:
                     [](const std::uint8_t* pixel, std::uint32_t channel) {
                         const auto half = std::uint16_t(pixel[2u * channel])
                             | (std::uint16_t(pixel[2u * channel + 1u]) << 8u);
-                        return core::ibl::halfToFloat(half);
+                        return core::halfToFloat(half);
                     });
                 assert(statistics.valid && statistics.channelCount == 4u);
                 for (std::size_t channel = 0u; channel < expected.size(); ++channel) {
@@ -1203,7 +1203,7 @@ private:
                         && statistics.channels[channel].sampleCount == 1u
                         && statistics.channels[channel].finiteCount == 1u
                         && statistics.channels[channel].meanValue
-                            == core::ibl::halfToFloat(expected[channel]));
+                            == core::halfToFloat(expected[channel]));
                 }
                 assert(!custody->pendingOriginalRecords() && !custody->originalNativeLossArmed());
                 std::printf(

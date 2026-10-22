@@ -1,6 +1,6 @@
 #pragma once
 
-#include "platform/vulkan_runtime_bootstrap.h"
+#include "platform/native/vulkan_runtime_bootstrap.h"
 #include "renderer/render_graph/render_graph_resource_management_smoke.h"
 #include "rhi/backends/vulkan/vulkan_swapchain_retirement.h"
 #include "tests/fixtures/vulkan_heap_owner_fixture.h"

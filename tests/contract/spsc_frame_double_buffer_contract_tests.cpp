@@ -22,7 +22,7 @@
 //      slot is the value the consumer reads from it (no cross-slot aliasing).
 //   6. stopRequested() unblocks waitFrameCompleted (no deadlock on shutdown).
 
-#include "core/runtime/spsc_frame_double_buffer.h"
+#include "core/concurrency/spsc_frame_double_buffer.h"
 
 #include <atomic>
 #include <cassert>

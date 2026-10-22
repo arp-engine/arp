@@ -1,6 +1,6 @@
 #include "rhi/frontend/bindless_snapshot.h"
 
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/frontend/bindless_snapshot_allocation.h"
 #include "rhi/frontend/bindless_snapshot_metadata.h"
 #include "rhi/frontend/command_indirect_commands.h"
@@ -22,7 +22,10 @@ std::uint64_t BindlessCrossExtension::queryOriginalMixedSnapshotAllocation(
     if (diagnostic)
         return 0u;
     diagnostic = "RHI-BINDLESS-SNAPSHOT-ALLOCATION-UNAVAILABLE";
-    if (!semantics::OriginalBindlessPreparationLowering::capabilityAvailable(capabilities(), 9u))
+    const auto& caps = capabilities();
+    if ((version == 1u
+            && !semantics::OriginalBindlessPreparationLowering::capabilityAvailable(caps, 9u))
+        || (version == 2u && (!caps.limitsQueried || !caps.deviceIdentity)))
         return 0u;
     std::uint64_t total = 0u;
     for (const auto& desc : BindlessSnapshotAllocationContract::buffers(artifact)) {

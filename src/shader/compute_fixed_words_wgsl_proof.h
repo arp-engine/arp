@@ -1,5 +1,5 @@
 #pragma once
-#include "core/ascii_token_cursor.h"
+#include "core/text/ascii_token_cursor.h"
 #include "shader/compute_indirect_producer_proof.h"
 
 namespace arp::shader {

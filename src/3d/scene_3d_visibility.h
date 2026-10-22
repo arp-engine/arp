@@ -1,5 +1,6 @@
 #pragma once
 
+#include "3d/camera_parameters.h"
 #include "3d/scene_3d_render_queue.h"
 
 namespace arp::scene3d {

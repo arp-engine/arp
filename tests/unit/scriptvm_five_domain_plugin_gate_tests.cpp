@@ -1,6 +1,6 @@
 #include "3d/collider_component.h"
 #include "3d/components.h"
-#include "core/math.h"
+#include "core/math/math.h"
 #include "core/runtime/async_runtime.h"
 #include "network/io_context.h"
 #include "network/network_module.h"
@@ -8,7 +8,7 @@
 #include "resource/resource_module.h"
 #include "scene/camera.h"
 #include "scene/scene.h"
-#include "scriptvm/runtime/cpp_plugin_api.h"
+#include "scriptvm/plugin/cpp_plugin_api.h"
 #include "scriptvm/runtime/module_registry.h"
 
 #include <cassert>

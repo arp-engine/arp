@@ -1,6 +1,6 @@
 #include "rhi/backends/vulkan/vulkan_original_bindless_graphics_pass.h"
 
-#include "core/shared_identity_projection.h"
+#include "core/ownership/shared_identity_projection.h"
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
 
 namespace arp::rhi_vulkan {

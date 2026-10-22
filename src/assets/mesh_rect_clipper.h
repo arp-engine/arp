@@ -1,7 +1,7 @@
 #pragma once
 
 #include "assets/asset_pipeline.h"
-#include "core/triangle_rect_clipper.h"
+#include "core/math/triangle_rect_clipper.h"
 
 namespace arp::assets {
 

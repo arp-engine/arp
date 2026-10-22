@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/initialized_byte_buffer.h"
+#include "core/memory/initialized_byte_buffer.h"
 #include "shader/webgl_shader_program_artifact.h"
 
 #include <cstring>

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/array_view.h"
-#include "core/cpu_allocator.h"
+#include "core/container/array_view.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/rhi_draw_plan_bridge.h"
 #include "renderer/scene_runtime_frame.h"
 

@@ -1,5 +1,5 @@
-#include "physics2d/physics_world_2d.h"
-#include "scriptvm/runtime/cpp_plugin_api.h"
+#include "physics/2d/physics_world_2d.h"
+#include "scriptvm/plugin/cpp_plugin_api.h"
 
 namespace arp::reflection::generated {
 bool register_arp_scene2d_reflection(

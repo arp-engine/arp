@@ -1,5 +1,5 @@
-#include "core/file_io.h"
-#include "core/yaml_contract.h"
+#include "core/encoding/yaml_contract.h"
+#include "core/io/file_io.h"
 #include "ui/ui_bitmap_font_resource.h"
 
 #include <cassert>

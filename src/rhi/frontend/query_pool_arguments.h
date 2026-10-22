@@ -1,7 +1,7 @@
 #pragma once
-#include "core/bounded_sequence.h"
-#include "core/quota_bound_shared_identity.h"
-#include "core/shared_owner_projection.h"
+#include "core/container/bounded_sequence.h"
+#include "core/ownership/quota_bound_shared_identity.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/frontend/command_arguments.h"
 #include "rhi/semantics/query_lowering.h"
 

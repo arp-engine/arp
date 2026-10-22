@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/semantics/renderer_frame_lifecycle_readiness.h"
 
 #include <cassert>

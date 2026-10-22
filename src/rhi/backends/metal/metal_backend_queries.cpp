@@ -1,6 +1,6 @@
 #include "rhi/backends/metal/metal_backend_queries.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <limits>
 

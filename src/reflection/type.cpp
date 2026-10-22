@@ -3,8 +3,35 @@
 #include "reflection/type.h"
 
 #include "reflection/class_info.h"
+#include "reflection/registration_transaction.h"
 
 namespace arp::reflection {
+
+void typeinfo::setCollection(const CollectionAccess* value) const
+{
+    if (collection_ == value)
+        return;
+    if (auto* transaction = detail::currentRegistrationTransaction())
+        transaction->preserveSerializationMetadata(*this);
+    collection_ = value;
+}
+
+void typeinfo::setEnumValues(const core::pmr::Map<core::pmr::String, int>& values) const
+{
+    if (auto* transaction = detail::currentRegistrationTransaction())
+        transaction->preserveSerializationMetadata(*this);
+    enumValues_.clear();
+    for (const auto& entry : values)
+        enumValues_.push_back(entry.second);
+}
+
+bool typeinfo::containsEnumValue(int value) const
+{
+    for (int member : enumValues_)
+        if (member == value)
+            return true;
+    return false;
+}
 
 typeinfo::typeinfo(const class_info* cls, std::uint64_t mask) : mask_(mask), cls_(cls)
 {}

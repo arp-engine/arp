@@ -1,4 +1,4 @@
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "rhi/backends/vulkan/vulkan_allocator.h"
 #include "rhi/backends/vulkan/vulkan_timeline_semaphore.h"
 #include "tests/fixtures/vulkan_query_only_runtime_owner.h"
@@ -211,7 +211,7 @@ int main()
     const auto header =
         arp::core::readTextFile(ARP_SOURCE_DIR "/src/rhi/backends/vulkan/vulkan_runtime.h");
     const auto platform =
-        arp::core::readTextFile(ARP_SOURCE_DIR "/src/platform/render_system_vulkan.cpp");
+        arp::core::readTextFile(ARP_SOURCE_DIR "/src/platform/native/render_system_vulkan.cpp");
     assert(header.success && platform.success);
     const bool ownerContract =
         header.text.find("VulkanRhiNativeRuntimeOwner") != arp::core::pmr::String::npos

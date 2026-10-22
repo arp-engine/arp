@@ -4,11 +4,12 @@ module: arp_scene3d
 moduleVersion: 1
 source: scene3d/scene3d_module.cpp
 entry: arp_register_arp_scene3d
-exportContractHash: sha256:583a407b42e4bccb7680f433c5cc388bcbcc093f759af6509ab830c575451c92
+exportContractHash: sha256:0b93cd56f68209ba0b94162c777bc09e117173310f74113db7c0c469eba690d4
 reflectionHeaders:
   - src/3d/bounds.h
   - src/3d/components.h
+  - src/3d/fog_components.h
   - src/3d/authoring_components.h
   - src/3d/collider_component.h
-  - src/physics/physics_types.h
+  - src/physics/3d/physics_types.h
   - src/scene/camera.h

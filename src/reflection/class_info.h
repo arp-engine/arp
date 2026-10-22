@@ -6,7 +6,7 @@
 // Uses PMR containers (core::pmr::Vector/Map) instead of std::vector/map.
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/def.h"
 #define ARP_REFLECTION_CLASS_INFO_HEADER_ACTIVE 1
 #include "reflection/object.h"

@@ -73,6 +73,31 @@ class SpirvLayoutFacts:
             raise RuntimeError("SPIRV-BUFFER-LAYOUT-TYPE")
         return result
 
+    def validate_nonuniform_descriptor_accesses(self, bindings):
+        """Check dynamic access pointers for selected descriptor-array bindings.
+
+        NonUniform on an index alone does not prove the accessed descriptor has
+        the decoration. Constant indices and scalar descriptors need no marker.
+        """
+        arrays = set()
+        selected = {((group,), (binding,)) for group, binding in bindings}
+        for variable in self.variables:
+            key = (self.decorations.get((variable[1], 34)),
+                   self.decorations.get((variable[1], 33)))
+            if key not in selected:
+                continue
+            _, pointer = self.definition(variable[0], 32, 3)
+            if self.definition(pointer[2])[0] in (28, 29):
+                arrays.add(variable[1])
+        for _, opcode, operands in self.instructions:
+            if opcode not in (65, 66) or operands[2] not in arrays:
+                continue
+            index = self.definitions.get(operands[3])
+            if index and index[0] == 43:  # OpConstant
+                continue
+            if (operands[1], 5300) not in self.decorations:  # NonUniform
+                raise RuntimeError("SPIRV-BINDLESS-NONUNIFORM-DESCRIPTOR-ACCESS")
+
     def decoration(self, identifier, kind, marker=False):
         values = self.decorations.get((identifier, kind))
         if values is None or len(values) != (0 if marker else 1):

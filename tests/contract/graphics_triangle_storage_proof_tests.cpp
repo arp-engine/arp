@@ -1,6 +1,6 @@
 #include "../fixtures/graphics_triangle_storage_proof_fixture.h"
 #include "../fixtures/spirv_binary_mutation_fixture.h"
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 
 #include <cstring>
 #ifdef NDEBUG

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "core/bounded_retainer.h"
-#include "core/bounded_sequence.h"
-#include "core/lifetime_epoch.h"
+#include "core/container/bounded_sequence.h"
+#include "core/ownership/bounded_retainer.h"
+#include "core/ownership/lifetime_epoch.h"
 #include "rhi/semantics/ordered_command_issue.h"
 
 #include <cstring>

@@ -48,11 +48,11 @@ def main():
     ap.add_argument('--conformance-pingpong-only', action='store_true')
     ap.add_argument('--conformance-storage-only', action='store_true')
     ap.add_argument('--entry', choices=('index.html', 'pipeline.html',
-        'webgpu_shared_conformance_runner.html'), default='index.html')
+        'webgpu_shared_conformance_runner.html', 'arp_volumetric_fog.html'), default='index.html')
     ap.add_argument('--capture-frames', type=int, choices=(4, 24), default=4)
     args=ap.parse_args();output=args.output.resolve();output.mkdir(parents=True,exist_ok=True)
     capture_inputs={}
-    if args.entry=='webgpu_shared_conformance_runner.html':
+    if args.entry in ('webgpu_shared_conformance_runner.html','arp_volumetric_fog.html'):
         scripts=re.findall(r'<script src="([^"]+\.js)"></script>',(args.directory/args.entry).read_text())
         if len(scripts)!=1:raise ValueError('WEBGPU-CAPTURE-SCRIPT-IDENTITY')
         module=Path(scripts[0]).stem

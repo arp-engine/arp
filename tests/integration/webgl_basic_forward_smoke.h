@@ -1,5 +1,5 @@
 #pragma once
-#include "core/quad_geometry.h"
+#include "core/math/quad_geometry.h"
 #include "platform/render_system.h"
 #include "platform/render_system_ordered_graphics.h"
 #include "renderer/gui/gui_ordered_renderer.h"

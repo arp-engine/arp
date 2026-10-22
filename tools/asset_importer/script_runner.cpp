@@ -1,13 +1,13 @@
 #include "tools/asset_importer/script_runner.h"
 
-#include "core/file_io.h"
-#include "core/sha256.h"
-#include "scriptvm/aot/aot_dynamic_package.h"
+#include "core/hash/sha256.h"
+#include "core/io/file_io.h"
 #include "scriptvm/aot/aot_v5.h"
 #include "scriptvm/compile/parser.h"
 #include "scriptvm/compile/sema.h"
 #include "scriptvm/interpreter/eval.h"
 #include "scriptvm/interpreter/pipeline.h"
+#include "scriptvm/plugin/aot_dynamic_package.h"
 #include "scriptvm/runtime/module_registry.h"
 #include "scriptvm/runtime/semantic_runtime.h"
 

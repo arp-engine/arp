@@ -1,7 +1,7 @@
 #include "portable_renderer.h"
 
-#include "core/diagnostic_error.h"
-#include "core/quad_geometry.h"
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/math/quad_geometry.h"
 #include "renderer/gui/bitmap_text_resolver.h"
 
 namespace arp::build_a_queen {

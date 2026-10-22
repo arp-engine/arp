@@ -1,0 +1,237 @@
+type: arp.scene-prefab
+contractVersion: 1
+resourceId: 20000000-0000-4000-8000-000000005000
+name: orbit-rig
+objects:
+  - id: 1
+    parent: 0
+    name: orbit-root
+    active: true
+    transform:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      qx: 0.0
+      qy: 0.0
+      qz: 0.0
+      qw: 1.0
+      sx: 1.0
+      sy: 1.0
+      sz: 1.0
+    components: []
+  - id: 2
+    parent: 1
+    name: blade-0
+    active: true
+    transform:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      qx: 0.0
+      qy: 0.0
+      qz: 0.0
+      qw: 1.0
+      sx: 0.7
+      sy: 0.7
+      sz: 1.0
+    components:
+      - type: arp.sprite/1
+        spriteId: 20000000-0000-4000-8000-000000000106
+        r: 1.0
+        g: 1.0
+        b: 1.0
+        a: 1.0
+        sortingLayer: 2
+        sortingOrder: 0
+        ySort: false
+        flipX: false
+        flipY: false
+  - id: 3
+    parent: 1
+    name: blade-1
+    active: true
+    transform:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      qx: 0.0
+      qy: 0.0
+      qz: 0.0
+      qw: 1.0
+      sx: 0.7
+      sy: 0.7
+      sz: 1.0
+    components:
+      - type: arp.sprite/1
+        spriteId: 20000000-0000-4000-8000-000000000106
+        r: 1.0
+        g: 1.0
+        b: 1.0
+        a: 1.0
+        sortingLayer: 2
+        sortingOrder: 0
+        ySort: false
+        flipX: false
+        flipY: false
+  - id: 4
+    parent: 1
+    name: blade-2
+    active: true
+    transform:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      qx: 0.0
+      qy: 0.0
+      qz: 0.0
+      qw: 1.0
+      sx: 0.7
+      sy: 0.7
+      sz: 1.0
+    components:
+      - type: arp.sprite/1
+        spriteId: 20000000-0000-4000-8000-000000000106
+        r: 1.0
+        g: 1.0
+        b: 1.0
+        a: 1.0
+        sortingLayer: 2
+        sortingOrder: 0
+        ySort: false
+        flipX: false
+        flipY: false
+  - id: 5
+    parent: 1
+    name: blade-3
+    active: false
+    transform:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      qx: 0.0
+      qy: 0.0
+      qz: 0.0
+      qw: 1.0
+      sx: 0.7
+      sy: 0.7
+      sz: 1.0
+    components:
+      - type: arp.sprite/1
+        spriteId: 20000000-0000-4000-8000-000000000106
+        r: 1.0
+        g: 1.0
+        b: 1.0
+        a: 1.0
+        sortingLayer: 2
+        sortingOrder: 0
+        ySort: false
+        flipX: false
+        flipY: false
+  - id: 6
+    parent: 1
+    name: blade-4
+    active: false
+    transform:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      qx: 0.0
+      qy: 0.0
+      qz: 0.0
+      qw: 1.0
+      sx: 0.7
+      sy: 0.7
+      sz: 1.0
+    components:
+      - type: arp.sprite/1
+        spriteId: 20000000-0000-4000-8000-000000000106
+        r: 1.0
+        g: 1.0
+        b: 1.0
+        a: 1.0
+        sortingLayer: 2
+        sortingOrder: 0
+        ySort: false
+        flipX: false
+        flipY: false
+  - id: 7
+    parent: 1
+    name: blade-5
+    active: false
+    transform:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      qx: 0.0
+      qy: 0.0
+      qz: 0.0
+      qw: 1.0
+      sx: 0.7
+      sy: 0.7
+      sz: 1.0
+    components:
+      - type: arp.sprite/1
+        spriteId: 20000000-0000-4000-8000-000000000106
+        r: 1.0
+        g: 1.0
+        b: 1.0
+        a: 1.0
+        sortingLayer: 2
+        sortingOrder: 0
+        ySort: false
+        flipX: false
+        flipY: false
+  - id: 8
+    parent: 1
+    name: blade-6
+    active: false
+    transform:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      qx: 0.0
+      qy: 0.0
+      qz: 0.0
+      qw: 1.0
+      sx: 0.7
+      sy: 0.7
+      sz: 1.0
+    components:
+      - type: arp.sprite/1
+        spriteId: 20000000-0000-4000-8000-000000000106
+        r: 1.0
+        g: 1.0
+        b: 1.0
+        a: 1.0
+        sortingLayer: 2
+        sortingOrder: 0
+        ySort: false
+        flipX: false
+        flipY: false
+  - id: 9
+    parent: 1
+    name: blade-7
+    active: false
+    transform:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      qx: 0.0
+      qy: 0.0
+      qz: 0.0
+      qw: 1.0
+      sx: 0.7
+      sy: 0.7
+      sz: 1.0
+    components:
+      - type: arp.sprite/1
+        spriteId: 20000000-0000-4000-8000-000000000106
+        r: 1.0
+        g: 1.0
+        b: 1.0
+        a: 1.0
+        sortingLayer: 2
+        sortingOrder: 0
+        ySort: false
+        flipX: false
+        flipY: false

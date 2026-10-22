@@ -2,7 +2,7 @@
 
 #include "assets/asset_pipeline.h"
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "resource/prefab_asset_resources.h"
 
 #include <cstdint>

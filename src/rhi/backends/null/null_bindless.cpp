@@ -1,7 +1,7 @@
 #include "rhi/backends/null/null_bindless.h"
 
 #include "rhi/backends/null/null_backend_internal.h"
-#include "rhi/frontend/bindless_scene_content.h"
+#include "rhi/frontend/bindless_initialized_graphics.h"
 #include "rhi/frontend/pipeline_state_copy.h"
 #include "rhi/semantics/bindless_pipeline_interface.h"
 #include "rhi/semantics/bindless_scene_raster.h"
@@ -317,7 +317,8 @@ core::UniquePtr<RenderPipeline> createBindlessRenderPipeline(const BindlessCross
         diagnostic = authoredValidation.diagnostics;
         return {};
     }
-    const auto scene = OriginalBindlessSceneContentContract::selectEntries(vertex, fragment);
+    const auto scene =
+        selectBindlessInitializedGraphics(state->authorization->package(), vertex, fragment);
     if (scene.diagnostic) {
         diagnostic = scene.diagnostic;
         return {};

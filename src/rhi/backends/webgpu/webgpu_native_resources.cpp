@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/webgpu/native_validation.h"
 #include "rhi/backends/webgpu/webgpu_backend_objects.h"
 #include "rhi/backends/webgpu/webgpu_binding_space_lowering.h"
@@ -11,7 +11,7 @@
 #include "rhi/backends/webgpu/webgpu_original_runtime_length_interval_lowering.h"
 #include "rhi/backends/webgpu/webgpu_original_whole_buffer_binding_lowering.h"
 #include "rhi/backends/webgpu/webgpu_pipeline_preparation.h"
-#include "rhi/frontend/bindless_scene_content.h"
+#include "rhi/frontend/bindless_initialized_graphics.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "rhi/frontend/bindless_snapshot.h"
 #include "rhi/frontend/command_draw_validation.h"
@@ -2184,8 +2184,7 @@ std::shared_ptr<WebGpuNativeRenderPipelinePayload> createWebGpuNativeBindlessRen
         diagnostic = prepared.diagnostics;
         return nullptr;
     }
-    const auto scene =
-        rhi::OriginalBindlessSceneContentContract::selectEntries(vertexEntry, fragmentEntry);
+    const auto scene = rhi::selectBindlessInitializedGraphics(package, vertexEntry, fragmentEntry);
     if (scene.diagnostic) {
         diagnostic = scene.diagnostic;
         return nullptr;

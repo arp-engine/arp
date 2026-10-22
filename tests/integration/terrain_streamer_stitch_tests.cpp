@@ -8,7 +8,7 @@
 // vertices -- after stitching -- land exactly on the LOD-1 chunk's linear
 // edge, so no gap remains between them.
 
-#include "pcg/terrain_streamer.h"
+#include "3d/terrain/terrain_streamer.h"
 
 #include <cassert>
 #include <cmath>
@@ -50,8 +50,8 @@ bool finite3(const float* v)
 
 bool test_normal_sampling_matches_lod_grid_spacing()
 {
-    arp::pcg::TerrainStreamer streamer;
-    arp::pcg::TerrainStreamerDesc desc;
+    arp::terrain::TerrainStreamer streamer;
+    arp::terrain::TerrainStreamerDesc desc;
     desc.worldHalfExtent = 256.0f;
     desc.chunkSize = 64.0f;
     desc.samplesPerChunk = 33u;
@@ -96,8 +96,8 @@ bool test_normal_sampling_matches_lod_grid_spacing()
 
 bool test_heightfield_tangent_frame_is_finite_and_orthogonal()
 {
-    arp::pcg::TerrainStreamer streamer;
-    arp::pcg::TerrainStreamerDesc desc;
+    arp::terrain::TerrainStreamer streamer;
+    arp::terrain::TerrainStreamerDesc desc;
     desc.worldHalfExtent = 256.0f;
     desc.chunkSize = 64.0f;
     desc.samplesPerChunk = 33u;
@@ -156,8 +156,8 @@ bool test_skirt_frames_and_winding_face_outward()
         {0x8u, {1.0f, 0.0f, 0.0f}, "right"},
     };
 
-    arp::pcg::TerrainStreamer streamer;
-    arp::pcg::TerrainStreamerDesc desc;
+    arp::terrain::TerrainStreamer streamer;
+    arp::terrain::TerrainStreamerDesc desc;
     desc.worldHalfExtent = 256.0f;
     desc.chunkSize = 64.0f;
     desc.samplesPerChunk = 33u;
@@ -247,8 +247,8 @@ bool test_skirt_frames_and_winding_face_outward()
 
 bool test_active_lod_seam_uses_stitch_without_skirt()
 {
-    arp::pcg::TerrainStreamer streamer;
-    arp::pcg::TerrainStreamerDesc desc;
+    arp::terrain::TerrainStreamer streamer;
+    arp::terrain::TerrainStreamerDesc desc;
     desc.worldHalfExtent = 2048.0f;
     desc.chunkSize = 64.0f;
     desc.samplesPerChunk = 33u;
@@ -264,12 +264,12 @@ bool test_active_lod_seam_uses_stitch_without_skirt()
 
     streamer.update(0.0f, 0.0f, 1.0f, 0.0f, 0.0f);
 
-    const arp::pcg::ChunkGenRequest* lodSeam = nullptr;
-    const arp::pcg::ChunkGenRequest* streamingBoundary = nullptr;
+    const arp::terrain::ChunkGenRequest* lodSeam = nullptr;
+    const arp::terrain::ChunkGenRequest* streamingBoundary = nullptr;
     for (const auto& request : streamer.genRequests()) {
-        if (request.coord == arp::pcg::ChunkCoord{1, 0})
+        if (request.coord == arp::terrain::ChunkCoord{1, 0})
             lodSeam = &request;
-        if (request.coord == arp::pcg::ChunkCoord{6, 0})
+        if (request.coord == arp::terrain::ChunkCoord{6, 0})
             streamingBoundary = &request;
     }
 
@@ -304,8 +304,8 @@ bool test_active_lod_seam_uses_stitch_without_skirt()
 
 bool test_stitch_snaps_edge_to_coarse_linear()
 {
-    arp::pcg::TerrainStreamer streamer;
-    arp::pcg::TerrainStreamerDesc desc;
+    arp::terrain::TerrainStreamer streamer;
+    arp::terrain::TerrainStreamerDesc desc;
     desc.worldHalfExtent = 256.0f;
     desc.chunkSize = 64.0f;
     desc.samplesPerChunk = 33u;
@@ -323,8 +323,8 @@ bool test_stitch_snaps_edge_to_coarse_linear()
     // Two adjacent chunks along X: chunk A at (0,0), chunk B at (1,0).
     // A is LOD 0 (fine, 2m/seg), B is LOD 1 (coarse, 4m/seg).
     // Stitch A's +X (right) edge onto B's -X (left) edge.
-    const arp::pcg::ChunkCoord coordA{0, 0};
-    const arp::pcg::ChunkCoord coordB{1, 0};
+    const arp::terrain::ChunkCoord coordA{0, 0};
+    const arp::terrain::ChunkCoord coordB{1, 0};
 
     const auto meshFine = streamer.generateChunkMesh(coordA, 0, 0u, 0x8u); // stitch right edge
     const auto meshCoarse = streamer.generateChunkMesh(coordB, 1, 0u, 0u); // no stitch
@@ -389,8 +389,8 @@ bool test_stitch_snaps_edge_to_coarse_linear()
 bool test_no_stitch_preserves_true_height()
 {
     // With stitchEdgeMask=0, edge vertices keep their true heightfield height.
-    arp::pcg::TerrainStreamer streamer;
-    arp::pcg::TerrainStreamerDesc desc;
+    arp::terrain::TerrainStreamer streamer;
+    arp::terrain::TerrainStreamerDesc desc;
     desc.worldHalfExtent = 256.0f;
     desc.chunkSize = 64.0f;
     desc.samplesPerChunk = 33u;
@@ -405,7 +405,7 @@ bool test_no_stitch_preserves_true_height()
         return false;
     }
 
-    const arp::pcg::ChunkCoord coordA{0, 0};
+    const arp::terrain::ChunkCoord coordA{0, 0};
     const auto mesh = streamer.generateChunkMesh(coordA, 0, 0u, 0u); // no stitch
 
     const std::uint32_t vertsX = 33u;
@@ -424,8 +424,8 @@ bool test_no_stitch_preserves_true_height()
 
 bool test_asset_declared_samples_drive_lod_mesh_resolution()
 {
-    arp::pcg::TerrainStreamer streamer;
-    arp::pcg::TerrainStreamerDesc desc;
+    arp::terrain::TerrainStreamer streamer;
+    arp::terrain::TerrainStreamerDesc desc;
     desc.worldBounds = {-150.0f, 150.0f, -150.0f, 150.0f};
     desc.chunkSize = 150.0f;
     desc.samplesPerChunk = 129u;
@@ -458,8 +458,8 @@ bool test_chunk_world_bounds_match_mesh_and_adjacent_chunks()
         {}, // legacy signed grid, without an asset origin
     };
     for (const auto& world : worlds) {
-        arp::pcg::TerrainStreamer streamer;
-        arp::pcg::TerrainStreamerDesc desc;
+        arp::terrain::TerrainStreamer streamer;
+        arp::terrain::TerrainStreamerDesc desc;
         desc.worldBounds = world;
         desc.chunkSize = 150.0f;
         desc.worldHalfExtent = 300.0f;
@@ -468,8 +468,8 @@ bool test_chunk_world_bounds_match_mesh_and_adjacent_chunks()
         };
         if (!streamer.initialize(desc))
             return false;
-        const arp::pcg::ChunkCoord c =
-            world.valid() ? arp::pcg::ChunkCoord{0, 1} : arp::pcg::ChunkCoord{-1, -2};
+        const arp::terrain::ChunkCoord c =
+            world.valid() ? arp::terrain::ChunkCoord{0, 1} : arp::terrain::ChunkCoord{-1, -2};
         const auto bounds = streamer.chunkWorldBounds(c);
         const float expectedX = world.valid() ? world.minX : -150.0f;
         const float expectedZ = world.valid() ? world.minZ + 150.0f : -300.0f;

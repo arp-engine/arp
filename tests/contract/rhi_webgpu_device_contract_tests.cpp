@@ -17,7 +17,7 @@
 #include "../fixtures/webgpu_public_transition_admission_fixture.h"
 #include "../fixtures/webgpu_timestamp_command_point_fixture.h"
 #include "../fixtures/webgpu_transfer_retention_fixture.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/webgpu/webgpu_backend_objects.h"
 #include "rhi/backends/webgpu/webgpu_bindless_root_cold_admission.h"
 #include "rhi/backends/webgpu/webgpu_device.h"
@@ -195,7 +195,8 @@ void assertWebGpuLimitsComeFromCreatedDevice()
         readText(ARP_SOURCE_DIR "/src/rhi/backends/webgpu/webgpu_native_runtime.h");
     const auto runtimeSource =
         readText(ARP_SOURCE_DIR "/src/rhi/backends/webgpu/webgpu_native_runtime.cpp");
-    const auto platformSource = readText(ARP_SOURCE_DIR "/src/platform/render_system_webgpu.cpp");
+    const auto platformSource =
+        readText(ARP_SOURCE_DIR "/src/platform/web/render_system_webgpu.cpp");
 
     assert(runtimeHeader.find("struct WebGpuNativeDeviceLimits") != std::pmr::string::npos);
     assert(runtimeHeader.find("webGpuNativeDeviceLimits()") != std::pmr::string::npos);
@@ -729,7 +730,8 @@ void assertWebGpuStorageBufferCapabilityIsIndependent()
         readText(ARP_SOURCE_DIR "/src/rhi/backends/webgpu/webgpu_native_runtime.h");
     const auto nativeSource =
         readText(ARP_SOURCE_DIR "/src/rhi/backends/webgpu/webgpu_native_runtime.cpp");
-    const auto platformSource = readText(ARP_SOURCE_DIR "/src/platform/render_system_webgpu.cpp");
+    const auto platformSource =
+        readText(ARP_SOURCE_DIR "/src/platform/web/render_system_webgpu.cpp");
     const auto profileSource =
         readText(ARP_SOURCE_DIR "/src/rhi/semantics/webgpu_runtime_profile.cpp");
     const auto deviceSource = readText(ARP_SOURCE_DIR "/src/rhi/backends/webgpu/webgpu_device.cpp");

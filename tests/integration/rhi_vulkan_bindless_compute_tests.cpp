@@ -2282,11 +2282,13 @@ int main(int argc, char** argv)
         BindlessAccessArray(missingVertexAccesses.data(), missingVertexAccesses.size()));
     assert(!missingVertexAccess.success
         && missingVertexAccess.diagnostics == "RHI-BINDLESS-ACCESS-SET-INCOMPLETE");
+    const auto graphicsBindAllocations = core::defaultCpuAllocator().stats().allocationCount;
     const auto graphicsBound = publicGraphicsBindless->bindPreparedGraphicsBinding(
         preparedGraphics, BindlessAccessArray(graphicsAccesses.data(), graphicsAccesses.size()));
     if (!graphicsBound.success)
         std::cerr << graphicsBound.diagnostics << '\n';
     assert(graphicsBound.success);
+    assert(core::defaultCpuAllocator().stats().allocationCount == graphicsBindAllocations);
     const auto indirectRejected =
         publicRenderPass->drawIndexedIndirect(*graphicsPixels, 0u, 1u, 20u);
     assert(!indirectRejected.success
@@ -2296,7 +2298,9 @@ int main(int argc, char** argv)
                     : "RHI-BINDLESS-INDIRECT-FIRST-INSTANCE-UNAVAILABLE"));
     assert(publicRenderPass->setViewport(publicGraphicsState.viewport).success);
     assert(publicRenderPass->setScissor(publicGraphicsState.scissor).success);
+    const auto graphicsDrawAllocations = core::defaultCpuAllocator().stats().allocationCount;
     assert(publicRenderPass->draw(3u, 1u, 0u, 0u).success);
+    assert(core::defaultCpuAllocator().stats().allocationCount == graphicsDrawAllocations);
     assert(publicRenderPass->end().success);
     preparedGraphics.reset();
     assert(!preparedGraphicsObserver.expired() && graphicsBindingPool.liveBindings() == 1u

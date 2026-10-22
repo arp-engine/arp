@@ -1,6 +1,6 @@
 #pragma once
-#include "core/bounded_sequence.h"
-#include "core/monotonic_id_sequence.h"
+#include "core/container/bounded_sequence.h"
+#include "core/ownership/monotonic_id_sequence.h"
 #include "core/runtime/external_callback_gate.h"
 
 #include <optional>

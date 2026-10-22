@@ -326,7 +326,7 @@ def main():
         if name in ('ReflectionProbes','SoundOutside','SoundReactorRoom','FlyingForklifts'): icon('branch_' + name,'chevron-down',20,y+5,12)
     panel('tree_scroll_track',10,549,244,4,'input'); panel('tree_scroll_thumb',12,549,225,4,'scroll')
     button('tab_files','FileSystem',16,563,92,30,'tab'); button('tab_history','History',125,563,70,30)
-    icon('files_dots','dots',265,568)
+    button('files_build_terrain','Terrain',210,563,80,30)
     button('files_back','<',15,603,20); button('files_forward','>',38,603,20)
     node('files_path','TextInput',57,600,190,28,'res://','input'); icon('files_view','file',256,605,18)
     node('file_search','TextInput',10,633,238,28,'','input'); label('file_search_hint','Filter Files',18,636,160,22,'muted'); icon('file_search_icon','search',222,638,17)

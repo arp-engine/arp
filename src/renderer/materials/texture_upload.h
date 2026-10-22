@@ -1,5 +1,5 @@
 #pragma once
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/renderer_result.h"
 #include "rhi/gpu_commands.h"
 #include "rhi/gpu_device.h"

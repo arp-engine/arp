@@ -1,6 +1,6 @@
 #include "assets/ktx2_bc7.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
 #include <cstddef>

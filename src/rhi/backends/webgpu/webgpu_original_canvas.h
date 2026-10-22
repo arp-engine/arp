@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/lifetime_epoch.h"
+#include "core/ownership/lifetime_epoch.h"
 #include "rhi/gpu_resource_types.h"
 #include "rhi/gpu_swapchain.h"
 

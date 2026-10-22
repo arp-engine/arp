@@ -1100,6 +1100,12 @@ private:
         const auto& original = usage(graph);
         const auto& inventory = sources(graph);
         const auto& roots = graph.budget_.bindlessRoots;
+        const auto geometryInputs = graph.visitGeometryAccesses(
+            graph.budget_.geometryUsage, [](const auto&) noexcept -> const char* {
+                return nullptr;
+            });
+        if (geometryInputs.diagnostic)
+            return geometryInputs.diagnostic;
         const auto maxDependencyVisits = roots.directResultCopies.empty()
             ? roots.maxDependencyVisits
             : roots.directResultCopies.maxDependencyVisits;
@@ -1180,16 +1186,22 @@ private:
                     });
                 if (projected.diagnostic)
                     return projected.diagnostic;
-                const auto geometry = graph.visitGeometryAccesses(
-                    graph.budget_.geometryUsage, [&](const auto& point) noexcept -> const char* {
-                        if (const auto* id = charge())
-                            return id;
-                        return point.commandIndex == command && point.drawConsumption()
-                            ? merge(point.resource, point.scope)
-                            : nullptr;
-                    });
-                if (geometry.diagnostic)
-                    return geometry.diagnostic;
+                // Whole-graph validation above already checked every geometry
+                // input. A geometry consumption cannot name a non-draw ordinal;
+                // avoid revalidating the entire snapshot for each such command.
+                if (op.kind == K::Draw || op.kind == K::DrawIndexed
+                    || op.kind == K::DrawIndexedIndirect) {
+                    const auto geometry = graph.visitGeometryAccesses(graph.budget_.geometryUsage,
+                        [&](const auto& point) noexcept -> const char* {
+                            if (const auto* id = charge())
+                                return id;
+                            return point.commandIndex == command && point.drawConsumption()
+                                ? merge(point.resource, point.scope)
+                                : nullptr;
+                        });
+                    if (geometry.diagnostic)
+                        return geometry.diagnostic;
+                }
                 if (roots.contractVersion == 6u) {
                     const auto indirect = OriginalCommandIndirectAccesses::visit(
                         inputs, roots, [&](const auto& point) noexcept -> const char* {
@@ -3525,7 +3537,10 @@ private:
                 originalContentPlanContractVersion(),
                 hasOriginalFiniteGeneralShaderResourceProfile(),
                 hasOriginalBindlessRootShaderResourceProfile()
-                    || (version == 5u && hasOriginalBindlessGraphicsGeometryProfile()),
+                    || ((version == 5u
+                            || (version == 6u
+                                && originalBindlessCompletedReadContractVersion() == 4u))
+                        && hasOriginalBindlessGraphicsGeometryProfile()),
                 plan_ ? plan_->mixedBudget.bindlessCompletedReadContractVersion : 0u))
             return id;
         if (version == 3u) {
@@ -4926,6 +4941,7 @@ private:
             } else if (control->contractVersion()
                 == (root && b.bindlessCompletedReadContractVersion != 1u
                             && b.bindlessCompletedReadContractVersion != 3u
+                            && b.bindlessCompletedReadContractVersion != 4u
                         ? 3u
                         : 1u)) {
                 if (!root && object->desc().mipLevelCount != 2u)

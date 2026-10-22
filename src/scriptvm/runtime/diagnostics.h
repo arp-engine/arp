@@ -3,7 +3,7 @@
 // ArpScript: compile/runtime diagnostics + Result type.
 // Follows the SceneResult pattern (src/scene/diagnostics.h) but adds line/column.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <string_view>
 

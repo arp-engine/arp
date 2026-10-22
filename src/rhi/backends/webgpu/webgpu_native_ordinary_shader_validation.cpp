@@ -1,6 +1,6 @@
 #include "rhi/backends/webgpu/webgpu_native_ordinary_shader_validation.h"
 
-#include "core/external_object_slot.h"
+#include "core/ownership/external_object_slot.h"
 #include "rhi/backends/webgpu/webgpu_native_string_view.h"
 
 namespace arp::rhi_webgpu {

@@ -11,7 +11,7 @@
 //   - Shadow-mapping invariants (same ray → same UV, depth monotonic,
 //     ortho separability, player-following)
 
-#include "core/math.h"
+#include "core/math/math.h"
 #include "renderer/shadow_system.h"
 
 #include <cassert>

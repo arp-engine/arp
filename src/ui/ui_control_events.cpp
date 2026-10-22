@@ -1,5 +1,5 @@
-#include "core/geometry.h"
-#include "core/utf8.h"
+#include "core/math/geometry.h"
+#include "core/text/utf8.h"
 #include "ui/ui.h"
 
 #include <algorithm>

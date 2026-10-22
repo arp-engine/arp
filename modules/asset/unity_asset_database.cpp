@@ -1,6 +1,6 @@
 #include "unity_asset_database.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "unity_asset_database_bridge.h"
 
 #include <algorithm>

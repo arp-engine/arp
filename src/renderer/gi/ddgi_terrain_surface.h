@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "terrain/terrain_surface.h"
+#include "3d/terrain/terrain_surface.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cmath>
 #include <cstdint>

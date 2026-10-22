@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/conformance/original_output.h"
 #include "rhi/semantics/fallback_plan.h"
 

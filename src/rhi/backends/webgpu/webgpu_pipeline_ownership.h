@@ -1,9 +1,9 @@
 #pragma once
 
-#include "core/quota_bound_shared_identity.h"
-#include "core/sha256.h"
-#include "core/shared_owner_projection.h"
-#include "core/versioned_shared_owner.h"
+#include "core/hash/sha256.h"
+#include "core/ownership/quota_bound_shared_identity.h"
+#include "core/ownership/shared_owner_projection.h"
+#include "core/ownership/versioned_shared_owner.h"
 #include "rhi/backends/webgpu/webgpu_native_runtime.h"
 #include "rhi/backends/webgpu/webgpu_original_depth_table_expansion_pipeline_definition.h"
 #include "rhi/frontend/descriptor_set_validation.h"

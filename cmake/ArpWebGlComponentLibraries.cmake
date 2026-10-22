@@ -15,10 +15,10 @@ function(arp_add_webgl_component_libraries)
     set(ARP_THIRD_PARTY_DIR "${arp_component_root}/3rd")
     include("${arp_component_root}/cmake/ArpMimalloc.cmake")
     add_library(arp_core STATIC
-        "${arp_component_root}/src/core/cpu_allocator.cpp"
-        "${arp_component_root}/src/core/file_io.cpp"
-        "${arp_component_root}/src/core/sha256.cpp"
-        "${arp_component_root}/src/core/base64.cpp")
+        "${arp_component_root}/src/core/memory/cpu_allocator.cpp"
+        "${arp_component_root}/src/core/io/file_io.cpp"
+        "${arp_component_root}/src/core/hash/sha256.cpp"
+        "${arp_component_root}/src/core/encoding/base64.cpp")
     target_include_directories(arp_core PUBLIC "${arp_component_root}/src")
     target_link_libraries(arp_core PUBLIC arp_mimalloc)
     target_compile_features(arp_core PUBLIC cxx_std_17)
@@ -54,11 +54,11 @@ function(arp_add_webgl_component_libraries)
         "${arp_component_root}/src/renderer/render_graph/frame_graph_uniform_ring_buffer.cpp"
         "${arp_component_root}/src/renderer/render_graph/render_graph.cpp"
         "${arp_component_root}/src/renderer/render_graph/transient_resource_allocator.cpp"
-        "${arp_component_root}/src/platform/render_system_ordered_graphics.cpp")
+        "${arp_component_root}/src/platform/common/render_system_ordered_graphics.cpp")
     target_link_libraries(arp_ordered_graphics PUBLIC arp_rhi)
     target_link_libraries(arp_rhi_webgl PUBLIC arp_ordered_graphics)
     add_library(arp_platform STATIC
-        "${arp_component_root}/src/platform/render_system_webgl.cpp")
+        "${arp_component_root}/src/platform/web/render_system_webgl.cpp")
     target_link_libraries(arp_platform PUBLIC arp_rhi_webgl arp_ordered_graphics)
     include("${arp_component_root}/cmake/ArpReflectionLibrary.cmake")
     arp_add_reflection_library(arp_reflection arp_core arp_fkyaml_headers)

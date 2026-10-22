@@ -1,7 +1,7 @@
 #pragma once
 
+#include "core/ownership/shared_allocation_projection.h"
 #include "core/runtime/completion_evidence_batch.h"
-#include "core/shared_allocation_projection.h"
 #include "rhi/frontend/bindless_root_completion_profile.h"
 #include "rhi/frontend/command_model.h"
 #include "rhi/frontend/command_state.h"

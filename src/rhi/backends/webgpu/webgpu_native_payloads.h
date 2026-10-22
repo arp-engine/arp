@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/atomic_capacity.h"
+#include "core/memory/atomic_capacity.h"
 #include "rhi/backends/webgpu/webgpu_native_runtime.h"
 #include "rhi/backends/webgpu/webgpu_original_canvas.h"
 #include "rhi/frontend/resource_state_control.h"
@@ -232,6 +232,8 @@ public:
     // wgpuTextureDestroy on them before the next animation-frame tick drops
     // the canvas frame instead of presenting it.
     bool browserSurfaceTexture = false;
+    std::uint32_t acquiredExecutionTurn = 0;
+    bool acquiredImageValid = false;
     WGPUTextureFormat format = WGPUTextureFormat_Undefined;
     WGPUTextureDimension dimension = WGPUTextureDimension_2D;
     rhi::TextureFormat rhiFormat = rhi::TextureFormat::Unknown;

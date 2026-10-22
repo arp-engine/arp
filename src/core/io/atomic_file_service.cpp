@@ -1,7 +1,7 @@
 #include "core/io/atomic_file_service.h"
 
-#include "core/file_io.h"
-#include "core/monotonic_id_sequence.h"
+#include "core/io/file_io.h"
+#include "core/ownership/monotonic_id_sequence.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -106,6 +106,14 @@ bool atomicReplace(
     return true;
 }
 } // namespace
+
+AtomicFileResult replaceFileAtomically(
+    const pmr::String& path, const pmr::Vector<std::uint8_t>& bytes)
+{
+    AtomicFileResult result;
+    result.success = atomicReplace(path, bytes, result);
+    return result;
+}
 
 AtomicFileService::AtomicFileService(std::uint32_t capacity, std::size_t maxBytes)
     : maxBytes_(maxBytes), requests_(capacity), completions_({capacity}),

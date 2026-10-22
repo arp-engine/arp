@@ -1,7 +1,7 @@
 #include "editor/ui/editor_ui_assets.h"
 
 #include "assets/image_decoder.h"
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "editor/ui/editor_atlas_layout.h"
 #include "editor/workspace/editor_shell.h"
 #include "ui/ui_font.h"

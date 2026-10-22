@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "platform/render_system.h"
 #include "samples/scene_runtime_demo/scene_runtime_demo.h"
 

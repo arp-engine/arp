@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
-#include "core/shared_owner_projection.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/conformance/clear_execution.h"
 #include "rhi/conformance/sampled_execution.h"
 #include "rhi/conformance/storage_mrt_execution.h"
@@ -58,6 +58,11 @@ struct QueueSubmitResult {
 /// The upper layer can poll isSignaled() (non-blocking, hot-path) or wait()
 /// (blocking, shutdown/drain only). The fence does not expose native handles;
 /// backend implementations own the native object internally.
+/// wait() returns normally only on successful completion. A failed/lost or
+/// unsubmitted command-owned completion rejects with core::DiagnosticError;
+/// reporting a diagnostic and returning as if drained is forbidden. Immutable
+/// command-owned fences reject signal/reset; generic fence creation capability
+/// is independent of this command-scoped completion contract.
 class ARP_API GpuFence {
 public:
     virtual ~GpuFence() = default;
@@ -586,6 +591,10 @@ public:
     virtual arp::core::UniquePtr<RenderBundleEncoder> createRenderBundleEncoder(
         const RenderBundleDesc& desc) = 0;
     virtual arp::core::UniquePtr<Swapchain> createSwapchain(const SwapchainDesc& desc) = 0;
+    // Standalone submission completion. NativeSync includes binary semaphore
+    // ordering and is intentionally broader than this factory. Return a genuine
+    // queue-bound native completion (Null: validator only), or null/diagnostic.
+    // Availability is independent of CommandBuffer::ownedSubmissionFence().
     virtual arp::core::UniquePtr<GpuFence> createFence() = 0;
     virtual arp::core::UniquePtr<GpuSemaphore> createSemaphore() = 0;
     virtual arp::core::UniquePtr<GpuTimelineSemaphore> createTimelineSemaphore(

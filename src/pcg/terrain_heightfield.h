@@ -31,9 +31,9 @@
 //     is stored as a displacement grid and bilinearly interpolated at runtime,
 //     overlaying realistic weathering without changing the analytic base.
 
-#include "core/cpu_allocator.h"
-#include "core/deterministic_hash.h"
-#include "core/math.h"
+#include "core/hash/deterministic_hash.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 #include "pcg/simplex_noise.h"    // Phase 1: replaces fbm2 in TerrainNoiseLayer
 #include "pcg/terrain_landform.h" // P2: landform stamp composition
 
@@ -519,7 +519,7 @@ struct TerrainHeightField {
     ///
     /// Approximates the reference world.ts baseHeight() composition: a broad
     /// fbm2 "hill" layer plus a finer fbm2 "detail" layer, both centered on
-    /// `baseHeight`. Because every layer samples core/deterministic_hash.h
+    /// `baseHeight`. Because every layer samples core/hash/deterministic_hash.h
     /// fbm2(seed), the same `seed` reproduces the same terrain and a different
     /// `seed` reshapes it — this is the engine's single world-seed entry point
     /// for terrain. The producing MeshAssetResource samples this same instance

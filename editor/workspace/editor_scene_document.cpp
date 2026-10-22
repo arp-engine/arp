@@ -1,8 +1,8 @@
 #include "editor/workspace/editor_scene_document.h"
 
+#include "2d/physics_components.h"
 #include "3d/components.h"
 #include "editor/workspace/editor_scene_component_registry.h"
-#include "physics2d/components.h"
 #include "reflection/reflection.h"
 #include "scene/camera.h"
 #include "scene/scene_asset_resource.h"
@@ -36,37 +36,14 @@ bool isEditorEnumOption(std::string_view name)
     return name != "Count";
 }
 
-bool parseResourceReferenceMetadata(
-    std::string_view metadata, std::string_view& resourceType, bool& optional)
+bool referenceMetadata(
+    const property& value, reflection::ReferenceKind kind, std::string_view& target, bool& optional)
 {
-    constexpr std::string_view prefix = "resource:";
-    if (metadata.size() <= prefix.size() || metadata.compare(0, prefix.size(), prefix) != 0)
+    const auto& metadata = value.reference();
+    if (metadata.kind != kind || metadata.targetType.empty())
         return false;
-    const auto separator = metadata.find(':', prefix.size());
-    if (separator == std::string_view::npos || separator == prefix.size())
-        return false;
-    const auto requirement = metadata.substr(separator + 1u);
-    if (requirement != "optional" && requirement != "required")
-        return false;
-    resourceType = metadata.substr(prefix.size(), separator - prefix.size());
-    optional = requirement == "optional";
-    return true;
-}
-
-bool parseSceneObjectReferenceMetadata(
-    std::string_view metadata, std::string_view& componentType, bool& optional)
-{
-    constexpr std::string_view prefix = "sceneObject:";
-    if (metadata.size() <= prefix.size() || metadata.compare(0, prefix.size(), prefix) != 0)
-        return false;
-    const auto separator = metadata.find(':', prefix.size());
-    if (separator == std::string_view::npos || separator == prefix.size())
-        return false;
-    const auto requirement = metadata.substr(separator + 1u);
-    if (requirement != "optional" && requirement != "required")
-        return false;
-    componentType = metadata.substr(prefix.size(), separator - prefix.size());
-    optional = requirement == "optional";
+    target = std::string_view(metadata.targetType.data(), metadata.targetType.size());
+    optional = !metadata.required;
     return true;
 }
 
@@ -105,9 +82,8 @@ void appendReflectedProperties(core::pmr::Vector<SceneInspectorProperty>& result
             qualifiedName.push_back('.');
         qualifiedName += entry.first;
         if (reflectedProperty.type() && reflectedProperty.type()->is_class() && value.class_()
-            && !value.is_native_reference() && !value.is<core::Vec3>()
-            && !value.is<core::Vec2>() && !value.is<core::Vec4>()
-            && !value.is<core::pmr::String>()
+            && !value.is_native_reference() && !value.is<core::Vec3>() && !value.is<core::Vec2>()
+            && !value.is<core::Vec4>() && !value.is<core::pmr::String>()
             && !value.is<core::pmr::Vector<core::Vec2>>()
             && !value.is<core::pmr::Vector<scene::ObjectLinksEditorEntry>>()) {
             appendReflectedProperties(
@@ -116,6 +92,8 @@ void appendReflectedProperties(core::pmr::Vector<SceneInspectorProperty>& result
         }
 
         SceneInspectorProperty item;
+        item.serializable =
+            reflectedProperty.check_hints(static_cast<std::uint8_t>(PropertyHint::Serialize));
         item.objectId = objectId;
         item.componentId = component.id().value();
         item.componentType = component.scriptTypeName();
@@ -134,28 +112,32 @@ void appendReflectedProperties(core::pmr::Vector<SceneInspectorProperty>& result
             const std::string_view metadata(
                 reflectedProperty.doc().data(), reflectedProperty.doc().size());
             std::string_view targetComponentType;
-            if (parseSceneObjectReferenceMetadata(
-                    metadata, targetComponentType, item.resourceOptional)) {
+            if (referenceMetadata(reflectedProperty,
+                    reflection::ReferenceKind::SceneObject,
+                    targetComponentType,
+                    item.resourceOptional)) {
                 item.kind = SceneInspectorPropertyKind::SceneObjectReference;
                 item.sceneObjectType = targetComponentType;
                 item.sceneObjectReferenceValue = value.cast<std::uint64_t>();
             } else {
-                item.kind = SceneInspectorPropertyKind::Unsupported;
+                item.kind = SceneInspectorPropertyKind::UnsignedInteger;
+                item.unsignedIntegerValue = value.cast<std::uint64_t>();
             }
         } else if (value.is<int>()) {
             item.kind = SceneInspectorPropertyKind::Integer;
             item.integerValue = value.cast<int>();
-        } else if (value.is<float>()) {
+        } else if (value.is<float>() || value.is<double>()) {
             item.kind = SceneInspectorPropertyKind::Number;
-            item.numberValue = value.cast<float>();
+            item.numberValue = value.is<float>() ? value.cast<float>() : value.cast<double>();
         } else if (value.is<core::pmr::String>()
-            && std::string_view(reflectedProperty.doc().data(), reflectedProperty.doc().size())
-                    .compare(0, 9u, "resource:")
-                == 0) {
+            && reflectedProperty.reference().kind == reflection::ReferenceKind::Resource) {
             const std::string_view metadata(
                 reflectedProperty.doc().data(), reflectedProperty.doc().size());
             std::string_view resourceType;
-            if (!parseResourceReferenceMetadata(metadata, resourceType, item.resourceOptional)) {
+            if (!referenceMetadata(reflectedProperty,
+                    reflection::ReferenceKind::Resource,
+                    resourceType,
+                    item.resourceOptional)) {
                 item.kind = SceneInspectorPropertyKind::Unsupported;
                 item.resourceDiagnostic = "EDITOR-RESOURCE-REFERENCE-METADATA-INVALID";
             } else {
@@ -208,8 +190,8 @@ void appendReflectedProperties(core::pmr::Vector<SceneInspectorProperty>& result
                 reflectedProperty.doc().data(), reflectedProperty.doc().size());
             if (metadata == "sceneObjectLinkList") {
                 item.kind = SceneInspectorPropertyKind::SceneObjectLinkList;
-                const auto& links = value.cast<
-                    const core::pmr::Vector<scene::ObjectLinksEditorEntry>&>();
+                const auto& links =
+                    value.cast<const core::pmr::Vector<scene::ObjectLinksEditorEntry>&>();
                 item.sceneObjectLinkListValue.reserve(links.size());
                 for (const auto& link : links) {
                     item.sceneObjectLinkListValue.emplace_back();
@@ -246,8 +228,8 @@ SceneInspectorWriteResult writeReflectedObjectProperty(const scene::Component& c
     SceneInspectorPropertyKind valueKind,
     bool booleanValue,
     int integerValue,
-    std::uint32_t unsignedIntegerValue,
-    float numberValue,
+    std::uint64_t unsignedIntegerValue,
+    double numberValue,
     core::Vec3 vector3Value,
     core::Vec4 color4Value,
     std::string_view stringValue,
@@ -276,7 +258,8 @@ SceneInspectorWriteResult writeReflectedObjectProperty(const scene::Component& c
             || !currentValue.class_() || currentValue.is_native_reference())
             return SceneInspectorWriteResult::Rejected;
         object nestedDescriptor = currentValue;
-        const auto nestedResult = writeReflectedObjectProperty(component, nestedDescriptor,
+        const auto nestedResult = writeReflectedObjectProperty(component,
+            nestedDescriptor,
             propertyName.substr(separator + 1),
             valueKind,
             booleanValue,
@@ -308,13 +291,20 @@ SceneInspectorWriteResult writeReflectedObjectProperty(const scene::Component& c
         && currentValue.is<std::uint32_t>()) {
         if (currentValue.cast<std::uint32_t>() == unsignedIntegerValue)
             return SceneInspectorWriteResult::Unchanged;
+        if (unsignedIntegerValue > UINT32_MAX)
+            return SceneInspectorWriteResult::Rejected;
+        newValue = object(static_cast<std::uint32_t>(unsignedIntegerValue));
+    } else if (valueKind == SceneInspectorPropertyKind::UnsignedInteger
+        && currentValue.is<std::uint64_t>()) {
+        if (currentValue.cast<std::uint64_t>() == unsignedIntegerValue)
+            return SceneInspectorWriteResult::Unchanged;
         newValue = object(unsignedIntegerValue);
     } else if (valueKind == SceneInspectorPropertyKind::SceneObjectReference
         && currentValue.is<std::uint64_t>()) {
         std::string_view targetComponentType;
         bool optional = false;
-        if (!parseSceneObjectReferenceMetadata(
-                std::string_view(reflectedProperty.doc().data(), reflectedProperty.doc().size()),
+        if (!referenceMetadata(reflectedProperty,
+                reflection::ReferenceKind::SceneObject,
                 targetComponentType,
                 optional))
             return SceneInspectorWriteResult::Rejected;
@@ -323,13 +313,15 @@ SceneInspectorWriteResult writeReflectedObjectProperty(const scene::Component& c
         } else {
             const auto* owner = component.gameObject();
             const auto* scene = owner ? owner->scene() : nullptr;
-            const auto* target = scene ? scene->findObject(
-                                           scene::GameObjectId::fromValue(
-                                               sceneObjectReferenceValue))
-                                       : nullptr;
-            if (!target || std::none_of(target->components().begin(),
-                    target->components().end(), [&](const auto& candidate) {
-                        return targetComponentType == candidate->scriptTypeName();
+            const auto* target = scene
+                ? scene->findObject(scene::GameObjectId::fromValue(sceneObjectReferenceValue))
+                : nullptr;
+            if (!target
+                || std::none_of(target->components().begin(),
+                    target->components().end(),
+                    [&](const auto& candidate) {
+                        return targetComponentType == "*"
+                            || targetComponentType == candidate->scriptTypeName();
                     }))
                 return SceneInspectorWriteResult::Rejected;
         }
@@ -339,6 +331,13 @@ SceneInspectorWriteResult writeReflectedObjectProperty(const scene::Component& c
     } else if (valueKind == SceneInspectorPropertyKind::Number && currentValue.is<float>()
         && std::isfinite(numberValue)) {
         if (currentValue.cast<float>() == numberValue)
+            return SceneInspectorWriteResult::Unchanged;
+        if (std::abs(numberValue) > std::numeric_limits<float>::max())
+            return SceneInspectorWriteResult::Rejected;
+        newValue = object(static_cast<float>(numberValue));
+    } else if (valueKind == SceneInspectorPropertyKind::Number && currentValue.is<double>()
+        && std::isfinite(numberValue)) {
+        if (currentValue.cast<double>() == numberValue)
             return SceneInspectorWriteResult::Unchanged;
         newValue = object(numberValue);
     } else if (valueKind == SceneInspectorPropertyKind::Enumeration && reflectedProperty.type()
@@ -378,9 +377,10 @@ SceneInspectorWriteResult writeReflectedObjectProperty(const scene::Component& c
                 return SceneInspectorWriteResult::Rejected;
         const auto& current = currentValue.cast<const core::pmr::Vector<core::Vec2>&>();
         if (current.size() == vector2ListValue.size()
-            && std::equal(current.begin(), current.end(), vector2ListValue.begin(), [](auto a, auto b) {
-                   return a.x == b.x && a.y == b.y;
-               }))
+            && std::equal(
+                current.begin(), current.end(), vector2ListValue.begin(), [](auto a, auto b) {
+                    return a.x == b.x && a.y == b.y;
+                }))
             return SceneInspectorWriteResult::Unchanged;
         core::pmr::Vector<core::Vec2> prepared(&core::defaultCpuMemoryResource());
         prepared.assign(vector2ListValue.begin(), vector2ListValue.end());
@@ -407,13 +407,15 @@ SceneInspectorWriteResult writeReflectedObjectProperty(const scene::Component& c
             entry.targetObjectId = link.targetObjectId;
             prepared.push_back(std::move(entry));
         }
-        const auto& current = currentValue.cast<
-            const core::pmr::Vector<scene::ObjectLinksEditorEntry>&>();
+        const auto& current =
+            currentValue.cast<const core::pmr::Vector<scene::ObjectLinksEditorEntry>&>();
         if (current.size() == prepared.size()
-            && std::equal(current.begin(), current.end(), prepared.begin(), [](const auto& lhs,
-                   const auto& rhs) {
-                   return lhs.name == rhs.name && lhs.targetObjectId == rhs.targetObjectId;
-               }))
+            && std::equal(current.begin(),
+                current.end(),
+                prepared.begin(),
+                [](const auto& lhs, const auto& rhs) {
+                    return lhs.name == rhs.name && lhs.targetObjectId == rhs.targetObjectId;
+                }))
             return SceneInspectorWriteResult::Unchanged;
         newValue = object(std::move(prepared));
     } else if (valueKind == SceneInspectorPropertyKind::Vector3 && currentValue.is<core::Vec3>()) {
@@ -425,16 +427,15 @@ SceneInspectorWriteResult writeReflectedObjectProperty(const scene::Component& c
             && current.z == vector3Value.z)
             return SceneInspectorWriteResult::Unchanged;
         newValue = object(vector3Value);
-    } else if (valueKind == SceneInspectorPropertyKind::Color4
-        && currentValue.is<core::Vec4>()
+    } else if (valueKind == SceneInspectorPropertyKind::Color4 && currentValue.is<core::Vec4>()
         && std::string_view(reflectedProperty.doc().data(), reflectedProperty.doc().size())
             == "color:rgba") {
         const auto current = currentValue.cast<core::Vec4>();
         if (!std::isfinite(color4Value.x) || !std::isfinite(color4Value.y)
             || !std::isfinite(color4Value.z) || !std::isfinite(color4Value.w))
             return SceneInspectorWriteResult::Rejected;
-        if (current.x == color4Value.x && current.y == color4Value.y
-            && current.z == color4Value.z && current.w == color4Value.w)
+        if (current.x == color4Value.x && current.y == color4Value.y && current.z == color4Value.z
+            && current.w == color4Value.w)
             return SceneInspectorWriteResult::Unchanged;
         newValue = object(color4Value);
     } else if ((valueKind == SceneInspectorPropertyKind::String
@@ -443,10 +444,8 @@ SceneInspectorWriteResult writeReflectedObjectProperty(const scene::Component& c
         if (valueKind == SceneInspectorPropertyKind::ResourceReference) {
             std::string_view resourceType;
             bool optional = false;
-            if (!parseResourceReferenceMetadata(std::string_view(reflectedProperty.doc().data(),
-                                                    reflectedProperty.doc().size()),
-                    resourceType,
-                    optional))
+            if (!referenceMetadata(
+                    reflectedProperty, reflection::ReferenceKind::Resource, resourceType, optional))
                 return SceneInspectorWriteResult::Rejected;
         }
         const auto& current = currentValue.cast<const core::pmr::String&>();
@@ -593,8 +592,9 @@ bool EditorSceneDocument::destroySelected()
     for (const auto& object : scene_->objects()) {
         for (const auto& component : object->components()) {
             const auto* joint = dynamic_cast<const physics2d::Joint2DComponent*>(component.get());
-            if (joint && (joint->bodyAObjectId() == selectedObject_.value()
-                             || joint->bodyBObjectId() == selectedObject_.value()))
+            if (joint
+                && (joint->bodyAObjectId() == selectedObject_.value()
+                    || joint->bodyBObjectId() == selectedObject_.value()))
                 return false;
         }
     }
@@ -661,8 +661,9 @@ bool EditorSceneDocument::removeComponent(
             for (const auto& component : sceneObject->components()) {
                 const auto* joint =
                     dynamic_cast<const physics2d::Joint2DComponent*>(component.get());
-                if (joint && (joint->bodyAObjectId() == objectId.value()
-                                 || joint->bodyBObjectId() == objectId.value()))
+                if (joint
+                    && (joint->bodyAObjectId() == objectId.value()
+                        || joint->bodyBObjectId() == objectId.value()))
                     return false;
             }
         }
@@ -727,8 +728,8 @@ SceneInspectorWriteResult EditorSceneDocument::setComponentProperty(scene::GameO
     SceneInspectorPropertyKind valueKind,
     bool booleanValue,
     int integerValue,
-    std::uint32_t unsignedIntegerValue,
-    float numberValue,
+    std::uint64_t unsignedIntegerValue,
+    double numberValue,
     core::Vec3 vector3Value,
     core::Vec4 color4Value,
     std::string_view stringValue,
@@ -746,7 +747,8 @@ SceneInspectorWriteResult EditorSceneDocument::setComponentProperty(scene::GameO
     if (std::string_view(component->scriptTypeName()) == "TransformComponent")
         return SceneInspectorWriteResult::Rejected;
     auto commonProperties = component->editorProperties();
-    const auto componentWrite = writeReflectedObjectProperty(*component, commonProperties,
+    const auto componentWrite = writeReflectedObjectProperty(*component,
+        commonProperties,
         propertyName,
         valueKind,
         booleanValue,
@@ -767,7 +769,8 @@ SceneInspectorWriteResult EditorSceneDocument::setComponentProperty(scene::GameO
         return componentWrite;
     }
     auto reflectedComponent = component->nativeReflectionObject();
-    const auto reflectedWrite = writeReflectedObjectProperty(*component, reflectedComponent,
+    const auto reflectedWrite = writeReflectedObjectProperty(*component,
+        reflectedComponent,
         propertyName,
         valueKind,
         booleanValue,
@@ -784,7 +787,8 @@ SceneInspectorWriteResult EditorSceneDocument::setComponentProperty(scene::GameO
     if (reflectedWrite != SceneInspectorWriteResult::Rejected)
         return reflectedWrite;
     auto authoringProperties = component->editorAuthoringProperties();
-    const auto authoringWrite = writeReflectedObjectProperty(*component, authoringProperties,
+    const auto authoringWrite = writeReflectedObjectProperty(*component,
+        authoringProperties,
         propertyName,
         valueKind,
         booleanValue,

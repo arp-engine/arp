@@ -34,7 +34,7 @@
 // gated; Apple runtime validation remains unavailable here. WebGPU native path
 // is core but not exercised on this Windows MinGW build.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/gpu_commands.h"
 #include "rhi/semantics/native_backend_capabilities.h"

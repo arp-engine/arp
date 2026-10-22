@@ -1,4 +1,5 @@
-#include "scene/script_component_codec.h"
+#include "scene/scene_asset_resource.h"
+#include "scene/script_component_persistence.h"
 #include "tests/fixtures/script_component_fixture.h"
 
 #include <cassert>
@@ -146,8 +147,8 @@ int main(int argc, char** argv)
             target.transform().nativeReflectionObject();
         assert(target.transform().nativeReflectionObject().can_safe_cast<scene::Component*>());
         assert(!target.transform().nativeReflectionObject().can_safe_cast<scene::GameObject*>());
-        scene::SceneCodecRegistry codecs;
-        assert(codecs.add(core::makeUnique<ScriptComponentCodec>(shared, 1024, 8)));
+        scene::SceneComponentFactory codecs;
+        assert(registerScriptComponentPersistence(codecs, shared));
         core::pmr::String yaml, diagnostic;
         const core::pmr::String id = "00000000-0000-4000-8000-000000000091";
         const bool encoded = scene::SceneDocumentResource::encode(
@@ -196,6 +197,34 @@ int main(int argc, char** argv)
         assert(yaml == roundtrip);
         restored.reset();
         assert(module.liveInstances() == 2);
+        {
+            scene::Scene untouched;
+            scene::SceneComponentFactory failing;
+            auto binding = *codecs.persistence("arp.script-component/1");
+            int publications = 0;
+            binding.publish = [shared, &publications](scene::Component& component) {
+                return ++publications == 1 && shared->bind(*component.gameObject()->scene());
+            };
+            assert(failing.addPersistence(std::move(binding)));
+            assert(!document.get()
+                    ->instantiateInto(untouched, untouched.rootId(), resources, failing, diagnostic)
+                    .valid());
+            assert(publications == 2 && untouched.objects().empty() && module.liveInstances() == 2);
+            auto& probe = untouched.createObject("rollback-probe");
+            assert(probe.id().value() == 2 && probe.transform().id().value() == 2);
+            assert(probe.add_component("Counter").is_undefined());
+            assert(module.session().call("constructor_count", {}, countAfter));
+            assert(countBefore.cast<int>() == countAfter.cast<int>());
+        }
+        {
+            scene::SceneComponentFactory cyclic;
+            auto binding = *codecs.persistence("arp.script-component/1");
+            binding.after.push_back("arp.script-component/1");
+            assert(cyclic.addPersistence(std::move(binding)));
+            assert(!document.get()->instantiate(resources, cyclic, diagnostic));
+            assert(diagnostic == "ARP-SCENE-INITIALIZATION-DEPENDENCY-CYCLE");
+            assert(module.liveInstances() == 2);
+        }
         assert(resources.unload(id).success);
         auto malformed = core::YamlContract::Node::deserialize(yaml);
         malformed["objects"][1]["components"][0]["fields"]["other"]["object"] = 999;
@@ -209,7 +238,7 @@ int main(int argc, char** argv)
                 .valid());
         assert(authored.objects().size() == before && module.liveInstances() == 2);
         assert(resources.unload(id).success);
-        malformed["objects"][1]["components"][0]["schemaVersion"] = 2;
+        malformed["objects"][1]["components"][0]["configuration"]["moduleSchemaVersion"] = 2;
         text = core::YamlContract::Node::serialize(malformed);
         write(core::pmr::String(text.c_str()));
         assert(load());

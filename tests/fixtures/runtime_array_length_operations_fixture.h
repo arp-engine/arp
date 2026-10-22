@@ -1,5 +1,5 @@
 #pragma once
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "cpu_quota_factory_fixture.h"
 #include "shader/runtime_array_length_operations.h"
 #include "shader/shader_artifact_files.h"

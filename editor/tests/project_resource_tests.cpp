@@ -1,7 +1,9 @@
 #include "3d/animator_component.h"
 #include "editor/workspace/editor_project_resources.h"
+#include "editor/workspace/editor_terrain_build.h"
 #include "resource/internal_asset_package.h"
 #include "resource/prefab_asset_resources.h"
+#include "resource/terrain_asset_resource.h"
 
 #include <cassert>
 #include <chrono>
@@ -9,6 +11,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <thread>
 
 namespace {
 std::filesystem::path makeRoot()
@@ -56,6 +59,68 @@ int main()
     using namespace arp;
     const auto root = makeRoot();
     {
+        const auto terrainRoot = root / "terrain";
+        std::filesystem::create_directory(terrainRoot);
+        const auto fixture =
+            std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()
+            / "tests/fixtures/terrain";
+        std::filesystem::copy_file(fixture / "editor-hill.terrain.yaml", terrainRoot / "hill.yaml");
+        std::filesystem::copy_file(fixture / "editor-hill.r32", terrainRoot / "editor-hill.r32");
+        editor::EditorTerrainBuild build;
+        const auto wait = [&] {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (!build.ready() && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::yield();
+            assert(build.ready());
+        };
+        assert(!build.start(terrainRoot, "../hill.yaml", "escape.arpkg"));
+        assert(build.start(terrainRoot, "hill.yaml", "hill.arpkg"));
+        assert(!build.start(terrainRoot, "hill.yaml", "parallel.arpkg"));
+        wait();
+        auto completed = build.finish(terrainRoot);
+        assert(completed.success && completed.resources);
+        constexpr auto id = "3f6fbcca-17d2-46a6-9817-2af357399301";
+        assert(completed.resources->manager().find<resource::TerrainAssetResource>(id).ready());
+        editor::EditorProjectResources reopened;
+        assert(reopened.load(terrainRoot).success);
+        assert(reopened.manager().find<resource::TerrainAssetResource>(id).ready());
+        assert(build.start(terrainRoot, "hill.yaml", "hill.arpkg"));
+        wait();
+        assert(!build.finish(terrainRoot).success);
+        assert(reopened.manager().find<resource::TerrainAssetResource>(id).ready());
+
+        const auto conflictRoot = root / "terrain-conflict";
+        std::filesystem::create_directory(conflictRoot);
+        std::filesystem::copy_file(
+            fixture / "editor-hill.terrain.yaml", conflictRoot / "hill.yaml");
+        std::filesystem::copy_file(fixture / "editor-hill.r32", conflictRoot / "editor-hill.r32");
+        assert(build.start(conflictRoot, "hill.yaml", "hill.arpkg"));
+        wait();
+        writeManifest(conflictRoot, "format: ArpEditorProject\nversion: 1\nassetPackages: []\n");
+        auto conflict = build.finish(conflictRoot);
+        assert(!conflict.success && conflict.diagnostic == "EDITOR-TERRAIN-MANIFEST-CONFLICT");
+        assert(!std::filesystem::exists(conflictRoot / "hill.arpkg"));
+        assert(reopened.load(conflictRoot).success && reopened.lastLoad().packageCount == 0u);
+
+        const auto invalidRoot = root / "terrain-invalid";
+        std::filesystem::create_directory(invalidRoot);
+        std::ofstream(invalidRoot / "bad.yaml") << "type: unsupported\n";
+        assert(build.start(invalidRoot, "bad.yaml", "bad.arpkg"));
+        wait();
+        assert(!build.finish(invalidRoot).success);
+        assert(build.start(terrainRoot, "hill.yaml", "stale.arpkg", std::string_view{}));
+        wait();
+        const auto staleProject = build.finish(terrainRoot);
+        assert(!staleProject.success
+            && staleProject.diagnostic == "EDITOR-TERRAIN-PROJECT-RELOAD-REQUIRED");
+        assert(!std::filesystem::exists(terrainRoot / "stale.arpkg"));
+        assert(!std::filesystem::exists(invalidRoot / "project.arp.yaml"));
+        assert(!std::filesystem::exists(invalidRoot / "bad.arpkg"));
+        assert(build.start(invalidRoot, "bad.yaml", "bad.arpkg"));
+        wait();
+        assert(!build.finish(invalidRoot).success);
+    }
+    {
         editor::EditorProjectResources resources;
 
         const auto missing = resources.load(root);
@@ -77,6 +142,12 @@ int main()
         const auto physicsOwner = resources.physicsWorld2D();
         assert(configuredPhysics.success && configuredPhysics.physicsWorld2DReady);
         assert(physicsOwner && physicsOwner->valid());
+        editor::EditorProjectResources packageCandidate;
+        assert(packageCandidate.load(root).success);
+        resources.publishAssetPackages(std::move(packageCandidate));
+        assert(
+            resources.physicsWorld2D() == physicsOwner && resources.lastLoad().physicsWorld2DReady);
+        assert(!resources.manifestSnapshot().empty());
 
         writeManifest(root,
             "format: ArpEditorProject\nversion: 1\nassetPackages: []\nphysics2d:\n"
@@ -225,8 +296,9 @@ int main()
         animatedDesc.importedCharacter = &imported;
         const auto animatedPackage = resource::PrefabAssetGraphBuilder().buildPackage(animatedDesc);
         assert(animatedPackage.success);
-        assert(resource::InternalAssetPackageWriter().write(
-            animatedPackage.package, packageRoot).success);
+        assert(resource::InternalAssetPackageWriter()
+                .write(animatedPackage.package, packageRoot)
+                .success);
         writeManifest(animatorRoot,
             "format: ArpEditorProject\nversion: 1\nassetPackages:\n  - Assets/Animated.arpkg\n");
         editor::EditorProjectResources animatorResources;
@@ -234,13 +306,15 @@ int main()
         assert(loaded.success && loaded.packageCount == 1u);
         const auto prefab = animatorResources.manager().find<resource::PrefabResource>(
             animatedPackage.ids.prefabId);
-        const auto runtime = animatorResources.manager().find<resource::PrefabRuntimePayloadResource>(
-            animatedPackage.ids.runtimePayloadId);
+        const auto runtime =
+            animatorResources.manager().find<resource::PrefabRuntimePayloadResource>(
+                animatedPackage.ids.runtimePayloadId);
         assert(prefab.ready() && runtime.ready() && runtime.get()->runtimeAsset
             && runtime.get()->controllerAsset);
 
-        core::SharedCallback<resource::ResourceManager*()> provider(
-            [&animatorResources] { return &animatorResources.manager(); });
+        core::SharedCallback<resource::ResourceManager*()> provider([&animatorResources] {
+            return &animatorResources.manager();
+        });
         scene3d::AnimatorComponent animator(scene3d::AnimatorComponentDesc{}, provider);
         scene3d::AnimatorEditorProperties properties;
         properties.prefabResourceId = animatedPackage.ids.prefabId;

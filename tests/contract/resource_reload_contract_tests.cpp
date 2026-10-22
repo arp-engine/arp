@@ -1,5 +1,5 @@
-#include "core/cpu_allocator.h"
-#include "core/stable_hash.h"
+#include "core/hash/stable_hash.h"
+#include "core/memory/cpu_allocator.h"
 #include "resource/resource_manager.h"
 
 #include <cassert>

@@ -1,6 +1,6 @@
 #pragma once
 #include "assets/image_decoder.h"
-#include "core/math.h"
+#include "core/math/math.h"
 #include "resource/resource_manager.h"
 
 namespace arp::scene2d {
@@ -92,7 +92,9 @@ public:
         resource::ResourceManager&, const resource::ResourceLoadContext&) override;
 
     const SpriteFontResourceDesc& desc() const { return desc_; }
+
     std::uint32_t maxTextBytes() const { return desc_.maxTextBytes; }
+
     const core::pmr::Vector<SpriteFontGlyph>& resolvedGlyphs() const { return resolvedGlyphs_; }
 
 private:

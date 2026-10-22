@@ -1,8 +1,8 @@
 #pragma once
 #include "3d/bvh.h"
-#include "core/ibl_bake.h"
-#include "core/ray_geometry.h"
+#include "core/math/ray_geometry.h"
 #include "renderer/gi/ddgi_renderer.h"
+#include "renderer/gi/ibl_bake.h"
 
 namespace arp::renderer {
 // StaticSceneRadiance/1: initialization/offline only, real textured triangle

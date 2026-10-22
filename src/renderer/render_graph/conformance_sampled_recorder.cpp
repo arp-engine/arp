@@ -1,6 +1,6 @@
 #include "renderer/render_graph/conformance_sampled_recorder.h"
 
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "rhi/conformance/sampled_pipeline.h"
 #include "rhi/gpu_device.h"
 

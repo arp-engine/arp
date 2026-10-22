@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "network/endpoint.h"
 #include "network/http/client.h"
 #include "network/io_context.h"

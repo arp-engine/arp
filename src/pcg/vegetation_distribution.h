@@ -33,8 +33,8 @@
 // Plan reference: Track C P1 - Poisson cluster scatter + species palette.
 // Status gate: Prototype Complete (verified by vegetation_distribution_tests).
 
-#include "core/deterministic_hash.h"
-#include "core/math.h"
+#include "core/hash/deterministic_hash.h"
+#include "core/math/math.h"
 #include "pcg/biome_weights.h"
 #include "pcg/poisson_scatter.h"
 #include "pcg/terrain_fields.h"

@@ -4,7 +4,7 @@
 #include "../fixtures/original_command_sampler_custody_fixture.h"
 #include "../fixtures/original_heap_registration_fixture.h"
 #include "../fixtures/original_texture_state_fixture.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/metal/metal_allocator.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_binding_validation.h"

@@ -1,4 +1,4 @@
-#include "core/string_utils.h"
+#include "core/text/string_utils.h"
 
 #include <cassert>
 

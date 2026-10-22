@@ -6,12 +6,12 @@
 #include "assets/fbx_character_importer.h"
 #include "assets/glb_animated_mesh_importer.h"
 #include "assets/image_decoder.h"
-#include "core/file_io.h"
-#include "core/sha1.h"
+#include "core/hash/sha1.h"
+#include "core/io/file_io.h"
 #include "resource/internal_asset_package.h"
 #include "resource/prefab_asset_resources.h"
 #include "resource/resource_manager.h"
-#include "scriptvm/runtime/cpp_plugin_api.h"
+#include "scriptvm/plugin/cpp_plugin_api.h"
 #include "scriptvm/runtime/value.h"
 #include "unity_asset_database_bridge.h"
 
@@ -678,8 +678,11 @@ RuntimePayloadResult writePrefabRuntimePayload(const String& packageRoot,
     controller.name = displayName;
     controller.defaultStateName = resolvedDefaultState;
     for (const auto& binding : bindings) {
-        const auto clip = std::find_if(imported.asset.clips.begin(), imported.asset.clips.end(),
-            [&](const animation::AnimationClip& value) { return value.name == binding.clipName; });
+        const auto clip = std::find_if(imported.asset.clips.begin(),
+            imported.asset.clips.end(),
+            [&](const animation::AnimationClip& value) {
+                return value.name == binding.clipName;
+            });
         if (clip == imported.asset.clips.end()) {
             result.diagnostics = String("runtime payload state references an unknown clip",
                 &arp::core::defaultCpuMemoryResource());

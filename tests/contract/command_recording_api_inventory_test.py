@@ -1583,7 +1583,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         self.assertIn("&& ownedReadbackPublicDeviceIsolationPassed",runner)
 
     def test_original_object_cold_adoption_reuses_core_slot_without_identity_inference(self):
-        source=CppSource((self.ROOT / "src/core/cold_owned_object_slot.h").read_text(encoding="utf-8-sig"))
+        source=CppSource((self.ROOT / "src/core/ownership/cold_owned_object_slot.h").read_text(encoding="utf-8-sig"))
         for token in ["class ColdOwnedObjectSlot final", "UniquePtr<T> object_", "const T* candidate_", "std::is_nothrow_invocable_r_v<bool", "!matchesCold(*source) || !validate(*source)", "object_=std::move(source);candidate_=nullptr"]:self.assertIn(token,source)
         for token in ["makeUnique", "makeShared", "new ", "delete ", "signalFromHost", "Gpu", "RHI", "std::vector"]:self.assertNotIn(token,source)
         lease=self.read_source("src/rhi/frontend/transfer_readback_input.h", "frontend_transfer_readback_source_lease_h")
@@ -1780,7 +1780,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         for token in ["OriginalCommandTextureUploadSource", "value.get(),1u", "RHI-ORIGINAL-SOURCES-UPLOAD-DESTINATION"]:self.assertIn(token,table)
         usage=self.read_validation_section("src/rhi/frontend/command_usage.h","original_command_usage")
         self.assertIn("RHI-ORIGINAL-USAGE-UPLOAD-GRAPH-QUOTA",usage)
-        projection=CppSource((self.ROOT / "src/core/shared_identity_projection.h").read_text(encoding="utf-8-sig"))
+        projection=CppSource((self.ROOT / "src/core/ownership/shared_identity_projection.h").read_text(encoding="utf-8-sig"))
         self.assertIn("keyNamespace",projection)
         runner=CppSource((self.ROOT / "tests/fixtures/bindless_webgpu_rhi_runner.html").read_text(encoding="utf-8-sig"))
         for name in ["genericOriginalTextureUploadInputsPassed", "sharedIdentityNamespacePassed"]:
@@ -1892,11 +1892,11 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         self.assertNotIn("case Backend::",contract)
 
     def test_reusable_batch_revision_admission_preserves_rollback_without_identity_consumption(self):
-        sequence=CppSource((self.ROOT / "src/core/monotonic_id_sequence.h").read_text(encoding="utf-8-sig"))
+        sequence=CppSource((self.ROOT / "src/core/ownership/monotonic_id_sequence.h").read_text(encoding="utf-8-sig"))
         for token in ["hasRemaining(std::uint64_t count)", "count-1u<=std::numeric_limits<std::uint64_t>::max()-next"]:self.assertIn(token,sequence)
-        value=CppSource((self.ROOT / "src/core/versioned_mutation_value.h").read_text(encoding="utf-8-sig"))
+        value=CppSource((self.ROOT / "src/core/ownership/versioned_mutation_value.h").read_text(encoding="utf-8-sig"))
         for token in ["canWriteBatch", "writes!=UINT64_MAX", "sequence_.hasRemaining(writes+1u)"]:self.assertIn(token,value)
-        array=CppSource((self.ROOT / "src/core/versioned_mutation_array.h").read_text(encoding="utf-8-sig"))
+        array=CppSource((self.ROOT / "src/core/ownership/versioned_mutation_array.h").read_text(encoding="utf-8-sig"))
         self.assertIn("stamp_.canWriteBatch(journal,writes)",array)
         for name in ["recorded_resource_state_control.h", "recorded_texture_state_control.h"]:
             self.assertIn("canWriteBatch",self.read_source(*self.CURRENT_CONTROL_SOURCES[name]))
@@ -2399,11 +2399,11 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         self.assertIn("originalTransactionOwnershipPassed: originalTransactionOwnershipPassed",runner)
 
     def test_core_pending_observation_seals_nonrecycling_enlistment_epoch(self):
-        source=CppSource((self.ROOT / "src/core/versioned_mutation_value.h").read_text(encoding="utf-8-sig"))
+        source=CppSource((self.ROOT / "src/core/ownership/versioned_mutation_value.h").read_text(encoding="utf-8-sig"))
         for token in ["MonotonicIdSequence enlistments_", "enlistments_.tryAcquire()", "input.enlistmentEpoch_==enlistmentEpoch_", "if(snapshot_.pending())return true", "enlistmentEpoch_=epoch", "WriteResult::EnlistmentExhausted"]:self.assertIn(token,source)
         self.assertLess(source.index("if(journal && enlistmentExhausted())"),source.index("const auto next=sequence_.tryAcquire()"))
         for forbidden in ["std::vector", "core::make", "new ", "push_back", "wgpu"]:self.assertNotIn(forbidden,source)
-        array=CppSource((self.ROOT / "src/core/versioned_mutation_array.h").read_text(encoding="utf-8-sig"))
+        array=CppSource((self.ROOT / "src/core/ownership/versioned_mutation_array.h").read_text(encoding="utf-8-sig"))
         self.assertIn("stamp_(false,firstRevision,firstEnlistmentEpoch)",array)
         self.assertNotIn("MonotonicIdSequence",array)
         for fixture in ["versioned_mutation_value_fixture.h", "versioned_mutation_array_fixture.h", "original_texture_state_fixture.h"]:
@@ -2434,7 +2434,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         self.assertIn("originalStateDomainPassed: originalStateDomainPassed",runner)
 
     def test_normalized_pending_observation_reuses_exact_sealed_core_journal_stamp(self):
-        array=CppSource((self.ROOT / "src/core/versioned_mutation_array.h").read_text(encoding="utf-8-sig"))
+        array=CppSource((self.ROOT / "src/core/ownership/versioned_mutation_array.h").read_text(encoding="utf-8-sig"))
         for token in ["using PendingObservation=typename Stamp::PendingObservation", "snapshot_.ownedBy(journal)", "stamp_.observePending(journal)", "stamp_.matchesPending(observation,journal)"]:self.assertIn(token,array)
         texture=self.read_source("src/rhi/frontend/resource_texture_state_control.h")
         for token in ["class PendingObservation final", "friend class RecordedTextureStateControl", "Values::PendingObservation stamp_", "values_.observePending(journal)", "values_.matchesPending(observation.stamp_,journal)", "uniformState(observation.range_)==observation.state_"]:self.assertIn(token,texture)
@@ -2471,7 +2471,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
             for token in ["MutationSnapshot", "subresourceStates_", "push_back", "kMaxSubresourceStates"]:self.assertNotIn(token,body)
         web=self.read_source("src/rhi/backends/webgpu/webgpu_backend_objects.cpp")
         self.assertIn("if(nativePayload_ && nativePayload_->texture && nativePayload_->ownerDevice)",web)
-        array=CppSource((self.ROOT / "src/core/versioned_mutation_array.h").read_text(encoding="utf-8-sig"))
+        array=CppSource((self.ROOT / "src/core/ownership/versioned_mutation_array.h").read_text(encoding="utf-8-sig"))
         for token in ["snapshot_(values_)", "stamp_.tryWrite(false,journal)", "indexAt(i)>=size()", "pmr::Vector<T>", "snapshot_.prepare(*journal)"]:self.assertIn(token,array)
         for token in ["new ", "std::make_shared", "std::vector", "resize(", "push_back("]:self.assertNotIn(token,array)
         runner=CppSource((self.ROOT / "tests/fixtures/bindless_webgpu_rhi_runner.html").read_text(encoding="utf-8-sig"))
@@ -2482,7 +2482,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         source=self.read_source("src/rhi/frontend/resource_texture_state_range.h")
         for token in ["TextureResourceLayout::capture(desc)", "bytesPerBlock(desc.format)", "core::RowMajorIndexGrid", "containsUnsignedRange", "textureAspectMatchesFormat", "grid.size()*planes", "range.aspect==TextureAspect::Stencil", "originalRangeIssuerAvailable() const noexcept {return false;}", "arp::rhi::semantics::OriginalCommandStateAdmissionLowering::lowering(backend)"]:self.assertIn(token,source)
         for token in ["backends/", "new ", "std::make_shared", "WebGpuRecordedCommandProof", "RecordedResourceStateControl", "MutationJournal", "initialState="]:self.assertNotIn(token,source)
-        grid=CppSource((self.ROOT / "src/core/row_major_index_grid.h").read_text(encoding="utf-8-sig"))
+        grid=CppSource((self.ROOT / "src/core/algorithm/row_major_index_grid.h").read_text(encoding="utf-8-sig"))
         self.assertIn("rows<=maxElements/columns",grid)
         self.assertIn("row*columns_+column",grid)
         self.assertIn("index/columns_",grid)
@@ -3118,7 +3118,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         self.assertIn("&& canonicalTextureUploadExecutionPassed",runner)
 
     def test_cpu_quota_overlap_checks_pointer_and_controlblock_without_retained_list(self):
-        source=CppSource((self.ROOT / "src/core/cpu_allocator.cpp").read_text(encoding="utf-8-sig"))
+        source=CppSource((self.ROOT / "src/core/memory/cpu_allocator.cpp").read_text(encoding="utf-8-sig"))
         body=source[source.index("bool cpuAllocationOverlapsQuotaOwner"):source.index("bool transferCpuAllocationCharge")]
         for token in ["inspectCpuAllocationCharge(exactAllocation).found", "original.get()==quota.get()", "original.owner_before(quota)", "quota.owner_before(original)"]:
             self.assertIn(token,body)
@@ -3919,7 +3919,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         self.assertIn("&& originalGeometryStateStreamPassed && originalGeometryStateRefusalPassed &&",runner)
 
     def test_geometry_access_projection_and_backend_decisions_are_explicit(self):
-        pairs=self.read_source("src/core/unsigned_range.h").split("countUnorderedPairsUnsigned",1)[1].split("// Finite nonempty intervals",1)[0]
+        pairs=self.read_source("src/core/math/unsigned_range.h").split("countUnorderedPairsUnsigned",1)[1].split("// Finite nonempty intervals",1)[0]
         for token in ["output=0", "count<UInt{2}", "canMultiplyUnsigned(lhs,rhs)"]:
             self.assertIn(token,pairs)
         inputs=self.read_validation_section("src/rhi/frontend/command_usage.h","original_command_inputs")
@@ -4671,7 +4671,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         self.assertIn("OriginalCommandStateSequence::bufferBefore(*joined.graph_",usage)
         self.assertIn("OriginalCommandStateSequence::resolveValidatedTextureCell(*joined.graph_",usage)
         self.assertIn("measureRetained(factory)",CppSource((self.ROOT / "tests/fixtures/original_typed_dependency_decision_fixture.h").read_text(encoding="utf-8-sig")))
-        core=CppSource((self.ROOT / "src/core/ordered_interval_neighborhood.h").read_text(encoding="utf-8-sig"))
+        core=CppSource((self.ROOT / "src/core/algorithm/ordered_interval_neighborhood.h").read_text(encoding="utf-8-sig"))
         for token in ["maxInputs_", "ContainsPoint", "AmbiguousBoundary", "result_={status,{},{},0u}"]:
             self.assertIn(token,core)
         tests=CppSource((self.ROOT / "tests/unit/bounded_retention_tests.cpp").read_text(encoding="utf-8-sig"))

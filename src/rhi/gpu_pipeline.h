@@ -1,9 +1,9 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
-#include "core/number_format.h"
-#include "core/quota_bound_shared_identity.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/quota_bound_shared_identity.h"
+#include "core/text/number_format.h"
 #include "rhi/frontend/descriptor_buffer_write_validation.h"
 #include "rhi/frontend/memory_cache_budget.h"
 #include "rhi/frontend/resource_registration.h"

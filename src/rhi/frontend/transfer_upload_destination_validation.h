@@ -1,7 +1,7 @@
 #pragma once
-#include "core/memory_budget_ledger.h"
-#include "core/strided_index_range.h"
-#include "core/unsigned_range.h"
+#include "core/algorithm/strided_index_range.h"
+#include "core/math/unsigned_range.h"
+#include "rhi/frontend/memory_budget_ledger.h"
 #include "rhi/frontend/resource_texture_extent.h"
 #include "rhi/gpu_resource_types.h"
 

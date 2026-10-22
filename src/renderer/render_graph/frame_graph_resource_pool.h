@@ -1,11 +1,11 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/atomic_capacity.h"
-#include "core/bounded_retainer.h"
-#include "core/cpu_allocator.h"
-#include "core/partitioned_budget_ledger.h"
-#include "core/single_use_reservation_pool.h"
+#include "core/container/single_use_reservation_pool.h"
+#include "core/memory/atomic_capacity.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/memory/partitioned_budget_ledger.h"
+#include "core/ownership/bounded_retainer.h"
 #include "rhi/frontend/ordered_graphics_execution.h"
 #include "rhi/frontend/resource_cache_accounting.h"
 #include "rhi/gpu_device.h"

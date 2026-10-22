@@ -1,6 +1,6 @@
 #include "assets/glb_importer_common.h"
 #include "assets/glb_static_mesh_importer.h"
-#include "core/base64.h"
+#include "core/encoding/base64.h"
 
 #include <cassert>
 #include <cmath>

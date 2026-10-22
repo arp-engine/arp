@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/row_major_index_grid.h"
-#include "core/unsigned_range.h"
+#include "core/algorithm/row_major_index_grid.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/frontend/command_model.h"
 #include "rhi/frontend/resource_texture_aspect_validation.h"
 #include "rhi/frontend/resource_texture_resource_layout.h"

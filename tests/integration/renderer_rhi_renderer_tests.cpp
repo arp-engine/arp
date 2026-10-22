@@ -1,4 +1,5 @@
-#include "core/cpu_allocator.h"
+#include "3d/camera_parameters.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/renderers.h"
 #include "samples/stylized/stylized_scene_renderer.h"
 

@@ -39,10 +39,10 @@
 //   - cachedDepthView_: depth-aspect TextureView for the scene depth, rebuilt
 //     only when the source depth texture id changes (mirrors SSAO's input cache).
 
-#include "core/contiguous_diff.h"
-#include "core/cpu_allocator.h"
-#include "core/diagnostic_error.h"
-#include "core/math.h"
+#include "core/algorithm/contiguous_diff.h"
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/gi/ddgi_runtime.h"
 #include "renderer/gi/ddgi_scene_materials.h"
 #include "renderer/gi/ddgi_terrain_surface.h"

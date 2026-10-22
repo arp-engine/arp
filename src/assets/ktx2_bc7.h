@@ -22,7 +22,7 @@
 // on failure rather than exceptions).
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cstdint>
 #include <filesystem>

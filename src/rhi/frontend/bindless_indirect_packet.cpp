@@ -1,6 +1,6 @@
 #include "rhi/frontend/bindless_indirect_packet.h"
 
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/frontend/bindless_image_and_indirect_validation.h"
 #include "rhi/gpu_extensions.h"
 

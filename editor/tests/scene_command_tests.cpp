@@ -1,20 +1,22 @@
 #include "2d/components.h"
 #include "2d/particle_emitter_component.h"
-#include "2d/scene_runtime_codec.h"
+#include "2d/physics_components.h"
 #include "2d/screen_canvas_component.h"
+#include "2d/sprite_animation_component.h"
 #include "2d/sprite_text_component.h"
+#include "2d/tile_map_resource_component.h"
 #include "3d/animator_component.h"
 #include "3d/authoring_components.h"
 #include "3d/collider_component.h"
 #include "3d/components.h"
 #include "audio/audio_components.h"
+#include "core/encoding/yaml_contract.h"
 #include "editor/editor_shell.h"
 #include "editor/viewport/editor_scene_viewport_camera.h"
 #include "editor/viewport/editor_scene_viewport_physics_overlay.h"
 #include "editor/workspace/editor_layout.h"
 #include "editor/workspace/editor_scene_authoring_codec.h"
 #include "editor/workspace/editor_scene_persistence.h"
-#include "physics2d/components.h"
 #include "resource/mesh_asset_resources.h"
 #include "resource/prefab_asset_resources.h"
 #include "resource/resource_request_component.h"
@@ -497,7 +499,7 @@ int main()
         const auto initialDistance = camera.distance();
         camera.orbit(40.0f, -20.0f);
         assert(std::abs(camera.yawDegrees() - (-25.0f)) < 0.001f);
-        assert(std::abs(camera.pitchDegrees() - 30.0f) < 0.001f);
+        assert(std::abs(camera.pitchDegrees() - (-20.0f)) < 0.001f);
         camera.zoom(1.0f);
         assert(camera.distance() < initialDistance);
         const auto targetBeforePan = camera.target();
@@ -666,6 +668,16 @@ int main()
         shell.runtime().canvas().findWidget(shell.id("scene_component_add"));
     const auto* inspectorPropertiesWidget =
         shell.runtime().canvas().findWidget(shell.id("properties"));
+    const auto initialInspectorLayout = shell.runtime().canvas().resolveLayout();
+    const auto* resolvedInspectorPanel = initialInspectorLayout.findWidget(shell.id("inspector"));
+    const auto* resolvedInspectorProperties =
+        initialInspectorLayout.findWidget(shell.id("properties"));
+    assert(initialInspectorLayout.ok() && resolvedInspectorPanel && resolvedInspectorProperties);
+    assert(inspectorPropertiesWidget->parentId() == shell.id("inspector"));
+    assert(resolvedInspectorProperties->rect.x >= resolvedInspectorPanel->rect.x);
+    assert(resolvedInspectorProperties->rect.x + resolvedInspectorProperties->rect.width
+        <= resolvedInspectorPanel->rect.x + resolvedInspectorPanel->rect.width);
+    assert(initialInspectorLayout.clipRect(shell.id("properties")).width > 0.0f);
     const auto* bakedInspectorHeader =
         shell.runtime().canvas().findWidget(shell.id("probe_header"));
     assert(inspectorContentId.valid() && sceneNameWidget && sceneComponentAddWidget
@@ -1524,7 +1536,7 @@ int main()
     ui::WidgetId readyMeshChoiceWidget;
     for (const auto widgetId : shell.runtime().canvas().traversal()) {
         const auto* widget = shell.runtime().canvas().findWidget(widgetId);
-        if (!widget || widget->parentId() != inspectorContentId)
+        if (!widget || widget->parentId() != shell.runtime().canvas().rootId())
             continue;
         const std::string_view label(widget->desc().text.data(), widget->desc().text.size());
         if (label.find(readyMeshId) != std::string_view::npos) {
@@ -1587,7 +1599,7 @@ int main()
     const auto hasSelectedMeshBounds = [](const auto& commands) {
         return std::any_of(commands.begin(), commands.end(), [](const auto& command) {
             return command.kind == renderer::ui::UiDrawCommandKind::Box
-                && command.rect.width == 4.0f && command.rect.height == 4.0f
+                && command.rect.width == 1.5f && command.rect.height == 1.5f
                 && std::abs(command.color[0] - 0xe9 / 255.0f) < 0.0001f
                 && std::abs(command.color[1] - 0xbb / 255.0f) < 0.0001f
                 && std::abs(command.color[2] - 0x63 / 255.0f) < 0.0001f;
@@ -1773,16 +1785,28 @@ int main()
     assert(
         componentAddControl && componentAddControl->controlType() == ui::UiControlType::Dropdown);
     assert(componentAddWidget);
-    assert(shell.runtime().interact(ui::UiControlInteraction::click(componentAddId)).ok());
+    const auto clickWidgetAtPointer = [&](ui::WidgetId widgetId) {
+        const auto layout = shell.runtime().canvas().resolveLayout();
+        assert(layout.ok());
+        const auto* target = layout.findWidget(widgetId);
+        assert(target);
+        const float x = target->rect.x + target->rect.width * 0.5f;
+        const float y = target->rect.y + target->rect.height * 0.5f;
+        const auto hit = shell.runtime().canvas().hitTest(layout, {x, y});
+        assert(hit.ok() && hit.widgetId() == widgetId);
+        assert(shell.runtime().dispatch(ui::UiInputEvent::pointerDown(x, y)).ok());
+        assert(shell.runtime().dispatch(ui::UiInputEvent::pointerUp(x, y)).ok());
+    };
+    clickWidgetAtPointer(componentAddId);
     ui::WidgetId campfireOption;
     for (const auto widgetId : shell.runtime().canvas().traversal()) {
         const auto* widget = shell.runtime().canvas().findWidget(widgetId);
         if (widget && widget->desc().text == "Campfire"
-            && widget->parentId() == componentAddWidget->parentId())
+            && widget->parentId() == shell.runtime().canvas().rootId())
             campfireOption = widgetId;
     }
     assert(campfireOption.valid());
-    assert(shell.runtime().interact(ui::UiControlInteraction::click(campfireOption)).ok());
+    clickWidgetAtPointer(campfireOption);
     auto* selectedSceneObject = shell.sceneDocument().scene().findObject(selected);
     assert(selectedSceneObject && selectedSceneObject->getComponent<scene3d::CampfireComponent>());
     assert(selectedSceneObject->components().size() == 2);
@@ -1794,7 +1818,7 @@ int main()
     for (const auto widgetId : shell.runtime().canvas().traversal()) {
         const auto* widget = shell.runtime().canvas().findWidget(widgetId);
         if (widget && widget->desc().text == "UI Document"
-            && widget->parentId() == componentAddWidget->parentId())
+            && widget->parentId() == shell.runtime().canvas().rootId())
             documentOption = widgetId;
     }
     assert(documentOption.valid());
@@ -1809,7 +1833,7 @@ int main()
     for (const auto widgetId : shell.runtime().canvas().traversal()) {
         const auto* widget = shell.runtime().canvas().findWidget(widgetId);
         if (widget && widget->desc().text == "Particle Emitter 2D"
-            && widget->parentId() == componentAddWidget->parentId())
+            && widget->parentId() == shell.runtime().canvas().rootId())
             particleEmitterOption = widgetId;
     }
     assert(particleEmitterOption.valid());
@@ -3932,6 +3956,12 @@ int main()
                    {0.2f, 0.4f, 0.6f, 0.8f})
             == editor::SceneInspectorWriteResult::Changed);
 
+        auto animationState = animation->editorAuthoringProperties();
+        animationState.cast<scene2d::SpriteAnimationEditorProperties&>().speed = 1.23456789012345;
+        assert(animation->applyEditorAuthoringProperties(animationState));
+        auto filterState = authoredCollider2D->editorAuthoringProperties();
+        filterState.cast<physics2d::Collider2DEditorProperties&>().filter.mask = UINT64_MAX;
+        assert(authoredCollider2D->applyEditorAuthoringProperties(filterState));
         core::pmr::String yaml(&core::defaultCpuMemoryResource());
         core::pmr::String diagnostic(&core::defaultCpuMemoryResource());
         assert(editor::EditorSceneAuthoringCodec::encode(authoring, yaml, diagnostic));
@@ -3990,6 +4020,7 @@ int main()
             }));
         const auto* loadedAnimation =
             loadedChild->getComponent<scene2d::SpriteAnimationComponent>();
+        assert(loadedAnimation && loadedAnimation->speed() == 1.23456789012345);
         assert(loadedAnimation && loadedAnimation->valid() && loadedAnimation->animationReady()
             && loadedAnimation->animationResourceId() == editorAnimationId);
         const auto* loadedParticleEmitter =
@@ -4009,6 +4040,7 @@ int main()
         assert(loadedCollider2D && loadedCollider2D->handle()
             && loadedCollider2D->desc().type == physics2d::ShapeType::Convex
             && std::abs(loadedCollider2D->desc().radius - 0.8f) < 0.0001f);
+        assert(loadedCollider2D->desc().filter.mask == UINT64_MAX);
         assert(loadedCollider2D->desc().points.size() == 3u
             && loadedCollider2D->desc().points[0].x == -2.0f
             && loadedCollider2D->desc().points[1].x == 2.0f
@@ -4023,9 +4055,9 @@ int main()
 
         const auto preservedName = loaded.scene().name();
         auto invalidYaml = core::pmr::String(yaml, &core::defaultCpuMemoryResource());
-        const auto versionToken = invalidYaml.find("contractVersion: 1");
+        const auto versionToken = invalidYaml.find("contractVersion: 2");
         assert(versionToken != core::pmr::String::npos);
-        invalidYaml.replace(versionToken, sizeof("contractVersion: 1") - 1u, "contractVersion: 99");
+        invalidYaml.replace(versionToken, sizeof("contractVersion: 2") - 1u, "contractVersion: 99");
         assert(!editor::EditorSceneAuthoringCodec::decode(
             std::string_view(invalidYaml.data(), invalidYaml.size()),
             loaded,
@@ -4070,10 +4102,10 @@ int main()
                 == std::string_view(yaml.data(), yaml.size()));
 
             auto invalidReplacement = yaml;
-            const auto replacementVersion = invalidReplacement.find("contractVersion: 1");
+            const auto replacementVersion = invalidReplacement.find("contractVersion: 2");
             assert(replacementVersion != core::pmr::String::npos);
             invalidReplacement.replace(
-                replacementVersion, sizeof("contractVersion: 1") - 1u, "contractVersion: 99");
+                replacementVersion, sizeof("contractVersion: 2") - 1u, "contractVersion: 99");
             core::io::AtomicFileResult invalidSave;
             finish(persistence.save(persistenceRoot, "scenes/test.arp.yaml", invalidReplacement),
                 invalidSave);
@@ -4243,8 +4275,19 @@ int main()
         core::pmr::String yaml{&core::defaultCpuMemoryResource()};
         core::pmr::String diagnostic{&core::defaultCpuMemoryResource()};
         assert(editor::EditorSceneAuthoringCodec::encode(source, yaml, diagnostic));
-        assert(std::string_view(yaml.data(), yaml.size()).find("kind: sceneObjectReference")
-            != std::string_view::npos);
+        const auto encodedScene = core::YamlContract::parseSingleDocument(yaml);
+        bool foundObjectReference = false;
+        using Node = core::YamlContract::Node;
+        for (const auto& object :
+            encodedScene["objects"].get_value_ref<const Node::sequence_type&>())
+            for (const auto& component :
+                object["components"].get_value_ref<const Node::sequence_type&>())
+                for (const auto& property :
+                    component["properties"].get_value_ref<const Node::mapping_type&>())
+                    foundObjectReference = foundObjectReference
+                        || core::YamlContract::text(property.second, "kind")
+                            == "sceneObjectReference";
+        assert(foundObjectReference);
         auto destinationWorld = core::makeShared<physics2d::PhysicsWorld2D>(config);
         editor::EditorSceneDocument destination(false);
         destination.setPhysicsWorld2DProvider([destinationWorld] {

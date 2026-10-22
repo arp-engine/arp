@@ -33,7 +33,7 @@
 // keeps depending on core::math for the actual matrix algebra - no parallel
 // matrix pipeline is introduced here.
 
-#include "core/math.h"
+#include "core/math/math.h"
 
 #include <array>
 #include <cmath>

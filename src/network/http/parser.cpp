@@ -1,7 +1,7 @@
 #include "network/http/parser.h"
 
-#include "core/path_pattern.h"
-#include "core/string_utils.h"
+#include "core/text/path_pattern.h"
+#include "core/text/string_utils.h"
 
 #include <cstdint>
 #include <limits>

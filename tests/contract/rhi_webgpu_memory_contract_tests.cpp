@@ -5,7 +5,7 @@
 // code must not introduce an untracked std::vector allocation path; bounded
 // sequences use the project PMR containers instead.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/frontend/transfer_validation.h"
 
 #include <cassert>

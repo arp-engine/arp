@@ -1,5 +1,5 @@
 #pragma once
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "rhi/frontend/pipeline_definition_identity.h"
 
 namespace arp::rhi {

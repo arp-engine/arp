@@ -91,20 +91,34 @@ struct TileMapMetadata {
 ASTRUCT(Construct = Default)
 
 struct SpriteRendererComponentDesc {
-    APROP(Serialize, Editor)
+    APROP(Runtime)
     SpriteHandle sprite;
-    APROP(Serialize, Editor)
+    APROP(Runtime)
     arp::renderer::MaterialHandle material;
-    APROP(Serialize, Editor)
+    APROP(Runtime)
     arp::renderer::TextureHandle texture;
     APROP(Serialize, Editor)
     Bounds2D localBounds;
     // Resource-driven contract / 1. An explicit UUID selects this path;
     // numeric handles above retain their existing legacy semantics.
+    APROP(Serialize,
+        Editor,
+        ResourceReference,
+        ReferenceTarget = "SpriteResource",
+        Doc = "resource:SpriteResource:required")
     core::pmr::String spriteResourceId{&core::defaultCpuMemoryResource()};
+    APROP(Serialize, Editor, Doc = "color:rgba")
     core::Vec4 tint{1, 1, 1, 1};
-    std::int32_t sortingLayer = 0, sortingOrder = 0;
-    bool ySort = false, flipX = false, flipY = false;
+    APROP(Serialize, Editor)
+    std::int32_t sortingLayer = 0;
+    APROP(Serialize, Editor)
+    std::int32_t sortingOrder = 0;
+    APROP(Serialize, Editor)
+    bool ySort = false;
+    APROP(Serialize, Editor)
+    bool flipX = false;
+    APROP(Serialize, Editor)
+    bool flipY = false;
 };
 
 ASTRUCT(Construct = Default)
@@ -125,18 +139,13 @@ struct TileMapComponentDesc {
 ASTRUCT(Construct = Default)
 
 struct TileMapComponentEditorProperties {
-    APROP(Editor)
+    APROP(Serialize, Editor)
     Scene2DChunkGrid grid;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     TileMapMetadata metadata;
 };
 
-ASTRUCT(Construct = Default)
-
-struct SpriteRendererComponentEditorProperties {
-    APROP(Editor)
-    Bounds2D localBounds;
-};
+using SpriteRendererComponentEditorProperties = SpriteRendererComponentDesc;
 
 ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
@@ -173,7 +182,7 @@ public:
 
     arp::reflection::object editorAuthoringProperties() const override
     {
-        return arp::reflection::object(SpriteRendererComponentEditorProperties{desc_.localBounds});
+        return arp::reflection::object(desc_);
     }
 
     bool applyEditorAuthoringProperties(const arp::reflection::object& value) override;

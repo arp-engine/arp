@@ -12,7 +12,7 @@
 //
 // All tests use the Null RHI backend -- no live GPU required, CI-safe.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/render_graph/compiled_frame_graph.h"
 #include "renderer/render_graph/render_graph.h"
 #include "renderer/render_graph/render_graph_topology_dump.h"

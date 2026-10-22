@@ -1,10 +1,15 @@
 #include "resource/internal_asset_package.h"
 
-#include "core/file_io.h"
-#include "core/filesystem_path.h"
+#include "core/encoding/yaml_contract.h"
+#include "core/io/file_io.h"
+#include "core/io/filesystem_path.h"
 #include "reflection/serialization.h"
+#include "resource/asset_package_closure.h"
+#include "resource/asset_package_payload.h"
 #include "resource/prefab_asset_resources.h"
+#include "resource/resource_graph_plan.h"
 #include "resource/terrain_asset_resource.h"
+#include "resource/vegetation_catalog_cooked.h"
 
 #include <charconv>
 #include <exception>
@@ -178,19 +183,10 @@ bool requireSequenceSize(
 
 bool safeRelativePackagePath(const core::pmr::String& value)
 {
-    const std::filesystem::path path(value.c_str());
-    if (value.empty() || path.is_absolute()) {
-        return false;
-    }
-    for (const auto& part : path) {
-        if (part == "..") {
-            return false;
-        }
-    }
-    return true;
+    return value.find('\0') == core::pmr::String::npos && core::FilePath::isSafeRelativePath(value);
 }
 
-bool parseTerrainAssetManifestPath(
+bool parseTypedAssetManifestPath(
     NameView envelopeYaml, core::pmr::String& outManifestPath, core::pmr::String& diagnostics)
 {
     YamlNode root;
@@ -198,7 +194,7 @@ bool parseTerrainAssetManifestPath(
         root =
             YamlNode::deserialize(envelopeYaml.data(), envelopeYaml.data() + envelopeYaml.size());
     } catch (const std::exception& err) {
-        diagnostics = makeDiagnostic("TerrainAssetResource envelope YAML parse failed: ");
+        diagnostics = makeDiagnostic("Typed asset envelope YAML parse failed: ");
         diagnostics += err.what();
         return false;
     }
@@ -208,12 +204,28 @@ bool parseTerrainAssetManifestPath(
         || !requireString(*fields, "manifestPath", outManifestPath, diagnostics)
         || !safeRelativePackagePath(outManifestPath)) {
         if (diagnostics.empty()) {
-            diagnostics = makeDiagnostic(
-                "TerrainAssetResource payload requires a safe relative manifestPath");
+            diagnostics =
+                makeDiagnostic("Typed asset payload requires a safe relative manifestPath");
         }
         return false;
     }
+    try {
+        core::YamlContract::onlyKeys(*payload, {"type", "fields"});
+        if (core::YamlContract::text(*payload, "type")
+            != core::YamlContract::text(root, "resourceType"))
+            core::YamlContract::fail();
+        core::YamlContract::onlyKeys(*fields, {"manifestPath"});
+    } catch (...) {
+        diagnostics = "TYPED-ASSET-PACKAGE-UNKNOWN-FIELD";
+        return false;
+    }
     return true;
+}
+
+bool isManifestAsset(NameView type)
+{
+    return type == TerrainAssetResource::resourceTypeName()
+        || type == kVegetationCatalogCookedContract.type;
 }
 
 bool validateSkinnedMeshFields(const YamlNode& fields, core::pmr::String& diagnostics)
@@ -317,13 +329,13 @@ bool parseEnvelopeEntry(
             return false;
         }
     }
-    if (out.resourceType == TerrainAssetResource::resourceTypeName()) {
+    if (isManifestAsset(out.resourceType)) {
         core::pmr::String manifestPath(&core::defaultCpuMemoryResource());
-        if (!parseTerrainAssetManifestPath(envelopeYaml, manifestPath, diagnostics)) {
+        if (!parseTypedAssetManifestPath(envelopeYaml, manifestPath, diagnostics)) {
             return false;
         }
     }
-    const auto payloadText = makeString(NameView(YamlNode::serialize(*payload)));
+    const auto payloadText = core::YamlContract::serialize(*payload);
     const auto hash = computeResourcePayloadHash(payloadText);
     if (!hash.success) {
         diagnostics = hash.diagnostics;
@@ -334,6 +346,27 @@ bool parseEnvelopeEntry(
         return false;
     }
     out.envelopeYaml = makeString(envelopeYaml);
+    return true;
+}
+
+bool matchesEnvelopeMetadata(
+    const InternalAssetPackageEntry& entry, const InternalAssetPackageEntry& envelope)
+{
+    if (entry.resourceId != envelope.resourceId || entry.resourceType != envelope.resourceType
+        || entry.contentHash != envelope.contentHash || entry.status != envelope.status
+        || entry.alias != envelope.alias
+        || entry.dependencies.size() != envelope.dependencies.size())
+        return false;
+    // Dependencies are a set of explicit ID/usage bindings. Array order is not semantic.
+    for (const auto& dependency : entry.dependencies) {
+        const auto matches = [&](const auto& other) {
+            return other.id == dependency.id && other.usage == dependency.usage;
+        };
+        if (std::count_if(entry.dependencies.begin(), entry.dependencies.end(), matches) != 1
+            || std::count_if(envelope.dependencies.begin(), envelope.dependencies.end(), matches)
+                != 1)
+            return false;
+    }
     return true;
 }
 
@@ -356,6 +389,12 @@ bool validatePackageDesc(const InternalAssetPackageDesc& desc, core::pmr::String
         return false;
     }
 
+    if (!desc.closurePath.empty()
+        && (!safeRelativePackagePath(desc.closurePath)
+            || desc.closurePath == "manifest.arpkg.yaml")) {
+        diagnostics = "PACKAGE-CLOSURE-PATH";
+        return false;
+    }
     core::pmr::UnorderedSet<core::pmr::String> ids{&core::defaultCpuMemoryResource()};
     core::pmr::UnorderedSet<core::pmr::String> paths{&core::defaultCpuMemoryResource()};
     for (const auto& entry : desc.entries) {
@@ -370,6 +409,10 @@ bool validatePackageDesc(const InternalAssetPackageDesc& desc, core::pmr::String
         if (!core::FilePath::isSafeRelativePath(
                 std::string_view(entry.envelopePath.data(), entry.envelopePath.size()))) {
             diagnostics = makeDiagnostic("package entry requires a safe relative envelopePath");
+            return false;
+        }
+        if (!desc.closurePath.empty() && entry.envelopePath == desc.closurePath) {
+            diagnostics = "PACKAGE-CLOSURE-PATH-COLLISION";
             return false;
         }
         if (entry.envelopeYaml.empty()) {
@@ -394,6 +437,17 @@ bool validatePackageDesc(const InternalAssetPackageDesc& desc, core::pmr::String
             }
         }
     }
+    for (const auto& entry : desc.entries) {
+        InternalAssetPackageEntry parsed;
+        if (!parseEnvelopeEntry(entry.envelopeYaml, parsed, diagnostics))
+            return false;
+        if (!matchesEnvelopeMetadata(entry, parsed)) {
+            diagnostics = makeDiagnostic(
+                "PACKAGE-ENVELOPE-METADATA-MISMATCH: metadata does not match envelope: ",
+                entry.resourceId);
+            return false;
+        }
+    }
     return true;
 }
 
@@ -406,7 +460,15 @@ core::pmr::String manifestYaml(const InternalAssetPackageDesc& desc)
     yaml += desc.name;
     yaml += "\nstatus: ";
     yaml += desc.status;
-    yaml += "\nentries:\n";
+    yaml += "\n";
+    if (!desc.closurePath.empty()) {
+        auto declaration = core::YamlContract::Node::mapping();
+        declaration["closure"] = core::YamlContract::Node::mapping();
+        declaration["closure"]["contractVersion"] = "resource.package.closure/v1";
+        declaration["closure"]["path"] = desc.closurePath.c_str();
+        yaml += core::YamlContract::serialize(declaration);
+    }
+    yaml += "entries:\n";
     for (const auto& entry : desc.entries) {
         yaml += "  - resourceId: ";
         yaml += entry.resourceId;
@@ -449,10 +511,12 @@ bool writeTextFile(const std::filesystem::path& path, NameView text, core::pmr::
     return file.good();
 }
 
-bool readTextFile(
-    const std::filesystem::path& path, core::pmr::String& out, core::pmr::String& diagnostics)
+bool readTextFile(const std::filesystem::path& path,
+    core::pmr::String& out,
+    core::pmr::String& diagnostics,
+    std::size_t maxBytes)
 {
-    const auto read = core::readTextFile(path);
+    const auto read = core::readTextFile(path, maxBytes ? maxBytes : UINT64_MAX);
     if (!read.success) {
         diagnostics = makeDiagnostic("missing envelope file: ");
         diagnostics += makeString(path.generic_string());
@@ -462,7 +526,10 @@ bool readTextFile(
     return true;
 }
 
-bool parseManifest(NameView yamlText, InternalAssetPackageDesc& out, core::pmr::String& diagnostics)
+bool parseManifest(NameView yamlText,
+    InternalAssetPackageDesc& out,
+    core::pmr::String& diagnostics,
+    std::size_t maxResources)
 {
     YamlNode root;
     try {
@@ -494,12 +561,30 @@ bool parseManifest(NameView yamlText, InternalAssetPackageDesc& out, core::pmr::
         return false;
     }
 
+    if (const auto* closure = findMappingValue(root, "closure")) {
+        try {
+            core::YamlContract::onlyKeys(*closure, {"contractVersion", "path"});
+            if (core::YamlContract::text(*closure, "contractVersion")
+                != "resource.package.closure/v1")
+                core::YamlContract::fail();
+            out.closurePath = core::YamlContract::text(*closure, "path");
+            if (!safeRelativePackagePath(out.closurePath))
+                core::YamlContract::fail();
+        } catch (...) {
+            diagnostics = "PACKAGE-CLOSURE-CONTRACT";
+            return false;
+        }
+    }
     const YamlNode* entries = findMappingValue(root, "entries");
     if (entries == nullptr || !entries->is_sequence()) {
         diagnostics = makeDiagnostic("package entries must be a sequence");
         return false;
     }
     const auto& sequence = entries->get_value_ref<const YamlNode::sequence_type&>();
+    if (maxResources && sequence.size() > maxResources) {
+        diagnostics = "PACKAGE-RESOURCE-COUNT-BUDGET";
+        return false;
+    }
     for (const auto& item : sequence) {
         if (!item.is_mapping()) {
             diagnostics = makeDiagnostic("package entry must be a mapping");
@@ -617,8 +702,7 @@ InternalAssetPackageValidationResult InternalAssetPackageWriter::write(
             result.diagnostics = diagnostics;
             return result;
         }
-        if (parsed.resourceId != entry.resourceId || parsed.resourceType != entry.resourceType
-            || parsed.contentHash != entry.contentHash) {
+        if (!matchesEnvelopeMetadata(entry, parsed)) {
             result.diagnostics = makeDiagnostic(
                 "package entry metadata does not match envelope: ", entry.resourceId);
             return result;
@@ -648,7 +732,9 @@ InternalAssetPackageValidationResult InternalAssetPackageWriter::write(
 }
 
 InternalAssetPackageValidationResult InternalAssetPackageReader::read(
-    const std::filesystem::path& packageDirectory) const
+    const std::filesystem::path& packageDirectory,
+    std::size_t maxMetadataBytes,
+    std::size_t maxResources) const
 {
     InternalAssetPackageValidationResult result;
     core::pmr::String diagnostics(&core::defaultCpuMemoryResource());
@@ -666,11 +752,11 @@ InternalAssetPackageValidationResult InternalAssetPackageReader::read(
             makeDiagnostic("asset package manifest resolves outside package directory");
         return result;
     }
-    if (!readTextFile(canonicalManifest, manifest, diagnostics)) {
+    if (!readTextFile(canonicalManifest, manifest, diagnostics, maxMetadataBytes)) {
         result.diagnostics = diagnostics;
         return result;
     }
-    if (!parseManifest(manifest, result.package, diagnostics)) {
+    if (!parseManifest(manifest, result.package, diagnostics, maxResources)) {
         result.diagnostics = diagnostics;
         return result;
     }
@@ -690,8 +776,8 @@ InternalAssetPackageValidationResult InternalAssetPackageReader::read(
             return result;
         }
         if (pathError) {
-            result.diagnostics = makeDiagnostic(
-                "cannot inspect package envelope path: ", entry.envelopePath);
+            result.diagnostics =
+                makeDiagnostic("cannot inspect package envelope path: ", entry.envelopePath);
             return result;
         }
         const auto envelopePath = std::filesystem::canonical(unresolvedEnvelopePath, pathError);
@@ -700,7 +786,7 @@ InternalAssetPackageValidationResult InternalAssetPackageReader::read(
                 "package envelope resolves outside package directory: ", entry.envelopePath);
             return result;
         }
-        if (!readTextFile(envelopePath, entry.envelopeYaml, diagnostics)) {
+        if (!readTextFile(envelopePath, entry.envelopeYaml, diagnostics, maxMetadataBytes)) {
             result.diagnostics = diagnostics;
             return result;
         }
@@ -709,8 +795,7 @@ InternalAssetPackageValidationResult InternalAssetPackageReader::read(
             result.diagnostics = diagnostics;
             return result;
         }
-        if (parsed.resourceId != entry.resourceId || parsed.resourceType != entry.resourceType
-            || parsed.contentHash != entry.contentHash) {
+        if (!matchesEnvelopeMetadata(entry, parsed)) {
             result.diagnostics =
                 makeDiagnostic("manifest entry does not match envelope: ", entry.resourceId);
             return result;
@@ -746,7 +831,7 @@ bool extractPayloadYaml(
         diagnostics = makeDiagnostic("missing required payload");
         return false;
     }
-    outPayloadYaml = makeString(NameView(YamlNode::serialize(*payload)));
+    outPayloadYaml = core::YamlContract::serialize(*payload);
     return true;
 }
 
@@ -754,7 +839,9 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
     ResourceManager& manager,
     ResourceLoadPolicy policy) const
 {
-    const auto readResult = read(packageDirectory);
+    auto readResult = read(packageDirectory,
+        AssetPackageClosureService::maxMetadataBytes,
+        AssetPackageClosureService::maxResources);
     if (!readResult.success) {
         return ResourceLoadResult{
             false,
@@ -765,20 +852,186 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
         };
     }
 
+    ResourceLoadContext loadContext{policy};
+    if (!readResult.package.closurePath.empty()) {
+        const auto closure = AssetPackageClosureService().inspect(packageDirectory);
+        if (!closure.success)
+            return {false, ResourceState::Failed, {}, {}, closure.diagnostics};
+        loadContext.maxDecodedBytes = closure.maxDecodedBytes;
+        const auto callerBudget = manager.telemetry().budget.maxDecodedBytes;
+        if (callerBudget != 0u)
+            loadContext.maxDecodedBytes = std::min(loadContext.maxDecodedBytes, callerBudget);
+    }
+
+    const bool atomicTypedPackage = !readResult.package.closurePath.empty()
+        || std::any_of(readResult.package.entries.begin(),
+            readResult.package.entries.end(),
+            [](const auto& entry) {
+                return isManifestAsset(entry.resourceType);
+            });
     for (const auto& entry : readResult.package.entries) {
-        const auto declared = manager.declareResource(entry.resourceId, entry.resourceType);
-        if (!declared.success
-            && declared.diagnostics.find("duplicate resource id") == core::pmr::String::npos) {
-            return declared;
+        if (atomicTypedPackage) {
+            if (!isManifestAsset(entry.resourceType)
+                && !prefabResourceFactory().supports(entry.resourceType))
+                return {false,
+                    ResourceState::Failed,
+                    entry.resourceId,
+                    entry.resourceType,
+                    makeDiagnostic("TERRAIN-PACKAGE-TYPED-FACTORY-REQUIRED")};
+        } else {
+            const auto declared = manager.declareResource(entry.resourceId, entry.resourceType);
+            if (!declared.success
+                && declared.diagnostics.find("duplicate resource id") == core::pmr::String::npos) {
+                return declared;
+            }
         }
     }
 
+    // Payload references are authoritative even when an envelope omits them.
+    // Discover and type-check them before any package resource is admitted.
+    if (atomicTypedPackage) {
+        AssetPackagePayloadInspector inspector;
+        for (auto& entry : readResult.package.entries) {
+            if (!inspector.supports(entry.resourceType))
+                continue;
+            const auto payload = inspector.inspect(entry);
+            if (!payload.success)
+                return {false,
+                    ResourceState::Failed,
+                    entry.resourceId,
+                    entry.resourceType,
+                    payload.diagnostics};
+            for (const auto& dependency : payload.dependencies) {
+                const auto found = std::find_if(readResult.package.entries.begin(),
+                    readResult.package.entries.end(),
+                    [&](const auto& candidate) {
+                        return candidate.resourceId == dependency.binding.id;
+                    });
+                if ((found != readResult.package.entries.end()
+                        && found->resourceType != dependency.expectedType)
+                    || (found == readResult.package.entries.end()
+                        && !inspector.externalReady(manager, dependency)))
+                    return {false,
+                        ResourceState::Failed,
+                        entry.resourceId,
+                        entry.resourceType,
+                        makeDiagnostic("PACKAGE-PAYLOAD-DEPENDENCY-NOT-READY-OR-TYPE: ",
+                            dependency.binding.id)};
+                if (std::none_of(entry.dependencies.begin(),
+                        entry.dependencies.end(),
+                        [&](const auto& existing) {
+                            return existing.id == dependency.binding.id
+                                && existing.usage == dependency.binding.usage;
+                        }))
+                    entry.dependencies.push_back(dependency.binding);
+            }
+        }
+    }
+
+    ResourceGraphRequest ordering;
+    ordering.rootResourceId = readResult.package.entries.front().resourceId;
+    for (auto& entry : readResult.package.entries) {
+        ResourceReference reference{
+            entry.resourceId, entry.resourceType, entry.alias, entry.status, {}};
+        if (isManifestAsset(entry.resourceType)) {
+            core::pmr::String manifestPath{&core::defaultCpuMemoryResource()};
+            core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
+            if (!parseTypedAssetManifestPath(entry.envelopeYaml, manifestPath, diagnostics))
+                return {false,
+                    ResourceState::Failed,
+                    entry.resourceId,
+                    entry.resourceType,
+                    diagnostics};
+            std::error_code error;
+            const auto packageRoot = std::filesystem::canonical(packageDirectory, error);
+            if (error)
+                return {false,
+                    ResourceState::Failed,
+                    entry.resourceId,
+                    entry.resourceType,
+                    makeDiagnostic("TERRAIN-PACKAGE-ROOT")};
+            const auto resolvedManifest = std::filesystem::canonical(
+                packageRoot / std::filesystem::path(manifestPath.c_str()), error);
+            if (error || !core::FilePath::contains(packageRoot, resolvedManifest))
+                return {false,
+                    ResourceState::Failed,
+                    entry.resourceId,
+                    entry.resourceType,
+                    makeDiagnostic("TERRAIN-PACKAGE-MANIFEST-PATH-ESCAPE")};
+
+            struct ManifestDependencies final {
+                bool success;
+                core::pmr::String diagnostics;
+                core::pmr::Vector<ResourceDependency> dependencies;
+            };
+
+            const auto index = [&]() -> ManifestDependencies {
+                if (entry.resourceType == kVegetationCatalogCookedContract.type) {
+                    auto cooked = VegetationCatalogCookedCodec().inspect(
+                        reference, resolvedManifest, loadContext);
+                    return {cooked.success,
+                        std::move(cooked.diagnostics),
+                        std::move(cooked.dependencies)};
+                }
+                const auto terrain =
+                    TerrainAssetResource(reference, resolvedManifest).inspectManifest(loadContext);
+                return {terrain.success, terrain.diagnostics, terrain.dependencies};
+            }();
+            if (!index.success)
+                return {false,
+                    ResourceState::Failed,
+                    entry.resourceId,
+                    entry.resourceType,
+                    index.diagnostics};
+            for (const auto& dependency : index.dependencies) {
+                const auto found = std::find_if(
+                    entry.dependencies.begin(), entry.dependencies.end(), [&](const auto& item) {
+                        return item.id == dependency.id && item.usage == dependency.usage;
+                    });
+                if (found == entry.dependencies.end())
+                    entry.dependencies.push_back(dependency);
+            }
+        }
+        ResourceGraphNode node;
+        node.resource = core::makeUnique<ResourceBase>(std::move(reference));
+        node.dependencies = entry.dependencies;
+        ordering.nodes.push_back(std::move(node));
+    }
+    // Already-loaded resources may be supplied by another explicit package.
+    const auto packageNodeCount = ordering.nodes.size();
+    for (std::size_t i = 0; i < packageNodeCount; ++i) {
+        const auto dependencies = ordering.nodes[i].dependencies;
+        for (const auto& dependency : dependencies) {
+            if (std::any_of(ordering.nodes.begin(), ordering.nodes.end(), [&](const auto& node) {
+                    return node.resource->reference().id == dependency.id;
+                }))
+                continue;
+            const auto* record = manager.recordSnapshot(dependency.id);
+            if (!record || record->state != ResourceState::Ready)
+                return {false,
+                    ResourceState::Failed,
+                    dependency.id,
+                    {},
+                    makeDiagnostic("PACKAGE-DEPENDENCY-NOT-READY")};
+            ResourceGraphNode external;
+            external.resource = core::makeUnique<ResourceBase>(
+                ResourceReference{record->id, record->type, {}, record->status, {}});
+            ordering.nodes.push_back(std::move(external));
+        }
+    }
+    const auto plan = buildResourceGraphPlan(ordering);
+    if (!plan.success)
+        return {false, ResourceState::Failed, plan.resourceId, plan.resourceType, plan.diagnostics};
     ResourceLoadResult last;
-    for (const auto& entry : readResult.package.entries) {
-        if (entry.resourceType == TerrainAssetResource::resourceTypeName()) {
+    core::pmr::Vector<core::UniquePtr<ResourceBase>> prepared{&core::defaultCpuMemoryResource()};
+    for (const auto entryIndex : plan.order) {
+        if (entryIndex >= packageNodeCount)
+            continue;
+        const auto& entry = readResult.package.entries[entryIndex];
+        if (isManifestAsset(entry.resourceType)) {
             core::pmr::String manifestPath(&core::defaultCpuMemoryResource());
             core::pmr::String diagnostics(&core::defaultCpuMemoryResource());
-            if (!parseTerrainAssetManifestPath(entry.envelopeYaml, manifestPath, diagnostics)) {
+            if (!parseTypedAssetManifestPath(entry.envelopeYaml, manifestPath, diagnostics)) {
                 return ResourceLoadResult{
                     false,
                     ResourceState::Failed,
@@ -787,17 +1040,26 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
                     diagnostics,
                 };
             }
-            auto typed = core::makeUnique<TerrainAssetResource>(
-                ResourceReference{
-                    entry.resourceId,
-                    entry.resourceType,
-                    entry.alias,
-                    entry.status,
-                    core::pmr::String(&core::defaultCpuMemoryResource()),
-                },
-                packageDirectory / std::filesystem::path(manifestPath.c_str()));
+            ResourceReference reference{
+                entry.resourceId, entry.resourceType, entry.alias, entry.status, {}};
+            const auto manifest = packageDirectory / std::filesystem::path(manifestPath.c_str());
+            core::UniquePtr<ResourceBase> typed;
+            if (entry.resourceType == kVegetationCatalogCookedContract.type) {
+                VegetationCatalogResourceLoadDesc desc;
+                desc.resourceId = entry.resourceId;
+                desc.alias = entry.alias;
+                desc.status = entry.status;
+                desc.catalogPath = manifest;
+                desc.input = VegetationCatalogInput::Cooked;
+                typed = core::makeUnique<VegetationCatalogResource>(std::move(desc));
+            } else
+                typed = core::makeUnique<TerrainAssetResource>(std::move(reference), manifest);
             typed->configureMetadata(typed->reference(), entry.dependencies);
-            last = manager.loadResource(std::move(typed), {policy});
+            if (atomicTypedPackage) {
+                prepared.push_back(std::move(typed));
+                last = {true, ResourceState::Ready, entry.resourceId, entry.resourceType, {}};
+            } else
+                last = manager.loadResource(std::move(typed), {policy});
         } else if (prefabResourceFactory().supports(entry.resourceType)) {
             core::pmr::String payloadYaml(&core::defaultCpuMemoryResource());
             core::pmr::String diagnostics(&core::defaultCpuMemoryResource());
@@ -810,6 +1072,9 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
                     diagnostics,
                 };
             }
+            // Package loading is also a standalone entry point; it cannot depend
+            // on an editor/game having registered the typed schema beforehand.
+            registerPrefabAssetReflection();
             auto payload = arp::reflection::deserialize_from_yaml(payloadYaml);
             if (!payload.success) {
                 return ResourceLoadResult{
@@ -841,7 +1106,8 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
                                    [&](const ResourceDependency& dependency) {
                                        return dependency.id == entry.resourceId
                                            && dependency.usage == "runtime-payload";
-                                   }) != candidate.dependencies.end();
+                                   })
+                            != candidate.dependencies.end();
                     });
                 if (prefabEntry != readResult.package.entries.end()) {
                     const auto decoded = loadPrefabRuntimePayloadByResourceIdFromPackage(
@@ -855,12 +1121,12 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
                                 ? makeDiagnostic("runtime payload lacks complete controller data")
                                 : decoded.diagnostics};
                     }
-                    auto* runtimeResource =
-                        static_cast<PrefabRuntimePayloadResource*>(typed.get());
+                    auto* runtimeResource = static_cast<PrefabRuntimePayloadResource*>(typed.get());
                     runtimeResource->runtimeAsset =
                         core::makeShared<assets::AnimatedMeshAsset>(decoded.asset);
                     runtimeResource->controllerAsset =
-                        core::makeShared<animation::AnimatorControllerAsset>(decoded.controllerAsset);
+                        core::makeShared<animation::AnimatorControllerAsset>(
+                            decoded.controllerAsset);
                 }
             } else if (entry.resourceType == AnimatorControllerResource::resourceTypeName()) {
                 const auto prefabEntry = std::find_if(readResult.package.entries.begin(),
@@ -868,17 +1134,21 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
                     [&](const InternalAssetPackageEntry& candidate) {
                         if (candidate.resourceType != PrefabResource::resourceTypeName())
                             return false;
-                        const auto referencesController = std::find_if(candidate.dependencies.begin(),
-                                   candidate.dependencies.end(),
-                                   [&](const ResourceDependency& dependency) {
-                                       return dependency.id == entry.resourceId
-                                           && dependency.usage == "animator-controller";
-                                   }) != candidate.dependencies.end();
-                        const auto referencesRuntime = std::find_if(candidate.dependencies.begin(),
-                            candidate.dependencies.end(),
-                            [](const ResourceDependency& dependency) {
-                                return dependency.usage == "runtime-payload";
-                            }) != candidate.dependencies.end();
+                        const auto referencesController =
+                            std::find_if(candidate.dependencies.begin(),
+                                candidate.dependencies.end(),
+                                [&](const ResourceDependency& dependency) {
+                                    return dependency.id == entry.resourceId
+                                        && dependency.usage == "animator-controller";
+                                })
+                            != candidate.dependencies.end();
+                        const auto referencesRuntime =
+                            std::find_if(candidate.dependencies.begin(),
+                                candidate.dependencies.end(),
+                                [](const ResourceDependency& dependency) {
+                                    return dependency.usage == "runtime-payload";
+                                })
+                            != candidate.dependencies.end();
                         return referencesController && referencesRuntime;
                     });
                 if (prefabEntry != readResult.package.entries.end()) {
@@ -896,7 +1166,8 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
                     auto* controllerResource =
                         static_cast<AnimatorControllerResource*>(typed.get());
                     controllerResource->controllerAsset =
-                        core::makeShared<animation::AnimatorControllerAsset>(decoded.controllerAsset);
+                        core::makeShared<animation::AnimatorControllerAsset>(
+                            decoded.controllerAsset);
                 }
             }
             typed->configureMetadata(
@@ -908,13 +1179,22 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
                     core::pmr::String(&core::defaultCpuMemoryResource()),
                 },
                 entry.dependencies);
-            last = manager.loadResource(std::move(typed));
+            if (atomicTypedPackage) {
+                prepared.push_back(std::move(typed));
+                last = {true, ResourceState::Ready, entry.resourceId, entry.resourceType, {}};
+            } else
+                last = manager.loadResource(std::move(typed), {policy});
         } else {
             last = compatibility::loadFromEnvelope(manager, entry.envelopeYaml, policy);
         }
         if (!last.success) {
             return last;
         }
+    }
+    if (atomicTypedPackage) {
+        const auto batch = manager.loadResourcesAtomically(std::move(prepared), loadContext);
+        if (!batch.success)
+            return {false, ResourceState::Failed, batch.failedResourceId, {}, batch.diagnostics};
     }
     return last;
 }

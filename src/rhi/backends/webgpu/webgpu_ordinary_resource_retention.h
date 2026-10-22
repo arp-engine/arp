@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/quota_bound_shared_identity.h"
+#include "core/ownership/quota_bound_shared_identity.h"
 #include "rhi/backends/webgpu/webgpu_transfer_retention.h"
 
 namespace arp::rhi_webgpu {

@@ -12,7 +12,7 @@ float4 familyColorMain(FamilyVertex input, bool frontFacing : SV_IsFrontFace) : 
     uint available = MaterialResults_query(0u, fault);
     uint4 extent = GeometryFrame.outputExtent;
     if (fault || extent.x == 0u || extent.y == 0u || extent.z != 23u || extent.w != 1u
-        || extent.x > 0xffffffffu / extent.y || extent.x * extent.y > available / 23u
+        || !arpUintMultiplyFits(extent.x, extent.y) || extent.x * extent.y > available / 23u
         || any(input.position.xy < 0.0) || any(input.position.xy >= float2(extent.xy))) {
         arpBindlessReportFault(); discard;
     }

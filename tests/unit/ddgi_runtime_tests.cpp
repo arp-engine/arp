@@ -1,4 +1,4 @@
-#include "core/contiguous_diff.h"
+#include "core/algorithm/contiguous_diff.h"
 #include "renderer/gi/ddgi_runtime.h"
 #include "renderer/global_illumination.h"
 

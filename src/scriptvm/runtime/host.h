@@ -9,7 +9,7 @@
 // Host functions are stored as reflection::function, so they can accept
 // and return reflection::object (the VM's Value type) natively.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
 #include "scriptvm/runtime/value.h"
 

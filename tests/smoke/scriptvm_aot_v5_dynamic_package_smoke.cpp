@@ -1,6 +1,6 @@
-#include "core/process_runner.h"
-#include "scriptvm/aot/aot_dynamic_package.h"
+#include "core/system/process_runner.h"
 #include "scriptvm/aot/aot_v5.h"
+#include "scriptvm/plugin/aot_dynamic_package.h"
 
 #include <chrono>
 #include <filesystem>

@@ -1,5 +1,5 @@
-#include "core/filesystem_path.h"
-#include "core/string_utils.h"
+#include "core/io/filesystem_path.h"
+#include "core/text/string_utils.h"
 #include "editor/workspace/editor_layout.h"
 #include "editor/workspace/editor_shell.h"
 

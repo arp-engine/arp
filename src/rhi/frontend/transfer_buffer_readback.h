@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/buffer_readback_range.h"
 #include "rhi/frontend/resource_leases.h"
 #include "rhi/gpu_device.h"

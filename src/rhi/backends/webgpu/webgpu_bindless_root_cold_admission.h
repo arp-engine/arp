@@ -2,12 +2,12 @@
 #include "rhi/backends/webgpu/webgpu_bindless_root.h"
 #include "rhi/backends/webgpu/webgpu_canonical_callback_layout.h"
 #include "rhi/backends/webgpu/webgpu_native_runtime.h"
+#include "rhi/frontend/bindless_initialized_graphics.h"
 #include "rhi/frontend/bindless_mixed_entry_flow.h"
 #include "rhi/frontend/bindless_produced_geometry.h"
 #include "rhi/frontend/bindless_root_callback.h"
 #include "rhi/frontend/bindless_root_native_sequence.h"
 #include "rhi/frontend/bindless_root_readback_sequence.h"
-#include "rhi/frontend/bindless_scene_content.h"
 
 namespace arp::rhi_webgpu {
 // Same canonical inventory/graph/stream/seal. No encoder, replacement journal,
@@ -46,7 +46,7 @@ public:
         std::shared_ptr<const Closure> final,
         const Readbacks::Input& readbackInput = {},
         const Roots::Input& rootInput = {},
-        const rhi::OriginalBindlessSceneContentInputs& scene = {})
+        const rhi::OriginalBindlessInitializedGraphicsInputs& scene = {})
         : roots_({std::move(closure), std::move(next), std::move(final)}, rootInput),
           closure_(roots_.atOrEmpty(0u)), reservation_(std::move(reservation)),
           readbacks_(std::move(binding), readbackInput), binding_(readbacks_.faultBinding()),
@@ -193,6 +193,17 @@ public:
                     op.kind, programRequest))
                 return id;
             switch (op.kind) {
+            case K::RetainIndexedSnapshot:
+                if (op.referenceCount != 1u
+                    || binding->originalProgram()
+                            ->originalInputs()
+                            ->originalScalars()
+                            ->originalUsage()
+                            ->references()[op.firstReference]
+                            .sourceIndex
+                        != binding->rootSourceIndex())
+                    return "RHI-WEBGPU-ROOT-SNAPSHOT-CORRESPONDENCE";
+                break;
             case K::BufferBarrier:
             case K::BeginTransferPass:
             case K::EndTransferPass:
@@ -315,7 +326,7 @@ public:
         const Readbacks::Input& readbackInput = {},
         const Roots::Input& rootInput = {},
         const rhi::OriginalBindlessProducedGeometryInputs& producedGeometry = {},
-        const rhi::OriginalBindlessSceneContentInputs& scene = {})
+        const rhi::OriginalBindlessInitializedGraphicsInputs& scene = {})
     {
         diagnostic = rhi::semantics::OriginalBindlessRootCallbackColdLowering::lowering(
             device.backend(), budget.contractVersion)
@@ -357,7 +368,7 @@ public:
             diagnostic = "RHI-BINDLESS-PRODUCED-EXECUTION-INPUT-SCHEMA";
         if (diagnostic)
             return {};
-        diagnostic = rhi::OriginalBindlessSceneContentContract::inspectNative(
+        diagnostic = rhi::OriginalBindlessInitializedGraphicsContract::inspectNative(
             closure, binding->originalProgram(), scene);
         if (diagnostic)
             return {};
@@ -404,7 +415,7 @@ public:
             return id;
         // Immutable bytes were checked at cold admission. Pending validation
         // checks the retained root identity without observing committed state.
-        if (const auto* id = rhi::OriginalBindlessSceneContentContract::validateRootInput(
+        if (const auto* id = rhi::OriginalBindlessInitializedGraphicsContract::validateRootInput(
                 closure_->originalRoot(), scene_))
             return id;
         if (const auto* id = roots_.validate(closure_->originalInventory(),
@@ -580,6 +591,6 @@ private:
     const std::uint32_t owners_;
     const std::shared_ptr<const Closure>& next_;
     const std::shared_ptr<const Closure>& final_;
-    const rhi::OriginalBindlessSceneContentInputs scene_;
+    const rhi::OriginalBindlessInitializedGraphicsInputs scene_;
 };
 } // namespace arp::rhi_webgpu

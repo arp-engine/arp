@@ -1,5 +1,5 @@
 #pragma once
-#include "core/ibl_bake.h"
+#include "core/math/half_float.h"
 #include "cpu_quota_factory_fixture.h"
 #include "original_command_upload_stream_builder_fixture.h"
 #include "original_storage_pipeline_fixture.h"
@@ -918,11 +918,10 @@ public:
                             if constexpr (mixed) {
                                 std::array<std::uint16_t, 20u> expected;
                                 for (unsigned pixel = 0u; pixel < 4u; ++pixel) {
-                                    const auto nearest =
-                                        core::ibl::floatToHalf(mixedDepthValues[pixel]);
+                                    const auto nearest = core::floatToHalf(mixedDepthValues[pixel]);
                                     const auto towardZero =
-                                        core::ibl::floatToHalf(mixedDepthValues[pixel],
-                                            core::ibl::HalfFloatRounding::TowardZero);
+                                        core::floatToHalf(mixedDepthValues[pixel],
+                                            core::HalfFloatRounding::TowardZero);
                                     const auto half = packed[pixel * 4u];
                                     if (half != nearest && half != towardZero)
                                         std::fprintf(stderr,
@@ -966,7 +965,7 @@ public:
                                     *output->originalObject(), values, diagnostic));
                                 for (unsigned lane = 0u; lane < values.size(); ++lane)
                                     assert(values[lane]
-                                        == core::ibl::halfToFloat(
+                                        == core::halfToFloat(
                                             expected[(lane < 4u ? 0u : 16u) + lane % 4u]));
                                 require(mixedDepthRoot->originalCompletedDepthAt(0u)->validate());
                                 std::printf(

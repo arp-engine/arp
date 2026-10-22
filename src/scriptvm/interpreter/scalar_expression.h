@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/borrowed_lookup_cache.h"
-#include "core/cpu_allocator.h"
+#include "core/container/borrowed_lookup_cache.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/runtime/semantic_runtime.h"
 
 #include <array>

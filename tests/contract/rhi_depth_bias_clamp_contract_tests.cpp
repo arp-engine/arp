@@ -25,7 +25,7 @@
 //      only uses the constant/slope factors is valid on every backend,
 //      including a device that lacks the depthBiasClamp feature).
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/gpu_pipeline.h"
 #include "rhi/semantics/native_backend_capabilities.h"

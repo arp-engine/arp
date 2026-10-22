@@ -27,6 +27,16 @@ bool finiteMatrix(const core::Mat4& matrix)
     return true;
 }
 
+bool finiteSky(const EditorSceneViewportSky& sky)
+{
+    const auto finiteVec3 = [](core::Vec3 value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    };
+    return finiteVec3(sky.zenith) && finiteVec3(sky.horizon) && finiteVec3(sky.sunDirection)
+        && finiteVec3(sky.sunColor) && std::isfinite(sky.domeRadius) && sky.domeRadius > 0.0f
+        && (sky.sunDirection.x != 0.0f || sky.sunDirection.y != 0.0f || sky.sunDirection.z != 0.0f);
+}
+
 } // namespace
 
 EditorSceneViewportValidationResult validateEditorSceneViewportFrame(
@@ -47,6 +57,8 @@ EditorSceneViewportValidationResult validateEditorSceneViewportFrame(
     if (!std::isfinite(frame.cameraProjectionAspectRatio)
         || frame.cameraProjectionAspectRatio <= 0.0f)
         return {EditorSceneViewportDiagnostic::InvalidCameraAspect, 0};
+    if (frame.sky.present && !finiteSky(frame.sky))
+        return {EditorSceneViewportDiagnostic::InvalidSkyParameters, 0};
     if (frame.cameraAspectPolicy != scene::CameraAspectPolicyKind::Fixed
         && frame.cameraAspectPolicy != scene::CameraAspectPolicyKind::MatchViewport)
         return {EditorSceneViewportDiagnostic::InvalidCameraAspect, 0};
@@ -73,6 +85,15 @@ EditorSceneViewportValidationResult validateEditorSceneViewportFrame(
             return {EditorSceneViewportDiagnostic::MissingComponentIdentity, index};
         if (!finiteTransform(item.worldTransform))
             return {EditorSceneViewportDiagnostic::InvalidWorldTransform, index};
+        if (item.geometry != EditorSceneViewportGeometry::Mesh
+            && item.geometry != EditorSceneViewportGeometry::TerrainTile)
+            return {EditorSceneViewportDiagnostic::InvalidMeshData, index};
+        if (item.geometry == EditorSceneViewportGeometry::TerrainTile) {
+            const auto& t = item.worldTransform;
+            if (t.scale.x != 1.0f || t.scale.y != 1.0f || t.scale.z != 1.0f || t.rotation.x != 0.0f
+                || t.rotation.y != 0.0f || t.rotation.z != 0.0f || std::fabs(t.rotation.w) != 1.0f)
+                return {EditorSceneViewportDiagnostic::TerrainTransformUnsupported, index};
+        }
         if (item.meshResourceId.empty())
             return {EditorSceneViewportDiagnostic::MissingMeshResource, index};
         if (item.materialResourceId.empty())
@@ -105,6 +126,8 @@ const char* editorSceneViewportDiagnosticCode(EditorSceneViewportDiagnostic diag
         return "ARP-EDITOR-VIEWPORT-CAMERA-MATRIX-INVALID";
     case EditorSceneViewportDiagnostic::InvalidCameraAspect:
         return "ARP-EDITOR-VIEWPORT-CAMERA-ASPECT-INVALID";
+    case EditorSceneViewportDiagnostic::InvalidSkyParameters:
+        return "ARP-EDITOR-VIEWPORT-SKY-PARAMETERS-INVALID";
     case EditorSceneViewportDiagnostic::CameraViewportAspectMismatch:
         return "ARP-EDITOR-VIEWPORT-CAMERA-ASPECT-VIEWPORT-MISMATCH";
     case EditorSceneViewportDiagnostic::InvalidTargetExtent:
@@ -159,6 +182,14 @@ const char* editorSceneViewportDiagnosticCode(EditorSceneViewportDiagnostic diag
         return "ARP-EDITOR-VIEWPORT-MATERIAL-TEXTURE-NOT-READY";
     case EditorSceneViewportDiagnostic::MaterialTextureWrongType:
         return "ARP-EDITOR-VIEWPORT-MATERIAL-TEXTURE-WRONG-TYPE";
+    case EditorSceneViewportDiagnostic::TerrainResourceInvalid:
+        return "ARP-EDITOR-VIEWPORT-TERRAIN-RESOURCE-INVALID";
+    case EditorSceneViewportDiagnostic::TerrainSurfacePreviewUnsupported:
+        return "TERRAIN-SURFACE-PREVIEW-UNSUPPORTED";
+    case EditorSceneViewportDiagnostic::TerrainTransformUnsupported:
+        return "TERRAIN-INSTANCE-TRANSFORM-UNSUPPORTED";
+    case EditorSceneViewportDiagnostic::GeometryBudgetExceeded:
+        return "ARP-EDITOR-VIEWPORT-GEOMETRY-BUDGET-EXCEEDED";
     }
     return "ARP-EDITOR-VIEWPORT-DIAGNOSTIC-UNKNOWN";
 }

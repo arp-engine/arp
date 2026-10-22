@@ -1,8 +1,8 @@
 #pragma once
-
-#include "core/base64.h"
+#include "core/encoding/base64.h"
 #include "rhi/gpu_bindless.h"
 #include "rhi/gpu_pipeline.h"
+#include "rhi/semantics/bindless_initialized_graphics.h"
 #include "shader/native_buffer_memory_declarations.h"
 #include "shader/shader_reflection_cache.h"
 #include "shader/target_buffer_memory_declarations.h"
@@ -67,6 +67,7 @@ struct BindlessPackageFile {
 };
 
 struct BindlessPackageModule {
+    semantics::BindlessInitializedGraphicsContract::Profile initializedGraphics;
     core::pmr::String entry{&core::defaultCpuMemoryResource()};
     shader::ShaderReflectionModule reflection;
     std::uint32_t sourceFile = 0;
@@ -223,6 +224,11 @@ private:
     const BindlessPackageModule* vertex_ = nullptr;
     const BindlessPackageModule* fragment_ = nullptr;
 };
+
+// Select only authenticated package modules. Names identify modules; the sealed
+// versioned profile, never the spelling of those names, chooses the scope.
+ARP_API semantics::BindlessInitializedGraphicsContract::Selection selectBindlessInitializedGraphics(
+    const BindlessShaderPackage&, core::StringView vertex, core::StringView fragment) noexcept;
 
 // Authenticate the pipeline's explicit selected modules against this original
 // package before dereferencing them. Never select by merged layout similarity.

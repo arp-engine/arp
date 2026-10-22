@@ -1,6 +1,6 @@
 #include "ui/ui_font.h"
 
-#include "core/utf8.h"
+#include "core/text/utf8.h"
 #include "ui/ui_font_face_cache.h"
 
 #include <algorithm>

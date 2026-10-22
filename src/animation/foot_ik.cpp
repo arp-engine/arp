@@ -1,8 +1,8 @@
 #include "animation/foot_ik.h"
 
 #include "animation/ik.h"
-#include "core/cpu_allocator.h"
-#include "core/math.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
 #include <cmath>

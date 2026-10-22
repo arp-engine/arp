@@ -2,9 +2,9 @@
 
 // ArpScript: backend-neutral semantic operations.
 
-#include "core/borrowed_lookup_cache.h"
-#include "core/cpu_allocator.h"
-#include "core/int32_divisor.h"
+#include "core/container/borrowed_lookup_cache.h"
+#include "core/math/int32_divisor.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/runtime/diagnostics.h"
 #include "scriptvm/runtime/execution_slot.h"
 #include "scriptvm/runtime/scalar_value.h"
@@ -319,7 +319,7 @@ public:
     // Borrowed access for a proven uninterrupted nonescaping local. The caller
     // must prevent carrier replacement, aliases, host calls and suspension until
     // the access expires. No ownership or allocation is introduced by the borrow.
-    class UniqueStringAccess final {
+    class ARP_API UniqueStringAccess final {
     public:
         static UniqueStringAccess borrow(ExecutionSlot& local);
 
@@ -344,8 +344,15 @@ public:
     // Requires a nonescape proof; elements retain the normal Value ABI.
     static bool reuseUniqueList(
         ExecutionSlot& local, ExecutionSlotBuffer& operands, int count, std::size_t limit);
+    static bool reuseUniqueList(
+        ExecutionSlot& local, ExecutionSlotStackView& operands, int count, std::size_t limit);
     static bool reuseUniqueDictionary(ExecutionSlot& local,
         ExecutionSlotBuffer& operands,
+        int pairCount,
+        std::size_t limit,
+        PrivateDictionaryWriteScratch& scratch);
+    static bool reuseUniqueDictionary(ExecutionSlot& local,
+        ExecutionSlotStackView& operands,
         int pairCount,
         std::size_t limit,
         PrivateDictionaryWriteScratch& scratch);
@@ -353,7 +360,7 @@ public:
     // Only an immutable, call-free construction/read/scalar-tail self edge may
     // retain this topology. Existing nodes remain real Values; commits consume
     // the original operands in the original order. Destroy before PC replay.
-    class PrivateConstructionBorrow final {
+    class ARP_API PrivateConstructionBorrow final {
     public:
         PrivateConstructionBorrow() = default;
         PrivateConstructionBorrow(const PrivateConstructionBorrow&) = delete;
@@ -366,8 +373,24 @@ public:
             bool dictionary,
             PrivateDictionaryWriteScratch& scratch);
         bool commit(ExecutionSlotBuffer& operands) const;
+        bool bind(ExecutionSlot& local,
+            ExecutionSlotStackView& operands,
+            int count,
+            std::size_t limit,
+            bool dictionary,
+            PrivateDictionaryWriteScratch& scratch);
+        bool commit(ExecutionSlotStackView& operands) const;
+        void reset();
 
     private:
+        template <class Operands>
+        bool bindOperands(ExecutionSlot& local,
+            Operands& operands,
+            int count,
+            std::size_t limit,
+            bool dictionary,
+            PrivateDictionaryWriteScratch& scratch);
+        template <class Operands> bool commitOperands(Operands& operands) const;
         arp::reflection::hlist* list_ = nullptr;
         PrivateDictionaryWriteScratch* targets_ = nullptr;
         std::size_t start_ = 0;
@@ -401,6 +424,10 @@ public:
         ExecutionSlotBuffer& operands, int count, std::size_t maxContainerValues);
     static SemanticOperationResult makeDict(
         ExecutionSlotBuffer& operands, int pairCount, std::size_t maxContainerValues);
+    static SemanticOperationResult makeList(
+        ExecutionSlotStackView& operands, int count, std::size_t maxContainerValues);
+    static SemanticOperationResult makeDict(
+        ExecutionSlotStackView& operands, int pairCount, std::size_t maxContainerValues);
     static SemanticOperationResult makeRange(int start, int end, std::size_t maxContainerValues);
     // Consumes range bounds in bytecode order: end first, then start for the
     // two-bound form. The consumption order is part of the VM error contract.
@@ -430,19 +457,85 @@ public:
     // The caller proves an uninterrupted span without calls, suspension,
     // container replacement, key/size changes or writes except to existing
     // integer elements. Destroy this borrow before replaying any instruction.
-    class IntegerIndexUpdate;
+    class ARP_API IntegerIndexUpdate;
 
-    class IntegerIndexBorrow final {
+    class ARP_API IntegerIndexBorrow final {
     public:
         bool bind(const ExecutionSlot& base);
-        const Value* read(const ExecutionSlot& index) const;
-        bool readInteger(const ExecutionSlot& index, int& value) const;
+
+        const Value* readIntegerCarrier(int index) const
+        {
+            if (list_)
+                return index >= 0 && static_cast<std::size_t>(index) < list_->size()
+                    ? &(*list_)[static_cast<std::size_t>(index)]
+                    : nullptr;
+            if (!dictionary_)
+                return nullptr;
+            const auto* key = integers_.find(index);
+            const auto* payload = key ? exactValuePayload<int>(*key) : nullptr;
+            return payload ? find(*key, *payload) : nullptr;
+        }
+
+        const Value* read(const ExecutionSlot& index) const
+        {
+            const auto* raw = index.scalarPointer<int>();
+            if (!raw || (!index.inlineScalar() && index.boxed().is_native_reference()))
+                return nullptr;
+            if (list_)
+                return *raw >= 0 && static_cast<std::size_t>(*raw) < list_->size()
+                    ? &(*list_)[static_cast<std::size_t>(*raw)]
+                    : nullptr;
+            if (!dictionary_)
+                return nullptr;
+            const auto* key = index.inlineScalar() ? integers_.find(*raw) : &index.boxed();
+            const auto* payload = key ? checkedOwnedValuePayload<int>(*key) : nullptr;
+            return payload ? find(*key, *payload) : nullptr;
+        }
+
+        bool readInteger(const ExecutionSlot& index, int& value) const
+        {
+            const auto* element = read(index);
+            const auto* payload = element ? checkedOwnedValuePayload<int>(*element) : nullptr;
+            if (!payload)
+                return false;
+            value = *payload;
+            return true;
+        }
+
         Value* destination(const ExecutionSlot& index) const;
 
     private:
         friend class IntegerIndexUpdate;
         bool resolve(const ExecutionSlot& index, const Value*& source, Value*& destination) const;
-        Value* find(const Value& key, int payload) const;
+
+        bool resolveInteger(int index, const Value*& source, Value*& destination) const
+        {
+            const auto* key = integers_.find(index);
+            const auto* actual = key ? exactValuePayload<int>(*key) : nullptr;
+            if (!actual)
+                return false;
+            if (list_) {
+                if (index < 0 || static_cast<std::size_t>(index) >= list_->size() || *actual < 0
+                    || static_cast<std::size_t>(*actual) >= list_->size())
+                    return false;
+                source = &(*list_)[static_cast<std::size_t>(index)];
+                destination = &(*list_)[static_cast<std::size_t>(*actual)];
+            } else if (dictionary_)
+                source = destination = find(*key, *actual);
+            else
+                return false;
+            return source != nullptr && destination != nullptr;
+        }
+
+        Value* find(const Value& key, int payload) const
+        {
+            const Value* element;
+            if (cache_.find(payload, element))
+                return const_cast<Value*>(element);
+            return findUncached(key, payload);
+        }
+
+        Value* findUncached(const Value& key, int payload) const;
         arp::reflection::hlist* list_ = nullptr;
         arp::reflection::hdict* dictionary_ = nullptr;
         // Same explicit stack-storage policy as readonly scalar index access.
@@ -453,16 +546,171 @@ public:
         IntegerValueCacheBorrow integers_;
     };
 
-    class IntegerIndexUpdate final {
+    class ARP_API IntegerIndexUpdate final {
     public:
         bool bind(const ExecutionSlot& base, const ExecutionSlot& index, int& source);
         bool bind(const IntegerIndexBorrow& borrow, const ExecutionSlot& index, int& source);
+
+        // The caller retains the original inline-index semantics. In particular,
+        // list reads use index while writes use makeInt(index)'s actual payload.
+        bool bindInteger(const IntegerIndexBorrow& borrow, int index, int& source)
+        {
+            destination_ = nullptr;
+            source_ = nullptr;
+            integers_ = borrow.integers_;
+            const Value* element;
+            Value* destination;
+            return borrow.resolveInteger(index, element, destination)
+                && bindResolved(element, destination, source);
+        }
+
         bool readSource(int& value) const;
-        void commit(int value) const;
+
+        void commit(int value) const
+        {
+            assert(destination_ != nullptr);
+            // Replace the carrier, preserving aliases and the cache's actual
+            // payload. A cold cache miss retains makeInt's allocation/quota path.
+            if (const auto* cached = integers_.find(value))
+                *destination_ = *cached;
+            else
+                *destination_ = makeInt(value);
+        }
 
     private:
+        bool bindResolved(const Value* element, Value* destination, int& source)
+        {
+            const auto* actual = exactValuePayload<int>(*element);
+            if (!actual || (destination != element && !exactValuePayload<int>(*destination)))
+                return false;
+            source = *actual;
+            destination_ = destination;
+            source_ = element;
+            return true;
+        }
+
         Value* destination_ = nullptr;
         const Value* source_ = nullptr;
+        IntegerValueCacheBorrow integers_;
+    };
+
+    // A callback-free readonly relation. Owners retain container topology and
+    // dictionary key bytes until rebinding; mapped values are read on every use.
+    class ARP_API ReadonlyIndexBorrow final {
+    public:
+        bool bind(const ExecutionSlot& base);
+
+        const Value* readIntegerCarrier(int index) const
+        {
+            return !strings_ ? integers_.readIntegerCarrier(index) : nullptr;
+        }
+
+        const Value* read(const ExecutionSlot& index) const
+        {
+            if (!strings_)
+                return integers_.read(index);
+            const auto* carrier = index.boxedCarrier();
+            const auto* text = index.immutableLiteral();
+            if (!text && carrier)
+                text = exactValuePayload<core::pmr::String>(*carrier);
+            // An exact selector binds the same type_of<String> as the admitted keys.
+            // No host callback or key/metadata mutation is allowed during this borrow.
+            assert(!text || !carrier
+                || (carrier->class_() && carrier->class_()->hasBuiltinOrdering()));
+            if (!text)
+                return nullptr;
+            const Value* element;
+            if (cache_.find({text}, element))
+                return element;
+            return cacheString(index.boxed());
+        }
+
+        // Nested indexing already has the owner's actual key carrier. Borrow
+        // it directly instead of manufacturing a temporary shared slot.
+        const Value* readCarrier(const Value& key) const
+        {
+            const auto* text = exactValuePayload<core::pmr::String>(key);
+            if (!strings_ || !text)
+                return nullptr;
+            const Value* element;
+            return cache_.find({text}, element) ? element : cacheString(key);
+        }
+
+    private:
+        const Value* cacheString(const Value& key) const
+        {
+            const auto found = strings_->find(key);
+            if (found == strings_->end())
+                return nullptr;
+            const auto* element = &found->second;
+            // Retain the owner's key object, never a temporary lookup string.
+            cache_.insert({exactValuePayload<core::pmr::String>(found->first)}, element);
+            return element;
+        }
+
+    public:
+        bool prepareUpdate(
+            const ExecutionSlot& index, IntegerIndexUpdate& update, int& source) const
+        {
+            return !strings_ && update.bind(integers_, index, source);
+        }
+
+        bool prepareIntegerUpdate(int index, IntegerIndexUpdate& update, int& source) const
+        {
+            return !strings_ && update.bindInteger(integers_, index, source);
+        }
+
+        bool readInteger(const ExecutionSlot& index, int& value) const
+        {
+            if (!strings_)
+                return integers_.readInteger(index, value);
+            const auto* element = read(index);
+            const auto* payload = element ? checkedOwnedValuePayload<int>(*element) : nullptr;
+            if (!payload)
+                return false;
+            value = *payload;
+            return true;
+        }
+
+    private:
+        struct StringKey {
+            const core::pmr::String* text;
+
+            bool operator==(const StringKey& other) const { return *text == *other.text; }
+        };
+
+        IntegerIndexBorrow integers_;
+        const arp::reflection::hdict* strings_ = nullptr;
+        static constexpr std::size_t lookupStorageBytes = 64u;
+        static constexpr std::size_t lookupEntries =
+            lookupStorageBytes / core::BorrowedLookupCache<StringKey, Value, 0u>::entryBytes;
+        mutable core::BorrowedLookupCache<StringKey, Value, lookupEntries> cache_;
+    };
+
+    // Both owners and selector nodes must remain alive and unchanged throughout
+    // this scope. Mapped Values may be replaced: cache only their real addresses.
+    // Generated closed regions destroy this relation before canonical replay.
+    class StableStringIndexBorrow final {
+    public:
+        explicit StableStringIndexBorrow(const ReadonlyIndexBorrow& owner) : owner_(owner) {}
+
+        const Value* read(const Value& key) const
+        {
+            const Value* element;
+            if (cache_.find(&key, element))
+                return element;
+            element = owner_.readCarrier(key);
+            if (element)
+                cache_.insert(&key, element);
+            return element;
+        }
+
+    private:
+        static constexpr std::size_t lookupStorageBytes = 64u;
+        static constexpr std::size_t lookupEntries =
+            lookupStorageBytes / core::BorrowedLookupCache<const Value*, Value, 0u>::entryBytes;
+        const ReadonlyIndexBorrow& owner_;
+        mutable core::BorrowedLookupCache<const Value*, Value, lookupEntries> cache_;
     };
 
     static SemanticOperationResult storeIndex(Value base, Value index, Value value);

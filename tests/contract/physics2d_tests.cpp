@@ -1,5 +1,5 @@
-#include "physics2d/physics_script_domain.h"
-#include "physics2d/physics_world_2d.h"
+#include "2d/physics_script_domain.h"
+#include "physics/2d/physics_world_2d.h"
 
 #include <cassert>
 #include <cmath>

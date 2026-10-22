@@ -2,6 +2,7 @@
 #include "rhi/frontend/command_model.h"
 #include "rhi/frontend/resource_texture_validation.h"
 #include "rhi/gpu_commands.h"
+#include "rhi/semantics/bindless_closure_extensions.h"
 
 namespace arp::rhi {
 // ProducedImageRead/1 composes a previously completed RGBA16F mip chain with
@@ -42,19 +43,8 @@ public:
 
     static constexpr Decision lowering(Backend backend, std::uint32_t version) noexcept
     {
-        if (version != 1u)
-            return {false, false, false, "RHI-BINDLESS-PRODUCED-IMAGE-VERSION"};
-        switch (backend) {
-        case Backend::Null:
-            return {true, true, false, nullptr};
-        case Backend::Vulkan:
-        case Backend::Metal:
-        case Backend::WebGPU:
-            return {true, false, false, nullptr};
-        case Backend::WebGL:
-            return {false, false, false, "RHI-WEBGL1-BINDLESS-PRODUCED-IMAGE-UNSUPPORTED"};
-        }
-        return {};
+        return semantics::BindlessClosureExtensionLowering::produced_image<Decision>(
+            backend, version);
     }
 
     static constexpr bool acceptsControl(std::uint32_t version) noexcept

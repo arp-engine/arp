@@ -7,7 +7,7 @@
 // part of the performance regression and is being reverted).
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/def.h"
 #include "reflection/internal/function_invoker.h"
 #include "reflection/object.h"

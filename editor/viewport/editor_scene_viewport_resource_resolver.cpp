@@ -2,6 +2,9 @@
 
 #include "resource/mesh_asset_resources.h"
 #include "resource/prefab_asset_resources.h"
+#include "resource/terrain_asset_resource.h"
+
+#include <limits>
 
 namespace arp::editor {
 namespace {
@@ -51,31 +54,62 @@ EditorSceneViewportResourceResolution resolveEditorSceneViewportResources(
         EditorSceneViewportResolvedItem item;
         item.meshResourceId = draw.meshResourceId;
         item.materialResourceId = draw.materialResourceId;
-        const auto mesh = resources.find<resource::MeshAssetResource>(draw.meshResourceId);
-        if (!mesh.ready()) {
-            item.diagnostic = resourceFailure<resource::MeshAssetResource>(resources,
-                draw.meshResourceId,
-                EditorSceneViewportDiagnostic::MissingMeshResource,
-                EditorSceneViewportDiagnostic::MeshResourceNotReady,
-                EditorSceneViewportDiagnostic::MeshResourceWrongType);
-            result.items.push_back(std::move(item));
-            continue;
+        item.geometry = draw.geometry;
+        item.tile = draw.tile;
+        if (draw.geometry == EditorSceneViewportGeometry::TerrainTile) {
+            const auto terrain =
+                resources.find<resource::TerrainAssetResource>(draw.meshResourceId);
+            resource::TerrainAssetTileReadView view;
+            if (!terrain.ready() || !terrain.get()->tileReadView(draw.tile, view)
+                || !view.geometryValid()) {
+                item.diagnostic = EditorSceneViewportDiagnostic::TerrainResourceInvalid;
+                result.items.push_back(std::move(item));
+                continue;
+            }
+            if (terrain.get()->hasSurfaceWeights() || terrain.get()->hasVegetation()) {
+                item.diagnostic = EditorSceneViewportDiagnostic::TerrainSurfacePreviewUnsupported;
+                result.items.push_back(std::move(item));
+                continue;
+            }
+            const auto samples = static_cast<std::uint64_t>(view.samplesPerEdge);
+            const auto cells = samples - 1u;
+            if (samples * samples > UINT32_MAX
+                || cells * cells > std::numeric_limits<std::size_t>::max() / 6u) {
+                item.diagnostic = EditorSceneViewportDiagnostic::GeometryBudgetExceeded;
+                result.items.push_back(std::move(item));
+                continue;
+            }
+            item.meshGeneration = terrain.generation();
+            item.vertexCount = static_cast<std::size_t>(samples * samples);
+            item.indexCount = static_cast<std::size_t>(cells * cells * 6u);
+            item.submeshCount = 1u;
+        } else {
+            const auto mesh = resources.find<resource::MeshAssetResource>(draw.meshResourceId);
+            if (!mesh.ready()) {
+                item.diagnostic = resourceFailure<resource::MeshAssetResource>(resources,
+                    draw.meshResourceId,
+                    EditorSceneViewportDiagnostic::MissingMeshResource,
+                    EditorSceneViewportDiagnostic::MeshResourceNotReady,
+                    EditorSceneViewportDiagnostic::MeshResourceWrongType);
+                result.items.push_back(std::move(item));
+                continue;
+            }
+            const auto* asset = mesh.get()->mesh();
+            if (asset == nullptr || !asset->validForIndexedDraw()) {
+                item.diagnostic = EditorSceneViewportDiagnostic::InvalidMeshData;
+                result.items.push_back(std::move(item));
+                continue;
+            }
+            if (!mesh.get()->immutableMeshGeometry()) {
+                item.diagnostic = EditorSceneViewportDiagnostic::MutableMeshGeometryUnsupported;
+                result.items.push_back(std::move(item));
+                continue;
+            }
+            item.meshGeneration = mesh.generation();
+            item.vertexCount = asset->vertices.size();
+            item.indexCount = asset->indices.size();
+            item.submeshCount = asset->submeshes.size();
         }
-        const auto* asset = mesh.get()->mesh();
-        if (asset == nullptr || !asset->validForIndexedDraw()) {
-            item.diagnostic = EditorSceneViewportDiagnostic::InvalidMeshData;
-            result.items.push_back(std::move(item));
-            continue;
-        }
-        if (!mesh.get()->immutableMeshGeometry()) {
-            item.diagnostic = EditorSceneViewportDiagnostic::MutableMeshGeometryUnsupported;
-            result.items.push_back(std::move(item));
-            continue;
-        }
-        item.meshGeneration = mesh.generation();
-        item.vertexCount = asset->vertices.size();
-        item.indexCount = asset->indices.size();
-        item.submeshCount = asset->submeshes.size();
 
         const auto material = resources.find<resource::MaterialResource>(draw.materialResourceId);
         if (!material.ready()) {

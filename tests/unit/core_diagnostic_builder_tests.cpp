@@ -1,5 +1,5 @@
-#include "core/cpu_allocator.h"
-#include "core/diagnostic_builder.h"
+#include "core/diagnostics/diagnostic_builder.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cassert>
 #include <memory_resource>

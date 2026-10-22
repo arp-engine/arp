@@ -1,6 +1,6 @@
 #pragma once
-#include "core/strided_index_range.h"
-#include "core/unsigned_range.h"
+#include "core/algorithm/strided_index_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/frontend/resource_texture_aspect_validation.h"
 #include "rhi/gpu_commands.h"
 

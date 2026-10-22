@@ -25,7 +25,7 @@
 //
 // Status: Contract Complete.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/gpu_common.h"
 #include "rhi/semantics/device_construction_lowering.h"
 

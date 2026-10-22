@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/frontend/command_retention_budget.h"
 #include "rhi/gpu_execution_status.h"
 #include "rhi/gpu_texture_format.h"
@@ -78,6 +78,19 @@ struct CommandRetentionCapabilities {
     bool boundedRecordingPayload = false;
     bool completionRetiresOwners = false;
     bool validatorOnly = false;
+};
+
+// Independent opt-in capability; availability never enables ordinary recording
+// or NativeSync. Version zero is unavailable on every backend by default.
+enum class PrototypeCommandBatchMode : std::uint8_t { DiagnosticFailure, Prototype };
+
+struct PrototypeCommandBatchCapabilities {
+    std::uint32_t contractVersion = 0;
+    PrototypeCommandBatchMode mode = PrototypeCommandBatchMode::DiagnosticFailure;
+    bool boundedRecording = false;
+    bool nativeCompletion = false;
+    bool passBoundaryOrdering = false;
+    bool acquiredImageLeaseValidation = false;
 };
 
 /// Numeric compute/resource facts required by algorithms such as Forward+.
@@ -348,6 +361,7 @@ struct DeviceCapabilities {
     MemoryCapabilities memory;
     RuntimeFeatureCapabilities features;
     CommandRetentionCapabilities commandRetention;
+    PrototypeCommandBatchCapabilities prototypeCommandBatch;
 
     /// Full planner result, kept separate from boolean feature compatibility
     /// fields so Native/Emulated/CpuReplay remain distinguishable.

@@ -1,10 +1,10 @@
 #pragma once
 
 #include "audio/audio_system.h"
-#include "core/callback.h"
-#include "core/cpu_allocator.h"
+#include "core/concurrency/callback.h"
+#include "core/memory/cpu_allocator.h"
 #include "editor/workspace/editor_scene_component_catalog.h"
-#include "physics2d/physics_world_2d.h"
+#include "physics/2d/physics_world_2d.h"
 #include "resource/resource_manager.h"
 #include "scene/component.h"
 

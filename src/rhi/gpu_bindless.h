@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/lifetime_epoch.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/lifetime_epoch.h"
 #include "rhi/frontend/bindless_binding_budget.h"
 #include "rhi/gpu_commands.h"
 #include "rhi/gpu_descriptors.h"
@@ -498,6 +498,9 @@ struct RenderPipelineDesc;
 struct RenderPassDesc;
 ARP_API ValidationResult validateBindlessRenderPass(
     const RenderPipelineDesc&, const RenderPassDesc&);
+struct PipelineValidationReport;
+ARP_API ValidationResult validateBindlessRenderPass(
+    const PipelineValidationReport&, const RenderPassDesc&);
 
 class ARP_API BindlessCrossExtension {
 public:
@@ -513,10 +516,12 @@ public:
     std::shared_ptr<const OriginalInitializedGeometrySource> prepareOriginalInitializedBuffer(
         GpuDevice&, const OriginalInitializedBufferRequest&, const char*& diagnostic) const;
 
-    // Cold mixed SnapshotAllocation/1 query. Returns the resident envelope for
+    // Cold SnapshotAllocation/1 (Compute) or /2 (also Vertex/Fragment) query.
+    // Returns the resident envelope for
     // a local artifact projection, never edits the immutable shader package.
     // Query failure returns zero. Ordinary execution and mode selection are
-    // unaffected; the independently published Preparation9 capability is needed.
+    // unaffected. /1 needs Preparation9; /2 needs queried device limits and
+    // authentic backend allocation queries, independent of mixed-image execution.
     std::uint64_t queryOriginalMixedSnapshotAllocation(
         const BindlessShaderArtifact&, std::uint32_t version, const char*& diagnostic) const;
 

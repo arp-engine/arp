@@ -1,7 +1,8 @@
 #pragma once
 
 #include "assets/asset_pipeline.h"
-#include "core/cpu_allocator.h"
+#include "assets/mesh_source_ranges.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/gpu_device.h"
 
 #include <algorithm>
@@ -56,6 +57,10 @@ public:
 
     const std::pmr::vector<SubmeshDrawBounds>& submeshBounds() const { return submeshBounds_; }
 
+    const core::pmr::Vector<assets::MeshSourceRange>& sourceRanges() const { return sourceRanges_; }
+
+    std::uint32_t sourceRangesVersion() const { return sourceRangesVersion_; }
+
     uint64_t backendResourceId() const { return backendResourceId_; }
 
     bool compatibleWith(const MeshAsset& mesh) const
@@ -71,12 +76,25 @@ public:
 
     void setBackendResourceId(uint64_t id) { backendResourceId_ = id; }
 
+    bool immutable() const noexcept { return immutable_; }
+
+    void markImmutable() noexcept
+    {
+        immutable_ = true;
+        if (vertexBuffer_)
+            vertexBuffer_->sealHostWrites();
+        if (indexBuffer_)
+            indexBuffer_->sealHostWrites();
+    }
+
     void reset(arp::core::UniquePtr<rhi::GpuBuffer> vertexBuffer,
         arp::core::UniquePtr<rhi::GpuBuffer> indexBuffer,
         size_t vertexCount,
         size_t indexCount,
         std::pmr::vector<Submesh> submeshes,
-        std::pmr::vector<SubmeshDrawBounds> submeshBounds = {})
+        std::pmr::vector<SubmeshDrawBounds> submeshBounds = {},
+        core::pmr::Vector<assets::MeshSourceRange> sourceRanges = {},
+        std::uint32_t sourceRangesVersion = 0u)
     {
         vertexBuffer_ = std::move(vertexBuffer);
         indexBuffer_ = std::move(indexBuffer);
@@ -84,17 +102,24 @@ public:
         indexCount_ = indexCount;
         submeshes_ = std::move(submeshes);
         submeshBounds_ = std::move(submeshBounds);
+        sourceRanges_ = std::move(sourceRanges);
+        sourceRangesVersion_ = sourceRangesVersion;
+        immutable_ = false;
     }
 
     void updateMetadata(size_t vertexCount,
         size_t indexCount,
         std::pmr::vector<Submesh> submeshes,
-        std::pmr::vector<SubmeshDrawBounds> submeshBounds = {})
+        std::pmr::vector<SubmeshDrawBounds> submeshBounds = {},
+        core::pmr::Vector<assets::MeshSourceRange> sourceRanges = {},
+        std::uint32_t sourceRangesVersion = 0u)
     {
         vertexCount_ = vertexCount;
         indexCount_ = indexCount;
         submeshes_ = std::move(submeshes);
         submeshBounds_ = std::move(submeshBounds);
+        sourceRanges_ = std::move(sourceRanges);
+        sourceRangesVersion_ = sourceRangesVersion;
     }
 
 private:
@@ -102,9 +127,12 @@ private:
     arp::core::UniquePtr<rhi::GpuBuffer> indexBuffer_;
     size_t vertexCount_ = 0;
     size_t indexCount_ = 0;
-    std::pmr::vector<Submesh> submeshes_;
-    std::pmr::vector<SubmeshDrawBounds> submeshBounds_;
+    std::pmr::vector<Submesh> submeshes_{&core::defaultCpuMemoryResource()};
+    std::pmr::vector<SubmeshDrawBounds> submeshBounds_{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<assets::MeshSourceRange> sourceRanges_{&core::defaultCpuMemoryResource()};
+    std::uint32_t sourceRangesVersion_ = 0u;
     uint64_t backendResourceId_ = 0;
+    bool immutable_ = false;
 };
 
 struct MeshGpuBufferResult {
@@ -121,7 +149,7 @@ struct MeshGpuBufferUploadResult {
 
 inline std::pmr::vector<SubmeshDrawBounds> calculateSubmeshDrawBounds(const MeshAsset& mesh)
 {
-    std::pmr::vector<SubmeshDrawBounds> bounds;
+    std::pmr::vector<SubmeshDrawBounds> bounds{&core::defaultCpuMemoryResource()};
     bounds.reserve(mesh.submeshes.size());
     for (const auto& submesh : mesh.submeshes) {
         if (submesh.indexCount == 0
@@ -181,6 +209,11 @@ inline std::pmr::vector<SubmeshDrawBounds> calculateSubmeshDrawBounds(const Mesh
 
 inline MeshGpuBufferResult uploadMeshToRhi(rhi::GpuDevice& device, const MeshAsset& mesh)
 {
+    try {
+        assets::validateMeshSourceRanges(mesh);
+    } catch (const core::DiagnosticError& error) {
+        return {false, error.what(), {}};
+    }
     if (!mesh.validForIndexedDraw()) {
         return MeshGpuBufferResult{false, "mesh is not valid for indexed draw", {}};
     }
@@ -221,13 +254,22 @@ inline MeshGpuBufferResult uploadMeshToRhi(rhi::GpuDevice& device, const MeshAss
         mesh.vertices.size(),
         mesh.indices.size(),
         mesh.submeshes,
-        calculateSubmeshDrawBounds(mesh));
+        calculateSubmeshDrawBounds(mesh),
+        mesh.sourceRanges,
+        mesh.sourceRangesVersion);
     return MeshGpuBufferResult{true, "", std::move(uploaded)};
 }
 
 inline MeshGpuBufferUploadResult uploadOrUpdateMeshToRhi(
     rhi::GpuDevice& device, const MeshAsset& mesh, MeshGpuBuffer& output)
 {
+    if (output.immutable())
+        return {false, "IMMUTABLE-MESH-UPDATE-FORBIDDEN", false};
+    try {
+        assets::validateMeshSourceRanges(mesh);
+    } catch (const core::DiagnosticError& error) {
+        return {false, error.what(), false};
+    }
     if (!mesh.validForIndexedDraw()) {
         return MeshGpuBufferUploadResult{false, "mesh is not valid for indexed draw", false};
     }
@@ -251,7 +293,9 @@ inline MeshGpuBufferUploadResult uploadOrUpdateMeshToRhi(
         output.updateMetadata(mesh.vertices.size(),
             mesh.indices.size(),
             mesh.submeshes,
-            calculateSubmeshDrawBounds(mesh));
+            calculateSubmeshDrawBounds(mesh),
+            mesh.sourceRanges,
+            mesh.sourceRangesVersion);
         return MeshGpuBufferUploadResult{true, "", true};
     }
 

@@ -1,5 +1,5 @@
 #pragma once
-#include "core/quota_bound_shared_identity.h"
+#include "core/ownership/quota_bound_shared_identity.h"
 #include "rhi/frontend/resource_device_loss_registration.h"
 #include "rhi/semantics/resource_lowering.h"
 

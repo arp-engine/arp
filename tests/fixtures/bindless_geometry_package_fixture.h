@@ -1,5 +1,5 @@
 #pragma once
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "shader/shader_artifact_files.h"
 
@@ -45,7 +45,7 @@ class BindlessGeometryPackageFixture final {
         core::pmr::Vector<Request::BindingPlan> bindings;
         Request target;
         std::array<core::pmr::Vector<Native::MatrixTargetPath>, 4u> nativePaths;
-        std::array<std::array<std::array<Path::Step, 3u>, 4u>, 4u> pathSteps;
+        std::array<std::array<std::array<Path::Step, 4u>, 4u>, 4u> pathSteps;
         std::array<core::pmr::Vector<Native::Lowering::ArrayWrapper>, 4u> wrappers;
         core::pmr::Vector<Native::Binding> nativeBindings;
         Native native;
@@ -108,7 +108,7 @@ class BindlessGeometryPackageFixture final {
         for (const auto& path : paths)
             if (path.sourceType == source)
                 return;
-        assert(paths.size() < 4u && steps.size() <= 3u);
+        assert(paths.size() < 4u && steps.size() <= 4u);
         auto& storage = entry.pathSteps[binding][paths.size()];
         std::copy(steps.begin(), steps.end(), storage.begin());
         paths.push_back({source, {storage.data(), steps.size()}});
@@ -132,16 +132,15 @@ class BindlessGeometryPackageFixture final {
                     const auto array = member(source, wrapper, 0u);
                     assert(source.nodes()[array].kind == Graph::Kind::FixedArray
                         && source.nodes()[array].count == 256u);
-                    auto& wrappers = entry.wrappers[2u];
-                    bool exists = false;
-                    for (const auto& value : wrappers)
-                        exists = exists || value.wrapperType == wrapper;
-                    if (!exists)
-                        wrappers.push_back({Native::Lowering::Side::Source, wrapper});
+                    // Both std140 SPIR-V and the pinned MSL std::array
+                    // declaration retain one authored array wrapper. The real
+                    // driver reports current.skinMatrices.__elems[element].
+                    // Compare both wrappers; do not erase only the source one.
                     nativeMatrix(entry,
                         2u,
                         source.nodes()[array].child,
                         {{Path::Kind::Member, temporal},
+                            {Path::Kind::Member, 0u},
                             {Path::Kind::Member, 0u},
                             {Path::Kind::ArrayElement, 0u}});
                 }
@@ -162,7 +161,7 @@ class BindlessGeometryPackageFixture final {
                                            : Native::Lowering::RootForm::Block},
                 paths.data(),
                 paths.size(),
-                paths.size() * 3u});
+                paths.size() * 4u});
         }
         entry.native = {3u, graphBudget, entry.nativeBindings.data(), entry.nativeBindings.size()};
     }

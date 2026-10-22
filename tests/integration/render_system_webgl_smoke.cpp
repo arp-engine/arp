@@ -1,5 +1,5 @@
-#include "core/diagnostic_error.h"
-#include "core/quad_geometry.h"
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/math/quad_geometry.h"
 #include "platform/render_system.h"
 #include "platform/render_system_ordered_profile.h"
 

@@ -1,5 +1,5 @@
 #pragma once
-#include "core/generation_pool.h"
+#include "core/container/generation_pool.h"
 #include "core/runtime/work_service.h"
 
 namespace arp::core::io {
@@ -11,6 +11,11 @@ struct AtomicFileResult {
     pmr::Vector<std::uint8_t> bytes;
     pmr::String diagnostic;
 };
+
+// Preparation/tooling-only synchronous boundary; runtime callers use the
+// bounded worker service. Shares the same OS replacement implementation.
+ARP_API AtomicFileResult replaceFileAtomically(
+    const pmr::String& path, const pmr::Vector<std::uint8_t>& bytes);
 
 // Bounded, single worker, ordered requests. Poll/take on the owner thread.
 // Validation occurs before replacement; invalid existing files are preserved.

@@ -1,13 +1,14 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/def.h"
 
 #include <cstddef>
 #include <cstdint>
 
 namespace arp::reflection {
+struct CollectionAccess;
 
 class class_info;
 class db;
@@ -111,6 +112,7 @@ public:
     bool commit(
         NameView expectedFingerprint, RegistrationReceipt& receipt, core::pmr::String& diagnostics);
     void reject(NameView diagnostics);
+    void preserveSerializationMetadata(const typeinfo& type);
 
 private:
     friend class db;
@@ -139,6 +141,14 @@ private:
     };
 
     core::pmr::Map<const class_info*, ClassSemantics> classSemantics_{
+        &core::defaultCpuMemoryResource()};
+
+    struct SerializationMetadata {
+        const CollectionAccess* collection = nullptr;
+        core::pmr::Vector<int> enumValues{&core::defaultCpuMemoryResource()};
+    };
+
+    core::pmr::Map<const typeinfo*, SerializationMetadata> serializationMetadata_{
         &core::defaultCpuMemoryResource()};
     bool requireDeclaredContracts_ = false;
     core::pmr::String diagnostics_{&core::defaultCpuMemoryResource()};

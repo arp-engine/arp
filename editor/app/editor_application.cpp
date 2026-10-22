@@ -9,21 +9,25 @@
 #ifdef DeviceCapabilities
 #undef DeviceCapabilities
 #endif
-#include "2d/scene_runtime_codec.h"
+#include "2d/physics_components.h"
+#include "2d/sprite_animation_component.h"
+#include "2d/tile_map_resource_component.h"
 #include "editor/ui/editor_ui_assets.h"
 #include "editor/viewport/editor_scene_component_gizmos.h"
 #include "editor/viewport/editor_scene_viewport_frame_builder.h"
 #include "editor/viewport/editor_scene_viewport_resource_resolver.h"
 #include "editor/viewport/editor_scene_viewport_session.h"
 #include "editor/workspace/editor_layout.h"
+#include "editor/workspace/editor_scene_authoring_codec.h"
+#include "editor/workspace/editor_scene_persistence.h"
 #include "editor/workspace/editor_shell.h"
-#include "physics2d/components.h"
 #include "platform/input_bridge.h"
 #include "platform/render_system.h"
 #include "renderer/render_graph/render_graph.h"
 #include "renderer/ui/gui_renderer.h"
 #include "resource/mesh_asset_resources.h"
 #include "resource/prefab_asset_resources.h"
+#include "resource/terrain_asset_resource.h"
 #include "scene/camera.h"
 #include "scene/camera_temporal_component.h"
 #include "scene/runtime_components.h"
@@ -188,13 +192,29 @@ int EditorApplication::run(bool hidden,
     std::uint16_t remotePort,
     std::string_view remoteBindAddress,
     bool viewportPipelineSmoke,
-    bool viewportRuntimeSmoke)
+    bool viewportRuntimeSmoke,
+    bool terrainResourceSmoke)
 {
     using namespace arp;
     editor::EditorShell shell;
     ScopedTemporaryDirectory terrainGizmoFixtureDirectory;
     const auto root = std::filesystem::path(ARP_SOURCE_DIR) / "editor/resources";
-    auto loaded = shell.load(root / "editor.arpui", projectRoot);
+    ScopedTemporaryDirectory terrainResourceDirectory;
+    auto effectiveProjectRoot = projectRoot;
+    if (terrainResourceSmoke) {
+        terrainResourceDirectory.path = std::filesystem::temp_directory_path()
+            / ("arp-editor-terrain-resource-"
+                + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        if (!std::filesystem::create_directory(terrainResourceDirectory.path))
+            return fail("TERRAIN-SMOKE", "cannot create isolated project");
+        effectiveProjectRoot = terrainResourceDirectory.path;
+        const auto fixtures = std::filesystem::path(ARP_SOURCE_DIR) / "tests/fixtures/terrain";
+        std::filesystem::copy_file(fixtures / "editor-hill.terrain.yaml",
+            effectiveProjectRoot / "editor-hill.terrain.yaml");
+        std::filesystem::copy_file(
+            fixtures / "editor-hill.r32", effectiveProjectRoot / "editor-hill.r32");
+    }
+    auto loaded = shell.load(root / "editor.arpui", effectiveProjectRoot);
     if (!loaded.ok())
         return fail("LOAD", loaded.diagnostic().message);
     scene::GameObjectId tileMapCaptureObject;
@@ -456,7 +476,7 @@ int EditorApplication::run(bool hidden,
         for (const auto widgetId : shell.runtime().canvas().traversal()) {
             const auto* widget = shell.runtime().canvas().findWidget(widgetId);
             if (!widget || widget->name() != choiceName
-                || widget->parentId() != shell.id("inspector_content"))
+                || widget->parentId() != shell.runtime().canvas().rootId())
                 continue;
             hasReadyMeshChoice =
                 std::string_view(widget->desc().text.data(), widget->desc().text.size())
@@ -602,9 +622,10 @@ int EditorApplication::run(bool hidden,
         if (shell.submitCommand(highlightUp).status != EditorResponseStatus::Completed)
             return fail("SCENE-HIERARCHY-SMOKE", "cannot finish the hierarchy drag");
         const auto expandedHierarchy = shell.sceneDocument().hierarchyEntries();
-        const auto smokeParentRow = std::find_if(expandedHierarchy.begin(),
-            expandedHierarchy.end(),
-            [&](const auto& entry) { return entry.objectId == hierarchyParentId; });
+        const auto smokeParentRow = std::find_if(
+            expandedHierarchy.begin(), expandedHierarchy.end(), [&](const auto& entry) {
+                return entry.objectId == hierarchyParentId;
+            });
         if (smokeParentRow == expandedHierarchy.end())
             return fail("SCENE-HIERARCHY-SMOKE", "hierarchy parent disappeared before folding");
         EditorInputCommand foldParent;
@@ -625,18 +646,18 @@ int EditorApplication::run(bool hidden,
         const auto foldedDraw = shell.drawCommands();
         if (!foldedDraw.ok())
             return fail("SCENE-HIERARCHY-SMOKE", "cannot draw the folded hierarchy");
-        const bool childVisible = std::any_of(foldedDraw.commands().begin(),
-            foldedDraw.commands().end(),
-            [&](const auto& command) {
+        const bool childVisible = std::any_of(
+            foldedDraw.commands().begin(), foldedDraw.commands().end(), [&](const auto& command) {
                 return command.kind == renderer::ui::UiDrawCommandKind::Text
                     && command.text == "HierarchySmokeChild"
                     && command.rect.x < layout::kSceneHierarchyLeft + layout::kSceneHierarchyWidth
-                    && command.rect.y < layout::kSceneHierarchyTop
-                        + layout::kSceneHierarchyVisibleHeight
+                    && command.rect.y
+                    < layout::kSceneHierarchyTop + layout::kSceneHierarchyVisibleHeight
                     && command.rect.y + command.rect.height > layout::kSceneHierarchyTop;
             });
         if (childVisible || shell.sceneDocument().selectedObject() != hierarchyParentId)
-            return fail("SCENE-HIERARCHY-SMOKE", "folding did not hide the child and select parent");
+            return fail(
+                "SCENE-HIERARCHY-SMOKE", "folding did not hide the child and select parent");
         std::printf(
             "PASS: ARP Editor Hierarchy sibling reorder, target highlight and node folding\n");
     }
@@ -1128,23 +1149,24 @@ int EditorApplication::run(bool hidden,
         const auto jointTargetId = shell.sceneDocument().selectedObject();
         if (shell.submitCommand(AddSceneComponentCommand("RigidBody2DComponent")).status
                 != EditorResponseStatus::Completed
-            || shell.submitCommand(SelectSceneObjectCommand{meshObject->id().value()}).status
+            || shell.submitCommand(CreateSceneObjectCommand("Joint Inspector")).status
                 != EditorResponseStatus::Completed
             || shell.submitCommand(AddSceneComponentCommand("Joint2DComponent")).status
                 != EditorResponseStatus::Completed)
             return fail("JOINT2D-INSPECTOR-SMOKE", "cannot create stable-reference joint fixture");
-        const auto* jointOwner = shell.sceneDocument().scene().findObject(meshObject->id());
+        const auto jointInspectorObjectId = shell.sceneDocument().selectedObject();
+        const auto* jointOwner = shell.sceneDocument().scene().findObject(jointInspectorObjectId);
         const auto* joint =
             jointOwner ? jointOwner->getComponent<physics2d::Joint2DComponent>() : nullptr;
         if (!jointTargetId.valid() || !joint)
             return fail("JOINT2D-INSPECTOR-SMOKE", "joint fixture is absent");
         SetSceneComponentPropertyCommand jointBodyA("bodyA");
-        jointBodyA.objectId = meshObject->id().value();
+        jointBodyA.objectId = jointInspectorObjectId.value();
         jointBodyA.componentId = joint->id().value();
         jointBodyA.valueKind = ScenePropertyValueKind::SceneObjectReference;
         jointBodyA.sceneObjectReferenceValue = meshObject->id().value();
         SetSceneComponentPropertyCommand jointBodyB("bodyB");
-        jointBodyB.objectId = meshObject->id().value();
+        jointBodyB.objectId = jointInspectorObjectId.value();
         jointBodyB.componentId = joint->id().value();
         jointBodyB.valueKind = ScenePropertyValueKind::SceneObjectReference;
         jointBodyB.sceneObjectReferenceValue = jointTargetId.value();
@@ -1155,21 +1177,21 @@ int EditorApplication::run(bool hidden,
             return fail("JOINT2D-INSPECTOR-SMOKE", "cannot bind live joint endpoints");
         if (shell.submitCommand(SelectSceneObjectCommand{jointTargetId.value()}).status
                 != EditorResponseStatus::Completed
-            || shell.submitCommand(SelectSceneObjectCommand{meshObject->id().value()}).status
+            || shell.submitCommand(SelectSceneObjectCommand{jointInspectorObjectId.value()}).status
                 != EditorResponseStatus::Completed)
             return fail("JOINT2D-INSPECTOR-SMOKE", "cannot refresh bound reference values");
         if (!shell.runtime()
                 .interact(ui::UiControlInteraction::scrollBy(shell.id("properties"), 0.0f, 5000.0f))
                 .ok())
             return fail("JOINT2D-INSPECTOR-SMOKE", "cannot scroll to joint properties");
-        const auto jointLayout = shell.runtime().canvas().resolveLayout();
+        auto jointLayout = shell.runtime().canvas().resolveLayout();
         const auto* jointInspector =
             jointLayout.ok() ? jointLayout.findWidget(shell.id("properties")) : nullptr;
         if (!jointInspector)
             return fail("JOINT2D-INSPECTOR-SMOKE", "cannot resolve joint Inspector viewport");
         for (const auto* field : {"bodyA", "bodyB"}) {
             core::pmr::String widgetName("scene_property_", &core::defaultCpuMemoryResource());
-            widgetName += std::to_string(meshObject->id().value());
+            widgetName += std::to_string(jointInspectorObjectId.value());
             widgetName.push_back('_');
             widgetName += std::to_string(joint->id().value());
             widgetName.push_back('_');
@@ -1183,7 +1205,18 @@ int EditorApplication::run(bool hidden,
                 }
             }
             const auto* fieldLayout = widgetId.valid() ? jointLayout.findWidget(widgetId) : nullptr;
-            if (!fieldLayout || !fieldLayout->visibleInHierarchy
+            if (fieldLayout && fieldLayout->rect.y < jointInspector->rect.y) {
+                const auto offset =
+                    shell.inspectorScrollOffset() + fieldLayout->rect.y - jointInspector->rect.y;
+                if (shell.submitCommand(SetInspectorScrollCommand{offset}).status
+                    != EditorResponseStatus::Completed)
+                    return fail("JOINT2D-INSPECTOR-SMOKE", "cannot reveal joint reference picker");
+                jointLayout = shell.runtime().canvas().resolveLayout();
+                jointInspector =
+                    jointLayout.ok() ? jointLayout.findWidget(shell.id("properties")) : nullptr;
+                fieldLayout = jointLayout.ok() ? jointLayout.findWidget(widgetId) : nullptr;
+            }
+            if (!jointInspector || !fieldLayout || !fieldLayout->visibleInHierarchy
                 || fieldLayout->rect.y < jointInspector->rect.y
                 || fieldLayout->rect.y + fieldLayout->rect.height
                     > jointInspector->rect.y + jointInspector->rect.height)
@@ -1484,6 +1517,66 @@ int EditorApplication::run(bool hidden,
     auto window = platform.createWindow({"ARP Editor", 1440, 810, hidden, true});
     if (!window.valid())
         return fail("WINDOW", "creation failed");
+    if (hidden) {
+        ScopedTemporaryDirectory directory{std::filesystem::temp_directory_path()
+            / ("arp-editor-reflection-smoke-"
+                + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
+        std::filesystem::create_directories(directory.path);
+        EditorSceneDocument source(false), reopened(false);
+        source.setResourceManagerProvider([&shell] {
+            return &shell.projectResources();
+        });
+        reopened.setResourceManagerProvider([&shell] {
+            return &shell.projectResources();
+        });
+        const auto objectId = source.createObject("serialization-smoke");
+        if (!source.addComponent("SpriteRendererComponent", objectId))
+            return fail("PERSISTENCE-SMOKE", "sprite component construction failed");
+        auto* animation = dynamic_cast<scene2d::SpriteAnimationComponent*>(
+            source.addComponent("SpriteAnimationComponent", objectId));
+        if (!animation)
+            return fail("PERSISTENCE-SMOKE", "component construction failed");
+        auto state = animation->editorAuthoringProperties();
+        state.cast<scene2d::SpriteAnimationEditorProperties&>().speed = 1.23456789012345;
+        if (!animation->applyEditorAuthoringProperties(state))
+            return fail("PERSISTENCE-SMOKE", "authoring state rejected");
+        core::pmr::String yaml, diagnostic;
+        if (!EditorSceneAuthoringCodec::encode(source, yaml, diagnostic))
+            return fail("PERSISTENCE-SMOKE", diagnostic);
+        EditorScenePersistence persistence;
+        const auto finish = [&](EditorScenePersistence::RequestHandle handle,
+                                core::io::AtomicFileResult& result) {
+            if (!handle)
+                return false;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (std::chrono::steady_clock::now() < deadline) {
+                if (persistence.take(handle, result))
+                    return result.success;
+                std::this_thread::yield();
+            }
+            return false;
+        };
+        core::io::AtomicFileResult saved, loadedFile;
+        if (!finish(persistence.save(directory.path, "scene.yaml", yaml), saved)
+            || !finish(persistence.load(directory.path, "scene.yaml"), loadedFile))
+            return fail("PERSISTENCE-SMOKE",
+                saved.diagnostic.empty() ? loadedFile.diagnostic : saved.diagnostic);
+        if (!EditorSceneAuthoringCodec::decode(
+                std::string_view(reinterpret_cast<const char*>(loadedFile.bytes.data()),
+                    loadedFile.bytes.size()),
+                reopened,
+                nullptr,
+                nullptr,
+                diagnostic))
+            return fail("PERSISTENCE-SMOKE", diagnostic);
+        const auto* object = reopened.scene().findObjectByName("serialization-smoke");
+        const auto* restored =
+            object ? object->getComponent<scene2d::SpriteAnimationComponent>() : nullptr;
+        if (!restored || restored->speed() != 1.23456789012345)
+            return fail("PERSISTENCE-SMOKE", "double precision changed during save/reopen");
+        std::puts(
+            "PASS: editor hidden-window reflection save/reopen, empty reference and double precision");
+    }
     GamePreviewHost gamePreview;
     if (!hidden && !gamePreview.hasEditorWindow())
         return fail("GAME-PREVIEW", "cannot locate the editor native window");
@@ -1542,7 +1635,40 @@ int EditorApplication::run(bool hidden,
         (shaderRoot / "editor_viewport_sprite.reflection.yaml").generic_string();
     const editor::EditorSceneViewportShaderArtifacts viewportSpriteArtifacts{
         spriteSourcePath, spriteSpirvPath, spriteMslPath, spriteWgslPath, spriteReflectionPath};
+    const auto environmentSourcePath =
+        (shaderRoot / "editor_viewport_environment.slang").generic_string();
+    const auto environmentSpirvPath =
+        (shaderRoot / "editor_viewport_environment.spv").generic_string();
+    const auto environmentMslPath =
+        (shaderRoot / "editor_viewport_environment.metal").generic_string();
+    const auto environmentWgslPath =
+        (shaderRoot / "editor_viewport_environment.wgsl").generic_string();
+    const auto environmentReflectionPath =
+        (shaderRoot / "editor_viewport_environment.reflection.yaml").generic_string();
+    const editor::EditorSceneViewportShaderArtifacts viewportEnvironmentArtifacts{
+        environmentSourcePath,
+        environmentSpirvPath,
+        environmentMslPath,
+        environmentWgslPath,
+        environmentReflectionPath};
     if (viewportPipelineSmoke || viewportRuntimeSmoke) {
+        if (terrainResourceSmoke) {
+            BuildTerrainResourceCommand build;
+            build.authoringPath = "editor-hill.terrain.yaml";
+            build.packagePath = "hill.arpkg";
+            if (shell.submitCommand(std::move(build)).status != EditorResponseStatus::Completed)
+                return fail("TERRAIN-SMOKE", "build command rejected");
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (shell.terrainBuildPending() && std::chrono::steady_clock::now() < deadline) {
+                shell.pollTasks();
+                std::this_thread::yield();
+            }
+            if (shell.terrainBuildPending()
+                || !shell.projectResources()
+                    .find<resource::TerrainAssetResource>("3f6fbcca-17d2-46a6-9817-2af357399301")
+                    .ready())
+                return fail("TERRAIN-SMOKE", "async import did not publish terrain");
+        }
         core::pmr::String resourceDiagnostics(&core::defaultCpuMemoryResource());
         if (!installViewportSmokeSceneResources(shell, resourceDiagnostics))
             return fail("VIEWPORT-RESOURCES", resourceDiagnostics);
@@ -1570,10 +1696,16 @@ int EditorApplication::run(bool hidden,
         auto* secondaryObject = shell.sceneDocument().scene().findObjectByName(
             core::pmr::String("MeshInstanceSecondary", &core::defaultCpuMemoryResource()));
         if (!secondaryObject
-            || shell.submitCommand(editor::AddSceneComponentCommand("MeshComponent")).status
+            || shell.submitCommand(editor::AddSceneComponentCommand(
+                                       terrainResourceSmoke ? "TerrainComponent" : "MeshComponent"))
+                    .status
                 != editor::EditorResponseStatus::Completed)
             return fail("VIEWPORT-SCENE", "cannot add secondary MeshComponent");
-        auto* secondaryMesh = secondaryObject->getComponent<scene3d::MeshComponent>();
+        scene::Component* secondaryMesh = terrainResourceSmoke
+            ? static_cast<scene::Component*>(
+                  secondaryObject->getComponent<scene3d::TerrainComponent>())
+            : static_cast<scene::Component*>(
+                  secondaryObject->getComponent<scene3d::MeshComponent>());
         if (!secondaryMesh)
             return fail("VIEWPORT-SCENE", "secondary object did not receive MeshComponent");
         const auto assignSecondaryResource = [&](const char* property, const char* resourceId) {
@@ -1585,14 +1717,19 @@ int EditorApplication::run(bool hidden,
             return shell.submitCommand(std::move(command)).status
                 == editor::EditorResponseStatus::Completed;
         };
-        if (!assignSecondaryResource("resourceId", kViewportSmokeCubeMeshId)
+        if (!assignSecondaryResource("resourceId",
+                terrainResourceSmoke ? "3f6fbcca-17d2-46a6-9817-2af357399301"
+                                     : kViewportSmokeCubeMeshId)
             || !assignSecondaryResource("materialResourceId", kViewportSmokeCubeMaterialId))
             return fail("VIEWPORT-SCENE", "secondary resource assignment was rejected");
         const auto secondaryTransform =
             shell.submitCommand(editor::SelectSceneObjectCommand{secondaryObject->id().value()});
         editor::SetSceneObjectTransformCommand secondaryTrs;
-        secondaryTrs.translation = {1.5f, 0.0f, 0.0f};
-        secondaryTrs.rotation = core::Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, 0.6f);
+        secondaryTrs.translation =
+            terrainResourceSmoke ? core::Vec3{0, 0, 0} : core::Vec3{1.5f, 0.0f, 0.0f};
+        secondaryTrs.rotation = terrainResourceSmoke
+            ? core::Quat{}
+            : core::Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, 0.6f);
         if (secondaryTransform.status != editor::EditorResponseStatus::Completed
             || shell.submitCommand(secondaryTrs).status != editor::EditorResponseStatus::Completed
             || shell.submitCommand(editor::SelectSceneObjectCommand{sceneObject->id().value()})
@@ -1600,7 +1737,57 @@ int EditorApplication::run(bool hidden,
                 != editor::EditorResponseStatus::Completed)
             return fail("VIEWPORT-SCENE", "cannot place secondary viewport smoke object");
 
+        if (terrainResourceSmoke) {
+            const auto waitForScene = [&](EditorCommandPayload command) {
+                const auto started = shell.submitCommand(std::move(command));
+                const auto taskId = started.snapshot.scenePersistenceTaskId;
+                if (started.status != EditorResponseStatus::Completed || !taskId)
+                    return false;
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+                while (std::chrono::steady_clock::now() < deadline) {
+                    shell.pollTasks();
+                    const auto result = shell.submitCommand(GetScenePersistenceTaskQuery{taskId});
+                    if (result.snapshot.scenePersistenceTaskStatus
+                        == ScenePersistenceTaskStatus::Succeeded)
+                        return true;
+                    if (result.snapshot.scenePersistenceTaskStatus
+                        != ScenePersistenceTaskStatus::Pending)
+                        return false;
+                    std::this_thread::yield();
+                }
+                return false;
+            };
+            if (!waitForScene(SaveSceneCommand("terrain.scene.yaml"))
+                || !assignSecondaryResource("materialResourceId", kViewportSmokeMaterialId)
+                || shell.submitCommand(UndoSceneCommand{}).status != EditorResponseStatus::Completed
+                || !waitForScene(LoadSceneCommand("terrain.scene.yaml")))
+                return fail("TERRAIN-SMOKE", "scene save/undo/reopen failed");
+            sceneObject = shell.sceneDocument().scene().findObjectByName(
+                core::pmr::String("MeshInstance", &core::defaultCpuMemoryResource()));
+            meshComponent =
+                sceneObject ? sceneObject->getComponent<scene3d::MeshComponent>() : nullptr;
+            secondaryObject = shell.sceneDocument().scene().findObjectByName(
+                core::pmr::String("MeshInstanceSecondary", &core::defaultCpuMemoryResource()));
+            auto* terrain = secondaryObject
+                ? secondaryObject->getComponent<scene3d::TerrainComponent>()
+                : nullptr;
+            if (!meshComponent || !terrain
+                || terrain->resource_id() != "3f6fbcca-17d2-46a6-9817-2af357399301"
+                || terrain->materialResourceId() != kViewportSmokeCubeMaterialId)
+                return fail(
+                    "TERRAIN-SMOKE", "terrain resource/material identity changed after reopen");
+            secondaryMesh = terrain;
+            std::fprintf(stdout, "[TERRAIN-SMOKE] import/bind/undo/save/reopen passed\n");
+        }
+
         if (viewportRuntimeSmoke) {
+            auto& skyObject = shell.sceneDocument().scene().createObject(
+                core::pmr::String("ViewportSky", &core::defaultCpuMemoryResource()));
+            auto& sky = skyObject.addComponent<scene3d::SkyComponent>();
+            sky.set_zenith_color(0.08f, 0.20f, 0.68f);
+            sky.set_horizon_color(0.72f, 0.16f, 0.08f);
+            sky.set_sun_direction(0.0f, 1.0f, 0.0f);
+            sky.set_sun_color(0.8f, 0.65f, 0.3f);
             auto& cameraObject = shell.sceneDocument().scene().createObject(
                 core::pmr::String("ViewportCameraGizmo", &core::defaultCpuMemoryResource()));
             auto cameraDesc = scene::CameraComponentDesc::perspective(52.0f, 1.0f, 0.15f, 5.0f);
@@ -1692,13 +1879,14 @@ int EditorApplication::run(bool hidden,
                 *system.gpuDevice(),
                 viewportArtifacts,
                 viewportSpriteArtifacts,
+                viewportEnvironmentArtifacts,
                 targetExtent,
                 viewportDiagnostics);
 #if defined(ARP_RENDERDOC_APP_AVAILABLE)
             if (capture)
                 capture->EndFrameCapture(nullptr, nullptr);
 #endif
-            if (!viewportInitialized)
+            if (!viewportInitialized || !viewportDiagnostics.empty())
                 return fail("VIEWPORT-SESSION", viewportDiagnostics);
             auto oneDrawBudget = editor::kEditorSceneViewportSmokeSessionConfig;
             oneDrawBudget.maxDrawCalls = 1u;
@@ -1708,9 +1896,10 @@ int EditorApplication::run(bool hidden,
                     *system.gpuDevice(),
                     viewportArtifacts,
                     viewportSpriteArtifacts,
+                    viewportEnvironmentArtifacts,
                     targetExtent,
                     budgetDiagnostics)
-                || budgetDiagnostics != "ARP-EDITOR-VIEWPORT-SESSION-DRAW-BUDGET-EXCEEDED")
+                || budgetDiagnostics != "ARP-EDITOR-VIEWPORT-GEOMETRY-BUDGET-EXCEEDED")
                 return fail(
                     "VIEWPORT-BUDGET", "session did not reject a frame above its draw budget");
             const auto initialViewportVersion = shell.stateVersion();
@@ -1736,6 +1925,28 @@ int EditorApplication::run(bool hidden,
                 || viewportSession.extent().height != targetExtent.height)
                 return fail(
                     "VIEWPORT-SESSION", "resize did not recreate and restore the viewport target");
+            // No renderable components must still produce the real environment texture.
+            if (shell.submitCommand(editor::RemoveSceneComponentCommand{
+                                        sceneObject->id().value(), meshComponent->id().value()})
+                        .status
+                    != editor::EditorResponseStatus::Completed
+                || shell.submitCommand(
+                            editor::RemoveSceneComponentCommand{
+                                secondaryObject->id().value(), secondaryMesh->id().value()})
+                        .status
+                    != editor::EditorResponseStatus::Completed
+                || !viewportSession.renderIfDirty(shell, targetExtent, viewportDiagnostics)
+                || !viewportSession.valid() || !viewportDiagnostics.empty())
+                return fail(
+                    "VIEWPORT-ENVIRONMENT", "empty scene did not render sky and ground grid");
+            if (shell.submitCommand(editor::UndoSceneCommand{}).status
+                    != editor::EditorResponseStatus::Completed
+                || shell.submitCommand(editor::UndoSceneCommand{}).status
+                    != editor::EditorResponseStatus::Completed
+                || !viewportSession.renderIfDirty(shell, targetExtent, viewportDiagnostics))
+                return fail(
+                    "VIEWPORT-ENVIRONMENT", "cannot restore scene after empty viewport smoke");
+            std::printf("PASS: ARP Editor empty scene environment, camera and resize\n");
             std::printf("PASS: ARP Editor scene viewport session initialized at %ux%u\n",
                 targetExtent.width,
                 targetExtent.height);
@@ -1762,6 +1973,7 @@ int EditorApplication::run(bool hidden,
     while (!quit) {
         const auto remoteStateVersion = shell.stateVersion();
         remoteServer.pump();
+        shell.pollTasks();
         if (shell.stateVersion() != remoteStateVersion)
             dirty = true;
         platform::WindowEventBatch batch;
@@ -1844,56 +2056,28 @@ int EditorApplication::run(bool hidden,
         } else if (shell.workspace() == "3D") {
             const auto viewportExtent = resolveViewportExtent();
             if (viewportExtent.width > 0u && viewportExtent.height > 0u) {
-                const auto snapshot = shell.sceneDocument().scene().extractTraversalSnapshot(
-                    scene::SceneTraversalOptions{1024u});
-                const auto frame =
-                    editor::buildEditorSceneViewportFrame(shell.sceneDocument().scene(),
-                        snapshot,
-                        shell.stateVersion(),
-                        viewportExtent.width,
-                        viewportExtent.height,
-                        {0u, 0u, viewportExtent.width, viewportExtent.height});
-                if (!frame.valid()) {
-                    viewportRuntimeDiagnostic =
-                        editor::editorSceneViewportDiagnosticCode(frame.validation.diagnostic);
-                    shell.reportViewportDiagnostic(
-                        editor::editorSceneViewportDiagnosticCode(frame.validation.diagnostic));
-                } else if (!frame.frame.drawItems.empty()) {
-                    const auto resolvedFrame = editor::resolveEditorSceneViewportResources(
-                        frame.frame, shell.projectResources());
-                    if (!resolvedFrame.valid()) {
-                        viewportRuntimeDiagnostic = editor::editorSceneViewportDiagnosticCode(
-                            resolvedFrame.frameDiagnostic);
-                        shell.reportViewportDiagnostic(editor::editorSceneViewportDiagnosticCode(
-                            resolvedFrame.frameDiagnostic));
-                    } else {
-                        core::pmr::String viewportDiagnostics(&core::defaultCpuMemoryResource());
+                core::pmr::String viewportDiagnostics(&core::defaultCpuMemoryResource());
 #if defined(ARP_RENDERDOC_APP_AVAILABLE)
-                        if (viewportRuntimeSmoke && capture)
-                            capture->StartFrameCapture(nullptr, nullptr);
+                if (viewportRuntimeSmoke && capture)
+                    capture->StartFrameCapture(nullptr, nullptr);
 #endif
-                        const bool renderedViewport = viewportSession.valid()
-                            ? viewportSession.renderIfDirty(
-                                  shell, viewportExtent, viewportDiagnostics)
-                            : viewportSession.initialize(shell,
-                                  *system.gpuDevice(),
-                                  viewportArtifacts,
-                                  viewportSpriteArtifacts,
-                                  viewportExtent,
-                                  viewportDiagnostics);
+                const bool renderedViewport = viewportSession.valid()
+                    ? viewportSession.renderIfDirty(shell, viewportExtent, viewportDiagnostics)
+                    : viewportSession.initialize(shell,
+                          *system.gpuDevice(),
+                          viewportArtifacts,
+                          viewportSpriteArtifacts,
+                          viewportEnvironmentArtifacts,
+                          viewportExtent,
+                          viewportDiagnostics);
 #if defined(ARP_RENDERDOC_APP_AVAILABLE)
-                        if (viewportRuntimeSmoke && capture)
-                            capture->EndFrameCapture(nullptr, nullptr);
+                if (viewportRuntimeSmoke && capture)
+                    capture->EndFrameCapture(nullptr, nullptr);
 #endif
-                        if (!renderedViewport) {
-                            viewportRuntimeDiagnostic = viewportDiagnostics;
-                            shell.reportViewportDiagnostic(viewportDiagnostics);
-                        } else {
-                            viewportRuntimeDiagnostic.clear();
-                            viewportAvailableThisFrame = true;
-                        }
-                    }
-                }
+                viewportRuntimeDiagnostic = viewportDiagnostics;
+                if (!viewportDiagnostics.empty())
+                    shell.reportViewportDiagnostic(viewportDiagnostics);
+                viewportAvailableThisFrame = renderedViewport;
             }
         }
         authored =
@@ -1910,7 +2094,10 @@ int EditorApplication::run(bool hidden,
                 }))
             return fail("VIEWPORT-COMPOSITE",
                 "3D workspace did not author the external scene viewport image");
-        if (viewportRuntimeSmoke && !viewportAvailableThisFrame)
+        if (hidden && after && shell.workspace() == "3D" && !viewportAvailableThisFrame)
+            return fail("VIEWPORT-ENVIRONMENT", viewportRuntimeDiagnostic);
+        if (viewportRuntimeSmoke
+            && (!viewportAvailableThisFrame || !viewportRuntimeDiagnostic.empty()))
             return fail("VIEWPORT-RUNTIME-SMOKE",
                 viewportRuntimeDiagnostic.empty()
                     ? core::pmr::String("ordinary 3D workspace did not render its scene",

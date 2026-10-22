@@ -1,6 +1,6 @@
 #pragma once
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "resource/mesh_asset_resources.h"
 
 #include <cstddef>

@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "resource/resource_contract.h"
 #include "ui/ui_resource_contracts.h"
 

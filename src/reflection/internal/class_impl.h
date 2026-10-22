@@ -7,7 +7,7 @@
 // in the cast<T> path (handled in object_impl.h).
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/db.h"
 #include "reflection/def.h"
 #include "reflection/function.h"

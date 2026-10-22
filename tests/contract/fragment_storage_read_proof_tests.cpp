@@ -1,5 +1,5 @@
 #include "../fixtures/spirv_binary_mutation_fixture.h"
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "shader/fragment_atomic_write_proof.h"
 #include "shader/fragment_storage_read_proof.h"
 #include "shader/fragment_uniform_read_proof.h"

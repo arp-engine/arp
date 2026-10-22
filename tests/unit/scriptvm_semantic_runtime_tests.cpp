@@ -1726,6 +1726,39 @@ void testPrivateConstructionBorrow()
         }
         require(scratch.empty(),
             "private construction borrow: topology released before original PC replay");
+        {
+            ExecutionSlot fixed[5];
+            std::size_t size = 0u;
+            ExecutionSlotStackView view(fixed, size, 5u);
+            const auto fill = [&] {
+                push(ExecutionSlot(ScriptScalar(100007)), ExecutionSlot(ScriptScalar(200007)));
+                size = operands.size();
+                for (std::size_t index = 0; index < size; ++index)
+                    fixed[index] = std::move(operands[index]);
+                operands.clear();
+            };
+            fill();
+            ScriptSemanticRuntime::PrivateConstructionBorrow borrow;
+            auto quota = arp::core::makeShared<arp::core::CpuMemoryQuota>(1024u * 1024u);
+            {
+                arp::core::CpuMemoryQuotaScope scope(quota);
+                require(!borrow.bind(local, view, 2, 2, dictionary, scratch) && size > 1u,
+                    "fixed construction borrow: quota rejects without consuming operands");
+            }
+            require(borrow.bind(local, view, 2, 2, dictionary, scratch) && borrow.commit(view)
+                    && size == 1u && *mapped(0).ptr<int>() == (dictionary ? 100007 : 200007),
+                "fixed construction borrow: shared contract consumes only active suffix");
+            borrow.reset();
+            require(scratch.empty(),
+                "fixed construction borrow: explicit invalidation releases topology");
+            fill();
+            require(borrow.bind(local, view, 2, 2, dictionary, scratch),
+                "fixed construction borrow: invalidated site can rebind actual owner");
+            const auto prior = *mapped(0).ptr<int>();
+            fixed[size - 1u] = makeString(std::string_view("wrong-new"));
+            require(!borrow.commit(view) && *mapped(0).ptr<int>() == prior && size > 1u,
+                "fixed construction borrow: failed guard preserves original replay operands");
+        }
         mapped(0) = makeString(std::string_view("wrong-old"));
         push(ExecutionSlot(ScriptScalar(1)), ExecutionSlot(ScriptScalar(2)));
         ScriptSemanticRuntime::PrivateConstructionBorrow denied;
@@ -1886,6 +1919,8 @@ void testIntegerTopologyBorrow()
     *result.ptr<int>() = -9;
     require(update.bind(borrow, ExecutionSlot(ScriptScalar(2)), source) && source == -9,
         "topology borrow: every source read observes changed cached actual payload");
+    require(update.bindInteger(borrow, 2, source) && source == -9,
+        "native index update: actual cached key and mapped payload remain authoritative");
     const auto allocations = arp::core::defaultCpuAllocator().stats().allocationCount;
     update.commit(1310);
     int reread;
@@ -1897,10 +1932,14 @@ void testIntegerTopologyBorrow()
     *result.ptr<int>() = originalResult;
     require(!update.bind(borrow, ExecutionSlot(Value{-1}), source),
         "topology borrow: missing read/write cannot insert a node");
+    require(!update.bindInteger(borrow, -1, source) && !update.readSource(source),
+        "native index update: failed lookup clears source and cannot insert nodes");
     base.boxed().ptr<arp::reflection::hdict>()->begin()->second =
         makeString(std::string_view("wrong"));
     require(!update.bind(borrow, ExecutionSlot(Value{0}), source),
         "topology borrow: changed mapped type retains replay without writing");
+    require(!update.bindInteger(borrow, 0, source),
+        "native index update: changed mapped type rejects without writing");
     ExecutionSlot invalid(makeString(std::string_view("wrong base")));
     require(!borrow.bind(invalid) && !borrow.read(ExecutionSlot(Value{0})),
         "topology borrow: failed rebind clears old nodes");
@@ -1919,6 +1958,8 @@ void testIntegerTopologyBorrow()
     require(borrow.bind(listBase) && update.bind(borrow, ExecutionSlot(ScriptScalar(0)), source)
             && source == 100000,
         "topology borrow: separate inline read and cached write indices");
+    require(update.bindInteger(borrow, 0, source) && source == 100000,
+        "native index update: unboxed selector retains separate read and cached write indices");
     update.commit(1310);
     require(listBase.boxed().ptr<arp::reflection::hlist>()->at(0).storageIdentity()
                 == first.storageIdentity()
@@ -1926,6 +1967,45 @@ void testIntegerTopologyBorrow()
                 == result.storageIdentity(),
         "topology borrow: actual cached write identity replaces only its destination");
     *zero.ptr<int>() = oldZero;
+}
+
+void testStableStringIndexBorrow()
+{
+    auto& resource = arp::core::defaultCpuMemoryResource();
+    arp::reflection::hdict dictionary{&resource};
+    arp::reflection::hlist selectors{&resource};
+    for (const auto key : {"oak", "pine", "birch", "ash", "elm", "cedar"}) {
+        dictionary.emplace(makeString(std::string_view(key)), Value{100000});
+        selectors.push_back(makeString(std::string_view(key)));
+    }
+    ExecutionSlot owner(Value{std::move(dictionary)});
+    ScriptSemanticRuntime::ReadonlyIndexBorrow borrowed;
+    require(borrowed.bind(owner), "stable string relation: bind actual owned dictionary");
+    ScriptSemanticRuntime::StableStringIndexBorrow relation(borrowed);
+    Value replacement{200000};
+    Value missing = makeString(std::string_view("missing")), wrong{17};
+    auto quota = arp::core::makeShared<arp::core::CpuMemoryQuota>(1u);
+    const auto afterQuota = arp::core::defaultCpuAllocator().stats().allocationCount;
+    {
+        arp::core::CpuMemoryQuotaScope scope(quota);
+        for (int repeat = 0; repeat != 3; ++repeat) {
+            for (const auto& key : selectors) {
+                auto& mapped = owner.boxed().ptr<arp::reflection::hdict>()->at(key);
+                const Value* node = relation.read(key);
+                require(
+                    node == &mapped, "stable string relation: hits and eviction retain real node");
+                mapped = replacement;
+                require(relation.read(key) == node
+                        && node->storageIdentity() == replacement.storageIdentity(),
+                    "stable string relation: mapped replacement is observed without copying its payload");
+            }
+        }
+        require(!relation.read(missing) && !relation.read(wrong),
+            "stable string relation: missing or wrong-type selectors cannot manufacture values");
+    }
+    require(arp::core::defaultCpuAllocator().stats().allocationCount == afterQuota
+            && quota->liveBytes() == 0u,
+        "stable string relation: misses, hits and eviction have no owned allocation");
 }
 
 void testIntegerIndexCacheBorrow()
@@ -1942,11 +2022,14 @@ void testIntegerIndexCacheBorrow()
     require(borrow.bind(base), "index cache borrow: owned integer topology binds");
     auto quota = arp::core::makeShared<arp::core::CpuMemoryQuota>(1);
     const auto before = arp::core::defaultCpuAllocator().stats().allocationCount;
+    ScriptSemanticRuntime::IntegerIndexUpdate update;
+    int source;
     {
         arp::core::CpuMemoryQuotaScope scope(quota);
         require(!borrow.read(ExecutionSlot(ScriptScalar(cold)))
                 && !borrow.destination(ExecutionSlot(ScriptScalar(cold)))
-                && findCachedIntValue(cold) == nullptr && quota->liveBytes() == 0,
+                && !update.bindInteger(borrow, cold, source) && findCachedIntValue(cold) == nullptr
+                && quota->liveBytes() == 0,
             "index cache borrow: cold key guard never materializes or charges script quota");
     }
     require(arp::core::defaultCpuAllocator().stats().allocationCount == before,
@@ -2443,6 +2526,24 @@ int main()
             "typed int valid minimum result retained");
         const int divisors[]{minimum, maximum, -1000000007, -7, -1, 0, 1, 7, 1000000007};
         const int numerators[]{minimum, maximum, -1000000007, -7, -1, 0, 1, 7, 1000000007};
+        for (const auto lhs : numerators)
+            for (const auto rhs : numerators) {
+                const std::int64_t a = lhs, b = rhs;
+                const std::int64_t wide[]{a + b, a - b, a * b};
+                const ScalarOperationResult checked[]{
+                    ScriptSemanticRuntime::intBinary<Op::Add>(lhs, rhs),
+                    ScriptSemanticRuntime::intBinary<Op::Sub>(lhs, rhs),
+                    ScriptSemanticRuntime::intBinary<Op::Mul>(lhs, rhs)};
+                for (std::size_t i = 0; i < 3u; ++i) {
+                    const bool valid = wide[i] >= minimum && wide[i] <= maximum;
+                    require(checked[i].ok() == valid
+                            && (valid ? checked[i].value.integer() == wide[i]
+                                      : checked[i].code == ScriptDiagnosticCode::IntegerOverflow
+                                        && std::string_view(checked[i].message)
+                                            == "integer arithmetic overflow"),
+                        "checked int arithmetic: exact result and diagnostic match independent wide reference");
+                }
+            }
         for (const auto d : divisors)
             for (const auto n : numerators) {
                 const arp::core::Int32Divisor prepared(d);
@@ -2486,6 +2587,7 @@ int main()
     testIndexedIntegerUpdateCarrier();
     testIntegerTopologyBorrow();
     testIntegerIndexCacheBorrow();
+    testStableStringIndexBorrow();
     testPrivateConstructionBorrow();
     testDictionaryOrderingInvalidation();
     std::printf("All ScriptVM semantic runtime tests passed\n");

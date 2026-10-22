@@ -1,7 +1,7 @@
 #include "rhi/backends/vulkan/vulkan_bindless_root.h"
 
-#include "core/row_major_index_grid.h"
-#include "core/shared_identity_projection.h"
+#include "core/algorithm/row_major_index_grid.h"
+#include "core/ownership/shared_identity_projection.h"
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
 #include "rhi/backends/vulkan/vulkan_bindless.h"
 #include "rhi/frontend/bindless_graphics_depth_content.h"
@@ -466,7 +466,10 @@ VulkanBindlessRootNativeClosure::prepareOriginal(std::shared_ptr<const Root> roo
     if ((diagnostic = semantics::OriginalBindlessRootSourceLowering::nativeClosureDiagnostic(
              device.backend(), root->sourceContractVersion())))
         return {};
+    // Closure3 retains initialized shader/geometry actors for the public
+    // InitializedGraphics/2 profile, including its authenticated ordinary domains.
     if (root->sourceContractVersion() == 2u && budget.contractVersion != 1u
+        && budget.contractVersion != 3u
         && budget.contractVersion
             != OriginalBindlessRootNativeClosureContract::ordinaryGraphicsDepthVersion) {
         diagnostic = "RHI-VULKAN-BINDLESS-ROOT-ORDINARY-PROFILE-UNAVAILABLE";

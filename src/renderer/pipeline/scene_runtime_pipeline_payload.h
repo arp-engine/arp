@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/pipeline/custom_render_frame_workload.h"
 #include "renderer/scene_runtime_frame.h"
 

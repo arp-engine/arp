@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "editor/workspace/editor_scene_document.h"
 
 #include <string_view>
@@ -11,7 +11,7 @@ using EditorSceneResourceValidator = bool (*)(
 
 class EditorSceneAuthoringCodec final {
 public:
-    static constexpr std::uint32_t contractVersion = 1;
+    static constexpr std::uint32_t contractVersion = 2;
     static constexpr std::size_t maxDocumentBytes = 4u * 1024u * 1024u;
     static constexpr std::size_t maxObjects = 512u;
     static constexpr std::size_t maxComponents = 2048u;

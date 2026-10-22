@@ -1,7 +1,7 @@
 #include "ui/ui_document.h"
 
-#include "core/file_io.h"
-#include "core/stable_hash.h"
+#include "core/hash/stable_hash.h"
+#include "core/io/file_io.h"
 
 #include <algorithm>
 #include <cassert>

@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><link rel="icon" href="data:,"><title>ARP Volumetric Fog</title>
+<style>body{margin:0;background:#182129}canvas{display:block;width:640px;height:360px}</style>
+<canvas id="canvas" width="640" height="360"></canvas>
+<script>
+const query=new URLSearchParams(location.search);
+const messages=[],nativeErrors=[],scopeDiagnostics=[];
+let sent=false;
+const originalPopErrorScope=GPUDevice.prototype.popErrorScope;
+GPUDevice.prototype.popErrorScope=function(){return originalPopErrorScope.call(this).then(error=>{
+  if(error)scopeDiagnostics.push(error.message);
+  return error;
+});};
+async function finish(code) {
+  if(sent)return;sent=true;
+  await new Promise(r=>setTimeout(r,100));
+  nativeErrors.push(...(Module.webGpuUncapturedErrors||[]));
+  const result={success:code===0&&!nativeErrors.length,messages,nativeErrors,
+    diagnostic:code===0?'':'FOG-BROWSER-EXIT-'+code,productionReady:false,scopeDiagnostics};
+  try {result.readback=await window.fogProbeResult;result.image=await window.fogImageResult;}catch(e){result.success=false;result.diagnostic=String(e);}
+  if(result.success&&query.has('homogeneous')&&!result.readback){result.success=false;result.diagnostic='FOG-READBACK-MISSING';}
+  document.body.dataset.fogResult=JSON.stringify(result);
+  await fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(result)});
+}
+var Module={canvas:document.getElementById('canvas'),
+  arguments:['--backend','webgpu','--frames','35','--fixed-time','1',...(query.has('ordinary')?[]:['--prototype-frozen-batch'])],
+  print:s=>{messages.push(String(s));console.log(s);},
+  printErr:s=>{nativeErrors.push(String(s));console.error(s);},
+  onExit:finish,onAbort:s=>{nativeErrors.push(String(s));finish(1);}};
+for(const flag of ['homogeneous','camera-inside','no-shadow','no-temporal','no-noise','no-local','no-fog'])
+  if(query.has(flag))Module.arguments.push('--'+flag);
+for(const value of ['resize-frame','disable-frame','quality','seed'])
+  if(query.has(value))Module.arguments.push('--'+value,query.get(value));
+window.addEventListener('error',e=>{nativeErrors.push(e.message);finish(1);});
+window.addEventListener('unhandledrejection',e=>{nativeErrors.push(String(e.reason));finish(1);});
+if(query.get('captureGate')==='1') {
+  Module.preRun=[function(){
+    addRunDependency('fog-renderdoc-gate');
+    (async()=>{
+      while(!Module.preinitializedWebGPUDevice)await new Promise(r=>requestAnimationFrame(r));
+      await fetch('/ready',{method:'POST'});
+      while(!(await fetch('/armed',{cache:'no-store'})).ok)await new Promise(r=>requestAnimationFrame(r));
+      removeRunDependency('fog-renderdoc-gate');
+    })().catch(e=>{nativeErrors.push(String(e));finish(1);});
+  }];
+}
+// Capture the actual canvas attachment before the browser expires it.
+if(query.has('capture')) {
+  let texture=null,device=null,submissions=0;
+  const getTexture=GPUCanvasContext.prototype.getCurrentTexture;
+  GPUCanvasContext.prototype.getCurrentTexture=function(){texture=getTexture.call(this);return texture;};
+  const encoder=GPUDevice.prototype.createCommandEncoder;
+  GPUDevice.prototype.createCommandEncoder=function(...args){device=this;return encoder.apply(this,args);};
+  const submit=GPUQueue.prototype.submit;
+  GPUQueue.prototype.submit=function(commands){
+    submit.call(this,commands);
+    if(++submissions===31&&texture&&device){
+      const width=texture.width,height=texture.height,row=Math.ceil(width*4/256)*256;
+      const bgra=texture.format.startsWith('bgra');
+      const staging=device.createBuffer({size:row*height,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ});
+      const copy=encoder.call(device);copy.copyTextureToBuffer({texture},{buffer:staging,bytesPerRow:row},{width,height});
+      submit.call(this,[copy.finish()]);
+      window.fogImageResult=(async()=>{
+        await staging.mapAsync(GPUMapMode.READ);
+        const source=new Uint8Array(staging.getMappedRange()),pixels=new Uint8ClampedArray(width*height*4);
+        let sum=0,minimum=1,maximum=0;
+        for(let y=0;y<height;++y)for(let x=0;x<width;++x){
+          const a=y*row+x*4,b=(y*width+x)*4;
+          pixels[b]=source[a+(bgra?2:0)];pixels[b+1]=source[a+1];pixels[b+2]=source[a+(bgra?0:2)];pixels[b+3]=255;
+          const l=(.2126*pixels[b]+.7152*pixels[b+1]+.0722*pixels[b+2])/255;
+          sum+=l;minimum=Math.min(minimum,l);maximum=Math.max(maximum,l);
+        }
+        staging.unmap();staging.destroy();
+        const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
+        canvas.getContext('2d').putImageData(new ImageData(pixels,width,height),0,0);
+        return {width,height,meanLuminance:sum/(width*height),minimumLuminance:minimum,maximumLuminance:maximum,png:canvas.toDataURL('image/png')};
+      })();
+    }
+  };
+}
+// Observe the real submitted integral with one bounded native copy/map probe.
+// This instrumentation belongs to the acceptance fixture, never the renderer.
+if(query.has('homogeneous')) {
+  let constants=null,integral=null,device=null,copied=false;
+  const groups=new WeakMap(),pipelines=new WeakMap(),passes=new WeakMap();
+  const createGroup=GPUDevice.prototype.createBindGroup;
+  GPUDevice.prototype.createBindGroup=function(d){const g=createGroup.call(this,d);groups.set(g,d.entries);device=this;return g;};
+  const createPipeline=GPUDevice.prototype.createComputePipeline;
+  GPUDevice.prototype.createComputePipeline=function(d){const p=createPipeline.call(this,d);pipelines.set(p,d.label);return p;};
+  const setPipeline=GPUComputePassEncoder.prototype.setPipeline;
+  GPUComputePassEncoder.prototype.setPipeline=function(p){passes.set(this,{name:pipelines.get(p)});return setPipeline.call(this,p);};
+  const setGroup=GPUComputePassEncoder.prototype.setBindGroup;
+  GPUComputePassEncoder.prototype.setBindGroup=function(i,g,...args){if(i===0&&passes.has(this))passes.get(this).entries=groups.get(g);return setGroup.call(this,i,g,...args);};
+  const dispatch=GPUComputePassEncoder.prototype.dispatchWorkgroups;
+  GPUComputePassEncoder.prototype.dispatchWorkgroups=function(...args){
+    const p=passes.get(this);
+    if(!copied&&p&&p.name==='fog_integrate'&&p.entries)integral=p.entries.find(e=>e.binding===2).resource.buffer;
+    return dispatch.apply(this,args);
+  };
+  const write=GPUQueue.prototype.writeBuffer;
+  GPUQueue.prototype.writeBuffer=function(buffer,offset,data,dataOffset,size){
+    if(buffer.size===752&&offset===0){
+      const bytes=ArrayBuffer.isView(data)?new Uint8Array(data.buffer,data.byteOffset,data.byteLength):new Uint8Array(data);
+      const unit=ArrayBuffer.isView(data)?data.BYTES_PER_ELEMENT:1;
+      constants=bytes.slice((dataOffset||0)*unit,(dataOffset||0)*unit+752);
+    }
+    return write.apply(this,arguments);
+  };
+  const submit=GPUQueue.prototype.submit;
+  GPUQueue.prototype.submit=function(commands){
+    submit.call(this,commands);
+    if(integral&&constants&&!copied){
+      copied=true;
+      const bytes=constants.slice(),u=new Uint32Array(bytes.buffer),f=new Float32Array(bytes.buffer);
+      const x=u[148],y=u[149],z=u[150],cx=Math.floor(x/2),cy=Math.floor(y/2);
+      const staging=device.createBuffer({size:16,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ});
+      const encoder=device.createCommandEncoder();encoder.copyBufferToBuffer(integral,((z-1)*y*x+cy*x+cx)*16,staging,0,16);
+      submit.call(this,[encoder.finish()]);
+      window.fogProbeResult=(async()=>{
+        await staging.mapAsync(GPUMapMode.READ);
+        const actual=Array.from(new Float32Array(staging.getMappedRange()));staging.unmap();staging.destroy();
+        const world=depth=>{const v=[(cx+.5)/x*2-1,(cy+.5)/y*2-1,depth,1];const a=[0,0,0,0].map((_,r)=>v.reduce((s,n,c)=>s+f[r*4+c]*n,0));return a.slice(0,3).map(n=>n/a[3]);};
+        const a=world(0),b=world(1),viewZ=w=>Math.abs(f[24]*w[0]+f[25]*w[1]+f[26]*w[2]+f[27]);
+        const distance=Math.hypot(...b.map((v,i)=>v-a[i]))/(viewZ(b)-viewZ(a))*(f[153]-f[152]);
+        const transmittance=Math.exp(-f[160]*distance);
+        const expected=[0,1,2].map(i=>f[164+i]*f[171]*f[172+i]/(4*Math.PI)*(1-transmittance));expected.push(transmittance);
+        const error=Math.max(...actual.map((v,i)=>Math.abs(v-expected[i])));
+        if(!actual.every(Number.isFinite)||error>0.0002)throw Error('FOG-ANALYTIC-MISMATCH '+JSON.stringify({actual,expected,error}));
+        return {actual,expected,maxAbsoluteError:error,distance};
+      })();
+    }
+  };
+}
+</script><script src="arp_volumetric_fog.js"></script></html>

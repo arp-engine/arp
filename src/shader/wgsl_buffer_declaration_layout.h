@@ -1,9 +1,9 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/ascii_token_cursor.h"
-#include "core/cpu_allocator.h"
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/text/ascii_token_cursor.h"
 #include "shader/buffer_declaration_type_layout.h"
 
 namespace arp::shader {

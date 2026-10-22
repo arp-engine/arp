@@ -1,4 +1,4 @@
-#include "rhi/frontend/bindless_scene_content.h"
+#include "rhi/frontend/bindless_initialized_graphics.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "rhi/frontend/command_sources.h"
 #include "rhi/semantics/bindless_entry_access.h"
@@ -798,11 +798,18 @@ std::uint32_t OriginalCommandBindlessRootSource::originalShaderEntryAccessVersio
         if (prepared && *prepared && (*prepared)->owners()
             && (*prepared)->owners()->desc().pipeline) {
             const auto& pipeline = *(*prepared)->owners()->desc().pipeline;
-            const auto* vertex = pipeline.bindlessShaderModule(ShaderStage::Vertex, 1u);
-            const auto* fragment = pipeline.bindlessShaderModule(ShaderStage::Fragment, 1u);
+            const auto* vp = pipeline.bindlessShaderModule(ShaderStage::Vertex, 1u);
+            const auto* fp = pipeline.bindlessShaderModule(ShaderStage::Fragment, 1u);
+            const BindlessPackageModule *vertex = nullptr, *fragment = nullptr;
+            for (const auto& module : authorization_->package().modules()) {
+                if (&module == vp)
+                    vertex = &module;
+                if (&module == fp)
+                    fragment = &module;
+            }
             if (vertex && fragment) {
-                const auto selected = OriginalBindlessSceneContentContract::selectEntries(
-                    vertex->entry, fragment->entry);
+                const auto selected = semantics::BindlessInitializedGraphicsContract::select(
+                    vertex->initializedGraphics, fragment->initializedGraphics);
                 if (selected.recognized && !selected.diagnostic)
                     return 4u;
             }

@@ -359,7 +359,8 @@ public:
                 || kind == CommandUsageKind::DrawIndexedIndirect))
             return nullptr;
         if (request.initializedGeometryContractVersion == 1u
-            && (kind == CommandUsageKind::BindVertexBuffer
+            && (kind == CommandUsageKind::RetainIndexedSnapshot
+                || kind == CommandUsageKind::BindVertexBuffer
                 || kind == CommandUsageKind::BindIndexBuffer
                 || kind == CommandUsageKind::DrawIndexed))
             return nullptr;

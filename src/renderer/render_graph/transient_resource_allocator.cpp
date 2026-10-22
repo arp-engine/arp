@@ -1,6 +1,6 @@
 #include "renderer/render_graph/transient_resource_allocator.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
 #include <map>

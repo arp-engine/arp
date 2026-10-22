@@ -6,9 +6,9 @@
 #include "../fixtures/original_storage_execution_contract_fixture.h"
 #include "../fixtures/original_storage_texture_creation_fixture.h"
 #include "../fixtures/transfer_dependency_lowering_fixture.h"
-#include "core/bounded_retainer.h"
+#include "core/math/unsigned_range.h"
+#include "core/ownership/bounded_retainer.h"
 #include "core/runtime/completion_retention_pool.h"
-#include "core/unsigned_range.h"
 #include "renderer/render_graph/compiled_frame_graph.h"
 #include "renderer/render_graph/render_graph.h"
 #include "rhi/backends/null/null_backend.h"
@@ -3928,8 +3928,80 @@ void BindlessContractFixture::verifyNullSnapshotContracts()
     }
 }
 
+static void verifyInitializedGraphicsProfileContract()
+{
+    using Contract = semantics::BindlessInitializedGraphicsContract;
+    const Contract::Profile profile{2u, 77u, true};
+    assert(Contract::select(profile, profile).recognized);
+    assert(!Contract::select({}, {}).recognized && !Contract::select({}, {}).diagnostic);
+    assert(Contract::select(profile, {}).diagnostic);
+    assert(Contract::select(profile, {2u, 78u, true}).diagnostic);
+    assert(Contract::select(profile, {1u, 77u, true}).diagnostic);
+    assert(Contract::select(profile, {2u, 77u, false}).diagnostic);
+    for (auto backend :
+        {Backend::Null, Backend::Vulkan, Backend::Metal, Backend::WebGPU, Backend::WebGL}) {
+        const bool native = backend == Backend::Vulkan || backend == Backend::Metal;
+        const bool emulated = backend == Backend::WebGPU;
+        const auto* id = Contract::lowering(backend, 2u, native ? 3u : 5u, true, true, emulated);
+        assert(bool(id) == (!native && !emulated));
+        assert(Contract::lowering(backend, 1u, 3u, true, true, emulated));
+        assert(Contract::lowering(backend, 2u, 3u, false, true, emulated));
+    }
+}
+
+static void verifyBindlessPureDecisionAllocations()
+{
+    Fixture fixture;
+    fixture.request.shaderPackageIdentity = 0u;
+    auto resolved = fixture.request;
+    resolved.shaderPackageIdentity = fixture.artifact.shaderPackageIdentity;
+    const auto expected = semantics::planBindless(fixture.caps, resolved, fixture.artifact);
+    assert(expected.success);
+    for (auto policy : {BindlessPolicy::Auto, BindlessPolicy::Required, BindlessPolicy::Disabled}) {
+        const auto before = arp::core::defaultCpuAllocator().stats().allocationCount;
+        const auto empty =
+            semantics::selectBindlessVariant(policy, fixture.caps, fixture.request, nullptr, 0u);
+        const auto selected = semantics::selectBindlessVariant(
+            policy, fixture.caps, fixture.request, &fixture.artifact, 1u);
+        assert(arp::core::defaultCpuAllocator().stats().allocationCount == before);
+        assert(empty.path
+            == (policy == BindlessPolicy::Required ? BindlessSelectionPath::Rejected
+                                                   : BindlessSelectionPath::Traditional));
+        if (policy != BindlessPolicy::Disabled)
+            assert(bindlessPlansMatch(expected, selected.plan));
+    }
+    fixture.request.budget.maxResidentBytes = 0u;
+    const auto failureBefore = arp::core::defaultCpuAllocator().stats().allocationCount;
+    const auto unavailable = semantics::selectBindlessVariant(
+        BindlessPolicy::Auto, fixture.caps, fixture.request, &fixture.artifact, 1u);
+    assert(unavailable.path == BindlessSelectionPath::Traditional
+        && arp::core::defaultCpuAllocator().stats().allocationCount == failureBefore);
+    PipelineValidationReport report;
+    report.success = true;
+    report.colorTargetCount = 1u;
+    report.colorFormats.push_back(TextureFormat::Rgba8Unorm);
+    RenderPassDesc pass;
+    RenderPassColorAttachmentDesc attachment;
+    attachment.target = allocateGpuResourceId();
+    attachment.format = TextureFormat::Rgba8Unorm;
+    pass.colorAttachments.push_back(attachment);
+    const auto before = arp::core::defaultCpuAllocator().stats().allocationCount;
+    for (unsigned i = 0u; i < 128u; ++i)
+        assert(validateBindlessRenderPass(report, pass).success);
+    assert(arp::core::defaultCpuAllocator().stats().allocationCount == before);
+    report.sampleCount = 2u;
+    assert(!validateBindlessRenderPass(report, pass).success);
+    report.sampleCount = 1u;
+    report.colorFormats[0] = TextureFormat::Rgba16Float;
+    assert(!validateBindlessRenderPass(report, pass).success);
+    report.success = false;
+    assert(!validateBindlessRenderPass(report, pass).success);
+}
+
 int main()
 {
+    verifyInitializedGraphicsProfileContract();
+    verifyBindlessPureDecisionAllocations();
     arp::test::OriginalStorageContentPlanFixture::verifyContract();
     arp::test::OriginalStorageContentSequenceFixture::verify();
     arp::test::OriginalStorageExecutionContractFixture::verify();

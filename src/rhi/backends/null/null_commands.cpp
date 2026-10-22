@@ -1,5 +1,5 @@
-#include "core/bounded_retainer.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/bounded_retainer.h"
 #include "null_backend_internal.h"
 #include "null_bindless.h"
 #include "rhi/frontend/command_attachment_validation.h"

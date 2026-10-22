@@ -1,4 +1,4 @@
-#include "core/deterministic_hash.h"
+#include "core/hash/deterministic_hash.h"
 
 #include <cassert>
 #include <cmath>

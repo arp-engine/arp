@@ -1,4 +1,4 @@
-#include "core/curve.h"
+#include "core/math/curve.h"
 
 #include <cassert>
 #include <cmath>

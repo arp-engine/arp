@@ -1,7 +1,8 @@
 #pragma once
-#include "core/cpu_allocator.h"
-#include "core/diagnostic_error.h"
-#include "pcg/foliage_instance_batch.h"
+#include "3d/vegetation/instance_layout.h"
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/memory/cpu_allocator.h"
+#include "renderer/geometry/projected_depth_order.h"
 
 #include <algorithm>
 
@@ -24,7 +25,7 @@ public:
 
     struct Batch {
         Key key;
-        core::pmr::Vector<pcg::InstanceDataGpu> instances{&core::defaultCpuMemoryResource()};
+        core::pmr::Vector<vegetation::InstanceDataGpu> instances{&core::defaultCpuMemoryResource()};
     };
 
     void reset(std::size_t instanceBudget, std::size_t batchBudget)
@@ -41,7 +42,7 @@ public:
         append(key, instances.data(), instances.size());
     }
 
-    void append(Key key, const pcg::InstanceDataGpu* instances, std::size_t count)
+    void append(Key key, const vegetation::InstanceDataGpu* instances, std::size_t count)
     {
         if (count == 0)
             return;
@@ -68,6 +69,24 @@ public:
         }
         it->instances.insert(it->instances.end(), instances, instances + count);
         used_ += count;
+    }
+
+    void orderFrontToBack(core::Vec3 axis)
+    {
+        for (auto& batch : batches_)
+            core::ProjectedDepthOrder::sort(
+                batch.instances.data(),
+                batch.instances.size(),
+                axis,
+                [](const auto& record) {
+                    return core::Vec3{
+                        record.positionScale[0], record.positionScale[1], record.positionScale[2]};
+                },
+                [](const auto& record) {
+                    // Use an integral storage key so even opaque float payloads
+                    // cannot introduce NaN comparisons into std::sort.
+                    return vegetation::unpackInstanceMetadataFloat(record.yawPhaseIdLod[2]);
+                });
     }
 
     const auto& batches() const { return batches_; }

@@ -1,11 +1,11 @@
 #pragma once
 
 #include "audio/audio_system.h"
-#include "core/cpu_allocator.h"
+#include "core/concurrency/callback.h"
+#include "core/memory/cpu_allocator.h"
 #include "editor/workspace/editor_scene_component_catalog.h"
 #include "editor/workspace/editor_scene_inspector.h"
-#include "physics2d/physics_world_2d.h"
-#include "core/callback.h"
+#include "physics/2d/physics_world_2d.h"
 #include "resource/resource_manager.h"
 #include "scene/scene.h"
 
@@ -29,14 +29,17 @@ public:
     void setResourceManagerProvider(core::SharedCallback<resource::ResourceManager*()> provider);
     void setPhysicsWorld2DProvider(
         core::SharedCallback<core::SharedPtr<physics2d::PhysicsWorld2D>()> provider);
+
     void setSchemaOnlyComponentCreation(bool enabled) noexcept
     {
         schemaOnlyComponentCreation_ = enabled;
     }
+
     core::SharedCallback<resource::ResourceManager*()> resourceManagerProvider() const
     {
         return resourceManagerProvider_;
     }
+
     core::SharedCallback<core::SharedPtr<physics2d::PhysicsWorld2D>()>
     physicsWorld2DProvider() const
     {
@@ -72,8 +75,8 @@ public:
         SceneInspectorPropertyKind valueKind,
         bool booleanValue,
         int integerValue,
-        std::uint32_t unsignedIntegerValue,
-        float numberValue,
+        std::uint64_t unsignedIntegerValue,
+        double numberValue,
         core::Vec3 vector3Value = {},
         core::Vec4 color4Value = {},
         std::string_view stringValue = {},

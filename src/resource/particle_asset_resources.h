@@ -1,9 +1,9 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/curve.h"
-#include "core/math.h"
-#include "core/stable_hash.h"
+#include "core/hash/stable_hash.h"
+#include "core/math/curve.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
 #include "resource/internal_asset_package.h"
 #include "resource/prefab_asset_resources.h"

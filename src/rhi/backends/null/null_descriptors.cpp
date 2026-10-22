@@ -1,6 +1,6 @@
-#include "core/cpu_allocator.h"
-#include "core/lifetime_epoch.h"
-#include "core/mutation_journal.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/lifetime_epoch.h"
+#include "core/ownership/mutation_journal.h"
 #include "null_backend_internal.h"
 #include "rhi/frontend/descriptor_state_copy.h"
 

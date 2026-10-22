@@ -1,7 +1,8 @@
 #include "resource/prefab_asset_resources.h"
 
-#include "core/filesystem_path.h"
-#include "core/sha1.h"
+#include "core/encoding/yaml_contract.h"
+#include "core/hash/sha1.h"
+#include "core/io/filesystem_path.h"
 #include "reflection/serialization.h"
 #include "resource/particle_asset_resources.h"
 
@@ -603,6 +604,7 @@ public:
     }
 
     bool done() const { return cursor_ == bytes_.size(); }
+
     std::size_t remaining() const { return bytes_.size() - cursor_; }
 
 private:
@@ -776,14 +778,20 @@ bool validateAnimatorControllerForPayload(const animation::AnimatorControllerAss
         return false;
     }
     const auto stateExists = [&](const std::pmr::string& name) {
-        return std::find_if(controller.states.begin(), controller.states.end(),
-                   [&](const animation::AnimatorState& state) { return state.name == name; })
+        return std::find_if(controller.states.begin(),
+                   controller.states.end(),
+                   [&](const animation::AnimatorState& state) {
+                       return state.name == name;
+                   })
             != controller.states.end();
     };
-    const auto parameter = [&](const std::pmr::string& name)
-        -> const animation::AnimatorParameterDefinition* {
-        const auto found = std::find_if(controller.parameters.begin(), controller.parameters.end(),
-            [&](const animation::AnimatorParameterDefinition& value) { return value.name == name; });
+    const auto parameter =
+        [&](const std::pmr::string& name) -> const animation::AnimatorParameterDefinition* {
+        const auto found = std::find_if(controller.parameters.begin(),
+            controller.parameters.end(),
+            [&](const animation::AnimatorParameterDefinition& value) {
+                return value.name == name;
+            });
         return found == controller.parameters.end() ? nullptr : &*found;
     };
     if (!stateExists(controller.defaultStateName)) {
@@ -795,9 +803,11 @@ bool validateAnimatorControllerForPayload(const animation::AnimatorControllerAss
         if (value.name.empty()
             || static_cast<unsigned>(value.type)
                 > static_cast<unsigned>(animation::AnimatorParameterType::Trigger)
-            || std::find_if(controller.parameters.begin(), controller.parameters.begin()
-                    + static_cast<std::ptrdiff_t>(index),
-                [&](const auto& previous) { return previous.name == value.name; })
+            || std::find_if(controller.parameters.begin(),
+                   controller.parameters.begin() + static_cast<std::ptrdiff_t>(index),
+                   [&](const auto& previous) {
+                       return previous.name == value.name;
+                   })
                 != controller.parameters.begin() + static_cast<std::ptrdiff_t>(index)) {
             diagnostics = makeDiagnostic("runtime payload animator parameter is invalid");
             return false;
@@ -805,13 +815,17 @@ bool validateAnimatorControllerForPayload(const animation::AnimatorControllerAss
     }
     for (std::size_t index = 0; index < controller.states.size(); ++index) {
         const auto& state = controller.states[index];
-        const auto clip = std::find_if(asset.clips.begin(), asset.clips.end(),
-            [&](const animation::AnimationClip& value) { return value.name == state.clipName; });
+        const auto clip = std::find_if(
+            asset.clips.begin(), asset.clips.end(), [&](const animation::AnimationClip& value) {
+                return value.name == state.clipName;
+            });
         if (state.name.empty() || state.clipName.empty() || !std::isfinite(state.speed)
             || state.speed <= 0.0f || clip == asset.clips.end()
-            || std::find_if(controller.states.begin(), controller.states.begin()
-                    + static_cast<std::ptrdiff_t>(index),
-                [&](const auto& previous) { return previous.name == state.name; })
+            || std::find_if(controller.states.begin(),
+                   controller.states.begin() + static_cast<std::ptrdiff_t>(index),
+                   [&](const auto& previous) {
+                       return previous.name == state.name;
+                   })
                 != controller.states.begin() + static_cast<std::ptrdiff_t>(index)) {
             diagnostics = makeDiagnostic("runtime payload animator state is invalid");
             return false;
@@ -834,8 +848,11 @@ bool validateAnimatorControllerForPayload(const animation::AnimatorControllerAss
         }
     }
     for (const auto& binding : stateBindings) {
-        const auto state = std::find_if(controller.states.begin(), controller.states.end(),
-            [&](const animation::AnimatorState& value) { return value.name == binding.stateName; });
+        const auto state = std::find_if(controller.states.begin(),
+            controller.states.end(),
+            [&](const animation::AnimatorState& value) {
+                return value.name == binding.stateName;
+            });
         if (state == controller.states.end() || state->clipName != binding.clipName
             || state->speed != binding.speed) {
             diagnostics = makeDiagnostic("runtime payload state binding mismatches controller");
@@ -850,13 +867,14 @@ void writeAnimatorController(
 {
     writer.string(controller.name);
     writer.string(controller.defaultStateName);
-    writeVector(writer, controller.parameters, [&](const animation::AnimatorParameterDefinition& value) {
-        writer.string(value.name);
-        writer.POD(value.type);
-        writer.POD(value.defaultFloat);
-        writer.POD(value.defaultInt);
-        writer.POD(value.defaultBool);
-    });
+    writeVector(
+        writer, controller.parameters, [&](const animation::AnimatorParameterDefinition& value) {
+            writer.string(value.name);
+            writer.POD(value.type);
+            writer.POD(value.defaultFloat);
+            writer.POD(value.defaultInt);
+            writer.POD(value.defaultBool);
+        });
     writeVector(writer, controller.states, [&](const animation::AnimatorState& value) {
         writer.string(value.name);
         writer.string(value.clipName);
@@ -877,25 +895,29 @@ void writeAnimatorController(
     });
 }
 
-bool readAnimatorController(RuntimeBlobReader& reader, animation::AnimatorControllerAsset& controller)
+bool readAnimatorController(
+    RuntimeBlobReader& reader, animation::AnimatorControllerAsset& controller)
 {
     return reader.string(controller.name) && reader.string(controller.defaultStateName)
-        && readVector(reader, controller.parameters,
+        && readVector(reader,
+            controller.parameters,
             [&](animation::AnimatorParameterDefinition& value) {
                 return reader.string(value.name) && reader.POD(value.type)
                     && reader.POD(value.defaultFloat) && reader.POD(value.defaultInt)
                     && reader.POD(value.defaultBool);
             })
-        && readVector(reader, controller.states, [&](animation::AnimatorState& value) {
-               return reader.string(value.name) && reader.string(value.clipName)
-                   && reader.POD(value.clipDurationSeconds) && reader.POD(value.speed);
-           })
+        && readVector(reader,
+            controller.states,
+            [&](animation::AnimatorState& value) {
+                return reader.string(value.name) && reader.string(value.clipName)
+                    && reader.POD(value.clipDurationSeconds) && reader.POD(value.speed);
+            })
         && readVector(reader, controller.transitions, [&](animation::AnimatorTransition& value) {
                return reader.string(value.sourceState) && reader.string(value.destinationState)
                    && reader.POD(value.durationSeconds) && reader.POD(value.hasExitTime)
                    && reader.POD(value.exitTime)
-                   && readVector(reader, value.conditions,
-                       [&](animation::AnimatorCondition& condition) {
+                   && readVector(
+                       reader, value.conditions, [&](animation::AnimatorCondition& condition) {
                            return reader.string(condition.parameter) && reader.POD(condition.mode)
                                && reader.POD(condition.threshold);
                        });
@@ -1232,13 +1254,13 @@ bool parseRuntimePayloadResource(const InternalAssetPackageEntry& entry,
     const auto parsedHash = blobHash->get_value<fkyaml::node::integer_type>();
     const auto parsedByteSize = blobByteSize->get_value<fkyaml::node::integer_type>();
     if (!arp::core::FilePath::isSafeRelativePath(out.blobPath)) {
-        diagnostics = makeDiagnostic(
-            "runtime payload blob path is not a safe relative package path");
+        diagnostics =
+            makeDiagnostic("runtime payload blob path is not a safe relative package path");
         return false;
     }
     if (parsedHash < std::numeric_limits<int>::min()
-        || parsedHash > static_cast<fkyaml::node::integer_type>(
-               std::numeric_limits<std::uint32_t>::max())
+        || parsedHash
+            > static_cast<fkyaml::node::integer_type>(std::numeric_limits<std::uint32_t>::max())
         || parsedByteSize <= 0 || parsedByteSize > std::numeric_limits<int>::max()) {
         diagnostics = makeDiagnostic("PrefabRuntimePayloadResource blob metadata is invalid");
         return false;
@@ -1404,8 +1426,8 @@ PrefabRuntimePayloadLoadResult loadPrefabRuntimePayloadFromPackageKey(
         return result;
     }
     if (!result.hasCompleteControllerData) {
-        result.diagnostics = makeDiagnostic(
-            "legacy runtime payload has no complete animator controller data");
+        result.diagnostics =
+            makeDiagnostic("legacy runtime payload has no complete animator controller data");
     }
     if (result.defaultStateName != payload.defaultStateName) {
         result.diagnostics = makeDiagnostic("runtime payload default state metadata mismatch");
@@ -2012,9 +2034,7 @@ core::UniquePtr<ResourceBase> createPrefabResourceFromEnvelope(
     }
 
     const auto resourceType = nodeString(*resourceTypeNode);
-    const auto payloadYaml = core::pmr::String(YamlNode::serialize(*payload).data(),
-        YamlNode::serialize(*payload).size(),
-        &core::defaultCpuMemoryResource());
+    const auto payloadYaml = core::YamlContract::serialize(*payload);
 
     auto deserialized = arp::reflection::deserialize_from_yaml(payloadYaml);
     if (!deserialized.success) {

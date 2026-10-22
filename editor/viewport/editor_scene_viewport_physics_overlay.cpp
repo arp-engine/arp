@@ -1,6 +1,6 @@
 #include "editor/viewport/editor_scene_viewport_physics_overlay.h"
 
-#include "physics2d/components.h"
+#include "2d/physics_components.h"
 
 #include <cmath>
 
@@ -11,8 +11,8 @@ constexpr float kPi = 3.14159265358979323846f;
 core::Vec2 transformPoint(const physics2d::BodyState& body, core::Vec2 point)
 {
     const auto c = std::cos(body.angle), s = std::sin(body.angle);
-    return {body.position.x + c * point.x - s * point.y,
-        body.position.y + s * point.x + c * point.y};
+    return {
+        body.position.x + c * point.x - s * point.y, body.position.y + s * point.x + c * point.y};
 }
 
 bool finite(core::Vec2 point)
@@ -96,8 +96,8 @@ EditorScenePhysicsOverlay buildEditorScenePhysicsOverlay(
                     return fail("ARP-EDITOR-PHYSICS-OVERLAY-SHAPE-INVALID");
                 core::Vec2 previous{};
                 for (std::size_t i = 0; i <= circleSegments; ++i) {
-                    const auto angle = 2.0f * kPi * static_cast<float>(i)
-                        / static_cast<float>(circleSegments);
+                    const auto angle =
+                        2.0f * kPi * static_cast<float>(i) / static_cast<float>(circleSegments);
                     const core::Vec2 point{shape.center.x + shape.radius * std::cos(angle),
                         shape.center.y + shape.radius * std::sin(angle)};
                     if (i && !edge(previous, point))
@@ -105,8 +105,8 @@ EditorScenePhysicsOverlay buildEditorScenePhysicsOverlay(
                     previous = point;
                 }
             } else if (shape.type == physics2d::ShapeType::Box) {
-                if (!finite(shape.center) || !finite(shape.halfSize)
-                    || shape.halfSize.x <= 0.0f || shape.halfSize.y <= 0.0f)
+                if (!finite(shape.center) || !finite(shape.halfSize) || shape.halfSize.x <= 0.0f
+                    || shape.halfSize.y <= 0.0f)
                     return fail("ARP-EDITOR-PHYSICS-OVERLAY-SHAPE-INVALID");
                 const core::Vec2 corners[] = {
                     {shape.center.x - shape.halfSize.x, shape.center.y - shape.halfSize.y},
@@ -122,7 +122,8 @@ EditorScenePhysicsOverlay buildEditorScenePhysicsOverlay(
                 const auto count = shape.points.size();
                 const auto edgeCount = shape.type == physics2d::ShapeType::Convex || shape.loop
                     ? count
-                    : count > 0u ? count - 1u : 0u;
+                    : count > 0u ? count - 1u
+                                 : 0u;
                 if (count < 2u)
                     return fail("ARP-EDITOR-PHYSICS-OVERLAY-SHAPE-INVALID");
                 for (std::size_t i = 0; i < edgeCount; ++i) {
@@ -136,8 +137,8 @@ EditorScenePhysicsOverlay buildEditorScenePhysicsOverlay(
                 if (core::length(delta) <= 1e-6f) {
                     core::Vec2 previous{};
                     for (std::size_t i = 0; i <= circleSegments; ++i) {
-                        const auto angle = 2.0f * kPi * static_cast<float>(i)
-                            / static_cast<float>(circleSegments);
+                        const auto angle =
+                            2.0f * kPi * static_cast<float>(i) / static_cast<float>(circleSegments);
                         const core::Vec2 point{shape.pointA.x + shape.radius * std::cos(angle),
                             shape.pointA.y + shape.radius * std::sin(angle)};
                         if (i && !edge(previous, point))
@@ -177,20 +178,25 @@ EditorScenePhysicsOverlay buildEditorScenePhysicsOverlay(
             const auto* joint = dynamic_cast<const physics2d::Joint2DComponent*>(component.get());
             if (!joint || !joint->enabled() || !joint->handle())
                 continue;
-            const auto* a = scene.findObject(scene::GameObjectId::fromValue(joint->bodyAObjectId()));
-            const auto* b = scene.findObject(scene::GameObjectId::fromValue(joint->bodyBObjectId()));
+            const auto* a =
+                scene.findObject(scene::GameObjectId::fromValue(joint->bodyAObjectId()));
+            const auto* b =
+                scene.findObject(scene::GameObjectId::fromValue(joint->bodyBObjectId()));
             const auto* bodyA = a ? a->getComponent<physics2d::RigidBody2DComponent>() : nullptr;
             const auto* bodyB = b ? b->getComponent<physics2d::RigidBody2DComponent>() : nullptr;
             physics2d::BodyState stateA{}, stateB{};
-            if (!bodyA || !bodyB || !bodyA->enabled() || !bodyB->enabled()
-                || !bodyA->world() || bodyA->world() != bodyB->world()
+            if (!bodyA || !bodyB || !bodyA->enabled() || !bodyB->enabled() || !bodyA->world()
+                || bodyA->world() != bodyB->world()
                 || !bodyA->world()->state(bodyA->handle(), stateA)
                 || !bodyB->world()->state(bodyB->handle(), stateB))
                 return fail("ARP-EDITOR-PHYSICS-OVERLAY-JOINT-BODY-UNAVAILABLE");
             const auto& desc = joint->desc();
-            if (!add(object.id(), joint->id(), EditorScenePhysicsOverlayKind::Joint,
+            if (!add(object.id(),
+                    joint->id(),
+                    EditorScenePhysicsOverlayKind::Joint,
                     transformPoint(stateA, desc.localAnchorA),
-                    transformPoint(stateB, desc.localAnchorB), false))
+                    transformPoint(stateB, desc.localAnchorB),
+                    false))
                 return result;
         }
     }

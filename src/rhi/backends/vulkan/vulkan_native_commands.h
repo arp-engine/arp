@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 #include "rhi/backends/vulkan/vulkan_timeline_semaphore.h"
 #include "rhi/gpu_bindless.h"

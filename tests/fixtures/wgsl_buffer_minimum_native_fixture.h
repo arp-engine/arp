@@ -1,6 +1,6 @@
 #pragma once
 #include "buffer_declaration_type_layout_fixture.h"
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "original_runtime_length_fixture.h"
 #include "original_target_memory_fixture.h"
 #include "runtime_array_length_operations_fixture.h"

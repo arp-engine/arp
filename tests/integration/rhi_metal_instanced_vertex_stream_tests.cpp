@@ -1,4 +1,4 @@
-#include "core/ibl_bake.h"
+#include "core/math/half_float.h"
 #include "renderer/shader_package_reflection.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_device.h"
@@ -215,7 +215,7 @@ int main()
                     std::uint16_t bits = 0u;
                     std::memcpy(
                         &bits, bytes.data() + pixelOffset + channel * sizeof(bits), sizeof(bits));
-                    const float actual = core::ibl::halfToFloat(bits);
+                    const float actual = core::halfToFloat(bits);
                     assert(std::isfinite(actual));
                     assert(std::abs(actual - expected[draw][channel]) <= 0.001f);
                 }

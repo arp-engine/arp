@@ -1,6 +1,6 @@
 #include "editor/app/game_preview.h"
 
-#include "core/number_format.h"
+#include "core/text/number_format.h"
 #include "editor/workspace/editor_shell.h"
 
 #include <algorithm>

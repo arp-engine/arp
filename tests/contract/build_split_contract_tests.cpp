@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cassert>
 #include <cctype>
@@ -26,7 +26,8 @@ bool contains(const std::pmr::string& text, const std::pmr::string& needle)
 
 bool containsEngineSourceCompile(const std::pmr::string& text)
 {
-    return contains(text, "src/core/log.cpp") || contains(text, "src/platform/render_system.cpp")
+    return contains(text, "src/core/diagnostics/log.cpp")
+        || contains(text, "src/platform/common/render_system.cpp")
         || contains(text, "src/rhi/frontend/descriptor_descriptors.cpp")
         || contains(text, "src/assets/glb_static_mesh_importer.cpp");
 }
@@ -124,7 +125,7 @@ int main()
     assert(contains(apiHeaderText, "ARP_BUILDING_DLL"));
 
     assertFileContains(root,
-        "src/core/cpu_allocator.h",
+        "src/core/memory/cpu_allocator.h",
         {
             "#include \"core/api.h\"",
             "struct ARP_API CpuMemoryStats",

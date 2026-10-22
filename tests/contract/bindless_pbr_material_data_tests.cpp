@@ -1,5 +1,5 @@
 #include "../fixtures/original_graphics_pbr_material_data_fixture.h"
-#include "rhi/frontend/bindless_pbr_material.h"
+#include "renderer/bindless/bindless_pbr_material.h"
 
 #include <cstring>
 #include <limits>
@@ -11,8 +11,8 @@
 int main()
 {
     {
-        using Contract = arp::rhi::BindlessPbrMaterialContract;
-        using Record = arp::rhi::BindlessPbrMaterial96;
+        using Contract = arp::renderer::BindlessPbrMaterialContract;
+        using Record = arp::renderer::BindlessPbrMaterial96;
         Contract::Values values;
         values.baseColorAlpha = {0.2f, 0.3f, 0.4f, 0.75f};
         values.flags = Contract::AlphaMask | Contract::TwoSidedLighting | Contract::AuthoredLeaf;

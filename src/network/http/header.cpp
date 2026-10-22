@@ -1,6 +1,6 @@
 #include "network/http/header.h"
 
-#include "core/string_utils.h"
+#include "core/text/string_utils.h"
 
 namespace arp::network::http {
 

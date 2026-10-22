@@ -1,5 +1,7 @@
 #include "3d/scene_3d_visibility.h"
 
+#include "3d/camera_parameters.h"
+
 #include <cmath>
 #include <utility>
 
@@ -37,6 +39,12 @@ Scene3DVisibilityResult Scene3DVisibilitySystem::filterVisible(
     const Scene3DRenderQueue& sourceQueue, const Scene3DCameraBinding& camera) const
 {
     Scene3DRenderQueue visibleQueue;
+    if (sourceQueue.hasFog())
+        visibleQueue.setFog(sourceQueue.fog());
+    for (const auto& volume : sourceQueue.fogVolumes())
+        visibleQueue.addFogVolume(volume);
+    for (const auto& light : sourceQueue.lights())
+        visibleQueue.addLight(light);
     for (const auto& cameraBinding : sourceQueue.cameras()) {
         visibleQueue.addCamera(cameraBinding);
     }

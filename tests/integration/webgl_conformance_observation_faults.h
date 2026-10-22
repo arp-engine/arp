@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "rhi/conformance/original_output.h"
 
 namespace arp::rhi::webgl::test {

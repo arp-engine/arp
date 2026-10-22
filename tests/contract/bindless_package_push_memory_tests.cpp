@@ -1,7 +1,7 @@
 #include "../fixtures/bindless_graphics_push_package_fixture.h"
 #include "../fixtures/cpu_quota_factory_fixture.h"
 #include "../fixtures/original_graphics_push_consumption_fixture.h"
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "rhi/backends/metal/metal_bindless_validation.h"
 #include "rhi/frontend/bindless_root_execution.h"
 #include "rhi/frontend/bindless_shader_package.h"

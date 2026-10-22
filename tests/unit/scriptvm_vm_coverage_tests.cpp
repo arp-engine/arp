@@ -9,7 +9,7 @@
 // Test style follows scriptvm_vm_tests.cpp: self-contained main() + require()
 // helpers, no third-party framework.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
 #include "scriptvm/interpreter/bytecode.h"
 #include "scriptvm/interpreter/eval.h"

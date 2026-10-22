@@ -1,8 +1,8 @@
 #pragma once
 
 #include "3d/bounds.h"
-#include "core/cpu_allocator.h"
-#include "core/math.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
 #include "renderer/runtime_scene.h"
 #include "scene/component.h"
@@ -60,19 +60,41 @@ struct MeshComponentDesc {
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct MeshComponentEditorProperties {
-    APROP(Editor, Doc = "resource:MeshAssetResource:optional")
+    APROP(Serialize,
+        Editor,
+        ResourceReference,
+        OptionalReference,
+        ReferenceTarget = "MeshAssetResource",
+        Doc = "resource:MeshAssetResource:optional")
     arp::core::pmr::String resourceId{&arp::core::defaultCpuMemoryResource()};
-    APROP(Editor, Doc = "resource:MaterialResource:optional")
+    APROP(Serialize,
+        Editor,
+        ResourceReference,
+        OptionalReference,
+        ReferenceTarget = "MaterialResource",
+        Doc = "resource:MaterialResource:optional")
     arp::core::pmr::String materialResourceId{&arp::core::defaultCpuMemoryResource()};
-    APROP(Editor, Doc = "color:rgba")
+    APROP(Serialize, Editor, Doc = "color:rgba")
     arp::core::Vec4 baseColor{1.0f, 1.0f, 1.0f, 1.0f};
 };
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct TerrainComponentEditorProperties {
-    APROP(Editor, Doc = "resource:TerrainAssetResource:optional")
+    APROP(Serialize,
+        Editor,
+        ResourceReference,
+        OptionalReference,
+        ReferenceTarget = "TerrainAssetResource",
+        Doc = "resource:TerrainAssetResource:optional")
     arp::core::pmr::String resourceId{&arp::core::defaultCpuMemoryResource()};
+    APROP(Serialize,
+        Editor,
+        ResourceReference,
+        OptionalReference,
+        ReferenceTarget = "MaterialResource",
+        Doc = "resource:MaterialResource:optional")
+    arp::core::pmr::String materialResourceId{&arp::core::defaultCpuMemoryResource()};
 };
 
 struct TerrainComponentDesc {
@@ -219,9 +241,17 @@ public:
 
     const arp::core::pmr::String& resourceId() const { return resourceId_; }
 
+    const arp::core::pmr::String& materialResourceId() const { return materialResourceId_; }
+
+    void set_material_resource_id(const arp::core::pmr::String& value)
+    {
+        materialResourceId_ = value;
+    }
+
     arp::reflection::object editorAuthoringProperties() const override
     {
-        return arp::reflection::object(TerrainComponentEditorProperties{resourceId_});
+        return arp::reflection::object(
+            TerrainComponentEditorProperties{resourceId_, materialResourceId_});
     }
 
     bool applyEditorAuthoringProperties(const arp::reflection::object& value) override;
@@ -259,9 +289,10 @@ public:
 
 private:
     TerrainComponentDesc desc_;
-    // The only authored terrain identity. Renderer handles and bounds are
+    // Authored terrain identity. Renderer handles and bounds are
     // runtime data resolved from TerrainAssetResource, never scene data.
     arp::core::pmr::String resourceId_{&arp::core::defaultCpuMemoryResource()};
+    arp::core::pmr::String materialResourceId_{&arp::core::defaultCpuMemoryResource()};
 };
 
 AENUM()

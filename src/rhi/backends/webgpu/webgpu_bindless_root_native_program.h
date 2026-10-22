@@ -1,5 +1,5 @@
 #pragma once
-#include "core/bounded_sequence.h"
+#include "core/container/bounded_sequence.h"
 #include "rhi/backends/webgpu/webgpu_bindless_root_cold_admission.h"
 #include "rhi/backends/webgpu/webgpu_original_render_pass_payload.h"
 #include "rhi/frontend/command_push_upload.h"

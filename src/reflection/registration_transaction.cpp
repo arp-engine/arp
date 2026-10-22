@@ -1,6 +1,6 @@
 #include "reflection/registration_transaction.h"
 
-#include "core/sha256.h"
+#include "core/hash/sha256.h"
 #include "reflection/class_info.h"
 #include "reflection/db.h"
 #include "reflection/enum.h"
@@ -281,7 +281,25 @@ RegistrationTransaction::RegistrationTransaction(NameView moduleIdentity, NameVi
         reject("reflection registration transaction requires an owner identity");
 }
 
-RegistrationTransaction::~RegistrationTransaction() = default;
+void RegistrationTransaction::preserveSerializationMetadata(const typeinfo& type)
+{
+    if (serializationMetadata_.find(&type) != serializationMetadata_.end())
+        return;
+    SerializationMetadata snapshot;
+    snapshot.collection = type.collection_;
+    snapshot.enumValues = type.enumValues_;
+    serializationMetadata_.emplace(&type, std::move(snapshot));
+}
+
+RegistrationTransaction::~RegistrationTransaction()
+{
+    if (committed_)
+        return;
+    for (auto& [type, snapshot] : serializationMetadata_) {
+        type->collection_ = snapshot.collection;
+        type->enumValues_.swap(snapshot.enumValues);
+    }
+}
 
 class_info* RegistrationTransaction::findStagedClass(NameView typeName) const
 {

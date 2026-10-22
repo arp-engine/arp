@@ -7,9 +7,9 @@
 #include <emscripten/emscripten.h>
 #endif
 
-#include "core/external_object_slot.h"
-#include "core/shared_owner_projection.h"
-#include "core/versioned_shared_owner.h"
+#include "core/ownership/external_object_slot.h"
+#include "core/ownership/shared_owner_projection.h"
+#include "core/ownership/versioned_shared_owner.h"
 #include "rhi/backends/webgpu/webgpu_native_runtime.h"
 #include "rhi/backends/webgpu/webgpu_original_depth_table_expansion_pipeline_definition.h"
 #include "rhi/frontend/pipeline_creation_validation.h"

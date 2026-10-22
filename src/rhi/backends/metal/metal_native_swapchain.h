@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/metal/metal_native_resources.h"
 #include "rhi/gpu_swapchain.h"
 

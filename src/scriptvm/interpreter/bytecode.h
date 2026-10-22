@@ -8,7 +8,7 @@
 // Program/Function layout follows goes but adapts to the thick-bridge model
 // (no separate HostFunctions table -- host calls route through the reflection db).
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/runtime/artifact_identity.h"
 #include "scriptvm/runtime/diagnostics.h"
 #include "scriptvm/runtime/source_pos.h"

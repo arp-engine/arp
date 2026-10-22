@@ -1,8 +1,8 @@
 #include "scriptvm/aot/aot_package.h"
 
-#include "core/file_io.h"
-#include "core/number_format.h"
-#include "core/sha256.h"
+#include "core/hash/sha256.h"
+#include "core/io/file_io.h"
+#include "core/text/number_format.h"
 #include "scriptvm/compile/frontend.h"
 #include "scriptvm/compile/parser.h"
 #include "scriptvm/compile/sema.h"

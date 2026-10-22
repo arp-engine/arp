@@ -56,9 +56,11 @@ bool TerrainComponent::applyEditorAuthoringProperties(const arp::reflection::obj
     if (!value.is<TerrainComponentEditorProperties>())
         return false;
     const auto& properties = value.cast<const TerrainComponentEditorProperties&>();
-    if (!isOptionalStableResourceId(properties.resourceId))
+    if (!isOptionalStableResourceId(properties.resourceId)
+        || !isOptionalStableResourceId(properties.materialResourceId))
         return false;
     resourceId_ = properties.resourceId;
+    materialResourceId_ = properties.materialResourceId;
     return true;
 }
 

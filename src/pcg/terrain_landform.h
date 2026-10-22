@@ -22,7 +22,7 @@
 //
 // Plan reference: complete_procedural_scene_implementation_plan.md P2.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cmath>
 #include <cstdint>

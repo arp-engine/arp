@@ -16,8 +16,8 @@
 // mutable containers (list/dict/instance) mutations are visible through all
 // aliases -- this is the intended Python-like reference semantics.
 
-#include "core/callback.h"
-#include "core/cpu_allocator.h"
+#include "core/concurrency/callback.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
 
 #include <cassert>

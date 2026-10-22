@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_native_commands.h"
 #include "rhi/backends/vulkan/vulkan_swapchain_retirement.h"
 #include "tests/fixtures/vulkan_headless_runtime.h"

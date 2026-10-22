@@ -6,5 +6,5 @@ source: core/core_module.cpp
 entry: arp_register_arp_core
 exportContractHash: sha256:64ec4ff4e94ccc7eeeda00410452a69ab80f21c3cd5133aeb5988981600e4ff8
 reflectionHeaders:
-  - src/core/math.h
-  - src/core/script_types.h
+  - src/core/math/math.h
+  - src/scriptvm/bindings/script_types.h

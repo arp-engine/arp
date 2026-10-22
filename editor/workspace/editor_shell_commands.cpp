@@ -1,5 +1,5 @@
-#include "core/filesystem_path.h"
-#include "core/string_utils.h"
+#include "core/io/filesystem_path.h"
+#include "core/text/string_utils.h"
 #include "editor/workspace/editor_layout.h"
 #include "editor/workspace/editor_shell.h"
 #include "editor/workspace/editor_shell_internal.h"
@@ -289,12 +289,39 @@ void EditorShell::pollScenePersistence()
     }
 }
 
+void EditorShell::pollTasks()
+{
+    pollScenePersistence();
+    if (terrainBuild_.ready())
+        (void)submitCommand(CompleteTerrainResourceBuildCommand{}, EditorCommandOrigin::Internal);
+}
+
 EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
 {
     return std::visit(
         [this](const auto& command) -> EditorCommandOutcome {
             using Command = std::decay_t<decltype(command)>;
-            if constexpr (std::is_same_v<Command, ActivateControlCommand>) {
+            if constexpr (std::is_same_v<Command, BuildTerrainResourceCommand>) {
+                if (!terrainBuild_.start(projectRoot(),
+                        command.authoringPath,
+                        command.packagePath,
+                        projectResources_.manifestSnapshot()))
+                    return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
+                feedback("Building terrain resource...");
+                return {true, false, EditorDiagnosticCode::None};
+            } else if constexpr (std::is_same_v<Command, CompleteTerrainResourceBuildCommand>) {
+                auto built = terrainBuild_.finish(projectRoot());
+                if (!built.success) {
+                    feedback(built.diagnostic);
+                    return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
+                }
+                projectResources_.publishAssetPackages(std::move(*built.resources));
+                refreshFileSystem();
+                sceneInspectorWidgetOwner_ = scene::GameObjectId::invalid();
+                refreshSceneInspector();
+                feedback("Terrain resource built and added to project");
+                return {true, true, EditorDiagnosticCode::None};
+            } else if constexpr (std::is_same_v<Command, ActivateControlCommand>) {
                 if (command.source.empty())
                     return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
                 applyActivation(command.source);
@@ -387,8 +414,7 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
                     sceneViewportCamera_.orbit(command.deltaX, command.deltaY);
                     break;
                 case SceneViewportCameraOperation::OrbitAround:
-                    sceneViewportCamera_.orbitAround(
-                        command.deltaX, command.deltaY, command.pivot);
+                    sceneViewportCamera_.orbitAround(command.deltaX, command.deltaY, command.pivot);
                     break;
                 case SceneViewportCameraOperation::Look:
                     sceneViewportCamera_.look(command.deltaX, command.deltaY);
@@ -539,8 +565,7 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
                 if (result.success)
                     sceneViewportAdditionalSelection_.clear();
                 return result;
-            }
-            else if constexpr (std::is_same_v<Command, AddSceneComponentCommand>) {
+            } else if constexpr (std::is_same_v<Command, AddSceneComponentCommand>) {
                 if (command.initialProperties.size() > 64u)
                     return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
                 for (std::size_t index = 0; index < command.initialProperties.size(); ++index) {

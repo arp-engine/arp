@@ -1,4 +1,4 @@
-#include "core/ibl_bake.h"
+#include "core/math/half_float.h"
 #include "rhi/backends/webgpu/webgpu_backend_objects.h"
 #include "rhi/backends/webgpu/webgpu_conformance_artifact_wait.h"
 #include "rhi/backends/webgpu/webgpu_conformance_clear.h"
@@ -451,8 +451,7 @@ const char* WebGpuConformanceClearExecution::observeAuxiliary()
             for (std::size_t i = 0; i < bytes.size(); i += 2) {
                 const auto bits = std::uint16_t(bytes[i]) | (std::uint16_t(bytes[i + 1]) << 8);
                 matches = matches
-                    && bits
-                        == core::ibl::floatToHalf(frame.storageMrt_->expectedStorage[(i / 2) % 4]);
+                    && bits == core::floatToHalf(frame.storageMrt_->expectedStorage[(i / 2) % 4]);
             }
         }
     }

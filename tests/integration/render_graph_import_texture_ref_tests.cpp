@@ -17,7 +17,7 @@
 //   - graph_destruction_releases: destroying the FrameGraph releases the
 //     borrowed shared_ptr even without an explicit reset().
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/render_graph/compiled_frame_graph.h"
 #include "renderer/render_graph/render_graph.h"
 #include "rhi/backends/null/null_backend.h"

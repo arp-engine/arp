@@ -4,7 +4,7 @@
 #include "../fixtures/descriptor_whole_buffer_binding_fixture.h"
 #include "../fixtures/original_descriptor_buffer_binding_fixture.h"
 #include "../fixtures/render_pass_arguments_fixture.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "core/runtime/creation_receipt_lifecycle.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/frontend/command_attachment_validation.h"

@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "core/runtime/async_runtime.h"
 #include "resource/resource_manager.h"
 #include "ui/ui_atlas_metadata_resource.h"

@@ -1,11 +1,12 @@
 #include "../fixtures/cpp_source_evidence.h"
 #include "../fixtures/depth_stencil_attachment_input_fixture.h"
 #include "../fixtures/original_command_sampler_custody_fixture.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
 #include "rhi/backends/vulkan/vulkan_device.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
+#include "rhi/backends/vulkan/vulkan_resource_registry.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 #include "rhi/frontend/bindless_compute_binding.h"
 #include "rhi/gpu_bindless.h"
@@ -43,6 +44,60 @@
 #endif
 
 namespace {
+
+void verifyRegistryLookupPreservesWeakLiveness()
+{
+    using namespace arp;
+    using namespace arp::rhi_vulkan;
+    core::DefaultCpuAllocator allocator;
+    core::CpuMemoryResource memory(
+        allocator, core::CpuAllocationIntent::General, "VulkanRegistryLookupContract");
+    VulkanRhiResourceRegistry registry(&memory);
+    auto live = core::makeShared<VulkanRhiNativeResourcePayload>();
+    auto expired = core::makeShared<VulkanRhiNativeResourcePayload>();
+    const auto liveId = rhi::allocateGpuResourceId();
+    const auto expiredId = rhi::allocateGpuResourceId();
+    registry.registerResource(liveId, live);
+    registry.registerResource(expiredId, expired);
+    const auto registered = allocator.stats();
+    expired.reset();
+    // Unrelated lookups do not perform whole-device garbage collection.
+    for (unsigned repeat = 0; repeat < 1000u; ++repeat)
+        assert(registry.payload(liveId) == live);
+    assert(allocator.stats().allocationCount == registered.allocationCount);
+    assert(allocator.stats().deallocationCount == registered.deallocationCount);
+    assert(!registry.payload(expiredId));
+    assert(allocator.stats().deallocationCount == registered.deallocationCount + 1u);
+    registry.unregisterResource(liveId);
+    assert(!registry.payload(liveId));
+    assert(live); // unregister removes identity without destroying a retained owner
+    assert(allocator.stats().liveBytes == 0u);
+
+    struct ViewPayload final : VulkanRhiNativeResourcePayload {
+        bool backendVulkanTextureViewDescAvailable() const override { return true; }
+    };
+
+    auto parent = core::makeShared<VulkanRhiNativeResourcePayload>();
+    auto view = core::makeShared<ViewPayload>();
+    const auto parentId = rhi::allocateGpuResourceId();
+    const auto viewId = rhi::allocateGpuResourceId();
+    registry.registerTexture(parentId, parent);
+    registry.registerResource(viewId, view, parentId);
+    assert(registry.textureViewParentIsLive(viewId));
+    registry.unregisterResource(parentId);
+    assert(!registry.textureViewParentIsLive(viewId));
+    assert(parent); // native retention must not keep a public parent ID live
+    registry.registerResource(parentId, parent);
+    assert(!registry.textureViewParentIsLive(viewId)); // wrong registered kind
+    registry.registerTexture(parentId, parent);
+    assert(registry.textureViewParentIsLive(viewId));
+    parent.reset();
+    assert(!registry.textureViewParentIsLive(viewId));
+    assert(!registry.payload(parentId));
+    view.reset();
+    assert(!registry.payload(viewId));
+    assert(allocator.stats().liveBytes == 0u);
+}
 
 arp::tests::CppSourceEvidence readText(const char* path)
 {
@@ -566,6 +621,7 @@ int main(int argc, char** argv)
 {
     if (argc == 2 && std::string_view(argv[1]) == "--descriptor-parent") {
 #ifdef ARP_SOURCE_DIR
+        verifyRegistryLookupPreservesWeakLiveness();
         assertVulkanResourceRegistryDoesNotStrongPinReleasedResources();
         assertVulkanTextureViewAndSamplerRetainNativePayloads();
         std::puts(
@@ -614,6 +670,7 @@ int main(int argc, char** argv)
     assertVulkanSubmittedCommandsDrainBeforeRuntimeTeardown();
     assertVulkanFloatTextureUploadFormatsAreExplicit();
     assertVulkanResourceRegistryDoesNotStrongPinReleasedResources();
+    verifyRegistryLookupPreservesWeakLiveness();
     assertVulkanTextureViewAndSamplerRetainNativePayloads();
     assertVulkanNativeCommandPayloadRetainsStylizedGraphRenderPasses();
     assertVulkanDefaultTextureTransitionInfersFormatAspect();

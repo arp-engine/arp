@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/quota_bound_shared_identity.h"
+#include "core/ownership/quota_bound_shared_identity.h"
 #include "shader/runtime_array_length_operations.h"
 #include "shader/shader_artifact_files.h"
 #include "shader/shader_reflection_cache.h"

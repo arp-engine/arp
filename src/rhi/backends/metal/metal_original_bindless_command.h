@@ -1,5 +1,5 @@
 #pragma once
-#include "core/external_object_slot.h"
+#include "core/ownership/external_object_slot.h"
 #include "rhi/backends/metal/metal_bindless_root.h"
 #include "rhi/backends/metal/metal_original_bindless_graphics_pass.h"
 #include "rhi/backends/metal/metal_original_command_custody.h"

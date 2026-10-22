@@ -1,6 +1,6 @@
 #include "rhi/frontend/transfer_texture_readback_batch.h"
 
-#include "core/monotonic_id_sequence.h"
+#include "core/ownership/monotonic_id_sequence.h"
 
 namespace arp::rhi {
 

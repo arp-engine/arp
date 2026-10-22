@@ -1,5 +1,5 @@
 #pragma once
-#include "core/shared_identity_projection.h"
+#include "core/ownership/shared_identity_projection.h"
 #include "rhi/backends/webgpu/webgpu_original_command_inputs.h"
 
 namespace arp::rhi_webgpu {

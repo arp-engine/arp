@@ -1,6 +1,6 @@
 #include "renderer/render_graph/conformance_storage_mrt_recorder.h"
 
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "rhi/conformance/storage_mrt_pipeline.h"
 #include "rhi/gpu_device.h"
 

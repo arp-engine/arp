@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/lifetime_epoch.h"
-#include "core/shared_owner_projection.h"
+#include "core/ownership/lifetime_epoch.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/backends/metal/metal_native_descriptors.h"
 #include "rhi/frontend/descriptor_validation.h"
 #include "rhi/gpu_commands.h"

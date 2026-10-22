@@ -1,7 +1,7 @@
 #pragma once
 
 #include "animation/skeleton.h"
-#include "core/array_view.h"
+#include "core/container/array_view.h"
 
 #include <array>
 #include <cmath>

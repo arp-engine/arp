@@ -206,6 +206,12 @@ public:
         auto result =
             semantics::OriginalCommandStateAdmissionLowering::bindlessGraphicsContentPlanLowering(
                 backend, geometryVersion);
+        if (completedReadVersion == 4u && geometryVersion != 1u) {
+            result.validationAvailable = result.rootAvailable = result.executionAvailable = false;
+            result.mode = CapabilityMode::DiagnosticFailure;
+            result.diagnostic = "RHI-BINDLESS-GRAPHICS-COMPLETED-READ-SCHEMA";
+            return result;
+        }
         if (completedReadVersion) {
             const auto read =
                 semantics::OriginalCommandStateAdmissionLowering::bindlessCompletedReadPlanLowering(
@@ -246,10 +252,16 @@ public:
             return "RHI-BINDLESS-PRODUCED-IMAGE-CONTENT-PROFILE";
         if (b.producedImageRead.maxCells > SIZE_MAX - b.maxAttachmentCells)
             return "RHI-BINDLESS-PRODUCED-IMAGE-BUDGET";
-        if (b.bindlessCompletedReadContractVersion > 3u)
+        if (b.bindlessCompletedReadContractVersion > 4u)
             return "RHI-BINDLESS-GRAPHICS-COMPLETED-READ-VERSION";
+        // /4 explicitly composes canonical RGBA8 whole-view reads with direct
+        // initialized indexed geometry. /1-/3 retain their original domains.
+        if (b.bindlessCompletedReadContractVersion == 4u
+            && (b.bindlessGeometryContractVersion != 1u || !b.bindlessGeometryOptIn))
+            return "RHI-BINDLESS-GRAPHICS-COMPLETED-READ-SCHEMA";
         if (b.bindlessCompletedReadContractVersion
-            && (b.bindlessGeometryContractVersion || b.bindlessGeometryOptIn
+            && ((b.bindlessCompletedReadContractVersion != 4u
+                    && (b.bindlessGeometryContractVersion || b.bindlessGeometryOptIn))
                 || !b.maxCompletedControls || !b.maxSampledSteps))
             return "RHI-BINDLESS-GRAPHICS-COMPLETED-READ-SCHEMA";
         if (const auto* id =

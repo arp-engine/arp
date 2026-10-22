@@ -9,7 +9,7 @@ namespace arp::rhi::semantics {
 // completion authority. Bound-resource API alias validation is independent.
 // /3 projects the same pinned family's Compute entries, including ordinary
 // aliases retained for Graphics but explicitly inactive in Compute reflection.
-// /4 uses the same Graphics projection for authenticated SceneContent/1
+// /4 uses the same Graphics projection for authenticated InitializedGraphics/2
 // color/depth/shadow entry pairs. It does not authorize scene execution.
 class OriginalBindlessEntryAccessContract final {
 public:

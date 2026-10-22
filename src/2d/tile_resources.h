@@ -1,6 +1,6 @@
 #pragma once
 #include "2d/sprite_resources.h"
-#include "physics2d/physics_world_2d.h"
+#include "physics/2d/physics_world_2d.h"
 
 namespace arp::scene2d {
 struct TileDefinition {

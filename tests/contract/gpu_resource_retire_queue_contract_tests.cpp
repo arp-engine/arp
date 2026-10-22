@@ -31,7 +31,7 @@
 //      verified structurally by the cpu_memory_policy_contract_tests scanner
 //      over the header; this test does not re-assert it.
 
-#include "core/runtime/gpu_resource_retire_queue.h"
+#include "renderer/runtime/gpu_resource_retire_queue.h"
 #include "rhi/frontend/memory_retirement_budget.h"
 
 #include <cassert>

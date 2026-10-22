@@ -1,8 +1,8 @@
 #include "network/websocket/handshake.h"
 
-#include "core/base64.h"
-#include "core/sha1.h"
-#include "core/string_utils.h"
+#include "core/encoding/base64.h"
+#include "core/hash/sha1.h"
+#include "core/text/string_utils.h"
 
 namespace arp::network::websocket {
 

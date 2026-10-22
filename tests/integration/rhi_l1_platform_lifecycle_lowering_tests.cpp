@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/semantics/native_platform_lifecycle_lowering.h"
 
 #include <cassert>

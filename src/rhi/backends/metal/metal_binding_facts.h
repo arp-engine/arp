@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/metal/metal_resource_ownership.h"
 #include "rhi/frontend/command_draw_validation.h"
 #include "rhi/gpu_descriptors.h"

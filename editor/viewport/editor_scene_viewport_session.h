@@ -2,6 +2,7 @@
 
 #include "editor/viewport/editor_scene_viewport_composite.h"
 #include "editor/viewport/editor_scene_viewport_draw_executor.h"
+#include "editor/viewport/editor_scene_viewport_environment.h"
 #include "editor/viewport/editor_scene_viewport_material_payload.h"
 #include "editor/viewport/editor_scene_viewport_mesh_cache.h"
 #include "editor/viewport/editor_scene_viewport_shader_package.h"
@@ -38,8 +39,7 @@ inline constexpr std::uint64_t kEditorSceneViewportInteractiveTextureBudgetBytes
 inline constexpr std::uint64_t kEditorSceneViewportInteractiveUploadBudgetBytes =
     16u * 1024u * 1024u;
 inline constexpr EditorSceneViewportSessionConfig kEditorSceneViewportInteractiveSessionConfig{
-    {EditorSceneAuthoringCodec::maxComponents,
-        kEditorSceneViewportInteractiveGeometryBudgetBytes},
+    {EditorSceneAuthoringCodec::maxComponents, kEditorSceneViewportInteractiveGeometryBudgetBytes},
     {EditorSceneAuthoringCodec::maxComponents * kEditorSceneViewportMaterialTextureSlotCount,
         kEditorSceneViewportInteractiveTextureBudgetBytes,
         kEditorSceneViewportInteractiveUploadBudgetBytes},
@@ -58,6 +58,7 @@ public:
         rhi::GpuDevice& device,
         const EditorSceneViewportShaderArtifacts& artifacts,
         const EditorSceneViewportShaderArtifacts& spriteArtifacts,
+        const EditorSceneViewportShaderArtifacts& environmentArtifacts,
         rhi::Extent2D extent,
         core::pmr::String& diagnostics);
     bool renderIfDirty(EditorShell& shell, rhi::Extent2D extent, core::pmr::String& diagnostics);
@@ -85,10 +86,19 @@ private:
     EditorSceneViewportTextureCache textureCache_;
     core::UniquePtr<EditorSceneViewportSpriteRenderer> spriteRenderer_;
     EditorSceneViewportComposite composite_;
+    EditorSceneViewportEnvironment environment_;
+    core::pmr::String renderedSceneDiagnostics_{&core::defaultCpuMemoryResource()};
+    bool renderEnvironment(EditorShell& shell,
+        bool gridPass,
+        const EditorSceneViewportSky& sky,
+        core::pmr::String& diagnostics);
+    bool finishEnvironment(
+        EditorShell& shell, const EditorSceneViewportSky& sky, core::pmr::String& diagnostics);
     core::pmr::Vector<MaterialDescriptorOwner> materialDescriptors_{
         &core::defaultCpuMemoryResource()};
     std::uint64_t renderedStateVersion_ = 0u;
     bool hasRendered_ = false;
+    const resource::ResourceManager* renderedResourceOwner_ = nullptr;
 };
 
 } // namespace arp::editor

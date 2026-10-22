@@ -7,7 +7,7 @@
 // contract. Every backend consumes Typed IR emitted directly from the
 // sema-validated AST; no bytecode compatibility adapter exists here.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/compile/ast.h"
 #include "scriptvm/ir/typed_ir.h"
 #include "scriptvm/runtime/diagnostics.h"

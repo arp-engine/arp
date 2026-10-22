@@ -1,5 +1,5 @@
-#include "core/ascii_token_cursor.h"
-#include "core/file_io.h"
+#include "core/io/file_io.h"
+#include "core/text/ascii_token_cursor.h"
 #include "rhi/backends/metal/metal_buffer_type_layout.h"
 #include "shader/spirv_buffer_declaration_layout.h"
 #include "shader/spirv_msl_buffer_memory_lowering.h"

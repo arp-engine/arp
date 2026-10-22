@@ -696,4 +696,23 @@ bool Scene::collectUpdateOrder(GameObject& object,
     return true;
 }
 
+Scene::RestorationTransaction::RestorationTransaction(Scene& scene)
+    : scene_(scene), factories_(scene.scriptFactories_), objects_(scene.objects_.size()),
+      objectId_(scene.nextObjectId_), componentId_(scene.nextComponentId_)
+{
+    if (scene.dispatching_ || scene.shuttingDown_)
+        throw std::logic_error("ARP-SCENE-RESTORATION-DURING-DISPATCH");
+}
+
+Scene::RestorationTransaction::~RestorationTransaction()
+{
+    if (committed_)
+        return;
+    while (scene_.objects_.size() > objects_)
+        scene_.destroyObject(scene_.objects_.back()->id());
+    scene_.scriptFactories_.swap(factories_);
+    scene_.nextObjectId_ = objectId_;
+    scene_.nextComponentId_ = componentId_;
+}
+
 } // namespace arp::scene

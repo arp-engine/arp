@@ -1,4 +1,4 @@
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/frontend/transfer_texture_readback_batch.h"
 

@@ -438,6 +438,49 @@ private:
 };
 
 // Reuse the PMR vector's storage/algorithms, adding only explicit ABI edges.
+// A generated fixed frame can use the same consuming construction algorithms
+// as the growable interpreter stack, without an intermediate operand vector.
+class ExecutionSlotStackView final {
+public:
+    ExecutionSlotStackView(ExecutionSlot* slots, std::size_t& size, std::size_t capacity)
+        : slots_(slots), size_(size), capacity_(capacity)
+    {
+        assert(size <= capacity);
+    }
+
+    std::size_t size() const noexcept { return size_; }
+
+    ExecutionSlot& operator[](std::size_t index) const
+    {
+        assert(index < size_);
+        return slots_[index];
+    }
+
+    ExecutionSlot& back() const
+    {
+        assert(size_ != 0u);
+        return slots_[size_ - 1u];
+    }
+
+    void pop_back()
+    {
+        assert(size_ != 0u);
+        slots_[--size_] = ScriptScalar();
+    }
+
+    void resize(std::size_t count)
+    {
+        assert(count <= size_ && count <= capacity_);
+        while (size_ > count)
+            pop_back();
+    }
+
+private:
+    ExecutionSlot* slots_;
+    std::size_t& size_;
+    std::size_t capacity_;
+};
+
 class ExecutionSlotBuffer final : public core::pmr::Vector<ExecutionSlot> {
     using Base = core::pmr::Vector<ExecutionSlot>;
 

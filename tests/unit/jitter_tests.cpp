@@ -1,5 +1,5 @@
-#include "core/jitter.h"
 #include "renderer/postprocess/taa_camera_history.h"
+#include "renderer/temporal/jitter.h"
 
 #include <cmath>
 #include <cstdio>
@@ -220,6 +220,21 @@ void camera_history_advance_and_reset()
 
 int main()
 {
+    const auto first = arp::core::halton235(1u);
+    requireNear("3D Halton first x", first.x, 0.5f);
+    requireNear("3D Halton first y", first.y, 1.0f / 3.0f);
+    requireNear("3D Halton first z", first.z, 0.2f);
+    const auto fifth = arp::core::halton235(5u);
+    requireNear("3D Halton base-five carry", fifth.z, 0.04f);
+    for (std::uint32_t i = 0; i < 1024u; ++i) {
+        const auto sample = arp::core::halton235(i);
+        const auto raster = arp::core::halton23(i);
+        requireNear("3D Halton reuses raster x", sample.x * 2 - 1, raster.x);
+        requireNear("3D Halton reuses raster y", sample.y * 2 - 1, raster.y);
+        require(sample.x >= 0 && sample.x < 1 && sample.y >= 0 && sample.y < 1 && sample.z >= 0
+                && sample.z < 1,
+            "3D sample outside cell");
+    }
     halton_sequence_is_deterministic_and_matches_reference();
     halton_points_stay_in_unit_range();
     jitter_folds_into_perspective_z_column_only();

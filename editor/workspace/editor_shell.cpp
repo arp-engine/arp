@@ -1,7 +1,7 @@
 #include "editor/workspace/editor_shell.h"
 
-#include "core/filesystem_path.h"
-#include "core/string_utils.h"
+#include "core/io/filesystem_path.h"
+#include "core/text/string_utils.h"
 #include "editor/workspace/editor_layout.h"
 #include "editor/workspace/editor_shell_internal.h"
 
@@ -222,12 +222,15 @@ void EditorEnumDropdown::openMenu()
     const auto* widget = runtime()->canvas().findWidget(widgetId());
     if (!widget || !widget->parentId().valid())
         return;
-    const auto& rect = desc().widget.localRect;
-    const auto menuParent = widget->parentId();
     const auto layout = runtime()->canvas().resolveLayout();
-    const auto* parentLayout = layout.ok() ? layout.findWidget(menuParent) : nullptr;
-    if (!parentLayout || parentLayout->rect.width <= 0.0f)
+    const auto* widgetLayout = layout.ok() ? layout.findWidget(widgetId()) : nullptr;
+    const auto* parentLayout = layout.ok() ? layout.findWidget(widget->parentId()) : nullptr;
+    if (!widgetLayout || !parentLayout || parentLayout->rect.width <= 0.0f)
         return;
+    const auto menuParent = runtime()->canvas().rootId();
+    const float optionX = useCommandValue_ ? parentLayout->rect.x : widgetLayout->rect.x;
+    const float optionWidth =
+        useCommandValue_ ? parentLayout->rect.width : widgetLayout->rect.width;
     for (std::size_t index = 0; index < options_.size(); ++index) {
         ui::UiControlDesc optionDesc;
         optionDesc.type = ui::UiControlType::Button;
@@ -243,11 +246,11 @@ void EditorEnumDropdown::openMenu()
         }
         optionName.append(indexText.data(), static_cast<std::size_t>(indexEnd - indexText.data()));
         const auto registeredSource = optionName;
-        optionDesc.widget.localRect =
-            ui::LayoutRect::fromOriginSize(useCommandValue_ ? 0.0f : rect.x,
-                rect.y + rect.height + static_cast<float>(index) * rect.height,
-                useCommandValue_ ? parentLayout->rect.width : rect.width,
-                rect.height);
+        optionDesc.widget.localRect = ui::LayoutRect::fromOriginSize(optionX,
+            widgetLayout->rect.y + widgetLayout->rect.height
+                + static_cast<float>(index) * widgetLayout->rect.height,
+            optionWidth,
+            widgetLayout->rect.height);
         optionDesc.widget.styleId = desc().widget.styleId;
         optionDesc.widget.fontToken = desc().widget.fontToken;
         optionDesc.widget.text = options_[index].name;
@@ -385,6 +388,17 @@ ui::UiResult EditorShell::load(const std::filesystem::path& path, std::filesyste
     if (contentNode == loaded_.document().nodes().end())
         return ui::UiResult::failure(
             ui::UiDiagnosticCode::RuntimeLoadFailed, "UI-INSPECTOR-CONTENT-MISSING");
+    auto* inspectorPanel = runtime().canvas().findWidget(id("inspector"));
+    auto* inspectorView = runtime().canvas().findWidget(id("properties"));
+    if (!inspectorPanel || !inspectorView)
+        return ui::UiResult::failure(
+            ui::UiDiagnosticCode::RuntimeLoadFailed, "UI-INSPECTOR-PANEL-MISSING");
+    const auto inspectorViewParent =
+        runtime().reparentControl(inspectorView->id(), inspectorPanel->id());
+    if (!inspectorViewParent.ok())
+        return inspectorViewParent;
+    inspectorView = runtime().canvas().findWidget(id("properties"));
+    inspectorView->setLocalRect(ui::LayoutRect::fromOriginSize(8.0f, 142.0f, 302.0f, 840.0f));
     inspectorContentHeight_ = contentNode->layout.height;
     const auto inspectorContentId = id("inspector_content");
     auto* inspectorContent = runtime().canvas().findWidget(inspectorContentId);
@@ -428,8 +442,19 @@ ui::UiResult EditorShell::load(const std::filesystem::path& path, std::filesyste
         const auto reparented = runtime().reparentControl(widgetId, inspectorContentId);
         if (!reparented.ok())
             return reparented;
-        widget->setLocalRect(
-            ui::LayoutRect::fromOriginSize(entry.x, entry.y, entry.width, entry.height));
+        widget = runtime().canvas().findWidget(widgetId);
+        if (!widget)
+            return ui::UiResult::failure(
+                ui::UiDiagnosticCode::InvalidWidgetId, "UI-SCENE-INSPECTOR-CONTROL-MISSING");
+        const auto sceneInspectorRect =
+            ui::LayoutRect::fromOriginSize(entry.x, entry.y, entry.width, entry.height);
+        widget->setLocalRect(sceneInspectorRect);
+        const auto& appliedRect = widget->desc().localRect;
+        if (appliedRect.x != sceneInspectorRect.x || appliedRect.y != sceneInspectorRect.y
+            || appliedRect.width != sceneInspectorRect.width
+            || appliedRect.height != sceneInspectorRect.height)
+            return ui::UiResult::failure(
+                ui::UiDiagnosticCode::InvalidLayoutAnchor, "UI-SCENE-INSPECTOR-PLACEMENT-FAILED");
     }
     auto* thumb = runtime().canvas().findWidget(id("inspector_scroll"));
     const auto viewLayout = runtime().canvas().resolveLayout();
@@ -795,7 +820,14 @@ void EditorShell::activate(const core::pmr::String& source)
             }
         }
     }
-    if (source == "scene_object_add")
+    if (source == "files_build_terrain") {
+        const auto relative =
+            core::FilePath::utf8(selectedFilePath_.lexically_relative(projectRoot()));
+        BuildTerrainResourceCommand command;
+        command.authoringPath = relative;
+        command.packagePath = relative + ".arpkg";
+        (void)submitCommand(std::move(command));
+    } else if (source == "scene_object_add")
         (void)submitCommand(CreateSceneObjectCommand("GameObject"));
     else if (source == "scene_object_delete")
         (void)submitCommand(DestroySceneObjectCommand{});
@@ -1050,7 +1082,7 @@ void EditorShell::entryChanged(const core::pmr::String& source, const core::pmr:
             const auto* object = sceneDocument_.scene().findObject(
                 scene::GameObjectId::fromValue(property->objectId));
             char* end = nullptr;
-            const float parsed = std::strtof(value.c_str(), &end);
+            const double parsed = std::strtod(value.c_str(), &end);
             if (!object || selected.value() != property->objectId || end == value.c_str()
                 || *end != '\0' || !std::isfinite(parsed) || source.empty()) {
                 sceneInspectorWidgetOwner_ = scene::GameObjectId::invalid();
@@ -1140,7 +1172,7 @@ void EditorShell::entryChanged(const core::pmr::String& source, const core::pmr:
             command.integerValue = parsed;
             command.valueKind = ScenePropertyValueKind::Integer;
         } else if (property->kind == SceneInspectorPropertyKind::UnsignedInteger) {
-            std::uint32_t parsed = 0;
+            std::uint64_t parsed = 0;
             const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
             if (result.ec != std::errc{} || result.ptr != value.data() + value.size()) {
                 sceneInspectorWidgetOwner_ = scene::GameObjectId::invalid();
@@ -1152,7 +1184,7 @@ void EditorShell::entryChanged(const core::pmr::String& source, const core::pmr:
             command.valueKind = ScenePropertyValueKind::UnsignedInteger;
         } else if (property->kind == SceneInspectorPropertyKind::Number) {
             char* end = nullptr;
-            const float parsed = std::strtof(value.c_str(), &end);
+            const double parsed = std::strtod(value.c_str(), &end);
             if (end == value.c_str() || *end != '\0' || !std::isfinite(parsed)) {
                 sceneInspectorWidgetOwner_ = scene::GameObjectId::invalid();
                 refreshSceneInspector();
@@ -1178,7 +1210,7 @@ void EditorShell::entryChanged(const core::pmr::String& source, const core::pmr:
         } else if (property->kind == SceneInspectorPropertyKind::Vector2
             || property->kind == SceneInspectorPropertyKind::Vector3) {
             char* end = nullptr;
-            const float parsed = std::strtof(value.c_str(), &end);
+            const double parsed = std::strtod(value.c_str(), &end);
             if (end == value.c_str() || *end != '\0' || !std::isfinite(parsed)) {
                 sceneInspectorWidgetOwner_ = scene::GameObjectId::invalid();
                 refreshSceneInspector();
@@ -1226,7 +1258,7 @@ void EditorShell::entryChanged(const core::pmr::String& source, const core::pmr:
                 || index >= property->vector2ListValue.size())
                 return;
             char* end = nullptr;
-            const float parsed = std::strtof(value.c_str(), &end);
+            const double parsed = std::strtod(value.c_str(), &end);
             if (end == value.c_str() || *end != '\0' || !std::isfinite(parsed)) {
                 sceneInspectorWidgetOwner_ = scene::GameObjectId::invalid();
                 refreshSceneInspector();
@@ -2145,8 +2177,8 @@ void EditorShell::refreshSceneInspector()
         else if (property.kind == SceneInspectorPropertyKind::UnsignedInteger)
             std::snprintf(displayedValue,
                 sizeof(displayedValue),
-                "%u",
-                static_cast<unsigned int>(property.unsignedIntegerValue));
+                "%llu",
+                static_cast<unsigned long long>(property.unsignedIntegerValue));
         else if (property.kind == SceneInspectorPropertyKind::Enumeration) {
             const auto option = std::find_if(property.enumOptions.begin(),
                 property.enumOptions.end(),
@@ -2257,8 +2289,12 @@ void EditorShell::refreshSceneInspector()
         }
         rowY += 23.0f;
     }
+    const float componentAddY = rowY + 8.0f;
+    if (auto* addComponent = runtime().canvas().findWidget(id("scene_component_add")))
+        addComponent->setLocalRect(
+            ui::LayoutRect::fromOriginSize(6.0f, componentAddY, 336.0f, 28.0f));
     if (auto* content = runtime().canvas().findWidget(id("inspector_content"))) {
-        inspectorContentHeight_ = std::max(420.0f, rowY + 8.0f);
+        inspectorContentHeight_ = std::max(420.0f, componentAddY + 36.0f);
         auto contentRect = content->desc().localRect;
         contentRect.height = inspectorContentHeight_;
         content->setLocalRect(contentRect);

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/callback.h"
-#include "core/cpu_allocator.h"
+#include "core/concurrency/callback.h"
+#include "core/memory/cpu_allocator.h"
 #include "network/io_operation.h"
 #include "network/io_poller.h"
 #include "network/timer.h"

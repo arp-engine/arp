@@ -1,5 +1,5 @@
 #pragma once
-#include "core/external_object_slot.h"
+#include "core/ownership/external_object_slot.h"
 #include "rhi/backends/webgpu/webgpu_native_payloads.h"
 #include "webgpu_async_wait_fixture.h"
 

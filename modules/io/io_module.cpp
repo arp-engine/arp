@@ -1,8 +1,8 @@
 #include "io_module.h"
 
-#include "core/file_io.h"
-#include "core/stable_hash.h"
-#include "scriptvm/runtime/cpp_plugin_api.h"
+#include "core/hash/stable_hash.h"
+#include "core/io/file_io.h"
+#include "scriptvm/plugin/cpp_plugin_api.h"
 #include "scriptvm/runtime/value.h"
 
 #include <algorithm>

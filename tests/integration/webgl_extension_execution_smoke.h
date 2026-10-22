@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/sha256.h"
+#include "core/hash/sha256.h"
 #include "rhi/backends/webgl/webgl_execution.h"
 #include "rhi/backends/webgl/webgl_pipeline_internal.h"
 

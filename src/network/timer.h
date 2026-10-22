@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/callback.h"
-#include "core/cpu_allocator.h"
+#include "core/concurrency/callback.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <atomic>
 #include <chrono>

@@ -1,8 +1,12 @@
+#include "core/encoding/yaml_contract.h"
+#include "core/io/file_io.h"
 #include "pcg/terrain_scatter.h"
+#include "resource/prefab_asset_resources.h"
 #include "resource/terrain_asset_resource.h"
 #include "resource/vegetation_catalog_resource.h"
 
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -154,6 +158,17 @@ void loadCatalog(arp::resource::ResourceManager& manager)
         manager.load<TestVegetationCatalogResource>(arp::resource::ResourceLoadContext{}).success);
 }
 
+void loadMaterial(arp::resource::ResourceManager& manager)
+{
+    auto material = arp::core::makeUnique<arp::resource::MaterialResource>();
+    arp::resource::ResourceReference reference;
+    reference.id = kMaterialId;
+    reference.type = "MaterialResource";
+    reference.status = "Contract Complete";
+    material->configureMetadata(std::move(reference));
+    assert(manager.loadResource(std::move(material)).success);
+}
+
 void assertRoundTrip(const std::filesystem::path& root)
 {
     const auto written = arp::resource::writeTerrainAsset(makeAsset(), root);
@@ -262,10 +277,9 @@ void assertManifestIdentityAndPrototypeFail(const std::filesystem::path& root)
     const auto manifest = root / "terrain.asset.yaml";
     std::ifstream input(manifest, std::ios::binary);
     std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    const auto marker = std::string("resourceId: ") + kTerrainId;
-    const auto replacement = std::string("resourceId: 11111111-1111-4111-8111-111111111111");
-    assert(contents.find(marker) != std::string::npos);
-    contents.replace(contents.find(marker), marker.size(), replacement);
+    auto yaml = arp::core::YamlContract::parseSingleDocument(contents);
+    yaml["resourceId"] = "11111111-1111-4111-8111-111111111111";
+    contents = arp::core::YamlContract::serialize(yaml).c_str();
     std::ofstream output(manifest, std::ios::binary | std::ios::trunc);
     output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
     output.close();
@@ -330,6 +344,165 @@ void assertReloadPublishesNewSurfaceGeneration(const std::filesystem::path& root
     assert(manager.generationOf(kTerrainId) == oldGeneration + 2u);
 }
 
+void assertV2IndependentGeometry(const std::filesystem::path& root)
+{
+    auto desc = makeAsset();
+    desc.version = arp::resource::TerrainAssetVersion::V2;
+    desc.hasSurfaceWeights = false;
+    desc.hasVegetation = false;
+    desc.layers = {};
+    desc.vegetationCatalogResourceId.clear();
+    desc.bounds = {11.0f, 15.0f, -7.0f, -5.0f};
+    desc.tileCountX = 2u;
+    desc.tiles.front().weightPageA.clear();
+    desc.tiles.front().weightPageB.clear();
+    desc.tiles.front().vegetation.clear();
+    auto next = desc.tiles.front();
+    next.coord = {1, 0};
+    next.heights = {3.0f, 5.0f, 7.0f, 9.0f};
+    desc.tiles.push_back(next);
+    assert(arp::resource::writeTerrainAsset(desc, root).success);
+    arp::resource::ResourceManager manager;
+    assert(arp::resource::loadTerrainAssetResource(
+        manager, makeReference(), root / "terrain.asset.yaml")
+            .success);
+    const auto terrain = manager.find<arp::resource::TerrainAssetResource>(kTerrainId);
+    assert(
+        terrain.ready() && !terrain.get()->hasSurfaceWeights() && !terrain.get()->hasVegetation());
+    assert(terrain.get()->dependencies().empty());
+    assert(terrain.get()->sample(12.0f, -6.0f).sample.height == 4.0f);
+    assert(!terrain.get()->sample(12.0f, -6.0f).sample.hasSurfaceWeights);
+    assert(terrain.get()->sample(15.0f, -5.0f).sample.height == 9.0f);
+    arp::resource::TerrainAssetTileReadView view;
+    assert(terrain.get()->tileReadView({1, 0}, view));
+    assert(view.geometryValid() && !view.valid()); // GPU weighted ABI must reject absent pages.
+
+    arp::resource::ResourceSourceSet sources;
+    const auto index = terrain.get()->inspectManifest();
+    assert(index.success && index.dependencies.empty() && index.files.size() == 3u);
+    for (const auto& intent : index.files) {
+        const std::filesystem::path path(intent.path.c_str());
+        const auto file = arp::core::readBinaryFile(path);
+        assert(file.success);
+        arp::resource::ResourceSourceBuffer buffer;
+        buffer.path = path.generic_string().c_str();
+        buffer.bytes = file.bytes;
+        assert(sources.add(std::move(buffer)));
+    }
+    arp::resource::ResourceLoadContext context;
+    context.requirePreloadedSources = true;
+    context.sources = &sources;
+    context.maxDecodedBytes = 32u;
+    const auto hidden = root.string() + "_hidden";
+    std::filesystem::rename(root, hidden);
+    arp::resource::ResourceManager preloaded;
+    assert(preloaded
+            .loadResource(arp::core::makeUnique<arp::resource::TerrainAssetResource>(
+                              makeReference(), root / "terrain.asset.yaml"),
+                context)
+            .success);
+    assert(preloaded.find<arp::resource::TerrainAssetResource>(kTerrainId).get()->generation()
+        == terrain.get()->generation());
+    context.maxDecodedBytes = 31u;
+    arp::resource::ResourceManager limited;
+    assert(!limited
+            .loadResource(arp::core::makeUnique<arp::resource::TerrainAssetResource>(
+                              makeReference(), root / "terrain.asset.yaml"),
+                context)
+            .success);
+    context.sources = nullptr;
+    arp::resource::ResourceManager missing;
+    const auto failed =
+        missing.loadResource(arp::core::makeUnique<arp::resource::TerrainAssetResource>(
+                                 makeReference(), root / "terrain.asset.yaml"),
+            context);
+    assert(!failed.success && failed.diagnostics == "ARP-RESOURCE-SOURCE-NOT-PRELOADED");
+    std::filesystem::rename(hidden, root);
+    auto invalid = desc;
+    invalid.bounds.maxX += 1.0f;
+    assert(!arp::resource::writeTerrainAsset(invalid, root / "invalid").success);
+    invalid = desc;
+    invalid.tiles.front().vegetation.emplace_back();
+    assert(!arp::resource::writeTerrainAsset(invalid, root / "invalid").success);
+}
+
+void assertV2PresenceCombinations(const std::filesystem::path& root)
+{
+    for (bool weights : {false, true}) {
+        for (bool vegetation : {false, true}) {
+            auto desc = makeAsset();
+            desc.version = arp::resource::TerrainAssetVersion::V2;
+            desc.hasSurfaceWeights = weights;
+            desc.hasVegetation = vegetation;
+            if (!weights) {
+                desc.layers = {};
+                desc.tiles.front().weightPageA.clear();
+                desc.tiles.front().weightPageB.clear();
+            }
+            if (!vegetation) {
+                desc.vegetationCatalogResourceId.clear();
+                desc.tiles.front().vegetation.clear();
+            }
+            assert(arp::resource::writeTerrainAsset(desc, root).success);
+            arp::resource::ResourceManager manager;
+            if (vegetation)
+                loadCatalog(manager);
+            if (weights)
+                loadMaterial(manager);
+            const auto result = arp::resource::loadTerrainAssetResource(
+                manager, makeReference(), root / "terrain.asset.yaml");
+            if (!result.success)
+                std::cerr << result.diagnostics << '\n';
+            assert(result.success);
+            assert(
+                manager.find<arp::resource::TerrainAssetResource>(kTerrainId).get()->hasVegetation()
+                == vegetation);
+        }
+    }
+}
+
+void assertV1Migration(const std::filesystem::path& root)
+{
+    const auto unique =
+        root / std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto input = unique / "v1", output = unique / "v2";
+    assert(arp::resource::writeTerrainAsset(makeAsset(), input).success);
+    arp::resource::ResourceManager manager;
+    loadCatalog(manager);
+    loadMaterial(manager);
+    assert(arp::resource::loadTerrainAssetResource(
+        manager, makeReference(), input / "terrain.asset.yaml")
+            .success);
+    const auto before = manager.find<arp::resource::TerrainAssetResource>(kTerrainId);
+    const auto migrated = arp::resource::TerrainAssetWriter().migrateV1(
+        manager, makeReference(), input / "terrain.asset.yaml", output);
+    assert(migrated.success
+        && migrated.diagnostics.find("TERRAIN-MIGRATE-V1-V2") != arp::core::pmr::String::npos);
+    arp::resource::TerrainAssetResource candidate(makeReference(), output / "terrain.asset.yaml");
+    arp::resource::ResourceManager migratedManager;
+    loadCatalog(migratedManager);
+    loadMaterial(migratedManager);
+    assert(candidate.load(migratedManager, {}).success);
+    assert(candidate.generation() == before.get()->generation());
+    const auto report = arp::core::readTextFile(output / "terrain.migration.yaml");
+    assert(report.success);
+    const auto parsedReport = arp::core::YamlContract::parseSingleDocument(report.text);
+    assert(arp::core::YamlContract::text(parsedReport, "resourceId") == kTerrainId);
+    const auto committedManifest = arp::core::readTextFile(output / "terrain.asset.yaml");
+    assert(!arp::resource::TerrainAssetWriter()
+            .migrateV1(manager, makeReference(), input / "terrain.asset.yaml", output)
+            .success);
+    assert(arp::core::readTextFile(output / "terrain.asset.yaml").text == committedManifest.text);
+    auto staging = output;
+    staging += ".arp-staging";
+    assert(!std::filesystem::exists(staging));
+    const auto index = candidate.inspectManifest();
+    assert(index.success && index.dependencies.size() == 2u && index.files.size() == 5u);
+    assert(!arp::resource::TerrainAssetWriter()
+            .migrateV1(manager, makeReference(), output / "terrain.asset.yaml", input)
+            .success);
+}
+
 } // namespace
 
 int main()
@@ -345,5 +518,8 @@ int main()
     assertInvalidAuthoringFails();
     assertManifestIdentityAndPrototypeFail(root.string() + "_manifest");
     assertReloadPublishesNewSurfaceGeneration(reloadRoot);
+    assertV2IndependentGeometry(root.string() + "_v2");
+    assertV2PresenceCombinations(root.string() + "_v2_combinations");
+    assertV1Migration(root.string() + "_migration");
     return 0;
 }

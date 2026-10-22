@@ -14,7 +14,7 @@ namespace {
 /// Wind weights: root (y=0) has primaryBend=0, flutter=0, stiffness=1;
 /// tip (y=height) has primaryBend=tipBend, flutter=tipFlutter, stiffness=tipStiff.
 /// The bend curve interpolates non-linearly: more bend near the tip.
-void appendQuadBlade(std::vector<InstanceVertex>& verts,
+void appendQuadBlade(core::pmr::Vector<vegetation::InstanceVertex>& verts,
     float width,
     float height,
     float rotY,
@@ -50,7 +50,7 @@ void appendQuadBlade(std::vector<InstanceVertex>& verts,
     };
 
     for (int i = 0; i < 4; ++i) {
-        InstanceVertex v;
+        vegetation::InstanceVertex v;
         // Apply Y rotation.
         v.position[0] = localPos[i][0] * c + localPos[i][2] * s + centerX;
         v.position[1] = localPos[i][1];
@@ -88,9 +88,9 @@ void appendQuadBlade(std::vector<InstanceVertex>& verts,
 
 } // anonymous namespace
 
-std::vector<InstanceVertex> bakeCardTemplate(const CardTemplateDesc& desc)
+core::pmr::Vector<vegetation::InstanceVertex> bakeCardTemplate(const CardTemplateDesc& desc)
 {
-    std::vector<InstanceVertex> verts;
+    core::pmr::Vector<vegetation::InstanceVertex> verts;
 
     if (desc.bladeCount <= 1) {
         // Single blade.

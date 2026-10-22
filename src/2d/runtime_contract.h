@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/math.h"
+#include "core/math/math.h"
 #include "rhi/gpu_common.h"
 
 #include <cmath>

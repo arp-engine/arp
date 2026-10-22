@@ -1,10 +1,11 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/materials/texture_upload.h"
 #include "renderer/mesh/mesh_gpu_buffer.h"
 #include "renderer/particles/particle_rhi_draw_commands.h"
 #include "renderer/particles/particle_texture_resource.h"
+#include "renderer/pipeline/custom_render_frame_workload.h"
 #include "renderer/render_graph/render_graph.h"
 #include "renderer/renderer_common.h"
 

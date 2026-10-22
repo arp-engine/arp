@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_binding_validation.h"
 #include "rhi/backends/metal/metal_bindless_validation.h"
@@ -4625,7 +4625,8 @@ arp::core::UniquePtr<rhi::CommandEncoder> createMetalRhiCommandEncoder(
     const rhi::BindlessCapabilities* bindlessCapabilities,
     const rhi::BindlessCrossExtension* bindlessIssuer)
 {
-    if (!rhi::semantics::commandRetentionRequestAllowed(desc, rhi::CommandRetentionCapabilities{}))
+    if (!rhi::semantics::commandRetentionRequestAllowed(
+            desc, rhi::CommandRetentionCapabilities{}, rhi::Backend::Metal))
         return {};
     auto encoder = arp::core::makeUnique<MetalRhiCommandEncoder>(desc,
         capabilityContract,

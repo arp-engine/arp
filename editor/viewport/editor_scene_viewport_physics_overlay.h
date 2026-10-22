@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
-#include "core/math.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 #include "scene/ids.h"
 #include "scene/scene.h"
 
@@ -25,8 +25,7 @@ struct EditorScenePhysicsOverlaySegment {
 };
 
 struct EditorScenePhysicsOverlay {
-    core::pmr::Vector<EditorScenePhysicsOverlaySegment> segments{
-        &core::defaultCpuMemoryResource()};
+    core::pmr::Vector<EditorScenePhysicsOverlaySegment> segments{&core::defaultCpuMemoryResource()};
     bool valid = true;
     const char* diagnostic = "";
 };

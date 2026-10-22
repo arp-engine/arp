@@ -1,5 +1,5 @@
 #pragma once
-#include "core/bounded_sequence.h"
+#include "core/container/bounded_sequence.h"
 #include "rhi/backends/webgpu/webgpu_original_query_binding.h"
 #include "rhi/frontend/query_slot_declaration_control.h"
 

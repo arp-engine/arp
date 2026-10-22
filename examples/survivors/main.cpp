@@ -1,5 +1,5 @@
 #include "2d/camera_2d.h"
-#include "core/frame_time_statistics.h"
+#include "core/diagnostics/frame_time_statistics.h"
 #include "game.h"
 #include "platform/render_system.h"
 #include "platform/renderdoc_capture_scope.h"
@@ -159,8 +159,7 @@ int main(int argc, char** argv)
     GameConfig config;
     core::pmr::String diagnostic;
     Rules rules;
-    if (!config.load(root, diagnostic)
-        || !rules.load(root, config.maxSourceBytes, diagnostic)) {
+    if (!config.load(root, diagnostic) || !rules.load(root, config.maxSourceBytes, diagnostic)) {
         std::fprintf(stderr, "%s\n", diagnostic.c_str());
         return 1;
     }

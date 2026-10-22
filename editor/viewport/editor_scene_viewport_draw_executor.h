@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/math.h"
+#include "core/math/math.h"
 #include "editor/viewport/editor_scene_viewport_contract.h"
 #include "renderer/mesh/mesh_gpu_buffer.h"
 #include "rhi/gpu_commands.h"
@@ -42,6 +42,7 @@ ARP_API EditorSceneViewportDrawExecutionResult recordEditorSceneViewportPass(rhi
     rhi::GpuTexture& depthTarget,
     const EditorSceneViewportRect& viewport,
     const core::pmr::Vector<EditorSceneViewportDrawItemSubmission>& items,
-    EditorSceneViewportDrawBudget budget);
+    EditorSceneViewportDrawBudget budget,
+    bool preserveAttachments = false);
 
 } // namespace arp::editor

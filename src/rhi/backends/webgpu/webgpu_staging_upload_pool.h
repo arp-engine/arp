@@ -1,8 +1,8 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/page_slice_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/webgpu/webgpu_allocator.h"
+#include "rhi/frontend/page_slice_allocator.h"
 #include "rhi/frontend/transfer_recorded_staging_upload.h"
 
 #include <atomic>

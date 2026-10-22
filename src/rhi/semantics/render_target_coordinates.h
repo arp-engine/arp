@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "rhi/gpu_common.h"
 
 namespace arp::rhi::semantics {

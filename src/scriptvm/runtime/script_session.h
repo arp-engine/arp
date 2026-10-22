@@ -1,5 +1,5 @@
 #pragma once
-#include "core/sha256.h"
+#include "core/hash/sha256.h"
 #include "scriptvm/interpreter/pipeline.h"
 #include "scriptvm/interpreter/vm.h"
 

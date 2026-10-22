@@ -5,6 +5,8 @@ import contextlib
 import hashlib
 import io
 import pathlib
+import re
+import random
 import subprocess
 import struct
 import sys
@@ -41,8 +43,243 @@ def spirv_validator_tool():
 
 
 class BindlessCodegenTests(unittest.TestCase):
+    def test_initialized_graphics_profile_is_explicit_and_rename_invariant(self):
+        from bindless_codegen import initialized_graphics_profiles
+        intent = dict(initializedGraphics=dict(contractVersion=2, prototypeOptIn=True,
+            interfaces=[dict(identity=77, vertexEntries=["arbitraryVertex"], fragmentEntries=["arbitraryFragment"])]))
+        profiles = initialized_graphics_profiles(intent, dict(arbitraryVertex=1, arbitraryFragment=2))
+        self.assertEqual(profiles["arbitraryVertex"], profiles["arbitraryFragment"])
+        renamed = copy.deepcopy(intent)
+        renamed["initializedGraphics"]["interfaces"][0]["vertexEntries"] = ["renamed"]
+        self.assertEqual(initialized_graphics_profiles(renamed, dict(renamed=1, arbitraryFragment=2))["renamed"], profiles["arbitraryVertex"])
+        self.assertEqual(initialized_graphics_profiles({}, dict(meshColorVertex=1, familyColorMain=2)), {})
+        for mutation in ("version", "optin", "stage", "coverage", "duplicate"):
+            value = copy.deepcopy(intent)
+            stages = dict(arbitraryVertex=1, arbitraryFragment=2)
+            if mutation == "version": value["initializedGraphics"]["contractVersion"] = 1
+            if mutation == "optin": value["initializedGraphics"]["prototypeOptIn"] = False
+            if mutation == "stage": stages["arbitraryVertex"] = 4
+            if mutation == "coverage": stages["other"] = 1
+            if mutation == "duplicate": value["initializedGraphics"]["interfaces"].append(value["initializedGraphics"]["interfaces"][0])
+            with self.assertRaises(BindlessContractError): initialized_graphics_profiles(value, stages)
+
+    def test_initialized_graphics_authenticated_entry_rename_and_collision(self):
+        if not SLANGC or not RUNTIME_VERIFIER:
+            self.skipTest("Pass --slangc and --runtime-verifier for authenticated profile tests")
+        original = (ROOT / "tests/fixtures/bindless_graphics_depth_color.slang").read_text()
+        for mode in ("Native", "Emulated"):
+            for renamed, tagged in ((False, True), (True, True), (True, False)):
+                schema = yaml.safe_load((ROOT / "tests/fixtures/bindless_graphics_depth_color.yaml").read_text())
+                vertex = "meshColorVertex" if renamed else "vertexMain"
+                fragment = "familyColorMain" if renamed else "cleanFragment"
+                if tagged:
+                    schema["initializedGraphics"] = dict(contractVersion=2, prototypeOptIn=True,
+                        interfaces=[dict(identity=77, vertexEntries=[vertex], fragmentEntries=[fragment])])
+                with tempfile.TemporaryDirectory(prefix="arp-profile-rename-") as directory:
+                    source = pathlib.Path(directory) / "authored.slang"
+                    source.write_text(original.replace("vertexMain", vertex).replace("cleanFragment", fragment))
+                    publication = compile_bindless_package(schema, source, [vertex, fragment], mode, directory,
+                        SLANGC, spirv_reflect_tool())
+                    subprocess.run([RUNTIME_VERIFIER, str(publication), "valid",
+                        "graphics-profile-present" if tagged else "graphics-profile-absent"], check=True)
+                    if not tagged:
+                        # A correctly resealed old publication still lacks an
+                        # explicit scope declaration and must fail closed.
+                        envelope = yaml.safe_load(publication.read_bytes())
+                        payload_path = publication.parent / envelope["payload"]
+                        payload = yaml.safe_load(payload_path.read_bytes())
+                        for module in payload["modules"]:
+                            self.assertEqual(module.pop("initializedGraphics"), dict(
+                                contractVersion=0, interfaceIdentity=0, prototypeOptIn=False))
+                            reflection_path = publication.parent / module["reflection"]
+                            reflection = yaml.safe_load(reflection_path.read_bytes())
+                            reflection.pop("initializedGraphics")
+                            reflection_path.write_text(yaml.safe_dump(reflection, sort_keys=False), encoding="utf-8")
+                            payload["artifacts"][reflection_path.name] = hashlib.sha256(
+                                reflection_path.read_bytes()).hexdigest()
+                        data = yaml.safe_dump(payload, sort_keys=False).encode()
+                        payload_path.write_bytes(data)
+                        publication.write_text(yaml.safe_dump(dict(envelope,
+                            shaderPackageIdentity=hashlib.sha256(data).hexdigest()), sort_keys=False))
+                        checked = subprocess.run([RUNTIME_VERIFIER, str(publication),
+                            "RHI-BINDLESS-PACKAGE-GRAPHICS-PROFILE-DECLARATION"],
+                            capture_output=True, text=True)
+                        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+
     def setUp(self):
         self.schema = yaml.safe_load((ROOT / "tests/fixtures/bindless_variant.yaml").read_text())
+
+    def test_wgsl_vertex_input_matches_selected_reflection_without_remapping(self):
+        from compile_shaders import validate_wgsl_vertex_input_interface
+        text = '''struct Inputs { @location(0) position_1 : vec3<f32>,
+          @location(5) joints_2 : vec4<f32>, @location(6) weights_3 : vec4<f32>, };
+          struct Output { @location(9) color : vec4<f32>, };
+          @vertex fn selected(input : Inputs, @builtin(vertex_index) index : u32) -> Output { }
+        '''
+        expected = [dict(name='input.position', location=0, format='Float3'),
+                    dict(name='input.joints', location=5, format='Float4'),
+                    dict(name='input.weights', location=6, format='Float4')]
+        validate_wgsl_vertex_input_interface(text, 'selected', expected)
+        for mutation in (text.replace('@location(5)', '@location(1)'),
+                         text.replace('joints_2', 'weights_2').replace('weights_3', 'joints_3'),
+                         text.replace('@location(6)', '@location(5)'),
+                         text.replace('position_1 : vec3<f32>', 'position_1 : vec4<f32>'),
+                         text.replace('@location(5)', ''), text.replace('fn selected', 'fn other')):
+            with self.assertRaisesRegex(RuntimeError, 'WGSL-VERTEX-INPUT-INTERFACE'):
+                validate_wgsl_vertex_input_interface(mutation, 'selected', expected)
+        validate_wgsl_vertex_input_interface(
+            '@vertex fn procedural(@builtin(vertex_index) index : u32) -> @builtin(position) vec4<f32> {}',
+            'procedural', [])
+        validate_wgsl_vertex_input_interface(
+            '@vertex fn direct(@location(2) uv_0 : vec2<f32>) -> @builtin(position) vec4<f32> {}',
+            'direct', [dict(name='uv', location=2, format='Float2')])
+
+    def test_checked_uint_multiplication_compiled_boundary_values(self):
+        if not SLANGC:
+            self.skipTest("Pass --slangc for compiled checked-arithmetic evidence")
+        from compile_shaders import run_slangc
+        limit = (1 << 32) - 1
+        edges = [0, 1, 2, 3, 0xffff, 0x10000, 0x10001, 0x7fffffff, 0x80000000, limit]
+        pairs = [(a, b) for a in edges for b in edges]
+        rng = random.Random(0x43484131)
+        # Independent wide-integer oracle at both sides of exact division
+        # boundaries, plus random operands across the entire uint32 domain.
+        for _ in range(128):
+            a, b = rng.randrange(1, limit + 1), rng.randrange(limit + 1)
+            pairs.extend([(a, b), (a, limit // a), (a, limit // a + 1)])
+        with tempfile.TemporaryDirectory(prefix="arp-checked-arithmetic-") as directory:
+            directory = pathlib.Path(directory)
+            source, target = directory / "checked.slang", directory / "checked.spv"
+            stores = "\n".join(
+                f"results[{i}] = arpUintMultiplyFits({a}u, {b}u) ? 1u : 0u;"
+                for i, (a, b) in enumerate(pairs))
+            source.write_text((ROOT / "shaders/core/checked_arithmetic.slang").read_text()
+                + '\nRWStructuredBuffer<uint> results;\n[shader("compute")] [numthreads(1,1,1)]\n'
+                + "void main() {\n" + stores + "\n}")
+            run_slangc(SLANGC, str(source), "spirv", "spirv_1_5", ["main"], str(target), include_dirs=[])
+            optimized = directory / "checked-folded.spv"
+            optimizer = spirv_validator_tool().with_name("spirv-opt.exe" if sys.platform == "win32" else "spirv-opt")
+            subprocess.run([str(optimizer), "-O", str(target), "-o", str(optimized)],
+                           check=True, capture_output=True, text=True)
+            target = optimized
+            facts = SpirvLayoutFacts(target)
+            constants = {operands[1]: operands[2] for _, opcode, operands in facts.instructions
+                         if opcode == 43 and len(operands) == 3}
+            accesses = {operands[1]: operands for _, opcode, operands in facts.instructions if opcode == 65}
+            actual = {}
+            for _, opcode, operands in facts.instructions:
+                if opcode != 62 or operands[0] not in accesses:
+                    continue
+                access = accesses[operands[0]]
+                self.assertIn(operands[1], constants, "Slang must fold the real helper for each constant case")
+                actual[constants[access[-1]]] = constants[operands[1]]
+            self.assertEqual(actual, {i: int(a * b <= limit) for i, (a, b) in enumerate(pairs)})
+            subprocess.run([str(spirv_validator_tool()), "--target-env", "vulkan1.2", str(target)],
+                           check=True, capture_output=True, text=True)
+
+    def test_metal_only_active_binding_prevents_publication(self):
+        if not SLANGC:
+            self.skipTest("Pass --slangc for independent target-binding evidence")
+        import compile_shaders as compiler
+        original = compiler.get_metal_binding_space_lowering
+
+        def extra_uniform(logical, path):
+            return original(logical, path) + [{
+                "name": "Constants", "set": 0, "binding": 6, "metalSlot": 0,
+                "physicalType": "UniformBuffer", "active": True}]
+
+        with tempfile.TemporaryDirectory(prefix="arp-metal-active-mismatch-") as directory:
+            # This real fragment SPIR-V has no uniform buffer. Even an otherwise
+            # declared resource must not gain execution from MSL metadata alone.
+            with mock.patch.object(compiler, "get_metal_binding_space_lowering", extra_uniform):
+                with self.assertRaisesRegex(BindlessContractError, "REFLECTION-METAL-ACTIVE-BINDING-MISMATCH"):
+                    compile_bindless_package(self.schema, ROOT / "tests/fixtures/bindless_access.slang",
+                        ["fragmentMain"], "Native", directory, SLANGC, spirv_reflect_tool())
+            self.assertFalse(list(pathlib.Path(directory).glob("*.bindless.yaml")))
+
+    def test_native_uniform_array_selection_keeps_descriptor_abi_and_atomic_nonuniform(self):
+        generated = generate_bindless(self.schema, "Native")
+        if not SLANGC:
+            self.skipTest("Pass --slangc for native uniform-array selection evidence")
+        from compile_shaders import run_slangc
+        with tempfile.TemporaryDirectory(prefix="arp-uniform-selection-") as directory:
+            directory = pathlib.Path(directory)
+            source = directory / "selection.slang"
+            target = directory / "selection.spv"
+            source.write_text("#define ARP_BINDLESS_SPIRV 1\n" + generated.source
+                              + (ROOT / "tests/fixtures/bindless_access.slang").read_text())
+            run_slangc(SLANGC, str(source), "spirv", "spirv_1_5",
+                       ["computeMain"], str(target), include_dirs=[])
+            facts = SpirvLayoutFacts(target)
+            uniform = next(variable for variable in facts.variables
+                           if facts.decorations.get((variable[1], 34)) == (0,)
+                           and facts.decorations.get((variable[1], 33)) == (6,))
+            _, pointer = facts.definition(uniform[0], 32, 3)
+            _, array = facts.definition(pointer[2], 28, 3)
+            self.assertEqual(facts.definition(array[2], 43)[1][2], 2)
+            accesses = [operands for _, opcode, operands in facts.instructions
+                        if opcode == 65 and operands[2] == uniform[1]]
+            self.assertTrue(accesses)
+            # Both real descriptors are accessed with literal array elements;
+            # varying per-invocation selection is expressed by the switch.
+            self.assertEqual({facts.definition(access[3], 43)[1][2] for access in accesses}, {0, 1})
+            facts.validate_nonuniform_descriptor_accesses({(0, b) for b in (0, 2, 4, 6, 8, 10)})
+            atomic_pointers = {operands[2] for _, opcode, operands in facts.instructions if opcode == 234}
+            self.assertTrue(atomic_pointers)
+            chains = {operands[1]: operands for _, opcode, operands in facts.instructions if opcode == 65}
+            # Actual atomic operations still derive their selected buffer from
+            # a decorated descriptor access, rather than bypassing that path.
+            self.assertTrue(any(pointer in chains and (chains[pointer][2], 5300) in facts.decorations
+                                for pointer in atomic_pointers))
+            subprocess.run([str(spirv_validator_tool()), "--target-env", "vulkan1.2", str(target)],
+                           check=True, capture_output=True, text=True)
+
+    def test_native_dynamic_image_and_sampler_keep_spirv_nonuniform(self):
+        generated = generate_bindless(self.schema, "Native")
+        self.assertNotIn("uint arpBindlessResourceIndex(", generated.source)
+        if not SLANGC:
+            self.skipTest("Pass --slangc for binary nonuniform-index evidence")
+        from compile_shaders import run_slangc
+        with tempfile.TemporaryDirectory(prefix="arp-bindless-nonuniform-") as directory:
+            directory = pathlib.Path(directory)
+            source = directory / "nonuniform.slang"
+            target = directory / "nonuniform.spv"
+            source.write_text("#define ARP_BINDLESS_SPIRV 1\n" + generated.source + """
+[shader("fragment")]
+float4 fragmentMain(float4 position : SV_Position) : SV_Target0 {
+    bool fault;
+    return Images_sampleGrad(uint(position.x) % 2u, uint(position.y) % 2u,
+        position.xy, float2(1.0, 0.0), float2(0.0, 1.0), fault);
+}
+""")
+            run_slangc(SLANGC, str(source), "spirv", "spirv_1_5",
+                       ["fragmentMain"], str(target), include_dirs=[])
+            facts = SpirvLayoutFacts(target)
+            nonuniform = {identifier for identifier, decoration in facts.decorations
+                          if decoration == 5300}  # NonUniform
+            resources = {operands[1] for operands in facts.variables
+                         if facts.decorations.get((operands[1], 33)) in ((0,), (2,))}
+            self.assertEqual(len(resources), 2)
+            accesses = [operands for _, opcode, operands in facts.instructions
+                        if opcode == 65 and operands[2] in resources]  # OpAccessChain
+            self.assertEqual({operands[2] for operands in accesses}, resources)
+            self.assertTrue(all(operands[1] in nonuniform for operands in accesses))
+            facts.validate_nonuniform_descriptor_accesses({(0, 0), (0, 2)})
+            self.assertIn((5301,), [operands for _, opcode, operands in facts.instructions
+                                   if opcode == 17])  # ShaderNonUniform capability
+            validator = spirv_validator_tool()
+            self.assertTrue(validator.is_file())
+            subprocess.run([str(validator), "--target-env", "vulkan1.2", str(target)],
+                           check=True, capture_output=True, text=True)
+            # Reproduce the former function-wrapper lowering. It is valid
+            # SPIR-V, but loses the required nonuniform resource semantics.
+            source.write_text(source.read_text().replace(
+                "#define arpBindlessResourceIndex(index) NonUniformResourceIndex(index)",
+                "uint arpBindlessResourceIndex(uint index) { return NonUniformResourceIndex(index); }"))
+            run_slangc(SLANGC, str(source), "spirv", "spirv_1_5",
+                       ["fragmentMain"], str(target), include_dirs=[])
+            with self.assertRaisesRegex(RuntimeError, "NONUNIFORM-DESCRIPTOR-ACCESS"):
+                SpirvLayoutFacts(target).validate_nonuniform_descriptor_accesses({(0, 0), (0, 2)})
 
     def test_pbr_geometry_family_stage_and_shared_deformation(self):
         from compile_shaders import derive_entry_point_reflection
@@ -55,7 +292,7 @@ class BindlessCodegenTests(unittest.TestCase):
         reflected = derive_entry_point_reflection(geometry_library.read_text() + source.read_text(), entries, "pbr-geometry")
         self.assertEqual([entry["stage"] for entry in reflected], ["Vertex"] * 12 + ["Fragment"] * 3)
         libraries = [ROOT / "shaders" / name for name in (
-            "core/leaf_surface.slang", "core/pbr_material.slang", "core/instance_transform.slang",
+            "core/checked_arithmetic.slang", "core/leaf_surface.slang", "core/pbr_material.slang", "core/instance_transform.slang",
             "core/foliage_geometry.slang", "core/skinning_geometry.slang", "core/pbr_geometry.slang",
             "renderer/bindless_pbr_material.slang", "renderer/bindless_pbr_geometry.slang")]
         for mode in ("Native", "Emulated"):
@@ -82,6 +319,11 @@ class BindlessCodegenTests(unittest.TestCase):
                             self.assertEqual(layouts[(0, 2)]["staticOccupiedExtentBytes"], 32864)
                         if index >= 6:
                             self.assertEqual(layouts[(0, 1)]["runtimeArrayStrideBytes"], 64)
+                        metal = (publication.parent / reflection["targets"]["metal"]).read_text()
+                        self.assertEqual({int(location) for location in
+                                          re.findall(r"\[\[attribute\((\d+)\)\]\]", metal)},
+                                         {attribute["location"] for attribute in reflection["vertexAttributes"]},
+                                         module["entry"])
                     if mode == "Emulated":
                         wgsl = (publication.parent / reflection["targets"]["wgsl"]).read_text()
                         self.assertNotIn("binding_array", wgsl)
@@ -94,7 +336,7 @@ class BindlessCodegenTests(unittest.TestCase):
         schema = yaml.safe_load((ROOT / "tests/fixtures/bindless_terrain_geometry_family.yaml").read_text())
         source = ROOT / "tests/fixtures/bindless_terrain_geometry_family.slang"
         libraries = [ROOT / "shaders" / name for name in (
-            "core/instance_transform.slang", "core/foliage_geometry.slang", "core/skinning_geometry.slang",
+            "core/checked_arithmetic.slang", "core/instance_transform.slang", "core/foliage_geometry.slang", "core/skinning_geometry.slang",
             "core/pbr_geometry.slang", "renderer/bindless_pbr_geometry.slang", "core/terrain_surface.slang",
             "renderer/bindless_terrain_material.slang", "renderer/bindless_terrain_geometry.slang")]
         entries = ["terrainColorVertex", "terrainDepthVertex", "terrainShadowVertex",
@@ -1201,7 +1443,9 @@ class BindlessCodegenTests(unittest.TestCase):
         reflect = spirv_reflect_tool()
         with tempfile.TemporaryDirectory(prefix="arp-bindless-record-") as directory:
             for mode in ("Native", "Emulated"):
-                path = compile_bindless_package(schema, ROOT / "tests/fixtures/bindless_original_graphics_records.slang",
+                selected_schema = schema if mode == "Native" else yaml.safe_load(
+                    (ROOT / "tests/fixtures/bindless_original_fragment_records.yaml").read_text())
+                path = compile_bindless_package(selected_schema, ROOT / "tests/fixtures/bindless_original_graphics_records.slang",
                     ["vertexUnindexed" if mode == "Emulated" else "vertexMain", "cleanFragment", "faultFragment"],
                     mode, directory, SLANGC, reflect)
                 def verify(expected="valid"):
@@ -2256,6 +2500,12 @@ class BindlessCodegenTests(unittest.TestCase):
             original = target.read_bytes()
             reflection = yaml.safe_load(original)
             mutate(reflection)
+            if reflection["entryPoints"][0]["stage"] in ("Vertex", "Fragment"):
+                # Keep the new publication precondition valid when forging a
+                # stage, so this case still reaches binding/stage validation.
+                reflection.setdefault("initializedGraphics", dict(
+                    contractVersion=0, interfaceIdentity=0, prototypeOptIn=False))
+                module["initializedGraphics"] = reflection["initializedGraphics"]
             data = yaml.safe_dump(reflection, sort_keys=False).encode()
             target.write_bytes(data)
             changed["artifacts"][target.name] = hashlib.sha256(data).hexdigest()

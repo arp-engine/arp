@@ -7,7 +7,7 @@
 // tests lock the overflow, budget-cap, accounting and release semantics so
 // all three backend allocators inherit a single validated source of truth.
 
-#include "core/memory_budget_ledger.h"
+#include "rhi/frontend/memory_budget_ledger.h"
 
 #include <cstdio>
 #include <cstdlib>

@@ -1,6 +1,6 @@
 #pragma once
-#include "core/shared_owner_projection.h"
-#include "core/versioned_shared_owner.h"
+#include "core/ownership/shared_owner_projection.h"
+#include "core/ownership/versioned_shared_owner.h"
 #include "rhi/frontend/pipeline_definition_identity.h"
 #include "rhi/frontend/pipeline_depth_table_lowering_validation.h"
 #include "rhi/gpu_pipeline.h"

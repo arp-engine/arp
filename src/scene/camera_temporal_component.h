@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/math.h"
+#include "core/math/math.h"
 #include "reflection/reflection_macros.h"
 #include "scene/component.h"
 

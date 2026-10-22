@@ -3,7 +3,7 @@
 #include "animation/animator_controller.h"
 #include "assets/glb_animated_mesh_importer.h"
 #include "assets/imported_asset_types.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
 #include "resource/internal_asset_package.h"
 #include "resource/resource_manager.h"

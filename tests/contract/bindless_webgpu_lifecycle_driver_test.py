@@ -26,6 +26,43 @@ class FiniteLifecycleDriverTest(unittest.TestCase):
                  ("--general-submission-terminal", "cancel"), ("--general-physical-loss", "queue-uncertain"),
                  ("--general-map-terminal", "cancel"), ("--general-post-suppression-failure", "commit"))
 
+    def test_scene_deadline_deducts_setup_from_original_host_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = [str(DRIVER), "--browser", "unit-fixture-no-browser",
+                    "--runner", "unit-fixture-no-runner", "--output", directory,
+                    "--original-bindless-root-preparation", "--original-root-scene-family", "terrain",
+                    "--timeout-seconds", "60"]
+            handlers = []
+            bodies = []
+            server = mock.Mock(server_port=12345)
+
+            def create_server(handler):
+                handlers.append(handler.func)
+                return server
+
+            def intercept(*unused, **kwargs):
+                handler = object.__new__(handlers[0])
+                handler.path = "/progress-contract.js"
+                handler.wfile = io.BytesIO()
+                handler.send_response = mock.Mock()
+                handler.send_header = mock.Mock()
+                handler.end_headers = mock.Mock()
+                handler.do_GET()
+                bodies.append(handler.wfile.getvalue().decode())
+                raise BrowserLaunchIntercepted()
+
+            with mock.patch.object(driver.sys, "argv", args), \
+                    mock.patch.object(driver, "read_bindless_publication", return_value=dict(shaderPackageIdentity="unit-fixture-only")), \
+                    mock.patch.object(driver, "create_browser_http_server", side_effect=create_server), \
+                    mock.patch.object(driver.threading, "Thread"), \
+                    mock.patch.object(driver.time, "monotonic", side_effect=[100.0, 107.25]), \
+                    mock.patch.object(driver.subprocess, "Popen", side_effect=intercept), \
+                    self.assertRaises(BrowserLaunchIntercepted):
+                driver.main()
+            self.assertIn("window.BindlessSceneCompletionDeadline=performance.now()+52750.0;", bodies[0])
+            server.shutdown.assert_called_once()
+            server.server_close.assert_called_once()
+
     def base(self, output):
         return [str(DRIVER), "--browser", "unit-fixture-no-browser", "--runner", "unit-fixture-no-runner",
                 "--output", str(output), "--general-resource-projection-scenario", "--general-finite-lifecycle"]

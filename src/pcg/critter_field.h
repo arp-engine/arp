@@ -11,13 +11,14 @@
 //     frame given a player position and delta time. No rendering concerns.
 //   - Deterministic: all randomness flows through a seeded mulberry32 RNG,
 //     so the same seed yields the same behavior.
-//   - Terrain-aware: critters sample a TerrainHeightField for ground Y and
+//   - Terrain-aware: critters query TerrainSurface (or a legacy heightfield) for
 //     slope validity. They reject moves onto steep slopes or below water.
 //   - Bounded: fixed pool size (kCritterCount), no per-frame allocation.
 
-#include "core/cpu_allocator.h"
-#include "core/deterministic_hash.h"
-#include "core/math.h"
+#include "3d/terrain/terrain_surface.h"
+#include "core/hash/deterministic_hash.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 #include "pcg/terrain_heightfield.h"
 
 #include <array>
@@ -130,11 +131,44 @@ public:
         initialized_ = true;
     }
 
-    /// Advance the simulation by `dt` seconds. `playerX/playerZ` is the
-    /// player's world position. The heightfield is sampled for ground Y
-    /// and slope validity.
+    /// Legacy heightfield entry point; both sources share the same simulation.
     void update(
         float playerX, float playerZ, float dt, const TerrainHeightField& heightField) noexcept
+    {
+        updateGround(playerX, playerZ, dt, [&heightField](float x, float z, float& height) {
+            height = heightField.sample(x, z);
+            return std::isfinite(height);
+        });
+    }
+
+    /// Unavailable or nonfinite surface probes reject ground without substitution.
+    void update(float playerX, float playerZ, float dt, const terrain::TerrainSurface& surface)
+    {
+        updateGround(playerX, playerZ, dt, [&surface](float x, float z, float& height) {
+            const auto query = surface.sample(x, z);
+            height = query.sample.height;
+            return query.ready() && std::isfinite(height);
+        });
+    }
+
+    /// Read-only access to the critter pool.
+    const std::array<CritterState, kCount>& critters() const noexcept { return critters_; }
+
+    std::array<CritterState, kCount>& critters() noexcept { return critters_; }
+
+    /// Configuration access (for tuning / testing).
+    CritterFieldConfig& config() noexcept { return config_; }
+
+    const CritterFieldConfig& config() const noexcept { return config_; }
+
+private:
+    Mulberry32 rng_;
+    CritterFieldConfig config_;
+    std::array<CritterState, kCount> critters_;
+    bool initialized_ = false;
+
+    template <typename GroundQuery>
+    void updateGround(float playerX, float playerZ, float dt, const GroundQuery& ground)
     {
         if (!initialized_)
             return;
@@ -146,8 +180,8 @@ public:
             const float dist = std::sqrt(dx * dx + dz * dz);
 
             // Relocate if too far from player or on invalid ground.
-            if (dist > config_.cullRadius || !isValidGround(c.x, c.z, heightField)) {
-                relocate(c, playerX, playerZ, heightField);
+            if (dist > config_.cullRadius || !isValidGround(c.x, c.z, ground)) {
+                relocate(c, playerX, playerZ, ground);
                 continue;
             }
 
@@ -174,7 +208,7 @@ public:
             // Move.
             const float nx = c.x + std::cos(c.heading) * c.speed * dt;
             const float nz = c.z + std::sin(c.heading) * c.speed * dt;
-            if (isValidGround(nx, nz, heightField)) {
+            if (isValidGround(nx, nz, ground)) {
                 c.x = nx;
                 c.z = nz;
                 c.hopPhase += dt * ((c.species == CritterSpecies::Bird) ? 18.0f : 9.0f);
@@ -184,38 +218,18 @@ public:
                 c.turnT = 0.4f + rng_.next();
             }
 
-            // Ground Y follow.
-            const float groundY = heightField.sample(c.x, c.z);
-            const float motion = (c.species == CritterSpecies::Bird)
-                ? std::sin(c.hopPhase) * 0.06f
-                : (c.speed > 0.0f ? std::fabs(std::sin(c.hopPhase)) * 0.16f : 0.0f);
             c.baseY = (c.species == CritterSpecies::Bird)
                 ? (0.25f + std::fabs(std::sin(c.hopPhase * 0.3f)) * 0.4f)
                 : 0.0f;
-            (void)groundY;
-            (void)motion;
             c.visible = true;
         }
     }
 
-    /// Read-only access to the critter pool.
-    const std::array<CritterState, kCount>& critters() const noexcept { return critters_; }
-
-    std::array<CritterState, kCount>& critters() noexcept { return critters_; }
-
-    /// Configuration access (for tuning / testing).
-    CritterFieldConfig& config() noexcept { return config_; }
-
-    const CritterFieldConfig& config() const noexcept { return config_; }
-
-private:
-    Mulberry32 rng_;
-    CritterFieldConfig config_;
-    std::array<CritterState, kCount> critters_;
-    bool initialized_ = false;
-
-    bool isValidGround(float x, float z, const TerrainHeightField& hf) const noexcept
+    template <typename GroundQuery>
+    bool isValidGround(float x, float z, const GroundQuery& ground) const
     {
+        if (!std::isfinite(x) || !std::isfinite(z))
+            return false;
         // World bounds (with edge margin).
         if (x < -config_.worldMaxX + config_.edgeMargin
             || x > config_.worldMaxX - config_.edgeMargin
@@ -225,11 +239,13 @@ private:
         }
         // Slope check.
         const float eps = 0.35f;
-        const float h = hf.sample(x, z);
-        const float hx = hf.sample(x + eps, z) - h;
-        const float hz = hf.sample(x, z + eps) - h;
+        float h, heightX, heightZ;
+        if (!ground(x, z, h) || !ground(x + eps, z, heightX) || !ground(x, z + eps, heightZ))
+            return false;
+        const float hx = heightX - h;
+        const float hz = heightZ - h;
         const float slope = std::sqrt(hx * hx + hz * hz) / eps;
-        if (slope > config_.maxWalkSlope)
+        if (!std::isfinite(slope) || slope > config_.maxWalkSlope)
             return false;
         // Dry ground.
         if (h < config_.waterLevel + config_.dryMargin)
@@ -237,7 +253,8 @@ private:
         return true;
     }
 
-    void relocate(CritterState& c, float px, float pz, const TerrainHeightField& hf) noexcept
+    template <typename GroundQuery>
+    void relocate(CritterState& c, float px, float pz, const GroundQuery& ground)
     {
         for (int attempt = 0; attempt < 8; ++attempt) {
             const float angle = rng_.next() * 6.2831853f;
@@ -245,7 +262,7 @@ private:
                 config_.spawnMin + rng_.next() * (config_.spawnMax - config_.spawnMin);
             const float x = px + std::cos(angle) * radius;
             const float z = pz + std::sin(angle) * radius;
-            if (isValidGround(x, z, hf)) {
+            if (isValidGround(x, z, ground)) {
                 c.x = x;
                 c.z = z;
                 c.heading = rng_.next() * 6.2831853f;

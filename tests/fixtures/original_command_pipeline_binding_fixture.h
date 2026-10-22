@@ -375,7 +375,8 @@ public:
         assert(!Contract::validateBudget({}));
         assert(!Contract::validateBudget({2u, true, 1u}));
         is(Contract::validateBudget({0u, true, 1u}), "RHI-ORIGINAL-INPUTS-VERSION");
-        is(Contract::validateBudget({8u, true, 1u}), "RHI-ORIGINAL-INPUTS-VERSION");
+        is(Contract::validateBudget({9u, true, 1u}), "RHI-ORIGINAL-INPUTS-VERSION");
+        is(Contract::validateBudget({8u, true, 1u}), "RHI-ORIGINAL-GEOMETRY-INPUT-BUDGET");
         is(Contract::validateBudget({7u, true, 1u}), "RHI-ORIGINAL-GEOMETRY-INPUT-BUDGET");
         is(Contract::validateBudget({6u, true, 1u}), "RHI-ORIGINAL-INPUTS-GENERAL-FINITE-SCHEMA");
         is(Contract::validateBudget({5u, true, 1u}), "RHI-ORIGINAL-GEOMETRY-INPUT-BUDGET");

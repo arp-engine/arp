@@ -1,6 +1,6 @@
 #include "rhi/backends/metal/metal_staging_upload_pool.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/frontend/memory_staging_upload_pool.h"
 
 #include <algorithm>

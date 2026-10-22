@@ -1,7 +1,7 @@
 #include "rhi/frontend/frame_resources.h"
 
-#include "core/cpu_allocator.h"
-#include "core/diagnostic_builder.h"
+#include "core/diagnostics/diagnostic_builder.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cstddef>
 #include <limits>

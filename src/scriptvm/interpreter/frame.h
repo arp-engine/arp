@@ -11,7 +11,7 @@
 // Capture cells are shared_ptr so multiple closures capturing the same
 // outer variable share one cell (upvalue sharing, like goes/Lua).
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/interpreter/bytecode.h"
 #include "scriptvm/runtime/execution_slot.h"
 #include "scriptvm/runtime/value.h"

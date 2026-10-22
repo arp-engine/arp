@@ -1,7 +1,7 @@
 #include "resource/particle_asset_resources.h"
 
-#include "core/diagnostic_builder.h"
-#include "core/utf8.h"
+#include "core/diagnostics/diagnostic_builder.h"
+#include "core/text/utf8.h"
 
 #include <algorithm>
 #include <charconv>

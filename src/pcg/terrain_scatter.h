@@ -16,10 +16,10 @@
 //   - Bounded: iterates [minX,maxX) × [minZ,maxZ) stepping by `step`, so the
 //     cell count is (range/step)² and predictable.
 
-#include "core/deterministic_hash.h"
-#include "core/math.h"
+#include "3d/terrain/terrain_surface.h"
+#include "core/hash/deterministic_hash.h"
+#include "core/math/math.h"
 #include "pcg/terrain_heightfield.h"
-#include "terrain/terrain_surface.h"
 
 #include <cmath>
 #include <cstddef>

@@ -9,7 +9,7 @@
 // Phase 1: core execution (scalars, control flow, calls, closures, containers).
 // Phase 6: host bridge (CallHost), Yield/Suspend.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/interpreter/bytecode.h"
 #include "scriptvm/interpreter/execution_session.h"
 #include "scriptvm/interpreter/frame.h"

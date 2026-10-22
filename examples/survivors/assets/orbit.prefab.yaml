@@ -1,237 +1,511 @@
-type: arp.scene-prefab
-contractVersion: 1
-resourceId: 20000000-0000-4000-8000-000000005000
+contractVersion: 2
 name: orbit-rig
 objects:
-  - id: 1
-    parent: 0
+- components: []
+  id: 1
+  parent: 0
+  properties:
+    active: true
     name: orbit-root
+  transform:
+    rotation:
+      fields:
+        w: 1.0
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Quat
+    scale:
+      fields:
+        x: 1.0
+        y: 1.0
+        z: 1.0
+      type: Vec3
+    translation:
+      fields:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Vec3
+- components:
+  - configuration: null
+    enabled: true
+    fields:
+      flipX: false
+      flipY: false
+      localBounds:
+        fields:
+          center:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          extents:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          hasExplicitMetadata: false
+        type: Bounds2D
+      sortingLayer: 2
+      sortingOrder: 0
+      spriteResourceId: 20000000-0000-4000-8000-000000000106
+      tint:
+        fields:
+          w: 1.0
+          x: 1.0
+          y: 1.0
+          z: 1.0
+        type: Vec4
+      ySort: false
+    schemaVersion: 1
+    type: arp.sprite/1
+  id: 2
+  parent: 1
+  properties:
     active: true
-    transform:
-      x: 0.0
-      y: 0.0
-      z: 0.0
-      qx: 0.0
-      qy: 0.0
-      qz: 0.0
-      qw: 1.0
-      sx: 1.0
-      sy: 1.0
-      sz: 1.0
-    components: []
-  - id: 2
-    parent: 1
     name: blade-0
+  transform:
+    rotation:
+      fields:
+        w: 1.0
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Quat
+    scale:
+      fields:
+        x: 0.7
+        y: 0.7
+        z: 1.0
+      type: Vec3
+    translation:
+      fields:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Vec3
+- components:
+  - configuration: null
+    enabled: true
+    fields:
+      flipX: false
+      flipY: false
+      localBounds:
+        fields:
+          center:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          extents:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          hasExplicitMetadata: false
+        type: Bounds2D
+      sortingLayer: 2
+      sortingOrder: 0
+      spriteResourceId: 20000000-0000-4000-8000-000000000106
+      tint:
+        fields:
+          w: 1.0
+          x: 1.0
+          y: 1.0
+          z: 1.0
+        type: Vec4
+      ySort: false
+    schemaVersion: 1
+    type: arp.sprite/1
+  id: 3
+  parent: 1
+  properties:
     active: true
-    transform:
-      x: 0.0
-      y: 0.0
-      z: 0.0
-      qx: 0.0
-      qy: 0.0
-      qz: 0.0
-      qw: 1.0
-      sx: 0.7
-      sy: 0.7
-      sz: 1.0
-    components:
-      - type: arp.sprite/1
-        spriteId: 20000000-0000-4000-8000-000000000106
-        r: 1.0
-        g: 1.0
-        b: 1.0
-        a: 1.0
-        sortingLayer: 2
-        sortingOrder: 0
-        ySort: false
-        flipX: false
-        flipY: false
-  - id: 3
-    parent: 1
     name: blade-1
+  transform:
+    rotation:
+      fields:
+        w: 1.0
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Quat
+    scale:
+      fields:
+        x: 0.7
+        y: 0.7
+        z: 1.0
+      type: Vec3
+    translation:
+      fields:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Vec3
+- components:
+  - configuration: null
+    enabled: true
+    fields:
+      flipX: false
+      flipY: false
+      localBounds:
+        fields:
+          center:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          extents:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          hasExplicitMetadata: false
+        type: Bounds2D
+      sortingLayer: 2
+      sortingOrder: 0
+      spriteResourceId: 20000000-0000-4000-8000-000000000106
+      tint:
+        fields:
+          w: 1.0
+          x: 1.0
+          y: 1.0
+          z: 1.0
+        type: Vec4
+      ySort: false
+    schemaVersion: 1
+    type: arp.sprite/1
+  id: 4
+  parent: 1
+  properties:
     active: true
-    transform:
-      x: 0.0
-      y: 0.0
-      z: 0.0
-      qx: 0.0
-      qy: 0.0
-      qz: 0.0
-      qw: 1.0
-      sx: 0.7
-      sy: 0.7
-      sz: 1.0
-    components:
-      - type: arp.sprite/1
-        spriteId: 20000000-0000-4000-8000-000000000106
-        r: 1.0
-        g: 1.0
-        b: 1.0
-        a: 1.0
-        sortingLayer: 2
-        sortingOrder: 0
-        ySort: false
-        flipX: false
-        flipY: false
-  - id: 4
-    parent: 1
     name: blade-2
-    active: true
-    transform:
-      x: 0.0
-      y: 0.0
-      z: 0.0
-      qx: 0.0
-      qy: 0.0
-      qz: 0.0
-      qw: 1.0
-      sx: 0.7
-      sy: 0.7
-      sz: 1.0
-    components:
-      - type: arp.sprite/1
-        spriteId: 20000000-0000-4000-8000-000000000106
-        r: 1.0
-        g: 1.0
-        b: 1.0
-        a: 1.0
-        sortingLayer: 2
-        sortingOrder: 0
-        ySort: false
-        flipX: false
-        flipY: false
-  - id: 5
-    parent: 1
+  transform:
+    rotation:
+      fields:
+        w: 1.0
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Quat
+    scale:
+      fields:
+        x: 0.7
+        y: 0.7
+        z: 1.0
+      type: Vec3
+    translation:
+      fields:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Vec3
+- components:
+  - configuration: null
+    enabled: true
+    fields:
+      flipX: false
+      flipY: false
+      localBounds:
+        fields:
+          center:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          extents:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          hasExplicitMetadata: false
+        type: Bounds2D
+      sortingLayer: 2
+      sortingOrder: 0
+      spriteResourceId: 20000000-0000-4000-8000-000000000106
+      tint:
+        fields:
+          w: 1.0
+          x: 1.0
+          y: 1.0
+          z: 1.0
+        type: Vec4
+      ySort: false
+    schemaVersion: 1
+    type: arp.sprite/1
+  id: 5
+  parent: 1
+  properties:
+    active: false
     name: blade-3
+  transform:
+    rotation:
+      fields:
+        w: 1.0
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Quat
+    scale:
+      fields:
+        x: 0.7
+        y: 0.7
+        z: 1.0
+      type: Vec3
+    translation:
+      fields:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Vec3
+- components:
+  - configuration: null
+    enabled: true
+    fields:
+      flipX: false
+      flipY: false
+      localBounds:
+        fields:
+          center:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          extents:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          hasExplicitMetadata: false
+        type: Bounds2D
+      sortingLayer: 2
+      sortingOrder: 0
+      spriteResourceId: 20000000-0000-4000-8000-000000000106
+      tint:
+        fields:
+          w: 1.0
+          x: 1.0
+          y: 1.0
+          z: 1.0
+        type: Vec4
+      ySort: false
+    schemaVersion: 1
+    type: arp.sprite/1
+  id: 6
+  parent: 1
+  properties:
     active: false
-    transform:
-      x: 0.0
-      y: 0.0
-      z: 0.0
-      qx: 0.0
-      qy: 0.0
-      qz: 0.0
-      qw: 1.0
-      sx: 0.7
-      sy: 0.7
-      sz: 1.0
-    components:
-      - type: arp.sprite/1
-        spriteId: 20000000-0000-4000-8000-000000000106
-        r: 1.0
-        g: 1.0
-        b: 1.0
-        a: 1.0
-        sortingLayer: 2
-        sortingOrder: 0
-        ySort: false
-        flipX: false
-        flipY: false
-  - id: 6
-    parent: 1
     name: blade-4
+  transform:
+    rotation:
+      fields:
+        w: 1.0
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Quat
+    scale:
+      fields:
+        x: 0.7
+        y: 0.7
+        z: 1.0
+      type: Vec3
+    translation:
+      fields:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Vec3
+- components:
+  - configuration: null
+    enabled: true
+    fields:
+      flipX: false
+      flipY: false
+      localBounds:
+        fields:
+          center:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          extents:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          hasExplicitMetadata: false
+        type: Bounds2D
+      sortingLayer: 2
+      sortingOrder: 0
+      spriteResourceId: 20000000-0000-4000-8000-000000000106
+      tint:
+        fields:
+          w: 1.0
+          x: 1.0
+          y: 1.0
+          z: 1.0
+        type: Vec4
+      ySort: false
+    schemaVersion: 1
+    type: arp.sprite/1
+  id: 7
+  parent: 1
+  properties:
     active: false
-    transform:
-      x: 0.0
-      y: 0.0
-      z: 0.0
-      qx: 0.0
-      qy: 0.0
-      qz: 0.0
-      qw: 1.0
-      sx: 0.7
-      sy: 0.7
-      sz: 1.0
-    components:
-      - type: arp.sprite/1
-        spriteId: 20000000-0000-4000-8000-000000000106
-        r: 1.0
-        g: 1.0
-        b: 1.0
-        a: 1.0
-        sortingLayer: 2
-        sortingOrder: 0
-        ySort: false
-        flipX: false
-        flipY: false
-  - id: 7
-    parent: 1
     name: blade-5
+  transform:
+    rotation:
+      fields:
+        w: 1.0
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Quat
+    scale:
+      fields:
+        x: 0.7
+        y: 0.7
+        z: 1.0
+      type: Vec3
+    translation:
+      fields:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Vec3
+- components:
+  - configuration: null
+    enabled: true
+    fields:
+      flipX: false
+      flipY: false
+      localBounds:
+        fields:
+          center:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          extents:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          hasExplicitMetadata: false
+        type: Bounds2D
+      sortingLayer: 2
+      sortingOrder: 0
+      spriteResourceId: 20000000-0000-4000-8000-000000000106
+      tint:
+        fields:
+          w: 1.0
+          x: 1.0
+          y: 1.0
+          z: 1.0
+        type: Vec4
+      ySort: false
+    schemaVersion: 1
+    type: arp.sprite/1
+  id: 8
+  parent: 1
+  properties:
     active: false
-    transform:
-      x: 0.0
-      y: 0.0
-      z: 0.0
-      qx: 0.0
-      qy: 0.0
-      qz: 0.0
-      qw: 1.0
-      sx: 0.7
-      sy: 0.7
-      sz: 1.0
-    components:
-      - type: arp.sprite/1
-        spriteId: 20000000-0000-4000-8000-000000000106
-        r: 1.0
-        g: 1.0
-        b: 1.0
-        a: 1.0
-        sortingLayer: 2
-        sortingOrder: 0
-        ySort: false
-        flipX: false
-        flipY: false
-  - id: 8
-    parent: 1
     name: blade-6
+  transform:
+    rotation:
+      fields:
+        w: 1.0
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Quat
+    scale:
+      fields:
+        x: 0.7
+        y: 0.7
+        z: 1.0
+      type: Vec3
+    translation:
+      fields:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Vec3
+- components:
+  - configuration: null
+    enabled: true
+    fields:
+      flipX: false
+      flipY: false
+      localBounds:
+        fields:
+          center:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          extents:
+            fields:
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: Vec3
+          hasExplicitMetadata: false
+        type: Bounds2D
+      sortingLayer: 2
+      sortingOrder: 0
+      spriteResourceId: 20000000-0000-4000-8000-000000000106
+      tint:
+        fields:
+          w: 1.0
+          x: 1.0
+          y: 1.0
+          z: 1.0
+        type: Vec4
+      ySort: false
+    schemaVersion: 1
+    type: arp.sprite/1
+  id: 9
+  parent: 1
+  properties:
     active: false
-    transform:
-      x: 0.0
-      y: 0.0
-      z: 0.0
-      qx: 0.0
-      qy: 0.0
-      qz: 0.0
-      qw: 1.0
-      sx: 0.7
-      sy: 0.7
-      sz: 1.0
-    components:
-      - type: arp.sprite/1
-        spriteId: 20000000-0000-4000-8000-000000000106
-        r: 1.0
-        g: 1.0
-        b: 1.0
-        a: 1.0
-        sortingLayer: 2
-        sortingOrder: 0
-        ySort: false
-        flipX: false
-        flipY: false
-  - id: 9
-    parent: 1
     name: blade-7
-    active: false
-    transform:
-      x: 0.0
-      y: 0.0
-      z: 0.0
-      qx: 0.0
-      qy: 0.0
-      qz: 0.0
-      qw: 1.0
-      sx: 0.7
-      sy: 0.7
-      sz: 1.0
-    components:
-      - type: arp.sprite/1
-        spriteId: 20000000-0000-4000-8000-000000000106
-        r: 1.0
-        g: 1.0
-        b: 1.0
-        a: 1.0
-        sortingLayer: 2
-        sortingOrder: 0
-        ySort: false
-        flipX: false
-        flipY: false
+  transform:
+    rotation:
+      fields:
+        w: 1.0
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Quat
+    scale:
+      fields:
+        x: 0.7
+        y: 0.7
+        z: 1.0
+      type: Vec3
+    translation:
+      fields:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      type: Vec3
+resourceId: 20000000-0000-4000-8000-000000005000
+type: arp.scene-prefab

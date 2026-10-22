@@ -1,9 +1,10 @@
 #pragma once
 #include "2d/particle_emitter_component.h"
-#include "2d/scene_runtime_codec.h"
+#include "2d/physics_components.h"
 #include "2d/screen_canvas_component.h"
+#include "2d/sprite_animation_component.h"
 #include "2d/sprite_text_component.h"
-#include "physics2d/components.h"
+#include "2d/tile_map_resource_component.h"
 #include "resource/audio_source_component.h"
 #include "scene/component_factory.h"
 #include "scene/runtime_components.h"

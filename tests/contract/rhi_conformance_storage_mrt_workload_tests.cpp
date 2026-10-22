@@ -1,5 +1,5 @@
-#include "core/file_io.h"
-#include "core/sha256.h"
+#include "core/hash/sha256.h"
+#include "core/io/file_io.h"
 #include "rhi/conformance/storage_mrt_execution.h"
 #include "rhi/conformance/storage_mrt_workload.h"
 

@@ -173,9 +173,16 @@ class WebGpuCanonicalTextureUploadSourceFixture final {
             if (!texture && diagnostic)
                 std::fprintf(stderr, "canonical texture creation: %s\n", diagnostic);
             assert(texture);
-            auto target = rhi::OriginalCommandTextureLease::prepareOriginal(
-                texture, {1u, true, 2u, metadataBytes}, quotas[5], diagnostic);
-            assert(target);
+            auto target = rhi::OriginalCommandTextureLease::prepareOriginal(texture,
+                {1u,
+                    true,
+                    rhi::OriginalCommandTextureLease::retainedOwnerCount,
+                    quotas[5]->limitBytes()},
+                quotas[5],
+                diagnostic);
+            if (diagnostic)
+                std::fprintf(stderr, "canonical texture lease: %s\n", diagnostic);
+            assert(target && !diagnostic);
             prepareBinding(target, 0u, originalStagingSource);
         }
 

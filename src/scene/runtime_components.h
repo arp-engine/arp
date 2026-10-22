@@ -1,6 +1,6 @@
 #pragma once
-#include "core/runtime/tween.h"
 #include "scene/scene.h"
+#include "scene/time/tween.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -9,13 +9,13 @@ namespace arp::scene {
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct TimerComponentEditorProperties {
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float seconds = 1.0f;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     bool repeat = false;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     bool startOnEnable = false;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     arp::core::pmr::String eventName{&arp::core::defaultCpuMemoryResource()};
 };
 
@@ -24,8 +24,7 @@ ACLASS(Ownership = Engine, Lifecycle = Explicit)
 class TimerComponent final : public Component {
 public:
     explicit TimerComponent(std::uint32_t events)
-        : timer_(1, events),
-          event_("timer.elapsed", &arp::core::defaultCpuMemoryResource())
+        : timer_(1, events), event_("timer.elapsed", &arp::core::defaultCpuMemoryResource())
     {}
 
     const char* scriptTypeName() const override { return "TimerComponent"; }
@@ -105,15 +104,15 @@ private:
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct TweenComponentEditorProperties {
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float seconds = 1.0f;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float from = 0.0f;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float to = 1.0f;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     bool unscaled = false;
-    APROP(Editor)
+    APROP(Serialize, Editor)
     bool startOnEnable = false;
 };
 
@@ -128,8 +127,7 @@ public:
 
     bool start_tween(double seconds, float from, float to, bool unscaled)
     {
-        if (!std::isfinite(seconds) || seconds <= 0.0 || !std::isfinite(from)
-            || !std::isfinite(to))
+        if (!std::isfinite(seconds) || seconds <= 0.0 || !std::isfinite(from) || !std::isfinite(to))
             return false;
         unscaled_ = unscaled;
         return tween_.start({this, 0, id().value()},
@@ -143,8 +141,8 @@ public:
 
     arp::reflection::object editorAuthoringProperties() const override
     {
-        return arp::reflection::object(TweenComponentEditorProperties{
-            seconds_, from_, to_, unscaled_, startOnEnable_});
+        return arp::reflection::object(
+            TweenComponentEditorProperties{seconds_, from_, to_, unscaled_, startOnEnable_});
     }
 
     bool applyEditorAuthoringProperties(const arp::reflection::object& value) override

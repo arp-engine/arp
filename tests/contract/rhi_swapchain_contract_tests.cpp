@@ -1,5 +1,5 @@
 #include "../fixtures/frame_input_lifecycle_checks.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "platform/frame_input_admission.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/gpu_swapchain.h"

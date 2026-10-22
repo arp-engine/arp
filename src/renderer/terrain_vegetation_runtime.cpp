@@ -1,6 +1,6 @@
 #include "renderer/terrain_vegetation_runtime.h"
 
-#include "core/math.h"
+#include "core/math/math.h"
 #include "resource/vegetation_catalog_resource.h"
 
 #include <algorithm>
@@ -110,7 +110,7 @@ bool buildTerrainVegetationGpuInstances(const TerrainVegetationPrototypePage& pa
 }
 
 bool lowerTerrainVegetationInstancesForCull(const TerrainVegetationPrototypePage& page,
-    core::pmr::Vector<pcg::InstanceDataGpu>& outInstances,
+    core::pmr::Vector<vegetation::InstanceDataGpu>& outInstances,
     core::pmr::String& diagnostics)
 {
     outInstances.clear();
@@ -147,7 +147,7 @@ bool lowerTerrainVegetationInstancesForCull(const TerrainVegetationPrototypePage
             outInstances.clear();
             return false;
         }
-        pcg::InstanceDataGpu lowered;
+        vegetation::InstanceDataGpu lowered;
         lowered.positionScale[0] = source.position.x;
         lowered.positionScale[1] = source.position.y;
         lowered.positionScale[2] = source.position.z;
@@ -160,10 +160,33 @@ bool lowerTerrainVegetationInstancesForCull(const TerrainVegetationPrototypePage
         lowered.extraTransform[1] = roll;
         lowered.extraTransform[2] = source.scale.y == source.scale.x ? 0.0f : source.scale.y;
         lowered.extraTransform[3] = 0.0f;
-        pcg::setInstanceMetadata(lowered, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
+        vegetation::setInstanceMetadata(lowered, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
         outInstances.push_back(lowered);
     }
     return true;
+}
+
+core::pmr::Vector<TerrainVegetationPrototypePage> groupTerrainVegetationInstances(
+    core::ArrayView<vegetation::StaticVegetationInstance> instances)
+{
+    core::pmr::Vector<TerrainVegetationPrototypePage> prototypes{&core::defaultCpuMemoryResource()};
+    for (const auto& instance : instances) {
+        auto bucket =
+            std::find_if(prototypes.begin(), prototypes.end(), [&](const auto& prototype) {
+                return prototype.prototypeId == instance.prototypeId;
+            });
+        if (bucket == prototypes.end()) {
+            TerrainVegetationPrototypePage prototype;
+            prototype.prototypeId = instance.prototypeId;
+            prototypes.push_back(std::move(prototype));
+            bucket = std::prev(prototypes.end());
+        }
+        bucket->instances.push_back(instance);
+    }
+    std::sort(prototypes.begin(), prototypes.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.prototypeId < rhs.prototypeId;
+    });
+    return prototypes;
 }
 
 TerrainVegetationPage TerrainVegetationRuntime::buildPage(
@@ -174,25 +197,8 @@ TerrainVegetationPage TerrainVegetationRuntime::buildPage(
     page.terrainGeneration = terrain.generation();
     page.terrainResourceId = terrain.reference().id;
     page.vegetationCatalogResourceId = terrain.vegetationCatalogResourceId();
-    const auto* instances = terrain.vegetationFor(tile);
-    if (instances == nullptr)
-        return page;
-    for (const auto& instance : *instances) {
-        auto bucket = std::find_if(
-            page.prototypes.begin(), page.prototypes.end(), [&](const auto& prototype) {
-                return prototype.prototypeId == instance.prototypeId;
-            });
-        if (bucket == page.prototypes.end()) {
-            TerrainVegetationPrototypePage prototype;
-            prototype.prototypeId = instance.prototypeId;
-            page.prototypes.push_back(std::move(prototype));
-            bucket = std::prev(page.prototypes.end());
-        }
-        bucket->instances.push_back(instance);
-    }
-    std::sort(page.prototypes.begin(), page.prototypes.end(), [](const auto& lhs, const auto& rhs) {
-        return lhs.prototypeId < rhs.prototypeId;
-    });
+    if (const auto* instances = terrain.vegetationFor(tile))
+        page.prototypes = groupTerrainVegetationInstances(*instances);
     return page;
 }
 

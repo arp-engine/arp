@@ -9,7 +9,7 @@
 #include "../fixtures/metal_original_depth_execution_fixture.h"
 #include "../fixtures/metal_original_storage_execution_fixture.h"
 #include "../fixtures/original_bindless_root_source_fixture.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_binding_validation.h"
 #include "rhi/backends/metal/metal_bindless_validation.h"

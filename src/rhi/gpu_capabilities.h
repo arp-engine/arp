@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/diagnostic_builder.h"
+#include "core/diagnostics/diagnostic_builder.h"
 #include "rhi/gpu_common.h"
 
 #include <utility>

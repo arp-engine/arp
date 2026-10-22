@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/gui/gui_draw_plan.h"
 #include "renderer/rhi_draw_plan_bridge.h"
 #include "rhi/frontend/descriptor_set_validation.h"

@@ -1,6 +1,6 @@
 #pragma once
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "platform/render_backend_preference.h"
 #include "platform/render_system_rhi_dry_run.h"
 #include "platform/render_system_rhi_startup_readiness.h"

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/frontend/command_indirect_commands.h"
 
 namespace arp::rhi::semantics {

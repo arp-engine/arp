@@ -7,7 +7,7 @@
 // call_v(inst, argv) dispatches to invoke_variadic().
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/internal/function_wrapper.h"
 
 #include <array>

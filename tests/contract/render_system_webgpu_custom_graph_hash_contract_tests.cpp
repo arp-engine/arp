@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "platform/render_system.h"
 #include "rhi/backends/metal/metal_runtime_smoke.h"
 #include "rhi/backends/vulkan/vulkan_device.h"

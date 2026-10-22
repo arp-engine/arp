@@ -1,7 +1,7 @@
 #pragma once
-#include "core/atomic_capacity.h"
+#include "core/algorithm/strided_index_range.h"
+#include "core/memory/atomic_capacity.h"
 #include "core/runtime/external_callback_gate.h"
-#include "core/strided_index_range.h"
 #include "rhi/frontend/resource_device_loss_registration.h"
 #include "rhi/frontend/transfer_readback_command_graph_budget.h"
 #include "rhi/frontend/transfer_readback_input.h"

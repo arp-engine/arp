@@ -1,5 +1,5 @@
 #include "platform/window.h"
-#include "platform/windows_application_icon.h"
+#include "platform/windows/windows_application_icon.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN

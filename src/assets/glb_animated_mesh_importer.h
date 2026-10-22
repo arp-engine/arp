@@ -4,7 +4,7 @@
 #include "animation/skeleton.h"
 #include "assets/asset_pipeline.h"
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <array>
 #include <cstdint>

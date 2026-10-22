@@ -40,8 +40,8 @@ public:
         const pcg::GpuVisibilityLayoutContract::Input layout{
             groups.data(), owners.data(), indexCounts.data(), 1u, 2u, 1u, 1u, 2u, 1u, 1u};
         const pcg::GpuVisibilityLayoutContract::Budget layoutBudget{1u, true, 5u, 5u, 1u};
-        std::array<pcg::InstanceDataGpu, 2u> instances;
-        pcg::packInstanceMetadataFloat(instances[1u].speciesLodState[0u], 0x7fc12345u);
+        std::array<vegetation::InstanceDataGpu, 2u> instances;
+        vegetation::packInstanceMetadataFloat(instances[1u].speciesLodState[0u], 0x7fc12345u);
         pcg::GpuVisibilityParameters parameters{};
         parameters.counts[0u] = parameters.capacities[0u] = 2u;
         parameters.counts[1u] = parameters.counts[2u] = 1u;

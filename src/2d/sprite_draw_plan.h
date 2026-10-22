@@ -1,7 +1,7 @@
 #pragma once
 #include "2d/runtime_contract.h"
 #include "2d/sprite_resources.h"
-#include "core/geometry.h"
+#include "core/math/geometry.h"
 #include "scene/transform.h"
 
 #include <algorithm>

@@ -7,7 +7,7 @@
 #include "animation/animation.h"
 #include "animation/pose_blend.h"
 #include "animation/skeleton.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cassert>
 #include <cmath>

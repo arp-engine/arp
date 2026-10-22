@@ -1,8 +1,8 @@
 #pragma once
 
-#include "core/array_view.h"
-#include "core/base64.h"
-#include "core/cpu_allocator.h"
+#include "core/container/array_view.h"
+#include "core/encoding/base64.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/gpu_common.h"
 
 #include <array>

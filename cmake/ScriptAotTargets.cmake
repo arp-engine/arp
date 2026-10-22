@@ -84,6 +84,8 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
             VERBATIM)
     endif()
 
+    set(ARP_SCRIPT_AOT_TEST_INCLUDE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/src" CACHE PATH
+        "Include tree for dynamic AOT smoke; may point at an immutable source snapshot")
     add_executable(arp_scriptvm_aot_v5_dynamic_package_smoke
         tests/smoke/scriptvm_aot_v5_dynamic_package_smoke.cpp)
     target_include_directories(arp_scriptvm_aot_v5_dynamic_package_smoke PRIVATE src)
@@ -94,7 +96,7 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
         ARP_AOT_DYNAMIC_TEST_CXX="${CMAKE_CXX_COMPILER}"
         ARP_AOT_DYNAMIC_TEST_NM="${CMAKE_NM}"
         ARP_AOT_DYNAMIC_TEST_OBJDUMP="${CMAKE_OBJDUMP}"
-        ARP_AOT_DYNAMIC_TEST_INCLUDE="${CMAKE_CURRENT_SOURCE_DIR}/src"
+        ARP_AOT_DYNAMIC_TEST_INCLUDE="${ARP_SCRIPT_AOT_TEST_INCLUDE_ROOT}"
         ARP_AOT_DYNAMIC_TEST_HOST="$<TARGET_FILE:arp_script_aot_tool_host>")
     target_link_libraries(arp_scriptvm_aot_v5_dynamic_package_smoke PRIVATE
         arp_script_aot_tool_host arp_core)

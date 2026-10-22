@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "platform/render_system.h"
 #include "platform/render_system_ordered_graphics.h"
 #include "renderer/render_graph/frame_graph_uniform_ring_buffer.h"

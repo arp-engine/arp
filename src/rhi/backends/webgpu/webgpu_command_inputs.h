@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/ordered_span_cursor.h"
-#include "core/shared_allocation_projection.h"
+#include "core/algorithm/ordered_span_cursor.h"
+#include "core/ownership/shared_allocation_projection.h"
 #include "rhi/backends/webgpu/webgpu_native_ordinary_physical_groups.h"
 #include "rhi/backends/webgpu/webgpu_readback_preparation.h"
 #include "rhi/backends/webgpu/webgpu_transfer_copy_validation.h"

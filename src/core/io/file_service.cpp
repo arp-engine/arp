@@ -1,6 +1,6 @@
 #include "core/io/file_service.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
 #include <chrono>

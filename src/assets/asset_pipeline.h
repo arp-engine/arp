@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/diagnostic_builder.h"
+#include "core/diagnostics/diagnostic_builder.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
 #include <cctype>
@@ -175,11 +175,25 @@ struct MeshBounds {
     bool valid = false;
 };
 
+// MeshSourceRanges/1: boundaries before opaque material grouping. Geometry is
+// already in the same space as MeshVertex; no instance transform is inferred.
+inline constexpr std::uint32_t kMeshSourceRangesVersion = 1u;
+
+struct MeshSourceRange {
+    Submesh indices;
+    std::uint32_t parentSubmesh = 0u;
+    std::uint32_t sourceFirstIndex = 0u;
+    MeshBounds bounds;
+    float maxAbsNormal[3]{};
+};
+
 struct MeshAsset {
     std::pmr::vector<MeshVertex> vertices;
     std::pmr::vector<uint32_t> indices;
     std::pmr::vector<Submesh> submeshes;
     MeshBounds bounds;
+    std::uint32_t sourceRangesVersion = 0u;
+    core::pmr::Vector<MeshSourceRange> sourceRanges{&core::defaultCpuMemoryResource()};
 
     bool recomputeBounds() noexcept
     {

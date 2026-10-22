@@ -1,7 +1,7 @@
 #include "3d/components.h"
-#include "core/filesystem_path.h"
-#include "core/string_utils.h"
-#include "core/utf8_cursor.h"
+#include "core/io/filesystem_path.h"
+#include "core/text/string_utils.h"
+#include "core/text/utf8_cursor.h"
 #include "editor/ui/editor_atlas_layout.h"
 #include "editor/viewport/editor_scene_component_gizmos.h"
 #include "editor/viewport/editor_scene_viewport_physics_overlay.h"
@@ -772,27 +772,22 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
         const float clippedX0 = x0 + dx * t0, clippedY0 = y0 + dy * t0;
         const float clippedX1 = x0 + dx * t1, clippedY1 = y0 + dy * t1;
         const float clippedDx = clippedX1 - clippedX0, clippedDy = clippedY1 - clippedY0;
+        constexpr float lineThickness = 1.5f;
         const int steps = std::clamp(
-            static_cast<int>(std::ceil(std::max(std::abs(clippedDx), std::abs(clippedDy)) / 4.0f)),
+            static_cast<int>(
+                std::ceil(std::max(std::abs(clippedDx), std::abs(clippedDy)) / lineThickness)),
             1,
-            256);
+            4096);
         for (int i = 0; i <= steps; ++i) {
             const float t = static_cast<float>(i) / static_cast<float>(steps);
-            box(ui::LayoutRect::fromOriginSize(
-                    clippedX0 + clippedDx * t, clippedY0 + clippedDy * t, 4.0f, 4.0f),
+            box(ui::LayoutRect::fromOriginSize(clippedX0 + clippedDx * t,
+                    clippedY0 + clippedDy * t,
+                    lineThickness,
+                    lineThickness),
                 rgb,
                 alpha);
         }
     };
-    for (int coordinate = -8; coordinate <= 8; ++coordinate) {
-        const auto x0 = project(static_cast<float>(coordinate), 0.0f, -8.0f);
-        const auto x1 = project(static_cast<float>(coordinate), 0.0f, 8.0f);
-        const auto z0 = project(-8.0f, 0.0f, static_cast<float>(coordinate));
-        const auto z1 = project(8.0f, 0.0f, static_cast<float>(coordinate));
-        const unsigned gridColor = coordinate == 0 ? 0x454b50 : 0x252a2f;
-        line(x0.first, x0.second, x1.first, x1.second, gridColor, 0.32f);
-        line(z0.first, z0.second, z1.first, z1.second, gridColor, 0.32f);
-    }
     const auto physicsOverlay = buildEditorScenePhysicsOverlay(sceneDocument_.scene(),
         kEditorScenePhysicsOverlaySegmentBudget,
         kEditorScenePhysicsOverlayCircleSegments);
@@ -805,7 +800,7 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
                 : segment.sensor                                                  ? 0xd58bdd
                 : selected                                                        ? 0xffcc66u
                                                                                   : 0x66c8d4u;
-            line(first.first, first.second, second.first, second.second, rgb, 0.9f);
+            line(first.first, first.second, second.first, second.second, rgb, 0.72f);
         }
     } else if (physicsOverlay.diagnostic[0] != '\0') {
         label(physicsOverlay.diagnostic, rect.x + 14.0f, rect.y + 32.0f, 0xe58f70);
@@ -830,7 +825,7 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
                 : segment.kind == EditorSceneComponentGizmoKind::CritterField
                 ? (selected ? 0xffdf83u : 0xe99b7bu)
                 : (selected ? 0xffdf83u : 0x70d1a5u);
-            line(first.first, first.second, second.first, second.second, rgb, 0.88f);
+            line(first.first, first.second, second.first, second.second, rgb, 0.72f);
         }
     } else if (componentGizmos.diagnostic[0] != '\0') {
         label(componentGizmos.diagnostic, rect.x + 14.0f, rect.y + 50.0f, 0xe58f70);

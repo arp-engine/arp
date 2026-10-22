@@ -19,7 +19,7 @@ int main()
     assert(std::abs(sentinel.x - oracle[4]) > 1.f);
     assert(std::abs(last.x - oracle[0]) < Data::tolerance);
     // Check core composition against a hand-solvable right-angle transform.
-    arp::pcg::InstanceDataGpu rightAngle;
+    arp::vegetation::InstanceDataGpu rightAngle;
     rightAngle.yawPhaseIdLod[0] = 1.5707963267948966f;
     rightAngle.extraTransform[0] = 1.5707963267948966f;
     rightAngle.extraTransform[1] = 1.5707963267948966f;
@@ -36,8 +36,8 @@ int main()
     assert(!Data::matches(bad));
     for (const auto lane : {16u, 17u, 18u, 19u}) {
         bad = oracle;
-        const auto bits = arp::pcg::unpackInstanceMetadataFloat(bad[lane]);
-        arp::pcg::packInstanceMetadataFloat(bad[lane], bits ^ 1u);
+        const auto bits = arp::vegetation::unpackInstanceMetadataFloat(bad[lane]);
+        arp::vegetation::packInstanceMetadataFloat(bad[lane], bits ^ 1u);
         assert(!Data::matches(bad));
     }
     bad = oracle;
@@ -47,8 +47,8 @@ int main()
         const auto base = pixel * 44u;
         const auto& instance = instances[probe.selectors[0] + probe.offsets[pixel]];
         for (std::size_t lane = 0u; lane < 4u; ++lane)
-            assert(arp::pcg::unpackInstanceMetadataFloat(oracle[base + 16u + lane])
-                == arp::pcg::unpackInstanceMetadataFloat(instance.speciesLodState[lane]));
+            assert(arp::vegetation::unpackInstanceMetadataFloat(oracle[base + 16u + lane])
+                == arp::vegetation::unpackInstanceMetadataFloat(instance.speciesLodState[lane]));
         const float lengthSquared = oracle[base + 8] * oracle[base + 8]
             + oracle[base + 9] * oracle[base + 9] + oracle[base + 10] * oracle[base + 10];
         assert(std::abs(lengthSquared - 1.f) < Data::tolerance);
@@ -62,7 +62,7 @@ int main()
             assert(oracle[base + 40u + lane] == rest);
         }
     }
-    using Geometry = arp::pcg::FoliageGeometryContract;
+    using Geometry = arp::vegetation::FoliageGeometryContract;
     const auto grass = Geometry::grass(), canopy = Geometry::canopy();
     assert(!Geometry::validatePassFamily(grass, grass, grass));
     assert(!Geometry::validatePassFamily(canopy, canopy, canopy));
@@ -80,7 +80,7 @@ int main()
     invalid.contractVersion = 2u;
     assert(Geometry::validate(invalid));
     invalid = grass;
-    invalid.family = static_cast<arp::pcg::FoliageGeometryFamily>(255u);
+    invalid.family = static_cast<arp::vegetation::FoliageGeometryFamily>(255u);
     assert(Geometry::validate(invalid));
     bad = oracle;
     bad[28] = oracle[36]; // Substituting the canopy wind must be observable.

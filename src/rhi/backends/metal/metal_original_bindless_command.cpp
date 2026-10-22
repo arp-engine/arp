@@ -501,8 +501,8 @@ public:
                 {geometry.data(), geometry.size(), shader.data(), shader.size()});
             if (!closure)
                 return fail(id);
-            if ((id = OriginalBindlessSceneContentContract::inspectNative(
-                     closure, inputs.readback->originalProgram(), inputs.scene)))
+            if ((id = OriginalBindlessInitializedGraphicsContract::inspectNative(
+                     closure, inputs.readback->originalProgram(), inputs.initializedGraphics)))
                 return fail(id);
             if (inputs.geometryCount)
                 if ((id = MetalOriginalBindlessCommand::validateGeometryFetch(

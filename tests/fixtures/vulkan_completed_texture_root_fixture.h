@@ -1,7 +1,7 @@
 #pragma once
 #include "completed_texture_root_program_fixture.h"
-#include "core/ibl_bake.h"
 #include "original_graphics_hdr_gi_data_fixture.h"
+#include "renderer/gi/ibl_bake.h"
 #include "rhi/backends/vulkan/vulkan_original_bindless_command.h"
 #include "rhi/frontend/command_buffer_readback.h"
 #include "vulkan_original_root_terminal_fixture.h"

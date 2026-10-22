@@ -1,3 +1,4 @@
+#include "3d/camera_parameters.h"
 #include "renderer/particles/particle_draw_plan.h"
 #include "renderer/particles/particle_system.h"
 #include "renderer/scene/scene.h"

@@ -1,8 +1,8 @@
 #include "rhi/backends/vulkan/vulkan_allocator.h"
 
-#include "core/cpu_allocator.h"
-#include "core/memory_budget_ledger.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
+#include "rhi/frontend/memory_budget_ledger.h"
 
 #ifndef ARP_RHI_NO_VMA
 #define VMA_STATIC_VULKAN_FUNCTIONS 0

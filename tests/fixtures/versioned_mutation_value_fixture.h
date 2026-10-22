@@ -1,6 +1,6 @@
 #pragma once
-#include "core/cpu_allocator.h"
-#include "core/versioned_mutation_value.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/versioned_mutation_value.h"
 
 #include <cassert>
 #include <cstdio>

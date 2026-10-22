@@ -1,4 +1,4 @@
-// Contract test for the reusable core::ibl IBL convolution utilities.
+// Contract test for the renderer-owned IBL convolution utilities.
 //
 // These are pure CPU math assertions (no GPU) that lock the contract between
 // the IBL baker and the runtime TextureCube sampler:
@@ -10,9 +10,9 @@
 //
 // Per AGENTS.md each stage keeps a fast unit test; this is the IBL bake stage's.
 
-#include "core/cpu_allocator.h"
-#include "core/ibl_bake.h"
-#include "core/math.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
+#include "renderer/gi/ibl_bake.h"
 
 #include <cassert>
 #include <cmath>

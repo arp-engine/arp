@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "rhi/frontend/memory_physical_budget_ledger.h"
 #include "rhi/frontend/transfer_upload_destination_validation.h"
 

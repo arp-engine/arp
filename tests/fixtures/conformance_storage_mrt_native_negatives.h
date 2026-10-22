@@ -1,7 +1,7 @@
 #pragma once
 
 #include "conformance_native_frame_lease.h"
-#include "core/diagnostic_error.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "renderer/render_graph/conformance_storage_mrt_recorder.h"
 #include "rhi/frontend/command_encoder_base.h"
 #include "rhi/gpu_device.h"

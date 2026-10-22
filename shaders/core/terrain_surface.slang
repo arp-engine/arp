@@ -1,5 +1,12 @@
 // Shared terrain material arithmetic. No descriptors, resource access or
 // derivatives: Traditional and indexed frontends can pass identical samples.
+bool arpTerrainWeightPagesValid(float4 pageA, float4 pageB)
+{
+    return all(isfinite(pageA)) && all(isfinite(pageB))
+        && all(pageA >= 0.0) && all(pageA <= 1.0)
+        && all(pageB >= 0.0) && all(pageB <= 1.0);
+}
+
 float3 arpTerrainNormalize(float3 value, float3 fallback)
 {
     float lengthSquared = dot(value, value);

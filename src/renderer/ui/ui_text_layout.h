@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/utf8.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/text/utf8.h"
 #include "renderer/ui/ui_glyph_atlas.h"
 #include "ui/ui.h"
 #include "ui/ui_font.h"

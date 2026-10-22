@@ -1,5 +1,5 @@
 #pragma once
-#include "core/utf8.h"
+#include "core/text/utf8.h"
 #include "rhi/gpu_common.h"
 
 #include <string_view>

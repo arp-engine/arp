@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/row_major_index_grid.h"
+#include "core/algorithm/row_major_index_grid.h"
 #include "rhi/backends/webgpu/webgpu_canonical_readback_joins.h"
 #include "rhi/backends/webgpu/webgpu_ordinary_resource_retention.h"
 #include "rhi/backends/webgpu/webgpu_pipeline_preparation.h"

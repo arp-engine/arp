@@ -1,5 +1,5 @@
 #pragma once
-#include "core/versioned_mutation_value.h"
+#include "core/ownership/versioned_mutation_value.h"
 #include "rhi/frontend/resource_recorded_state_domain.h"
 #include "rhi/frontend/resource_state_validation.h"
 #include "rhi/gpu_common.h"

@@ -1,5 +1,5 @@
 #pragma once
-#include "core/utf8.h"
+#include "core/text/utf8.h"
 #include "rhi/backends/webgpu/webgpu_original_transfer_state_validation.h"
 #include "rhi/semantics/transfer_dependency_lowering.h"
 

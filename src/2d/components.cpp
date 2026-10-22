@@ -45,10 +45,15 @@ bool SpriteRendererComponent::applyEditorAuthoringProperties(const arp::reflecti
 {
     if (!value.is<SpriteRendererComponentEditorProperties>())
         return false;
-    const auto& bounds = value.cast<const SpriteRendererComponentEditorProperties&>().localBounds;
+    const auto& properties = value.cast<const SpriteRendererComponentEditorProperties&>();
+    const auto& bounds = properties.localBounds;
     if (bounds.hasExplicitMetadata && !bounds.valid())
         return false;
-    desc_.localBounds = bounds;
+    if (!std::isfinite(properties.tint.x) || !std::isfinite(properties.tint.y)
+        || !std::isfinite(properties.tint.z) || !std::isfinite(properties.tint.w)
+        || properties.tint.w < 0 || properties.tint.w > 1)
+        return false;
+    desc_ = properties;
     return true;
 }
 

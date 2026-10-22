@@ -3,8 +3,8 @@ project(QueenContentContract LANGUAGES C CXX)
 set(queen_root "${CMAKE_CURRENT_LIST_DIR}/../../..")
 set(ARP_THIRD_PARTY_DIR "${queen_root}/3rd")
 include("${queen_root}/cmake/ArpMimalloc.cmake")
-add_library(arp_core STATIC "${queen_root}/src/core/cpu_allocator.cpp"
-    "${queen_root}/src/core/base64.cpp")
+add_library(arp_core STATIC "${queen_root}/src/core/memory/cpu_allocator.cpp"
+    "${queen_root}/src/core/encoding/base64.cpp")
 target_include_directories(arp_core PUBLIC "${queen_root}/src")
 target_compile_definitions(arp_core PUBLIC ARP_STATIC_LINK=1)
 target_compile_features(arp_core PUBLIC cxx_std_17)

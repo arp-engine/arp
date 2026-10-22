@@ -1,8 +1,8 @@
 #pragma once
 
 #include "3d/bounds.h"
-#include "core/callback.h"
-#include "core/cpu_allocator.h"
+#include "core/concurrency/callback.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
 #include "resource/resource_manager.h"
 #include "scene/component.h"
@@ -29,10 +29,16 @@ struct MeshAsset;
 namespace arp::scene3d {
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
+
 struct AnimatorEditorProperties {
-    APROP(Editor, Doc = "resource:PrefabResource:optional")
+    APROP(Serialize,
+        Editor,
+        ResourceReference,
+        OptionalReference,
+        ReferenceTarget = "PrefabResource",
+        Doc = "resource:PrefabResource:optional")
     arp::core::pmr::String prefabResourceId{&arp::core::defaultCpuMemoryResource()};
-    APROP(Editor)
+    APROP(Serialize, Editor)
     arp::core::pmr::String defaultStateName{&arp::core::defaultCpuMemoryResource()};
 };
 
@@ -135,6 +141,7 @@ public:
     bool applyEditorAuthoringProperties(const arp::reflection::object& value) override;
 
     AnimatorEvaluationResult evaluate(const AnimatorEvaluationRequest& request);
+
     const arp::core::pmr::String& editorBindingDiagnostic() const noexcept
     {
         return editorBindingDiagnostic_;
@@ -154,8 +161,7 @@ private:
         arp::core::SharedPtr<const animation::AnimatorControllerAsset>& controllerOwner,
         arp::core::pmr::String& diagnostics) const;
     bool refreshEditorBinding();
-    void installEditorBinding(
-        arp::core::SharedPtr<const arp::assets::AnimatedMeshAsset> meshOwner,
+    void installEditorBinding(arp::core::SharedPtr<const arp::assets::AnimatedMeshAsset> meshOwner,
         arp::core::SharedPtr<const animation::AnimatorControllerAsset> controllerOwner);
 
     AnimatorComponentDesc desc_;

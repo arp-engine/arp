@@ -1,7 +1,7 @@
 #pragma once
-#include "core/quota_bound_shared_identity.h"
-#include "core/shared_allocation_projection.h"
-#include "core/shared_owner_projection.h"
+#include "core/ownership/quota_bound_shared_identity.h"
+#include "core/ownership/shared_allocation_projection.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/backends/webgpu/webgpu_backend_objects.h"
 #include "rhi/backends/webgpu/webgpu_native_payloads.h"
 #include "rhi/frontend/command_retention_storage.h"

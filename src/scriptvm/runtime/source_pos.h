@@ -3,7 +3,7 @@
 // ArpScript: source position tracking for diagnostics and debugging.
 // Pure header-only; backed by core::pmr for the filename string.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cstdint>
 

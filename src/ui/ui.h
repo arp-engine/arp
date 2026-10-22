@@ -1,9 +1,9 @@
 #pragma once
 
-#include "core/bounded_sequence.h"
-#include "core/cpu_allocator.h"
-#include "core/filesystem_path.h"
-#include "core/lifetime_epoch.h"
+#include "core/container/bounded_sequence.h"
+#include "core/io/filesystem_path.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/lifetime_epoch.h"
 #include "input/input.h"
 #include "renderer/runtime_scene.h"
 #include "scene/camera.h"

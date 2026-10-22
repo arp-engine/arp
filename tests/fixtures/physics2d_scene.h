@@ -1,6 +1,6 @@
 #pragma once
+#include "2d/physics_components.h"
 #include "2d/scene_sprite_extractor.h"
-#include "physics2d/components.h"
 #include "tests/fixtures/scene_2d_fixture.h"
 
 namespace arp::tests {
@@ -79,7 +79,6 @@ private:
         auto& object = scene.createObject("physics showcase");
         scene::Transform transform;
         transform.translation = {position.x, position.y, 0};
-        transform.scale = {size.x, size.y, 1};
         object.set_local_transform(transform);
         physics2d::BodyDesc desc;
         desc.type = type;
@@ -99,7 +98,13 @@ private:
         scene2d::SpriteRendererComponentDesc sprite;
         sprite.spriteResourceId = tests::spriteA;
         sprite.sortingOrder = type == physics2d::BodyType::Static ? 0 : 1;
-        object.addComponent<scene2d::SpriteRendererComponent>(sprite);
+        auto& visual = scene.createObject("physics showcase sprite");
+        if (!scene.reparent(visual.id(), object.id()).ok())
+            return nullptr;
+        scene::Transform visualTransform;
+        visualTransform.scale = {size.x, size.y, 1};
+        visual.set_local_transform(visualTransform);
+        visual.addComponent<scene2d::SpriteRendererComponent>(sprite);
         bodies.push_back(&body);
         return &body;
     }

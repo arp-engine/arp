@@ -2,6 +2,7 @@
 
 #include "core/base64.h"
 #include "core/cpu_allocator.h"
+#include "core/number_format.h"
 
 #include <array>
 #include <charconv>
@@ -29,6 +30,16 @@ public:
         if (documents.size() != 1u)
             fail();
         return std::move(documents.front());
+    }
+
+    // fkYAML's block writer emits an empty string as an empty scalar (null on
+    // reload). Keep scalar escaping in the parser library, but preserve empty
+    // strings explicitly in this common, deterministic document writer.
+    static pmr::String serialize(const Node& node)
+    {
+        pmr::String result{&defaultCpuMemoryResource()};
+        appendDocument(node, result, 0);
+        return result;
     }
 
     static const Node& required(const Node& node, const char* key)
@@ -153,6 +164,56 @@ public:
     }
 
     [[noreturn]] static void fail() { throw YamlContractError{"YAML-CONTRACT-FIELD-INVALID"}; }
+
+private:
+    static void appendScalar(const Node& node, pmr::String& output)
+    {
+        if (node.is_float_number()) {
+            if (!appendFloating(output, node.get_value<Node::float_number_type>()))
+                fail();
+        } else if (node.is_string() && node.get_value_ref<const Node::string_type&>().empty())
+            output += "\"\"";
+        else
+            output += Node::serialize(node);
+    }
+
+    static void appendDocument(const Node& node, pmr::String& output, std::size_t indent)
+    {
+        if (node.is_scalar() || node.empty()) {
+            output.append(indent, ' ');
+            appendScalar(node, output);
+            if (output.empty() || output.back() != '\n')
+                output += '\n';
+            return;
+        }
+        auto appendValue = [&](const Node& value) {
+            if (value.is_scalar() || value.empty()) {
+                output += ' ';
+                appendScalar(value, output);
+                if (output.back() != '\n')
+                    output += '\n';
+            } else {
+                output += '\n';
+                appendDocument(value, output, indent + 2);
+            }
+        };
+        if (node.is_mapping()) {
+            for (const auto& entry : node.get_value_ref<const Node::mapping_type&>()) {
+                if (!entry.first.is_scalar())
+                    fail();
+                output.append(indent, ' ');
+                appendScalar(entry.first, output);
+                output += ':';
+                appendValue(entry.second);
+            }
+        } else {
+            for (const auto& entry : node.get_value_ref<const Node::sequence_type&>()) {
+                output.append(indent, ' ');
+                output += '-';
+                appendValue(entry);
+            }
+        }
+    }
 };
 
 } // namespace arp::core

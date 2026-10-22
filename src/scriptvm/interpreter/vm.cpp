@@ -1,7 +1,7 @@
 #include "scriptvm/interpreter/vm.h"
 
-#include "core/cpu_allocator.h"
-#include "core/log.h"
+#include "core/diagnostics/log.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
 #include "scriptvm/ir/typed_ir.h"
 #include "scriptvm/runtime/semantic_runtime.h"

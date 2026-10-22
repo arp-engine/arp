@@ -1,9 +1,9 @@
 #pragma once
 
-#include "core/atomic_capacity.h"
-#include "core/cold_owned_object_slot.h"
-#include "core/quota_bound_shared_identity.h"
-#include "core/shared_owner_projection.h"
+#include "core/memory/atomic_capacity.h"
+#include "core/ownership/cold_owned_object_slot.h"
+#include "core/ownership/quota_bound_shared_identity.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/frontend/command_model.h"
 #include "rhi/frontend/resource_binding_layout.h"
 #include "rhi/frontend/resource_texture_resource_layout.h"

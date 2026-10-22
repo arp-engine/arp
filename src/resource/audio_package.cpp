@@ -1,8 +1,8 @@
 #include "resource/audio_package.h"
 
 #include "audio/audio_system.h"
-#include "core/file_io.h"
-#include "core/stable_hash.h"
+#include "core/hash/stable_hash.h"
+#include "core/io/file_io.h"
 
 #include <cstring>
 #include <fstream>

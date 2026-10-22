@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/monotonic_id_sequence.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/monotonic_id_sequence.h"
 
 #include <algorithm>
 #include <array>

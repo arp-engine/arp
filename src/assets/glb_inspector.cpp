@@ -1,6 +1,6 @@
 #include "assets/glb_inspector.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <fstream>
 #include <sstream>

@@ -1,6 +1,6 @@
 #pragma once
+#include "core/ownership/versioned_mutation_value.h"
 #include "core/runtime/completion_retention_pool.h"
-#include "core/versioned_mutation_value.h"
 
 #include <cassert>
 #include <cstdio>

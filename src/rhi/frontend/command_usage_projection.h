@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/ordered_interval_neighborhood.h"
+#include "core/algorithm/ordered_interval_neighborhood.h"
 #include "rhi/frontend/command_shader_usage_validation.h"
 #include "rhi/frontend/command_shader_validation.h"
 #include "rhi/frontend/command_state.h"

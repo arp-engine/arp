@@ -1,7 +1,7 @@
 #pragma once
-#include "core/strided_index_range.h"
-#include "core/unsigned_element_span.h"
-#include "core/unsigned_range.h"
+#include "core/algorithm/strided_index_range.h"
+#include "core/encoding/unsigned_element_span.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/frontend/bindless_snapshot.h"
 #include "rhi/frontend/command_indirect_command_schema.h"
 #include "rhi/frontend/descriptor_validation.h"

@@ -1,6 +1,6 @@
 #include "shader/shader_reflection_cache.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <charconv>
 #include <fkYAML/node.hpp>

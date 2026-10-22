@@ -1020,6 +1020,11 @@ public:
     static constexpr FiniteGraphicsContentDecision bindlessCompletedReadPlanLowering(
         Backend backend, std::uint32_t version = 1u) noexcept
     {
+        // /4 joins /1 canonical RGBA8 reads to direct initialized geometry.
+        // Null validates, WebGPU plans; Vulkan/Metal use their native /0
+        // control3 reads, and WebGL refuses. This grants no execution issuer.
+        if (version == 4u)
+            return bindlessCompletedReadPlanLowering(backend, 1u);
         // /3: canonical control1 RGBA8/RGBA16F whole 2D/array/single Cube
         // (Read18). CPU planning is separate from native closure/execution.
         if (version == 3u) {

@@ -1,6 +1,6 @@
 #include "rhi/backends/vulkan/vulkan_device.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/null/dummy_sync.h"
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
 #include "rhi/backends/vulkan/vulkan_bindless.h"

@@ -1,4 +1,4 @@
-#include "core/atomic_capacity.h"
+#include "core/memory/atomic_capacity.h"
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
 #include "rhi/backends/vulkan/vulkan_device.h"
 #include "rhi/backends/vulkan/vulkan_native_commands.h"

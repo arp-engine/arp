@@ -212,11 +212,7 @@ void memoryLimitExceeded(DirectNativeExecutionContext& context, VmError* error) 
 
 bool memoryLimitReached(const DirectNativeExecutionContext& context) noexcept
 {
-    if (context.memoryBudgetFailed)
-        return true;
-    const auto liveBytes = context.memoryQuota != nullptr ? context.memoryQuota->liveBytes() : 0u;
-    return context.budget.maxMemoryBytes == 0u ? liveBytes != 0u
-                                               : liveBytes > context.budget.maxMemoryBytes;
+    return context.exceedsMemoryLimit();
 }
 
 bool present(const char* value) noexcept

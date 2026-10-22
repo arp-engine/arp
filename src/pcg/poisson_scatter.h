@@ -15,7 +15,7 @@
 //     // pt->x, pt->y are in [0, w-1], [0, h-1]
 //   }
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
 #include <cmath>

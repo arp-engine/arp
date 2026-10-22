@@ -1,7 +1,7 @@
 #pragma once
 
 #include "assets/asset_pipeline.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "gui/gui.h"
 #include "tools/asset_importer/script_runner.h"
 #include "ui/ui_document.h"

@@ -6,7 +6,7 @@
 int main(int argc, char** argv)
 {
     bool hidden = false, after = false, hover = false, viewportPipelineSmoke = false;
-    bool viewportRuntimeSmoke = false;
+    bool viewportRuntimeSmoke = false, terrainResourceSmoke = false;
     bool remoteBindAddressSpecified = false;
     std::uint16_t remotePort = 0;
     std::string_view remoteBindAddress = "127.0.0.1";
@@ -20,7 +20,10 @@ int main(int argc, char** argv)
             hover = true;
         else if (std::strcmp(argv[i], "--viewport-pipeline-smoke") == 0)
             viewportPipelineSmoke = true;
-        else if (std::strcmp(argv[i], "--viewport-runtime-smoke") == 0)
+        else if (std::strcmp(argv[i], "--terrain-resource-smoke") == 0) {
+            terrainResourceSmoke = true;
+            viewportPipelineSmoke = true;
+        } else if (std::strcmp(argv[i], "--viewport-runtime-smoke") == 0)
             viewportRuntimeSmoke = true;
         else if (std::strcmp(argv[i], "--project-root") == 0 && i + 1 < argc)
             projectRoot = argv[++i];
@@ -40,7 +43,7 @@ int main(int argc, char** argv)
         } else {
             std::fprintf(stderr,
                 "Usage: arp_editor [--smoke] [--after] [--hover] [--viewport-pipeline-smoke] "
-                "[--viewport-runtime-smoke] [--project-root PATH] "
+                "[--viewport-runtime-smoke] [--terrain-resource-smoke] [--project-root PATH] "
                 "[--open-script PATH] [--remote-port PORT] "
                 "[--remote-bind-address IPv4]\n");
             return 2;
@@ -70,5 +73,6 @@ int main(int argc, char** argv)
         remotePort,
         remoteBindAddress,
         viewportPipelineSmoke,
-        viewportRuntimeSmoke);
+        viewportRuntimeSmoke,
+        terrainResourceSmoke);
 }

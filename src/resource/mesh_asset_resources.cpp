@@ -24,7 +24,7 @@ ResourceLoadResult MeshAssetResource::load(
     ResourceManager& manager, const ResourceLoadContext& context)
 {
     std::cerr << "[MeshAssetResource::load] begin kind=" << static_cast<int>(sourceKind_) << '\n';
-    mesh_ = std::make_unique<assets::MeshAsset>();
+    mesh_ = core::makeUnique<assets::MeshAsset>();
 
     switch (sourceKind_) {
     case MeshSourceKind::GlbFile:
@@ -55,9 +55,10 @@ ResourceLoadResult MeshAssetResource::load(
         result.state = ResourceState::Failed;
         result.resourceId = reference().id;
         result.resourceType = reference().type;
-        result.diagnostics =
-                core::pmr::String("MeshAssetResource load failed: mesh geometry or bounds are invalid",
-                &core::defaultCpuMemoryResource());
+        result.diagnostics = core::pmr::String(gridSamples_.diagnostic()
+                ? gridSamples_.diagnostic()
+                : "MeshAssetResource load failed: mesh geometry or bounds are invalid",
+            &core::defaultCpuMemoryResource());
         return result;
     }
 
@@ -78,10 +79,29 @@ void MeshAssetResource::loadFromGlb()
         return;
     }
 
-    auto result = assets::importStaticMeshFromGlbFile(sourcePath_);
+    sourceIdentities_.clear();
+    sourceIdentityVersion_ = 0;
+    sourceContentDigest_ = {};
+    assets::StaticMeshImportResult result;
+    if (retainSourceIdentity_) {
+        auto identified = assets::importStaticMeshWithSourceIdentityFromGlbFile(sourcePath_);
+        sourceIdentityVersion_ = identified.identityVersion;
+        sourceContentDigest_ = identified.sourceContentDigest;
+        sourceIdentities_ = std::move(identified.identities);
+        result = std::move(identified.geometry);
+        if (!result.success)
+            throw core::DiagnosticError(result.diagnostics);
+    } else {
+        result = assets::importStaticMeshFromGlbFile(sourcePath_);
+    }
     if (result.success && result.mesh.validForIndexedDraw()) {
         if (groupSectionsByMaterial_) {
-            assets::groupMeshSectionsByMaterial(result.mesh);
+            assets::groupMeshSectionsByMaterial(result.mesh, retainSourceRanges_);
+        } else if (retainSourceRanges_) {
+            throw core::DiagnosticError("MESH-SOURCE-RANGES-REQUIRE-MATERIAL-GROUPING");
+        }
+        if (sectionSpatialPartition_.enabled()) {
+            assets::partitionMeshSectionsSpatially(result.mesh, sectionSpatialPartition_);
         }
         *mesh_ = std::move(result.mesh);
         materials_ = std::move(result.materials);
@@ -104,13 +124,10 @@ void MeshAssetResource::generateProceduralGrid()
     const float size = gridSize_;
     const float baseHeight = gridBaseHeight_;
 
-    // When the resource was constructed with a (noise/biome) heightfield, the
-    // rendered grid samples it directly — guaranteeing the mesh matches the
-    // gameplay-sampled elevation (the movement system reads the same
-    // TerrainHeightField instance). Otherwise fall back to the historical
-    // sine formula for the legacy hardcoded path.
-    const bool useHeightField =
-        (proceduralHeightField_.layerCount + proceduralHeightField_.noiseLayerCount) > 0u;
+    // The explicit source is already materialized; no generator survives load.
+    const bool useHeightField = explicitGridSamples_;
+    if (useHeightField && !gridSamples_.valid())
+        return;
 
     const float half = size * 0.5f;
     const float stepX = size / static_cast<float>(gridX);
@@ -124,7 +141,7 @@ void MeshAssetResource::generateProceduralGrid()
             const float px = -half + static_cast<float>(x) * stepX;
             const float pz = -half + static_cast<float>(z) * stepZ;
             const float h = useHeightField
-                ? proceduralHeightField_.sample(px, pz)
+                ? gridSamples_.samples()[z * (gridX + 1u) + x].height
                 : baseHeight + 0.5f * std::sin(px * 0.08f + 0.3f) * std::cos(pz * 0.08f + 0.5f)
                     + 0.3f * std::sin(px * 0.15f + pz * 0.12f + 1.0f);
 
@@ -133,13 +150,15 @@ void MeshAssetResource::generateProceduralGrid()
             vert.position[1] = h;
             vert.position[2] = pz;
 
-            const float dx = 0.1f;
-            const float hx1 = useHeightField ? proceduralHeightField_.sample(px + dx, pz)
-                                             : baseHeight
+            const float dx = terrain::TerrainMeshSamples::legacyNormalSampleSpacing;
+            const float hx1 = useHeightField
+                ? gridSamples_.samples()[z * (gridX + 1u) + x].offsetHeightX
+                : baseHeight
                     + 0.5f * std::sin((px + dx) * 0.08f + 0.3f) * std::cos(pz * 0.08f + 0.5f)
                     + 0.3f * std::sin((px + dx) * 0.15f + pz * 0.12f + 1.0f);
-            const float hz1 = useHeightField ? proceduralHeightField_.sample(px, pz + dx)
-                                             : baseHeight
+            const float hz1 = useHeightField
+                ? gridSamples_.samples()[z * (gridX + 1u) + x].offsetHeightZ
+                : baseHeight
                     + 0.5f * std::sin(px * 0.08f + 0.3f) * std::cos((pz + dx) * 0.08f + 0.5f)
                     + 0.3f * std::sin(px * 0.15f + (pz + dx) * 0.12f + 1.0f);
             float nx = -(hx1 - h) / dx;

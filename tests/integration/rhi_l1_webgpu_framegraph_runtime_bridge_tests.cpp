@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/deployment/webgpu_framegraph_runtime_bridge.h"
 #include "renderer/render_graph/rhi_frame_plan.h"
 

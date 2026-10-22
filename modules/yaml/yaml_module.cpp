@@ -1,7 +1,7 @@
 #include "yaml_module.h"
 
-#include "core/cpu_allocator.h"
-#include "scriptvm/runtime/cpp_plugin_api.h"
+#include "core/memory/cpu_allocator.h"
+#include "scriptvm/plugin/cpp_plugin_api.h"
 #include "scriptvm/runtime/value.h"
 
 #include <cstdint>

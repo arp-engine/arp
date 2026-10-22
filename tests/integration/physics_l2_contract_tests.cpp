@@ -1,12 +1,13 @@
 // Physics L2 semantic-layer contract tests.
 //
-// Validates that the L2 physics contract (src/physics/*.h) is backend-free
+// Validates that the L2 physics contract (src/physics/3d/*.h) is backend-free
 // and self-consistent. These are fast unit tests; no physics world is
 // created. Backend behaviour is covered by physics_jolt_backend_tests.cpp.
 
-#include "physics/physics_module.h"
-#include "physics/physics_types.h"
-#include "physics/physics_world.h"
+#include "3d/terrain/terrain_physics_binding.h"
+#include "physics/3d/physics_module.h"
+#include "physics/3d/physics_types.h"
+#include "physics/3d/physics_world.h"
 
 #include <cassert>
 #include <cstdint>
@@ -14,6 +15,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <type_traits>
 
 namespace {
 
@@ -25,7 +27,7 @@ namespace {
 // the test free of <filesystem> (which pulls an api-set DLL that is not
 // reliably present on all Windows targets). The contract is additionally
 // enforced by the build system: arp_physics' public headers are under
-// src/physics/*.h and never include <Jolt/...> (code review + the shape
+// src/physics/3d/*.h and never include <Jolt/...> (code review + the shape
 // factory is the only file that includes Jolt headers).
 // ---------------------------------------------------------------------------
 #if defined(JPH_NAMESPACE_BEGIN)
@@ -140,6 +142,7 @@ void invalid_handle_is_not_valid()
 void scene_query_defaults_are_explicit()
 {
     using namespace arp::physics;
+    static_assert(PhysicsWorld::maximumStepDeltaSeconds == 1.0f / 15.0f);
     PhysicsQueryFilter filter;
     assert(filter.layerMask == 0x0fu);
     assert(!filter.ignoredBody.valid());
@@ -151,6 +154,25 @@ void scene_query_defaults_are_explicit()
     assert(sweep.radius == 0.4f && sweep.halfHeight == 0.9f);
     CapsuleOverlapQuery overlap;
     assert(overlap.radius == 0.4f && overlap.halfHeight == 0.9f);
+}
+
+void terrain_lifecycle_is_an_explicit_l2_contract()
+{
+    using namespace arp::physics;
+    static_assert(std::is_same_v<decltype(&PhysicsWorld::terrainHeightFieldHandle),
+        PhysicsBodyHandle (PhysicsWorld::*)() const noexcept>);
+    static_assert(std::is_same_v<decltype(&PhysicsWorld::clearTerrainHeightField),
+        bool (PhysicsWorld::*)(PhysicsBodyHandle)>);
+    static_assert(!std::is_copy_constructible_v<TerrainPhysicsBinding>);
+    static_assert(!std::is_move_constructible_v<TerrainPhysicsBinding>);
+    const PhysicsWorldConfig config;
+    assert(config.maxTerrainSampleBytes
+        == std::uint64_t(config.terrainGridResolution) * config.terrainGridResolution
+            * sizeof(float));
+    const TerrainSurfacePhysicsSource missing(nullptr);
+    assert(!missing.valid());
+    TerrainPhysicsBinding::Result result;
+    assert(!result.success && !result.reused && result.diagnostics.empty());
 }
 
 } // namespace
@@ -167,6 +189,7 @@ int main()
     rigid_body_desc_defaults_are_explicit();
     invalid_handle_is_not_valid();
     scene_query_defaults_are_explicit();
+    terrain_lifecycle_is_an_explicit_l2_contract();
 
     std::fprintf(stderr, "physics_l2_contract_tests: all assertions passed\n");
     return 0;

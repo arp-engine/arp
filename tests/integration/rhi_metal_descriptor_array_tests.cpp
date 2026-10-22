@@ -1,4 +1,4 @@
-#include "core/ibl_bake.h"
+#include "core/math/half_float.h"
 #include "renderer/shader_package_reflection.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_device.h"
@@ -552,7 +552,7 @@ int main(int argc, char** argv)
                             bytes.data() + iteration * pitch * height + y * pitch + x * 8u
                                 + channel * 2u,
                             2u);
-                        actual = core::ibl::halfToFloat(bits);
+                        actual = core::halfToFloat(bits);
                     }
                     assert(std::isfinite(actual)
                         && (compute ? actual == expected : std::abs(actual - expected) <= 0.001f));
@@ -565,7 +565,7 @@ int main(int argc, char** argv)
                     std::memcpy(&bits,
                         bytes.data() + 2u * pitch * height + y * pitch + x * 8u + channel * 2u,
                         2u);
-                    assert(core::ibl::halfToFloat(bits) == 0.0f);
+                    assert(core::halfToFloat(bits) == 0.0f);
                 }
     }
     commands.reset();

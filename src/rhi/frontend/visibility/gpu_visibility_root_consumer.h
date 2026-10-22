@@ -1,5 +1,5 @@
 #pragma once
-#include "core/unsigned_element_span.h"
+#include "core/encoding/unsigned_element_span.h"
 #include "rhi/frontend/visibility/gpu_visibility_consumer_alias.h"
 #include "rhi/frontend/visibility/gpu_visibility_root_producer.h"
 

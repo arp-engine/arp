@@ -1,9 +1,10 @@
 #pragma once
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "core/runtime/completion_retention_pool.h"
 #include "rhi/backends/webgpu/webgpu_command_inputs.h"
 #include "rhi/backends/webgpu/webgpu_native_indirect_processor.h"
 #include "rhi/backends/webgpu/webgpu_native_payloads.h"
+#include "rhi/backends/webgpu/webgpu_prototype_batch.h"
 #include "rhi/backends/webgpu/webgpu_query_pool.h"
 #include "rhi/backends/webgpu/webgpu_transfer_retention.h"
 #include "rhi/frontend/bindless_shader_package.h"
@@ -106,6 +107,7 @@ struct WebGpuNativeCommandPayload::Impl {
     bool ordinaryTransfer = false;
     bool ordinaryPrepared = false;
     std::shared_ptr<class WebGpuConformanceClearFrame> conformanceClear;
+    core::UniquePtr<class WebGpuPrototypeBatch> prototypeBatch;
     // Lifetime/identity marker only. Distinct typed wrappers validate their own
     // authentic admission; this owner has no cast or execution interface.
     std::shared_ptr<const void> canonicalColdAdmission;

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "assets/asset_pipeline.h"
-#include "core/index_buffer_encoding.h"
-#include "core/math.h"
+#include "assets/mesh/index_buffer_encoding.h"
+#include "core/math/math.h"
 #include "resource/prefab_asset_resources.h"
 
 namespace arp::renderer {

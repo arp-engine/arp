@@ -1,5 +1,5 @@
 #pragma once
-#include "core/math.h"
+#include "core/math/math.h"
 #include "reflection/reflection_macros.h"
 #include "scene/scene.h"
 
@@ -9,7 +9,7 @@ namespace arp::scene2d {
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
 struct ScreenCanvas2DEditorProperties {
-    APROP(Editor)
+    APROP(Serialize, Editor)
     float pixelsPerUnit = 100.0f;
 };
 
@@ -18,6 +18,7 @@ ACLASS(Ownership = Engine, Lifecycle = Explicit)
 class ScreenCanvas2DComponent final : public scene::Component {
 public:
     const char* scriptTypeName() const override { return "ScreenCanvas2DComponent"; }
+
     arp::reflection::object editorAuthoringProperties() const override
     {
         return arp::reflection::object(ScreenCanvas2DEditorProperties{ppu_});
@@ -27,7 +28,8 @@ public:
     {
         if (!value.is<ScreenCanvas2DEditorProperties>())
             return false;
-        const auto pixelsPerUnit = value.cast<const ScreenCanvas2DEditorProperties&>().pixelsPerUnit;
+        const auto pixelsPerUnit =
+            value.cast<const ScreenCanvas2DEditorProperties&>().pixelsPerUnit;
         if (!std::isfinite(pixelsPerUnit) || pixelsPerUnit <= 0.0f)
             return false;
         ppu_ = pixelsPerUnit;

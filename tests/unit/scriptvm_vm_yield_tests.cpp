@@ -11,7 +11,7 @@
 //
 // Test style: hand-authored bytecode + self-contained main().
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
 #include "scriptvm/interpreter/bytecode.h"
 #include "scriptvm/interpreter/eval.h"

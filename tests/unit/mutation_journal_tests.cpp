@@ -1,8 +1,8 @@
 #include "../fixtures/shared_identity_projection_fixture.h"
 #include "../fixtures/versioned_mutation_array_fixture.h"
 #include "../fixtures/versioned_mutation_value_fixture.h"
-#include "core/cpu_allocator.h"
-#include "core/mutation_journal.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/mutation_journal.h"
 
 #include <array>
 #include <cassert>

@@ -3,4 +3,5 @@
 
 #include "3d/collider_component.h"
 #include "3d/components.h"
+#include "3d/fog_components.h"
 #include "scene/camera.h"

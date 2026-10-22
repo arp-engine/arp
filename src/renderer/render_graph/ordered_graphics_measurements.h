@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/performance_telemetry.h"
+#include "core/diagnostics/cpu_work_measurement.h"
 
 namespace arp::render_graph {
 

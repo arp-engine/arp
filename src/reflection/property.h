@@ -8,7 +8,7 @@
 // properties (indirectValueTraits).
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/def.h"
 #include "reflection/function.h"
 #include "reflection/object.h"
@@ -31,6 +31,14 @@ constexpr PropertyHint operator|(PropertyHint lhs, PropertyHint rhs) noexcept
     return static_cast<PropertyHint>(
         static_cast<std::uint8_t>(lhs) | static_cast<std::uint8_t>(rhs));
 }
+
+enum class ReferenceKind { None, SceneObject, Resource };
+
+struct ReferenceMetadata {
+    ReferenceKind kind = ReferenceKind::None;
+    core::pmr::String targetType{&core::defaultCpuMemoryResource()};
+    bool required = true;
+};
 
 class ARP_API property final {
 public:
@@ -75,6 +83,15 @@ public:
     const core::pmr::String& name() const;
     const core::pmr::String& doc() const;
 
+    const ReferenceMetadata& reference() const { return reference_; }
+
+    void setReference(ReferenceKind kind, NameView targetType, bool required = true)
+    {
+        reference_.kind = kind;
+        reference_.targetType.assign(targetType);
+        reference_.required = required;
+    }
+
 private:
     const typeinfo* type_ = nullptr;
     std::uint8_t hints_ = 0;
@@ -89,6 +106,7 @@ private:
     const class_info* indirectClass_ = nullptr;
     bool indirectAllowDerived_ = false;
     bool indirectResultOwned_ = false;
+    ReferenceMetadata reference_;
 };
 
 } // namespace arp::reflection

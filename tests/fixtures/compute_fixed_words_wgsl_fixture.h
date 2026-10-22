@@ -1,5 +1,5 @@
 #pragma once
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "shader/compute_fixed_words_wgsl_proof.h"
 
 #include <cassert>

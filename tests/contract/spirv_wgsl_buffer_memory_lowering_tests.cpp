@@ -1,7 +1,7 @@
 #include "../fixtures/spirv_msl_buffer_memory_lowering_fixture.h"
 #include "../fixtures/spirv_wgsl_buffer_memory_lowering_fixture.h"
 #include "../fixtures/webgpu_raw_physical_metadata_fixture.h"
-#include "core/ascii_token_cursor.h"
+#include "core/text/ascii_token_cursor.h"
 #ifdef NDEBUG
 #error Buffer lowering contract tests require assertions
 #endif

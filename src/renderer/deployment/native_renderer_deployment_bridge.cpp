@@ -1,7 +1,7 @@
 #include "renderer/deployment/native_renderer_deployment_bridge.h"
 
-#include "core/cpu_allocator.h"
-#include "core/diagnostic_builder.h"
+#include "core/diagnostics/diagnostic_builder.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/deployment/renderer_deployment_evidence_admission.h"
 
 #include <utility>

@@ -12,7 +12,7 @@
 #include "animation/skeleton.h"
 #include "assets/imported_asset_types.h"
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <vector>
 

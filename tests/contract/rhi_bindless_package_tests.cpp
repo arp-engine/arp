@@ -11,8 +11,8 @@
 #include "../fixtures/original_ordinary_opaque_binding_fixture.h"
 #include "../fixtures/original_undefined_texture_upload_plan_fixture.h"
 #include "../fixtures/zero_base_indirect_source_fixture.h"
-#include "core/file_io.h"
-#include "core/sha256.h"
+#include "core/hash/sha256.h"
+#include "core/io/file_io.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_binding_validation.h"
 #include "rhi/backends/metal/metal_device.h"
@@ -3713,6 +3713,23 @@ int main(int argc, char** argv)
         return 1;
     }
     assert(diagnostic.empty());
+    if (option == "graphics-profile-present" || option == "graphics-profile-absent") {
+        using namespace arp::rhi;
+        const BindlessPackageModule *vertex = nullptr, *fragment = nullptr;
+        for (const auto& module : package->modules()) {
+            const auto stage = module.reflection.reflection.entryPoints[0].stage;
+            if (stage == arp::shader::ShaderStage::Vertex)
+                vertex = &module;
+            if (stage == arp::shader::ShaderStage::Fragment)
+                fragment = &module;
+        }
+        assert(vertex && fragment);
+        const auto selected =
+            selectBindlessInitializedGraphics(*package, vertex->entry, fragment->entry);
+        assert(
+            !selected.diagnostic && selected.recognized == (option == "graphics-profile-present"));
+        return 0;
+    }
     if (option == "gpu-visibility-root-composition") {
         arp::test::validateOriginalBindlessVisibilityRoots(package);
         return 0;
@@ -3891,7 +3908,22 @@ int main(int argc, char** argv)
             assert(composed.success && view.reflection.pushConstantByteCount == 16u
                 && layout.pushConstantRanges.size() == 1u
                 && layout.pushConstantRanges.front().stages == ShaderStage::Vertex);
-            assert(view.reflection.descriptorBindings.size() >= 6u);
+            // The closed consumer reads four ordinary Vertex buffers; its
+            // Fragment returns the interpolated color and consumes no table,
+            // metadata or fault resource. Require the actual active interface.
+            assert(view.reflection.descriptorBindings.size() == 4u);
+            for (std::uint32_t binding = 0u; binding < 4u; ++binding) {
+                const auto found = std::find_if(view.reflection.descriptorBindings.begin(),
+                    view.reflection.descriptorBindings.end(),
+                    [&](const auto& value) {
+                        return value.set == 2u && value.binding == binding;
+                    });
+                assert(found != view.reflection.descriptorBindings.end()
+                    && found->stages == ShaderStage::Vertex && found->arrayCount == 1u
+                    && found->type
+                        == (binding == 3u ? DescriptorType::UniformBuffer
+                                          : DescriptorType::ReadOnlyStorageBuffer));
+            }
         }
         std::puts(consumer
                 ? "BINDLESS_GPU_VISIBILITY_CONSUMER_PACKAGE_OK closed-source six-real-entries Push16 Instance64 Mapping16 no-native-execution-grant"

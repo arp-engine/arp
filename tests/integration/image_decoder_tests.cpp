@@ -1,6 +1,6 @@
 #include "assets/glb_animated_mesh_importer.h"
 #include "assets/image_decoder.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cassert>
 #include <filesystem>

@@ -1,5 +1,5 @@
 #pragma once
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/metal/metal_binding_facts.h"
 #include "rhi/backends/metal/metal_native_resources.h"
 #include "rhi/backends/metal/metal_resource_ownership.h"

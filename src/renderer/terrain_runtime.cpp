@@ -43,6 +43,7 @@ bool TerrainRuntime::initialize(const Desc& desc, ChunkMeshProvider provider)
     streamerDesc.chunkSize = desc.chunkSize;
     streamerDesc.samplesPerChunk = desc.samplesPerChunk;
     streamerDesc.activeRadius = desc.activeRadius;
+    streamerDesc.distanceLodWhenFullyResident = desc.distanceLodWhenFullyResident;
     streamerDesc.fogDistance = desc.fogDistance;
     streamerDesc.baseHeight = desc.baseHeight;
     streamerDesc.heightSampler = [this](float worldX, float worldZ) {

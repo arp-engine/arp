@@ -1,11 +1,11 @@
 #pragma once
+#include "rhi/frontend/bindless_initialized_graphics.h"
 #include "rhi/frontend/bindless_mixed_entry_flow.h"
 #include "rhi/frontend/bindless_produced_geometry.h"
 #include "rhi/frontend/bindless_root_callback.h"
 #include "rhi/frontend/bindless_root_initialized_shader.h"
 #include "rhi/frontend/bindless_root_readback_sequence.h"
 #include "rhi/frontend/bindless_root_sequence.h"
-#include "rhi/frontend/bindless_scene_content.h"
 #include "rhi/frontend/command_geometry_content.h"
 
 namespace arp::rhi {
@@ -28,7 +28,7 @@ struct OriginalBindlessRootExecutionInputs {
     OriginalBindlessRootReadbackSequence::Input readbacks;
     OriginalBindlessRootSequenceContract::Input roots;
     OriginalBindlessProducedGeometryInputs producedGeometry;
-    OriginalBindlessSceneContentInputs scene;
+    OriginalBindlessInitializedGraphicsInputs initializedGraphics;
 };
 
 struct OriginalBindlessRootExecutionBudget {

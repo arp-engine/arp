@@ -1,6 +1,6 @@
 #include "rhi/backends/metal/metal_ordinary_graphics_write_execution.h"
 
-#include "core/unsigned_element_span.h"
+#include "core/encoding/unsigned_element_span.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_device.h"
 

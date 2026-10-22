@@ -1,5 +1,5 @@
-#include "core/completion_page_slice_allocator.h"
-#include "core/page_slice_allocator.h"
+#include "rhi/frontend/completion_page_slice_allocator.h"
+#include "rhi/frontend/page_slice_allocator.h"
 
 #include <atomic>
 #include <cassert>

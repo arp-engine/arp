@@ -1,8 +1,8 @@
 #include "scene_renderer.h"
 
 #include "assets/glb_static_mesh_importer.h"
-#include "core/math.h"
-#include "core/yaml_contract.h"
+#include "core/encoding/yaml_contract.h"
+#include "core/math/math.h"
 #include "hud_renderer.h"
 #include "renderer/mesh/gpu_skinning_contract.h"
 #include "renderer/renderer_common.h"

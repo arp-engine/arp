@@ -1,5 +1,5 @@
-#include "core/cpu_allocator.h"
-#include "core/versioned_shared_owner.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/versioned_shared_owner.h"
 
 #include <cassert>
 

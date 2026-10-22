@@ -1,7 +1,7 @@
 #include "rhi/backends/metal/metal_bindless_root.h"
 
-#include "core/row_major_index_grid.h"
-#include "core/shared_identity_projection.h"
+#include "core/algorithm/row_major_index_grid.h"
+#include "core/ownership/shared_identity_projection.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_binding_validation.h"
 #include "rhi/backends/metal/metal_native_pipelines.h"

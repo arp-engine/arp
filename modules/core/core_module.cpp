@@ -1,5 +1,5 @@
-#include "core/math.h"
-#include "scriptvm/runtime/cpp_plugin_api.h"
+#include "core/math/math.h"
+#include "scriptvm/plugin/cpp_plugin_api.h"
 
 namespace arp::reflection::generated {
 bool register_arp_core_reflection(arp::scriptvm::ModuleRegistration*);

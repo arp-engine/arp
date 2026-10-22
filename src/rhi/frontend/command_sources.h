@@ -1,10 +1,10 @@
 #pragma once
 
-#include "core/atomic_capacity.h"
-#include "core/bounded_sequence.h"
-#include "core/row_major_index_grid.h"
-#include "core/shared_identity_projection.h"
-#include "core/unsigned_range.h"
+#include "core/algorithm/row_major_index_grid.h"
+#include "core/container/bounded_sequence.h"
+#include "core/math/unsigned_range.h"
+#include "core/memory/atomic_capacity.h"
+#include "core/ownership/shared_identity_projection.h"
 #include "rhi/frontend/bindless_compute_binding.h"
 #include "rhi/frontend/bindless_graphics_binding.h"
 #include "rhi/frontend/bindless_ordinary_opaque_binding.h"
@@ -2150,7 +2150,7 @@ public:
     // the complete source closure. Inactive bound resources still obey native
     // usage-scope rules. No state/content/command authority is created here.
     // /2 adds the pinned visibility consumer's Graphics and ordinary aliases.
-    // /3 covers its Compute entries; /4 covers authenticated SceneContent/1
+    // /3 covers its Compute entries; /4 covers authenticated InitializedGraphics/2
     // Graphics pairs using the same explicit target-inactivity evidence.
     std::uint32_t originalShaderEntryAccessVersion() const noexcept;
     const char* readOriginalShaderDeclaration(std::size_t,

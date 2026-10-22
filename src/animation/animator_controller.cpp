@@ -1,6 +1,6 @@
 #include "animation/animator_controller.h"
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
 #include <cmath>

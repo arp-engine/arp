@@ -320,6 +320,7 @@ const char* WebGpuNativeCommandPreparation::prepareBindlessRootProgram(
         limits.minUniformBufferOffsetAlignment};
     const auto& prepared =
         original.admission_->originalClosure()->originalRoot()->originalPrepared();
+    const char* captureDiagnostic = "RHI-WEBGPU-ROOT-PROGRAM-PREPARED";
     const auto captured = std::visit(
         [&](const auto& binding) {
             const auto pipeline = webGpuNativePayloadFor(*binding->owners()->desc().pipeline);
@@ -334,8 +335,10 @@ const char* WebGpuNativeCommandPreparation::prepareBindlessRootProgram(
                 if (!original.request_.program.pushUpload.empty()) {
                     if (!pipeline->usesPushConstantGroup
                         || pipeline->pushConstantGroup == UINT32_MAX
-                        || pipeline->pushConstantBinding == UINT32_MAX)
+                        || pipeline->pushConstantBinding == UINT32_MAX) {
+                        captureDiagnostic = "RHI-WEBGPU-ROOT-PROGRAM-PUSH-INTERFACE";
                         return false;
+                    }
                     program.pushGroupIndex_ = pipeline->pushConstantGroup;
                     program.pushBinding_ = pipeline->pushConstantBinding;
                     program.pushBindingBytes_ = binding->owners()
@@ -356,7 +359,7 @@ const char* WebGpuNativeCommandPreparation::prepareBindlessRootProgram(
         },
         prepared);
     if (!captured)
-        return "RHI-WEBGPU-ROOT-PROGRAM-PREPARED";
+        return captureDiagnostic;
     return inspectBindlessRootProgram(original, &program);
 #endif
 }
@@ -571,6 +574,7 @@ const char* WebGpuNativeCommandPreparation::inspectBindlessRootProgram(
                 *closure.root_, *nextClosure->originalRoot()))
             return id;
     }
+    const char* preparedDiagnostic = "RHI-WEBGPU-ROOT-PROGRAM-PREPARED";
     const bool preparedMatches = std::visit(
         [&](const auto& binding) {
             constexpr bool compute =
@@ -595,13 +599,22 @@ const char* WebGpuNativeCommandPreparation::inspectBindlessRootProgram(
                 const auto& compatibility = pipeline->issuedContract()->graphics();
                 if (scene) {
                     const auto& object = *binding->owners()->desc().pipeline;
-                    const auto* definition = object.originalRenderPipelineDefinition();
-                    return geometry && frozen.renderPipeline_
-                        && frozen.renderPipeline_ == pipeline->pipeline && !frozen.pipeline_
-                        && compatibility.matches(*pipeline) && definition
-                        && !object.originalFullDefinitionDiagnostic()
-                        && !semantics::BindlessSceneRasterContract::inspect(
-                            Backend::WebGPU, *definition);
+                    const auto* definition = webGpuRhiBindlessGraphicsPipelineState(object);
+                    if (!geometry || !frozen.renderPipeline_
+                        || frozen.renderPipeline_ != pipeline->pipeline || frozen.pipeline_) {
+                        preparedDiagnostic = "RHI-WEBGPU-ROOT-PROGRAM-SCENE-PIPELINE";
+                        return false;
+                    }
+                    if (!compatibility.matches(*pipeline) || !definition) {
+                        preparedDiagnostic = "RHI-WEBGPU-ROOT-PROGRAM-SCENE-DEFINITION";
+                        return false;
+                    }
+                    if (const auto* id = semantics::BindlessSceneRasterContract::inspect(
+                            Backend::WebGPU, *definition)) {
+                        preparedDiagnostic = id;
+                        return false;
+                    }
+                    return true;
                 }
                 return frozen.renderPipeline_ && frozen.renderPipeline_ == pipeline->pipeline
                     && !frozen.pipeline_ && compatibility.matches(*pipeline)
@@ -615,7 +628,7 @@ const char* WebGpuNativeCommandPreparation::inspectBindlessRootProgram(
         },
         closure.root_->originalPrepared());
     if (!preparedMatches)
-        return "RHI-WEBGPU-ROOT-PROGRAM-PREPARED";
+        return preparedDiagnostic;
     // One bounded traversal supplies both freezing and allocation-free revalidation.
     // The original graph already checks source provenance, all ranges and state
     // transitions. This consumer admits only native copy/compute usage scopes.
@@ -742,6 +755,14 @@ const char* WebGpuNativeCommandPreparation::inspectBindlessRootProgram(
             if (!visit())
                 return "RHI-ORIGINAL-ROOT-PROGRAM-VISIT-CAPACITY";
         switch (op.kind) {
+        case K::RetainIndexedSnapshot:
+            if (!geometry || produced || op.referenceCount != 1u
+                || usage.references()[op.firstReference].sourceIndex != binding->rootSourceIndex())
+                return "RHI-WEBGPU-ROOT-SNAPSHOT-CORRESPONDENCE";
+            // The authentic admission strongly owns this Root and its snapshot.
+            // This command adds lifetime intent, not a native resource binding.
+            record.closure = &closure;
+            break;
         case K::BufferBarrier: {
             if (op.referenceCount != 1u)
                 return "RHI-WEBGPU-ROOT-PROGRAM-BARRIER";
@@ -999,12 +1020,14 @@ const char* WebGpuNativeCommandPreparation::inspectBindlessRootProgram(
                     return "RHI-WEBGPU-ROOT-PROGRAM-PASS-ROOT";
                 const auto& pipeline = (*prepared)->owners()->desc().pipeline;
                 const auto native = webGpuNativePayloadFor(*pipeline);
-                const auto* definition = pipeline->originalRenderPipelineDefinition();
+                const auto* definition = scene ? webGpuRhiBindlessGraphicsPipelineState(*pipeline)
+                                               : pipeline->originalRenderPipelineDefinition();
                 if (!native || !native->issuedContract() || !definition
                     || !native->issuedContract()->graphics().matches(*native))
                     return "RHI-WEBGPU-ROOT-PROGRAM-PASS-PIPELINE";
-                if (const auto* id = pipeline->originalFullDefinitionDiagnostic())
-                    return id;
+                if (!scene)
+                    if (const auto* id = pipeline->originalFullDefinitionDiagnostic())
+                        return id;
                 if (scene) {
                     if (const auto* id = semantics::BindlessSceneRasterContract::inspect(
                             Backend::WebGPU, *definition))
@@ -8459,6 +8482,7 @@ void WebGpuOrdinaryRecording::emitRoot(void* userdata) noexcept
             break;
         case K::TextureBarrier:
         case K::BufferBarrier:
+        case K::RetainIndexedSnapshot:
         case K::BeginTransferPass:
         case K::EndTransferPass:
             // Frozen RootState/4 barriers are outside passes. Encoder command

@@ -18,7 +18,7 @@ import sys
 
 
 class PropertyModel:
-    __slots__ = ('name', 'cpp_type', 'access', 'flags', 'doc')
+    __slots__ = ('name', 'cpp_type', 'access', 'flags', 'doc', 'reference_target')
 
     def __init__(self):
         self.name = ''
@@ -26,6 +26,7 @@ class PropertyModel:
         self.access = 'public'
         self.flags = []
         self.doc = ''
+        self.reference_target = ''
 
 
 class MethodModel:
@@ -277,6 +278,7 @@ def parse_headers(header_paths):
                             prop.access = current_access
                             prop.flags = props_flags
                             prop.doc = parse_marker_string(s, 'Doc')
+                            prop.reference_target = parse_marker_string(s, 'ReferenceTarget')
                             cls.properties.append(prop)
                             i += 1
                             continue
@@ -387,7 +389,8 @@ def write_json(out_path, module, headers):
                 'defaultConstruct': c.default_construct,
                 'properties': [
                     {'name': p.name, 'cppType': p.cpp_type, 'access': p.access,
-                     **({'doc': p.doc} if p.doc else {}), 'flags': p.flags}
+                     **({'doc': p.doc} if p.doc else {}),
+                     **({'referenceTarget': p.reference_target} if p.reference_target else {}), 'flags': p.flags}
                     for p in c.properties
                 ],
                 'methods': [
@@ -461,6 +464,12 @@ def write_cpp(out_path, module, headers):
                 lines.append(
                     f'        cls.property("{_json_escape(p.name)}", &{c.cpp_name}::{p.name}, "{_json_escape(p.doc)}", '
                     f'{_property_hint_expression(p.flags)});')
+                reference_kind = 'SceneObject' if 'SceneObjectReference' in p.flags else 'Resource' if 'ResourceReference' in p.flags else None
+                if reference_kind:
+                    if not p.reference_target:
+                        raise ValueError(f'reference requires ReferenceTarget: {c.cpp_name}::{p.name}')
+                    required = 'false' if 'OptionalReference' in p.flags else 'true'
+                    lines.append(f'        cls.reference("{_json_escape(p.name)}", ReferenceKind::{reference_kind}, "{_json_escape(p.reference_target)}", {required});')
             for m in c.methods:
                 if m.access != 'public':
                     print(f'ERROR: non-public AFUNC not supported: {c.cpp_name}::{m.name}', file=sys.stderr)

@@ -1,6 +1,7 @@
 #pragma once
 #include "2d/scene_component_factory.h"
 #include "scene/script_component_module.h"
+#include "scriptvm/plugin/plugin_runtime_scope.h"
 
 bool arp_add_arp_scene_static_plugin(arp::scriptvm::StaticPluginCatalog&);
 bool arp_add_arp_scene2d_static_plugin(arp::scriptvm::StaticPluginCatalog&);

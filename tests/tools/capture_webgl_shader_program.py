@@ -22,10 +22,10 @@ try:
     if server.get('conformanceSampledOnly'): query += '&conformanceSampledOnly=1&conformanceSampledVersion=' + str(server.get('conformanceSampledVersion',1))
     if server.get('conformanceStorageOnly'): query += '&conformanceStorageOnly=1'
     entry=server.get('entry','index.html')
-    if entry not in ('index.html','pipeline.html','webgpu_shared_conformance_runner.html'):
+    if entry not in ('index.html','pipeline.html','webgpu_shared_conformance_runner.html','arp_volumetric_fog.html'):
         raise RuntimeError('BROWSER-CAPTURE-ENTRY')
     command='--no-sandbox --disable-gpu-sandbox --in-process-gpu --no-first-run --no-default-browser-check --disable-background-networking --disable-renderer-backgrounding --disable-background-timer-throttling --disable-backgrounding-occluded-windows --window-size=256,256 --user-data-dir="{}" --app="http://127.0.0.1:{}/{}?frames=12&captureGate=1{}"'.format(server['profile'],server['port'],entry,query)
-    if entry=='webgpu_shared_conformance_runner.html':
+    if entry in ('webgpu_shared_conformance_runner.html','arp_volumetric_fog.html'):
         command+=' --enable-dawn-features=enable_renderdoc_process_injection'
     launch=rd.ExecuteAndInject(server['browser'],server['root'],command,[],os.path.join(output,'program'),options,False)
     events.append({'launch':str(launch.result),'ident':launch.ident})

@@ -1,5 +1,5 @@
-#include "core/cpu_allocator.h"
-#include "core/file_io.h"
+#include "core/io/file_io.h"
+#include "core/memory/cpu_allocator.h"
 #include "resource/internal_asset_package.h"
 #include "resource/prefab_asset_resources.h"
 #include "scriptvm/runtime/value.h"

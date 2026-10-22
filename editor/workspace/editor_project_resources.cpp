@@ -1,7 +1,7 @@
 #include "editor/workspace/editor_project_resources.h"
 
-#include "core/filesystem_path.h"
 #include "2d/sprite_resources.h"
+#include "core/io/filesystem_path.h"
 #include "resource/internal_asset_package.h"
 #include "resource/prefab_asset_resources.h"
 
@@ -19,8 +19,8 @@ namespace arp::editor {
 namespace {
 using YamlNode = fkyaml::node;
 constexpr const char* kProjectManifestName = "project.arp.yaml";
-constexpr std::size_t kMaxManifestBytes = 1024u * 1024u;
-constexpr std::size_t kMaxAssetPackages = 256u;
+constexpr std::size_t kMaxManifestBytes = EditorProjectResources::maxManifestBytes;
+constexpr std::size_t kMaxAssetPackages = EditorProjectResources::maxAssetPackages;
 
 EditorProjectResourceLoadResult failure(EditorProjectResourceLoadResult result, const char* message)
 {
@@ -94,8 +94,8 @@ bool readUnsigned32(const YamlNode* value, std::uint32_t& output)
     if (!value || !value->is_integer())
         return false;
     const auto integer = value->get_value<YamlNode::integer_type>();
-    if (integer <= 0 || static_cast<std::uint64_t>(integer)
-            > std::numeric_limits<std::uint32_t>::max())
+    if (integer <= 0
+        || static_cast<std::uint64_t>(integer) > std::numeric_limits<std::uint32_t>::max())
         return false;
     output = static_cast<std::uint32_t>(integer);
     return true;
@@ -243,6 +243,7 @@ EditorProjectResourceLoadResult EditorProjectResources::load(
         manager_ = std::move(emptyManager);
         physicsWorld2D_.reset();
         packageRoots_.clear();
+        manifestSnapshot_.clear();
         result.success = true;
         result.diagnostics =
             "EDITOR-PROJECT-MANIFEST-MISSING: opened with an empty project resource set";
@@ -271,10 +272,26 @@ EditorProjectResourceLoadResult EditorProjectResources::load(
         lastLoad_ = result;
         return result;
     }
+    return loadManifest(root, yaml);
+}
+
+EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
+    const std::filesystem::path& projectRoot, std::string_view yaml)
+{
+    scene2d::registerSpriteFontResourceType();
+    EditorProjectResourceLoadResult result;
+    result.manifestFound = true;
+    std::error_code error;
+    const auto root = std::filesystem::canonical(projectRoot, error);
+    if (error || !std::filesystem::is_directory(root, error) || error
+        || yaml.size() > kMaxManifestBytes) {
+        result.diagnostics = "EDITOR-PROJECT-CANDIDATE-ROOT-OR-SIZE";
+        lastLoad_ = result;
+        return result;
+    }
     core::pmr::Vector<core::pmr::String> packagePaths{&core::defaultCpuMemoryResource()};
     std::optional<physics2d::WorldConfig> physicsConfig;
-    if (!parsePackagePaths(
-            std::string_view(yaml.data(), yaml.size()),
+    if (!parsePackagePaths(std::string_view(yaml.data(), yaml.size()),
             packagePaths,
             physicsConfig,
             result.diagnostics)) {
@@ -293,8 +310,7 @@ EditorProjectResourceLoadResult EditorProjectResources::load(
             return result;
         }
     }
-    core::pmr::Vector<PackageResourceRoot> candidatePackageRoots{
-        &core::defaultCpuMemoryResource()};
+    core::pmr::Vector<PackageResourceRoot> candidatePackageRoots{&core::defaultCpuMemoryResource()};
     for (const auto& relative : packagePaths) {
         std::filesystem::path packagePath;
         if (!resolveContainedPath(
@@ -337,14 +353,25 @@ EditorProjectResourceLoadResult EditorProjectResources::load(
     manager_ = std::move(candidate);
     physicsWorld2D_ = std::move(candidatePhysicsWorld);
     packageRoots_ = std::move(candidatePackageRoots);
+    manifestSnapshot_.assign(yaml.data(), yaml.size());
     lastLoad_ = result;
     return result;
+}
+
+void EditorProjectResources::publishAssetPackages(EditorProjectResources&& candidate)
+{
+    manager_ = std::move(candidate.manager_);
+    packageRoots_ = std::move(candidate.packageRoots_);
+    lastLoad_ = std::move(candidate.lastLoad_);
+    manifestSnapshot_ = std::move(candidate.manifestSnapshot_);
+    lastLoad_.physicsWorld2DReady = bool(physicsWorld2D_);
 }
 
 bool EditorProjectResources::packageRootForResource(
     resource::NameView resourceId, std::filesystem::path& packageRoot) const
 {
-    const auto found = std::find_if(packageRoots_.begin(), packageRoots_.end(),
+    const auto found = std::find_if(packageRoots_.begin(),
+        packageRoots_.end(),
         [resourceId](const PackageResourceRoot& mapping) {
             return std::string_view(mapping.resourceId.data(), mapping.resourceId.size())
                 == resourceId;

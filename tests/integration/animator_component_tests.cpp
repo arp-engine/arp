@@ -1,5 +1,5 @@
 #include "3d/animator_component.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "games/pika/app/character_runtime_asset.h"
 
 #include <algorithm>

@@ -2,10 +2,11 @@
 #include "2d/scene_component_factory.h"
 #include "2d/scene_sprite_extractor.h"
 #include "content.h"
-#include "core/runtime/game_clock.h"
-#include "core/seeded_random.h"
+#include "core/math/seeded_random.h"
 #include "records.h"
 #include "scene/script_component_module.h"
+#include "scene/time/game_clock.h"
+#include "scriptvm/plugin/plugin_runtime_scope.h"
 
 namespace arp::survivors {
 enum class RunState { Menu, Fighting, Upgrade, Paused, Victory, Defeat };

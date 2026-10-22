@@ -225,7 +225,7 @@ public:
                     std::fprintf(stderr, "mixed snapshot9 allocation: %s\n", allocationDiagnostic);
                 assert(resident && !allocationDiagnostic && resident >= artifact.snapshotBytes);
                 assert(!extension->queryOriginalMixedSnapshotAllocation(
-                           artifact, 2u, allocationDiagnostic)
+                           artifact, 3u, allocationDiagnostic)
                     && allocationDiagnostic);
                 // The retained package remains immutable; only the cold allocation
                 // envelope is projected from actual backend allocation requirements.
@@ -446,10 +446,38 @@ public:
         }
         probe.calls = 0u;
         probe.failure = 0u;
-        assert(!probe.queryOriginalMixedSnapshotAllocation(artifact, 2u, queryDiagnostic)
+        assert(!probe.queryOriginalMixedSnapshotAllocation(artifact, 3u, queryDiagnostic)
             && queryDiagnostic && !probe.calls);
+        for (const auto stages : {ShaderStage::Vertex,
+                 ShaderStage::Fragment,
+                 ShaderStage::Vertex | ShaderStage::Fragment}) {
+            auto graphics = artifact;
+            graphics.snapshotMetadata.stages = graphics.faultLatch.stages = stages;
+            assert(!probe.queryOriginalMixedSnapshotAllocation(graphics, 1u, queryDiagnostic)
+                && queryDiagnostic && !probe.calls);
+            assert(probe.queryOriginalMixedSnapshotAllocation(graphics, 2u, queryDiagnostic)
+                    == artifact.snapshotBytes
+                && !queryDiagnostic && probe.calls == 3u);
+            probe.calls = 0u;
+            graphics.faultLatch.stages = ShaderStage::Compute;
+            assert(!probe.queryOriginalMixedSnapshotAllocation(graphics, 2u, queryDiagnostic)
+                && queryDiagnostic && !probe.calls);
+        }
+        for (const auto stages : {ShaderStage::None, ShaderStage::Compute | ShaderStage::Vertex}) {
+            auto invalid = artifact;
+            invalid.snapshotMetadata.stages = invalid.faultLatch.stages = stages;
+            assert(!probe.queryOriginalMixedSnapshotAllocation(invalid, 2u, queryDiagnostic)
+                && queryDiagnostic && !probe.calls);
+        }
         probe.caps.originalMixedImageSnapshotPreparationContractVersion = 0u;
         assert(!probe.queryOriginalMixedSnapshotAllocation(artifact, 1u, queryDiagnostic)
+            && queryDiagnostic && !probe.calls);
+        assert(probe.queryOriginalMixedSnapshotAllocation(artifact, 2u, queryDiagnostic)
+                == artifact.snapshotBytes
+            && !queryDiagnostic && probe.calls == 3u);
+        probe.calls = 0u;
+        probe.caps.limitsQueried = false;
+        assert(!probe.queryOriginalMixedSnapshotAllocation(artifact, 2u, queryDiagnostic)
             && queryDiagnostic && !probe.calls);
         auto request = BindlessPackageRequestFixture::make(artifact, caps.deviceIdentity);
         request.originalPreparation = {9u, true};

@@ -1,5 +1,5 @@
 #pragma once
-#include "core/unsigned_element_span.h"
+#include "core/encoding/unsigned_element_span.h"
 #include "rhi/frontend/command_indirect_commands.h"
 
 #include <array>

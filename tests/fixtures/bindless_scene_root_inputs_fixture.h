@@ -1,16 +1,18 @@
 #pragma once
+#include "bindless_scene_conformance_contract.h"
 #include "bindless_scene_geometry_data_fixture.h"
 #include "original_bindless_graphics_stream_fixture.h"
-#include "rhi/frontend/bindless_scene_content.h"
 
 namespace arp::test {
+using namespace renderer;
+
 // Actual immutable package/pipeline/Root ownership on Null. This checks public
 // scene-input selection, CPU readback correspondence and retirement; buffers
 // contain no native content proof. No native geometry is recorded or submitted.
 class BindlessSceneRootInputsFixture final {
     struct Data : BindlessSceneGeometryDataFixture {
         static constexpr bool sceneStream = true;
-        rhi::BindlessPbrGeometryDraw16 draw;
+        renderer::BindlessPbrGeometryDraw16 draw;
         std::uint32_t pass = 0u;
         std::shared_ptr<std::size_t> preparedCount = core::makeShared<std::size_t>(0u);
         std::shared_ptr<std::size_t> readbackCount = core::makeShared<std::size_t>(0u);
@@ -191,8 +193,8 @@ class BindlessSceneRootInputsFixture final {
 public:
     static void verify(const std::shared_ptr<const rhi::BindlessShaderPackage>& package)
     {
-        using Contract = rhi::OriginalBindlessSceneContentContract;
-        using Input = rhi::OriginalBindlessSceneContentInputs;
+        using Contract = arp::test::BindlessSceneConformanceContract;
+        using Input = arp::test::BindlessSceneConformanceInputs;
         std::size_t checked = 0u;
         for (const auto& vertex : package->modules()) {
             if (vertex.push.stages != rhi::ShaderStage::Vertex)
@@ -267,11 +269,18 @@ public:
                                0u, rhi::ShaderStage::Vertex, access, declaration, active, 5u)
                         && !active && declaration == SIZE_MAX);
                 }
+                rhi::OriginalBindlessInitializedGraphicsInputs generic{2u, true, 4096u, 4096u};
+                using Generic = rhi::OriginalBindlessInitializedGraphicsContract;
+                assert(!Generic::validateRootInput(root, generic));
+                assert(Generic::validateRootInput(root, {}));
+                generic.contractVersion = 1u;
+                assert(Generic::validateRootInput(root, generic));
                 Input input{1u, true, selection.family, 4096u, 4096u, 4096u};
                 assert(!Contract::validateRootInput(root, input));
                 const auto* absent = Contract::validateRootInput(root, {});
                 assert(absent
-                    && core::StringView(absent) == "RHI-BINDLESS-SCENE-CONTENT-INPUTS-REQUIRED");
+                    && core::StringView(absent)
+                        == "RHI-BINDLESS-INITIALIZED-GRAPHICS-INPUTS-REQUIRED");
                 input.family = static_cast<Input::Family>(
                     (static_cast<std::uint32_t>(selection.family) + 1u) % 5u);
                 assert(Contract::validateRootInput(root, input));

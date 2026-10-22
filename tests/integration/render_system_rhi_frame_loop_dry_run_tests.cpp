@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "platform/render_system_rhi_dry_run.h"
 #include "platform/render_system_rhi_startup_readiness.h"
 #include "renderer/rhi_draw_plan_bridge.h"

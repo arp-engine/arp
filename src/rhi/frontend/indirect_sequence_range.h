@@ -1,5 +1,5 @@
 #pragma once
-#include "core/strided_index_range.h"
+#include "core/algorithm/strided_index_range.h"
 #include "rhi/frontend/command_indirect_commands.h"
 #include "rhi/gpu_resource_types.h"
 

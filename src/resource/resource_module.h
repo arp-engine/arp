@@ -3,7 +3,7 @@
 #include "core/runtime/async_runtime.h"
 #include "reflection/reflection_macros.h"
 #include "resource/resource_manager.h"
-#include "scriptvm/runtime/cpp_plugin_api.h"
+#include "scriptvm/plugin/cpp_plugin_api.h"
 #include "scriptvm/runtime/module_registry.h"
 #include "scriptvm/runtime/value.h"
 

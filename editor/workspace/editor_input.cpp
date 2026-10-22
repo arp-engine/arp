@@ -9,7 +9,7 @@
 #endif
 #include <windows.h>
 #endif
-#include "core/utf8_cursor.h"
+#include "core/text/utf8_cursor.h"
 #include "editor/ingress/platform_input_adapter.h"
 #include "editor/workspace/editor_layout.h"
 #include "editor/workspace/editor_shell.h"

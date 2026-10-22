@@ -1,6 +1,6 @@
 #include "editor/remote/editor_remote_protocol.h"
 
-#include "core/string_utils.h"
+#include "core/text/string_utils.h"
 #include "editor/workspace/editor_shell.h"
 #include "network/http/uri.h"
 
@@ -105,6 +105,14 @@ bool unsignedValue(const JsonValue* value, std::uint64_t& out)
         return false;
     out = value->GetUint64();
     return true;
+}
+
+bool floatValue(const JsonValue* value, double& out)
+{
+    if (!value || !value->IsNumber())
+        return false;
+    out = value->GetDouble();
+    return std::isfinite(out);
 }
 
 bool floatValue(const JsonValue* value, float& out)
@@ -348,20 +356,34 @@ void appendSnapshot(core::pmr::String& out, const EditorStateSnapshot& snapshot)
 const char* propertyKindName(SceneInspectorPropertyKind kind)
 {
     switch (kind) {
-    case SceneInspectorPropertyKind::Unsupported: return "unsupported";
-    case SceneInspectorPropertyKind::Boolean: return "boolean";
-    case SceneInspectorPropertyKind::Integer: return "integer";
-    case SceneInspectorPropertyKind::UnsignedInteger: return "unsignedInteger";
-    case SceneInspectorPropertyKind::Number: return "number";
-    case SceneInspectorPropertyKind::Enumeration: return "enumeration";
-    case SceneInspectorPropertyKind::Vector2: return "vector2";
-    case SceneInspectorPropertyKind::Vector2List: return "vector2List";
-    case SceneInspectorPropertyKind::SceneObjectLinkList: return "sceneObjectLinkList";
-    case SceneInspectorPropertyKind::Vector3: return "vector3";
-    case SceneInspectorPropertyKind::Color4: return "color4";
-    case SceneInspectorPropertyKind::String: return "string";
-    case SceneInspectorPropertyKind::ResourceReference: return "resourceReference";
-    case SceneInspectorPropertyKind::SceneObjectReference: return "sceneObjectReference";
+    case SceneInspectorPropertyKind::Unsupported:
+        return "unsupported";
+    case SceneInspectorPropertyKind::Boolean:
+        return "boolean";
+    case SceneInspectorPropertyKind::Integer:
+        return "integer";
+    case SceneInspectorPropertyKind::UnsignedInteger:
+        return "unsignedInteger";
+    case SceneInspectorPropertyKind::Number:
+        return "number";
+    case SceneInspectorPropertyKind::Enumeration:
+        return "enumeration";
+    case SceneInspectorPropertyKind::Vector2:
+        return "vector2";
+    case SceneInspectorPropertyKind::Vector2List:
+        return "vector2List";
+    case SceneInspectorPropertyKind::SceneObjectLinkList:
+        return "sceneObjectLinkList";
+    case SceneInspectorPropertyKind::Vector3:
+        return "vector3";
+    case SceneInspectorPropertyKind::Color4:
+        return "color4";
+    case SceneInspectorPropertyKind::String:
+        return "string";
+    case SceneInspectorPropertyKind::ResourceReference:
+        return "resourceReference";
+    case SceneInspectorPropertyKind::SceneObjectReference:
+        return "sceneObjectReference";
     }
     return "unsupported";
 }
@@ -442,8 +464,7 @@ void appendSceneInspector(core::pmr::String& out, const EditorSceneInspectorSnap
             break;
         case SceneInspectorPropertyKind::SceneObjectLinkList:
             out.push_back('[');
-            for (std::size_t index = 0;
-                index < property.sceneObjectLinkListValue.size(); ++index) {
+            for (std::size_t index = 0; index < property.sceneObjectLinkListValue.size(); ++index) {
                 if (index != 0u)
                     out.push_back(',');
                 const auto& link = property.sceneObjectLinkListValue[index];
@@ -543,8 +564,8 @@ void appendSceneHierarchy(core::pmr::String& out, const SceneHierarchySnapshot& 
     out += "]}";
 }
 
-void appendSceneComponentCatalog(core::pmr::String& out,
-    const SceneComponentCatalogSnapshot& snapshot)
+void appendSceneComponentCatalog(
+    core::pmr::String& out, const SceneComponentCatalogSnapshot& snapshot)
 {
     out += ",\"sceneComponentCatalog\":{\"entries\":[";
     for (std::size_t index = 0; index < snapshot.entries.size(); ++index) {
@@ -617,29 +638,30 @@ std::uint64_t fingerprint(std::string_view command,
     const auto expected =
         std::to_chars(buffer.data(), buffer.data() + buffer.size(), expectedStateVersion);
     feed(std::string_view(buffer.data(), static_cast<std::size_t>(expected.ptr - buffer.data())));
-    const auto* property = payload ? std::get_if<SetSceneComponentPropertyCommand>(payload) : nullptr;
+    const auto* property =
+        payload ? std::get_if<SetSceneComponentPropertyCommand>(payload) : nullptr;
     if (property) {
         feed(property->name);
         const auto feedUnsigned = [&feed](std::uint64_t value) {
             std::array<char, 32> textBuffer{};
-            const auto result = std::to_chars(
-                textBuffer.data(), textBuffer.data() + textBuffer.size(), value);
-            feed(std::string_view(textBuffer.data(),
-                static_cast<std::size_t>(result.ptr - textBuffer.data())));
+            const auto result =
+                std::to_chars(textBuffer.data(), textBuffer.data() + textBuffer.size(), value);
+            feed(std::string_view(
+                textBuffer.data(), static_cast<std::size_t>(result.ptr - textBuffer.data())));
         };
         const auto feedSigned = [&feed](std::int64_t value) {
             std::array<char, 32> textBuffer{};
-            const auto result = std::to_chars(
-                textBuffer.data(), textBuffer.data() + textBuffer.size(), value);
-            feed(std::string_view(textBuffer.data(),
-                static_cast<std::size_t>(result.ptr - textBuffer.data())));
+            const auto result =
+                std::to_chars(textBuffer.data(), textBuffer.data() + textBuffer.size(), value);
+            feed(std::string_view(
+                textBuffer.data(), static_cast<std::size_t>(result.ptr - textBuffer.data())));
         };
         const auto feedFloat = [&feed](float value) {
             std::array<char, 64> textBuffer{};
-            const auto result = std::to_chars(
-                textBuffer.data(), textBuffer.data() + textBuffer.size(), value);
-            feed(std::string_view(textBuffer.data(),
-                static_cast<std::size_t>(result.ptr - textBuffer.data())));
+            const auto result =
+                std::to_chars(textBuffer.data(), textBuffer.data() + textBuffer.size(), value);
+            feed(std::string_view(
+                textBuffer.data(), static_cast<std::size_t>(result.ptr - textBuffer.data())));
         };
         feedUnsigned(property->objectId);
         feedUnsigned(property->componentId);
@@ -697,13 +719,14 @@ std::uint64_t fingerprint(std::string_view command,
             break;
         }
     }
-    if (const auto* reparent = payload ? std::get_if<ReparentSceneObjectCommand>(payload) : nullptr) {
+    if (const auto* reparent =
+            payload ? std::get_if<ReparentSceneObjectCommand>(payload) : nullptr) {
         const auto feedUnsigned = [&feed](std::uint64_t value) {
             std::array<char, 32> textBuffer{};
-            const auto result = std::to_chars(
-                textBuffer.data(), textBuffer.data() + textBuffer.size(), value);
-            feed(std::string_view(textBuffer.data(),
-                static_cast<std::size_t>(result.ptr - textBuffer.data())));
+            const auto result =
+                std::to_chars(textBuffer.data(), textBuffer.data() + textBuffer.size(), value);
+            feed(std::string_view(
+                textBuffer.data(), static_cast<std::size_t>(result.ptr - textBuffer.data())));
         };
         feedUnsigned(reparent->objectId);
         feedUnsigned(reparent->parentId);
@@ -712,27 +735,28 @@ std::uint64_t fingerprint(std::string_view command,
     if (const auto* add = payload ? std::get_if<AddSceneComponentCommand>(payload) : nullptr) {
         feed(add->type);
         std::array<char, 32> textBuffer{};
-        const auto result = std::to_chars(
-            textBuffer.data(), textBuffer.data() + textBuffer.size(), add->objectId);
-        feed(std::string_view(textBuffer.data(),
-            static_cast<std::size_t>(result.ptr - textBuffer.data())));
+        const auto result =
+            std::to_chars(textBuffer.data(), textBuffer.data() + textBuffer.size(), add->objectId);
+        feed(std::string_view(
+            textBuffer.data(), static_cast<std::size_t>(result.ptr - textBuffer.data())));
         for (const auto& initial : add->initialProperties) {
             EditorCommandPayload propertyPayload = initial;
-            const auto propertyHash = fingerprint(
-                "scene.component.property.set", {}, 0, false, 0, &propertyPayload);
+            const auto propertyHash =
+                fingerprint("scene.component.property.set", {}, 0, false, 0, &propertyPayload);
             const auto propertyResult = std::to_chars(
                 textBuffer.data(), textBuffer.data() + textBuffer.size(), propertyHash, 16);
             feed(std::string_view(textBuffer.data(),
                 static_cast<std::size_t>(propertyResult.ptr - textBuffer.data())));
         }
     }
-    if (const auto* remove = payload ? std::get_if<RemoveSceneComponentCommand>(payload) : nullptr) {
+    if (const auto* remove =
+            payload ? std::get_if<RemoveSceneComponentCommand>(payload) : nullptr) {
         std::array<char, 32> textBuffer{};
         const auto feedUnsigned = [&feed, &textBuffer](std::uint64_t value) {
-            const auto result = std::to_chars(
-                textBuffer.data(), textBuffer.data() + textBuffer.size(), value);
-            feed(std::string_view(textBuffer.data(),
-                static_cast<std::size_t>(result.ptr - textBuffer.data())));
+            const auto result =
+                std::to_chars(textBuffer.data(), textBuffer.data() + textBuffer.size(), value);
+            feed(std::string_view(
+                textBuffer.data(), static_cast<std::size_t>(result.ptr - textBuffer.data())));
         };
         feedUnsigned(remove->objectId);
         feedUnsigned(remove->componentId);
@@ -752,9 +776,8 @@ bool allowedRemoteActivation(EditorShell& shell, std::string_view source)
     return shell.id(sourceId).valid();
 }
 
-bool parseSceneProperty(const JsonValue& arguments,
-    SetSceneComponentPropertyCommand& command,
-    bool requireExactMembers)
+bool parseSceneProperty(
+    const JsonValue& arguments, SetSceneComponentPropertyCommand& command, bool requireExactMembers)
 {
     const auto* property = member(arguments, "property");
     const auto* kind = member(arguments, "kind");
@@ -771,9 +794,9 @@ bool parseSceneProperty(const JsonValue& arguments,
     } else if (kindName == "integer" && value->IsInt()) {
         command.valueKind = ScenePropertyValueKind::Integer;
         command.integerValue = value->GetInt();
-    } else if (kindName == "unsignedInteger" && value->IsUint()) {
+    } else if (kindName == "unsignedInteger" && value->IsUint64()) {
         command.valueKind = ScenePropertyValueKind::UnsignedInteger;
-        command.unsignedIntegerValue = value->GetUint();
+        command.unsignedIntegerValue = value->GetUint64();
     } else if (kindName == "number" && floatValue(value, command.numberValue)) {
         command.valueKind = ScenePropertyValueKind::Number;
     } else if (kindName == "enumeration" && value->IsInt()) {
@@ -788,8 +811,7 @@ bool parseSceneProperty(const JsonValue& arguments,
         command.valueKind = ScenePropertyValueKind::Vector2List;
         for (const auto& entry : value->GetArray()) {
             core::Vec2 point;
-            if (!hasOnlyMembers(entry, {"x", "y"})
-                || !floatValue(member(entry, "x"), point.x)
+            if (!hasOnlyMembers(entry, {"x", "y"}) || !floatValue(member(entry, "x"), point.x)
                 || !floatValue(member(entry, "y"), point.y))
                 return false;
             command.vector2ListValue.push_back(point);
@@ -800,8 +822,8 @@ bool parseSceneProperty(const JsonValue& arguments,
         for (const auto& entry : value->GetArray()) {
             const auto* name = member(entry, "name");
             const auto* target = member(entry, "target");
-            if (!entry.IsObject() || !hasOnlyMembers(entry, {"name", "target"})
-                || !name || !name->IsString() || name->GetStringLength() == 0
+            if (!entry.IsObject() || !hasOnlyMembers(entry, {"name", "target"}) || !name
+                || !name->IsString() || name->GetStringLength() == 0
                 || name->GetStringLength() > 128 || !target || !target->IsUint64()
                 || target->GetUint64() == 0u)
                 return false;
@@ -824,10 +846,10 @@ bool parseSceneProperty(const JsonValue& arguments,
     } else if (kindName == "sceneObjectReference" && value->IsUint64()) {
         command.valueKind = ScenePropertyValueKind::SceneObjectReference;
         command.sceneObjectReferenceValue = value->GetUint64();
-    } else if ((kindName == "string" || kindName == "resourceReference")
-        && value->IsString() && value->GetStringLength() <= 4096) {
+    } else if ((kindName == "string" || kindName == "resourceReference") && value->IsString()
+        && value->GetStringLength() <= 4096) {
         command.valueKind = kindName == "string" ? ScenePropertyValueKind::String
-                                                   : ScenePropertyValueKind::ResourceReference;
+                                                 : ScenePropertyValueKind::ResourceReference;
         command.stringValue.assign(value->GetString(), value->GetStringLength());
     } else {
         return false;
@@ -865,9 +887,8 @@ bool makeCommand(std::string_view name,
     if (name == "scene.component.add") {
         std::uint64_t objectId = 0;
         const auto* type = member(arguments, "type");
-        if (!unsignedValue(member(arguments, "objectId"), objectId) || objectId == 0
-            || !type || !type->IsString() || type->GetStringLength() == 0
-            || type->GetStringLength() > 128)
+        if (!unsignedValue(member(arguments, "objectId"), objectId) || objectId == 0 || !type
+            || !type->IsString() || type->GetStringLength() == 0 || type->GetStringLength() > 128)
             return false;
         AddSceneComponentCommand command(asView(*type));
         command.objectId = objectId;
@@ -900,8 +921,8 @@ bool makeCommand(std::string_view name,
         const auto* component = member(arguments, "componentId");
         const auto* property = member(arguments, "property");
         if (!unsignedValue(object, objectId) || objectId == 0
-            || !unsignedValue(component, componentId) || componentId == 0
-            || !property || !property->IsString() || property->GetStringLength() == 0
+            || !unsignedValue(component, componentId) || componentId == 0 || !property
+            || !property->IsString() || property->GetStringLength() == 0
             || property->GetStringLength() > 256)
             return false;
         SetSceneComponentPropertyCommand command(asView(*property));
@@ -1118,7 +1139,11 @@ network::http::Response EditorRemoteProtocol::restCommand(
     const auto commandName = asView(*name);
     if (commandName == "scene.inspector.get"
         && !hasOnlyMembers(document,
-            {"schemaVersion", "command", "commandId", "correlationId", "expectedStateVersion",
+            {"schemaVersion",
+                "command",
+                "commandId",
+                "correlationId",
+                "expectedStateVersion",
                 "objectId"}))
         return protocolError(400, "invalid_command_fields");
     if ((commandName == "scene.hierarchy.get" || commandName == "scene.component.catalog.get")
@@ -1127,26 +1152,55 @@ network::http::Response EditorRemoteProtocol::restCommand(
         return protocolError(400, "invalid_command_fields");
     if (commandName == "scene.reparent"
         && !hasOnlyMembers(document,
-            {"schemaVersion", "command", "commandId", "correlationId", "expectedStateVersion",
-                "idempotencyKey", "objectId", "parentId", "childIndex"}))
+            {"schemaVersion",
+                "command",
+                "commandId",
+                "correlationId",
+                "expectedStateVersion",
+                "idempotencyKey",
+                "objectId",
+                "parentId",
+                "childIndex"}))
         return protocolError(400, "invalid_command_fields");
     if (commandName == "scene.component.add"
         && !hasOnlyMembers(document,
-            {"schemaVersion", "command", "commandId", "correlationId", "expectedStateVersion",
-                "idempotencyKey", "objectId", "type", "properties"}))
+            {"schemaVersion",
+                "command",
+                "commandId",
+                "correlationId",
+                "expectedStateVersion",
+                "idempotencyKey",
+                "objectId",
+                "type",
+                "properties"}))
         return protocolError(400, "invalid_command_fields");
     if (commandName == "scene.component.remove"
         && !hasOnlyMembers(document,
-            {"schemaVersion", "command", "commandId", "correlationId", "expectedStateVersion",
-                "idempotencyKey", "objectId", "componentId"}))
+            {"schemaVersion",
+                "command",
+                "commandId",
+                "correlationId",
+                "expectedStateVersion",
+                "idempotencyKey",
+                "objectId",
+                "componentId"}))
         return protocolError(400, "invalid_command_fields");
     if (commandName != "scene.reparent"
         && (member(document, "parentId") || member(document, "childIndex")))
         return protocolError(400, "invalid_command_fields");
     if (commandName == "scene.component.property.set"
         && !hasOnlyMembers(document,
-            {"schemaVersion", "command", "commandId", "correlationId", "expectedStateVersion",
-                "idempotencyKey", "objectId", "componentId", "property", "kind", "value"}))
+            {"schemaVersion",
+                "command",
+                "commandId",
+                "correlationId",
+                "expectedStateVersion",
+                "idempotencyKey",
+                "objectId",
+                "componentId",
+                "property",
+                "kind",
+                "value"}))
         return protocolError(400, "invalid_command_fields");
     if (commandName != "scene.inspector.get" && commandName != "scene.component.property.set"
         && commandName != "scene.hierarchy.get" && commandName != "scene.component.catalog.get"
@@ -1191,8 +1245,8 @@ network::http::Response EditorRemoteProtocol::restCommand(
             && (member(document, "componentId") || member(document, "property")
                 || member(document, "kind") || member(document, "value")))
         || (commandName == "scene.component.remove"
-            && (member(document, "type") || member(document, "property")
-                || member(document, "kind") || member(document, "value")))
+            && (member(document, "type") || member(document, "property") || member(document, "kind")
+                || member(document, "value")))
         || (commandName == "scene.component.property.set"
             && (member(document, "documentId") || member(document, "text")
                 || member(document, "path") || member(document, "taskId")
@@ -1227,8 +1281,12 @@ network::http::Response EditorRemoteProtocol::restCommand(
         if (!key->IsString() || key->GetStringLength() == 0 || key->GetStringLength() > 128)
             return protocolError(400, "invalid_idempotency_key");
         envelope.idempotencyKey.assign(key->GetString(), key->GetStringLength());
-        const auto hash = fingerprint(
-            asView(*name), text, documentId, expected != nullptr, expectedStateVersion, &envelope.payload);
+        const auto hash = fingerprint(asView(*name),
+            text,
+            documentId,
+            expected != nullptr,
+            expectedStateVersion,
+            &envelope.payload);
         std::array<char, 32> encoded{};
         const auto result =
             std::to_chars(encoded.data(), encoded.data() + encoded.size(), hash, 16);
@@ -1329,19 +1387,24 @@ network::http::Response EditorRemoteProtocol::mcpMessage(
             : (toolName == "scene.hierarchy.get" || toolName == "scene.component.catalog.get")
             ? hasOnlyMembers(*arguments, {"expectedStateVersion"})
             : toolName == "scene.component.add"
-            ? hasOnlyMembers(*arguments, {"objectId", "type", "properties", "idempotencyKey", "expectedStateVersion"})
-            : toolName == "scene.component.remove"
             ? hasOnlyMembers(*arguments,
-                  {"objectId", "componentId", "idempotencyKey", "expectedStateVersion"})
+                  {"objectId", "type", "properties", "idempotencyKey", "expectedStateVersion"})
+            : toolName == "scene.component.remove"
+            ? hasOnlyMembers(
+                  *arguments, {"objectId", "componentId", "idempotencyKey", "expectedStateVersion"})
             : toolName == "scene.reparent"
             ? hasOnlyMembers(*arguments,
                   {"objectId", "parentId", "childIndex", "idempotencyKey", "expectedStateVersion"})
-            : toolName == "scene.component.property.set"
-            ? hasOnlyMembers(*arguments,
-                  {"objectId", "componentId", "property", "kind", "value", "idempotencyKey",
-                      "expectedStateVersion"})
-            : toolName == "editor.activate" ? hasOnlyMembers(*arguments, {"source"})
-            : toolName == "editor.search"   ? hasOnlyMembers(*arguments, {"source", "value"})
+            : toolName == "scene.component.property.set" ? hasOnlyMembers(*arguments,
+                                                               {"objectId",
+                                                                   "componentId",
+                                                                   "property",
+                                                                   "kind",
+                                                                   "value",
+                                                                   "idempotencyKey",
+                                                                   "expectedStateVersion"})
+            : toolName == "editor.activate"              ? hasOnlyMembers(*arguments, {"source"})
+            : toolName == "editor.search" ? hasOnlyMembers(*arguments, {"source", "value"})
             : (toolName == "scene.save" || toolName == "scene.load")
             ? hasOnlyMembers(*arguments, {"path", "idempotencyKey", "expectedStateVersion"})
             : toolName == "scene.task.get"

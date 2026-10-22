@@ -1,4 +1,5 @@
-#include "core/cpu_allocator.h"
+#include "3d/camera_parameters.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cassert>
 #include <cctype>
@@ -1119,13 +1120,13 @@ void collectCoreMathOwnershipViolations(
     };
     for (const auto& file : stylizedCoreMathUsers) {
         const auto text = readText(file);
-        requireText(file, text, "\"core/math.h\"", violations);
+        requireText(file, text, "\"core/math/math.h\"", violations);
         forbidText(file, text, "\"renderer/math/math.h\"", violations);
     }
 
     const auto particleSystemSource = root / "src" / "renderer" / "particles" / "particle_system.h";
     const auto particleSystemText = readText(particleSystemSource);
-    requireText(particleSystemSource, particleSystemText, "\"core/math.h\"", violations);
+    requireText(particleSystemSource, particleSystemText, "\"core/math/math.h\"", violations);
     forbidText(particleSystemSource, particleSystemText, "\"renderer/math/math.h\"", violations);
 
     const auto rendererRoot = root / "src" / "renderer";
@@ -1967,7 +1968,7 @@ void collectRhiMigrationBoundaryViolations(
         "src/render_graph/rhi_frame_plan.h",
         "src/render_graph/rhi_frame_plan.cpp",
         "src/render_graph/render_graph.h",
-        "src/platform/render_system_vulkan.cpp",
+        "src/platform/native/render_system_vulkan.cpp",
         "src/renderer/renderers.h",
         "src/renderer/ui/gui_renderer.h",
         "src/renderer/particles/particle_renderer.h",

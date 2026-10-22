@@ -1,5 +1,5 @@
-#include "core/diagnostic_error.h"
-#include "core/monotonic_id_sequence.h"
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/ownership/monotonic_id_sequence.h"
 #include "rhi/gpu_resources.h"
 
 namespace arp::rhi {

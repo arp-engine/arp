@@ -1,6 +1,6 @@
 #include "2d/tile_resources.h"
 
-#include "core/yaml_contract.h"
+#include "core/encoding/yaml_contract.h"
 #include "resource/resource_source_io.h"
 
 #include <algorithm>

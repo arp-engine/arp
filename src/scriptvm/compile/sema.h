@@ -16,7 +16,7 @@
 // variables, resolving overloaded methods). For Phase 4 we keep annotations
 // minimal -- the compiler re-walks scopes for slot allocation.
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "scriptvm/compile/ast.h"
 #include "scriptvm/runtime/diagnostics.h"
 #include "scriptvm/runtime/module_registry.h"

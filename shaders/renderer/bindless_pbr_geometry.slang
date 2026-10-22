@@ -27,15 +27,33 @@ struct FamilyTemporalPalette { FamilyPalette current; FamilyPalette previous; };
 struct FamilyPushConstants { uint material; uint instanceBase; uint reserved0; uint reserved1; };
 [[vk::push_constant]] FamilyPushConstants GeometrySelection;
 
+// Each entry declares only its actual input ABI. MSL preserves declared
+// stage attributes even when SPIR-V removes unused struct fields.
 struct FamilyInput
 {
-    float3 position : POSITION0;
-    float3 normal : NORMAL0;
-    float2 uv : TEXCOORD0;
-    float4 tangent : TANGENT0;
-    float3 windWeights : COLOR0;
-    float4 joints : TEXCOORD1;
-    float4 weights : TEXCOORD2;
+    [[vk::location(0)]] float3 position : POSITION0;
+    [[vk::location(1)]] float3 normal : NORMAL0;
+    [[vk::location(2)]] float2 uv : TEXCOORD0;
+    [[vk::location(3)]] float4 tangent : TANGENT0;
+};
+struct FamilySkinInput
+{
+    [[vk::location(0)]] float3 position : POSITION0;
+    [[vk::location(1)]] float3 normal : NORMAL0;
+    [[vk::location(2)]] float2 uv : TEXCOORD0;
+    [[vk::location(3)]] float4 tangent : TANGENT0;
+    // The pinned WGSL emitter reserves nonzero semantic indices separately
+    // from vk::location. Keep both declarations on the same public locations.
+    [[vk::location(5)]] float4 joints : TEXCOORD5;
+    [[vk::location(6)]] float4 weights : TEXCOORD6;
+};
+struct FamilyFoliageInput
+{
+    [[vk::location(0)]] float3 position : POSITION0;
+    [[vk::location(1)]] float3 normal : NORMAL0;
+    [[vk::location(2)]] float2 uv : TEXCOORD0;
+    [[vk::location(3)]] float4 tangent : TANGENT0;
+    [[vk::location(4)]] float3 windWeights : COLOR0;
 };
 struct FamilyVertex
 {
@@ -68,7 +86,7 @@ FamilyVertex familyProject(ArpPbrGeometry geometry, float2 uv, bool shadow)
     result.lodTime = geometry.lodTime;
     return result;
 }
-ArpPbrGeometry familySkin(FamilyInput input)
+ArpPbrGeometry familySkin(FamilySkinInput input)
 {
     ArpSkinningBlend blend = arpEmptySkinningBlend();
     [unroll]
@@ -109,25 +127,25 @@ FamilyVertex meshShadowVertex(FamilyInput input)
 }
 
 [shader("vertex")]
-FamilyVertex skinColorVertex(FamilyInput input)
+FamilyVertex skinColorVertex(FamilySkinInput input)
 {
     return familyProject(familySkin(input), input.uv, false);
 }
 
 [shader("vertex")]
-FamilyVertex skinDepthVertex(FamilyInput input)
+FamilyVertex skinDepthVertex(FamilySkinInput input)
 {
     return familyProject(familySkin(input), input.uv, false);
 }
 
 [shader("vertex")]
-FamilyVertex skinShadowVertex(FamilyInput input)
+FamilyVertex skinShadowVertex(FamilySkinInput input)
 {
     return familyProject(familySkin(input), input.uv, true);
 }
 
 [shader("vertex")]
-FamilyVertex grassColorVertex(FamilyInput input, uint instanceId : SV_InstanceID)
+FamilyVertex grassColorVertex(FamilyFoliageInput input, uint instanceId : SV_InstanceID)
 {
     return familyProject(arpPbrInstanceGeometry(GeometryInstances[GeometrySelection.instanceBase + instanceId],
         input.position, input.normal, input.tangent, input.windWeights,
@@ -135,7 +153,7 @@ FamilyVertex grassColorVertex(FamilyInput input, uint instanceId : SV_InstanceID
 }
 
 [shader("vertex")]
-FamilyVertex grassDepthVertex(FamilyInput input, uint instanceId : SV_InstanceID)
+FamilyVertex grassDepthVertex(FamilyFoliageInput input, uint instanceId : SV_InstanceID)
 {
     return familyProject(arpPbrInstanceGeometry(GeometryInstances[GeometrySelection.instanceBase + instanceId],
         input.position, input.normal, input.tangent, input.windWeights,
@@ -143,7 +161,7 @@ FamilyVertex grassDepthVertex(FamilyInput input, uint instanceId : SV_InstanceID
 }
 
 [shader("vertex")]
-FamilyVertex grassShadowVertex(FamilyInput input, uint instanceId : SV_InstanceID)
+FamilyVertex grassShadowVertex(FamilyFoliageInput input, uint instanceId : SV_InstanceID)
 {
     return familyProject(arpPbrInstanceGeometry(GeometryInstances[GeometrySelection.instanceBase + instanceId],
         input.position, input.normal, input.tangent, input.windWeights,
@@ -151,7 +169,7 @@ FamilyVertex grassShadowVertex(FamilyInput input, uint instanceId : SV_InstanceI
 }
 
 [shader("vertex")]
-FamilyVertex canopyColorVertex(FamilyInput input, uint instanceId : SV_InstanceID)
+FamilyVertex canopyColorVertex(FamilyFoliageInput input, uint instanceId : SV_InstanceID)
 {
     return familyProject(arpPbrInstanceGeometry(GeometryInstances[GeometrySelection.instanceBase + instanceId],
         input.position, input.normal, input.tangent, input.windWeights,
@@ -159,7 +177,7 @@ FamilyVertex canopyColorVertex(FamilyInput input, uint instanceId : SV_InstanceI
 }
 
 [shader("vertex")]
-FamilyVertex canopyDepthVertex(FamilyInput input, uint instanceId : SV_InstanceID)
+FamilyVertex canopyDepthVertex(FamilyFoliageInput input, uint instanceId : SV_InstanceID)
 {
     return familyProject(arpPbrInstanceGeometry(GeometryInstances[GeometrySelection.instanceBase + instanceId],
         input.position, input.normal, input.tangent, input.windWeights,
@@ -167,7 +185,7 @@ FamilyVertex canopyDepthVertex(FamilyInput input, uint instanceId : SV_InstanceI
 }
 
 [shader("vertex")]
-FamilyVertex canopyShadowVertex(FamilyInput input, uint instanceId : SV_InstanceID)
+FamilyVertex canopyShadowVertex(FamilyFoliageInput input, uint instanceId : SV_InstanceID)
 {
     return familyProject(arpPbrInstanceGeometry(GeometryInstances[GeometrySelection.instanceBase + instanceId],
         input.position, input.normal, input.tangent, input.windWeights,

@@ -16,8 +16,8 @@
 // Plan reference: complete_procedural_scene_implementation_plan.md P1.
 
 #include "assets/asset_pipeline.h"
-#include "core/cpu_allocator.h"
-#include "core/stable_hash.h"
+#include "core/hash/stable_hash.h"
+#include "core/memory/cpu_allocator.h"
 #include "resource/resource_contract.h"
 #include "resource/resource_manager.h"
 

@@ -245,6 +245,8 @@ class CmakeWriter:
         # product. OS identity alone must not select a second RHI route.
         if module_name == "arp_platform" and platform == "web":
             return 'ARP_SELECTED_WEB_RHI STREQUAL "webgpu"'
+        if module_name == "arp_platform" and platform == "vulkan_native":
+            return 'NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten"'
         return cls._cmake_platform_condition(platform)
 
     def _emit_std_flags(self):
@@ -504,11 +506,11 @@ class CmakeWriter:
 
         reflections = []
         # core_math
-        if exists("src/core/math.h"):
-            reflections.append(("core_math", "src/core/math.h"))
+        if exists("src/core/math/math.h"):
+            reflections.append(("core_math", "src/core/math/math.h"))
         # core_curve
-        if exists("src/core/curve.h"):
-            reflections.append(("core_curve", "src/core/curve.h"))
+        if exists("src/core/math/curve.h"):
+            reflections.append(("core_curve", "src/core/math/curve.h"))
         # prefab_asset_resources
         if exists("src/resource/prefab_asset_resources.h"):
             reflections.append(("prefab_asset_resources", "src/resource/prefab_asset_resources.h"))
@@ -552,6 +554,7 @@ class CmakeWriter:
                 # Filter to only actual engine modules
                 if any(m.name.startswith(p) for p in [
                     "arp_core", "arp_reflection", "arp_shader", "arp_animation",
+                    "arp_terrain_scene_runtime",
                     "arp_assets", "arp_unity_import", "arp_resource",
                     "arp_scene", "arp_physics", "arp_3d", "arp_2d", "arp_input", "arp_audio",
                     "arp_ui_font", "arp_ui_runtime", "arp_gui",
@@ -560,7 +563,7 @@ class CmakeWriter:
                     "arp_renderer_deployment", "arp_platform",
                     "arp_rhi", "arp_rhi_semantics",
                     "arp_rhi_vulkan", "arp_rhi_metal", "arp_rhi_webgpu",
-                    "arp_network",
+                    "arp_network", "arp_pcg",
                 ]):
                     engine_targets.append(m.name)
 
@@ -859,6 +862,7 @@ class CmakeWriter:
         self._emit_android_package_contract()
         self._w("include(cmake/ArpEditor.cmake)")
         self._w("include(cmake/ArpHttpServer.cmake)")
+        self._w("include(cmake/ArpVolumetricFog.cmake)")
         self._w()
 
         content = "\n".join(self.lines) + "\n"

@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/semantics/render_system_frame_loop_adapter.h"
 
 #include <cassert>

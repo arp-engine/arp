@@ -1,11 +1,11 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
 #include "rhi/backends/vulkan/vulkan_bindless.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 #include "rhi/frontend/bindless_compute_binding.h"
 #include "rhi/frontend/bindless_graphics_binding.h"
-#include "rhi/frontend/bindless_scene_content.h"
+#include "rhi/frontend/bindless_initialized_graphics.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "rhi/frontend/bindless_snapshot.h"
 #include "rhi/gpu_bindless.h"
@@ -606,8 +606,8 @@ core::UniquePtr<rhi::RenderPipeline> VulkanBindlessCrossExtension::createRenderP
         return {};
     }
 
-    const auto scene =
-        rhi::OriginalBindlessSceneContentContract::selectEntries(vertexEntry, fragmentEntry);
+    const auto scene = rhi::selectBindlessInitializedGraphics(
+        authorization->package(), vertexEntry, fragmentEntry);
     if (scene.diagnostic) {
         diagnostic = scene.diagnostic;
         return {};

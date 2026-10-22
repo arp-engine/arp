@@ -1,6 +1,6 @@
 #pragma once
-#include "core/versioned_mutation_array.h"
-#include "core/versioned_mutation_value.h"
+#include "core/ownership/versioned_mutation_array.h"
+#include "core/ownership/versioned_mutation_value.h"
 #include "rhi/frontend/resource_loss_validation.h"
 #include "rhi/frontend/resource_texture_validation.h"
 

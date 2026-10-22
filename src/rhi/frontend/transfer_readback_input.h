@@ -1,7 +1,7 @@
 #pragma once
-#include "core/cold_owned_object_slot.h"
-#include "core/preflight_replay.h"
-#include "core/strided_index_range.h"
+#include "core/algorithm/preflight_replay.h"
+#include "core/algorithm/strided_index_range.h"
+#include "core/ownership/cold_owned_object_slot.h"
 #include "rhi/frontend/resource_leases.h"
 #include "rhi/frontend/transfer_readback_layout_validation.h"
 #include "rhi/frontend/transfer_readback_statistics.h"

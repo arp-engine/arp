@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cassert>
 #include <filesystem>
@@ -45,7 +45,7 @@ bool isSourceFile(const std::filesystem::path& path)
 bool isAllowedAllocatorImplementation(const std::filesystem::path& relative)
 {
     const auto path = relative.generic_string();
-    return path == "src/core/cpu_allocator.h" || path == "src/core/cpu_allocator.cpp";
+    return path == "src/core/memory/cpu_allocator.h" || path == "src/core/memory/cpu_allocator.cpp";
 }
 
 bool isLikelyDeleteDeclaration(const std::pmr::string& line)

@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/webgpu/webgpu_attachment_operation_lowering.h"
 #include "rhi/backends/webgpu/webgpu_backend_objects.h"
 #include "rhi/backends/webgpu/webgpu_binding_space_lowering.h"
@@ -11,6 +11,7 @@
 #include "rhi/backends/webgpu/webgpu_ordinary_completion_retention.h"
 #include "rhi/frontend/bindless_snapshot_metadata.h"
 #include "rhi/frontend/command_indirect_commands.h"
+#include "rhi/frontend/prototype_command_batch_validation.h"
 #include "rhi/frontend/transfer_readback_borrowed_retirement.h"
 #include "rhi/gpu_common.h"
 #include "rhi/gpu_extensions.h"
@@ -2165,6 +2166,12 @@ const char* WebGpuNativeCommandPayload::restrictedRecordingDiagnostic() const no
 
 const char* WebGpuNativeCommandPayload::preparedRecordingDiagnostic() const noexcept
 {
+    if (impl_ && impl_->prototypeBatch) {
+        auto& b = *impl_->prototypeBatch;
+        if (b.diagnostic())
+            return b.diagnostic();
+        return b.replaying() ? nullptr : b.latch("RHI-PROTOTYPE-BATCH-UNSUPPORTED-COMMAND");
+    }
     if (impl_ && impl_->ordinaryPrepared)
         return "RHI-WEBGPU-ORDINARY-RECORDING-OWNER-REQUIRED";
     return ordinaryTransferOnly() ? nullptr : webGpuGenericRecordingUsageDiagnostic;
@@ -2172,6 +2179,8 @@ const char* WebGpuNativeCommandPayload::preparedRecordingDiagnostic() const noex
 
 const char* WebGpuNativeCommandPayload::nonTransferRecordingDiagnostic() const noexcept
 {
+    if (impl_ && impl_->prototypeBatch)
+        return impl_->prototypeBatch->diagnostic();
     if (impl_ && impl_->conformanceClear)
         return impl_->conformanceClear->failure_;
     return restrictedRecordingDiagnostic();
@@ -2179,6 +2188,8 @@ const char* WebGpuNativeCommandPayload::nonTransferRecordingDiagnostic() const n
 
 const char* WebGpuNativeCommandPayload::transitionRecordingDiagnostic() const noexcept
 {
+    if (impl_ && impl_->prototypeBatch)
+        return impl_->prototypeBatch->diagnostic();
     if (impl_ && impl_->conformanceClear)
         return impl_->conformanceClear->failure_;
     if (const auto* id = restrictedRecordingDiagnostic())
@@ -2198,6 +2209,8 @@ const char* WebGpuNativeCommandPayload::sampledGeometryBarrierDiagnostic(
 
 const char* WebGpuNativeCommandPayload::memoryBarrierRecordingDiagnostic() const noexcept
 {
+    if (impl_ && impl_->prototypeBatch)
+        return impl_->prototypeBatch->diagnostic();
     if (const auto* id = restrictedRecordingDiagnostic())
         return id;
     return "RHI-WEBGPU-MEMORY-BARRIER-LOWERING-UNPROVEN";
@@ -2794,6 +2807,31 @@ bool WebGpuNativeCommandPayload::recordBufferBarrier(const WebGpuNativeBufferPay
     const rhi::ResourceBarrierDesc& desc,
     std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::BufferBarrier,
+            [&](auto& r) {
+                r.barrier = desc;
+                return b.resource(r, desc.resource, &buffer, false, diagnostics);
+            },
+            diagnostics);
+    }
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->replaying()) {
+#if defined(ARP_RHI_WEBGPU_NATIVE_PAYLOADS_HAS_NATIVE)
+        if (const auto* id =
+                rhi::semantics::PrototypeCommandBatchBarrierLowering::transition(desc, false)) {
+            diagnostics = impl_->prototypeBatch->latch(id);
+            return false;
+        }
+        recordCommand(impl_->stats);
+        return true;
+#else
+        diagnostics = "RHI-PROTOTYPE-BATCH-NATIVE-UNAVAILABLE";
+        return false;
+#endif
+    }
+
     if (impl_ && impl_->conformanceClear)
         return impl_->conformanceClear->bufferBarrier(buffer, desc, diagnostics);
     (void)buffer;
@@ -2806,6 +2844,31 @@ bool WebGpuNativeCommandPayload::recordTextureBarrier(const WebGpuNativeTextureP
     const rhi::ResourceBarrierDesc& desc,
     std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::TextureBarrier,
+            [&](auto& r) {
+                r.barrier = desc;
+                return b.resource(r, desc.resource, &texture, true, diagnostics);
+            },
+            diagnostics);
+    }
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->replaying()) {
+#if defined(ARP_RHI_WEBGPU_NATIVE_PAYLOADS_HAS_NATIVE)
+        if (const auto* id =
+                rhi::semantics::PrototypeCommandBatchBarrierLowering::transition(desc, true)) {
+            diagnostics = impl_->prototypeBatch->latch(id);
+            return false;
+        }
+        recordCommand(impl_->stats);
+        return true;
+#else
+        diagnostics = "RHI-PROTOTYPE-BATCH-NATIVE-UNAVAILABLE";
+        return false;
+#endif
+    }
+
     if (impl_ && impl_->conformanceClear)
         return impl_->conformanceClear->transition(*this, texture, desc, diagnostics);
     if (const auto* id = texture.contentAccessPolicy().ordinaryAccessDiagnostic()) {
@@ -2822,6 +2885,32 @@ bool WebGpuNativeCommandPayload::recordBufferMemoryBarrier(const WebGpuNativeBuf
     const rhi::ResourceMemoryBarrierDesc& desc,
     std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::BufferMemory,
+            [&](auto& r) {
+                r.memory = desc;
+                r.memoryState = buffer.recordedState().state();
+                return b.resource(r, desc.resource, &buffer, false, diagnostics);
+            },
+            diagnostics);
+    }
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->replaying()) {
+#if defined(ARP_RHI_WEBGPU_NATIVE_PAYLOADS_HAS_NATIVE)
+        if (const auto* id = rhi::semantics::PrototypeCommandBatchBarrierLowering::memory(
+                desc, impl_->prototypeBatch->replayMemoryState(), false)) {
+            diagnostics = impl_->prototypeBatch->latch(id);
+            return false;
+        }
+        recordCommand(impl_->stats);
+        return true;
+#else
+        diagnostics = "RHI-PROTOTYPE-BATCH-NATIVE-UNAVAILABLE";
+        return false;
+#endif
+    }
+
     if (impl_ && impl_->conformanceClear
         && (impl_->conformanceClear->sampled_ || impl_->conformanceClear->storageMrt_)) {
         rhi::ResourceBarrierDesc dependency;
@@ -2844,6 +2933,32 @@ bool WebGpuNativeCommandPayload::recordTextureMemoryBarrier(
     const rhi::ResourceMemoryBarrierDesc& desc,
     std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::TextureMemory,
+            [&](auto& r) {
+                r.memory = desc;
+                r.memoryState = texture.recordedState().state();
+                return b.resource(r, desc.resource, &texture, true, diagnostics);
+            },
+            diagnostics);
+    }
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->replaying()) {
+#if defined(ARP_RHI_WEBGPU_NATIVE_PAYLOADS_HAS_NATIVE)
+        if (const auto* id = rhi::semantics::PrototypeCommandBatchBarrierLowering::memory(
+                desc, impl_->prototypeBatch->replayMemoryState(), true)) {
+            diagnostics = impl_->prototypeBatch->latch(id);
+            return false;
+        }
+        recordCommand(impl_->stats);
+        return true;
+#else
+        diagnostics = "RHI-PROTOTYPE-BATCH-NATIVE-UNAVAILABLE";
+        return false;
+#endif
+    }
+
     if (const auto* id = texture.contentAccessPolicy().ordinaryAccessDiagnostic()) {
         diagnostics = id;
         return false;
@@ -2860,6 +2975,44 @@ bool WebGpuNativeCommandPayload::recordRenderPassBegin(const rhi::RenderPassDesc
     const WebGpuNativeTexturePayload* depthTarget,
     std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::RenderBegin,
+            [&](auto& r) {
+                r.render = desc;
+                if (colorTargets.size() != desc.colorAttachments.size()
+                    || resolveTargets.size() != colorTargets.size())
+                    return b.reject("RHI-PROTOTYPE-BATCH-ATTACHMENT-COUNT", diagnostics);
+                for (std::size_t i = 0; i < colorTargets.size(); ++i) {
+                    WebGpuPrototypeBatch::Record resource{WebGpuPrototypeBatch::Op::TextureBarrier};
+                    if (!b.resource(resource,
+                            desc.colorAttachments[i].target,
+                            colorTargets[i],
+                            true,
+                            diagnostics))
+                        return false;
+                    r.colors.push_back(resource.texture);
+                    if (resolveTargets[i]) {
+                        if (!b.resource(resource,
+                                desc.colorAttachments[i].resolveTarget,
+                                resolveTargets[i],
+                                true,
+                                diagnostics))
+                            return false;
+                        r.resolves.push_back(resource.texture);
+                    } else
+                        r.resolves.push_back({});
+                }
+                if (depthTarget
+                    && !b.resource(
+                        r, desc.depthStencilAttachment.target, depthTarget, true, diagnostics))
+                    return false;
+                return true;
+            },
+            diagnostics);
+    }
+
     if (impl_ && impl_->conformanceClear
         && !impl_->conformanceClear->begin(
             desc, colorTargets, resolveTargets, depthTarget, diagnostics))
@@ -3266,6 +3419,17 @@ bool WebGpuNativeCommandPayload::recordRenderBundleExecute(
 bool WebGpuNativeCommandPayload::recordSetViewport(
     const rhi::ViewportState& viewport, std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::Viewport,
+            [&](auto& r) {
+                r.viewport = viewport;
+                return true;
+            },
+            diagnostics);
+    }
+
     if (impl_ && impl_->conformanceClear
         && !impl_->conformanceClear->viewport(viewport, diagnostics))
         return false;
@@ -3301,6 +3465,17 @@ bool WebGpuNativeCommandPayload::recordSetViewport(
 bool WebGpuNativeCommandPayload::recordSetScissor(
     const rhi::ScissorState& scissor, std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::Scissor,
+            [&](auto& r) {
+                r.scissor = scissor;
+                return true;
+            },
+            diagnostics);
+    }
+
     if (impl_ && impl_->conformanceClear && !impl_->conformanceClear->scissor(scissor, diagnostics))
         return false;
     if (const auto* id =
@@ -3334,6 +3509,22 @@ bool WebGpuNativeCommandPayload::recordRenderDescriptorSetBind(std::uint32_t set
     std::uint32_t dynamicOffsetCount,
     std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::RenderDescriptors,
+            [&](auto& r) {
+                r.args[0] = set;
+                r.descriptors = descriptorGroup;
+                if (dynamicOffsetCount && !dynamicOffsets)
+                    return b.reject("RHI-PROTOTYPE-BATCH-DYNAMIC-OFFSETS", diagnostics);
+                if (dynamicOffsetCount)
+                    r.offsets.assign(dynamicOffsets, dynamicOffsets + dynamicOffsetCount);
+                return true;
+            },
+            diagnostics);
+    }
+
     if (descriptorGroup)
         if (const auto* id = descriptorGroup->ordinaryTextureAccessDiagnostic()) {
             diagnostics = id;
@@ -3723,6 +3914,17 @@ bool WebGpuNativeCommandPayload::recordDraw(std::uint32_t vertexCount,
     std::uint32_t firstInstance,
     std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::Draw,
+            [&](auto& r) {
+                r.args = {vertexCount, instanceCount, firstVertex, firstInstance};
+                return true;
+            },
+            diagnostics);
+    }
+
     if (impl_ && impl_->conformanceClear
         && !impl_->conformanceClear->draw(
             false, vertexCount, instanceCount, firstVertex, 0, firstInstance, diagnostics))
@@ -3815,6 +4017,16 @@ bool WebGpuNativeCommandPayload::recordTimestamp(
 
 bool WebGpuNativeCommandPayload::recordRenderPassEnd(std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::RenderEnd,
+            [&](auto& r) {
+                return true;
+            },
+            diagnostics);
+    }
+
     if (impl_ && impl_->conformanceClear && !impl_->conformanceClear->end(diagnostics))
         return false;
     if (const auto* id =
@@ -3846,6 +4058,17 @@ bool WebGpuNativeCommandPayload::recordRenderPassEnd(std::pmr::string& diagnosti
 bool WebGpuNativeCommandPayload::recordComputePassBegin(
     const rhi::ComputePassDesc& desc, std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::ComputeBegin,
+            [&](auto& r) {
+                r.compute = desc;
+                return true;
+            },
+            diagnostics);
+    }
+
     if (impl_ && impl_->conformanceClear
         && !impl_->conformanceClear->computePass(true, diagnostics))
         return false;
@@ -3992,6 +4215,22 @@ bool WebGpuNativeCommandPayload::recordDescriptorSetBind(std::uint32_t set,
     std::uint32_t dynamicOffsetCount,
     std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::ComputeDescriptors,
+            [&](auto& r) {
+                r.args[0] = set;
+                r.descriptors = descriptorGroup;
+                if (dynamicOffsetCount && !dynamicOffsets)
+                    return b.reject("RHI-PROTOTYPE-BATCH-DYNAMIC-OFFSETS", diagnostics);
+                if (dynamicOffsetCount)
+                    r.offsets.assign(dynamicOffsets, dynamicOffsets + dynamicOffsetCount);
+                return true;
+            },
+            diagnostics);
+    }
+
     if (descriptorGroup)
         if (const auto* id = descriptorGroup->ordinaryTextureAccessDiagnostic()) {
             diagnostics = id;
@@ -4102,6 +4341,22 @@ bool WebGpuNativeCommandPayload::recordPushConstants(rhi::ShaderStage stages,
     const void* data,
     std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::Push,
+            [&](auto& r) {
+                if (!data || !sizeBytes)
+                    return b.reject("RHI-PROTOTYPE-BATCH-PUSH-INPUT", diagnostics);
+                r.stages = stages;
+                r.args[0] = offsetBytes;
+                const auto* ptr = static_cast<const std::uint8_t*>(data);
+                r.bytes.assign(ptr, ptr + sizeBytes);
+                return true;
+            },
+            diagnostics);
+    }
+
     if (impl_ && impl_->conformanceClear
         && !impl_->conformanceClear->push(stages, offsetBytes, sizeBytes, data, diagnostics))
         return false;
@@ -4213,6 +4468,17 @@ bool WebGpuNativeCommandPayload::recordDispatch(std::uint32_t groupCountX,
     std::uint32_t groupCountZ,
     std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::Dispatch,
+            [&](auto& r) {
+                r.args = {groupCountX, groupCountY, groupCountZ, 0};
+                return true;
+            },
+            diagnostics);
+    }
+
     if (impl_ && impl_->conformanceClear
         && !impl_->conformanceClear->dispatch(groupCountX, groupCountY, groupCountZ, diagnostics))
         return false;
@@ -4280,6 +4546,16 @@ bool WebGpuNativeCommandPayload::recordDispatchIndirect(
 
 bool WebGpuNativeCommandPayload::recordComputePassEnd(std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing()) {
+        auto& b = *impl_->prototypeBatch;
+        return b.capture(
+            WebGpuPrototypeBatch::Op::ComputeEnd,
+            [&](auto& r) {
+                return true;
+            },
+            diagnostics);
+    }
+
     if (impl_ && impl_->conformanceClear
         && !impl_->conformanceClear->computePass(false, diagnostics))
         return false;
@@ -4308,6 +4584,8 @@ bool WebGpuNativeCommandPayload::recordComputePassEnd(std::pmr::string& diagnost
 
 bool WebGpuNativeCommandPayload::finish(std::pmr::string& diagnostics)
 {
+    if (impl_ && impl_->prototypeBatch && !impl_->prototypeBatch->replaying())
+        return impl_->prototypeBatch->replay(*this, diagnostics);
     if (impl_ && impl_->conformanceClear && !impl_->conformanceClear->finish(diagnostics))
         return false;
     if (const auto* id =
@@ -4550,6 +4828,8 @@ bool WebGpuNativeCommandPayload::finished() const
 void WebGpuNativeCommandPayload::retainTextureForSubmission(
     std::shared_ptr<WebGpuNativeTexturePayload> texture)
 {
+    if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing())
+        return; // Frozen records retain exact owners.
     if (impl_ && impl_->conformanceClear ? impl_->conformanceClear->failure_
                                          : restrictedRecordingDiagnostic()) {
         if (impl_)

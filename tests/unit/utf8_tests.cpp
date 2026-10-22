@@ -1,4 +1,4 @@
-#include "core/utf8.h"
+#include "core/text/utf8.h"
 
 #include <array>
 #include <cassert>

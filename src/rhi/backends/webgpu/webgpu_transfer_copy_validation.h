@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/backends/webgpu/webgpu_transfer_retention.h"
 #include "rhi/frontend/transfer_copy.h"
 #include "rhi/frontend/transfer_validation.h"

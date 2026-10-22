@@ -2,7 +2,7 @@
 #include "2d/scene_component_factory.h"
 #include "2d/tile_map_runtime.h"
 #include "audio/audio_importer.h"
-#include "core/yaml_contract.h"
+#include "core/encoding/yaml_contract.h"
 #include "resource/audio_clip_resource.h"
 #include "scene/scene_asset_resource.h"
 #include "scriptvm/aot/aot_v5.h"
@@ -37,9 +37,8 @@ struct GameConfig {
 
 class Rules final {
 public:
-    bool load(const core::pmr::String& root,
-        std::size_t maxSourceBytes,
-        core::pmr::String& diagnostic);
+    bool load(
+        const core::pmr::String& root, std::size_t maxSourceBytes, core::pmr::String& diagnostic);
 
     const auto& diagnostic() const { return diagnostic_; }
 

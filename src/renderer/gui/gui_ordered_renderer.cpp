@@ -1,7 +1,7 @@
 #include "renderer/gui/gui_ordered_renderer.h"
 
-#include "core/diagnostic_error.h"
-#include "core/quad_geometry.h"
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/math/quad_geometry.h"
 #include "rhi/frontend/descriptor_set_validation.h"
 
 namespace arp::renderer {

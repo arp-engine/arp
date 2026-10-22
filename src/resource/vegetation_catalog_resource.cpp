@@ -1,14 +1,20 @@
 #include "resource/vegetation_catalog_resource.h"
 
 #include "assets/glb_static_mesh_importer.h"
-#include "core/diagnostic_builder.h"
-#include "core/file_io.h"
+#include "core/diagnostics/diagnostic_builder.h"
+#include "core/io/file_io.h"
 #include "reflection/serialization.h"
+#include "resource/prefab_asset_resources.h"
+#include "resource/resource_source_io.h"
+#include "resource/vegetation_catalog_cooked.h"
+#include "resource/vegetation_catalog_layout.h"
+#include "resource/vegetation_template_geometry_builder.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <initializer_list>
+#include <iostream>
 #include <limits>
 #include <string>
 
@@ -66,116 +72,58 @@ std::filesystem::path resolveRelativePath(
     return path.is_absolute() ? path : baseDir / path;
 }
 
-pcg::TemplateCategory classifyTemplateCategory(std::string_view sourceStem)
+vegetation::TemplateCategory classifyTemplateCategory(std::string_view sourceStem)
 {
     const auto stem = toLowerAscii(std::string(sourceStem));
 
     if (startsWith(stem, "grass_common_") || startsWith(stem, "grass_wispy_")) {
-        return pcg::TemplateCategory::FoliageGrass;
+        return vegetation::TemplateCategory::FoliageGrass;
     }
     if (startsWith(stem, "clover_")) {
-        return pcg::TemplateCategory::FoliageBroadleaf;
+        return vegetation::TemplateCategory::FoliageBroadleaf;
     }
     if (startsWith(stem, "fern_")) {
-        return pcg::TemplateCategory::FoliageFern;
+        return vegetation::TemplateCategory::FoliageFern;
     }
     if (startsWith(stem, "bush_common") || startsWith(stem, "plant_1")
         || startsWith(stem, "plant_7")) {
-        return pcg::TemplateCategory::FoliageBush;
+        return vegetation::TemplateCategory::FoliageBush;
     }
     if (startsWith(stem, "flower_") || startsWith(stem, "petal_")) {
-        return pcg::TemplateCategory::FoliageFlower;
+        return vegetation::TemplateCategory::FoliageFlower;
     }
     if (startsWith(stem, "mushroom_")) {
-        return pcg::TemplateCategory::FoliageMushroom;
+        return vegetation::TemplateCategory::FoliageMushroom;
     }
     if (startsWith(stem, "commontree_") || startsWith(stem, "twistedtree_")) {
-        return pcg::TemplateCategory::TreeMaturePine;
+        return vegetation::TemplateCategory::TreeMaturePine;
     }
     if (startsWith(stem, "deadtree_")) {
-        return pcg::TemplateCategory::TreeYoungFir;
+        return vegetation::TemplateCategory::TreeYoungFir;
     }
     if (startsWith(stem, "pine_")) {
-        return pcg::TemplateCategory::TreeYoungPine;
+        return vegetation::TemplateCategory::TreeYoungPine;
     }
     if (startsWith(stem, "pebble_") || startsWith(stem, "rock_medium_")) {
-        return pcg::TemplateCategory::RockMossy01;
+        return vegetation::TemplateCategory::RockMossy01;
     }
     if (startsWith(stem, "rockpath_")) {
-        return pcg::TemplateCategory::RockMossy02;
+        return vegetation::TemplateCategory::RockMossy02;
     }
 
-    return pcg::TemplateCategory::ProceduralGrass;
+    return vegetation::TemplateCategory::ProceduralGrass;
 }
 
-bool parseTemplateCategory(std::string_view value, pcg::TemplateCategory& out) noexcept
-{
-    struct CategoryName final {
-        const char* name;
-        pcg::TemplateCategory category;
-    };
-
-    static constexpr CategoryName kNames[] = {
-        {"foliage_grass", pcg::TemplateCategory::FoliageGrass},
-        {"foliage_weed", pcg::TemplateCategory::FoliageWeed},
-        {"foliage_broadleaf", pcg::TemplateCategory::FoliageBroadleaf},
-        {"foliage_fern", pcg::TemplateCategory::FoliageFern},
-        {"foliage_bush", pcg::TemplateCategory::FoliageBush},
-        {"foliage_flower", pcg::TemplateCategory::FoliageFlower},
-        {"foliage_mushroom", pcg::TemplateCategory::FoliageMushroom},
-        {"tree_mature_pine", pcg::TemplateCategory::TreeMaturePine},
-        {"tree_young_fir", pcg::TemplateCategory::TreeYoungFir},
-        {"tree_young_pine", pcg::TemplateCategory::TreeYoungPine},
-        {"rock_mossy_01", pcg::TemplateCategory::RockMossy01},
-        {"rock_mossy_02", pcg::TemplateCategory::RockMossy02},
-    };
-    for (const auto& candidate : kNames) {
-        if (value == candidate.name) {
-            out = candidate.category;
-            return true;
-        }
-    }
-    return false;
-}
-
-pcg::VegetationTemplate makeVegetationTemplate(const VegetationCatalogAssetEntry& entry,
+vegetation::VegetationTemplate makeVegetationTemplate(const VegetationCatalogAssetEntry& entry,
     std::uint16_t templateId,
     const assets::MeshAsset& mesh,
     const std::pmr::vector<assets::ImportedMaterialAsset>& materials)
 {
-    pcg::VegetationTemplate templateData;
+    auto templateData = detail::VegetationTemplateGeometryBuilder::build(mesh);
     templateData.category = entry.templateCategory;
     templateData.id = templateId;
     templateData.variantIndex = 0u;
     templateData.lodIndex = 0u;
-    templateData.vertices.reserve(mesh.vertices.size());
-    templateData.indices = mesh.indices;
-    templateData.sections.reserve(mesh.submeshes.size());
-
-    for (const auto& vertex : mesh.vertices) {
-        pcg::InstanceVertex instanceVertex;
-        instanceVertex.position[0] = vertex.position[0];
-        instanceVertex.position[1] = vertex.position[1];
-        instanceVertex.position[2] = vertex.position[2];
-        instanceVertex.normal[0] = vertex.normal[0];
-        instanceVertex.normal[1] = vertex.normal[1];
-        instanceVertex.normal[2] = vertex.normal[2];
-        instanceVertex.uv[0] = vertex.uv[0];
-        instanceVertex.uv[1] = vertex.uv[1];
-        instanceVertex.tangent[0] = vertex.tangent[0];
-        instanceVertex.tangent[1] = vertex.tangent[1];
-        instanceVertex.tangent[2] = vertex.tangent[2];
-        instanceVertex.tangent[3] = vertex.tangent[3];
-        templateData.vertices.push_back(instanceVertex);
-    }
-
-    for (const auto& submesh : mesh.submeshes) {
-        templateData.sections.push_back(pcg::VegetationTemplate::Section{
-            submesh.firstIndex,
-            submesh.indexCount,
-            submesh.materialSlot,
-        });
-    }
 
     if (!mesh.submeshes.empty()) {
         templateData.materialIndex = mesh.submeshes.front().materialSlot;
@@ -209,31 +157,31 @@ core::pmr::Vector<const VegetationCatalogAssetEntry*> flattenAssetsByFamily(
         core::pmr::Vector<const VegetationCatalogAssetEntry*>{&core::defaultCpuMemoryResource()},
     };
 
-    auto bucketIndex = [](pcg::TemplateCategory category) -> std::size_t {
+    auto bucketIndex = [](vegetation::TemplateCategory category) -> std::size_t {
         switch (category) {
-        case pcg::TemplateCategory::FoliageGrass:
+        case vegetation::TemplateCategory::FoliageGrass:
             return 0u;
-        case pcg::TemplateCategory::FoliageWeed:
+        case vegetation::TemplateCategory::FoliageWeed:
             return 1u;
-        case pcg::TemplateCategory::FoliageBroadleaf:
+        case vegetation::TemplateCategory::FoliageBroadleaf:
             return 2u;
-        case pcg::TemplateCategory::FoliageFern:
+        case vegetation::TemplateCategory::FoliageFern:
             return 3u;
-        case pcg::TemplateCategory::FoliageBush:
+        case vegetation::TemplateCategory::FoliageBush:
             return 4u;
-        case pcg::TemplateCategory::FoliageFlower:
+        case vegetation::TemplateCategory::FoliageFlower:
             return 5u;
-        case pcg::TemplateCategory::FoliageMushroom:
+        case vegetation::TemplateCategory::FoliageMushroom:
             return 6u;
-        case pcg::TemplateCategory::TreeMaturePine:
+        case vegetation::TemplateCategory::TreeMaturePine:
             return 7u;
-        case pcg::TemplateCategory::TreeYoungFir:
+        case vegetation::TemplateCategory::TreeYoungFir:
             return 8u;
-        case pcg::TemplateCategory::TreeYoungPine:
+        case vegetation::TemplateCategory::TreeYoungPine:
             return 9u;
-        case pcg::TemplateCategory::RockMossy01:
+        case vegetation::TemplateCategory::RockMossy01:
             return 10u;
-        case pcg::TemplateCategory::RockMossy02:
+        case vegetation::TemplateCategory::RockMossy02:
             return 11u;
         default:
             return std::numeric_limits<std::size_t>::max();
@@ -338,19 +286,33 @@ bool loadTypedCatalog(const std::filesystem::path& path,
     if (text.empty()) {
         return false;
     }
-    const auto result = arp::reflection::deserialize_from_yaml(text);
+    // vegetation.catalog/v1 and /v2 explicitly retain their versioned wire
+    // schema, including optional metadata. Do not relax global Authoring or
+    // retry another profile on failure. See the serialization binding contract.
+    arp::reflection::SerializationOptions options;
+    options.profile = arp::reflection::SerializationProfile::LegacyAllPropertiesV1;
+    const auto result = arp::reflection::deserialize_from_yaml(text, options);
     if (!result.success) {
         diagnostics = makeDiagnostic(label);
         diagnostics += " parse failed: ";
         diagnostics += result.diagnostics;
         return false;
     }
-    auto* catalog = result.value.cast<VegetationSourceCatalog*>();
+    auto* catalog = result.value.is<VegetationSourceCatalog>()
+        ? result.value.cast<VegetationSourceCatalog*>()
+        : nullptr;
     if (catalog == nullptr) {
         diagnostics = makeDiagnostic(label);
         diagnostics += " root type mismatch";
         return false;
     }
+    if (catalog->contractVersion != 1u && catalog->contractVersion != 2u) {
+        diagnostics = makeDiagnostic("unsupported vegetation catalog contract version: ");
+        diagnostics += std::to_string(catalog->contractVersion);
+        return false;
+    }
+    std::clog << "[vegetation-catalog-serialization] contractVersion=" << catalog->contractVersion
+              << " profile=LegacyAllPropertiesV1\n";
     out = *catalog;
     return true;
 }
@@ -368,7 +330,7 @@ const VegetationCatalogAssetEntry* VegetationCatalogResourceData::findAsset(
     return nullptr;
 }
 
-const pcg::VegetationTemplate* VegetationCatalogResourceData::findTemplate(
+const vegetation::VegetationTemplate* VegetationCatalogResourceData::findTemplate(
     std::string_view id) const noexcept
 {
     const auto templateId = templateIdFor(id);
@@ -394,18 +356,19 @@ const VegetationCatalogAssetEntry* VegetationCatalogResourceData::findAssetByTem
 }
 
 std::uint16_t VegetationCatalogResourceData::familyBase(
-    pcg::TemplateCategory category) const noexcept
+    vegetation::TemplateCategory category) const noexcept
 {
     // TerrainAsset reserves prototype ID zero as invalid. Catalog-facing
     // family IDs therefore begin at one even though the internal template
     // storage remains densely zero-indexed.
-    return static_cast<std::uint16_t>(pcg::familyTemplateBase(templateConfig, category) + 1u);
+    return static_cast<std::uint16_t>(
+        vegetation::familyTemplateBase(templateConfig, category) + 1u);
 }
 
 std::uint16_t VegetationCatalogResourceData::familyVariantCount(
-    pcg::TemplateCategory category) const noexcept
+    vegetation::TemplateCategory category) const noexcept
 {
-    return pcg::familyVariantCount(templateConfig, category);
+    return vegetation::familyVariantCount(templateConfig, category);
 }
 
 std::uint16_t VegetationCatalogResourceData::templateIdFor(std::string_view id) const noexcept
@@ -421,6 +384,30 @@ std::uint16_t VegetationCatalogResourceData::templateIdFor(std::string_view id) 
 ResourceLoadResult VegetationCatalogResource::load(
     ResourceManager& resourceManager, const ResourceLoadContext& context)
 {
+    if (loadDesc.input == VegetationCatalogInput::Cooked) {
+        auto decoded =
+            VegetationCatalogCookedCodec().decode(reference(), loadDesc.catalogPath, context);
+        if (!decoded.success)
+            return {false,
+                ResourceState::Failed,
+                reference().id,
+                reference().type,
+                decoded.diagnostics};
+        for (const auto& dependency : decoded.dependencies) {
+            const auto material = resourceManager.find<MaterialResource>(dependency.id);
+            if (!material.ready())
+                return resourceLoadFailure(*this, "VEGETATION-COOKED-MATERIAL-NOT-READY-OR-TYPE");
+        }
+        for (const auto& dependency : decoded.dependencies)
+            addDependency(dependency);
+        data = std::move(decoded.data);
+        cookedBytes_ = decoded.decodedBytes;
+        cookedFingerprint_ = decoded.contentFingerprint;
+        return ResourceBase::load(resourceManager, context);
+    }
+    if (loadDesc.input != VegetationCatalogInput::LegacySourceCatalog
+        || context.requirePreloadedSources || context.maxDecodedBytes)
+        return resourceLoadFailure(*this, "VEGETATION-LEGACY-SOURCE-CONTRACT-UNSUPPORTED");
     registerVegetationCatalogReflection();
 
     core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
@@ -490,6 +477,19 @@ ResourceLoadResult VegetationCatalogResource::load(
             makeString(kVegetationCatalogResourceContract.type),
             diagnostics,
         };
+    }
+
+    const auto hasAssetRecords = [](const auto& catalog) {
+        return std::all_of(catalog.assets.begin(), catalog.assets.end(), [](const auto& item) {
+            return item.template is<VegetationCatalogAssetRecord>();
+        });
+    };
+    if (!hasAssetRecords(sourceCatalog) || !hasAssetRecords(runtimeCatalog)) {
+        return ResourceLoadResult{false,
+            ResourceState::Failed,
+            loadDesc.resourceId,
+            makeString(kVegetationCatalogResourceContract.type),
+            makeDiagnostic("vegetation catalog assets require VegetationCatalogAssetRecord")};
     }
 
     const auto sourceAssets = [&]() -> core::pmr::Vector<VegetationCatalogAssetRecord> {
@@ -639,7 +639,8 @@ ResourceLoadResult VegetationCatalogResource::load(
         entry.category = runtimeAsset.category;
         entry.heightClass = runtimeAsset.heightClass;
         if (runtimeCatalog.contractVersion == 2u) {
-            if (!parseTemplateCategory(runtimeAsset.templateCategory, entry.templateCategory)) {
+            if (!detail::CatalogFamilyContract::parse(
+                    runtimeAsset.templateCategory, entry.templateCategory)) {
                 diagnostics = makeDiagnostic(
                     "vegetation.catalog/v2 asset requires a valid templateCategory: ");
                 diagnostics += runtimeAsset.id;
@@ -658,7 +659,7 @@ ResourceLoadResult VegetationCatalogResource::load(
                 std::filesystem::path(runtimeAsset.source.c_str()).stem().generic_string());
         }
 
-        if (entry.templateCategory == pcg::TemplateCategory::ProceduralGrass) {
+        if (entry.templateCategory == vegetation::TemplateCategory::ProceduralGrass) {
             diagnostics = makeDiagnostic("unsupported vegetation asset family for source: ");
             diagnostics += runtimeAsset.source;
             return ResourceLoadResult{
@@ -753,54 +754,9 @@ ResourceLoadResult VegetationCatalogResource::load(
     resourceData->templateConfig.proceduralSlabRockTemplate = 0u;
 
     for (const auto& asset : resourceData->assets) {
-        switch (asset.templateCategory) {
-        case pcg::TemplateCategory::FoliageGrass:
-            ++resourceData->templateConfig.grassCardCount;
-            break;
-        case pcg::TemplateCategory::FoliageWeed:
-            ++resourceData->templateConfig.weedCardCount;
-            break;
-        case pcg::TemplateCategory::FoliageBroadleaf:
-            ++resourceData->templateConfig.broadleafCardCount;
-            break;
-        case pcg::TemplateCategory::FoliageFern:
-            ++resourceData->templateConfig.fernCardCount;
-            break;
-        case pcg::TemplateCategory::FoliageBush:
-            ++resourceData->templateConfig.bushCardCount;
-            break;
-        case pcg::TemplateCategory::FoliageFlower:
-            ++resourceData->templateConfig.flowerCardCount;
-            break;
-        case pcg::TemplateCategory::FoliageMushroom:
-            ++resourceData->templateConfig.mushroomCardCount;
-            break;
-        case pcg::TemplateCategory::TreeMaturePine:
-            ++resourceData->templateConfig.maturePineVariantCount;
-            break;
-        case pcg::TemplateCategory::TreeYoungFir:
-            ++resourceData->templateConfig.youngFirVariantCount;
-            break;
-        case pcg::TemplateCategory::TreeYoungPine:
-            ++resourceData->templateConfig.youngPineVariantCount;
-            break;
-        case pcg::TemplateCategory::RockMossy01:
-            ++resourceData->templateConfig.mossyRock01VariantCount;
-            break;
-        case pcg::TemplateCategory::RockMossy02:
-            ++resourceData->templateConfig.mossyRock02VariantCount;
-            break;
-        default:
-            diagnostics =
-                makeDiagnostic("unexpected vegetation template category while building config");
-            return ResourceLoadResult{
-                false,
-                ResourceState::Failed,
-                loadDesc.resourceId,
-                makeString(kVegetationCatalogResourceContract.type),
-                diagnostics,
-            };
-        }
+        if (!detail::CatalogFamilyContract::increment(
+                resourceData->templateConfig, asset.templateCategory))
+            return resourceLoadFailure(*this, "VEGETATION-LEGACY-FAMILY-COUNT");
     }
 
     if (resourceData->assets.size() != resourceData->templates.size()) {
@@ -816,6 +772,34 @@ ResourceLoadResult VegetationCatalogResource::load(
 
     data = std::move(resourceData);
     return ResourceBase::load(resourceManager, context);
+}
+
+bool VegetationCatalogResource::collectFileReadIntents(ResourceManager&,
+    core::pmr::Vector<ResourceFileReadIntent>& intents,
+    core::pmr::String& diagnostics) const
+{
+    if (loadDesc.input != VegetationCatalogInput::Cooked) {
+        diagnostics = "VEGETATION-LEGACY-SOURCE-CONTRACT-UNSUPPORTED";
+        return false;
+    }
+    auto index = VegetationCatalogCookedCodec().inspect(reference(), loadDesc.catalogPath);
+    diagnostics = std::move(index.diagnostics);
+    if (!index.success)
+        return false;
+    intents.insert(intents.end(),
+        std::make_move_iterator(index.files.begin()),
+        std::make_move_iterator(index.files.end()));
+    return true;
+}
+
+std::size_t VegetationCatalogResource::processedByteCount() const noexcept
+{
+    return cookedBytes_;
+}
+
+void VegetationCatalogResource::appendContentFingerprint(core::StableHash64& hasher) const noexcept
+{
+    hasher.appendU64(cookedFingerprint_);
 }
 
 VegetationCatalogResourceLoadResult loadVegetationCatalogResource(

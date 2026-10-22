@@ -1,6 +1,6 @@
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "modules/yaml/yaml_module.h"
-#include "scriptvm/runtime/cpp_plugin_importer.h"
+#include "scriptvm/plugin/cpp_plugin_importer.h"
 #include "tools/asset_importer/script_runner.h"
 
 #include <cassert>

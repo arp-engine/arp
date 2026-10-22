@@ -1,7 +1,8 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
-#include "core/math.h"
+#include "3d/camera_parameters.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
 #include "scene/component.h"
 #include "scene/diagnostics.h"

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "core/memory_budget_ledger.h"
 #include "rhi/frontend/command_recording.h"
 #include "rhi/frontend/descriptor_validation.h"
+#include "rhi/frontend/memory_budget_ledger.h"
 
 #include <array>
 

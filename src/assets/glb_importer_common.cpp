@@ -1,9 +1,10 @@
 #include "assets/glb_importer_common.h"
 
 #include "assets/glb_static_mesh_importer.h"
-#include "core/base64.h"
-#include "core/cpu_allocator.h"
+#include "core/encoding/base64.h"
+#include "core/memory/cpu_allocator.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -23,10 +24,16 @@ constexpr uint32_t binChunkType = 0x004E4942u;
 
 class JsonParser {
 public:
-    explicit JsonParser(const std::pmr::string& text) : text_(text), cursor_(text_.c_str()) {}
+    explicit JsonParser(const std::pmr::string& text, JsonParseLimits limits = {})
+        : text_(text), cursor_(text_.c_str()), limits_(limits)
+    {}
 
     bool parse(JsonValue& out)
     {
+        if (limits_.strictAscii
+            && (text_.find('\0') != std::pmr::string::npos || !limits_.maxDepth
+                || !limits_.maxValues))
+            return false;
         skipWhitespace();
         if (!parseValue(out)) {
             return false;
@@ -38,6 +45,17 @@ public:
 private:
     bool parseValue(JsonValue& out)
     {
+        if (limits_.strictAscii && (depth_ >= limits_.maxDepth || values_ >= limits_.maxValues))
+            return false;
+        ++values_;
+        ++depth_;
+
+        struct DepthScope final {
+            std::uint32_t& value;
+
+            ~DepthScope() { --value; }
+        } depthScope{depth_};
+
         skipWhitespace();
         if (*cursor_ == '{') {
             return parseObject(out);
@@ -85,6 +103,12 @@ private:
             if (!parseString(key)) {
                 return false;
             }
+            if (limits_.strictAscii
+                && std::any_of(
+                    out.objectValue.begin(), out.objectValue.end(), [&](const auto& item) {
+                        return item.first == key;
+                    }))
+                return false;
             skipWhitespace();
             if (*cursor_ != ':') {
                 return false;
@@ -150,6 +174,9 @@ private:
         out.clear();
         while (*cursor_ != '\0') {
             const char ch = *cursor_++;
+            if (limits_.strictAscii
+                && (static_cast<unsigned char>(ch) < 32u || static_cast<unsigned char>(ch) > 126u))
+                return false;
             if (ch == '"') {
                 return true;
             }
@@ -157,6 +184,8 @@ private:
                 out.push_back(ch);
                 continue;
             }
+            if (*cursor_ == '\0')
+                return false;
             const char escaped = *cursor_++;
             switch (escaped) {
             case '"':
@@ -180,6 +209,8 @@ private:
                 out.push_back('\t');
                 break;
             case 'u':
+                if (limits_.strictAscii)
+                    return false;
                 for (int i = 0; i < 4 && std::isxdigit(static_cast<unsigned char>(*cursor_)); ++i) {
                     ++cursor_;
                 }
@@ -194,9 +225,39 @@ private:
 
     bool parseNumber(JsonValue& out)
     {
+        const char* expectedEnd = cursor_;
+        if (limits_.strictAscii) {
+            if (*expectedEnd == '-')
+                ++expectedEnd;
+            if (*expectedEnd == '0')
+                ++expectedEnd;
+            else {
+                if (*expectedEnd < '1' || *expectedEnd > '9')
+                    return false;
+                while (*expectedEnd >= '0' && *expectedEnd <= '9')
+                    ++expectedEnd;
+            }
+            if (*expectedEnd == '.') {
+                ++expectedEnd;
+                if (*expectedEnd < '0' || *expectedEnd > '9')
+                    return false;
+                while (*expectedEnd >= '0' && *expectedEnd <= '9')
+                    ++expectedEnd;
+            }
+            if (*expectedEnd == 'e' || *expectedEnd == 'E') {
+                ++expectedEnd;
+                if (*expectedEnd == '+' || *expectedEnd == '-')
+                    ++expectedEnd;
+                if (*expectedEnd < '0' || *expectedEnd > '9')
+                    return false;
+                while (*expectedEnd >= '0' && *expectedEnd <= '9')
+                    ++expectedEnd;
+            }
+        }
         char* end = nullptr;
         const auto value = std::strtod(cursor_, &end);
-        if (end == cursor_) {
+        if (end == cursor_
+            || (limits_.strictAscii && (end != expectedEnd || !std::isfinite(value)))) {
             return false;
         }
         cursor_ = end;
@@ -217,13 +278,17 @@ private:
 
     void skipWhitespace()
     {
-        while (std::isspace(static_cast<unsigned char>(*cursor_))) {
+        while (limits_.strictAscii
+                ? (*cursor_ == ' ' || *cursor_ == '\t' || *cursor_ == '\n' || *cursor_ == '\r')
+                : std::isspace(static_cast<unsigned char>(*cursor_))) {
             ++cursor_;
         }
     }
 
     std::pmr::string text_;
     const char* cursor_ = nullptr;
+    JsonParseLimits limits_;
+    std::uint32_t depth_ = 0, values_ = 0;
 };
 
 uint32_t readU32(const std::pmr::string& bytes, const std::size_t offset)
@@ -387,6 +452,12 @@ const JsonValue* JsonValue::find(const char* key) const
 bool parseJson(const std::pmr::string& text, JsonValue& out)
 {
     JsonParser parser(text);
+    return parser.parse(out);
+}
+
+bool parseJson(const std::pmr::string& text, JsonValue& out, JsonParseLimits limits)
+{
+    JsonParser parser(text, limits);
     return parser.parse(out);
 }
 

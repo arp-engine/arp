@@ -1,5 +1,5 @@
-#include "core/base64.h"
-#include "core/sha1.h"
+#include "core/encoding/base64.h"
+#include "core/hash/sha1.h"
 
 #include <cassert>
 

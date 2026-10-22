@@ -2,7 +2,7 @@
 #include "renderer/gi/ddgi_renderer.h"
 #include "rhi/backends/metal/metal_device.h"
 #include "rhi/gpu_extensions.h"
-#include "tools/render_feature_lab/postprocess_fixture.h"
+#include "tests/fixtures/postprocess_fixture.h"
 
 #include <cassert>
 #include <iostream>
@@ -36,8 +36,7 @@ int main()
     assert(row.success);
     core::pmr::String diagnostic;
     assert(readback->configureBudget({2u * row.alignedValue * atlasHeight, 1u}, diagnostic));
-    const auto result =
-        tools::render_feature_lab::runDdgiFeatureFixtureFrames(*device, {32u, 32u}, 3u);
+    const auto result = tests::postprocess::runDdgiFeatureFixtureFrames(*device, {32u, 32u}, 3u);
     if (!result.success)
         std::cerr << result.diagnostic << '\n';
     assert(result.success && result.graphPassCount == 10u);
@@ -70,10 +69,10 @@ int main()
         }
     }
     assert(lifecycleChecks == 2u);
-    for (const auto fault : {tools::render_feature_lab::DdgiFixtureFault::AfterHistoryCopy,
-             tools::render_feature_lab::DdgiFixtureFault::AfterResolve}) {
+    for (const auto fault : {tests::postprocess::DdgiFixtureFault::AfterHistoryCopy,
+             tests::postprocess::DdgiFixtureFault::AfterResolve}) {
         std::cout << "DDGI retry fault=" << static_cast<int>(fault) << std::endl;
-        const auto recovered = tools::render_feature_lab::runDdgiFeatureFixtureFrames(
+        const auto recovered = tests::postprocess::runDdgiFeatureFixtureFrames(
             *device, {32u, 32u}, 3u, nullptr, fault);
         if (!recovered.success)
             std::cerr << recovered.diagnostic << '\n';

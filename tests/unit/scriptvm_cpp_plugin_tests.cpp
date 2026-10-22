@@ -1,4 +1,4 @@
-#include "scriptvm/runtime/cpp_plugin_importer.h"
+#include "scriptvm/plugin/cpp_plugin_importer.h"
 #if ARP_CPP_PLUGIN_DIFFERENTIAL_TEST
 #include "scriptvm/interpreter/eval.h"
 #include "tests/scriptvm_interpreter_test_fixture.h"

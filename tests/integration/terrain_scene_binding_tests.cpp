@@ -1,6 +1,7 @@
 #include "renderer/gi/ddgi_renderer.h"
 #include "renderer/gi/ddgi_terrain_surface.h"
 #include "renderer/gi/ddgi_terrain_surface_gpu.h"
+#include "renderer/scene_terrain_preparation.h"
 #include "renderer/terrain_gpu_rhi_uploader.h"
 #include "renderer/terrain_gpu_runtime.h"
 #include "renderer/terrain_pbr_page_descriptors.h"
@@ -407,7 +408,7 @@ void bindsOnlyResolvedRuntimeState()
     assert(!gpuVegetationInstances.empty()
         && gpuVegetationInstances.front().prototypeId
             == activeVegetationPage->prototypes.front().prototypeId);
-    arp::core::pmr::Vector<arp::pcg::InstanceDataGpu> cullVegetationInstances{
+    arp::core::pmr::Vector<arp::vegetation::InstanceDataGpu> cullVegetationInstances{
         &arp::core::defaultCpuMemoryResource()};
     assert(arp::renderer::lowerTerrainVegetationInstancesForCull(
         activeVegetationPage->prototypes.front(),
@@ -486,8 +487,8 @@ void bindsOnlyResolvedRuntimeState()
     assert(!rejected.success);
     assert(component.desc().terrain == previous);
 
-    arp::pcg::TerrainStreamer invalidGrid;
-    arp::pcg::TerrainStreamerDesc invalidGridDesc;
+    arp::terrain::TerrainStreamer invalidGrid;
+    arp::terrain::TerrainStreamerDesc invalidGridDesc;
     invalidGridDesc.worldBounds = {0.0f, 2.5f, 0.0f, 2.0f};
     invalidGridDesc.chunkSize = 1.0f;
     invalidGridDesc.heightSampler = [](float, float) {
@@ -496,11 +497,135 @@ void bindsOnlyResolvedRuntimeState()
     assert(!invalidGrid.initialize(invalidGridDesc));
 }
 
+void preparesStandardSceneLifecycle()
+{
+    using namespace arp;
+    const auto path = std::filesystem::temp_directory_path() / "arp_terrain_scene_preparation";
+    assert(resource::writeTerrainAsset(makeAsset(), path).success);
+    resource::ResourceManager resources;
+    assert(resources.load<TestCatalog>(resource::ResourceLoadContext{}).success);
+    assert(resources.declareResource(kMaterialId, "MaterialResource").success);
+    assert(resource::loadTerrainAssetResource(resources, reference(), path / "terrain.asset.yaml")
+            .success);
+    renderer::RuntimeScene runtime;
+    auto material = runtime.addMaterial("terrain/standard");
+    scene::Scene scene(text("terrain-standard"));
+    auto& object = scene.createObject(text("Terrain"));
+    object.set_local_transform(scene::Transform::fromTranslation({100.0f, 5.0f, 200.0f}));
+    auto& component = object.addComponent<scene3d::TerrainComponent>();
+    component.set_resource_id(text(kTerrainId));
+    renderer::SceneTerrainPreparation preparation;
+    renderer::SceneTerrainPreparation::Desc desc;
+    desc.maxObjects = 8u;
+    desc.maxTerrains = 1u;
+    desc.binding.useAssetTileLayout = true;
+    desc.binding.resolveMaterial = resolveMaterial;
+    desc.binding.context = &material;
+
+    struct GateProbe final {
+        bool allow = false;
+        std::size_t calls = 0u;
+        std::size_t expectedTerrains = 1u;
+        std::uint64_t allocations = 0u;
+    } probe;
+
+    const auto gate = [](void* context,
+                          const renderer::SceneTerrainPreparation& candidate,
+                          core::pmr::String& diagnostics) {
+        auto& probe = *static_cast<GateProbe*>(context);
+        ++probe.calls;
+        assert(candidate.terrainCount() == probe.expectedTerrains);
+        assert(bool(candidate.singleWorldSurface()) == (probe.expectedTerrains == 1u));
+        if (!probe.allow)
+            diagnostics = "explicit-test-gate-rejection";
+        probe.allocations = core::defaultCpuAllocator().stats().allocationCount;
+        return probe.allow;
+    };
+    const auto rejected =
+        preparation.synchronizeWithGate(scene, resources, runtime, desc, gate, &probe);
+    assert(!rejected.success && rejected.bound == 0u && probe.calls == 1u);
+    assert(rejected.diagnostics == "explicit-test-gate-rejection");
+    assert(!component.desc().terrain.valid() && preparation.terrainCount() == 0u);
+    probe.allow = true;
+    const auto first =
+        preparation.synchronizeWithGate(scene, resources, runtime, desc, gate, &probe);
+    assert(core::defaultCpuAllocator().stats().allocationCount == probe.allocations);
+    assert(first.success && first.bound == 1u);
+    assert(component.desc().terrain.id == 1u); // Rejected candidate did not consume a handle.
+    const auto surface = preparation.worldSurface(component.id());
+    assert(surface && surface->bounds().minX == 110.0f);
+    assert(surface->sample(111.0f, 197.0f).sample.height == 7.0f);
+    assert(preparation.synchronize(scene, resources, runtime, desc).reused == 1u);
+    const renderer::TerrainHandle handle{component.desc().terrain.id};
+    const auto rendererGeneration = *runtime.terrain(handle);
+    const auto authoredTransform = object.local_transform();
+    object.set_local_transform(scene::Transform::fromTranslation({100, 9, 200}));
+    probe.allow = false;
+    assert(!preparation.synchronizeWithGate(scene, resources, runtime, desc, gate, &probe).success);
+    assert(*runtime.terrain(handle) == rendererGeneration);
+    assert(preparation.singleWorldSurface() == surface);
+    object.set_local_transform(authoredTransform);
+    component.set_enabled(false);
+    probe.expectedTerrains = 0u;
+    assert(!preparation.synchronizeWithGate(scene, resources, runtime, desc, gate, &probe).success);
+    assert(*runtime.terrain(handle) == rendererGeneration && component.desc().terrain.valid());
+    assert(preparation.terrainCount() == 1u);
+    component.set_enabled(true);
+    auto badTransform = object.local_transform();
+    badTransform.scale.x = 2.0f;
+    object.set_local_transform(badTransform);
+    const auto failed = preparation.synchronize(scene, resources, runtime, desc);
+    assert(!failed.success && failed.failed == 1u);
+    assert(runtime.terrain(handle) && preparation.worldSurface(component.id()) == surface);
+    component.set_enabled(false);
+    probe.allow = true;
+    const auto disabled =
+        preparation.synchronizeWithGate(scene, resources, runtime, desc, gate, &probe);
+    assert(core::defaultCpuAllocator().stats().allocationCount == probe.allocations);
+    assert(disabled.success && disabled.released == 1u && !runtime.terrain(handle));
+    assert(!component.desc().terrain.valid());
+    assert(surface->sample(111.0f, 197.0f).sample.height == 7.0f);
+    component.set_enabled(true);
+    object.set_local_transform(scene::Transform::identity());
+    assert(preparation.synchronize(scene, resources, runtime, desc).success);
+    const renderer::TerrainHandle currentHandle{component.desc().terrain.id};
+    const auto currentRuntime = *runtime.terrain(currentHandle);
+    auto& extraObject = scene.createObject(text("second-candidate"));
+    auto& extra = extraObject.addComponent<scene3d::TerrainComponent>();
+    extra.set_resource_id(text("3f6fbcca-17d2-46a6-9817-2af357399302"));
+    desc.maxTerrains = 2u;
+    object.set_local_transform(scene::Transform::fromTranslation({0, 3, 0}));
+    const auto callsBeforeFailure = probe.calls;
+    const auto partiallyInvalid =
+        preparation.synchronizeWithGate(scene, resources, runtime, desc, gate, &probe);
+    assert(!partiallyInvalid.success && partiallyInvalid.failed == 1u
+        && partiallyInvalid.bound == 0u && probe.calls == callsBeforeFailure);
+    assert(*runtime.terrain(currentHandle) == currentRuntime && !extra.desc().terrain.valid());
+    extra.set_resource_id(text(kTerrainId));
+    probe.expectedTerrains = 2u;
+    probe.allow = false;
+    const auto rejectedPair =
+        preparation.synchronizeWithGate(scene, resources, runtime, desc, gate, &probe);
+    assert(!rejectedPair.success && rejectedPair.bound == 0u);
+    assert(*runtime.terrain(currentHandle) == currentRuntime && !extra.desc().terrain.valid());
+    probe.allow = true;
+    const auto publishedPair =
+        preparation.synchronizeWithGate(scene, resources, runtime, desc, gate, &probe);
+    assert(core::defaultCpuAllocator().stats().allocationCount == probe.allocations);
+    assert(publishedPair.success && publishedPair.bound == 2u && preparation.terrainCount() == 2u);
+    assert(*runtime.terrain(currentHandle) != currentRuntime);
+    assert(extra.desc().terrain.valid() && extra.desc().terrain.id != currentHandle.id);
+    preparation.clear(scene, runtime);
+    assert(!preparation.worldSurface(component.id()) && !component.desc().terrain.valid()
+        && !extra.desc().terrain.valid());
+}
+
 } // namespace
 
 int main()
 {
     validatesDdgiBakedTerrainHierarchy();
     bindsOnlyResolvedRuntimeState();
+    preparesStandardSceneLifecycle();
     return 0;
 }

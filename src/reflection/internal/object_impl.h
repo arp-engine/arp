@@ -10,7 +10,7 @@
 //  - object specializations for is<>/cast<> retained
 
 #include "core/api.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/class_info.h"
 #include "reflection/db.h"
 #include "reflection/object.h"

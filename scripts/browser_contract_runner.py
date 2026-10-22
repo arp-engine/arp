@@ -3,6 +3,7 @@ import functools
 import http.server
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,7 +44,7 @@ def create_browser_http_server(handler):
             server.server_close()
 
 
-def wait_for_browser_result(ready, browser, profile, timeout_seconds):
+def wait_for_browser_result(ready, browser, profile, timeout_seconds, *, crash_output=None):
     """Wait for the actual result; a crashed child must never become a timeout.
 
     Only the dedicated temporary profile is inspected. A Crashpad report is
@@ -58,6 +59,28 @@ def wait_for_browser_result(ready, browser, profile, timeout_seconds):
             return True
         crashes = sorted(reports.glob("*.dmp"))
         if crashes:
+            # Preserve only this owned session's crash reports before profile
+            # retirement removes them. Evidence never changes the failure.
+            if crash_output is not None:
+                destination = pathlib.Path(crash_output)
+                destination.mkdir(parents=True, exist_ok=True)
+                # Crashpad creates the report before writing its payload. Do
+                # not kill its owned process tree while the dump is still
+                # empty/growing; this diagnostic wait consumes the original
+                # workload deadline and is itself bounded to ten seconds.
+                crash_deadline = min(deadline, time.monotonic() + 10.)
+                previous_sizes = None
+                while True:
+                    sizes = [crash.stat().st_size for crash in crashes]
+                    if all(sizes) and sizes == previous_sizes:
+                        break
+                    remaining = crash_deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    previous_sizes = sizes
+                    time.sleep(min(.1, remaining))
+                for crash in crashes:
+                    shutil.copy2(crash, destination / crash.name)
             raise RuntimeError("BROWSER-CONTRACT-CHILD-CRASH: " + crashes[0].name)
         if browser.poll() is not None:
             raise RuntimeError("BROWSER-CONTRACT-PROCESS-EXIT: " + str(browser.returncode))
@@ -218,7 +241,8 @@ class BrowserContractRunner:
                     browser = subprocess.Popen(command, stdout=log, stderr=log,
                         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
                     try:
-                        if not wait_for_browser_result(ready, browser, profile, self.timeout_seconds):
+                        if not wait_for_browser_result(ready, browser, profile, self.timeout_seconds,
+                                                       crash_output=self.output / "crashes"):
                             raise RuntimeError("BROWSER-CONTRACT-TIMEOUT; see browser.log")
                     finally:
                         retire_browser_process(browser,profile_directory,10)

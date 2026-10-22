@@ -1,0 +1,19 @@
+type: TerrainAssetAuthoring
+contractVersion: terrain.authoring/v1
+resourceId: 3f6fbcca-17d2-46a6-9817-2af357399301
+alias: terrain/editor-hill
+minX: -3.0
+minZ: -3.0
+tileCountX: 1
+tileCountZ: 1
+samplesPerEdge: 5
+tileWorldSize: 6.0
+maxDecodedBytes: 100
+input:
+  type: r32-float-le/v1
+  path: editor-hill.r32
+  width: 5
+  height: 5
+  rowDirection: increasing-z
+  scale: 1.0
+  offset: -0.4

@@ -1,18 +1,183 @@
 #include "scriptvm/aot/aot_codegen_v5.h"
 #include "scriptvm/aot/aot_v5.h"
+#include "scriptvm/aot/native_slot_operations.h"
 #include "scriptvm/compile/frontend.h"
 #include "scriptvm/interpreter/vm.h"
 #include "scriptvm/ir/typed_ir.h"
+#include "scriptvm/runtime/execution_slot_values.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string_view>
 
 namespace {
 
 using namespace arp::scriptvm;
+
+void inlineLeafAdmissionMatchesTheCanonicalGate()
+{
+    DirectNativeExecutionContext context;
+    context.budget.recursionLimit = 2u;
+    context.budget.maxMemoryBytes = 1u;
+    context.memoryQuota = arp::core::makeShared<arp::core::CpuMemoryQuota>(16u);
+    for (const auto live : {0u, 2u}) {
+        if (live != 0u)
+            assert(context.memoryQuota->tryReserve(live));
+        for (const auto depth : {0u, 1u, 2u}) {
+            for (const bool failed : {false, true}) {
+                context.memoryBudgetFailed = failed;
+                context.recursionDepth = depth;
+                VmError canonicalError;
+                const bool canonical = context.enterFunction("unit", &canonicalError);
+                const auto canonicalDepth = context.recursionDepth;
+                context.recursionDepth = depth;
+                VmError leafError;
+                const bool leaf = context.enterLeafFunction("unit", &leafError);
+                assert(leaf == canonical && context.recursionDepth == canonicalDepth);
+                assert(leafError.code == canonicalError.code
+                    && leafError.message == canonicalError.message);
+                if (leaf) {
+                    context.leaveLeafFunction();
+                    assert(context.recursionDepth == depth);
+                }
+                context.recursionDepth = depth;
+                VmError nativeError;
+                const bool native = context.enterNativeFunction("unit", &nativeError);
+                assert(native == canonical && context.recursionDepth == canonicalDepth);
+                assert(nativeError.code == canonicalError.code
+                    && nativeError.message == canonicalError.message);
+                if (native) {
+                    context.leaveNativeFunction();
+                    assert(context.recursionDepth == depth);
+                }
+            }
+        }
+        if (live != 0u)
+            context.memoryQuota->release(live);
+    }
+}
+
+void nativeSlotsPreserveValueEdgesAndCheckedSemantics()
+{
+    using Operations = DirectNativeSlotOperations;
+    auto sum = Operations::binary<SemanticBinaryOperation::Add>(
+        ExecutionSlot(ScriptScalar(17)), ExecutionSlot(ScriptScalar(25)));
+    assert(sum.ok() && sum.value.inlineScalar() && *sum.value.scalarPointer<int>() == 42);
+    auto fractional = Operations::binary<SemanticBinaryOperation::Mul>(
+        ExecutionSlot(ScriptScalar(1.25)), ExecutionSlot(ScriptScalar(2)));
+    assert(fractional.ok() && fractional.value.inlineScalar()
+        && *fractional.value.scalarPointer<double>() == 2.5);
+    auto overflow = Operations::binary<SemanticBinaryOperation::Add>(
+        ExecutionSlot(ScriptScalar(std::numeric_limits<int>::max())),
+        ExecutionSlot(ScriptScalar(1)));
+    assert(overflow.diagnostic.code == ScriptDiagnosticCode::IntegerOverflow);
+    auto zero = Operations::binary<SemanticBinaryOperation::Div>(
+        ExecutionSlot(ScriptScalar(7)), ExecutionSlot(ScriptScalar(0)));
+    assert(zero.diagnostic.code == ScriptDiagnosticCode::DivisionByZero);
+    const arp::core::pmr::String literal("native literal", &arp::core::defaultCpuMemoryResource());
+    std::array<ExecutionSlot, 4> slots;
+    slots[0] = ScriptScalar(2.5);
+    slots[1] = ExecutionSlot::borrowLiteral(literal);
+    const Value imported{73};
+    slots[2] = imported;
+    {
+        ExecutionSlotValues roots(slots, 0u, slots.size(), true);
+        assert(slots[0].inlineScalar() && slots[1].immutableLiteral());
+        assert(roots.data()[2].storageIdentity() == imported.storageIdentity());
+    }
+    {
+        const auto values = materializeExecutionSlots(slots, 1u, 2u);
+        assert(values.data()[0].is<arp::core::pmr::String>());
+        assert(values.data()[2].is_undefined());
+        assert(values.data()[1].storageIdentity() == imported.storageIdentity());
+        assert(slots[0].inlineScalar());
+    }
+    int hostInteger = 3;
+    slots[3] = Value::native_reference(&hostInteger);
+    const void* hostIdentity = slots[3].boxedCarrier()->storageIdentity();
+    hostInteger = 11;
+    auto updated =
+        Operations::binary<SemanticBinaryOperation::Add>(slots[3], ExecutionSlot(ScriptScalar(1)));
+    const auto nativeSemantic =
+        ScriptSemanticRuntime::binary(SemanticBinaryOperation::Add, slots[3].boxed(), makeInt(1));
+    assert(updated.diagnostic.code == nativeSemantic.diagnostic.code);
+    if (updated.ok())
+        assert(updated.value.boxed() == nativeSemantic.value);
+    assert(slots[3].boxedCarrier()->storageIdentity() == hostIdentity && hostInteger == 11);
+    auto quota = arp::core::makeShared<arp::core::CpuMemoryQuota>(1u);
+    {
+        arp::core::CpuMemoryQuotaScope scope(quota);
+        auto inlineOnly = Operations::binary<SemanticBinaryOperation::Add>(
+            ExecutionSlot(ScriptScalar(70000)), ExecutionSlot(ScriptScalar(1)));
+        assert(inlineOnly.ok() && quota->liveBytes() == 0u);
+        bool exhausted = false;
+        try {
+            (void)inlineOnly.value.takeValue();
+        } catch (const std::bad_alloc&) {
+            exhausted = true;
+        }
+        assert(exhausted);
+    }
+}
+
+void nativeFixedStackReusesSharedConstructionContracts()
+{
+    std::array<ExecutionSlot, 4> slots;
+    std::size_t size = 2u;
+    ExecutionSlotStackView operands(slots.data(), size, slots.size());
+    slots[0] = ScriptScalar(100000);
+    slots[1] = ScriptScalar(100001);
+    auto built = ScriptSemanticRuntime::makeList(operands, 2, 2u);
+    assert(built.ok() && size == 0u);
+    ExecutionSlot local(std::move(built.value));
+    Value alias = local.boxed();
+    slots[0] = ScriptScalar(100002);
+    slots[1] = ScriptScalar(100003);
+    size = 2u;
+    assert(!ScriptSemanticRuntime::reuseUniqueList(local, operands, 2, 2u) && size == 2u);
+    alias = Value::undefined();
+    assert(ScriptSemanticRuntime::reuseUniqueList(local, operands, 2, 2u) && size == 0u);
+    const auto* list = local.ptr<arp::reflection::hlist>();
+    assert(list && *(*list)[0].ptr<int>() == 100002 && *(*list)[1].ptr<int>() == 100003);
+    slots[0] = ScriptScalar(1);
+    slots[1] = ScriptScalar(10);
+    slots[2] = ScriptScalar(1);
+    slots[3] = ScriptScalar(20);
+    size = 4u;
+    auto duplicate = ScriptSemanticRuntime::makeDict(operands, 2, 2u);
+    assert(duplicate.ok() && size == 0u);
+    const auto* dictionary = duplicate.value.ptr<arp::reflection::hdict>();
+    assert(dictionary && dictionary->size() == 1u && *dictionary->begin()->second.ptr<int>() == 10);
+    size = 2u;
+    auto limited = ScriptSemanticRuntime::makeList(operands, 2, 1u);
+    assert(limited.diagnostic.code == ScriptDiagnosticCode::ResourceLimitExceeded && size == 2u);
+    arp::reflection::hdict strings{&arp::core::defaultCpuMemoryResource()};
+    strings.emplace(makeString(std::string_view("oak")), makeInt(3));
+    ExecutionSlot stringDictionary(Value{std::move(strings)});
+    ScriptSemanticRuntime::ReadonlyIndexBorrow borrow;
+    assert(borrow.bind(stringDictionary));
+    int value = 0;
+    {
+        ExecutionSlot key(makeString(std::string_view("oak")));
+        assert(borrow.readInteger(key, value) && value == 3);
+    }
+    // The cached relation retains dictionary-owned key bytes. A temporary
+    // lookup key may die, and replacing the mapped carrier is observed.
+    stringDictionary.ptr<arp::reflection::hdict>()->begin()->second = makeInt(7);
+    ExecutionSlot nextKey(makeString(std::string_view("oak")));
+    assert(borrow.readInteger(nextKey, value) && value == 7);
+    const auto* carrierResult = borrow.readCarrier(nextKey.boxed());
+    assert(carrierResult && *carrierResult->ptr<int>() == 7);
+    ExecutionSlot missing(makeString(std::string_view("pine")));
+    assert(borrow.read(missing) == nullptr);
+    assert(borrow.readCarrier(missing.boxed()) == nullptr);
+    assert(borrow.readCarrier(makeInt(0)) == nullptr);
+    assert(!borrow.bind(ExecutionSlot(ScriptScalar(1))));
+}
 
 constexpr const char* kHash =
     "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -226,7 +391,14 @@ void retainedValueGraphUsesOneQuotaFactSource()
         std::abort();
     assert(!opaqueSynchronized);
     assert(error.code == ScriptDiagnosticCode::AotSwitchUnsupported);
-    assert(error.message == "DirectNative opaque Value has no memory descriptor");
+    arp::core::pmr::String expectedOpaqueDiagnostic(
+        "DirectNative opaque Value has no memory descriptor",
+        &arp::core::defaultCpuMemoryResource());
+    if (opaque.class_()) {
+        expectedOpaqueDiagnostic += ": ";
+        expectedOpaqueDiagnostic += opaque.class_()->name();
+    }
+    assert(error.message == expectedOpaqueDiagnostic);
     assert(context->memoryAccountant->externalBytes() == retainedBytesBeforeOpaque);
     assert(context->memoryQuota->liveBytes() == liveBytesBeforeOpaque);
 
@@ -1394,6 +1566,42 @@ void unsupportedShapeFailsAtBuildTime()
     assert(generated.error.line > 0);
 }
 
+void nativeLoopRegionsRequireAClosedExecutionProof()
+{
+    const auto generate = [](const char* text) {
+        auto frontend = ScriptFrontend::compile(
+            arp::core::pmr::String(text, &arp::core::defaultCpuMemoryResource()),
+            arp::core::pmr::String("region.arp", &arp::core::defaultCpuMemoryResource()),
+            arp::core::pmr::String("region", &arp::core::defaultCpuMemoryResource()));
+        assert(frontend.ok());
+        const auto ir = ScriptLowerer::lower(frontend.module);
+        assert(ir.ok());
+        return generateDirectNativeModuleV5(ir.module, codegenOptions());
+    };
+    const auto pure = generate("def run(n: int) -> int:\n"
+                               "    var i: int = 0\n"
+                               "    var total: int = 0\n"
+                               "    while i < n:\n"
+                               "        total = total + i\n"
+                               "        i = i + 1\n"
+                               "    return total\n");
+    assert(pure.ok());
+    assert(pure.source.find("native_loop_local_") != arp::core::pmr::String::npos);
+    assert(pure.source.find("aot_replay_pc_") != arp::core::pmr::String::npos);
+    assert(pure.source.find("!arp::core::currentCpuMemoryQuota()") == arp::core::pmr::String::npos);
+    const auto mutation = generate("def mutate(values: [int]) -> int:\n"
+                                   "    values[0] = values[0] + 1\n"
+                                   "    return values[0]\n"
+                                   "def run(n: int) -> int:\n"
+                                   "    var values: [int] = [0]\n"
+                                   "    var i: int = 0\n"
+                                   "    while i < n:\n"
+                                   "        i = i + mutate(values)\n"
+                                   "    return i\n");
+    assert(mutation.ok());
+    assert(mutation.source.find("native_loop_local_") == arp::core::pmr::String::npos);
+}
+
 void malformedHandlerCfgFailsDeterministically()
 {
     auto frontend =
@@ -2023,6 +2231,9 @@ void budgetedRecursiveGeneratorIsFailClosed()
 
 int main()
 {
+    inlineLeafAdmissionMatchesTheCanonicalGate();
+    nativeSlotsPreserveValueEdgesAndCheckedSemantics();
+    nativeFixedStackReusesSharedConstructionContracts();
     retainedValueGraphUsesOneQuotaFactSource();
     strictContractRejectsLegacyAndIncompleteArtifacts();
     pluginDependencyContractIsValidatedBeforeRegistration();
@@ -2046,6 +2257,7 @@ int main()
     directNativePendingAwaitInjectionConsumesExplicitCapability();
     manifestRequiresDirectNativeAndExplicitBudgets();
     generatedControlFlowHasNoExecutorTable();
+    nativeLoopRegionsRequireAClosedExecutionProof();
     generatedPluginDependencyContractIsEmbedded();
     unsupportedShapeFailsAtBuildTime();
     malformedHandlerCfgFailsDeterministically();

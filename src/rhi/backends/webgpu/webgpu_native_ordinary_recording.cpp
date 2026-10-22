@@ -1,6 +1,6 @@
 #include "rhi/backends/webgpu/webgpu_native_ordinary_recording.h"
 
-#include "core/utf8.h"
+#include "core/text/utf8.h"
 #include "rhi/backends/webgpu/webgpu_attachment_operation_lowering.h"
 #include "rhi/backends/webgpu/webgpu_native_command_payload_impl.h"
 #include "rhi/backends/webgpu/webgpu_native_command_preparation.h"

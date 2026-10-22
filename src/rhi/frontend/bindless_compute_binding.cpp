@@ -1,6 +1,6 @@
 #include "rhi/frontend/bindless_compute_binding.h"
 
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/frontend/bindless_mixed_entry_flow.h"
 #include "rhi/frontend/bindless_root_execution.h"
 #include "rhi/frontend/bindless_root_sequence.h"
@@ -190,7 +190,7 @@ BindlessCrossExtension::prepareOriginalRootExecution(GpuDevice& device,
     core::pmr::String& diagnostic) const
 {
     diagnostic.clear();
-    if (const auto* id = inputs.scene.diagnostic()) {
+    if (const auto* id = inputs.initializedGraphics.diagnostic()) {
         diagnostic = id;
         return {};
     }
@@ -198,8 +198,8 @@ BindlessCrossExtension::prepareOriginalRootExecution(GpuDevice& device,
         diagnostic = id;
         return {};
     }
-    if (const auto* id = OriginalBindlessSceneContentContract::validateExecutionBudget(
-            device.backend(), inputs.scene, budget.closure)) {
+    if (const auto* id = OriginalBindlessInitializedGraphicsContract::validateExecutionBudget(
+            device.backend(), inputs.initializedGraphics, budget.closure)) {
         diagnostic = id;
         return {};
     }
@@ -219,8 +219,8 @@ BindlessCrossExtension::prepareOriginalRootExecution(GpuDevice& device,
         diagnostic = "RHI-BINDLESS-ROOT-EXECUTION-CAPABILITY";
         return {};
     }
-    if (const auto* id =
-            OriginalBindlessSceneContentContract::validateRootInput(inputs.root, inputs.scene)) {
+    if (const auto* id = OriginalBindlessInitializedGraphicsContract::validateRootInput(
+            inputs.root, inputs.initializedGraphics)) {
         diagnostic = id;
         return {};
     }

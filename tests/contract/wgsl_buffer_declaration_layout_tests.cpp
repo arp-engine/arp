@@ -1,4 +1,4 @@
-#include "core/file_io.h"
+#include "core/io/file_io.h"
 #include "shader/wgsl_buffer_declaration_layout.h"
 
 #include <cassert>

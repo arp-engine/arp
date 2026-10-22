@@ -2,7 +2,7 @@
 
 #include "assets/asset_pipeline.h"
 #include "assets/glb_animated_mesh_importer.h"
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "game.h"
 #include "renderer/renderer_common.h"
 #include "scene_content.h"

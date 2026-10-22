@@ -1,6 +1,8 @@
-#include "2d/scene_sprite_codec.h"
-#include "core/file_io.h"
+#include "2d/components.h"
+#include "2d/scene_component_persistence.h"
+#include "core/io/file_io.h"
 #include "core/io/versioned_yaml_store.h"
+#include "scene/scene_asset_resource.h"
 #include "tests/fixtures/tile_map_fixture.h"
 
 #include <chrono>
@@ -34,7 +36,7 @@ arp::core::io::AtomicFileResult await(
 }
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     using namespace arp;
     resource::ResourceManager resources;
@@ -87,9 +89,9 @@ int main()
     std::filesystem::remove(scenePath);
     std::filesystem::remove(savePath);
     core::io::AtomicFileService files(2, 65536);
-    scene::SceneCodecRegistry codecs;
-    assert(codecs.add(core::makeUnique<scene2d::SceneSpriteCodec>()));
-    assert(codecs.add(core::makeUnique<scene::ObjectLinksCodec>()));
+    scene::SceneComponentFactory codecs;
+    assert(scene2d::registerScene2DPersistence(
+        codecs, resources, core::makeShared<physics2d::PhysicsWorld2D>(config)));
     scene::Scene authored("round trip");
     auto& parent = authored.createObject("parent");
     auto& child = authored.createObject("child");
@@ -158,7 +160,8 @@ int main()
     write(prefabFile, core::pmr::String(serialized.data(), serialized.size()));
     assert(!resources.load<scene::ScenePrefabResource>({}, prefabId, prefabFile, 65536, 8).success);
     malformed = core::YamlContract::Node::deserialize(prefabYaml);
-    malformed["objects"][0]["components"][0]["links"][0]["target"] = 999;
+    malformed["objects"][0]["components"][0]["fields"]["links"][0]["fields"]["targetObjectId"] =
+        999;
     serialized = core::YamlContract::Node::serialize(malformed);
     write(prefabFile, core::pmr::String(serialized.data(), serialized.size()));
     assert(resources.load<scene::ScenePrefabResource>({}, prefabId, prefabFile, 65536, 8).success);
@@ -195,6 +198,52 @@ int main()
     assert(await(files, h1).success && await(files, h2).success);
     core::io::AtomicFileResult stale;
     assert(!files.take(h1, stale));
+    {
+        // Validate the migrated first-party prefab independently of game AOT.
+        const core::pmr::String orbitId = "20000000-0000-4000-8000-000000005000";
+        const core::pmr::String bladeId = "20000000-0000-4000-8000-000000000106";
+        assert(resources
+                .load<scene2d::SpriteResource>(
+                    {}, bladeId, core::pmr::String(tests::atlasA), core::pmr::String("left"))
+                .success);
+        const core::pmr::String orbitPath(
+            argc > 1 ? argv[1] : ARP_SOURCE_DIR "/examples/survivors/assets/orbit.prefab.yaml");
+        assert(
+            resources.load<scene::ScenePrefabResource>({}, orbitId, orbitPath, 65536, 16).success);
+        auto orbit = resources.find<scene::ScenePrefabResource>(orbitId);
+        auto restored = orbit.get()->instantiate(resources, codecs, diagnostic);
+        if (!restored)
+            std::fprintf(stderr, "%s\n", diagnostic.c_str());
+        assert(restored && restored->objects().size() == 9);
+        const auto* root = restored->findObjectByName("orbit-root");
+        assert(root && root->childIds().size() == 8);
+        for (int i = 0; i < 8; ++i) {
+            auto name = core::toPmrString("blade-" + std::to_string(i));
+            const auto* blade = restored->findObjectByName(name);
+            assert(blade && blade->parentId() == root->id() && blade->active() == (i < 3));
+            assert(blade->local_transform().scale.x == .7f);
+            const auto* sprite = blade->getComponent<scene2d::SpriteRendererComponent>();
+            assert(sprite && sprite->desc().spriteResourceId == bladeId
+                && sprite->desc().sortingLayer == 2);
+        }
+        scene::Scene repeated;
+        const auto a = orbit.get()->instantiateInto(
+            repeated, repeated.rootId(), resources, codecs, diagnostic);
+        const auto b = orbit.get()->instantiateInto(
+            repeated, repeated.rootId(), resources, codecs, diagnostic);
+        assert(a.valid() && b.valid() && a != b && repeated.objects().size() == 20);
+        assert(repeated.destroyObject(a).ok() && repeated.objects().size() == 10);
+        assert(repeated.destroyObject(b).ok() && repeated.objects().empty());
+        assert(resources.unload(orbitId).success);
+        const auto old = resources.load<scene::ScenePrefabResource>({},
+            orbitId,
+            core::pmr::String(
+                ARP_SOURCE_DIR "/tests/fixtures/scene_migration/orbit.prefab.v1.yaml"),
+            65536,
+            16);
+        assert(!old.success
+            && old.diagnostics.find("ARP-SCENE-MIGRATION-REQUIRED") != core::pmr::String::npos);
+    }
     std::puts(
         "PASS: tile chunks/collision retirement/rollback; scene hierarchy and references/roundtrip; async atomic saves and corruption preservation");
 }

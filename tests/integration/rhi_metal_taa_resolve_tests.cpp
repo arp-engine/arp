@@ -1,4 +1,4 @@
-#include "core/ibl_bake.h"
+#include "core/math/half_float.h"
 #include "renderer/postprocess/taa_renderer.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_device.h"
@@ -213,12 +213,12 @@ private:
         for (std::uint32_t y = 0u; y < kHeight; ++y) {
             for (std::uint32_t x = 0u; x < kWidth; ++x) {
                 const float ramp = static_cast<float>(x) / static_cast<float>(kWidth - 1u);
-                const std::array<std::uint16_t, 4> color{core::ibl::floatToHalf(ramp),
-                    core::ibl::floatToHalf(ramp),
-                    core::ibl::floatToHalf(ramp),
-                    core::ibl::floatToHalf(1.0f)};
+                const std::array<std::uint16_t, 4> color{core::floatToHalf(ramp),
+                    core::floatToHalf(ramp),
+                    core::floatToHalf(ramp),
+                    core::floatToHalf(1.0f)};
                 const std::array<std::uint16_t, 2> motion{
-                    core::ibl::floatToHalf(velocityX), core::ibl::floatToHalf(0.0f)};
+                    core::floatToHalf(velocityX), core::floatToHalf(0.0f)};
                 const float deviceDepth = 0.5f;
                 std::memcpy(currentBytes.data() + y * kPitch + x * sizeof(color),
                     color.data(),
@@ -388,7 +388,7 @@ private:
     {
         std::uint16_t bits = 0u;
         std::memcpy(&bits, bytes + y * kPitch + x * 8u, sizeof(bits));
-        const float value = core::ibl::halfToFloat(bits);
+        const float value = core::halfToFloat(bits);
         assert(std::isfinite(value));
         return value;
     }

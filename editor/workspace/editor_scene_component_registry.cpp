@@ -2,19 +2,20 @@
 
 #include "2d/components.h"
 #include "2d/particle_emitter_component.h"
-#include "2d/scene_runtime_codec.h"
+#include "2d/physics_components.h"
+#include "2d/screen_canvas_component.h"
+#include "2d/sprite_animation_component.h"
 #include "2d/sprite_text_component.h"
-#include "3d/authoring_components.h"
+#include "2d/tile_map_resource_component.h"
 #include "3d/animator_component.h"
+#include "3d/authoring_components.h"
 #include "3d/collider_component.h"
 #include "3d/components.h"
 #include "audio/audio_components.h"
-#include "physics2d/components.h"
 #include "resource/resource_request_component.h"
 #include "scene/camera.h"
 #include "scene/runtime_components.h"
 #include "scene/scene_asset_resource.h"
-#include "2d/screen_canvas_component.h"
 #include "ui/ui.h"
 
 #include <array>
@@ -161,8 +162,7 @@ core::UniquePtr<scene::Component> createSpriteAnimation(EditorSceneComponentFact
         context.resources, scene2d::kEditorSpriteAnimationEventBudget);
 }
 
-core::UniquePtr<scene::Component> createParticleEmitter(
-    EditorSceneComponentFactoryContext& context)
+core::UniquePtr<scene::Component> createParticleEmitter(EditorSceneComponentFactoryContext& context)
 {
     const auto capacity = renderer::ParticleEmitterDesc{}.maxParticles;
     if (context.resourceManagerProvider)
@@ -192,8 +192,8 @@ core::UniquePtr<scene::Component> createCollider2D(EditorSceneComponentFactoryCo
         return core::makeUnique<physics2d::Collider2DComponent>(
             context.physicsWorld2D, physics2d::BodyHandle{}, std::move(desc));
     auto* body = context.owner.getComponent<physics2d::RigidBody2DComponent>();
-    if (!context.physicsWorld2D || !context.physicsWorld2D->valid() || !body
-        || !body->handle() || body->world() != context.physicsWorld2D.get())
+    if (!context.physicsWorld2D || !context.physicsWorld2D->valid() || !body || !body->handle()
+        || body->world() != context.physicsWorld2D.get())
         return nullptr;
     auto component = core::makeUnique<physics2d::Collider2DComponent>(
         context.physicsWorld2D, body->handle(), std::move(desc));

@@ -64,6 +64,10 @@ public:
 
     bool pendingDestroy() const { return pendingDestroy_; }
 
+    bool restoring() const { return restoring_; }
+
+    void setRestoring(bool value) { restoring_ = value; }
+
     GameObject* gameObject() const { return owner_; }
 
     virtual arp::reflection::object scriptInstance() const { return {}; }
@@ -172,6 +176,7 @@ private:
     bool activeInScene_ = false;
     bool started_ = false;
     bool pendingDestroy_ = false;
+    bool restoring_ = false;
     GameObject* owner_ = nullptr;
     arp::reflection::object reflectionObject_;
 };

@@ -1,5 +1,5 @@
-#include "core/filesystem_path.h"
-#include "core/utf8_cursor.h"
+#include "core/io/filesystem_path.h"
+#include "core/text/utf8_cursor.h"
 #include "editor/workspace/editor_presentation_state.h"
 #include "editor/workspace/editor_scene_document.h"
 #include "editor/workspace/game_preview_model.h"

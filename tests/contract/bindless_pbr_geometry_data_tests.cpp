@@ -1,7 +1,9 @@
+#include "../fixtures/bindless_scene_attachment_fixture.h"
+#include "../fixtures/bindless_scene_conformance_contract.h"
 #include "../fixtures/bindless_scene_geometry_readback_fixture.h"
-#include "core/cpu_allocator.h"
-#include "rhi/frontend/bindless_pbr_geometry.h"
-#include "rhi/frontend/bindless_scene_content.h"
+#include "core/memory/cpu_allocator.h"
+#include "renderer/bindless/bindless_pbr_geometry.h"
+#include "rhi/frontend/bindless_root_callback.h"
 #include "rhi/frontend/command_buffer_readback.h"
 #include "rhi/semantics/bindless_scene_raster.h"
 
@@ -15,7 +17,103 @@
 int main()
 {
     using namespace arp;
-    using C = rhi::BindlessPbrGeometryContract;
+    using C = renderer::BindlessPbrGeometryContract;
+    {
+        using Program = rhi::OriginalBindlessRootProgramContract;
+        using K = rhi::CommandUsageKind;
+        rhi::OriginalBindlessRootProgramRequest request{2u, true, 32u, 256u};
+        // Retention is part of initialized indexed geometry, never permission
+        // to execute in a base, uninitialized or produced-geometry program.
+        assert(Program::validateOperation(K::RetainIndexedSnapshot, request));
+        request.initializedGeometryContractVersion = 1u;
+        assert(Program::validateOperation(K::RetainIndexedSnapshot, request));
+        request.initializedGeometryOptIn = true;
+        assert(!Program::validateOperation(K::RetainIndexedSnapshot, request));
+        assert(!Program::validateOperation(K::DrawIndexed, request));
+        assert(Program::validateOperation(K::Draw, request));
+        assert(Program::validateOperation(K::Dispatch, request));
+        request.contractVersion = 7u;
+        request.initializedGeometryContractVersion = 2u;
+        assert(Program::validateOperation(K::RetainIndexedSnapshot, request));
+        assert(Program::validateOperation(K::RetainIndexedSnapshot, 2u));
+    }
+    {
+        using Content = rhi::OriginalBindlessGraphicsContentPlanContract;
+        using Read = rhi::OriginalCompletedTextureReadPlanContract;
+        rhi::OriginalFiniteGraphicsContentPlanBudget budget;
+        budget.contractVersion = 9u;
+        budget.prototypeOptIn = true;
+        budget.bindlessGeometryContractVersion = 1u;
+        budget.bindlessGeometryOptIn = true;
+        budget.maxCompletedControls = budget.maxAttachmentControls = 1u;
+        budget.maxAttachmentCells = budget.maxSampledSteps = 1u;
+        budget.maxAttachmentSteps = 2u;
+        budget.maxCommandVisits = budget.maxProjectionVisits = 256u;
+        for (unsigned version = 1u; version <= 3u; ++version) {
+            budget.bindlessCompletedReadContractVersion = version;
+            assert(Content::validateIntent(budget));
+        }
+        budget.bindlessCompletedReadContractVersion = 4u;
+        assert(!Content::validateIntent(budget) && Read::graphicsReadVersion(4u) == 10u);
+        for (auto backend : {rhi::Backend::Null,
+                 rhi::Backend::Vulkan,
+                 rhi::Backend::Metal,
+                 rhi::Backend::WebGPU,
+                 rhi::Backend::WebGL}) {
+            const auto lowering = Content::lowering(backend, 1u, 0u, 4u);
+            assert(lowering.rootAvailable
+                == (backend == rhi::Backend::Null || backend == rhi::Backend::WebGPU));
+            assert(!lowering.executionAvailable);
+        }
+        assert(!Read::validatePendingProfile(6u, true, false, 9u, false, true, 4u));
+        assert(Read::validatePendingProfile(7u, true, false, 9u, false, true, 4u));
+        assert(Read::validatePendingProfile(6u, true, false, 18u, false, true, 4u));
+        budget.bindlessGeometryContractVersion = 2u;
+        assert(Content::validateIntent(budget));
+        budget.bindlessGeometryContractVersion = 0u;
+        budget.bindlessGeometryOptIn = false;
+        assert(Content::validateIntent(budget));
+    }
+    {
+        using Oracle = test::BindlessSceneAttachmentFixture;
+        // Frozen IEEE-half results from the independent exact-rational host
+        // oracle. Do not generate the expected bytes with the C++ oracle.
+        constexpr std::array<std::uint16_t, 4u> pbr{10854u, 12533u, 13890u, 15360u};
+        constexpr std::array<std::uint16_t, 4u> terrainLow{13442u, 13533u, 14104u, 15360u};
+        constexpr std::array<std::uint16_t, 4u> terrainHigh{13503u, 13560u, 14113u, 15360u};
+        for (const bool terrain : {false, true}) {
+            std::array<float, 92u> geometry{};
+            std::array<std::uint16_t, 16u> color;
+            for (std::size_t pixel = 0u; pixel < 4u; ++pixel) {
+                geometry[pixel * 23u + 1u] = pixel < 2u ? -.5f : .5f;
+                const auto& value = terrain ? (pixel < 2u ? terrainLow : terrainHigh) : pbr;
+                std::copy(value.begin(), value.end(), color.begin() + pixel * 4u);
+            }
+            assert(!Oracle::inspect(color.data(), sizeof(color), false, terrain, geometry.data()));
+            assert(
+                Oracle::inspect(color.data(), sizeof(color) - 1u, false, terrain, geometry.data()));
+            assert(Oracle::inspect(color.data(), sizeof(color), false, terrain, nullptr));
+            color[0u] = 0u;
+            assert(core::StringView(Oracle::inspect(
+                       color.data(), sizeof(color), false, terrain, geometry.data()))
+                == "SCENE-ATTACHMENT-MATERIAL");
+        }
+        std::array<float, 4u> depth{.5f, .5f, .5f, .5f};
+        assert(!Oracle::inspect(depth.data(), sizeof(depth), true, false, nullptr));
+        depth[2u] = 1.f; // A clear-only pass must fail.
+        assert(core::StringView(Oracle::inspect(depth.data(), sizeof(depth), true, false, nullptr))
+            == "SCENE-ATTACHMENT-DEPTH");
+        for (const auto layers : {1u, 2u}) {
+            core::pmr::Vector<std::uint8_t> pixels(20u * layers);
+            Oracle::initializeTexturePixels(26u, layers, pixels);
+            for (std::uint32_t layer = 0u; layer < layers; ++layer) {
+                const auto expected = Oracle::texel(26u, layer);
+                assert(!std::memcmp(pixels.data() + layer * 16u, expected.data(), 4u));
+                assert(
+                    !std::memcmp(pixels.data() + layers * 16u + layer * 4u, expected.data(), 4u));
+            }
+        }
+    }
     {
         using Oracle = test::BindlessSceneGeometryReadbackFixture;
         const auto bits = [](float value) {
@@ -131,9 +229,8 @@ int main()
     }
     {
         using namespace rhi;
-        using Scene = OriginalBindlessSceneContentContract;
-        const OriginalBindlessSceneContentInputs scene{
-            1u, true, Scene::Family::Mesh, 128u, 32u, 64u};
+        using Scene = OriginalBindlessInitializedGraphicsContract;
+        const OriginalBindlessInitializedGraphicsInputs scene{2u, true, 128u, 64u};
         OriginalBindlessRootNativeClosureBudget native{3u, true, 16u, 32u, 64u, 65536u};
         native.maxInitializedGeometryActors = 2u;
         native.maxInitializedGeometryBytes = 72u;
@@ -353,21 +450,24 @@ int main()
         state.depthStencil.depthBiasSlopeFactor = std::numeric_limits<float>::quiet_NaN();
         assert(Raster::inspect(rhi::Backend::WebGPU, state));
     }
-    rhi::BindlessPbrGeometryFrame400 frame;
-    frame.outputExtent = {2u, 3u, C::numericLanesPerPixel, C::version};
+    renderer::BindlessPbrGeometryFrame400 frame;
+    frame.outputExtent = {
+        2u, 3u, arp::test::BindlessGeometryNumericContract::numericLanesPerPixel, C::version};
     constexpr auto resultBytes = 2u * 3u * 23u * sizeof(std::uint32_t);
     const auto allocationCount = core::defaultCpuAllocator().stats().allocationCount;
-    assert(!C::validateFrame(frame, 2u, 3u, resultBytes));
-    assert(C::validateFrame(frame, 2u, 3u, resultBytes - 1u));
-    assert(C::validateFrame(frame, 3u, 2u, resultBytes));
-    assert(C::validateFrame(frame, 0u, 3u, resultBytes));
+    assert(!arp::test::BindlessGeometryNumericContract::validateFrame(frame, 2u, 3u, resultBytes));
+    assert(
+        arp::test::BindlessGeometryNumericContract::validateFrame(frame, 2u, 3u, resultBytes - 1u));
+    assert(arp::test::BindlessGeometryNumericContract::validateFrame(frame, 3u, 2u, resultBytes));
+    assert(arp::test::BindlessGeometryNumericContract::validateFrame(frame, 0u, 3u, resultBytes));
     for (auto* matrix : {&frame.renderViewProjection,
              &frame.currentViewProjection,
              &frame.previousViewProjection,
              &frame.shadowViewProjection}) {
         for (auto& lane : *matrix) {
             lane = std::numeric_limits<float>::quiet_NaN();
-            assert(C::validateFrame(frame, 2u, 3u, resultBytes));
+            assert(arp::test::BindlessGeometryNumericContract::validateFrame(
+                frame, 2u, 3u, resultBytes));
             lane = 0.f;
         }
     }
@@ -378,15 +478,18 @@ int main()
                  &wind->interactionCenter})
             for (auto& lane : *vector) {
                 lane = std::numeric_limits<float>::infinity();
-                assert(C::validateFrame(frame, 2u, 3u, resultBytes));
+                assert(arp::test::BindlessGeometryNumericContract::validateFrame(
+                    frame, 2u, 3u, resultBytes));
                 lane = 0.f;
             }
     auto large = frame;
     large.outputExtent = {UINT32_MAX, 2u, 23u, 1u};
-    assert(C::validateFrame(large, UINT32_MAX, 2u, UINT64_MAX));
+    assert(arp::test::BindlessGeometryNumericContract::validateFrame(
+        large, UINT32_MAX, 2u, UINT64_MAX));
     large.outputExtent = {UINT32_MAX, 1u, 23u, 1u};
-    assert(C::validateFrame(large, UINT32_MAX, 1u, UINT64_MAX));
-    rhi::BindlessPbrGeometryDraw16 draw{1u, 2u, 0u, 0u};
+    assert(arp::test::BindlessGeometryNumericContract::validateFrame(
+        large, UINT32_MAX, 1u, UINT64_MAX));
+    renderer::BindlessPbrGeometryDraw16 draw{1u, 2u, 0u, 0u};
     assert(!C::validateDraw(draw, 2u, 8u, 3u, 3u, true));
     assert(C::validateDraw(draw, 1u, 8u, 3u, 3u, true));
     assert(C::validateDraw(draw, 2u, 8u, 3u, 4u, true));
@@ -398,7 +501,7 @@ int main()
     assert(C::validateDraw(draw, 2u, 0u, 1u, 1u, false));
     draw.reserved1 = 1u;
     assert(C::validateDraw(draw, 2u, 0u, 0u, 1u, false));
-    rhi::BindlessPbrTemporalPalette32864 palettes;
+    renderer::BindlessPbrTemporalPalette32864 palettes;
     for (auto* palette : {&palettes.current, &palettes.previous}) {
         palette->jointCount = 256u;
         palette->worldTranslationAndScale[3u] = 1.f;
@@ -422,7 +525,7 @@ int main()
         assert(C::validatePalette(palettes));
         palette->worldTranslationAndScale[3u] = 1.f;
     }
-    rhi::OriginalBindlessSceneContentInputs scene;
+    arp::test::BindlessSceneConformanceInputs scene;
     assert(scene.empty() && !scene.diagnostic());
     scene.contractVersion = 1u;
     assert(scene.diagnostic());
@@ -431,7 +534,7 @@ int main()
     assert(!scene.diagnostic());
     scene.family = static_cast<decltype(scene.family)>(5u);
     assert(scene.diagnostic());
-    using Selection = rhi::OriginalBindlessSceneContentContract;
+    using Selection = arp::test::BindlessSceneConformanceContract;
     const std::array<core::StringView, 15u> vertices{"meshColorVertex",
         "meshDepthVertex",
         "meshShadowVertex",

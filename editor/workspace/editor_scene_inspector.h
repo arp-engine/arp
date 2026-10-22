@@ -1,6 +1,6 @@
 #pragma once
-#include "core/cpu_allocator.h"
-#include "core/math.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cstdint>
 
@@ -57,12 +57,13 @@ struct SceneInspectorProperty {
     core::pmr::Vector<SceneInspectorEnumOption> enumOptions{&core::defaultCpuMemoryResource()};
     SceneInspectorPropertyKind kind = SceneInspectorPropertyKind::Unsupported;
     bool editable = false;
+    bool serializable = false;
     bool resourceOptional = false;
     bool booleanValue = false;
     int integerValue = 0;
-    std::uint32_t unsignedIntegerValue = 0;
+    std::uint64_t unsignedIntegerValue = 0;
     std::uint64_t sceneObjectReferenceValue = 0;
-    float numberValue = 0.0f;
+    double numberValue = 0.0f;
     core::Vec2 vector2Value{};
     core::pmr::Vector<core::Vec2> vector2ListValue{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<SceneInspectorObjectLink> sceneObjectLinkListValue{

@@ -22,8 +22,8 @@
 // renderer) extend the payload via Custom + a domain-owned POD struct, keeping
 // the base layer free of higher-module includes.
 
-#include "core/cpu_allocator.h"
-#include "core/math.h"
+#include "core/math/math.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
 #include "scene/ids.h"
 #include "scene/transform.h"

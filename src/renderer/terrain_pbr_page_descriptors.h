@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "renderer/terrain_gpu_rhi_uploader.h"
 #include "rhi/gpu_descriptors.h"
 

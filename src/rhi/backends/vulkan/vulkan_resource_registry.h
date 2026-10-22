@@ -1,10 +1,10 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 
 #include <algorithm>
-#include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -15,7 +15,7 @@ class VulkanRhiResourceRegistry {
 public:
     /// Construct with an explicit CPU memory resource. When omitted, the
     /// process-wide default resource is used. Threaded through to the pmr
-    /// entries list so a backend can bind a per-instance intent/budget
+    /// entries map so a backend can bind a per-instance intent/budget
     /// instead of silently falling back to the global default.
     explicit VulkanRhiResourceRegistry(
         std::pmr::memory_resource* memoryResource = &core::defaultCpuMemoryResource())
@@ -32,15 +32,10 @@ public:
         }
         std::scoped_lock lock(mutex_);
         pruneExpired();
-        for (auto& entry : entries_) {
-            if (entry.id == id) {
-                entry.payload = std::move(payload);
-                entry.parentTexture = parentTexture;
-                entry.textureObject = textureObject;
-                return;
-            }
-        }
-        entries_.push_back({id, std::move(payload), parentTexture, textureObject});
+        auto& entry = entries_[id.value];
+        entry.payload = std::move(payload);
+        entry.parentTexture = parentTexture;
+        entry.textureObject = textureObject;
     }
 
     void registerTexture(
@@ -52,104 +47,92 @@ public:
     void registerBufferObject(rhi::GpuResourceId id, const rhi::GpuBuffer& buffer)
     {
         std::scoped_lock lock(mutex_);
-        for (auto& entry : entries_)
-            if (entry.id == id) {
-                entry.gpuWriteSeal = buffer.gpuWriteSealToken();
-                return;
-            }
+        if (auto entry = entries_.find(id.value); entry != entries_.end())
+            entry->second.gpuWriteSeal = buffer.gpuWriteSealToken();
     }
 
     bool bufferGpuWritesSealed(rhi::GpuResourceId id) const
     {
         std::scoped_lock lock(mutex_);
-        for (const auto& entry : entries_)
-            if (entry.id == id) {
-                const auto seal = entry.gpuWriteSeal.lock();
-                return seal && seal->writableDescriptorSealed();
-            }
+        if (auto entry = entries_.find(id.value); entry != entries_.end()) {
+            const auto seal = entry->second.gpuWriteSeal.lock();
+            return seal && seal->writableDescriptorSealed();
+        }
         return false;
     }
 
     bool bufferGpuTransferWritesSealed(rhi::GpuResourceId id) const
     {
         std::scoped_lock lock(mutex_);
-        for (const auto& entry : entries_)
-            if (entry.id == id) {
-                const auto seal = entry.gpuWriteSeal.lock();
-                return seal && seal->transferWritesSealed();
-            }
+        if (auto entry = entries_.find(id.value); entry != entries_.end()) {
+            const auto seal = entry->second.gpuWriteSeal.lock();
+            return seal && seal->transferWritesSealed();
+        }
         return false;
     }
 
     bool textureViewParentIsLive(rhi::GpuResourceId id) const
     {
         std::scoped_lock lock(mutex_);
-        rhi::GpuResourceId parent;
-        for (const auto& entry : entries_) {
-            if (entry.id != id)
-                continue;
-            const auto view = entry.payload.lock();
-            if (!view || !view->backendVulkanTextureViewDescAvailable())
-                return false;
-            parent = entry.parentTexture;
-            break;
-        }
-        if (!parent.isValid())
+        const auto entry = entries_.find(id.value);
+        if (entry == entries_.end())
             return false;
-        for (const auto& entry : entries_) {
-            if (entry.id != parent)
-                continue;
-            const auto texture = entry.payload.lock();
-            // Object registration, not native handle presence, is public ID
-            // life. Synthetic fixtures retain explicit typed metadata too.
-            return texture && entry.textureObject;
-        }
-        return false;
+        const auto view = entry->second.payload.lock();
+        if (!view || !view->backendVulkanTextureViewDescAvailable())
+            return false;
+        const auto parent = entries_.find(entry->second.parentTexture.value);
+        if (parent == entries_.end())
+            return false;
+        // Object registration, not native handle presence, is public ID life.
+        const auto texture = parent->second.payload.lock();
+        return texture && parent->second.textureObject;
     }
 
     std::shared_ptr<VulkanRhiNativeResourcePayload> payload(rhi::GpuResourceId id) const
     {
         std::scoped_lock lock(mutex_);
-        pruneExpired();
-        for (const auto& entry : entries_) {
-            if (entry.id == id) {
-                return entry.payload.lock();
-            }
-        }
-        return {};
+        const auto found = entries_.find(id.value);
+        if (found == entries_.end())
+            return {};
+        const auto& entry = found->second;
+        auto resolved = entry.payload.lock();
+        if (!resolved)
+            entries_.erase(found);
+        return resolved;
     }
 
     void unregisterResource(rhi::GpuResourceId id)
     {
         std::scoped_lock lock(mutex_);
-        entries_.remove_if([id](const Entry& entry) {
-            return entry.id == id;
-        });
+        entries_.erase(id.value);
     }
 
 private:
     void pruneExpired() const
     {
-        entries_.remove_if([](const Entry& entry) {
-            return entry.payload.expired();
-        });
+        for (auto entry = entries_.begin(); entry != entries_.end();) {
+            if (entry->second.payload.expired())
+                entry = entries_.erase(entry);
+            else
+                ++entry;
+        }
     }
 
     struct Entry {
-        rhi::GpuResourceId id;
         std::weak_ptr<VulkanRhiNativeResourcePayload> payload;
         rhi::GpuResourceId parentTexture;
         bool textureObject = false;
         std::weak_ptr<const rhi::GpuBufferWriteSealState> gpuWriteSeal;
     };
 
-    // Resource creation/destruction can occur while a command encoder resolves
-    // native payloads. Keep pruning and list mutation atomic with lookups;
-    // otherwise erasure may race weak_ptr access in payload().
+    // Preserve weak ownership and atomic lookup/unregistration. Per-draw
+    // descriptor validation must resolve only the requested ID, not scan and
+    // prune every live resource. Global expiry cleanup is a cold registration
+    // operation; ordinary wrapper destruction unregisters its node directly.
     mutable std::mutex mutex_;
     // Each cold registration owns its node; removal returns its exact CPU
     // charge without retaining capacity under a retired resource quota.
-    mutable core::pmr::List<Entry> entries_;
+    mutable core::pmr::Map<std::uint64_t, Entry> entries_;
 };
 
 } // namespace arp::rhi_vulkan

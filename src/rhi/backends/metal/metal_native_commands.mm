@@ -1,8 +1,8 @@
 #include "rhi/backends/metal/metal_native_commands.h"
 
-#include "core/cpu_allocator.h"
-#include "core/preflight_replay.h"
-#include "core/shared_owner_projection.h"
+#include "core/algorithm/preflight_replay.h"
+#include "core/memory/cpu_allocator.h"
+#include "core/ownership/shared_owner_projection.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_binding_validation.h"
 #include "rhi/backends/metal/metal_closed_consumer_native_preparation.h"
@@ -1302,17 +1302,6 @@ std::shared_ptr<MetalRhiNativeCommandPayload> MetalOriginalTextureUploadCommand:
             core::makeShared<core::ExternalObjectSlot>([](void* object) noexcept {
                 [reinterpret_cast<id>(object) release];
             });
-        for (const auto& result : custody->readbacks_.bindings()) {
-            const auto payload =
-                metalRhiNativePayloadFor(*result->originalReadbackSource()->originalObject());
-            if (!payload
-                || !core::SharedOwnerProjection::sameOwner(
-                    payload->resource.nativeDevice, custody->closure_->pipeline_->nativeDevice))
-                return reject("RHI-METAL-ROOT-COMMAND-READBACK-DEVICE");
-            retainResourcePayload(command->retainedResourcePayloads_,
-                command->retainedResourcePayloadIdentities_,
-                payload);
-        }
         custody->command_ = command.get();
         seal->nativeColdCommandClaimed_ = true;
         command->originalCommandCustody_ = custody;
@@ -1926,6 +1915,12 @@ std::shared_ptr<MetalRhiNativeCommandPayload> MetalOriginalBindlessCommand::prep
                     bool found = false;
                     for (const auto& entry : closure->entries_)
                         found = found || entry.sourceIndex == index;
+                    if (!found && op.kind == K::BufferCopy && i == 1u)
+                        if (const auto* lease =
+                                std::get_if<std::shared_ptr<const OriginalCommandBufferLease>>(
+                                    &usage.originalSources()->sources()[index]))
+                            found = OriginalBindlessRootReadbackSequence::containsCopyDestination(
+                                binding, readbackInput, op.commandIndex, *lease);
                     if (!found)
                         return reject("RHI-METAL-ROOT-COMMAND-BUFFER-CLOSURE");
                 }
@@ -2025,6 +2020,17 @@ std::shared_ptr<MetalRhiNativeCommandPayload> MetalOriginalBindlessCommand::prep
             return reject(id);
         if (storage && !custody->prepareStoragePasses(device, attachmentCapacity, diagnostic))
             return {};
+        for (const auto& result : custody->readbacks_.bindings()) {
+            const auto payload =
+                metalRhiNativePayloadFor(*result->originalReadbackSource()->originalObject());
+            if (!payload
+                || !core::SharedOwnerProjection::sameOwner(
+                    payload->resource.nativeDevice, custody->closure_->pipeline_->nativeDevice))
+                return reject("RHI-METAL-ROOT-COMMAND-READBACK-DEVICE");
+            retainResourcePayload(command->retainedResourcePayloads_,
+                command->retainedResourcePayloadIdentities_,
+                payload);
+        }
         custody->encoderSlot_ =
             core::makeShared<core::ExternalObjectSlot>([](void* object) noexcept {
                 [reinterpret_cast<id>(object) release];
@@ -2265,6 +2271,7 @@ bool MetalOriginalBindlessCommand::record(
         case K::ClearSnapshotFault: {
             if (op.referenceCount != 1u)
                 return fail("RHI-METAL-ROOT-COMMAND-FAULT-CLEAR-ROOT");
+            const auto& usage = *inputs->originalScalars()->originalUsage();
             const auto source = usage.references()[op.firstReference].sourceIndex;
             const auto* selected = roots_.select(closure_->inventory_, source);
             if (!selected)

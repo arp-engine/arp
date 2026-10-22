@@ -1,4 +1,4 @@
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/semantics/ios_layer_lifecycle_bridge.h"
 
 #include <cassert>

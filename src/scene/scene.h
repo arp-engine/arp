@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/callback.h"
-#include "core/cpu_allocator.h"
+#include "core/concurrency/callback.h"
+#include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
 #include "scene/game_object.h"
 #include "scene/main_scene_registry.h"
@@ -46,6 +46,7 @@ ACLASS(Name = "Scene", Export = "main_scene", Ownership = Engine, Lifecycle = Ex
 
 class Scene final : public GameObject {
 public:
+    class RestorationTransaction;
     using ComponentFactory = arp::core::SharedCallback<arp::core::UniquePtr<Component>(
         GameObject& owner, const arp::core::pmr::String& type)>;
 
@@ -221,6 +222,26 @@ private:
     arp::core::pmr::Vector<Component*> updateComponents_;
     std::size_t maxEvents_ = 0;
     arp::core::pmr::Vector<SceneEvent> events_, dispatchEvents_;
+};
+
+// A restoration transaction may append candidate objects and bind script types.
+// It must run outside scene dispatch; rollback restores identity allocation and
+// published factories after tearing down all candidate components.
+class Scene::RestorationTransaction final {
+public:
+    explicit RestorationTransaction(Scene& scene);
+    ~RestorationTransaction();
+    RestorationTransaction(const RestorationTransaction&) = delete;
+    RestorationTransaction& operator=(const RestorationTransaction&) = delete;
+
+    void commit() { committed_ = true; }
+
+private:
+    Scene& scene_;
+    core::pmr::Map<core::pmr::String, ScriptFactory> factories_;
+    std::size_t objects_;
+    std::uint64_t objectId_, componentId_;
+    bool committed_ = false;
 };
 
 } // namespace arp::scene

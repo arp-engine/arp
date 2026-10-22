@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/atomic_capacity.h"
+#include "core/memory/atomic_capacity.h"
 #include "rhi/backends/metal/metal_closed_consumer_issuance.h"
 #include "rhi/backends/metal/metal_graphics_preparation.h"
 #include "rhi/backends/metal/metal_instance_attribute_consumer.h"

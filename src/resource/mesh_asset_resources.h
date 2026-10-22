@@ -1,9 +1,11 @@
 #pragma once
 
+#include "3d/terrain/terrain_mesh_samples.h"
 #include "assets/asset_pipeline.h"
-#include "core/cpu_allocator.h"
-#include "core/stable_hash.h"
-#include "pcg/terrain_heightfield.h"
+#include "assets/glb_static_mesh_importer.h"
+#include "assets/mesh_section_grouping.h"
+#include "core/hash/stable_hash.h"
+#include "core/memory/cpu_allocator.h"
 #include "resource/resource_contract.h"
 #include "resource/resource_manager.h"
 
@@ -55,7 +57,8 @@ public:
           sourceKind_(MeshSourceKind::GlbFile), sourcePath_(std::move(sourcePath))
     {}
 
-    /// Construct for procedural grid mesh.
+    /// Explicit Legacy procedural-grid API. Selecting this overload opts into
+    /// the historical sine demo surface; production terrain uses baked assets.
     MeshAssetResource(core::pmr::String resourceId,
         std::size_t gridX,
         std::size_t gridZ,
@@ -65,28 +68,23 @@ public:
               core::pmr::String(std::move(resourceId), &core::defaultCpuMemoryResource()),
               core::pmr::String(resourceTypeName(), &core::defaultCpuMemoryResource()),
               {},
-              core::pmr::String("Contract Complete", &core::defaultCpuMemoryResource()),
+              core::pmr::String("Prototype Complete", &core::defaultCpuMemoryResource()),
               {},
           }),
           sourceKind_(MeshSourceKind::ProceduralGrid), gridX_(gridX), gridZ_(gridZ),
           gridSize_(size), gridBaseHeight_(baseHeight)
     {}
 
-    /// Construct for a procedural grid mesh driven by an explicit heightfield.
-    ///
-    /// When `heightField` carries any wave or noise layers,
-    /// generateProceduralGrid() samples it directly so the rendered mesh is
-    /// bit-identical to the gameplay-sampled elevation (movement system reads
-    /// the same TerrainHeightField instance). This is the single sanctioned
-    /// path for noise/biome-driven terrain: the heightfield is data, the
-    /// MeshAssetResource is the engine-owned runtime asset — no separate
-    /// runtime resource manager is introduced.
+    /// Explicit source compatibility boundary: materialize height and normal
+    /// samples now. Runtime resource loading owns data, never a PCG generator.
+    template <class HeightSource,
+        class = decltype(std::declval<const HeightSource&>().sample(0.0f, 0.0f))>
     MeshAssetResource(core::pmr::String resourceId,
         std::size_t gridX,
         std::size_t gridZ,
         float size,
         float baseHeight,
-        core::TerrainHeightField heightField)
+        const HeightSource& heightField)
         : ResourceBase(ResourceReference{
               core::pmr::String(std::move(resourceId), &core::defaultCpuMemoryResource()),
               core::pmr::String(resourceTypeName(), &core::defaultCpuMemoryResource()),
@@ -95,8 +93,12 @@ public:
               {},
           }),
           sourceKind_(MeshSourceKind::ProceduralGrid), gridX_(gridX), gridZ_(gridZ),
-          gridSize_(size), gridBaseHeight_(baseHeight),
-          proceduralHeightField_(std::move(heightField))
+          gridSize_(size), gridBaseHeight_(baseHeight), explicitGridSamples_(true),
+          gridSamples_(terrain::TerrainMeshSamples::build(heightField,
+              gridX,
+              gridZ,
+              size,
+              terrain::TerrainMeshSamples::legacyNormalSampleSpacing))
     {}
 
     /// Construct for procedural cube mesh.
@@ -123,7 +125,7 @@ public:
               {},
           }),
           sourceKind_(MeshSourceKind::CustomMesh),
-          customMesh_(std::make_unique<assets::MeshAsset>(std::move(customMesh)))
+          customMesh_(core::makeUnique<assets::MeshAsset>(std::move(customMesh)))
     {}
 
     /// Load mesh data from source (GLB file or procedural generation).
@@ -135,11 +137,11 @@ public:
 
     /// Imported GLB material bindings and encoded image payloads. Empty for
     /// procedural/custom meshes that do not carry imported PBR metadata.
-    const std::pmr::vector<assets::ImportedMaterialAsset>& materials() const { return materials_; }
+    const core::pmr::Vector<assets::ImportedMaterialAsset>& materials() const { return materials_; }
 
-    const std::pmr::vector<assets::ImportedTextureAsset>& textures() const { return textures_; }
+    const core::pmr::Vector<assets::ImportedTextureAsset>& textures() const { return textures_; }
 
-    const std::pmr::vector<assets::ImportedImageAsset>& images() const { return images_; }
+    const core::pmr::Vector<assets::ImportedImageAsset>& images() const { return images_; }
 
     const core::pmr::Vector<core::pmr::String>& textureResourceIds() const
     {
@@ -160,6 +162,24 @@ public:
     // Only opt in when material draws are order-independent (opaque/masked).
     void setGroupSectionsByMaterial(bool enabled) { groupSectionsByMaterial_ = enabled; }
 
+    void setRetainSourceRanges(bool enabled) { retainSourceRanges_ = enabled; }
+
+    void setRetainSourceIdentity(bool enabled) { retainSourceIdentity_ = enabled; }
+
+    const core::pmr::Vector<assets::StaticMeshSourceIdentity>& sourceIdentities() const
+    {
+        return sourceIdentities_;
+    }
+
+    std::uint32_t sourceIdentityVersion() const { return sourceIdentityVersion_; }
+
+    const std::array<std::uint8_t, 32>& sourceContentDigest() const { return sourceContentDigest_; }
+
+    void setSectionSpatialPartition(assets::MeshSectionSpatialPartition policy)
+    {
+        sectionSpatialPartition_ = policy;
+    }
+
     MeshSourceKind sourceKind() const { return sourceKind_; }
 
     void setUvScale(float s) { uvScale_ = s; }
@@ -173,7 +193,9 @@ public:
         if (!mesh_)
             return 0u;
         return mesh_->vertices.size() * sizeof(assets::MeshVertex)
-            + mesh_->indices.size() * sizeof(std::uint32_t);
+            + mesh_->indices.size() * sizeof(std::uint32_t)
+            + mesh_->sourceRanges.size() * sizeof(assets::MeshSourceRange)
+            + sourceIdentities_.size() * sizeof(assets::StaticMeshSourceIdentity);
     }
 
     ResourceGraphStage processingStage() const noexcept override
@@ -192,18 +214,11 @@ public:
         hasher.appendFloat(gridBaseHeight_);
         hasher.appendFloat(uvScale_);
         hasher.appendFloat(cubeSize_);
-        // Heightfield fingerprint: base height, wave layers, and noise layers
-        // (scale/amplitude/seed/octaves). This makes a noise-driven terrain
-        // reload when the world seed changes.
-        hasher.appendFloat(proceduralHeightField_.baseHeight);
-        hasher.appendU64(static_cast<std::uint64_t>(proceduralHeightField_.layerCount));
-        hasher.appendU64(static_cast<std::uint64_t>(proceduralHeightField_.noiseLayerCount));
-        for (std::uint32_t i = 0u; i < proceduralHeightField_.noiseLayerCount; ++i) {
-            const auto& nl = proceduralHeightField_.noiseLayers[i];
-            hasher.appendFloat(nl.scale);
-            hasher.appendFloat(nl.amplitude);
-            hasher.appendU64(static_cast<std::uint64_t>(nl.seed));
-            hasher.appendU64(static_cast<std::uint64_t>(nl.octaves));
+        hasher.appendByte(explicitGridSamples_ ? 1u : 0u);
+        for (const auto& sample : gridSamples_.samples()) {
+            hasher.appendFloat(sample.height);
+            hasher.appendFloat(sample.offsetHeightX);
+            hasher.appendFloat(sample.offsetHeightZ);
         }
         // Custom mesh fingerprint: vertex/index counts (not full data — that
         // would be expensive and the counts are enough to distinguish assets).
@@ -254,12 +269,49 @@ public:
             constexpr char policy[] = "MeshSectionGroupingByMaterial/1";
             hasher.appendBytes(policy, sizeof(policy) - 1u);
         }
+        if (retainSourceRanges_) {
+            constexpr char policy[] = "MeshSourceRanges/1";
+            hasher.appendBytes(policy, sizeof(policy) - 1u);
+        }
+        if (retainSourceIdentity_) {
+            constexpr char policy[] = "StaticMeshSourceIdentity/1";
+            hasher.appendBytes(policy, sizeof(policy) - 1u);
+            hasher.appendU64(sourceIdentityVersion_);
+            hasher.appendBytes(sourceContentDigest_.data(), sourceContentDigest_.size());
+            for (const auto& identity : sourceIdentities_) {
+                hasher.appendU64(identity.node);
+                hasher.appendU64(identity.mesh);
+                hasher.appendU64(identity.primitive);
+                hasher.appendU64(identity.sourceIndices.firstIndex);
+                hasher.appendU64(identity.sourceIndices.indexCount);
+                hasher.appendU64(identity.sourceIndices.materialSlot);
+                for (const auto value : identity.worldAffine)
+                    hasher.appendFloat(value);
+                for (const auto value : identity.localAbsolutePosition)
+                    hasher.appendBytes(&value, sizeof(value));
+                hasher.appendBytes(
+                    identity.localSurfaceDigest.data(), identity.localSurfaceDigest.size());
+            }
+        }
+        if (sectionSpatialPartition_.enabled()) {
+            constexpr char policy[] = "MeshSectionSpatialPartition/1";
+            hasher.appendBytes(policy, sizeof(policy) - 1u);
+            hasher.appendU64(sectionSpatialPartition_.maxTrianglesPerSection);
+            hasher.appendU64(sectionSpatialPartition_.maxSections);
+        }
     }
 
 private:
     MeshSourceKind sourceKind_ = MeshSourceKind::ProceduralCube;
     bool mutableMeshExposed_ = false;
     bool groupSectionsByMaterial_ = false;
+    bool retainSourceRanges_ = false;
+    bool retainSourceIdentity_ = false;
+    std::uint32_t sourceIdentityVersion_ = 0;
+    std::array<std::uint8_t, 32> sourceContentDigest_{};
+    core::pmr::Vector<assets::StaticMeshSourceIdentity> sourceIdentities_{
+        &core::defaultCpuMemoryResource()};
+    assets::MeshSectionSpatialPartition sectionSpatialPartition_;
     std::filesystem::path sourcePath_;
 
     // Procedural grid parameters
@@ -268,10 +320,8 @@ private:
     float gridSize_ = 0.0f;
     float gridBaseHeight_ = 0.0f;
 
-    /// Optional heightfield driving generateProceduralGrid(). When it carries
-    /// any wave/noise layers, the grid samples it (rendered mesh == gameplay
-    /// elevation). Empty by default (fallback legacy sine formula).
-    core::TerrainHeightField proceduralHeightField_;
+    bool explicitGridSamples_ = false;
+    terrain::TerrainMeshSamples gridSamples_;
 
     // Procedural cube parameters
     float cubeSize_ = 1.0f;
@@ -283,13 +333,13 @@ private:
     float uvScale_ = 1.0f;
 
     // Custom pre-built mesh (moved in at construction, swapped to mesh_ in load)
-    std::unique_ptr<assets::MeshAsset> customMesh_;
+    core::UniquePtr<assets::MeshAsset> customMesh_;
 
     // Loaded mesh data (owned by this resource, managed through ResourceManager)
-    std::unique_ptr<assets::MeshAsset> mesh_;
-    std::pmr::vector<assets::ImportedMaterialAsset> materials_{&core::defaultCpuMemoryResource()};
-    std::pmr::vector<assets::ImportedTextureAsset> textures_{&core::defaultCpuMemoryResource()};
-    std::pmr::vector<assets::ImportedImageAsset> images_{&core::defaultCpuMemoryResource()};
+    core::UniquePtr<assets::MeshAsset> mesh_;
+    core::pmr::Vector<assets::ImportedMaterialAsset> materials_{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<assets::ImportedTextureAsset> textures_{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<assets::ImportedImageAsset> images_{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<core::pmr::String> textureResourceIds_{&core::defaultCpuMemoryResource()};
 
     void loadFromGlb();

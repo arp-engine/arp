@@ -826,52 +826,39 @@ def set_wgsl_depth_texture_type(wgsl_path, texture_var_name):
     array_pattern = (
         rf'(var\s+{re.escape(texture_var_name)}\s*:\s*(?:binding_)?array\s*<\s*)'
         rf'texture_2d\s*<\s*f32\s*>(\s*,[^;]+>)')
-    if re.search(array_pattern, text):
+    array_binding = bool(re.search(array_pattern, text))
+    if array_binding:
         text = re.sub(array_pattern, r'\1texture_depth_2d\2', text)
-        # A depth load returns a scalar. Locate the call boundary, not the last
-        # .x on a line: a neighboring color load must retain its component read.
-        edits = []
-        for call in re.finditer(r'\b(textureLoad|textureSample|textureSampleLevel)\s*\(', text):
-            bounds = _find_function_parameter_end(text, call.group(1), call.start())
-            if bounds is None:
-                raise RuntimeError(f"{wgsl_path}: unterminated depth array texture call")
-            opening, closing = bounds
-            nesting = 0
-            separator = opening + 1
-            while separator < closing:
-                char = text[separator]
-                if char == ',' and nesting == 0: break
-                if char in '([{': nesting += 1
-                elif char in ')]}': nesting -= 1
-                separator += 1
-            resource = text[opening + 1:separator].strip().strip('()').strip()
-            if not (resource.startswith(texture_var_name + '[') and resource.endswith(']')):
-                continue
-            suffix = re.match(r'\s*\.x\b', text[closing + 1:])
-            if suffix:
-                edits.append((closing + 1, closing + 1 + suffix.end()))
-        for start, end in reversed(edits):
-            text = text[:start] + text[end:]
+    else:
+        var_pattern = rf'var\s+{re.escape(texture_var_name)}\s*:\s*texture_2d<f32>'
+        if not re.search(var_pattern, text):
+            return
+        text = re.sub(var_pattern, f'var {texture_var_name} : texture_depth_2d', text)
+
+    # Depth reads are scalar in every expression context, including comparisons
+    # and conditional expressions. Use the shared balanced-call parser so a
+    # nested coordinate swizzle or neighboring color load stays unchanged.
+    edits = []
+    for call in re.finditer(r'\b(textureLoad|textureSample|textureSampleLevel)\s*\(', text):
+        bounds = _find_function_parameter_end(text, call.group(1), call.start())
+        if bounds is None:
+            raise RuntimeError(f"{wgsl_path}: unterminated depth texture call")
+        opening, closing = bounds
+        arguments = _function_argument_ranges(text, opening, closing)
+        start, end = arguments[0]
+        resource = text[start:end].strip().strip('()').strip()
+        matches_binding = (resource.startswith(texture_var_name + '[') and resource.endswith(']')
+            if array_binding else resource == texture_var_name)
+        if not matches_binding:
+            continue
+        suffix = re.match(r'\s*\.x\b', text[closing + 1:])
+        if suffix:
+            edits.append((closing + 1, closing + 1 + suffix.end()))
+    for start, end in reversed(edits):
+        text = text[:start] + text[end:]
+    if array_binding:
         write_utf8_no_bom(wgsl_path, text)
         return
-
-    # 1. Replace variable type
-    var_pattern = rf'var\s+{re.escape(texture_var_name)}\s*:\s*texture_2d<f32>'
-    if not re.search(var_pattern, text):
-        return
-    text = re.sub(var_pattern, f'var {texture_var_name} : texture_depth_2d', text)
-
-    # 2. Remove .x component access from textureSample calls on depth textures
-    # textureSample((VarName), sampler, coords).x → textureSample((VarName), sampler, coords)
-    sample_pattern = rf'textureSample(?:Level)?\(\({re.escape(texture_var_name)}\), (.+?)\)\)\.x'
-    text = re.sub(sample_pattern, lambda match: match.group(0)[:-2], text)
-    # Keep this line-scoped and greedy so a coordinate expression such as
-    # ``((_S2)).xy`` is not mistaken for the scalar result suffix.
-    load_pattern = (
-        rf'(?m)(textureLoad\(\({re.escape(texture_var_name)}\),[^\r\n]*)'
-        rf'\.x(?=\)\s*;)'
-    )
-    text = re.sub(load_pattern, r'\1', text)
 
     # WGSL depth textures require an integer mip level for
     # textureSampleLevel, while Slang emits the float literal used by color
@@ -884,6 +871,75 @@ def set_wgsl_depth_texture_type(wgsl_path, texture_var_name):
     text = re.sub(depth_level_pattern, r'\g<1>0u\2', text)
 
     write_utf8_no_bom(wgsl_path, text)
+
+
+def validate_wgsl_vertex_input_interface(text, entry, reflected_attributes):
+    """Check VertexInput/1 against the selected emitted entry, without rewriting.
+
+    SPIR-V locations do not prove WGSL locations: the pinned Slang compiler
+    allocates some HLSL semantics independently of vk::location. Use the emitted
+    input members, including their names, so equal-format permutations also fail.
+    This accepts scalar/vector inputs and input structs emitted by our compiler;
+    other input grammars fail closed rather than guessing an interface.
+    """
+    def reject_interface():
+        raise RuntimeError('WGSL-VERTEX-INPUT-INTERFACE: ' + entry)
+
+    text = strip_comments_preserving_offsets(text)
+    definitions = list(re.finditer(r'@vertex\s+fn\s+' + re.escape(entry) + r'\s*\(', text))
+    if len(definitions) != 1:
+        reject_interface()
+    boundary = _find_function_parameter_end(text, entry, definitions[0].start())
+    if boundary is None:
+        reject_interface()
+    actual = {}
+
+    def inspect_field(field, allow_struct):
+        field = field.strip()
+        if not field:
+            return
+        match = re.fullmatch(r'((?:@\w+\s*\([^)]*\)\s*)*)([A-Za-z_]\w*)\s*:\s*(.+)', field, re.DOTALL)
+        if match is None:
+            reject_interface()
+        annotations, name, value_type = match.groups()
+        locations = re.findall(r'@location\s*\(\s*(\d+)\s*\)', annotations)
+        if re.search(r'@builtin\s*\(', annotations):
+            if locations:
+                reject_interface()
+            return
+        if not annotations and allow_struct and re.fullmatch(r'[A-Za-z_]\w*', value_type):
+            body = get_struct_body(text, value_type)
+            if not body:
+                reject_interface()
+            wrapped = '(' + body + ')'
+            for first, last in _function_argument_ranges(wrapped, 0, len(wrapped) - 1):
+                inspect_field(wrapped[first:last], False)
+            return
+        if len(locations) != 1:
+            reject_interface()
+        vector = re.fullmatch(r'vec([234])\s*<\s*(f32|u32|i32)\s*>', value_type.strip())
+        scalar = value_type.strip() if vector is None else vector[2]
+        kind = {'f32': 'Float', 'u32': 'UInt', 'i32': 'Int'}.get(scalar)
+        if kind is None:
+            reject_interface()
+        fmt = kind + (vector[1] if vector is not None else '')
+        location = int(locations[0])
+        if location in actual:
+            reject_interface()
+        # Slang appends an ordinal to generated member identifiers. Match the
+        # authored member from reflection, not declaration order or type alone.
+        actual[location] = (re.sub(r'_\d+$', '', name), fmt)
+
+    for first, last in _function_argument_ranges(text, *boundary):
+        inspect_field(text[first:last], True)
+    expected = {}
+    for attribute in reflected_attributes:
+        location = attribute['location']
+        if type(location) is not int or location < 0 or location in expected:
+            reject_interface()
+        expected[location] = (attribute['name'].rsplit('.', 1)[-1], attribute['format'])
+    if actual != expected:
+        reject_interface()
 
 
 def set_wgsl_vertex_output_locations(wgsl_path):
@@ -3191,6 +3247,16 @@ SHADER_SOURCES = [
     ("ForwardPlusCull", "forward_plus_cull",
      "renderer/forward_plus_cull.slang",
      ["forwardPlusCullMain"]),
+    ("FogInject", "fog_inject", "renderer/fog_inject.slang", ["computeMain"]),
+    ("FogScatter", "fog_scatter", "renderer/fog_scatter.slang", ["computeMain"]),
+    ("FogTemporal", "fog_temporal", "renderer/fog_temporal.slang", ["computeMain"]),
+    ("FogIntegrate", "fog_integrate", "renderer/fog_integrate.slang", ["computeMain"]),
+    ("FogComposite", "fog_composite", "renderer/fog_composite.slang", ["vertexMain", "fragmentMain"]),
+    ("FogDemoScene", "fog_demo_scene", "samples/fog_demo_scene.slang", ["vertexMain", "fragmentMain"]),
+    ("FogDemoShadow", "fog_demo_shadow", "samples/fog_demo_shadow.slang", ["vertexMain", "fragmentMain"]),
+    ("FogDemoGlass", "fog_demo_glass", "samples/fog_demo_glass.slang", ["vertexMain", "fragmentMain"]),
+    ("FogDemoPlainGlass", "fog_demo_plain_glass", "samples/fog_demo_plain_glass.slang", ["vertexMain", "fragmentMain"]),
+    ("FogDemoPresent", "fog_demo_present", "samples/fog_demo_present.slang", ["vertexMain", "fragmentMain"]),
     ("ForwardPlusDebug", "forward_plus_debug",
      "renderer/forward_plus_debug.slang",
      ["forwardPlusDebugMain"]),
@@ -3204,6 +3270,9 @@ SHADER_SOURCES = [
       "fragmentMainFoliage"]),
     ("EditorViewportPbr", "editor_viewport_pbr",
      "editor/viewport_pbr.slang",
+     ["vertexMain", "fragmentMain"]),
+    ("EditorViewportEnvironment", "editor_viewport_environment",
+     "editor/viewport_environment.slang",
      ["vertexMain", "fragmentMain"]),
     ("EditorViewportSprite", "editor_viewport_sprite",
      "editor/viewport_sprite.slang",
@@ -3295,12 +3364,15 @@ WGSL_PUSH_CONSTANT_SHADERS = {
     "depth_pyramid",
     "wocc_taa",
     "editor_viewport_pbr",
+    "editor_viewport_environment",
     "trail_beam",
     "ssr",
 }
 
 # Shaders that need WGSL vertex output location annotation (keyed by prefix)
 WGSL_VERTEX_LOCATION_SHADERS = {
+    "fog_composite",
+    "fog_demo_scene", "fog_demo_shadow", "fog_demo_glass", "fog_demo_plain_glass", "fog_demo_present",
     "queen_portable_shadow",
     "queen_portable",
     "queen_portable_sky",
@@ -3317,6 +3389,7 @@ WGSL_VERTEX_LOCATION_SHADERS = {
     "fxaa",
     "wocc_taa",
     "editor_viewport_pbr",
+    "editor_viewport_environment",
 }
 
 # WGSL storage texture format/access declarations (keyed by prefix).

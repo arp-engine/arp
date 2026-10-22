@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/cpu_allocator.h"
+#include "core/memory/cpu_allocator.h"
 #include "rhi/semantics/native_backend_capabilities.h"
 #include "rhi/semantics/webgpu_runtime_profile.h"
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/unsigned_range.h"
+#include "core/math/unsigned_range.h"
 #include "rhi/gpu_descriptors.h"
 
 namespace arp::rhi::semantics {

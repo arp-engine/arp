@@ -1,4 +1,4 @@
-#include "core/numeric_record_pool.h"
+#include "core/container/numeric_record_pool.h"
 
 #include <cassert>
 #include <cstdio>

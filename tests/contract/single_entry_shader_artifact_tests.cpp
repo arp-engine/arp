@@ -1,5 +1,5 @@
 #include "../fixtures/original_shader_artifact_owner_fixture.h"
-#include "core/artifact_path.h"
+#include "core/io/artifact_path.h"
 #include "shader/single_entry_shader_artifact.h"
 #include "shadow_depth.shader_bindings.h"
 

@@ -1,3 +1,10 @@
+#include "../fixtures/bindless_geometry_package_fixture.h"
+#include "../fixtures/webgpu_bindless_scene_execution_fixture.h"
+#include "../fixtures/webgpu_original_device_fixture.h"
+#include "rhi/backends/webgpu/webgpu_bindless_device_limit_plan.h"
+#include "rhi/backends/webgpu/webgpu_device.h"
+
+#if !defined(ARP_BINDLESS_WEBGPU_SCENE_ONLY)
 #include "../fixtures/bindless_graphics_instance64_package_fixture.h"
 #include "../fixtures/bindless_graphics_matrix_package_fixture.h"
 #include "../fixtures/bindless_graphics_pbr_material_package_fixture.h"
@@ -12,14 +19,12 @@
 #include "../fixtures/webgpu_original_bindless_root_preparation_fixture.h"
 #include "../fixtures/webgpu_original_completed_content_fixture.h"
 #include "../fixtures/webgpu_original_completed_preparation_fixture.h"
-#include "../fixtures/webgpu_original_device_fixture.h"
 #include "../fixtures/webgpu_original_graphics_matrix_data_fixture.h"
 #include "../fixtures/webgpu_original_graphics_push_data_fixture.h"
 #include "../fixtures/webgpu_original_sampled_preparation_fixture.h"
 #include "../fixtures/webgpu_original_storage_execution_fixture.h"
 #include "../fixtures/webgpu_wocc_ibl_execution_data_fixture.h"
-#include "rhi/backends/webgpu/webgpu_bindless_device_limit_plan.h"
-#include "rhi/backends/webgpu/webgpu_device.h"
+#endif
 
 #include <emscripten/emscripten.h>
 
@@ -42,18 +47,10 @@ EM_ASYNC_JS(int, requestPlannedDevice, (), {
     // clang-format on
 });
 
-void prepareTerrainDevice()
+void preparePackageDevice(
+    const std::shared_ptr<const arp::rhi::BindlessShaderPackage>& package, const char* receipt)
 {
     using namespace arp;
-    test::BindlessGraphicsTerrain27PackageFixture proof("/bindless-terrain27");
-    core::pmr::String diagnostic;
-    auto package = rhi::BindlessShaderPackage::load(
-        "/bindless-terrain27/GraphicsTerrain27.emulated.bindless.yaml",
-        {4u * 1024u * 1024u, 32u * 1024u * 1024u, 64u, 4u, 33u, 4u, &proof.request},
-        diagnostic);
-    if (!package)
-        std::fprintf(stderr, "Terrain device package: %s\n", diagnostic.c_str());
-    assert(package);
     std::array<std::uint32_t, 7u> facts{};
     assert(EM_ASM_INT(
         {
@@ -95,13 +92,60 @@ void prepareTerrainDevice()
             plan.requiredLimits[i].name,
             plan.requiredLimits[i].value);
     assert(requestPlannedDevice());
-    std::puts(
+    std::puts(receipt);
+}
+
+#if !defined(ARP_BINDLESS_WEBGPU_SCENE_ONLY)
+void prepareTerrainDevice()
+{
+    using namespace arp;
+    test::BindlessGraphicsTerrain27PackageFixture proof("/bindless-terrain27");
+    core::pmr::String diagnostic;
+    auto package = rhi::BindlessShaderPackage::load(
+        "/bindless-terrain27/GraphicsTerrain27.emulated.bindless.yaml",
+        {4u * 1024u * 1024u, 32u * 1024u * 1024u, 64u, 4u, 33u, 4u, &proof.request},
+        diagnostic);
+    if (!package)
+        std::fprintf(stderr, "Terrain device package: %s\n", diagnostic.c_str());
+    assert(package);
+    preparePackageDevice(package,
         "BINDLESS_TERRAIN27_DEVICE_PLAN_OK sealed-package queried-adapter actual-device before-rhi no-capability-grant");
 }
+
+#endif
 } // namespace
 
 int main()
 {
+    const int sceneFamily = EM_ASM_INT({
+        // clang-format off
+        const family = new URLSearchParams(location.search).get('original-root-scene-family');
+        return family === null ? 0 : family === 'pbr' ? 1 : family === 'terrain' ? 2 : -1;
+        // clang-format on
+    });
+    assert(sceneFamily >= 0);
+    std::shared_ptr<const arp::rhi::BindlessShaderPackage> scenePackage;
+    if (sceneFamily) {
+        using namespace arp;
+        const auto path = sceneFamily == 2
+            ? "/bindless-terrain-geometry/TerrainGeometryFamily.emulated.bindless.yaml"
+            : "/bindless-pbr-geometry/PbrGeometryFamily.emulated.bindless.yaml";
+        test::BindlessGeometryPackageFixture proof(path, sceneFamily == 2, "emulated");
+        rhi::BindlessPackageLoadBudget load{
+            4u * 1024u * 1024u, 64u * 1024u * 1024u, 256u, 16u, 256u, 64u};
+        load.push = &proof.push;
+        load.ordinaryMemory = &proof.memory;
+        core::pmr::String diagnostic;
+        scenePackage = rhi::BindlessShaderPackage::load(path, load, diagnostic);
+        if (!scenePackage)
+            std::fprintf(stderr, "Scene package: %s\n", diagnostic.c_str());
+        assert(scenePackage);
+        preparePackageDevice(scenePackage,
+            "BINDLESS_SCENE_DEVICE_PLAN_OK sealed-package queried-adapter actual-device before-rhi no-capability-grant");
+    }
+#if defined(ARP_BINDLESS_WEBGPU_SCENE_ONLY)
+    assert(sceneFamily != 0);
+#else
     const bool pushOnly = EM_ASM_INT({
         // clang-format off
             return new URLSearchParams(location.search).has('original-root-push-execution-only');
@@ -172,6 +216,7 @@ int main()
         {2u * 1024u * 1024u, 16u * 1024u * 1024u, 64u, 16u, 256u, 64u},
         diagnostic);
     assert(package);
+#endif
     EM_ASM({
         // clang-format off
             var device = Module.preinitializedWebGPUDevice;
@@ -181,12 +226,83 @@ int main()
             Module.originalRootPreparationScopeDone = false;
         // clang-format on
     });
+#if !defined(ARP_BINDLESS_WEBGPU_SCENE_ONLY)
     const bool geometryOnly = EM_ASM_INT({
         // clang-format off
         return new URLSearchParams(location.search).has('original-root-geometry-execution-only');
         // clang-format on
     });
-    if (geometryOnly) {
+#endif
+    if (sceneFamily) {
+        using namespace arp;
+        using Contract = arp::test::BindlessSceneConformanceContract;
+#if !defined(ARP_BINDLESS_WEBGPU_SCENE_ONLY)
+        assert(!geometryOnly && !woccIbl && !pushOnly && !matrixOnly && !storageOnly && !sampledOnly
+            && !arrayOnly && !composedOnly);
+#endif
+        std::size_t entries = 0u;
+        for (const auto& vertex : scenePackage->modules()) {
+            if (vertex.push.stages != rhi::ShaderStage::Vertex)
+                continue;
+            const rhi::BindlessPackageModule* fragment = nullptr;
+            Contract::EntrySelection selected;
+            for (const auto& candidate : scenePackage->modules()) {
+                const auto selection = Contract::selectEntries(vertex.entry, candidate.entry);
+                if (!selection.recognized || selection.diagnostic)
+                    continue;
+                assert(!fragment);
+                fragment = &candidate;
+                selected = selection;
+            }
+            assert(fragment);
+            using Scene = test::WebGpuBindlessSceneExecutionFixture;
+            // Every family entry covers cancellation/completion; one authentic
+            // geometry family covers the full callback matrix in all 3 passes.
+            const bool representative = selected.family == Contract::Family::Mesh
+                || selected.family == Contract::Family::Terrain;
+            const auto scenarios = representative ? Scene::scenarioNames.size() : 2u;
+            for (std::size_t scenario = 0u; scenario < scenarios; ++scenario) {
+                test::WebGpuBindlessSceneDataFixture data;
+                data.initializeNative = true;
+                data.vertex = &vertex;
+                data.artifact = &scenePackage->artifact();
+                data.family = selected.family;
+                data.draw.material = sceneFamily == 2 ? 0u : 1u;
+                if (scenario == static_cast<std::size_t>(Scene::Scenario::MaterialRangeRejected))
+                    data.draw.material = sceneFamily == 2 ? 1u : 2u;
+                data.cancelBeforeSubmit = scenario == 1u;
+                data.retiredDeviceExpected =
+                    scenario == static_cast<std::size_t>(Scene::Scenario::RetiredLifetime);
+                data.nativeStagingCeiling = rhi_webgpu::webGpuNativeDeviceLimits().maxBufferSize;
+                test::WebGpuBindlessSceneExecutionFixture observe(data);
+                observe.scenario = static_cast<Scene::Scenario>(scenario);
+                auto device = rhi_webgpu::createWebGpuRhiDevice(
+                    test::WebGpuOriginalDeviceFixture::describe("public-scene",
+                        64u * 1024u * 1024u,
+                        std::max<std::uint32_t>(
+                            sizeof(data.draw), rhi::kL2AtomicPushConstantLimitBytes),
+                        4u * 1024u * 1024u));
+                assert(device);
+                test::validateOriginalBindlessRootSource(scenePackage,
+                    std::move(device),
+                    "",
+                    false,
+                    observe,
+                    data,
+                    true,
+                    fragment->entry,
+                    vertex.entry,
+                    selected.pass != 0u,
+                    test::OrdinaryRootMutation::None,
+                    rhi::TextureFormat::Rgba16Float,
+                    true);
+            }
+            ++entries;
+        }
+        assert(entries == (sceneFamily == 2 ? 3u : 12u));
+    }
+#if !defined(ARP_BINDLESS_WEBGPU_SCENE_ONLY)
+    else if (geometryOnly) {
         using namespace arp;
         using Execute = test::WebGpuOriginalBindlessInitializedGeometryExecutionFixture;
         for (const bool instance : {false, true}) {
@@ -202,7 +318,7 @@ int main()
                     Execute execute;
                     execute.instanceRate = instance;
                     execute.fault = fault;
-                    execute.scenario = static_cast<Execute::Scenario>(scenario);
+                    execute.scenario = static_cast<typename Execute::Scenario>(scenario);
                     auto device = rhi_webgpu::createWebGpuRhiDevice(
                         test::WebGpuOriginalDeviceFixture::describe(
                             "initialized bindless Geometry1",
@@ -308,7 +424,7 @@ int main()
                 for (const bool fault : {false, true}) {
                     Execute execute;
                     execute.fault = fault;
-                    execute.scenario = static_cast<Execute::Scenario>(scenario);
+                    execute.scenario = static_cast<typename Execute::Scenario>(scenario);
                     auto device = rhi_webgpu::createWebGpuRhiDevice(
                         test::WebGpuOriginalDeviceFixture::describe(
                             "public Graphics push execution",
@@ -358,7 +474,7 @@ int main()
                     if constexpr (Data::sampled)
                         execute.initializeTexturePixels = Model::fillTexture;
                     execute.fault = fault;
-                    execute.scenario = static_cast<Execute::Scenario>(scenario);
+                    execute.scenario = static_cast<typename Execute::Scenario>(scenario);
                     auto device = rhi_webgpu::createWebGpuRhiDevice(
                         test::WebGpuOriginalDeviceFixture::describe(
                             Model::packageName, 64u * 1024u * 1024u, 4096u, 4u * 1024u * 1024u));
@@ -845,6 +961,7 @@ int main()
             }
         }
     }
+#endif
     EM_ASM({
         // clang-format off
             var device = Module.preinitializedWebGPUDevice;
@@ -880,7 +997,13 @@ int main()
             return !!Module.originalRootPreparationScopeDone && !!Module.originalRootPreparationScopePassed;
         // clang-format on
     }));
-    std::puts(geometryOnly
+#if defined(ARP_BINDLESS_WEBGPU_SCENE_ONLY)
+    std::puts(
+        "BINDLESS_WEBGPU_SCENE_RETIRE_OK original-owners-expired budgets-zero scopes3-drained no-visual-or-numeric-equivalence-grant");
+#else
+    std::puts(sceneFamily
+            ? "BINDLESS_WEBGPU_SCENE_RETIRE_OK original-owners-expired budgets-zero scopes3-drained no-visual-or-numeric-equivalence-grant"
+            : geometryOnly
             ? "BINDLESS_WEBGPU_INITIALIZED_GEOMETRY_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed"
             : woccIbl
             ? "BINDLESS_WEBGPU_WOCC_IBL_RETIRE_OK frozen655328 original-owners-expired budgets-zero scopes3-drained"
@@ -897,5 +1020,6 @@ int main()
             : sampledOnly
             ? "BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_SAMPLED_RETIRE_OK original-owners-expired budgets-zero scopes3-drained general-execution-closed"
             : "BINDLESS_RHI_ORIGINAL_ROOT_WEBGPU_PREPARATION_RETIRE_OK original-owners-expired budgets-zero scopes3-drained public-execution-closed");
+#endif
     return 0;
 }

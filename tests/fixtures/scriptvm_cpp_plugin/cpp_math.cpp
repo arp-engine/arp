@@ -1,6 +1,6 @@
 #include "cpp_math.h"
 
-#include "scriptvm/runtime/cpp_plugin_api.h"
+#include "scriptvm/plugin/cpp_plugin_api.h"
 
 namespace arp::reflection::generated {
 bool register_cpp_math_reflection(arp::scriptvm::ModuleRegistration* module);

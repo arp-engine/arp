@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/bounded_sequence.h"
-#include "core/quota_bound_shared_identity.h"
+#include "core/container/bounded_sequence.h"
+#include "core/ownership/quota_bound_shared_identity.h"
 #include "rhi/frontend/command_attachment_validation.h"
 #include "rhi/frontend/command_model.h"
 #include "rhi/frontend/pipeline_state_copy.h"
