@@ -2,6 +2,7 @@
 
 #include "core/memory/cpu_allocator.h"
 #include "physics/2d/physics_world_2d.h"
+#include "scriptvm/aot/aot_v5.h"
 
 #include <filesystem>
 #include <optional>
@@ -19,12 +20,24 @@ struct ProjectManifestBudget {
     std::size_t maxModuleDependencies = 256u;
 };
 
+// Explicit opt-in for cold ScriptComponent preparation. Absence is a legacy
+// source declaration, not permission to synthesize execution/instance budgets.
+struct ProjectScriptAuthoring {
+    static constexpr std::uint32_t contractVersion = 1;
+    std::uint64_t maxSourceBytes = 0;
+    std::uint64_t preparationBytes = 0;
+    std::uint32_t maxInstances = 0;
+    scriptvm::AotExecutionBudgetV5 execution;
+    core::pmr::Vector<core::pmr::String> imports;
+};
+
 struct ProjectScriptModule {
     core::pmr::String id;
     core::pmr::String resourceId;
     core::pmr::String source;
     std::uint32_t schemaVersion = 0;
     core::pmr::Vector<core::pmr::String> dependencies;
+    std::optional<ProjectScriptAuthoring> authoring;
 };
 
 // Editor-owned authoring data. Players consume exported startup data and assets,

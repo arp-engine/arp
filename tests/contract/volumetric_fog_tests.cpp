@@ -1,7 +1,9 @@
 #include "3d/scene_3d.h"
+#include "core/math/matrix_validation.h"
 #include "reflection/reflection.h"
 #include "reflection/serialization.h"
 #include "renderer/render_graph/compiled_frame_graph.h"
+#include "renderer/temporal/jitter.h"
 #include "renderer/volumetric_fog/volumetric_fog_feature.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/semantics/render_target_coordinates.h"
@@ -170,9 +172,33 @@ void contracts()
         transmittance *= std::exp(-0.2f * 8 / 96);
     }
     assert(std::fabs(sum - 0.3f * integratedLength(0.2f, 8)) < 0.00001f);
+
+    // Forest streaming left the origin by ~908m and FOG-CAMERA-MATRIX rejected
+    // a valid camera. Cover the full 1000m route, all 16 jitter phases and all
+    // render-target conventions with the production reconstruction validator.
+    for (const auto backend :
+        {rhi::Backend::Null, rhi::Backend::Vulkan, rhi::Backend::Metal, rhi::Backend::WebGPU}) {
+        for (unsigned step = 0; step <= 1000; ++step) {
+            const float distance = float(step);
+            const core::Vec3 eye{distance, 8.72790146f + distance * .2f, 3.5f};
+            const auto forward =
+                core::rotate(core::Quat::fromYawPitchRoll(0, -5.203902f, 0), {0, 0, -1});
+            const auto view = core::lookAtRightHanded(eye, eye + forward);
+            auto projection =
+                core::perspectiveRightHanded(39.7801853952f, 2560.0f / 1440, .1f, 1200);
+            rhi::semantics::applyProjectionYConvention(projection.m.data(), backend);
+            for (unsigned jitter = 1; jitter <= 16; ++jitter) {
+                auto matrix = core::multiply(
+                    core::applyProjectionJitter(projection, core::halton23(jitter), 2560, 1440),
+                    view);
+                rhi::semantics::applyRenderTargetSamplingYConvention(matrix.m.data(), backend);
+                assert(core::isApproximateInverse(matrix, core::inverse(matrix), .002f));
+            }
+        }
+    }
 }
 
-void smoke(bool spatialAmbient = false)
+void smoke(bool spatialAmbient = false, bool translatedCamera = false)
 {
     auto device = rhi::createNullDevice();
     FogConfig config;
@@ -243,9 +269,19 @@ void smoke(bool spatialAmbient = false)
             context.spatialAmbient.constants = graph.importBufferRef(probeConstants);
             context.spatialAmbient.sampler = probeSampler->id();
         }
-        context.view = core::lookAt({0, 2, -8}, {0, 2, 0});
-        context.projection = core::perspective(60, 64.0f / 48, 0.1f, 100);
-        context.cameraPosition = {0, 2, -8};
+        if (translatedCamera) {
+            context.cameraPosition = {1000, 208.72790146f, 3.5f};
+            const auto forward =
+                core::rotate(core::Quat::fromYawPitchRoll(0, -5.203902f, 0), {0, 0, -1});
+            context.view =
+                core::lookAtRightHanded(context.cameraPosition, context.cameraPosition + forward);
+            context.projection =
+                core::perspectiveRightHanded(39.7801853952f, 2560.0f / 1440, 0.1f, 1200);
+        } else {
+            context.view = core::lookAt({0, 2, -8}, {0, 2, 0});
+            context.projection = core::perspective(60, 64.0f / 48, 0.1f, 100);
+            context.cameraPosition = {0, 2, -8};
+        }
         context.time = float(frame) / 60;
         if (frame >= 9)
             context.ambientRadiance = {0.15f, 0.2f, 0.3f};
@@ -280,6 +316,12 @@ void smoke(bool spatialAmbient = false)
         auto badShadow = context;
         badShadow.primaryLight.castShadow = true;
         assert(feature.contributeGraph(badShadow, outputs).diagnostic == "FOG-SHADOW-INPUT");
+        auto badCamera = context;
+        badCamera.view = core::Mat4::scale({0, 1, 1});
+        assert(feature.contributeGraph(badCamera, outputs).diagnostic == "FOG-CAMERA-MATRIX");
+        badCamera.view = context.view;
+        badCamera.projection.m[0] = std::numeric_limits<float>::infinity();
+        assert(feature.contributeGraph(badCamera, outputs).diagnostic == "FOG-CAMERA-MATRIX");
         if (frame >= 10) {
             context.primaryLight.castShadow = true;
             context.shadow.depth = depth;
@@ -346,6 +388,8 @@ int main(int argc, char**)
         if (argc > 1) {
             smoke();
             smoke(true);
+            smoke(false, true);
+            smoke(true, true);
         } else {
             components();
             contracts();

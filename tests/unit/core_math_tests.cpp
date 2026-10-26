@@ -2,6 +2,7 @@
 #include "assets/mesh/mesh_translation.h"
 #include "core/math/int32_divisor.h"
 #include "core/math/math.h"
+#include "core/math/matrix_validation.h"
 #include "core/math/unsigned_range.h"
 
 #include <cmath>
@@ -269,6 +270,37 @@ int main()
     requireNear("Mat4 inverse translate+scale y", tsPoint.y, 4.0f, 0.001f);
     requireNear("Mat4 inverse translate+scale z", tsPoint.z, 8.0f, 0.001f);
 
+    // Translated perspective cameras must satisfy the same absolute inverse
+    // residual bound as near-origin cameras. Both elimination and validation
+    // need wider intermediates; relaxing the bound would hide wrong inverses.
+    for (unsigned step = 0; step <= 10000; ++step) {
+        const float distance = float(step) * 0.1f;
+        const arp::core::Vec3 eye{distance, 8.72790146f + distance * .2f, 3.5f};
+        const auto forward =
+            arp::core::rotate(arp::core::Quat::fromYawPitchRoll(0, -5.203902f, 0), {0, 0, -1});
+        const auto farView = arp::core::lookAtRightHanded(eye, eye + forward);
+        auto farProjection =
+            arp::core::perspectiveRightHanded(39.7801853952f, 2560.0f / 1440, .1f, 1200);
+        // Deterministic asymmetric subpixel offsets exercise cancellation in
+        // off-diagonal coefficients without a core -> renderer dependency.
+        farProjection.m[2] += (float(step % 17) / 17 - .5f) / 2560;
+        farProjection.m[6] += (float(step % 13) / 13 - .5f) / 1440;
+        const auto matrix = arp::core::multiply(farProjection, farView);
+        if (!arp::core::isApproximateInverse(matrix, arp::core::inverse(matrix), .002f)) {
+            std::printf("translated camera inverse rejected at x=%.9g\n", distance);
+            return 1;
+        }
+    }
+    auto wrongInverse = arp::core::Mat4::identity();
+    wrongInverse.m[3] = .01f;
+    if (arp::core::isApproximateInverse(arp::core::Mat4::identity(), wrongInverse, .002f)
+        || arp::core::isApproximateInverse(
+            arp::core::Mat4::identity(), arp::core::Mat4::identity(), -1))
+        return 1;
+    wrongInverse.m[3] = std::numeric_limits<float>::infinity();
+    if (arp::core::isApproximateInverse(arp::core::Mat4::identity(), wrongInverse, .002f))
+        return 1;
+
     // Singular matrix returns identity (no NaN/Inf).
     arp::core::Mat4 singular{};
     singular.m[0] = 1.0f;
@@ -292,6 +324,8 @@ int main()
     requireNear("Mat4 inverse singular returns identity m5", invSingular.m[5], 1.0f);
     requireNear("Mat4 inverse singular returns identity m10", invSingular.m[10], 1.0f);
     requireNear("Mat4 inverse singular returns identity m15", invSingular.m[15], 1.0f);
+    if (arp::core::isApproximateInverse(singular, invSingular, .002f))
+        return 1;
 
     // -- Vec3 lerp / distance (IK & blend primitives) --
     const arp::core::Vec3 lerpA{0.0f, 10.0f, -4.0f};

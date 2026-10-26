@@ -741,7 +741,7 @@ inline Vec3 mat4_transform_point(const Mat4& matrix, Vec3 point)
 }
 
 // General 4x4 matrix inverse via Gauss-Jordan elimination with partial pivoting.
-// Input and output are both row-major Mat4 (m[row*4+col], v_clip = v_local . M).
+// Input and output are both row-major Mat4 (m[row*4+col], v_clip = M . v_local).
 // Used for DDGI resolve: reconstructing world position from clip space requires
 // the inverse of the row-major view-projection produced by core::multiply(proj, view).
 // Returns identity if the matrix is singular (determinant ~0) so callers never
@@ -751,7 +751,11 @@ inline Mat4 inverse(const Mat4& matrix)
     // Augmented [A | I] in row-major layout. Left half starts as the input,
     // right half starts as identity. Gauss-Jordan reduces the left to identity,
     // which transforms the right into A^-1.
-    std::array<float, 32> aug{};
+    // A translated perspective matrix has large, nearly cancelling terms.
+    // Keep elimination in double so rounding those terms at every pivot does
+    // not corrupt kilometre-scale camera reconstruction. The public matrix
+    // remains float; round only once when storing the inverse.
+    std::array<double, 32> aug{};
     for (std::uint32_t row = 0; row < 4; ++row) {
         for (std::uint32_t col = 0; col < 4; ++col) {
             aug[row * 8 + col] = matrix.m[row * 4 + col];
@@ -763,9 +767,9 @@ inline Mat4 inverse(const Mat4& matrix)
         // Partial pivot: find the row with the largest absolute value in this column
         // at or below the diagonal, to maximize numerical stability.
         std::uint32_t pivotRow = col;
-        float pivotAbs = std::fabs(aug[col * 8 + col]);
+        double pivotAbs = std::fabs(aug[col * 8 + col]);
         for (std::uint32_t row = col + 1; row < 4; ++row) {
-            const float candidate = std::fabs(aug[row * 8 + col]);
+            const double candidate = std::fabs(aug[row * 8 + col]);
             if (candidate > pivotAbs) {
                 pivotAbs = candidate;
                 pivotRow = row;
@@ -773,7 +777,7 @@ inline Mat4 inverse(const Mat4& matrix)
         }
 
         // Singular matrix: return identity rather than dividing by ~0.
-        if (pivotAbs < 1e-12f) {
+        if (pivotAbs < 1e-12) {
             return Mat4::identity();
         }
 
@@ -785,7 +789,7 @@ inline Mat4 inverse(const Mat4& matrix)
         }
 
         // Scale the pivot row so the pivot element becomes 1.
-        const float invPivot = 1.0f / aug[col * 8 + col];
+        const double invPivot = 1.0 / aug[col * 8 + col];
         for (std::uint32_t k = 0; k < 8; ++k) {
             aug[col * 8 + k] *= invPivot;
         }
@@ -796,8 +800,8 @@ inline Mat4 inverse(const Mat4& matrix)
             if (row == col) {
                 continue;
             }
-            const float factor = aug[row * 8 + col];
-            if (std::fabs(factor) < 1e-12f) {
+            const double factor = aug[row * 8 + col];
+            if (std::fabs(factor) < 1e-12) {
                 continue;
             }
             for (std::uint32_t k = 0; k < 8; ++k) {
@@ -809,7 +813,7 @@ inline Mat4 inverse(const Mat4& matrix)
     Mat4 result;
     for (std::uint32_t row = 0; row < 4; ++row) {
         for (std::uint32_t col = 0; col < 4; ++col) {
-            result.m[row * 4 + col] = aug[row * 8 + 4 + col];
+            result.m[row * 4 + col] = static_cast<float>(aug[row * 8 + 4 + col]);
         }
     }
     return result;

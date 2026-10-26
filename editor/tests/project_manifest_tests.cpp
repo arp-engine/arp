@@ -1,3 +1,4 @@
+#include "core/encoding/yaml_contract.h"
 #include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
 #include "editor/project/project_manifest.h"
@@ -292,6 +293,74 @@ void metadataTests()
         "PROJECT-METADATA-CAPACITY-EXCEEDED",
         budget);
 }
+
+void scriptAuthoringTests()
+{
+    using Y = core::YamlContract;
+    auto manifest = project();
+    assert(!manifest.scriptModules[0].authoring && !manifest.scriptModules[1].authoring);
+    ProjectScriptAuthoring config;
+    config.maxSourceBytes = 65536;
+    config.preparationBytes = 16 * 1024 * 1024;
+    config.maxInstances = 32;
+    config.execution = {100000, 64, 1024, 1024, 16, 64, 16 * 1024 * 1024};
+    config.imports = {"arp_scene"};
+    manifest.scriptModules[0].authoring = config;
+    core::pmr::String yaml, again;
+    ProjectDiagnostic diagnostic;
+    assert(ProjectManifestCodec::encode(manifest, yaml, diagnostic));
+    ProjectManifest restored;
+    assert(ProjectManifestCodec::decode(yaml, restored, diagnostic));
+    assert(restored.scriptModules[0].authoring && !restored.scriptModules[1].authoring);
+    const auto& value = *restored.scriptModules[0].authoring;
+    assert(value.maxSourceBytes == config.maxSourceBytes
+        && value.preparationBytes == config.preparationBytes
+        && value.maxInstances == config.maxInstances && value.imports == config.imports
+        && value.execution.maxMemoryBytes == config.execution.maxMemoryBytes);
+    assert(ProjectManifestCodec::encode(restored, again, diagnostic) && yaml == again);
+    const auto node = Y::parseSingleDocument(yaml);
+    for (const char* key : {"contractVersion",
+             "maxSourceBytes",
+             "preparationBytes",
+             "maxInstances",
+             "execution",
+             "imports"}) {
+        auto malformed = node;
+        auto& authoring = malformed["scriptModules"][0]["authoring"];
+        if (std::string_view(key) == "contractVersion")
+            authoring[key] = 2;
+        else if (std::string_view(key) == "execution")
+            authoring[key] = Y::Node::mapping();
+        else if (std::string_view(key) == "imports")
+            authoring[key] = Y::Node::sequence();
+        else
+            authoring[key] = 0;
+        rejects(Y::serialize(malformed), "PROJECT-MODULE-AUTHORING-INVALID");
+    }
+    for (const char* key : {"instructionLimit",
+             "recursionLimit",
+             "maxFrameValues",
+             "maxContainerValues",
+             "maxCallArguments",
+             "maxContinuationFrames",
+             "maxMemoryBytes"}) {
+        auto malformed = node;
+        malformed["scriptModules"][0]["authoring"]["execution"][key] = 0;
+        rejects(Y::serialize(malformed), "PROJECT-MODULE-AUTHORING-INVALID");
+    }
+    auto malformed = node;
+    malformed["scriptModules"][0]["authoring"]["unknown"] = true;
+    rejects(Y::serialize(malformed), "PROJECT-MODULE-AUTHORING-INVALID");
+    malformed = node;
+    malformed["scriptModules"][0]["authoring"]["imports"]
+        .get_value_ref<Y::Node::sequence_type&>()
+        .push_back("arp_scene");
+    rejects(Y::serialize(malformed), "PROJECT-MODULE-AUTHORING-INVALID");
+    const auto before = again;
+    manifest.scriptModules[0].authoring->maxSourceBytes = UINT64_MAX;
+    assert(!ProjectManifestCodec::encode(manifest, again, diagnostic) && before == again);
+    assert(std::string_view(diagnostic.code) == "PROJECT-MODULE-AUTHORING-INVALID");
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -304,4 +373,5 @@ int main(int argc, char** argv)
     launchTests();
     pathTests();
     metadataTests();
+    scriptAuthoringTests();
 }

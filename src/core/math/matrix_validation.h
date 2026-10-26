@@ -19,11 +19,19 @@ inline bool isApproximateInverse(const Mat4& value, const Mat4& inverse, float t
 {
     if (!std::isfinite(tolerance) || tolerance < 0 || !isFinite(value) || !isFinite(inverse))
         return false;
-    const auto product = multiply(value, inverse);
-    for (std::size_t i = 0; i < product.m.size(); ++i)
-        if (!std::isfinite(product.m[i])
-            || std::fabs(product.m[i] - (i % 5u == 0u ? 1.0f : 0.0f)) > tolerance)
-            return false;
+    // Evaluate the residual of the supplied float matrices in double. A float
+    // product can itself lose more than the caller's bound through cancellation
+    // and reject a valid inverse. This does not relax the absolute tolerance.
+    for (std::size_t row = 0; row < 4; ++row) {
+        for (std::size_t col = 0; col < 4; ++col) {
+            double product = 0;
+            for (std::size_t k = 0; k < 4; ++k)
+                product += double(value.m[row * 4 + k]) * double(inverse.m[k * 4 + col]);
+            if (!std::isfinite(product)
+                || std::fabs(product - (row == col ? 1.0 : 0.0)) > double(tolerance))
+                return false;
+        }
+    }
     return true;
 }
 } // namespace arp::core

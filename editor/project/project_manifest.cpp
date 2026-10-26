@@ -51,6 +51,96 @@ Node stringNode(std::string_view value)
     return Node(Node::string_type(value.data(), value.size()));
 }
 
+bool validScriptAuthoring(const ProjectScriptAuthoring& value, ProjectManifestBudget budget)
+{
+    const auto representable = [](std::uint64_t bytes) {
+        return bytes && bytes <= std::numeric_limits<std::size_t>::max()
+            && bytes <= std::uint64_t(INT64_MAX);
+    };
+    const auto& execution = value.execution;
+    if (!representable(value.maxSourceBytes) || !representable(value.preparationBytes)
+        || !value.maxInstances || !execution.instructionLimit
+        || execution.instructionLimit > std::uint64_t(INT64_MAX) || !execution.recursionLimit
+        || !execution.maxFrameValues || !execution.maxContainerValues || !execution.maxCallArguments
+        || !execution.maxContinuationFrames || !representable(execution.maxMemoryBytes)
+        || value.imports.empty() || value.imports.size() > budget.maxModuleDependencies)
+        return false;
+    for (std::size_t i = 0; i < value.imports.size(); ++i) {
+        if (!validText(value.imports[i]))
+            return false;
+        for (std::size_t j = 0; j < i; ++j)
+            if (value.imports[i] == value.imports[j])
+                return false;
+    }
+    return true;
+}
+
+ProjectScriptAuthoring readScriptAuthoring(const Node& node, ProjectManifestBudget budget)
+{
+    Yaml::onlyKeys(node,
+        {"contractVersion",
+            "maxSourceBytes",
+            "preparationBytes",
+            "maxInstances",
+            "execution",
+            "imports"});
+    if (Yaml::uint32(node, "contractVersion") != ProjectScriptAuthoring::contractVersion)
+        Yaml::fail();
+    ProjectScriptAuthoring result;
+    result.maxSourceBytes = Yaml::uint64(Yaml::required(node, "maxSourceBytes"));
+    result.preparationBytes = Yaml::uint64(Yaml::required(node, "preparationBytes"));
+    result.maxInstances = Yaml::uint32(node, "maxInstances");
+    const auto& execution = Yaml::required(node, "execution");
+    Yaml::onlyKeys(execution,
+        {"instructionLimit",
+            "recursionLimit",
+            "maxFrameValues",
+            "maxContainerValues",
+            "maxCallArguments",
+            "maxContinuationFrames",
+            "maxMemoryBytes"});
+    auto& values = result.execution;
+    values.instructionLimit = Yaml::uint64(Yaml::required(execution, "instructionLimit"));
+    values.recursionLimit = Yaml::uint32(execution, "recursionLimit");
+    values.maxFrameValues = Yaml::uint32(execution, "maxFrameValues");
+    values.maxContainerValues = Yaml::uint32(execution, "maxContainerValues");
+    values.maxCallArguments = Yaml::uint32(execution, "maxCallArguments");
+    values.maxContinuationFrames = Yaml::uint32(execution, "maxContinuationFrames");
+    values.maxMemoryBytes = Yaml::uint64(Yaml::required(execution, "maxMemoryBytes"));
+    const auto& imports = Yaml::sequence(node, "imports");
+    if (imports.empty() || imports.size() > budget.maxModuleDependencies)
+        Yaml::fail();
+    for (const auto& import : imports) {
+        auto name = Yaml::text(import);
+        result.imports.push_back(std::move(name));
+    }
+    if (!validScriptAuthoring(result, budget))
+        Yaml::fail();
+    return result;
+}
+
+Node writeScriptAuthoring(const ProjectScriptAuthoring& value)
+{
+    auto node = Node::mapping();
+    node["contractVersion"] = ProjectScriptAuthoring::contractVersion;
+    node["maxSourceBytes"] = value.maxSourceBytes;
+    node["preparationBytes"] = value.preparationBytes;
+    node["maxInstances"] = value.maxInstances;
+    auto execution = Node::mapping();
+    execution["instructionLimit"] = value.execution.instructionLimit;
+    execution["recursionLimit"] = value.execution.recursionLimit;
+    execution["maxFrameValues"] = value.execution.maxFrameValues;
+    execution["maxContainerValues"] = value.execution.maxContainerValues;
+    execution["maxCallArguments"] = value.execution.maxCallArguments;
+    execution["maxContinuationFrames"] = value.execution.maxContinuationFrames;
+    execution["maxMemoryBytes"] = value.execution.maxMemoryBytes;
+    node["execution"] = std::move(execution);
+    node["imports"] = Node::sequence();
+    for (const auto& import : value.imports)
+        node["imports"].get_value_ref<Node::sequence_type&>().push_back(stringNode(import));
+    return node;
+}
+
 // YAML representation belongs to the project contract; runtime world validation
 // and creation remain owned by PhysicsWorld2D, not by this codec.
 physics2d::WorldConfig readPhysics(const Node& value)
@@ -168,6 +258,9 @@ bool validate(const ProjectManifest& manifest,
                 diagnostic, "PROJECT-MODULE-SCHEMA-INVALID", moduleField(i, "schemaVersion"));
         if (module.dependencies.size() > budget.maxModuleDependencies)
             return fail(diagnostic, "PROJECT-CAPACITY-EXCEEDED", moduleField(i, "dependencies"));
+        if (module.authoring && !validScriptAuthoring(*module.authoring, budget))
+            return fail(
+                diagnostic, "PROJECT-MODULE-AUTHORING-INVALID", moduleField(i, "authoring"));
     }
     core::pmr::Vector<std::size_t> order;
     return ProjectManifestCodec::moduleOrder(manifest, order, diagnostic);
@@ -284,7 +377,8 @@ bool ProjectManifestCodec::decode(std::string_view yaml,
         for (std::size_t i = 0; i < modules.size(); ++i) {
             const auto& value = modules[i];
             field = moduleField(i, "schema");
-            Yaml::onlyKeys(value, {"id", "resourceId", "source", "schemaVersion", "dependencies"});
+            Yaml::onlyKeys(value,
+                {"id", "resourceId", "source", "schemaVersion", "dependencies", "authoring"});
             ProjectScriptModule module;
             field = moduleField(i, "id");
             module.id = Yaml::text(value, "id");
@@ -300,6 +394,15 @@ bool ProjectManifestCodec::decode(std::string_view yaml,
                 return fail(diagnostic, "PROJECT-CAPACITY-EXCEEDED", field);
             for (const auto& dependency : dependencies)
                 module.dependencies.push_back(Yaml::text(dependency));
+            if (value.contains("authoring")) {
+                field = moduleField(i, "authoring");
+                try {
+                    module.authoring =
+                        readScriptAuthoring(Yaml::required(value, "authoring"), budget);
+                } catch (const core::YamlContractError&) {
+                    return fail(diagnostic, "PROJECT-MODULE-AUTHORING-INVALID", field);
+                }
+            }
             candidate.scriptModules.push_back(std::move(module));
         }
         if (!validate(candidate, diagnostic, budget))
@@ -343,6 +446,8 @@ bool ProjectManifestCodec::encode(const ProjectManifest& manifest,
             value["resourceId"] = stringNode(module.resourceId);
             value["source"] = stringNode(module.source);
             value["schemaVersion"] = module.schemaVersion;
+            if (module.authoring)
+                value["authoring"] = writeScriptAuthoring(*module.authoring);
             value["dependencies"] = Node::sequence();
             for (const auto& dependency : module.dependencies)
                 value["dependencies"].get_value_ref<Node::sequence_type&>().push_back(
