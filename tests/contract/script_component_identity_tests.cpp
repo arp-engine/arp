@@ -409,6 +409,32 @@ void allocations(Fixture& f)
     f.untouched();
 }
 
+void instanceCapacity(Fixture& f)
+{
+    scene::Scene world(
+        "instances", scene::SceneId::fromValue(10), scene::SceneExecutionMode::Passive);
+    core::pmr::Vector<Oid> owners;
+    for (unsigned i = 0; i < 33; ++i)
+        owners.push_back(world.createObject("owner").id());
+    {
+        Transaction t(world, {0, 33});
+        for (unsigned i = 0; i < 32; ++i)
+            t.createScriptComponent(owners[i], f.primary, Fixture::identity(), 1);
+        check(f.primary.liveInstances() == 32);
+        rejects("ARP-SCENE-IDENTITY-SCRIPT-CANDIDATE", [&] {
+            t.createScriptComponent(owners.back(), f.primary, Fixture::identity(), 1);
+        });
+        check(f.primary.diagnostic() == "ARP-SCRIPT-COMPONENT-CAPACITY");
+        rejects("ARP-SCENE-IDENTITY-CONSUMED", [&] {
+            t.commit();
+        });
+    }
+    for (const auto owner : owners)
+        check(world.findObject(owner)->components().size() == 1);
+    check(f.primary.liveInstances() == 0);
+    f.untouched();
+}
+
 void run()
 {
     Fixture fixture;
@@ -416,6 +442,7 @@ void run()
     probesAndGates(fixture);
     referencesAndFieldRollback(fixture);
     allocations(fixture);
+    instanceCapacity(fixture);
 }
 } // namespace
 
