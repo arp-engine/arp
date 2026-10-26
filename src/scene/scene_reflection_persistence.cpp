@@ -214,10 +214,19 @@ core::UniquePtr<Scene> SceneDocumentResource::instantiate(resource::ResourceMana
     const SceneComponentFactory& factory,
     core::pmr::String& diagnostic) const
 {
+    return instantiate(resources, factory, diagnostic, SceneExecutionMode::Runtime);
+}
+
+core::UniquePtr<Scene> SceneDocumentResource::instantiate(resource::ResourceManager& resources,
+    const SceneComponentFactory& factory,
+    core::pmr::String& diagnostic,
+    SceneExecutionMode mode) const
+{
     diagnostic.clear();
     try {
         const auto root = Y::parseSingleDocument(yaml_);
-        auto candidate = core::makeUnique<Scene>(Y::text(root, "name"));
+        auto candidate =
+            core::makeUnique<Scene>(Y::text(root, "name"), SceneId::fromValue(1), mode);
         Scene::RestorationTransaction transaction(*candidate);
         if (!populate(*candidate, candidate->rootId(), resources, factory, diagnostic))
             return {};
@@ -474,6 +483,10 @@ bool SceneDocumentResource::encode(const Scene& scene,
                     return false;
                 }
                 const auto state = entry->state(*component);
+                if (entry->validateState && !entry->validateState(state)) {
+                    diagnostic = "ARP-SCENE-COMPONENT-INVALID-STATE: " + entry->type;
+                    return false;
+                }
                 const bool written = descriptor
                     ? archive.writeValue(*descriptor, state, data["fields"])
                     : archive.writeFields(state, data["fields"]);

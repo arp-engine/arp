@@ -1,0 +1,18 @@
+from arp_scene import GameObject, Component
+
+var probes: int = 0
+
+
+def read_probes() -> int:
+    return probes
+
+
+# Same class name, distinct explicit module/resource identity and field schema.
+class Mover(ScriptComponent):
+    message: string
+
+    def __init__(self):
+        probes += 200
+
+    def on_update(self, dt: float):
+        probes += 20

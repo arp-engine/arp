@@ -4,6 +4,7 @@
 #include "resource/prefab_asset_resources.h"
 
 namespace arp::editor {
+class ProjectInputSnapshot;
 
 // A project-owned, explicitly opted-in editor material. Scene YAML still holds
 // a stable MaterialResource reference; tile materials are deterministic outputs.
@@ -26,7 +27,8 @@ public:
 bool loadEditorTerrainPreview(const std::filesystem::path& projectRoot,
     std::string_view relativeConfig,
     resource::ResourceManager& candidate,
-    core::pmr::String& diagnostic);
+    core::pmr::String& diagnostic,
+    ProjectInputSnapshot* inputSnapshot = nullptr);
 
 // Empty result means missing/stale/wrong binding; callers fail closed.
 core::pmr::String resolveEditorTerrainPreviewMaterial(const resource::ResourceManager& resources,

@@ -1,8 +1,11 @@
 #include "editor/workspace/editor_scene_document.h"
 
 #include "2d/physics_components.h"
+#include "2d/tile_map_resource_component.h"
 #include "3d/components.h"
+#include "core/text/utf8.h"
 #include "editor/workspace/editor_scene_component_registry.h"
+#include "editor/workspace/editor_scene_service_session.h"
 #include "reflection/reflection.h"
 #include "scene/camera.h"
 #include "scene/scene_asset_resource.h"
@@ -10,6 +13,8 @@
 #include <array>
 #include <cmath>
 #include <mutex>
+#include <new>
+#include <utility>
 
 namespace arp::reflection::generated {
 void register_arp_scene_reflection();
@@ -236,7 +241,8 @@ SceneInspectorWriteResult writeReflectedObjectProperty(const scene::Component& c
     core::Vec2 vector2Value,
     const core::pmr::Vector<core::Vec2>& vector2ListValue,
     std::uint64_t sceneObjectReferenceValue,
-    const core::pmr::Vector<SceneInspectorObjectLink>& sceneObjectLinkListValue)
+    const core::pmr::Vector<SceneInspectorObjectLink>& sceneObjectLinkListValue,
+    const scene::Scene::IdentityRestoration* transaction = nullptr)
 {
     const class_info* reflectedClass = reflectedDescriptor.class_();
     if (!reflectedClass)
@@ -272,7 +278,8 @@ SceneInspectorWriteResult writeReflectedObjectProperty(const scene::Component& c
             vector2Value,
             vector2ListValue,
             sceneObjectReferenceValue,
-            sceneObjectLinkListValue);
+            sceneObjectLinkListValue,
+            transaction);
         if (nestedResult == SceneInspectorWriteResult::Changed)
             reflectedProperty.set_value(reflectedDescriptor, nestedDescriptor);
         return nestedResult;
@@ -314,7 +321,10 @@ SceneInspectorWriteResult writeReflectedObjectProperty(const scene::Component& c
             const auto* owner = component.gameObject();
             const auto* scene = owner ? owner->scene() : nullptr;
             const auto* target = scene
-                ? scene->findObject(scene::GameObjectId::fromValue(sceneObjectReferenceValue))
+                ? (transaction ? transaction->resolveObject(
+                                     scene::GameObjectId::fromValue(sceneObjectReferenceValue))
+                               : scene->findObject(
+                                     scene::GameObjectId::fromValue(sceneObjectReferenceValue)))
                 : nullptr;
             if (!target
                 || std::none_of(target->components().begin(),
@@ -397,7 +407,10 @@ SceneInspectorWriteResult writeReflectedObjectProperty(const scene::Component& c
         prepared.reserve(sceneObjectLinkListValue.size());
         for (const auto& link : sceneObjectLinkListValue) {
             if (link.name.empty() || link.name.size() > 128u || link.targetObjectId == 0u
-                || !ownerScene->findObject(scene::GameObjectId::fromValue(link.targetObjectId))
+                || !(transaction ? transaction->resolveObject(
+                                       scene::GameObjectId::fromValue(link.targetObjectId))
+                                 : ownerScene->findObject(
+                                       scene::GameObjectId::fromValue(link.targetObjectId)))
                 || std::any_of(prepared.begin(), prepared.end(), [&](const auto& prior) {
                        return prior.name == link.name;
                    }))
@@ -465,19 +478,12 @@ EditorSceneDocument::EditorSceneDocument(bool createDefaultScene)
     : audioSystem_(core::makeUnique<audio::AudioSystem>(
           audio::AudioSystemDesc{static_cast<std::uint32_t>(audio::kMaxAudioVoices), false})),
       scene_(core::makeUnique<scene::Scene>(
-          core::pmr::String("EditorScene", &core::defaultCpuMemoryResource())))
+          core::pmr::String("EditorScene", &core::defaultCpuMemoryResource()),
+          scene::SceneId::fromValue(1),
+          scene::SceneExecutionMode::Passive))
 {
     ensureSceneReflectionRegistered();
-    scene_->setComponentFactory([this](scene::GameObject& owner, const core::pmr::String& type) {
-        EditorSceneComponentFactoryContext context{owner,
-            *audioSystem_,
-            resourceManagerProvider_ ? resourceManagerProvider_() : nullptr,
-            resourceManagerProvider_,
-            physicsWorld2DProvider_ ? physicsWorld2DProvider_() : nullptr,
-            schemaOnlyComponentCreation_,
-            physicsWorld2DProvider_};
-        return createEditorSceneComponent(std::string_view(type.data(), type.size()), context);
-    });
+    scene_->setComponentFactory(makeComponentFactory());
     if (createDefaultScene) {
         const auto cameraId = createObject("Camera3D");
         auto* camera = scene_->findObject(cameraId);
@@ -498,37 +504,242 @@ EditorSceneDocument::EditorSceneDocument(bool createDefaultScene)
     }
 }
 
+bool EditorSceneDocument::loadRuntimeScene(const scene::SceneDocumentResource& asset,
+    resource::ResourceManager& resources,
+    const scene::SceneComponentFactory& factory,
+    core::pmr::String& diagnostic)
+{
+    if (asset.reference().type != "SceneAssetResource"
+        || !resource::isResourceUuid(asset.reference().id)) {
+        diagnostic = "EDITOR-SCENE-RUNTIME-IDENTITY-INVALID";
+        return false;
+    }
+    auto restored =
+        asset.instantiate(resources, factory, diagnostic, scene::SceneExecutionMode::Passive);
+    if (!restored)
+        return false;
+    EditorSceneDocument candidate(false);
+    candidate.scene_ = std::move(restored);
+    candidate.runtimeSceneId_ = asset.reference().id;
+    candidate.selectedObject_ = candidate.scene_->rootId();
+    return replaceWith(std::move(candidate));
+}
+
 bool EditorSceneDocument::replaceWith(EditorSceneDocument&& candidate)
 {
-    if (!candidate.scene_ || !candidate.scene_->findObject(candidate.selectedObject_))
+    if (&candidate == this || !candidate.scene_
+        || candidate.scene_->executionMode() != scene::SceneExecutionMode::Passive
+        || !candidate.scene_->findObject(candidate.selectedObject_))
         return false;
-    candidate.scene_->setComponentFactory(
-        [this](scene::GameObject& owner, const core::pmr::String& type) {
-            EditorSceneComponentFactoryContext context{owner,
-                *audioSystem_,
-                resourceManagerProvider_ ? resourceManagerProvider_() : nullptr,
-                resourceManagerProvider_,
-                physicsWorld2DProvider_ ? physicsWorld2DProvider_() : nullptr,
-                schemaOnlyComponentCreation_,
-                physicsWorld2DProvider_};
-            return createEditorSceneComponent(std::string_view(type.data(), type.size()), context);
-        });
+    if (!ownerEpoch_)
+        ownerEpoch_ = core::makeUnique<core::LifetimeEpoch>();
+    core::pmr::String diagnostic{&core::defaultCpuMemoryResource()};
+    auto prepared = prepareReplacement(candidate, diagnostic);
+    return prepared && commitReplacement(*prepared, candidate) == ReplacementResult::Committed;
+}
+
+scene::Scene::ComponentFactory EditorSceneDocument::makeComponentFactory() const
+{
+    return [this](scene::GameObject& owner, const core::pmr::String& type) {
+        EditorSceneComponentFactoryContext context{owner,
+            *audioSystem_,
+            services_.resources ? services_.resources() : nullptr,
+            services_.resources,
+            services_.physics ? services_.physics() : nullptr,
+            schemaOnlyComponentCreation_,
+            services_.physics};
+        return createEditorSceneComponent(std::string_view(type.data(), type.size()), context);
+    };
+}
+
+scene::Scene::ComponentFactory EditorSceneDocument::identityRestorationFactory() const
+{
+    auto factory = makeComponentFactory();
+    return [factory = std::move(factory), schemaOnly = schemaOnlyComponentCreation_](
+               scene::GameObject& owner,
+               const core::pmr::String& type) -> core::UniquePtr<scene::Component> {
+        if (schemaOnly || !editorSceneComponentIdentityRestorable(type))
+            return nullptr;
+        return factory(owner, type);
+    };
+}
+
+core::UniquePtr<EditorSceneDocument::PreparedReplacement> EditorSceneDocument::prepareReplacement(
+    EditorSceneDocument& candidate,
+    core::pmr::String& diagnostic,
+    ServicePolicy servicePolicy) const
+{
+    diagnostic.clear();
+    if ((servicePolicy != ServicePolicy::KeepDestination
+            && servicePolicy != ServicePolicy::AdoptCandidate)
+        || &candidate == this || !ownerTicket().isCurrent() || !candidate.ownerTicket().isCurrent()
+        || !services_.matches(services_.epochs())
+        || !candidate.services_.matches(candidate.services_.epochs()) || !candidate.scene_
+        || !candidate.audioSystem_
+        || candidate.scene_->executionMode() != scene::SceneExecutionMode::Passive
+        || !candidate.scene_->findObject(candidate.selectedObject_)
+        || runtimeSceneId_.get_allocator().resource()
+            != candidate.runtimeSceneId_.get_allocator().resource()) {
+        diagnostic = "EDITOR-SCENE-REPLACEMENT-INVALID";
+        return nullptr;
+    }
+    try {
+        auto result = core::makeUnique<PreparedReplacement>();
+        result->destination_ = this;
+        result->candidate_ = &candidate;
+        result->destinationEpoch_ = ownerTicket();
+        result->candidateEpoch_ = candidate.ownerTicket();
+        result->destinationScene_ = scene_.get();
+        result->candidateScene_ = candidate.scene_.get();
+        result->destinationSelection_ = selectedObject_;
+        result->candidateSelection_ = candidate.selectedObject_;
+        result->destinationIdentity_ = runtimeSceneId_;
+        result->candidateIdentity_ = candidate.runtimeSceneId_;
+        result->destinationFactory_ = makeComponentFactory();
+        if (scene_)
+            result->retiredFactory_ = candidate.makeComponentFactory();
+        result->retiredServices_ = services_;
+        result->servicePolicy_ = servicePolicy;
+        result->destinationServiceEpochs_ = services_.epochs();
+        result->candidateServiceEpochs_ = candidate.services_.epochs();
+        if (servicePolicy == ServicePolicy::AdoptCandidate)
+            result->incomingServices_ = candidate.services_;
+        result->prepared_ = true;
+        return result;
+    } catch (const std::bad_alloc&) {
+        diagnostic = "EDITOR-SCENE-REPLACEMENT-PREPARATION-FAILED";
+        return nullptr;
+    }
+}
+
+EditorSceneDocument::ReplacementResult EditorSceneDocument::replacementReadiness(
+    const PreparedReplacement& prepared, const EditorSceneDocument& candidate) const noexcept
+{
+    if (prepared.committed_)
+        return ReplacementResult::Consumed;
+    if (!prepared.prepared_)
+        return ReplacementResult::Incomplete;
+    if (prepared.destination_ != this || prepared.candidate_ != &candidate
+        || !prepared.destinationEpoch_.sameCurrentEpoch(ownerTicket())
+        || !prepared.candidateEpoch_.sameCurrentEpoch(candidate.ownerTicket())
+        || !services_.matches(prepared.destinationServiceEpochs_)
+        || !candidate.services_.matches(prepared.candidateServiceEpochs_)
+        || scene_.get() != prepared.destinationScene_
+        || candidate.scene_.get() != prepared.candidateScene_
+        || selectedObject_ != prepared.destinationSelection_
+        || candidate.selectedObject_ != prepared.candidateSelection_
+        || runtimeSceneId_ != prepared.destinationIdentity_
+        || candidate.runtimeSceneId_ != prepared.candidateIdentity_ || !candidate.scene_
+        || candidate.scene_->executionMode() != scene::SceneExecutionMode::Passive
+        || !candidate.scene_->findObject(candidate.selectedObject_))
+        return ReplacementResult::Stale;
+    return ReplacementResult::Ready;
+}
+
+EditorSceneDocument::ReplacementResult EditorSceneDocument::commitReplacement(
+    PreparedReplacement& prepared, EditorSceneDocument& candidate) noexcept
+{
+    const auto ready = replacementReadiness(prepared, candidate);
+    if (ready != ReplacementResult::Ready)
+        return ready;
+    // Factories are already allocated. Scene may release its old shared
+    // callback here; no Scene, component or audio owner is destroyed.
+    candidate.scene_->setComponentFactory(prepared.destinationFactory_);
+    if (scene_)
+        scene_->setComponentFactory(prepared.retiredFactory_);
     scene_.swap(candidate.scene_);
     audioSystem_.swap(candidate.audioSystem_);
-    selectedObject_ = candidate.selectedObject_;
+    std::swap(selectedObject_, candidate.selectedObject_);
+    runtimeSceneId_.swap(candidate.runtimeSceneId_);
+    // Whole-workspace adoption is explicit; ordinary Scene replacements keep
+    // the destination session. Existing component callback copies follow their
+    // original sessions. Both factories read the post-swap document binding.
+    std::swap(candidate.services_, prepared.retiredServices_);
+    if (prepared.servicePolicy_ == ServicePolicy::AdoptCandidate) {
+        std::swap(services_, prepared.incomingServices_);
+        std::swap(schemaOnlyComponentCreation_, candidate.schemaOnlyComponentCreation_);
+    } else
+        candidate.schemaOnlyComponentCreation_ = schemaOnlyComponentCreation_;
+    ownerEpoch_->advance();
+    candidate.ownerEpoch_->advance();
+    prepared.committed_ = true;
+    return ReplacementResult::Committed;
+}
+
+bool EditorSceneDocument::setRuntimeSceneId(std::string_view identity)
+{
+    if (!identity.empty() && !resource::isResourceUuid(identity))
+        return false;
+    runtimeSceneId_ = identity;
     return true;
 }
 
 void EditorSceneDocument::setResourceManagerProvider(
     core::SharedCallback<resource::ResourceManager*()> provider)
 {
-    resourceManagerProvider_ = std::move(provider);
+    services_.resources = std::move(provider);
+    services_.resourcesSession.reset();
+    if (ownerEpoch_)
+        ownerEpoch_->advance();
 }
 
 void EditorSceneDocument::setPhysicsWorld2DProvider(
     core::SharedCallback<core::SharedPtr<physics2d::PhysicsWorld2D>()> provider)
 {
-    physicsWorld2DProvider_ = std::move(provider);
+    services_.physics = std::move(provider);
+    services_.physicsSession.reset();
+    if (ownerEpoch_)
+        ownerEpoch_->advance();
+}
+
+EditorSceneDocument::ServiceEpochs EditorSceneDocument::ServiceProviders::epochs() const noexcept
+{
+    return {resourcesSession ? resourcesSession->ownerTicket() : core::LifetimeEpoch::Ticket{},
+        physicsSession ? physicsSession->ownerTicket() : core::LifetimeEpoch::Ticket{}};
+}
+
+bool EditorSceneDocument::ServiceProviders::matches(const ServiceEpochs& observed) const noexcept
+{
+    return (!resourcesSession
+               || observed.resources.sameCurrentEpoch(resourcesSession->ownerTicket()))
+        && (!physicsSession || observed.physics.sameCurrentEpoch(physicsSession->ownerTicket()));
+}
+
+bool EditorSceneDocument::bindServiceSession(
+    core::SharedPtr<EditorSceneServiceSession> session, core::pmr::String& diagnostic)
+{
+    diagnostic.clear();
+    if (!session || !session->resources() || !session->ownerTicket().isCurrent()) {
+        diagnostic = "EDITOR-SCENE-SERVICE-SESSION-INVALID";
+        return false;
+    }
+    try {
+        ServiceProviders prepared;
+        prepared.resources = [session] {
+            return session->resources();
+        };
+        prepared.physics = [session] {
+            return session->physics();
+        };
+        prepared.resourcesSession = session;
+        prepared.physicsSession = std::move(session);
+        std::swap(services_, prepared);
+        if (ownerEpoch_)
+            ownerEpoch_->advance();
+        return true;
+    } catch (const std::bad_alloc&) {
+        diagnostic = "EDITOR-SCENE-SERVICE-SESSION-PREPARATION-FAILED";
+        return false;
+    }
+}
+
+void EditorSceneDocument::copySceneServicesFrom(const EditorSceneDocument& source) noexcept
+{
+    if (&source == this)
+        return;
+    services_ = source.services_;
+    if (ownerEpoch_)
+        ownerEpoch_->advance();
 }
 
 const std::array<SceneComponentCatalogEntry, kEditorSceneComponentCount>&
@@ -573,7 +784,7 @@ bool EditorSceneDocument::select(scene::GameObjectId id) noexcept
 
 scene::GameObjectId EditorSceneDocument::createObject(std::string_view name)
 {
-    if (name.empty() || name.size() > 128)
+    if (!validObjectName(name))
         return scene::GameObjectId::invalid();
     core::pmr::String owned(name, &core::defaultCpuMemoryResource());
     const auto id = scene_->createObject(std::move(owned)).id();
@@ -606,13 +817,20 @@ bool EditorSceneDocument::destroySelected()
 
 bool EditorSceneDocument::renameSelected(std::string_view name)
 {
-    if (name.empty() || name.size() > 128)
+    if (!validObjectName(name))
         return false;
     auto* object = scene_->findObject(selectedObject_);
     if (!object)
         return false;
     object->setName(core::pmr::String(name, &core::defaultCpuMemoryResource()));
     return true;
+}
+
+bool EditorSceneDocument::validObjectName(std::string_view name) noexcept
+{
+    return !name.empty() && name.size() <= maxObjectNameBytes
+        && name.find_first_of("\r\n") == std::string_view::npos
+        && name.find('\0') == std::string_view::npos && !core::Utf8Decoder::validate(name);
 }
 
 bool EditorSceneDocument::setSelectedTranslation(float x, float y, float z) noexcept
@@ -643,6 +861,8 @@ scene::Component* EditorSceneDocument::addComponent(
     auto* object = scene_->findObject(objectId);
     if (!object || type.empty() || type.size() > 64)
         return nullptr;
+    if (type == "RigidBody2DComponent" && object->getComponent<physics2d::RigidBody2DComponent>())
+        return nullptr;
     core::pmr::String owned(type, &core::defaultCpuMemoryResource());
     return object->create_component(owned);
 }
@@ -657,6 +877,8 @@ bool EditorSceneDocument::removeComponent(
     if (!target)
         return false;
     if (dynamic_cast<const physics2d::RigidBody2DComponent*>(target)) {
+        if (object->getComponent<physics2d::Collider2DComponent>())
+            return false;
         for (const auto& sceneObject : scene_->objects()) {
             for (const auto& component : sceneObject->components()) {
                 const auto* joint =
@@ -691,34 +913,44 @@ core::pmr::Vector<SceneInspectorProperty> EditorSceneDocument::inspectorProperti
     if (!object)
         return result;
     for (const auto& component : object->components()) {
-        const bool requiredTransform =
-            std::string_view(component->scriptTypeName()) == "TransformComponent";
-        if (!requiredTransform) {
-            const reflection::object commonProperties = component->editorProperties();
-            appendReflectedProperties(result, objectId.value(), *component, commonProperties);
-        }
-        appendReflectedProperties(
-            result, objectId.value(), *component, component->nativeReflectionObject());
-        appendReflectedProperties(result,
-            objectId.value(),
-            *component,
-            component->nativeReflectionObject(),
-            {},
-            PropertyHint::Runtime,
-            true);
-        const reflection::object scriptInstance = component->scriptInstance();
-        if (!scriptInstance.is_undefined()) {
-            appendReflectedProperties(result,
-                objectId.value(),
-                *component,
-                scriptInstance,
-                {},
-                PropertyHint::Editor,
-                true);
-        }
-        appendReflectedProperties(
-            result, objectId.value(), *component, component->editorAuthoringProperties());
+        auto properties = componentProperties(*component);
+        for (auto& property : properties)
+            result.push_back(std::move(property));
     }
+    return result;
+}
+
+core::pmr::Vector<SceneInspectorProperty> EditorSceneDocument::componentProperties(
+    const scene::Component& component)
+{
+    core::pmr::Vector<SceneInspectorProperty> result{&core::defaultCpuMemoryResource()};
+    const bool requiredTransform =
+        std::string_view(component.scriptTypeName()) == "TransformComponent";
+    if (!requiredTransform) {
+        const reflection::object commonProperties = component.editorProperties();
+        appendReflectedProperties(result, component.ownerId().value(), component, commonProperties);
+    }
+    appendReflectedProperties(
+        result, component.ownerId().value(), component, component.nativeReflectionObject());
+    appendReflectedProperties(result,
+        component.ownerId().value(),
+        component,
+        component.nativeReflectionObject(),
+        {},
+        PropertyHint::Runtime,
+        true);
+    const reflection::object scriptInstance = component.scriptInstance();
+    if (!scriptInstance.is_undefined()) {
+        appendReflectedProperties(result,
+            component.ownerId().value(),
+            component,
+            scriptInstance,
+            {},
+            PropertyHint::Editor,
+            true);
+    }
+    appendReflectedProperties(
+        result, component.ownerId().value(), component, component.editorAuthoringProperties());
     return result;
 }
 
@@ -739,15 +971,109 @@ SceneInspectorWriteResult EditorSceneDocument::setComponentProperty(scene::GameO
     const core::pmr::Vector<SceneInspectorObjectLink>& sceneObjectLinkListValue)
 {
     auto* object = scene_->findObject(objectId);
-    if (!object || propertyName.empty() || propertyName.size() > 128)
+    if (!object || propertyName.empty() || propertyName.size() > maxPropertyNameBytes)
         return SceneInspectorWriteResult::Rejected;
     auto* component = object->findComponent(componentId);
     if (!component)
         return SceneInspectorWriteResult::Rejected;
-    if (std::string_view(component->scriptTypeName()) == "TransformComponent")
+    SceneInspectorProperty value;
+    value.name = propertyName;
+    value.kind = valueKind;
+    value.booleanValue = booleanValue;
+    value.integerValue = integerValue;
+    value.unsignedIntegerValue = unsignedIntegerValue;
+    value.numberValue = numberValue;
+    value.vector3Value = vector3Value;
+    value.color4Value = color4Value;
+    value.stringValue = stringValue;
+    value.vector2Value = vector2Value;
+    value.vector2ListValue = vector2ListValue;
+    value.sceneObjectReferenceValue = sceneObjectReferenceValue;
+    value.sceneObjectLinkListValue = sceneObjectLinkListValue;
+    return applyComponentProperty(*component, value);
+}
+
+bool EditorSceneDocument::applyComponentProperties(scene::Component& component,
+    const core::pmr::Vector<SceneInspectorProperty>& values,
+    const scene::Scene::IdentityRestoration& transaction)
+{
+    auto common = component.editorProperties();
+    auto native = component.nativeReflectionObject();
+    auto authoring = component.editorAuthoringProperties();
+    bool commonChanged = false, authoringChanged = false;
+    const auto write = [&](reflection::object& target, const SceneInspectorProperty& field) {
+        return writeReflectedObjectProperty(component,
+            target,
+            field.name,
+            field.kind,
+            field.booleanValue,
+            field.integerValue,
+            field.unsignedIntegerValue,
+            field.numberValue,
+            field.vector3Value,
+            field.color4Value,
+            field.stringValue,
+            field.vector2Value,
+            field.vector2ListValue,
+            field.sceneObjectReferenceValue,
+            field.sceneObjectLinkListValue,
+            &transaction);
+    };
+    for (const auto& field : values) {
+        auto result = write(common, field);
+        if (result != SceneInspectorWriteResult::Rejected) {
+            commonChanged = commonChanged || result == SceneInspectorWriteResult::Changed;
+            continue;
+        }
+        result = write(native, field);
+        if (result != SceneInspectorWriteResult::Rejected)
+            continue;
+        result = write(authoring, field);
+        if (result == SceneInspectorWriteResult::Rejected)
+            return false;
+        authoringChanged = authoringChanged || result == SceneInspectorWriteResult::Changed;
+    }
+    if (commonChanged && !component.applyEditorProperties(common))
+        return false;
+    auto* body = dynamic_cast<physics2d::RigidBody2DComponent*>(&component);
+    auto* collider = dynamic_cast<physics2d::Collider2DComponent*>(&component);
+    auto* tileMap = dynamic_cast<scene2d::TileMapResourceComponent*>(&component);
+    if (authoringChanged || body || collider || tileMap) {
+        auto* links = dynamic_cast<scene::ObjectLinksComponent*>(&component);
+        auto* joint = dynamic_cast<physics2d::Joint2DComponent*>(&component);
+        if (!(links           ? links->applyRestoredAuthoringProperties(authoring, &transaction)
+                    : joint   ? joint->applyRestoredAuthoringProperties(authoring, &transaction)
+                    : body    ? body->applyRestoredAuthoringProperties(authoring, &transaction)
+                    : tileMap ? tileMap->applyRestoredAuthoringProperties(authoring, &transaction)
+                              : component.applyEditorAuthoringProperties(authoring)))
+            return false;
+    }
+    return true;
+}
+
+SceneInspectorWriteResult EditorSceneDocument::applyComponentProperty(scene::Component& component,
+    const SceneInspectorProperty& value,
+    const scene::Scene::IdentityRestoration* transaction)
+{
+    const auto& propertyName = value.name;
+    const auto& valueKind = value.kind;
+    const auto& booleanValue = value.booleanValue;
+    const auto& integerValue = value.integerValue;
+    const auto& unsignedIntegerValue = value.unsignedIntegerValue;
+    const auto& numberValue = value.numberValue;
+    const auto& vector3Value = value.vector3Value;
+    const auto& color4Value = value.color4Value;
+    const auto& stringValue = value.stringValue;
+    const auto& vector2Value = value.vector2Value;
+    const auto& vector2ListValue = value.vector2ListValue;
+    const auto& sceneObjectReferenceValue = value.sceneObjectReferenceValue;
+    const auto& sceneObjectLinkListValue = value.sceneObjectLinkListValue;
+    if (propertyName.empty() || propertyName.size() > maxPropertyNameBytes)
         return SceneInspectorWriteResult::Rejected;
-    auto commonProperties = component->editorProperties();
-    const auto componentWrite = writeReflectedObjectProperty(*component,
+    if (std::string_view(component.scriptTypeName()) == "TransformComponent")
+        return SceneInspectorWriteResult::Rejected;
+    auto commonProperties = component.editorProperties();
+    const auto componentWrite = writeReflectedObjectProperty(component,
         commonProperties,
         propertyName,
         valueKind,
@@ -761,15 +1087,16 @@ SceneInspectorWriteResult EditorSceneDocument::setComponentProperty(scene::GameO
         vector2Value,
         vector2ListValue,
         sceneObjectReferenceValue,
-        sceneObjectLinkListValue);
+        sceneObjectLinkListValue,
+        transaction);
     if (componentWrite != SceneInspectorWriteResult::Rejected) {
         if (componentWrite == SceneInspectorWriteResult::Changed
-            && !component->applyEditorProperties(commonProperties))
+            && !component.applyEditorProperties(commonProperties))
             return SceneInspectorWriteResult::Rejected;
         return componentWrite;
     }
-    auto reflectedComponent = component->nativeReflectionObject();
-    const auto reflectedWrite = writeReflectedObjectProperty(*component,
+    auto reflectedComponent = component.nativeReflectionObject();
+    const auto reflectedWrite = writeReflectedObjectProperty(component,
         reflectedComponent,
         propertyName,
         valueKind,
@@ -783,11 +1110,12 @@ SceneInspectorWriteResult EditorSceneDocument::setComponentProperty(scene::GameO
         vector2Value,
         vector2ListValue,
         sceneObjectReferenceValue,
-        sceneObjectLinkListValue);
+        sceneObjectLinkListValue,
+        transaction);
     if (reflectedWrite != SceneInspectorWriteResult::Rejected)
         return reflectedWrite;
-    auto authoringProperties = component->editorAuthoringProperties();
-    const auto authoringWrite = writeReflectedObjectProperty(*component,
+    auto authoringProperties = component.editorAuthoringProperties();
+    const auto authoringWrite = writeReflectedObjectProperty(component,
         authoringProperties,
         propertyName,
         valueKind,
@@ -801,9 +1129,16 @@ SceneInspectorWriteResult EditorSceneDocument::setComponentProperty(scene::GameO
         vector2Value,
         vector2ListValue,
         sceneObjectReferenceValue,
-        sceneObjectLinkListValue);
+        sceneObjectLinkListValue,
+        transaction);
+    auto* links = dynamic_cast<scene::ObjectLinksComponent*>(&component);
+    auto* joint = dynamic_cast<physics2d::Joint2DComponent*>(&component);
     if (authoringWrite == SceneInspectorWriteResult::Changed
-        && !component->applyEditorAuthoringProperties(authoringProperties)) {
+        && !(links && transaction
+                ? links->applyRestoredAuthoringProperties(authoringProperties, transaction)
+                : joint && transaction
+                ? joint->applyRestoredAuthoringProperties(authoringProperties, transaction)
+                : component.applyEditorAuthoringProperties(authoringProperties))) {
         return SceneInspectorWriteResult::Rejected;
     }
     return authoringWrite;

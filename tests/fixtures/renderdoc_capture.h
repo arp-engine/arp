@@ -15,8 +15,9 @@ namespace arp::tests {
 
 class RenderDocCaptureScope final {
 public:
-    RenderDocCaptureScope()
+    explicit RenderDocCaptureScope(const char* explicitPath = nullptr)
     {
+        (void)explicitPath;
 #if defined(ARP_RENDERDOC_APP_AVAILABLE) && defined(_WIN32)
         const auto module = GetModuleHandleA("renderdoc.dll");
         const auto getApi = module
@@ -26,7 +27,8 @@ public:
             || !api_) {
             return;
         }
-        if (const auto* path = std::getenv("ARP_RENDERDOC_CAPTURE_PATH")) {
+        if (const auto* path =
+                explicitPath ? explicitPath : std::getenv("ARP_RENDERDOC_CAPTURE_PATH")) {
             api_->SetCaptureFilePathTemplate(path);
         }
         // The RenderDoc overlay records its own swapchain image transitions

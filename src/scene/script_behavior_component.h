@@ -33,6 +33,8 @@ public:
         : invoke_(std::move(invoke)), type_(std::move(type)), instance_(std::move(instance))
     {}
 
+    ~ScriptBehaviorComponent() override;
+
     arp::reflection::object scriptInstance() const override { return instance_; }
 
     void setScriptIdentity(arp::core::pmr::String resource, std::uint32_t version)
@@ -63,6 +65,8 @@ public:
 
     void onEvent(const SceneEvent& event) override
     {
+        if (rejectPassiveExecution("on_event"))
+            return;
         if (!failed_ && eventInvoke_ && !eventInvoke_(event)) {
             failed_ = true;
             failureHook_ = "on_event";
@@ -107,6 +111,8 @@ public:
 
 private:
     void invoke(const char* hook, const SceneUpdateContext& context);
+    bool rejectPassiveExecution(const char* hook);
+    void invalidateInstance() noexcept;
 
     Invoke invoke_;
     InvokeEvent eventInvoke_;

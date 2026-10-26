@@ -7,6 +7,7 @@
 #include "rhi/frontend/telemetry_direct_objects.h"
 #include "rhi/gpu_device.h"
 #include "rhi/semantics/native_backend_capabilities.h"
+#include "rhi/semantics/original_submission_completion.h"
 
 #include <cstdint>
 #include <memory>
@@ -15,9 +16,17 @@
 namespace arp::rhi_metal {
 
 class MetalRhiResourceRegistry;
+class MetalOriginalSubmissionDomain;
 // Backend-private identity for preparation/recording; never exposed through L2.
 std::shared_ptr<MetalRhiResourceRegistry> metalRhiIssuingResourceRegistry(
     const rhi::GpuDevice&) noexcept;
+// Private finite Prototype setup. No native ticket/result injection is exposed.
+const char* prepareMetalOriginalSubmissionCompletion(rhi::GpuDevice&,
+    const rhi::semantics::OriginalSubmissionCompletionBudget&,
+    const std::shared_ptr<core::CpuMemoryQuota>&);
+std::shared_ptr<MetalOriginalSubmissionDomain> metalRhiOriginalSubmissionDomain(
+    const rhi::GpuDevice&) noexcept;
+const char* metalRhiOriginalSubmissionOwnerDiagnostic(const rhi::GpuDevice&) noexcept;
 
 struct MetalRhiDeviceDesc {
     std::pmr::string label;

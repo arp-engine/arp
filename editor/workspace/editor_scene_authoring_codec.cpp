@@ -1,6 +1,7 @@
 #include "editor/workspace/editor_scene_authoring_codec.h"
 
 #include "core/encoding/yaml_contract.h"
+#include "core/hash/sha256.h"
 #include "reflection/serialization.h"
 #include "scene/scene_asset_resource.h"
 #include "scene/transform.h"
@@ -307,7 +308,33 @@ bool writeProperty(EditorSceneDocument& document,
                sceneObjectLinkListValue)
         != SceneInspectorWriteResult::Rejected;
 }
+
 } // namespace
+
+bool EditorSceneAuthoringCodec::contentHash(
+    const EditorSceneDocument& document, core::pmr::String& hash, core::pmr::String& diagnostic)
+{
+    core::pmr::String yaml;
+    if (!encode(document, yaml, diagnostic))
+        return false;
+    try {
+        auto root = Yaml::parseSingleDocument(yaml);
+        root["selected"] = 0;
+        const auto content = Yaml::serialize(root);
+        hash = core::Sha256::hexDigest(core::StringView(content));
+        return true;
+    } catch (...) {
+        diagnostic = "EDITOR-SCENE-CONTENT-HASH";
+        return false;
+    }
+}
+
+bool EditorSceneAuthoringCodec::isContentHash(std::string_view value) noexcept
+{
+    constexpr std::string_view prefix = "sha256:";
+    return value.substr(0, prefix.size()) == prefix
+        && core::Sha256::isHexDigest(value.substr(prefix.size()));
+}
 
 bool EditorSceneAuthoringCodec::encode(
     const EditorSceneDocument& document, core::pmr::String& yaml, core::pmr::String& diagnostic)
@@ -322,6 +349,8 @@ bool EditorSceneAuthoringCodec::encode(
         Node root = Node::mapping();
         root["type"] = "arp.editor-scene";
         root["contractVersion"] = contractVersion;
+        root["runtimeSceneId"] =
+            document.runtimeSceneId().empty() ? Node() : Node(document.runtimeSceneId());
         root["name"] = document.scene().name().c_str();
         root["objects"] = Node::sequence();
         core::pmr::Vector<std::pair<std::uint64_t, std::uint64_t>> ids{
@@ -438,6 +467,17 @@ bool EditorSceneAuthoringCodec::encode(
     }
 }
 
+bool EditorSceneAuthoringCodec::isResourceReady(
+    void* context, std::string_view type, std::string_view id)
+{
+    auto* resources = static_cast<resource::ResourceManager*>(context);
+    if (!resources)
+        return false;
+    const auto* record = resources->recordSnapshot(id);
+    return record && record->state == resource::ResourceState::Ready
+        && std::string_view(record->type.data(), record->type.size()) == type;
+}
+
 bool EditorSceneAuthoringCodec::decode(std::string_view yaml,
     EditorSceneDocument& destination,
     EditorSceneResourceValidator resourceValidator,
@@ -453,8 +493,8 @@ bool EditorSceneAuthoringCodec::decode(std::string_view yaml,
     const char* stage = "root";
     try {
         const auto root = Yaml::parseSingleDocument(yaml);
-        if (!exactMappingSize(root, 5u)) {
-            diagnostic = "EDITOR-SCENE-ROOT-STRUCTURE";
+        if (Yaml::text(root, "type") != "arp.editor-scene") {
+            diagnostic = "EDITOR-SCENE-CONTRACT-UNSUPPORTED";
             return false;
         }
         if (Yaml::uint32(root, "contractVersion") == 1) {
@@ -462,9 +502,17 @@ bool EditorSceneAuthoringCodec::decode(std::string_view yaml,
                 "ARP-SCENE-MIGRATION-REQUIRED: run python tools/migrate_scene_v1.py source destination";
             return false;
         }
-        if (Yaml::text(root, "type") != "arp.editor-scene"
-            || Yaml::uint32(root, "contractVersion") != contractVersion) {
+        if (Yaml::uint32(root, "contractVersion") == 2) {
+            diagnostic =
+                "EDITOR-SCENE-MIGRATION-REQUIRED: run arp_editor_scene_migrate source new-output-directory --runtime-scene <uuid|none>";
+            return false;
+        }
+        if (Yaml::uint32(root, "contractVersion") != contractVersion) {
             diagnostic = "EDITOR-SCENE-CONTRACT-UNSUPPORTED";
+            return false;
+        }
+        if (!exactMappingSize(root, 6u)) {
+            diagnostic = "EDITOR-SCENE-ROOT-STRUCTURE";
             return false;
         }
         const auto& objects = Yaml::sequence(root, "objects");
@@ -473,10 +521,16 @@ bool EditorSceneAuthoringCodec::decode(std::string_view yaml,
             return false;
         }
         EditorSceneDocument candidate(false);
-        candidate.setResourceManagerProvider(destination.resourceManagerProvider());
-        candidate.setPhysicsWorld2DProvider(destination.physicsWorld2DProvider());
+        candidate.copySceneServicesFrom(destination);
         candidate.setSchemaOnlyComponentCreation(validateOnly);
         candidate.scene().setName(Yaml::text(root, "name"));
+        const auto& identity = Yaml::required(root, "runtimeSceneId");
+        if (!identity.is_null()
+            && (!identity.is_string() || Yaml::text(identity).empty()
+                || !candidate.setRuntimeSceneId(Yaml::text(identity)))) {
+            diagnostic = "EDITOR-SCENE-RUNTIME-IDENTITY-INVALID";
+            return false;
+        }
         core::pmr::Vector<ObjectRecord> records{&core::defaultCpuMemoryResource()};
         records.reserve(objects.size());
 
@@ -684,6 +738,57 @@ bool EditorSceneAuthoringCodec::decode(std::string_view yaml,
         return false;
     } catch (...) {
         diagnostic = "EDITOR-SCENE-YAML-INVALID";
+        return false;
+    }
+}
+
+bool EditorSceneAuthoringCodec::validateStructure(
+    std::string_view yaml, core::pmr::String& diagnostic)
+{
+    EditorSceneDocument candidate(false);
+    return decode(
+        yaml,
+        candidate,
+        [](void*, std::string_view, std::string_view) {
+            return true;
+        },
+        nullptr,
+        diagnostic,
+        true);
+}
+
+bool EditorSceneAuthoringCodec::migrateVersion2(std::string_view yaml,
+    std::string_view runtimeSceneId,
+    core::pmr::String& migrated,
+    core::pmr::String& diagnostic)
+{
+    diagnostic.clear();
+    if (yaml.empty() || yaml.size() > maxDocumentBytes) {
+        diagnostic = "EDITOR-SCENE-DOCUMENT-LIMIT";
+        return false;
+    }
+    if (!runtimeSceneId.empty() && !resource::isResourceUuid(runtimeSceneId)) {
+        diagnostic = "EDITOR-SCENE-RUNTIME-IDENTITY-INVALID";
+        return false;
+    }
+    try {
+        auto root = Yaml::parseSingleDocument(yaml);
+        Yaml::onlyKeys(root, {"type", "contractVersion", "name", "objects", "selected"});
+        if (Yaml::text(root, "type") != "arp.editor-scene"
+            || Yaml::uint32(root, "contractVersion") != 2 || !exactMappingSize(root, 5)) {
+            diagnostic = "EDITOR-SCENE-MIGRATION-SOURCE-CONTRACT";
+            return false;
+        }
+        root["contractVersion"] = contractVersion;
+        root["runtimeSceneId"] =
+            runtimeSceneId.empty() ? Node() : Node(core::pmr::String(runtimeSceneId));
+        auto output = Yaml::serialize(root);
+        if (!validateStructure(output, diagnostic))
+            return false;
+        migrated = std::move(output);
+        return true;
+    } catch (...) {
+        diagnostic = "EDITOR-SCENE-MIGRATION-SOURCE-INVALID";
         return false;
     }
 }

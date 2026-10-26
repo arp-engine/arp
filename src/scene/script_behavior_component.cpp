@@ -1,11 +1,37 @@
 #include "scene/script_behavior_component.h"
 
 #include "reflection/instance.h"
+#include "scene/scene.h"
 
 namespace arp::scene {
 
+ScriptBehaviorComponent::~ScriptBehaviorComponent()
+{
+    // Receiver invalidation is ownership cleanup, independent of lifecycle execution.
+    invalidateInstance();
+}
+
+void ScriptBehaviorComponent::invalidateInstance() noexcept
+{
+    if (instance_.is<arp::reflection::instance>())
+        instance_.ptr<arp::reflection::instance>()->invalidate();
+}
+
+bool ScriptBehaviorComponent::rejectPassiveExecution(const char* hook)
+{
+    const auto* owner = gameObject();
+    if (!owner || !owner->scene() || owner->scene()->executionMode() != SceneExecutionMode::Passive)
+        return false;
+    failed_ = true;
+    failureHook_ = hook;
+    failureDiagnostic_ = "ARP-SCENE-PASSIVE-EXECUTION";
+    return true;
+}
+
 void ScriptBehaviorComponent::invoke(const char* hook, const SceneUpdateContext& context)
 {
+    if (rejectPassiveExecution(hook))
+        return;
     if (failed_ || !invoke_)
         return;
     if (!invoke_(hook, context)) {
@@ -18,6 +44,8 @@ void ScriptBehaviorComponent::invoke(const char* hook, const SceneUpdateContext&
 
 bool ScriptBehaviorComponent::dispatchPhysicsEvent(const char* hook, GameObject* other)
 {
+    if (rejectPassiveExecution(hook))
+        return false;
     if (failed_ || !physicsEventInvoke_ || !physicsEventInvoke_(hook, other)) {
         if (!failed_ && physicsEventInvoke_) {
             failed_ = true;
@@ -64,10 +92,7 @@ void ScriptBehaviorComponent::onDestroy(const SceneUpdateContext& context)
 {
     if (!restoring())
         invoke("on_destroy", context);
-    if (instance_.is<arp::reflection::instance>()) {
-        auto* instance = instance_.ptr<arp::reflection::instance>();
-        instance->invalidate();
-    }
+    invalidateInstance();
 }
 
 } // namespace arp::scene

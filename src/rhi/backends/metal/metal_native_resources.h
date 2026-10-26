@@ -38,6 +38,32 @@ struct MetalRhiNativeResourcePayload {
 
 struct MetalRhiNativeBufferPayload {
     MetalRhiNativeResourcePayload resource;
+
+    // Issued only after this device's successful whole native write. Defined
+    // bytes remain defined under GPU writes; this proves no shader result.
+    bool originalHostDefinedBytesMatch(const rhi::GpuBuffer& object) const noexcept
+    {
+        if (originalHostInitializedObject_ != &object
+            || originalHostInitializedBytes_ != object.desc().sizeBytes
+            || !originalHostInitialization_ || !object.hostWritesSealed()
+            || object.originalCommittedStateDiagnostic()
+            || object.originalResourceRegistration().generation()
+                != originalHostInitialization_->resourceGeneration())
+            return false;
+        if (originalFrozenHostInitialization_.load(std::memory_order_acquire))
+            return true;
+        if (object.validateOriginalCommittedState(*originalHostInitialization_))
+            return false;
+        originalFrozenHostInitialization_.store(true, std::memory_order_release);
+        return true;
+    }
+
+private:
+    friend class MetalRhiDevice;
+    const rhi::GpuBuffer* originalHostInitializedObject_ = nullptr;
+    std::uint64_t originalHostInitializedBytes_ = 0u;
+    std::optional<rhi::GpuBuffer::CommittedStateObservation> originalHostInitialization_;
+    mutable std::atomic<bool> originalFrozenHostInitialization_{false};
 };
 
 // Reobserve the real independent buffer substrate; never infer tracked mode or

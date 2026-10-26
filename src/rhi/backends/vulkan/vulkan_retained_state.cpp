@@ -68,6 +68,11 @@ bool VulkanRhiRetainedCommand::transition(
         return reject(id);
     if (!command_->impl_->device.getDeviceProcAddr("vkCmdPipelineBarrier"))
         return reject("RHI-VULKAN-RETENTION-BARRIER-ENTRYPOINT");
+    rhi::CommandRecordingUsage charge;
+    charge.append(rhi::CommandUsageKind::BufferBarrier);
+    charge.resourceReferences = 1u;
+    if (!preflightRecordingCharge(charge, diagnostic))
+        return false;
     const auto transitioned = transitionVulkanRhiBuffer(buffer, desc, &journal);
     if (!transitioned.success) {
         failed_ = true;
@@ -75,6 +80,8 @@ bool VulkanRhiRetainedCommand::transition(
         return false;
     }
     (void)storage.retainResources(owners, 1u);
+    if (!commitRecordingCharge(charge, diagnostic))
+        return false;
     if (!command_->recordBufferBarrier(*owner, desc, diagnostic)
         || !command_->flushPendingBarriers(diagnostic)) {
         failed_ = true;
@@ -179,6 +186,11 @@ bool VulkanRhiRetainedCommand::transition(
         return reject(id);
     if (!command_->impl_->device.getDeviceProcAddr("vkCmdPipelineBarrier"))
         return reject("RHI-VULKAN-RETENTION-BARRIER-ENTRYPOINT");
+    rhi::CommandRecordingUsage charge;
+    charge.append(rhi::CommandUsageKind::TextureBarrier);
+    charge.resourceReferences = 1u;
+    if (!preflightRecordingCharge(charge, diagnostic))
+        return false;
     const auto changed = transitionVulkanRhiTexture(texture, desc, &journal);
     if (!changed.success) {
         failed_ = true;
@@ -186,6 +198,8 @@ bool VulkanRhiRetainedCommand::transition(
         return false;
     }
     (void)storage.retainResources(owners, 1u);
+    if (!commitRecordingCharge(charge, diagnostic))
+        return false;
     if (!command_->recordImageBarrier(*owner, desc, diagnostic)
         || !command_->flushPendingBarriers(diagnostic)) {
         failed_ = true;
@@ -243,7 +257,14 @@ bool VulkanRhiRetainedCommand::copy(const rhi::GpuTexture& source,
         return reject(id);
     if (!command_->impl_->device.getDeviceProcAddr("vkCmdCopyImageToBuffer"))
         return reject("RHI-VULKAN-RETENTION-TEXTURE-COPY-ENTRYPOINT");
+    rhi::CommandRecordingUsage charge;
+    charge.append(rhi::CommandUsageKind::TextureToBufferCopy);
+    charge.resourceReferences = 2u;
+    if (!preflightRecordingCharge(charge, diagnostic))
+        return false;
     (void)storage.retainResources(owners, 2u);
+    if (!commitRecordingCharge(charge, diagnostic))
+        return false;
     if (!command_->recordImageToBufferCopy(*src, *dst, desc, diagnostic)) {
         failed_ = true;
         return false;

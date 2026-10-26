@@ -97,6 +97,23 @@ UiResult UiResult::failure(UiDiagnosticCode code, arp::core::pmr::String message
     return UiResult(UiDiagnostic{code, std::move(message)});
 }
 
+UiResult TextInputContract::validate(std::string_view text, std::uint32_t maxTextBytes)
+{
+    if (!maxTextBytes)
+        return UiResult::failure(UiDiagnosticCode::InvalidTextInputBudget,
+            makeString("UI-TEXT-BUDGET-INVALID: maxTextBytes must be positive."));
+    if (const auto* diagnostic = arp::core::Utf8Decoder::validate(text))
+        return UiResult::failure(UiDiagnosticCode::InvalidUtf8Input, makeString(diagnostic));
+    if (text.find_first_of("\r\n") != std::string_view::npos
+        || text.find('\0') != std::string_view::npos)
+        return UiResult::failure(UiDiagnosticCode::InvalidTextInputContent,
+            makeString("UI-TEXT-CONTENT-INVALID: TextInput requires one line without NUL."));
+    if (text.size() > maxTextBytes)
+        return UiResult::failure(UiDiagnosticCode::TextEditOverflow,
+            makeString("UI-TEXT-BUDGET-EXCEEDED: input exceeds declared maxTextBytes."));
+    return UiResult::success();
+}
+
 LayoutRect LayoutRect::fromOriginSize(
     float xValue, float yValue, float widthValue, float heightValue)
 {
@@ -229,9 +246,40 @@ Widget& Canvas::createWidget(WidgetDesc desc)
     const auto id = WidgetId::fromValue(nextWidgetId_++);
     auto widget = arp::core::makeUnique<Widget>(id, std::move(desc));
     auto& result = *widget;
-    lookup_[id.value()] = &result;
     widgets_.push_back(std::move(widget));
+    try {
+        lookup_.emplace(id.value(), &result);
+    } catch (...) {
+        // Ownership is established before publishing the observation. Removing
+        // this new leaf requires no allocation and never rolls the ID back.
+        widgets_.pop_back();
+        throw;
+    }
     return result;
+}
+
+void Canvas::discardUnpublishedLeaf(WidgetId id) noexcept
+{
+    auto* widget = findWidget(id);
+    if (!widget)
+        return;
+    assert(id != rootId_ && widget->childIds().empty());
+    if (auto* parent = findWidget(widget->parentId()))
+        parent->removeChild(id);
+    lookup_.erase(id.value());
+    widgets_.erase(std::remove_if(widgets_.begin(),
+                       widgets_.end(),
+                       [id](const auto& owned) {
+                           return owned->id() == id;
+                       }),
+        widgets_.end());
+}
+
+void Canvas::reserveChildSlots(WidgetId parentId, std::size_t count)
+{
+    auto* parent = findWidget(parentId);
+    assert(parent);
+    parent->childIds_.reserve(count);
 }
 
 Widget* Canvas::findWidget(WidgetId widgetId)
@@ -266,6 +314,8 @@ UiResult Canvas::reparent(WidgetId childId, WidgetId parentId)
         return UiResult::success();
     }
 
+    // The only potentially allocating hierarchy operation precedes detach.
+    parent->childIds_.reserve(parent->childIds_.size() + 1u);
     if (child->parentId().valid()) {
         if (auto* oldParent = findWidget(child->parentId())) {
             oldParent->removeChild(childId);
@@ -1234,35 +1284,58 @@ UiControlRuntimeResult UiControlRuntime::createControl(
                     makeString("Dropdown option labels must be non-empty valid UTF-8."));
         }
     }
+    if (desc.type == UiControlType::TextInput) {
+        const auto checked = TextInputContract::validate(desc.initialValue.text, desc.maxTextBytes);
+        if (!checked.ok())
+            return UiControlRuntimeResult::failure(
+                checked.diagnostic().code, checked.diagnostic().message);
+    } else if (desc.maxTextBytes != TextInputContract::defaultMaxTextBytes) {
+        return UiControlRuntimeResult::failure(UiDiagnosticCode::InvalidTextInputBudget,
+            makeString("UI-TEXT-BUDGET-TYPE: only TextInput accepts maxTextBytes."));
+    }
     if (desc.initialValue.kind == UiControlValueKind::Text) {
         if (const auto* diagnostic = arp::core::Utf8Decoder::validate(desc.initialValue.text)) {
             return UiControlRuntimeResult::failure(
                 UiDiagnosticCode::InvalidUtf8Input, makeString(diagnostic));
         }
-        if (desc.type == UiControlType::TextInput && desc.initialValue.text.size() > 64u) {
-            return UiControlRuntimeResult::failure(UiDiagnosticCode::TextEditOverflow,
-                makeString("UI text input limit is 64 UTF-8 bytes."));
-        }
     }
     desc.widget.controlType = desc.type;
-    auto& widget = canvas_.createWidget(desc.widget);
+    // Prepare both descriptor copies and displayed text while the object is
+    // still unmounted. No virtual value/input callback participates in creation.
+    auto widgetDesc = desc.widget;
+    if (desc.initialValue.kind == UiControlValueKind::Text)
+        widgetDesc.text = desc.initialValue.text;
+    else if (desc.type == UiControlType::Dropdown
+        && desc.initialValue.kind == UiControlValueKind::Index
+        && desc.initialValue.index < desc.optionLabels.size())
+        widgetDesc.text = desc.optionLabels[desc.initialValue.index];
     ControlDesc typedDesc;
     static_cast<UiControlDesc&>(typedDesc) = std::move(desc);
     object->desc_ = std::move(typedDesc);
-    object->state_ =
-        UiControl(widget.id(), object->controlType(), std::move(object->desc_.initialValue));
-    object->owner_ = this;
+    prepareParentAttachment(parent);
+    auto& widget = canvas_.createWidget(std::move(widgetDesc));
     const auto id = widget.id();
-    controls_.push_back(std::move(object));
-    syncValue(*controls_.back());
-    if (dispatching_) {
-        mutations_.append({MutationKind::Create, id, parent});
-    } else {
-        const auto result = canvas_.reparent(id, parent);
-        if (!result.ok())
-            return UiControlRuntimeResult::failure(
-                result.diagnostic().code, result.diagnostic().message);
+    try {
+        object->state_ =
+            UiControl(id, object->controlType(), std::move(object->desc_.initialValue));
+        if (!dispatching_) {
+            const auto attached = canvas_.reparent(id, parent);
+            if (!attached.ok()) {
+                canvas_.discardUnpublishedLeaf(id);
+                return UiControlRuntimeResult::failure(
+                    attached.diagnostic().code, attached.diagnostic().message);
+            }
+        }
+    } catch (...) {
+        canvas_.discardUnpublishedLeaf(id);
+        throw;
     }
+    // Constructor-reserved control storage and the bounded trivial mutation
+    // record cannot allocate. Only now may the runtime observe the Control.
+    object->owner_ = this;
+    controls_.push_back(std::move(object));
+    if (dispatching_)
+        mutations_.append({MutationKind::Create, id, parent});
     return UiControlRuntimeResult::success(id);
 }
 
@@ -1274,6 +1347,9 @@ UiControlRuntimeResult UiControlRuntime::setValue(
         return UiControlRuntimeResult::failure(UiDiagnosticCode::InvalidWidgetId,
             makeString("Cannot update an unknown/pending UI control."));
     }
+    if (notify == UiNotifyPolicy::Notify && pendingCreation(id))
+        return UiControlRuntimeResult::failure(UiDiagnosticCode::InvalidStateTransition,
+            makeString("UI-CONTROL-UNPUBLISHED: notifying values require a mounted control."));
     if (!valueAllowedForControl(control->controlType(), value.kind) || !finiteControlValue(value)) {
         return UiControlRuntimeResult::failure(UiDiagnosticCode::InvalidStateTransition,
             makeString("UI control value is invalid for its type."));
@@ -1288,9 +1364,12 @@ UiControlRuntimeResult UiControlRuntime::setValue(
             return UiControlRuntimeResult::failure(
                 UiDiagnosticCode::InvalidUtf8Input, makeString(diagnostic));
         }
-        if (control->controlType() == UiControlType::TextInput && value.text.size() > 64u) {
-            return UiControlRuntimeResult::failure(UiDiagnosticCode::TextEditOverflow,
-                makeString("UI text input limit is 64 UTF-8 bytes."));
+        if (control->controlType() == UiControlType::TextInput) {
+            const auto checked =
+                TextInputContract::validate(value.text, control->desc().maxTextBytes);
+            if (!checked.ok())
+                return UiControlRuntimeResult::failure(
+                    checked.diagnostic().code, checked.diagnostic().message);
         }
     }
     if (notify == UiNotifyPolicy::Notify && control->notifying_)
@@ -1303,7 +1382,13 @@ UiControlRuntimeResult UiControlRuntime::setValue(
         const bool outer = !dispatching_;
         if (outer)
             dispatching_ = true;
-        control->notifyValueChanged(before);
+        try {
+            control->notifyValueChanged(before);
+        } catch (...) {
+            if (outer)
+                dispatching_ = false;
+            throw;
+        }
         if (outer) {
             dispatching_ = false;
             const auto result = finishMutations();

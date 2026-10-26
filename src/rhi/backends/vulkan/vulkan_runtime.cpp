@@ -2,6 +2,7 @@
 
 #include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_original_device_native_loss.h"
+#include "rhi/semantics/query_lowering.h"
 
 #include <cstring>
 #include <limits>
@@ -198,6 +199,11 @@ struct VulkanRhiRuntime::Impl {
         if (getPhysicalDeviceProperties) {
             getPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
         }
+        timestampFacts.propertiesQueried = getPhysicalDeviceProperties != nullptr;
+        timestampFacts.apiCore12 = physicalDeviceProperties.apiVersion >= VK_API_VERSION_1_2;
+        timestampFacts.timestampPeriodNanoseconds = physicalDeviceProperties.limits.timestampPeriod;
+        timestampFacts.enablementReported = desc.hostQueryResetEnablementReported;
+        timestampFacts.hostResetEnabled = desc.hostQueryResetEnabled;
 
         indexing = {};
         indirectFirstInstanceEnabled = false;
@@ -207,10 +213,17 @@ struct VulkanRhiRuntime::Impl {
             && physicalDeviceProperties.apiVersion >= VK_API_VERSION_1_2) {
             VkPhysicalDeviceVulkan12Features features12{
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+            VkPhysicalDeviceVulkan11Features features11{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+            features12.pNext = &features11;
             VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
             features.pNext = &features12;
             getFeatures(physicalDevice, &features);
+            timestampFacts.featuresQueried = true;
+            timestampFacts.hostResetSupported = features12.hostQueryReset == VK_TRUE;
             timelineSemaphoreSupported = features12.timelineSemaphore == VK_TRUE;
+            shaderDrawParametersEnabled = desc.shaderDrawParametersEnablementReported
+                && desc.shaderDrawParametersEnabled && features11.shaderDrawParameters == VK_TRUE;
             indirectFirstInstanceEnabled = desc.indirectFirstInstanceEnablementReported
                 && desc.indirectFirstInstanceEnabled
                 && features.features.drawIndirectFirstInstance == VK_TRUE;
@@ -263,6 +276,7 @@ struct VulkanRhiRuntime::Impl {
                                                      : "RHI-VULKAN-INDEXING-ENABLEMENT-VERIFIED";
         }
 
+        timestampFacts.entrypointsAvailable = timestampEntrypointsAvailable();
         if (surface == VK_NULL_HANDLE) {
             return;
         }
@@ -313,6 +327,8 @@ struct VulkanRhiRuntime::Impl {
 
     void queryCoreQueueCapabilities()
     {
+        timestampFacts.queueVerified = false;
+        timestampFacts.timestampValidBits = 0u;
         coreQueue = {};
         coreQueueDiagnostic = "RHI-VULKAN-CORE-QUEUE-QUERY-UNAVAILABLE";
         if (logicalDevice == VK_NULL_HANDLE || graphicsQueue == VK_NULL_HANDLE)
@@ -353,6 +369,23 @@ struct VulkanRhiRuntime::Impl {
         coreQueue.compute = (flags & VK_QUEUE_COMPUTE_BIT) != 0u;
         coreQueueDiagnostic =
             coreQueue.graphics || coreQueue.compute ? nullptr : "RHI-VULKAN-CORE-QUEUE-UNSUPPORTED";
+        timestampFacts.queueVerified = coreQueueDiagnostic == nullptr;
+        timestampFacts.timestampValidBits =
+            families[desc.graphicsQueueFamilyIndex].timestampValidBits;
+    }
+
+    bool timestampEntrypointsAvailable() const noexcept
+    {
+        if (!desc.getDeviceProcAddr || !logicalDevice)
+            return false;
+        for (const char* name : {"vkCreateQueryPool",
+                 "vkDestroyQueryPool",
+                 "vkResetQueryPool",
+                 "vkCmdWriteTimestamp",
+                 "vkGetQueryPoolResults"})
+            if (!desc.getDeviceProcAddr(logicalDevice, name))
+                return false;
+        return true;
     }
 
     VulkanRhiRuntimeDesc desc;
@@ -370,7 +403,9 @@ struct VulkanRhiRuntime::Impl {
     VkPhysicalDeviceProperties physicalDeviceProperties{};
     VulkanDescriptorIndexingInspection indexing;
     bool indirectFirstInstanceEnabled = false;
+    bool shaderDrawParametersEnabled = false;
     bool timelineSemaphoreSupported = false;
+    rhi::semantics::VulkanTimestampQueryFacts timestampFacts;
     VkSurfaceCapabilitiesKHR capabilities{};
     std::pmr::vector<VkSurfaceFormatKHR> formats;
     std::pmr::vector<VkPresentModeKHR> presentModes;
@@ -777,6 +812,37 @@ bool VulkanRhiRuntime::timelineSemaphoreEnabled() const noexcept
 {
     return valid() && !syntheticRuntime() && impl_->timelineSemaphoreSupported
         && impl_->desc.timelineSemaphoreEnablementReported && impl_->desc.timelineSemaphoreEnabled;
+}
+
+bool VulkanRhiRuntime::shaderDrawParametersEnabled() const noexcept
+{
+    return valid() && !syntheticRuntime() && !impl_->originalDeviceLost
+        && !coreQueueCapabilityDiagnostic() && impl_->shaderDrawParametersEnabled;
+}
+
+const char* VulkanRhiRuntime::timestampQueryDiagnostic() const noexcept
+{
+    if (!valid() || syntheticRuntime() || impl_->originalDeviceLost)
+        return "RHI-VULKAN-TIMESTAMP-RUNTIME-UNAVAILABLE";
+    if (const auto* id =
+            rhi::semantics::QueryLowering::vulkanTimestampDiagnostic(impl_->timestampFacts))
+        return id;
+    return impl_->timestampEntrypointsAvailable() ? nullptr : "RHI-VULKAN-TIMESTAMP-ENTRYPOINTS";
+}
+
+bool VulkanRhiRuntime::timestampQueriesEnabled() const noexcept
+{
+    return !timestampQueryDiagnostic();
+}
+
+rhi::semantics::OriginalQueryCreationFacts
+VulkanRhiRuntime::originalQueryCreationFacts() const noexcept
+{
+    rhi::semantics::OriginalQueryCreationFacts facts;
+    facts.vulkanRuntimeDiagnostic = timestampQueryDiagnostic();
+    if (impl_)
+        facts.vulkanTimestamp = impl_->timestampFacts;
+    return facts;
 }
 
 const std::pmr::vector<VkSurfaceFormatKHR>& VulkanRhiRuntime::surfaceFormats() const

@@ -618,6 +618,15 @@ bool parseManifest(NameView yamlText,
 ResourceEnvelopeBuildResult buildResourceEnvelope(
     const ResourceEnvelopeBuildDesc& desc, const reflection::object& payload)
 {
+    const auto yaml = reflection::serialize_to_yaml(payload);
+    if (!yaml.success)
+        return {false, {}, 0, yaml.diagnostics};
+    return buildResourceEnvelopeFromYaml(desc, yaml.yaml);
+}
+
+ResourceEnvelopeBuildResult buildResourceEnvelopeFromYaml(
+    const ResourceEnvelopeBuildDesc& desc, NameView payloadYaml)
+{
     ResourceEnvelopeBuildResult result;
     if (desc.resourceId.empty() || !isResourceUuid(desc.resourceId)) {
         result.diagnostics = makeDiagnostic("resource envelope requires UUID resourceId");
@@ -632,12 +641,7 @@ ResourceEnvelopeBuildResult buildResourceEnvelope(
         return result;
     }
 
-    const auto payloadYaml = reflection::serialize_to_yaml(payload);
-    if (!payloadYaml.success) {
-        result.diagnostics = payloadYaml.diagnostics;
-        return result;
-    }
-    const auto hash = computeResourcePayloadHash(payloadYaml.yaml);
+    const auto hash = computeResourcePayloadHash(payloadYaml);
     if (!hash.success) {
         result.diagnostics = hash.diagnostics;
         return result;
@@ -668,7 +672,7 @@ ResourceEnvelopeBuildResult buildResourceEnvelope(
     envelope += "\n";
     envelope += dependencyListYaml(desc.dependencies);
     envelope += "payload:\n";
-    envelope += indentYaml(payloadYaml.yaml);
+    envelope += indentYaml(payloadYaml);
 
     result.success = true;
     result.envelopeYaml = std::move(envelope);
@@ -839,6 +843,16 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
     ResourceManager& manager,
     ResourceLoadPolicy policy) const
 {
+    return load(packageDirectory, manager, {}, policy);
+}
+
+ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path& packageDirectory,
+    ResourceManager& manager,
+    core::SharedPtr<const AssetPackageCodecRegistry> codecs,
+    ResourceLoadPolicy policy) const
+{
+    if (codecs && !codecs->frozen())
+        return {false, ResourceState::Failed, {}, {}, "PACKAGE-CODEC-REGISTRY-NOT-FROZEN"};
     auto readResult = read(packageDirectory,
         AssetPackageClosureService::maxMetadataBytes,
         AssetPackageClosureService::maxResources);
@@ -854,7 +868,7 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
 
     ResourceLoadContext loadContext{policy};
     if (!readResult.package.closurePath.empty()) {
-        const auto closure = AssetPackageClosureService().inspect(packageDirectory);
+        const auto closure = AssetPackageClosureService(codecs).inspect(packageDirectory);
         if (!closure.success)
             return {false, ResourceState::Failed, {}, {}, closure.diagnostics};
         loadContext.maxDecodedBytes = closure.maxDecodedBytes;
@@ -866,13 +880,15 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
     const bool atomicTypedPackage = !readResult.package.closurePath.empty()
         || std::any_of(readResult.package.entries.begin(),
             readResult.package.entries.end(),
-            [](const auto& entry) {
-                return isManifestAsset(entry.resourceType);
+            [&](const auto& entry) {
+                return isManifestAsset(entry.resourceType)
+                    || (codecs && codecs->find(entry.resourceType));
             });
     for (const auto& entry : readResult.package.entries) {
         if (atomicTypedPackage) {
             if (!isManifestAsset(entry.resourceType)
-                && !prefabResourceFactory().supports(entry.resourceType))
+                && !prefabResourceFactory().supports(entry.resourceType)
+                && !(codecs && codecs->find(entry.resourceType)))
                 return {false,
                     ResourceState::Failed,
                     entry.resourceId,
@@ -890,7 +906,11 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
     // Payload references are authoritative even when an envelope omits them.
     // Discover and type-check them before any package resource is admitted.
     if (atomicTypedPackage) {
-        AssetPackagePayloadInspector inspector;
+        AssetPackagePayloadInspector inspector(codecs, packageDirectory);
+        std::size_t codecDecodedBytes = 0;
+        const auto decodeLimit = loadContext.maxDecodedBytes
+            ? loadContext.maxDecodedBytes
+            : manager.telemetry().budget.maxDecodedBytes;
         for (auto& entry : readResult.package.entries) {
             if (!inspector.supports(entry.resourceType))
                 continue;
@@ -901,6 +921,14 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
                     entry.resourceId,
                     entry.resourceType,
                     payload.diagnostics};
+            if (payload.maxDecodedBytes > SIZE_MAX - codecDecodedBytes
+                || (decodeLimit && payload.maxDecodedBytes > decodeLimit - codecDecodedBytes))
+                return {false,
+                    ResourceState::Failed,
+                    entry.resourceId,
+                    entry.resourceType,
+                    "PACKAGE-CODEC-DECODED-BUDGET"};
+            codecDecodedBytes += payload.maxDecodedBytes;
             for (const auto& dependency : payload.dependencies) {
                 const auto found = std::find_if(readResult.package.entries.begin(),
                     readResult.package.entries.end(),
@@ -1028,7 +1056,30 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
         if (entryIndex >= packageNodeCount)
             continue;
         const auto& entry = readResult.package.entries[entryIndex];
-        if (isManifestAsset(entry.resourceType)) {
+        if (codecs && codecs->find(entry.resourceType)) {
+            core::pmr::String diagnostic{&core::defaultCpuMemoryResource()};
+            core::UniquePtr<ResourceBase> typed;
+            try {
+                typed =
+                    codecs->find(entry.resourceType)->prepare(entry, packageDirectory, diagnostic);
+            } catch (...) {
+                diagnostic = "PACKAGE-CODEC-PREPARATION-FAILED";
+            }
+            if (!typed || typed->reference().id != entry.resourceId
+                || typed->reference().type != entry.resourceType)
+                return {false,
+                    ResourceState::Failed,
+                    entry.resourceId,
+                    entry.resourceType,
+                    diagnostic.empty() ? core::pmr::String("PACKAGE-CODEC-PREPARE-TYPE-OR-ID")
+                                       : diagnostic};
+            typed->configureMetadata(
+                ResourceReference{
+                    entry.resourceId, entry.resourceType, entry.alias, entry.status, {}},
+                entry.dependencies);
+            prepared.push_back(std::move(typed));
+            last = {true, ResourceState::Ready, entry.resourceId, entry.resourceType, {}};
+        } else if (isManifestAsset(entry.resourceType)) {
             core::pmr::String manifestPath(&core::defaultCpuMemoryResource());
             core::pmr::String diagnostics(&core::defaultCpuMemoryResource());
             if (!parseTypedAssetManifestPath(entry.envelopeYaml, manifestPath, diagnostics)) {

@@ -1,4 +1,5 @@
 #pragma once
+#include "core/math/half_float.h"
 #include "original_accepted_compute_pipeline_factory_fixture.h"
 #include "original_completed_sampled_input_fixture.h"
 #include "original_general_descriptor_binding_fixture.h"
@@ -2251,7 +2252,7 @@ class OriginalGeneralShaderResourcesProjectionFixture final {
                     std::memcpy(uniforms.data(), initialBytes.data(), initialBytes.size());
                     std::array<std::uint16_t, 4u> expected;
                     for (std::size_t channel = 0u; channel < expected.size(); ++channel)
-                        expected[channel] = core::ibl::floatToHalf(
+                        expected[channel] = core::floatToHalf(
                             uniforms[channel] + float(reference.channels[channel].meanValue));
                     std::weak_ptr<const TextureContent> retainedTextureContent = textureContent;
                     std::weak_ptr<const Issuer> retainedTextureIssuer = uploadIssuer;
@@ -4230,10 +4231,9 @@ public:
                                                                     + interval.offsetBytes
                                                                     + 4u * channel,
                                                                 4u);
-                                                        expected[channel] =
-                                                            core::ibl::floatToHalf(value
-                                                                + float(reference.channels[channel]
-                                                                        .meanValue));
+                                                        expected[channel] = core::floatToHalf(value
+                                                            + float(reference.channels[channel]
+                                                                    .meanValue));
                                                     }
                                                     OriginalGeneralOutputReadbackInputsFixture::
                                                         verifyPrepared(*c.device,

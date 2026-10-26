@@ -3,6 +3,8 @@
 #include "scene/scene.h"
 
 #include <algorithm>
+#include <cassert>
+#include <type_traits>
 
 namespace arp::scene {
 
@@ -135,6 +137,8 @@ const Component* GameObject::findComponent(ComponentId componentId) const
 
 bool GameObject::removeComponent(ComponentId componentId)
 {
+    if (scene_)
+        scene_->requireIdentityIdle();
     if (!componentId.valid() || transform_ == findComponent(componentId))
         return false;
     const auto found =
@@ -157,11 +161,15 @@ bool GameObject::removeComponent(ComponentId componentId)
     if (scene_)
         scene_->dispatching_ = true;
     SceneUpdateContext context;
-    if (owned->activeInScene()) {
-        owned->setActiveInScene(false);
-        owned->onDisable(context);
+    if (scene_)
+        scene_->dispatchComponentDestruction(*owned, context);
+    else {
+        if (owned->activeInScene()) {
+            owned->setActiveInScene(false);
+            owned->onDisable(context);
+        }
+        owned->onDestroy(context);
     }
-    owned->onDestroy(context);
     if (scene_) {
         if (!wasDispatching)
             scene_->flushDestroyed(context);
@@ -198,13 +206,27 @@ void GameObject::appendChild(GameObjectId childId)
     }
 }
 
-bool GameObject::insertChildAt(GameObjectId childId, std::size_t index)
+bool GameObject::prepareChildInsertion(GameObjectId childId, std::size_t index)
 {
     if (index > childIds_.size()
         || std::find(childIds_.begin(), childIds_.end(), childId) != childIds_.end())
         return false;
-    childIds_.insert(childIds_.begin() + static_cast<std::ptrdiff_t>(index), childId);
+    if (childIds_.size() == childIds_.capacity()) {
+        // Preserve amortized append behavior without publishing a temporary child.
+        const auto capacity = childIds_.capacity();
+        const auto maximum = childIds_.max_size();
+        const auto grown = capacity > maximum - capacity ? maximum : capacity + capacity;
+        childIds_.reserve(std::max(childIds_.size() + 1, grown));
+    }
     return true;
+}
+
+void GameObject::insertPreparedChildAt(GameObjectId childId, std::size_t index) noexcept
+{
+    static_assert(std::is_trivially_copyable_v<GameObjectId>);
+    assert(index <= childIds_.size() && childIds_.size() < childIds_.capacity());
+    assert(std::find(childIds_.begin(), childIds_.end(), childId) == childIds_.end());
+    childIds_.insert(childIds_.begin() + static_cast<std::ptrdiff_t>(index), childId);
 }
 
 bool GameObject::reorderChild(GameObjectId childId, std::size_t index)

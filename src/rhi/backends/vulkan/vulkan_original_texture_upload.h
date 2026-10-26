@@ -42,6 +42,12 @@ public:
         const char*&);
     static const char* validateOriginal(
         const std::shared_ptr<const VulkanOriginalTextureUploadStaging>&) noexcept;
+    // Shared borrowed validation for immutable staging and the existing cold
+    // pool. No new registration, ownership receipt or execution grant.
+    static const char* inspectDestination(
+        const std::shared_ptr<const rhi::OriginalCommandTextureUploadPackingSource>&,
+        rhi::GpuDevice&,
+        const VulkanRhiRuntime&) noexcept;
     const char* validate() const noexcept;
 
     const auto& originalPacking() const noexcept { return packing_; }

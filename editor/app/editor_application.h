@@ -19,7 +19,10 @@ public:
         bool viewportRuntimeSmoke = false,
         bool terrainResourceSmoke = false,
         std::string_view openTerrain = {},
-        bool terrainAssets = false);
+        bool terrainAssets = false,
+        const std::filesystem::path& legacyWoccExecutable = {},
+        std::string_view transformGestureSmoke = {},
+        std::string_view inspectorSafetySmoke = {});
 };
 
 } // namespace arp::editor

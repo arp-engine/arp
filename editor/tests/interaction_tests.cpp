@@ -254,6 +254,18 @@ int main()
                 && command.kind == renderer::ui::UiDrawCommandKind::Box;
         });
     assert(fileScrollbarBoxes == 2);
+    const auto fileLayout = fileEditor.runtime().canvas().resolveLayout();
+    const auto* filePanel = fileLayout.findWidget(fileEditor.id("left_files"));
+    assert(filePanel);
+    for (const auto& command : initialFileBarDraw.commands()) {
+        if (command.widgetId != fileEditor.id("files_view")
+            || command.kind != renderer::ui::UiDrawCommandKind::Box)
+            continue;
+        assert(command.rect.x >= filePanel->rect.x
+            && command.rect.x + command.rect.width <= filePanel->rect.x + filePanel->rect.width);
+        assert(command.rect.y >= filePanel->rect.y
+            && command.rect.y + command.rect.height <= filePanel->rect.y + filePanel->rect.height);
+    }
     platform::WindowInputEvent fileThumbDown;
     fileThumbDown.kind = platform::WindowInputEvent::Kind::MouseButtonDown;
     fileThumbDown.mouseButton = platform::WindowMouseButton::Left;
@@ -503,14 +515,20 @@ int main()
     fileEditor.handlePlatformInput(dragUp);
     assert(fileEditor.scriptSelectionEnd() - fileEditor.scriptSelectionStart() == 4);
     sendKey(platform::WindowInputEvent::Kind::KeyDown, platform::WindowKey::End);
-    // Preserve the legacy two-byte fixture exactly; this is not a Unicode literal.
+    // Platform text is UTF-8. Reject the old GBK fixture without changing history.
+    const auto beforeInvalidTextVersion = fileEditor.stateVersion();
     sendText("\xD6\xD0");
-    assert(scriptView().find("\xD6\xD0") != std::string_view::npos);
+    assert(scriptView() == originalScript && fileEditor.stateVersion() == beforeInvalidTextVersion);
+    // Explicit UTF-8 bytes keep the fixture independent of compiler source encoding.
+    auto withInsertedCjk = originalScript;
+    withInsertedCjk.insert(fileEditor.scriptSelectionStart(), "\xE4\xB8\xAD");
+    sendText("\xE4\xB8\xAD");
+    assert(scriptView() == withInsertedCjk);
     sendKey(platform::WindowInputEvent::Kind::KeyDown, platform::WindowKey::Backspace);
-    assert(scriptView().find("\xD6\xD0") == std::string_view::npos);
+    assert(scriptView() == originalScript);
     sendKey(platform::WindowInputEvent::Kind::KeyDown, platform::WindowKey::LeftControl);
     sendKey(platform::WindowInputEvent::Kind::KeyDown, platform::WindowKey::Z);
-    assert(scriptView().find("\xD6\xD0") != std::string_view::npos);
+    assert(scriptView() == withInsertedCjk);
     sendKey(platform::WindowInputEvent::Kind::KeyDown, platform::WindowKey::Z);
     assert(scriptView() == originalScript);
     sendKey(platform::WindowInputEvent::Kind::KeyUp, platform::WindowKey::LeftControl);
@@ -621,6 +639,8 @@ int main()
     assert(fileEditor.scriptPath() == secondScript && fileEditor.scriptDirty());
     switchTab(557.0f);
     assert(fileEditor.openScriptCount() == 2 && fileEditor.scriptDirty());
+    assert(fileEditor.runtime().canvas().findWidget(fileEditor.id("script_ui_modal"))->visible());
+    fileEditor.activate("script_ui_cancel");
     fileEditor.handlePlatformInput(controlDown);
     fileEditor.handlePlatformInput(saveKey);
     fileEditor.handlePlatformInput(controlUp);

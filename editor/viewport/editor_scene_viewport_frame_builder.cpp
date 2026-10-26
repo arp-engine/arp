@@ -47,7 +47,8 @@ EditorSceneViewportFrameBuildResult buildEditorSceneViewportFrame(const scene::S
     std::uint32_t targetHeight,
     EditorSceneViewportRect physicalViewport,
     const resource::ResourceManager* resources,
-    std::size_t maxDrawItems)
+    std::size_t maxDrawItems,
+    const scene::SceneTraversalSnapshot* visibleSnapshot)
 {
     EditorSceneViewportFrameBuildResult result;
     auto& frame = result.frame;
@@ -68,12 +69,13 @@ EditorSceneViewportFrameBuildResult buildEditorSceneViewportFrame(const scene::S
         result.validation = {EditorSceneViewportDiagnostic::InvalidViewportRect, 0};
         return result;
     }
-    if (!snapshot.ok()) {
+    if (!snapshot.ok() || (visibleSnapshot && !visibleSnapshot->ok())) {
         result.validation = {EditorSceneViewportDiagnostic::InvalidSceneSnapshot, 0};
         return result;
     }
 
-    for (const auto& node : snapshot.nodes()) {
+    const auto& visible = visibleSnapshot ? *visibleSnapshot : snapshot;
+    for (const auto& node : visible.nodes()) {
         if (!node.activeInHierarchy)
             continue;
         const auto* object = scene.findObject(node.objectId);
@@ -119,7 +121,7 @@ EditorSceneViewportFrameBuildResult buildEditorSceneViewportFrame(const scene::S
         ? static_cast<float>(physicalViewport.width) / static_cast<float>(physicalViewport.height)
         : camera.camera.aspectRatio;
 
-    for (const auto& node : snapshot.nodes()) {
+    for (const auto& node : visible.nodes()) {
         if (!node.activeInHierarchy)
             continue;
         const auto* object = scene.findObject(node.objectId);

@@ -4,9 +4,11 @@
 #include "core/memory/cpu_allocator.h"
 #include "rhi/backends/metal/metal_binding_validation.h"
 #include "rhi/backends/metal/metal_buffer_type_layout.h"
+#include "rhi/backends/metal/metal_compute_workgroup_limits.h"
 #include "rhi/backends/metal/metal_native_format.h"
 #include "rhi/backends/metal/metal_native_runtime.h"
 #include "rhi/semantics/native_pipeline_state_lowering.h"
+#include "shader/graphics_shader_module_artifact.h"
 
 #include <Metal/Metal.h>
 #include <fstream>
@@ -83,11 +85,30 @@ public:
 
 // Storage is reserved from logical cardinality before native objects exist;
 // neither collector can grow allocations during native reflection.
-class GraphicsTextureFactCollector final {
+class TextureBindingFactCollector final {
 public:
-    explicit GraphicsTextureFactCollector(core::pmr::Vector<MetalRhiTextureBindingFact>& facts)
+    explicit TextureBindingFactCollector(core::pmr::Vector<MetalRhiTextureBindingFact>& facts)
         : facts_(facts)
     {}
+
+    static bool reserve(const rhi::ShaderReflectionDesc& reflection,
+        std::size_t stages,
+        core::pmr::Vector<MetalRhiTextureBindingFact>& facts)
+    {
+        if (!stages)
+            return false;
+        std::size_t capacity = 0u;
+        for (const auto& binding : reflection.descriptorBindings) {
+            if (binding.type != rhi::DescriptorType::SampledTexture
+                && binding.type != rhi::DescriptorType::StorageTexture)
+                continue;
+            if (!binding.arrayCount || binding.arrayCount > (facts.max_size() - capacity) / stages)
+                return false;
+            capacity += binding.arrayCount * stages;
+        }
+        facts.reserve(capacity);
+        return true;
+    }
 
     bool collect(NSArray<MTLArgument*>* arguments, rhi::ShaderStage stage)
     {
@@ -99,7 +120,9 @@ public:
                         UINT32_MAX,
                         argument.textureType,
                         argument.textureDataType,
-                        argument.isDepthTexture))
+                        argument.isDepthTexture,
+                        argument.access,
+                        argument.isActive != NO))
                     return false;
             } else if (!GraphicsArgumentMemberEnumerator::collect(argument,
                            MTLDataTypeTexture,
@@ -117,7 +140,9 @@ public:
                                        index,
                                        type.textureType,
                                        type.textureDataType,
-                                       type.isDepthTexture);
+                                       type.isDepthTexture,
+                                       type.access,
+                                       argument.isActive != NO);
                            }))
                 return false;
         }
@@ -130,7 +155,9 @@ private:
         NSUInteger index,
         MTLTextureType type,
         MTLDataType scalar,
-        bool depth)
+        bool depth,
+        MTLArgumentAccess access,
+        bool active)
     {
         if (slot > UINT32_MAX || index > UINT32_MAX || facts_.size() == facts_.capacity())
             return false;
@@ -142,7 +169,9 @@ private:
             static_cast<std::uint32_t>(index),
             static_cast<std::uint32_t>(type),
             static_cast<std::uint32_t>(scalar),
-            depth});
+            depth,
+            static_cast<std::uint32_t>(access),
+            active ? 1u : 0u});
         return true;
     }
 
@@ -309,7 +338,8 @@ bool collectPhysicalBindingStages(NSArray<MTLArgument*>* arguments,
                 static_cast<std::uint64_t>(argument.bufferAlignment),
                 static_cast<std::uint64_t>(argument.bufferDataSize),
                 static_cast<std::uint32_t>(argument.access),
-                static_cast<std::uint32_t>(argument.bufferDataType)});
+                static_cast<std::uint32_t>(argument.bufferDataType),
+                argument.isActive != NO ? 1u : 0u});
         }
     }
     return true;
@@ -595,22 +625,22 @@ private:
     MetalRhiVertexInputFacts& output_;
 };
 
-static const char* collectOriginalGraphicsMemberMemory(NSArray<MTLArgument*>* arguments,
-    const rhi::BindlessPackageModule* module,
+static const char* collectOriginalMemberMemory(NSArray<MTLArgument*>* arguments,
+    const shader::NativeBufferMemoryDeclarations& memory,
+    const shader::ShaderReflection& reflection,
+    const core::pmr::Vector<shader::SpirvBufferDeclarationLayout>& declarations,
     rhi::ShaderStage stage,
     MetalRhiNativeStageBufferMemberMemory& output)
 {
     output = {};
-    if (!module || !module->nativeMemory.version())
-        return nullptr;
     try {
         MetalRhiNativeStageBufferMemberMemory candidate;
-        for (const auto& binary : module->ordinaryBinaryMemory) {
-            const auto* source = module->nativeMemory.lookup(binary.set, binary.binding);
+        for (const auto& binary : declarations) {
+            const auto* source = memory.lookup(binary.set, binary.binding);
             if (!source)
                 return "RHI-METAL-MEMBER-MEMORY-SOURCE";
             const shader::ShaderMetalBindingSpaceBinding* physical = nullptr;
-            for (const auto& candidate : module->reflection.reflection.metalBindingSpace)
+            for (const auto& candidate : reflection.metalBindingSpace)
                 if (candidate.set == binary.set && candidate.binding == binary.binding) {
                     if (physical)
                         return "RHI-METAL-MEMBER-MEMORY-MAPPING-DUPLICATE";
@@ -658,8 +688,7 @@ static const char* collectOriginalGraphicsMemberMemory(NSArray<MTLArgument*>* ar
             if (const auto* id =
                     source->resolveTargetPlan(record.target, record.targetType, matrices, relation))
                 return id;
-            if (const auto* id = shader::SpirvMslBufferMemoryLowering::compare(
-                    module->nativeMemory.sourceTypes(),
+            if (const auto* id = shader::SpirvMslBufferMemoryLowering::compare(memory.sourceTypes(),
                     source->sourceType,
                     record.target,
                     record.targetType,
@@ -691,6 +720,54 @@ static const char* collectOriginalGraphicsMemberMemory(NSArray<MTLArgument*>* ar
     }
 }
 
+static const char* collectOriginalGraphicsMemberMemory(NSArray<MTLArgument*>* arguments,
+    const rhi::BindlessPackageModule* module,
+    rhi::ShaderStage stage,
+    MetalRhiNativeStageBufferMemberMemory& output)
+{
+    output = {};
+    if (!module || !module->nativeMemory.version())
+        return nullptr;
+    return collectOriginalMemberMemory(arguments,
+        module->nativeMemory,
+        module->reflection.reflection,
+        module->ordinaryBinaryMemory,
+        stage,
+        output);
+}
+
+static const char* collectOrdinaryMemberMemory(NSArray<MTLArgument*>* arguments,
+    const std::shared_ptr<const shader::SingleEntryShaderArtifact>& artifact,
+    const shader::ShaderReflection& physicalReflection,
+    rhi::ShaderStage stage,
+    MetalRhiNativeStageBufferMemberMemory& output)
+{
+    output = {};
+    if (const auto* id = shader::SingleEntryShaderArtifact::validateOriginal(artifact))
+        return id;
+    if (!artifact->nativeBufferMemoryRequested())
+        return nullptr;
+    const shader::NativeBufferMemoryDeclarations* memory = nullptr;
+    if (const auto* id =
+            shader::SingleEntryShaderArtifact::originalNativeBufferMemory(artifact, memory))
+        return id;
+    core::pmr::Vector<shader::SpirvBufferDeclarationLayout> declarations{
+        &core::defaultCpuMemoryResource()};
+    for (const auto& binding : artifact->module().reflection.bindings) {
+        if (binding.type != shader::BindingType::UniformBuffer
+            && binding.type != shader::BindingType::ReadOnlyStorageBuffer
+            && binding.type != shader::BindingType::StorageBuffer)
+            continue;
+        shader::SpirvBufferDeclarationLayout declaration;
+        if (const auto* id = shader::SingleEntryShaderArtifact::originalBufferDeclarationLayout(
+                artifact, binding.set, binding.binding, declaration))
+            return id;
+        declarations.push_back(declaration);
+    }
+    return collectOriginalMemberMemory(
+        arguments, *memory, physicalReflection, declarations, stage, output);
+}
+
 static std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeRenderPipelinePayloadImpl(
     const rhi::RenderPipelineDesc& desc,
     const rhi::PipelineValidationReport& report,
@@ -698,7 +775,8 @@ static std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeRender
     bool supportsIndirectCommands,
     const std::string_view* verifiedVertexMsl,
     const std::string_view* verifiedFragmentMsl,
-    const std::array<const rhi::BindlessPackageModule*, 2u>* originalModules = nullptr)
+    const std::array<const rhi::BindlessPackageModule*, 2u>* originalModules = nullptr,
+    const shader::GraphicsShaderModuleArtifact* ordinary = nullptr)
 {
     auto payload = makeBasePayload(report, true);
     if (!vertexStreams.success) {
@@ -832,7 +910,7 @@ static std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeRender
         return payload;
     }
 
-    std::size_t textureFactCapacity = 0u, bufferPointeeFactCapacity = 0u;
+    std::size_t bufferPointeeFactCapacity = 0u;
     for (const auto& binding : desc.shaderPackage->reflection.descriptorBindings) {
         if (binding.type == rhi::DescriptorType::UniformBuffer
             || binding.type == rhi::DescriptorType::ReadOnlyStorageBuffer
@@ -844,19 +922,13 @@ static std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeRender
             }
             bufferPointeeFactCapacity += binding.arrayCount;
         }
-        if (binding.type != rhi::DescriptorType::SampledTexture
-            && binding.type != rhi::DescriptorType::StorageTexture)
-            continue;
-        // Both selected formal signatures may include an inactive declaration.
-        const std::size_t stages = hasFragment ? 2u : 1u;
-        if (binding.arrayCount
-            > (payload->graphicsTextureFacts.max_size() - textureFactCapacity) / stages) {
-            payload->diagnostics = "RHI-METAL-GRAPHICS-TEXTURE-FACT-CAPACITY-OVERFLOW";
-            return payload;
-        }
-        textureFactCapacity += binding.arrayCount * stages;
     }
-    payload->graphicsTextureFacts.reserve(textureFactCapacity);
+    // Both selected formal signatures may include an inactive declaration.
+    if (!TextureBindingFactCollector::reserve(
+            desc.shaderPackage->reflection, hasFragment ? 2u : 1u, payload->graphicsTextureFacts)) {
+        payload->diagnostics = "RHI-METAL-GRAPHICS-TEXTURE-FACT-CAPACITY-OVERFLOW";
+        return payload;
+    }
     payload->graphicsBufferPointeeFacts[0].entries.reserve(bufferPointeeFactCapacity);
     if (hasFragment)
         payload->graphicsBufferPointeeFacts[1].entries.reserve(bufferPointeeFactCapacity);
@@ -1008,7 +1080,7 @@ static std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeRender
                         payload->graphicsBufferFacts[1].stage = rhi::ShaderStage::Fragment;
                         payload->graphicsBufferFacts[1].version = 1u;
                     }
-                    GraphicsTextureFactCollector facts(payload->graphicsTextureFacts);
+                    TextureBindingFactCollector facts(payload->graphicsTextureFacts);
                     if (facts.collect(reflection.vertexArguments, rhi::ShaderStage::Vertex)
                         && (!hasFragment
                             || facts.collect(
@@ -1023,14 +1095,23 @@ static std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeRender
                     if (hasFragment)
                         GraphicsBufferPointeeFactCollector(payload->graphicsBufferPointeeFacts[1])
                             .collect(reflection.fragmentArguments, rhi::ShaderStage::Fragment);
-                    if (originalModules) {
+                    if (originalModules || ordinary) {
                         const char* memberDiagnostic = nullptr;
                         for (unsigned i = 0u; i < (hasFragment ? 2u : 1u); ++i) {
-                            memberDiagnostic = collectOriginalGraphicsMemberMemory(
-                                i ? reflection.fragmentArguments : reflection.vertexArguments,
-                                (*originalModules)[i],
-                                i ? rhi::ShaderStage::Fragment : rhi::ShaderStage::Vertex,
-                                payload->graphicsBufferMemberMemory[i]);
+                            const auto arguments =
+                                i ? reflection.fragmentArguments : reflection.vertexArguments;
+                            const auto stage =
+                                i ? rhi::ShaderStage::Fragment : rhi::ShaderStage::Vertex;
+                            memberDiagnostic = ordinary
+                                ? collectOrdinaryMemberMemory(arguments,
+                                      i ? ordinary->fragment() : ordinary->vertex(),
+                                      ordinary->module().reflection,
+                                      stage,
+                                      payload->graphicsBufferMemberMemory[i])
+                                : collectOriginalGraphicsMemberMemory(arguments,
+                                      (*originalModules)[i],
+                                      stage,
+                                      payload->graphicsBufferMemberMemory[i]);
                             if (memberDiagnostic)
                                 break;
                         }
@@ -1161,7 +1242,8 @@ std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeRenderPipelin
 static std::shared_ptr<MetalRhiNativePipelinePayload>
 createMetalRhiNativeComputePipelinePayloadImpl(const rhi::ComputePipelineDesc& desc,
     const rhi::PipelineValidationReport& report,
-    const std::string_view* verifiedMslSource)
+    const std::string_view* verifiedMslSource,
+    const std::shared_ptr<const shader::SingleEntryShaderArtifact>& ordinary = {})
 {
     auto payload = makeBasePayload(report, false);
     payload->pushConstantMetalBufferIndex = desc.shaderPackage
@@ -1172,6 +1254,12 @@ createMetalRhiNativeComputePipelinePayloadImpl(const rhi::ComputePipelineDesc& d
     payload->computeWorkgroupSizeZ = report.selectedComputeWorkgroupSizeZ;
     if (!desc.shaderPackage) {
         payload->diagnostics = "Metal RHI compute pipeline requires shader package";
+        return payload;
+    }
+
+    if (!TextureBindingFactCollector::reserve(
+            desc.shaderPackage->reflection, 1u, payload->computeTextureFacts)) {
+        payload->diagnostics = "RHI-METAL-COMPUTE-TEXTURE-FACT-CAPACITY-OVERFLOW";
         return payload;
     }
 
@@ -1192,12 +1280,23 @@ createMetalRhiNativeComputePipelinePayloadImpl(const rhi::ComputePipelineDesc& d
             pipeline = [defaultMetalDevice()
                 newComputePipelineStateWithFunction:function
                                             options:MTLPipelineOptionArgumentInfo
+                | (ordinary && ordinary->nativeBufferMemoryRequested()
+                        ? MTLPipelineOptionBufferTypeInfo
+                        : 0u)
                                          reflection:&reflection
                                               error:&error];
             if (pipeline != nil) {
-                if (reflection == nil)
+                const auto axes = pipeline.device.maxThreadsPerThreadgroup;
+                const MetalRhiComputeWorkgroupLimits limits{
+                    axes.width, axes.height, axes.depth, pipeline.maxTotalThreadsPerThreadgroup};
+                const auto* workgroupDiagnostic = limits.validate(payload->computeWorkgroupSizeX,
+                    payload->computeWorkgroupSizeY,
+                    payload->computeWorkgroupSizeZ);
+                if (workgroupDiagnostic)
+                    diagnostics = workgroupDiagnostic;
+                else if (reflection == nil)
                     diagnostics = "RHI-METAL-PIPELINE-REFLECTION-MISSING";
-                if (reflection == nil
+                if (workgroupDiagnostic || reflection == nil
                     || !collectPhysicalBindingStages(reflection.arguments,
                         rhi::ShaderStage::Compute,
                         payload->nativeBindingStages,
@@ -1205,8 +1304,27 @@ createMetalRhiNativeComputePipelinePayloadImpl(const rhi::ComputePipelineDesc& d
                         &payload->computeBufferFacts)) {
                     [pipeline release];
                     pipeline = nil;
+                } else if (ordinary) {
+                    payload->computeBufferFactsVersion = 1u;
+                    if (const auto* id = collectOrdinaryMemberMemory(reflection.arguments,
+                            ordinary,
+                            ordinary->module().reflection,
+                            rhi::ShaderStage::Compute,
+                            payload->computeBufferMemberMemory)) {
+                        diagnostics = id;
+                        payload->computeBufferMemberMemory = {};
+                        [pipeline release];
+                        pipeline = nil;
+                    }
                 } else
                     payload->computeBufferFactsVersion = 1u;
+                if (pipeline != nil) {
+                    TextureBindingFactCollector facts(payload->computeTextureFacts);
+                    if (facts.collect(reflection.arguments, rhi::ShaderStage::Compute))
+                        payload->computeTextureFactsVersion = 1u;
+                    else
+                        payload->computeTextureFacts.clear();
+                }
             }
         }
         [function release];
@@ -1237,6 +1355,38 @@ std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeComputePipeli
     std::string_view verifiedMslSource)
 {
     return createMetalRhiNativeComputePipelinePayloadImpl(desc, report, &verifiedMslSource);
+}
+
+std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeComputePipelinePayload(
+    const rhi::ComputePipelineDesc& desc,
+    const rhi::PipelineValidationReport& report,
+    const std::shared_ptr<const shader::SingleEntryShaderArtifact>& artifact)
+{
+    if (const auto* id = shader::SingleEntryShaderArtifact::validateOriginal(artifact)) {
+        auto payload = makeBasePayload(report, false);
+        payload->diagnostics = id;
+        return payload;
+    }
+    const auto& bytes = artifact->bytes(shader::ShaderArtifactRole::Metal);
+    const std::string_view source(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    return createMetalRhiNativeComputePipelinePayloadImpl(desc, report, &source, artifact);
+}
+
+std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeRenderPipelinePayload(
+    const rhi::RenderPipelineDesc& desc,
+    const rhi::PipelineValidationReport& report,
+    const rhi::semantics::MetalVertexStreamMapping& streams,
+    const std::shared_ptr<const shader::GraphicsShaderModuleArtifact>& artifact)
+{
+    if (const auto* id = shader::GraphicsShaderModuleArtifact::validateOriginal(artifact)) {
+        auto payload = makeBasePayload(report, true);
+        payload->diagnostics = id;
+        return payload;
+    }
+    const auto& bytes = artifact->bytes(shader::ShaderArtifactRole::Metal);
+    const std::string_view source(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    return createMetalRhiNativeRenderPipelinePayloadImpl(
+        desc, report, streams, false, &source, &source, nullptr, artifact.get());
 }
 
 } // namespace arp::rhi_metal

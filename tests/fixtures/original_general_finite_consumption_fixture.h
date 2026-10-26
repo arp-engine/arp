@@ -139,7 +139,8 @@ public:
             for (const auto decision : {consumption, binding}) {
                 assert(!decision.stateAvailable && !decision.executionAvailable);
                 assert(decision.validatorOnly == (backend == rhi::Backend::Null));
-                assert(decision.projectionAvailable == (backend == rhi::Backend::WebGPU));
+                assert(decision.projectionAvailable
+                    == (backend == rhi::Backend::WebGPU || backend == rhi::Backend::Vulkan));
                 assert(bool(decision.diagnostic) != decision.projectionAvailable);
             }
         }

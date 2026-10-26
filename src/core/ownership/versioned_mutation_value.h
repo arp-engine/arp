@@ -82,6 +82,8 @@ public:
 
     bool pending() const noexcept { return snapshot_.pending(); }
 
+    bool discardPending(MutationJournal& journal) noexcept { return snapshot_.discard(journal); }
+
     bool enlistmentExhausted() const noexcept
     {
         return !snapshot_.pending() && !enlistments_.hasRemaining();
@@ -98,6 +100,13 @@ public:
     bool canWriteBatch(const MutationJournal& journal, std::uint64_t writes) const noexcept
     {
         return canPrepare(journal) && writes != UINT64_MAX && sequence_.hasRemaining(writes + 1u);
+    }
+
+    // Serialized direct writes need no rollback reservation. This dry check
+    // does not consume revisions or invalidate an exhausted value.
+    bool canWriteBatch(std::uint64_t writes) const noexcept
+    {
+        return active() && !pending() && sequence_.hasRemaining(writes);
     }
 
     bool prepare(MutationJournal& journal) noexcept

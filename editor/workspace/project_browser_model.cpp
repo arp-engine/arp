@@ -4,6 +4,7 @@
 #include "core/text/string_utils.h"
 
 #include <algorithm>
+#include <new>
 #include <system_error>
 
 namespace arp::editor {
@@ -34,7 +35,7 @@ void ProjectBrowserModel::setRoot(std::filesystem::path root)
     visibleEntries_.clear();
 }
 
-bool ProjectBrowserModel::refresh()
+bool ProjectBrowserModel::refresh(std::size_t entryBudget)
 {
     entries_.clear();
     visibleEntries_.clear();
@@ -44,7 +45,10 @@ bool ProjectBrowserModel::refresh()
         end;
     if (error)
         return false;
+    std::size_t visited = 0;
     for (; iterator != end; iterator.increment(error)) {
+        if (entryBudget && (++visited > entryBudget || error))
+            return false;
         if (error) {
             error.clear();
             continue;
@@ -65,6 +69,8 @@ bool ProjectBrowserModel::refresh()
         entry.directory = directory;
         entries_.push_back(std::move(entry));
     }
+    if (entryBudget && error)
+        return false;
     std::sort(entries_.begin(), entries_.end(), [](const Entry& lhs, const Entry& rhs) {
         if (lhs.directory != rhs.directory)
             return lhs.directory > rhs.directory;
@@ -72,6 +78,53 @@ bool ProjectBrowserModel::refresh()
     });
     setSearch(search_);
     return true;
+}
+
+const char* ProjectBrowserModel::prepareReveal(const std::filesystem::path& file,
+    ProjectBrowserModel& destination,
+    std::size_t& visibleIndex) const noexcept
+{
+    constexpr std::size_t maxEntries = 4096;
+    try {
+        std::error_code error;
+        const auto canonical = std::filesystem::canonical(file, error);
+        if (error || canonical != file || !core::FilePath::contains(root_, canonical)
+            || !std::filesystem::is_regular_file(canonical, error) || error)
+            return "EDITOR-RESOURCE-NAVIGATION-FILE";
+        if (backHistory_.size() >= maxEntries || forwardHistory_.size() >= maxEntries
+            || entries_.size() > maxEntries)
+            return "EDITOR-RESOURCE-NAVIGATION-BROWSER-BUDGET";
+        auto candidate = *this;
+        if (candidate.navigate(canonical.parent_path()) == NavigationResult::Rejected
+            || !candidate.refresh(maxEntries))
+            return "EDITOR-RESOURCE-NAVIGATION-DIRECTORY-OR-BUDGET";
+        candidate.setSearch("");
+        const auto found = std::find_if(
+            candidate.entries_.begin(), candidate.entries_.end(), [&](const auto& entry) {
+                return !entry.directory && entry.path == canonical;
+            });
+        if (found == candidate.entries_.end())
+            return "EDITOR-RESOURCE-NAVIGATION-ROW-MISSING";
+        const auto index = static_cast<std::size_t>(found - candidate.entries_.begin());
+        destination.swap(candidate);
+        visibleIndex = index;
+        return nullptr;
+    } catch (const std::bad_alloc&) {
+        return "EDITOR-RESOURCE-NAVIGATION-ALLOCATION-FAILED";
+    } catch (const std::filesystem::filesystem_error&) {
+        return "EDITOR-RESOURCE-NAVIGATION-FILE";
+    }
+}
+
+void ProjectBrowserModel::swap(ProjectBrowserModel& other) noexcept
+{
+    root_.swap(other.root_);
+    currentDirectory_.swap(other.currentDirectory_);
+    entries_.swap(other.entries_);
+    visibleEntries_.swap(other.visibleEntries_);
+    backHistory_.swap(other.backHistory_);
+    forwardHistory_.swap(other.forwardHistory_);
+    search_.swap(other.search_);
 }
 
 ProjectBrowserModel::NavigationResult ProjectBrowserModel::navigate(

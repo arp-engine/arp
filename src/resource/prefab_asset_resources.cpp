@@ -1657,6 +1657,41 @@ ResourceLoadResult AnimationSetResource::loadInto(
     return loadIntoFor(*this, manager, resourceTypeName(), defaultEnvelopePath(), desc);
 }
 
+void MaterialResource::appendContentFingerprint(core::StableHash64& hasher) const noexcept
+{
+    constexpr std::uint64_t payloadFingerprintVersion = 1u;
+    hasher.appendU64(payloadFingerprintVersion);
+    const auto appendText = [&hasher](const core::pmr::String& value) noexcept {
+        hasher.appendU64(value.size());
+        hasher.appendString({value.data(), value.size()});
+    };
+    appendText(name);
+    appendText(sourcePath);
+    appendText(sourceResourceId);
+    appendText(shaderPackageId);
+    hasher.appendU64(static_cast<std::uint64_t>(textureBindingCount));
+    hasher.appendU64(static_cast<std::uint64_t>(propertyCount));
+    hasher.appendU64(materialContractVersion);
+    appendText(surfaceModel);
+    hasher.appendFloat(baseColorR);
+    hasher.appendFloat(baseColorG);
+    hasher.appendFloat(baseColorB);
+    hasher.appendFloat(baseColorA);
+    hasher.appendFloat(emissiveR);
+    hasher.appendFloat(emissiveG);
+    hasher.appendFloat(emissiveB);
+    hasher.appendFloat(metallicFactor);
+    hasher.appendFloat(roughnessFactor);
+    appendText(alphaMode);
+    hasher.appendFloat(alphaCutoff);
+    hasher.appendU64(doubleSided ? 1u : 0u);
+    appendText(baseColorTextureId);
+    appendText(normalTextureId);
+    appendText(metallicRoughnessTextureId);
+    appendText(occlusionTextureId);
+    appendText(emissiveTextureId);
+}
+
 arp::core::pmr::Vector<ResourceDependency> MaterialResource::dependencies() const
 {
     arp::core::pmr::Vector<ResourceDependency> result{&arp::core::defaultCpuMemoryResource()};

@@ -3,6 +3,7 @@
 #include "core/algorithm/preflight_replay.h"
 #include "core/math/unsigned_range.h"
 #include "rhi/frontend/command_geometry_fetch.h"
+#include "rhi/frontend/command_recording_budget.h"
 #include "rhi/frontend/command_state.h"
 #include "rhi/frontend/command_usage.h"
 #include "rhi/frontend/transfer_copy.h"
@@ -134,9 +135,13 @@ public:
         Counts counts;
     };
 
-    OriginalCommandStreamProgram(
-        ConstructionKey, Root root, const OriginalCommandStreamBudget& budget, const Counts& counts)
+    OriginalCommandStreamProgram(ConstructionKey,
+        Root root,
+        const OriginalCommandStreamBudget& budget,
+        const Counts& counts,
+        std::optional<CommandRecordingBudget> recordingBudget = {})
         : root_(std::move(root)), budget_(budget), counts_(counts),
+          recordingBudget_(std::move(recordingBudget)),
           operations_(static_cast<std::size_t>(counts.commands))
     {}
 
@@ -241,17 +246,44 @@ public:
         return prepareRoot(Root{std::move(graph)}, budget, std::move(quota), diagnostic);
     }
 
+    // Additional cold input-work admission over this exact immutable stream.
+    // No native storage/authority or second source/state graph is introduced.
+    static std::shared_ptr<const OriginalCommandStreamProgram> prepareRecordingBoundOriginal(
+        std::shared_ptr<const OriginalCommandInputs> inputs,
+        const OriginalCommandStreamBudget& budget,
+        const CommandRecordingBudget& recordingBudget,
+        std::shared_ptr<core::CpuMemoryQuota> quota,
+        const char*& diagnostic)
+    {
+        return prepareRoot(
+            Root{std::move(inputs)}, budget, std::move(quota), diagnostic, recordingBudget);
+    }
+
+    static std::shared_ptr<const OriginalCommandStreamProgram> prepareRecordingBoundOriginalTyped(
+        std::shared_ptr<const Graph> graph,
+        const OriginalCommandStreamBudget& budget,
+        const CommandRecordingBudget& recordingBudget,
+        std::shared_ptr<core::CpuMemoryQuota> quota,
+        const char*& diagnostic)
+    {
+        return prepareRoot(
+            Root{std::move(graph)}, budget, std::move(quota), diagnostic, recordingBudget);
+    }
+
 private:
     static std::shared_ptr<const OriginalCommandStreamProgram> prepareRoot(Root root,
         const OriginalCommandStreamBudget& budget,
         std::shared_ptr<core::CpuMemoryQuota> quota,
-        const char*& diagnostic)
+        const char*& diagnostic,
+        std::optional<CommandRecordingBudget> recordingBudget = {})
     {
         diagnostic = preflight(root, budget);
         if (diagnostic)
             return {};
         const auto& inputs = inputsOf(root);
         if ((diagnostic = validateQuota(root, budget, quota)))
+            return {};
+        if (recordingBudget && (diagnostic = validateRecordingBudget(*inputs, *recordingBudget)))
             return {};
         Inspection result;
         std::shared_ptr<OriginalCommandStreamProgram> program;
@@ -264,7 +296,7 @@ private:
                 },
                 [&] {
                     program = shareOriginal(core::makeUnique<OriginalCommandStreamProgram>(
-                        ConstructionKey{}, root, budget, result.counts));
+                        ConstructionKey{}, root, budget, result.counts, recordingBudget));
                     return bool(program);
                 },
                 [&](const Operation& operation) {
@@ -298,6 +330,9 @@ public:
             return id;
         if (const auto* id = validateQuota(root_, budget_, originalMetadataQuota()))
             return id;
+        if (recordingBudget_)
+            if (const auto* id = validateRecordingBudget(*originalInputs(), *recordingBudget_))
+                return id;
         if (operations_.values().size() != counts_.commands)
             return "RHI-ORIGINAL-STREAM-COVERAGE";
         Inspection result;
@@ -341,9 +376,25 @@ public:
 
     const OriginalCommandStreamBudget& originalBudget() const noexcept { return budget_; }
 
+    const std::optional<CommandRecordingBudget>& recordingBudget() const noexcept
+    {
+        return recordingBudget_;
+    }
+
     const auto& operations() const noexcept { return operations_.values(); }
 
     const Counts& counts() const noexcept { return counts_; }
+
+    // Reuse the immutable Inputs count projection without constructing another
+    // stream program or granting this input profile execution authority.
+    static const char* validateOriginalRecordingBudget(
+        const std::shared_ptr<const OriginalCommandInputs>& inputs,
+        const CommandRecordingBudget& budget) noexcept
+    {
+        if (const auto* id = OriginalCommandInputs::validateOriginal(inputs))
+            return id;
+        return validateRecordingBudget(*inputs, budget);
+    }
 
     // Join the existing State4/Stream4 and exact original Inputs5 to immutable
     // initialized-index analysis. This never records or authorizes GPU work.
@@ -516,6 +567,75 @@ public:
     }
 
 private:
+    // Inputs have already passed their original ownership/profile checks. This
+    // reads only their immutable stores and never queries a mutable descriptor.
+    static const char* validateRecordingBudget(
+        const OriginalCommandInputs& inputs, const CommandRecordingBudget& budget) noexcept
+    {
+        const char* id = nullptr;
+        auto meter = CommandRecordingMeter::prepare(budget, id);
+        if (!meter)
+            return id;
+        const auto& scalars = *inputs.originalScalars();
+        const auto& usage = *scalars.originalUsage();
+        const auto& arguments = *scalars.originalArguments();
+        const auto& sources = usage.originalSources()->sources();
+        using K = CommandUsageKind;
+        for (std::size_t i = 0u; i < usage.commands().size(); ++i) {
+            const auto& command = usage.commands()[i];
+            switch (command.kind) {
+            case K::RetainIndexedPipeline:
+            case K::RetainIndexedSnapshot:
+            case K::ClearFaultBuffer:
+            case K::ClearSnapshotFault:
+            case K::RecordIndirectProducer:
+            case K::RecordIndirectProcessor:
+            case K::IndirectProcessorDraw:
+            case K::BufferFaultReadback:
+            case K::SnapshotFaultReadback:
+            case K::ProcessorFaultReadback:
+            case K::PrepareBindlessGraphicsPass:
+            case K::BindPreparedComputeBinding:
+            case K::BindPreparedGraphicsBinding:
+            case K::ExecuteRenderBundle:
+            case K::ExecuteSecondaryCommandBuffer:
+                return "RHI-COMMAND-RECORDING-BUDGET-EXPANSION-PROFILE";
+            default:
+                break;
+            }
+            const auto& record = arguments.records()[i];
+            CommandRecordingUsage increment;
+            if (const auto* error = increment.appendArguments({record.scalar,
+                    arguments.text(i),
+                    arguments.offsets(i),
+                    static_cast<std::uint32_t>(record.offsetCount),
+                    arguments.bytes(i),
+                    static_cast<std::uint32_t>(record.byteCount)}))
+                return error;
+            increment.resourceReferences = command.referenceCount;
+            if (command.kind == K::BindRenderDescriptor || command.kind == K::BindComputeDescriptor
+                || command.kind == K::BindRenderDescriptorTable
+                || command.kind == K::BindComputeDescriptorTable) {
+                if (command.referenceCount != 1u)
+                    return "RHI-COMMAND-RECORDING-BUDGET-DESCRIPTOR-SOURCE";
+                const auto& source =
+                    sources[usage.references()[command.firstReference].sourceIndex];
+                if (const auto* set =
+                        std::get_if<std::shared_ptr<const OriginalCommandDescriptorSetSource>>(
+                            &source))
+                    increment.descriptorElements = (*set)->frozenElements().size();
+                else if (const auto* table = std::get_if<
+                             std::shared_ptr<const OriginalCommandDescriptorTableSource>>(&source))
+                    increment.descriptorElements = (*table)->frozenElements().size();
+                else
+                    return "RHI-COMMAND-RECORDING-BUDGET-DESCRIPTOR-SOURCE";
+            }
+            if (const auto* error = meter->consume(increment))
+                return error;
+        }
+        return nullptr;
+    }
+
     static const Graph* graphOf(const Root& root) noexcept
     {
         const auto* graph = std::get_if<std::shared_ptr<const Graph>>(&root);
@@ -540,7 +660,8 @@ private:
     {
         if (const auto* id = OriginalCommandStreamContract::validateIntent(budget))
             return id;
-        if (budget.contractVersion >= 2u || !budget.bindlessRoots.empty()) {
+        if (budget.contractVersion >= 2u || !budget.bindlessRoots.empty()
+            || (graphOf(root) && graphOf(root)->reads_)) {
             const auto* graph = std::get_if<std::shared_ptr<const Graph>>(&root);
             if (!graph)
                 return "RHI-ORIGINAL-STREAM-TYPED-STATE-REQUIRED";
@@ -559,9 +680,11 @@ private:
             if ((budget.contractVersion == 4u || budget.bindlessRoots.geometryJoined())
                 && !budget.geometryUsage.matches((*graph)->budget_.geometryUsage))
                 return "RHI-ORIGINAL-STREAM-GEOMETRY-FOOTPRINT-MISMATCH";
-            if (const auto* id =
-                    common::OriginalCommandAccessValidation::inspect(*graph, budget.stateSequence)
-                        .diagnostic)
+            if (const auto* id = common::OriginalCommandAccessValidation::inspect(*graph,
+                    budget.contractVersion == 1u && (*graph)->reads_
+                        ? (*graph)->readAdmission_->sequence
+                        : budget.stateSequence)
+                    .diagnostic)
                 return id;
         } else {
             if (std::holds_alternative<std::shared_ptr<const Graph>>(root))
@@ -589,6 +712,8 @@ private:
         const auto& sources = inputs.originalScalars()->originalUsage()->originalSources();
         if (!quota || quota->limitBytes() != budget.maxCpuMetadataBytes)
             return "RHI-ORIGINAL-STREAM-QUOTA";
+        if (graphOf(root) && graphOf(root)->overlapsSubmittedReadQuota(quota))
+            return "RHI-SUBMISSION-READ-QUOTA";
         const std::array<const std::shared_ptr<core::CpuMemoryQuota>*, 4> domains{&quota,
             &inputs.originalMetadataQuota(),
             &sources->originalMetadataQuota(),
@@ -950,6 +1075,7 @@ private:
     const Root root_;
     const OriginalCommandStreamBudget budget_;
     const Counts counts_;
+    const std::optional<CommandRecordingBudget> recordingBudget_;
     core::BoundedSequence<Operation> operations_;
 };
 } // namespace arp::rhi

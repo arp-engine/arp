@@ -1,6 +1,7 @@
 #include "renderer/volumetric_cloud/cloud_execution_plan.h"
 
 #include "core/math/unsigned_range.h"
+#include "rhi/gpu_device.h"
 
 #include <cmath>
 #include <limits>
@@ -39,11 +40,16 @@ bool add(std::uint64_t a, std::uint64_t b, std::uint64_t& output) noexcept
 
 } // namespace
 
-CloudResult CloudExecutionPlanner::plan(const CloudRenderConfig& c,
+const char* CloudOriginalDispatchAdmission::validate(rhi::Extent3D groups) const noexcept
+{
+    return device.validateOriginalComputeDispatchDomain(
+        domain, {kCloudWorkgroupWidth, kCloudWorkgroupHeight, 1u}, groups);
+}
+
+CloudResult CloudExecutionPlanner::describeResources(const CloudRenderConfig& c,
     rhi::Extent2D extent,
     std::uint64_t assetBytes,
     std::uint32_t uniformBytes,
-    const rhi::DeviceCapabilities& caps,
     CloudExecutionPlan& output) noexcept
 {
     output = {};
@@ -57,28 +63,6 @@ CloudResult CloudExecutionPlanner::plan(const CloudRenderConfig& c,
         || c.historyDepthTolerance <= 0.0f || !assetBytes || assetBytes % 16u || !uniformBytes
         || uniformBytes % 16u)
         return CloudResult::failure("CLOUD-RENDER-CONFIG-INVALID");
-    const auto& limits = caps.computeResources;
-    if (!caps.core.compute || !caps.core.graphics || !caps.features.computeDispatch
-        || !caps.features.storageBufferBinding || !caps.memory.hostVisible
-        || !limits.sampledDepthTexture
-        || (limits.mode != rhi::CapabilityMode::Native
-            && limits.mode != rhi::CapabilityMode::Equivalent))
-        return CloudResult::failure("CLOUD-CAPABILITY-UNAVAILABLE");
-    if (!executable(caps, rhi::EngineFeature::ComputeDispatch)
-        || !executable(caps, rhi::EngineFeature::StorageBufferBinding))
-        return CloudResult::failure("CLOUD-EXECUTION-UNAVAILABLE");
-    // Raymarch/resolve consume at most asset, previous-sample and output buffers.
-    if (limits.maxComputeWorkgroupInvocations < kCloudWorkgroupWidth * kCloudWorkgroupHeight
-        || limits.maxComputeWorkgroupSizeX < kCloudWorkgroupWidth
-        || limits.maxComputeWorkgroupSizeY < kCloudWorkgroupHeight
-        || limits.maxComputeWorkgroupSizeZ < 1u || limits.maxStorageBufferBindingsPerStage < 3u)
-        return CloudResult::failure("CLOUD-COMPUTE-LIMIT");
-    if (limits.maxUniformBufferBindingsPerStage < 1u
-        || uniformBytes > limits.maxUniformBufferBindingSizeBytes)
-        return CloudResult::failure("CLOUD-UNIFORM-LIMIT");
-    if (limits.maxSampledTextureBindingsPerStage < 2u || extent.width > limits.maxTexture2DDimension
-        || extent.height > limits.maxTexture2DDimension)
-        return CloudResult::failure("CLOUD-TEXTURE-LIMIT");
     CloudExecutionPlan p;
     p.extent = extent;
     p.sampleExtent = {1u + (extent.width - 1u) / c.resolutionDivisor,
@@ -86,17 +70,10 @@ CloudResult CloudExecutionPlanner::plan(const CloudRenderConfig& c,
     p.dispatchGroups = {1u + (p.sampleExtent.width - 1u) / kCloudWorkgroupWidth,
         1u + (p.sampleExtent.height - 1u) / kCloudWorkgroupHeight,
         1u};
-    if (p.dispatchGroups.width > limits.maxComputeWorkgroupCountX
-        || p.dispatchGroups.height > limits.maxComputeWorkgroupCountY
-        || p.dispatchGroups.depth > limits.maxComputeWorkgroupCountZ)
-        return CloudResult::failure("CLOUD-DISPATCH-LIMIT");
     p.sampleCount = std::uint64_t(p.sampleExtent.width) * p.sampleExtent.height;
     if (p.sampleCount > std::numeric_limits<std::uint32_t>::max())
         return CloudResult::failure("CLOUD-SAMPLE-INDEX-OVERFLOW");
     p.sampleBufferBytes = p.sampleCount * kCloudSampleBytes;
-    if (p.sampleBufferBytes > limits.maxStorageBufferBindingSizeBytes
-        || assetBytes > limits.maxStorageBufferBindingSizeBytes)
-        return CloudResult::failure("CLOUD-STORAGE-LIMIT");
     // Two shell intervals, each bounded by viewSteps, and at most two light
     // intervals per sample plus the primary density evaluation.
     const auto lightEvaluations = 2ull * c.lightSteps + 1u;
@@ -115,6 +92,97 @@ CloudResult CloudExecutionPlanner::plan(const CloudRenderConfig& c,
         return CloudResult::failure("CLOUD-MEMORY-OVERFLOW");
     if (p.retainedGpuBytes > c.gpuBudgetBytes)
         return CloudResult::failure("CLOUD-MEMORY-BUDGET");
+    output = p;
+    return {};
+}
+
+CloudResult CloudExecutionPlanner::plan(const CloudRenderConfig& c,
+    rhi::Extent2D extent,
+    std::uint64_t assetBytes,
+    std::uint32_t uniformBytes,
+    const rhi::DeviceCapabilities& caps,
+    CloudExecutionPlan& output) noexcept
+{
+    output = {};
+    CloudExecutionPlan p;
+    const auto described = describeResources(c, extent, assetBytes, uniformBytes, p);
+    if (!described.success)
+        return described;
+    const auto& limits = caps.computeResources;
+    if (!caps.core.compute || !caps.core.graphics || !caps.features.computeDispatch
+        || !caps.features.storageBufferBinding || !caps.memory.hostVisible
+        || !limits.sampledDepthTexture
+        || (limits.mode != rhi::CapabilityMode::Native
+            && limits.mode != rhi::CapabilityMode::Equivalent))
+        return CloudResult::failure("CLOUD-CAPABILITY-UNAVAILABLE");
+    if (!executable(caps, rhi::EngineFeature::ComputeDispatch)
+        || !executable(caps, rhi::EngineFeature::StorageBufferBinding))
+        return CloudResult::failure("CLOUD-EXECUTION-UNAVAILABLE");
+    return describeResources(c, extent, assetBytes, uniformBytes, limits, output);
+}
+
+CloudResult CloudExecutionPlanner::describeResources(const CloudRenderConfig& c,
+    rhi::Extent2D extent,
+    std::uint64_t assetBytes,
+    std::uint32_t uniformBytes,
+    const rhi::ComputeResourceCapabilities& limits,
+    CloudExecutionPlan& output) noexcept
+{
+    return describeResourcesWithAdmission(
+        c, extent, assetBytes, uniformBytes, limits, nullptr, output);
+}
+
+CloudResult CloudExecutionPlanner::describeResources(const CloudRenderConfig& c,
+    rhi::Extent2D extent,
+    std::uint64_t assetBytes,
+    std::uint32_t uniformBytes,
+    const rhi::ComputeResourceCapabilities& limits,
+    const CloudOriginalDispatchAdmission& admission,
+    CloudExecutionPlan& output) noexcept
+{
+    return describeResourcesWithAdmission(
+        c, extent, assetBytes, uniformBytes, limits, &admission, output);
+}
+
+CloudResult CloudExecutionPlanner::describeResourcesWithAdmission(const CloudRenderConfig& c,
+    rhi::Extent2D extent,
+    std::uint64_t assetBytes,
+    std::uint32_t uniformBytes,
+    const rhi::ComputeResourceCapabilities& limits,
+    const CloudOriginalDispatchAdmission* admission,
+    CloudExecutionPlan& output) noexcept
+{
+    output = {};
+    CloudExecutionPlan p;
+    if (const auto result = describeResources(c, extent, assetBytes, uniformBytes, p);
+        !result.success)
+        return result;
+    if (!limits.sampledDepthTexture
+        || (limits.mode != rhi::CapabilityMode::Native
+            && limits.mode != rhi::CapabilityMode::Equivalent))
+        return CloudResult::failure("CLOUD-CAPABILITY-UNAVAILABLE");
+    // Raymarch/resolve consume at most asset, previous-sample and output buffers.
+    if (limits.maxComputeWorkgroupInvocations < kCloudWorkgroupWidth * kCloudWorkgroupHeight
+        || limits.maxComputeWorkgroupSizeX < kCloudWorkgroupWidth
+        || limits.maxComputeWorkgroupSizeY < kCloudWorkgroupHeight
+        || limits.maxComputeWorkgroupSizeZ < 1u || limits.maxStorageBufferBindingsPerStage < 3u)
+        return CloudResult::failure("CLOUD-COMPUTE-LIMIT");
+    if (limits.maxUniformBufferBindingsPerStage < 1u
+        || uniformBytes > limits.maxUniformBufferBindingSizeBytes)
+        return CloudResult::failure("CLOUD-UNIFORM-LIMIT");
+    if (limits.maxSampledTextureBindingsPerStage < 2u || extent.width > limits.maxTexture2DDimension
+        || extent.height > limits.maxTexture2DDimension)
+        return CloudResult::failure("CLOUD-TEXTURE-LIMIT");
+    if (admission) {
+        if (const auto* id = admission->validate(p.dispatchGroups))
+            return CloudResult::failure(id);
+    } else if (p.dispatchGroups.width > limits.maxComputeWorkgroupCountX
+        || p.dispatchGroups.height > limits.maxComputeWorkgroupCountY
+        || p.dispatchGroups.depth > limits.maxComputeWorkgroupCountZ)
+        return CloudResult::failure("CLOUD-DISPATCH-LIMIT");
+    if (p.sampleBufferBytes > limits.maxStorageBufferBindingSizeBytes
+        || assetBytes > limits.maxStorageBufferBindingSizeBytes)
+        return CloudResult::failure("CLOUD-STORAGE-LIMIT");
     output = p;
     return {};
 }

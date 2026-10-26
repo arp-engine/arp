@@ -64,14 +64,16 @@ struct Joint2DEditorProperties {
     APROP(Serialize,
         Editor,
         SceneObjectReference,
+        OptionalReference,
         ReferenceTarget = "RigidBody2DComponent",
-        Doc = "sceneObject:RigidBody2DComponent:required")
+        Doc = "sceneObject:RigidBody2DComponent:optional")
     std::uint64_t bodyA = 0;
     APROP(Serialize,
         Editor,
         SceneObjectReference,
+        OptionalReference,
         ReferenceTarget = "RigidBody2DComponent",
-        Doc = "sceneObject:RigidBody2DComponent:required")
+        Doc = "sceneObject:RigidBody2DComponent:optional")
     std::uint64_t bodyB = 0;
     APROP(Serialize, Editor)
     JointType type = JointType::Distance;
@@ -110,16 +112,26 @@ ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
 class RigidBody2DComponent final : public scene::Component {
 public:
-    RigidBody2DComponent(core::SharedPtr<PhysicsWorld2D> world, BodyDesc desc)
-        : world_(std::move(world)), desc_(desc)
-    {}
+    RigidBody2DComponent(core::SharedPtr<PhysicsWorld2D> world,
+        BodyDesc desc,
+        ComponentUsage usage = ComponentUsage::Simulation)
+        : world_(std::move(world)), desc_(desc), usage_(requireComponentUsage(usage))
+    {
+        if (usage_ == ComponentUsage::Authoring)
+            if (const auto* diagnostic = validateBodyDesc(desc_))
+                throw std::invalid_argument(diagnostic);
+    }
 
-    explicit RigidBody2DComponent(core::SharedPtr<PhysicsWorld2D> world) : world_(std::move(world))
+    explicit RigidBody2DComponent(
+        core::SharedPtr<PhysicsWorld2D> world, ComponentUsage usage = ComponentUsage::Simulation)
+        : world_(std::move(world)), usage_(requireComponentUsage(usage))
     {}
     AFUNC()
 
     bool initialize_body(const BodyDesc& desc)
     {
+        if (usage_ != ComponentUsage::Simulation)
+            throw std::logic_error("ARP-PHYSICS2D-AUTHORING-NOT-SIMULATED");
         if (!gameObject() || handle_)
             return false;
         desc_ = desc;
@@ -130,18 +142,24 @@ public:
 
     bool set_velocity(core::Vec2 velocity, float angular)
     {
+        if (usage_ == ComponentUsage::Authoring)
+            throw std::logic_error("ARP-PHYSICS2D-AUTHORING-NOT-SIMULATED");
         return handle_ && world_->setVelocity(handle_, velocity, angular);
     }
     AFUNC()
 
     bool set_pose(core::Vec2 position, float angle)
     {
+        if (usage_ == ComponentUsage::Authoring)
+            throw std::logic_error("ARP-PHYSICS2D-AUTHORING-NOT-SIMULATED");
         return handle_ && world_->setPose(handle_, position, angle);
     }
     AFUNC()
 
     BodyState body_state() const
     {
+        if (usage_ == ComponentUsage::Authoring)
+            throw std::logic_error("ARP-PHYSICS2D-AUTHORING-NOT-SIMULATED");
         BodyState result;
         if (!handle_ || !world_->state(handle_, result))
             throw std::runtime_error("ARP-PHYSICS2D-BODY-STALE");
@@ -154,27 +172,57 @@ public:
 
     const char* scriptTypeName() const override { return "RigidBody2DComponent"; }
 
-    bool initialize(const scene::Transform& transform)
+    // Authoring geometry derives from Scene TRS, never stale simulation state.
+    static bool poseFromTransform(const scene::Transform& transform, BodyState& result)
     {
-        if (!desc_.objectId && gameObject())
-            desc_.objectId = ownerId().value();
-        if (handle_ || !world_ || !desc_.objectId || transform.scale.x != 1
-            || transform.scale.y != 1 || transform.scale.z != 1 || transform.rotation.x != 0
-            || transform.rotation.y != 0
+        if (transform.scale.x != 1 || transform.scale.y != 1 || transform.scale.z != 1
+            || transform.rotation.x != 0 || transform.rotation.y != 0
+            || !std::isfinite(transform.translation.x) || !std::isfinite(transform.translation.y)
+            || !std::isfinite(transform.translation.z) || !std::isfinite(transform.rotation.z)
+            || !std::isfinite(transform.rotation.w)
             || std::abs(core::dot(transform.rotation, transform.rotation) - 1) > 1e-5f)
             return false;
-        desc_.position = {transform.translation.x, transform.translation.y};
-        desc_.angle = 2 * std::atan2(transform.rotation.z, transform.rotation.w);
-        handle_ = world_->createBody(desc_);
-        return handle_ && world_->state(handle_, current_) && (previous_ = current_, true);
+        result = {{transform.translation.x, transform.translation.y},
+            {},
+            2 * std::atan2(transform.rotation.z, transform.rotation.w),
+            0};
+        return true;
+    }
+
+    bool authoringPose(BodyState& result) const
+    {
+        return usage_ == ComponentUsage::Authoring && gameObject()
+            && poseFromTransform(gameObject()->world_transform(), result);
+    }
+
+    bool initialize(const scene::Transform& transform)
+    {
+        return initializeForOwner(transform,
+            scene::GameObjectId::fromValue(desc_.objectId ? desc_.objectId : ownerId().value()));
     }
 
     bool initializeForOwner(const scene::Transform& transform, scene::GameObjectId objectId)
     {
-        if (handle_ || !objectId.valid())
+        BodyState pose;
+        if (handle_ || !world_ || !objectId.valid() || !poseFromTransform(transform, pose))
             return false;
-        desc_.objectId = objectId.value();
-        return initialize(transform);
+        auto candidate = desc_;
+        candidate.objectId = objectId.value();
+        candidate.position = pose.position;
+        candidate.angle = pose.angle;
+        if (validateBodyDesc(candidate))
+            return false;
+        if (usage_ == ComponentUsage::Authoring) {
+            desc_ = candidate;
+            return true;
+        }
+        const auto handle = world_->createBody(candidate);
+        if (!handle || !world_->state(handle, current_))
+            return false;
+        desc_ = candidate;
+        handle_ = handle;
+        previous_ = current_;
+        return true;
     }
 
     reflection::object editorAuthoringProperties() const override
@@ -191,6 +239,12 @@ public:
 
     bool applyEditorAuthoringProperties(const reflection::object& value) override
     {
+        return applyRestoredAuthoringProperties(value, nullptr);
+    }
+
+    bool applyRestoredAuthoringProperties(
+        const reflection::object& value, const scene::Scene::IdentityRestoration* transaction)
+    {
         if (!value.is<RigidBody2DEditorProperties>() || !world_)
             return false;
         const auto& properties = value.cast<const RigidBody2DEditorProperties&>();
@@ -203,6 +257,34 @@ public:
         candidate.angularDamping = properties.angularDamping;
         candidate.bullet = properties.bullet;
         candidate.fixedRotation = properties.fixedRotation;
+        if (validateBodyDesc(candidate))
+            return false;
+        if (usage_ == ComponentUsage::Authoring) {
+            scene::Transform transform;
+            BodyState pose;
+            if (!gameObject())
+                return false;
+            if (transaction) {
+                if (!transaction->worldTransform(ownerId(), transform))
+                    return false;
+            } else
+                transform = gameObject()->world_transform();
+            if (!poseFromTransform(transform, pose))
+                return false;
+            candidate.position = pose.position;
+            candidate.angle = pose.angle;
+            candidate.objectId = ownerId().value();
+            if (candidate.type != BodyType::Static && gameObject())
+                for (const auto& sibling : gameObject()->components()) {
+                    const auto properties = sibling->editorAuthoringProperties();
+                    if (properties.is<Collider2DEditorProperties>()
+                        && properties.cast<const Collider2DEditorProperties&>().type
+                            == ShapeType::StaticChain)
+                        return false;
+                }
+            desc_ = candidate;
+            return true;
+        }
         if (!handle_) {
             desc_ = candidate;
             return !restoring() || (gameObject() && initialize(gameObject()->world_transform()));
@@ -213,12 +295,26 @@ public:
         return true;
     }
 
-    void beforeStep() { previous_ = current_; }
+    ComponentUsage usage() const { return usage_; }
 
-    bool afterStep() { return handle_ && world_->state(handle_, current_); }
+    void beforeStep()
+    {
+        if (usage_ != ComponentUsage::Simulation)
+            throw std::logic_error("ARP-PHYSICS2D-AUTHORING-NOT-SIMULATED");
+        previous_ = current_;
+    }
+
+    bool afterStep()
+    {
+        if (usage_ != ComponentUsage::Simulation)
+            throw std::logic_error("ARP-PHYSICS2D-AUTHORING-NOT-SIMULATED");
+        return handle_ && world_->state(handle_, current_);
+    }
 
     bool synchronize(scene::Scene& scene, float interpolation)
     {
+        if (usage_ != ComponentUsage::Simulation)
+            throw std::logic_error("ARP-PHYSICS2D-AUTHORING-NOT-SIMULATED");
         if (!handle_ || !std::isfinite(interpolation) || interpolation < 0 || interpolation > 1)
             return false;
         auto* object = scene.findObject(ownerId());
@@ -255,6 +351,7 @@ private:
 
     core::SharedPtr<PhysicsWorld2D> world_;
     BodyDesc desc_;
+    const ComponentUsage usage_;
     BodyHandle handle_;
     BodyState previous_, current_;
 };
@@ -262,13 +359,22 @@ ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
 class Collider2DComponent final : public scene::Component {
 public:
-    explicit Collider2DComponent(core::SharedPtr<PhysicsWorld2D> world) : world_(std::move(world))
+    explicit Collider2DComponent(
+        core::SharedPtr<PhysicsWorld2D> world, ComponentUsage usage = ComponentUsage::Simulation)
+        : world_(std::move(world)), usage_(requireComponentUsage(usage))
     {}
 
-    Collider2DComponent(core::SharedPtr<PhysicsWorld2D> world, BodyHandle body, ShapeDesc desc)
-        : world_(std::move(world)), desc_(std::move(desc))
+    Collider2DComponent(core::SharedPtr<PhysicsWorld2D> world,
+        BodyHandle body,
+        ShapeDesc desc,
+        ComponentUsage usage = ComponentUsage::Simulation)
+        : world_(std::move(world)), desc_(std::move(desc)), usage_(requireComponentUsage(usage))
     {
-        if (world_)
+        if (usage_ == ComponentUsage::Authoring && world_) {
+            if (const auto* diagnostic = validateShapeDesc(desc_, world_->chainPointCapacity()))
+                throw std::invalid_argument(diagnostic);
+        }
+        if (world_ && usage_ == ComponentUsage::Simulation)
             handle_ = world_->createCollider(body, desc_);
     }
 
@@ -279,6 +385,8 @@ public:
     const ShapeDesc& desc() const { return desc_; }
 
     ColliderHandle handle() const { return handle_; }
+
+    ComponentUsage usage() const { return usage_; }
 
     reflection::object editorAuthoringProperties() const override
     {
@@ -316,6 +424,18 @@ public:
         candidate.sensor = properties.sensor;
         candidate.loop = properties.loop;
         candidate.filter = properties.filter;
+        if (!world_ || validateShapeDesc(candidate, world_->chainPointCapacity()))
+            return false;
+        if (usage_ == ComponentUsage::Authoring) {
+            const auto* body =
+                gameObject() ? gameObject()->getComponent<RigidBody2DComponent>() : nullptr;
+            if (!body || body->usage() != ComponentUsage::Authoring || body->world() != world_.get()
+                || (candidate.type == ShapeType::StaticChain
+                    && body->desc().type != BodyType::Static))
+                return false;
+            desc_ = std::move(candidate);
+            return true;
+        }
         if (handle_) {
             if (!world_)
                 return false;
@@ -350,13 +470,17 @@ private:
 
     core::SharedPtr<PhysicsWorld2D> world_;
     ShapeDesc desc_;
+    const ComponentUsage usage_;
     ColliderHandle handle_;
 };
 ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
 class Joint2DComponent final : public scene::Component {
 public:
-    explicit Joint2DComponent(core::SharedPtr<PhysicsWorld2D> world) : world_(std::move(world)) {}
+    explicit Joint2DComponent(
+        core::SharedPtr<PhysicsWorld2D> world, ComponentUsage usage = ComponentUsage::Simulation)
+        : world_(std::move(world)), usage_(requireComponentUsage(usage))
+    {}
     AFUNC()
 
     reflection::object editorAuthoringProperties() const override
@@ -367,9 +491,9 @@ public:
             for (const auto& object : owner->scene()->objects()) {
                 const auto* body = object->getComponent<RigidBody2DComponent>();
                 if (body && body->world() == world_.get()) {
-                    if (!a && body->handle() == desc_.bodyA)
+                    if (!a && desc_.bodyA && body->handle() == desc_.bodyA)
                         a = object->id().value();
-                    if (!b && body->handle() == desc_.bodyB)
+                    if (!b && desc_.bodyB && body->handle() == desc_.bodyB)
                         b = object->id().value();
                 }
             }
@@ -392,24 +516,83 @@ public:
 
     bool applyEditorAuthoringProperties(const reflection::object& value) override
     {
+        return applyRestoredAuthoringProperties(value, nullptr);
+    }
+
+    class PreparedAuthoring final {
+        friend class Joint2DComponent;
+        const Joint2DComponent* owner_ = nullptr;
+        JointDesc desc_;
+        std::uint64_t a_ = 0, b_ = 0;
+
+    public:
+        PreparedAuthoring() = default;
+    };
+
+    // Cold preparation validates endpoints without mutating live authoring or
+    // shared simulation. Publication only copies POD after Scene commits.
+    bool prepareAuthoringProperties(const Joint2DEditorProperties& properties,
+        const scene::Scene::IdentityRestoration* transaction,
+        PreparedAuthoring& prepared) const
+    {
+        prepared = {};
+        if (usage_ != ComponentUsage::Authoring || !world_ || !world_->valid())
+            return false;
+        const auto candidate = describe(properties);
+        if (validateJointDesc(candidate))
+            return false;
+        const auto* owner = gameObject();
+        const auto* ownerScene = owner ? owner->scene() : nullptr;
+        const auto resolve = [&](std::uint64_t id) -> const scene::GameObject* {
+            return !id || !ownerScene ? nullptr
+                : transaction ? transaction->resolveObject(scene::GameObjectId::fromValue(id))
+                              : ownerScene->findObject(scene::GameObjectId::fromValue(id));
+        };
+        for (const auto id : {properties.bodyA, properties.bodyB}) {
+            if (!id)
+                continue; // Explicit incomplete authoring; never a simulated joint.
+            const auto* object = resolve(id);
+            const auto* body = object ? object->getComponent<RigidBody2DComponent>() : nullptr;
+            if (!body || body->usage() != ComponentUsage::Authoring
+                || body->world() != world_.get())
+                return false;
+        }
+        if (properties.bodyA && properties.bodyA == properties.bodyB)
+            return false;
+        prepared.owner_ = this;
+        prepared.desc_ = candidate;
+        prepared.a_ = properties.bodyA;
+        prepared.b_ = properties.bodyB;
+        return true;
+    }
+
+    bool commitAuthoringProperties(PreparedAuthoring&& prepared) noexcept
+    {
+        if (prepared.owner_ != this || usage_ != ComponentUsage::Authoring)
+            return false;
+        desc_ = prepared.desc_;
+        bodyAObjectId_ = prepared.a_;
+        bodyBObjectId_ = prepared.b_;
+        prepared.owner_ = nullptr;
+        return true;
+    }
+
+    // Explicit transaction-scoped lookup; ordinary Scene queries stay unchanged.
+    bool applyRestoredAuthoringProperties(
+        const reflection::object& value, const scene::Scene::IdentityRestoration* transaction)
+    {
         if (!value.is<Joint2DEditorProperties>() || !world_ || !world_->valid())
             return false;
         const auto& properties = value.cast<const Joint2DEditorProperties&>();
-        auto candidate = desc_;
-        candidate.type = properties.type;
-        candidate.localAnchorA = properties.localAnchorA;
-        candidate.localAnchorB = properties.localAnchorB;
-        candidate.localAxisA = properties.localAxisA;
-        candidate.length = properties.length;
-        candidate.referenceAngle = properties.referenceAngle;
-        candidate.lowerLimit = properties.lowerLimit;
-        candidate.upperLimit = properties.upperLimit;
-        candidate.motorSpeed = properties.motorSpeed;
-        candidate.maxMotorForce = properties.maxMotorForce;
-        candidate.enableLimit = properties.enableLimit;
-        candidate.enableMotor = properties.enableMotor;
-        candidate.collideConnected = properties.collideConnected;
+        auto candidate = describe(properties);
 
+        if (validateJointDesc(candidate))
+            return false;
+        if (usage_ == ComponentUsage::Authoring) {
+            PreparedAuthoring prepared;
+            return prepareAuthoringProperties(properties, transaction, prepared)
+                && commitAuthoringProperties(std::move(prepared));
+        }
         JointHandle candidateHandle{};
         if (properties.bodyA != 0u && properties.bodyB != 0u) {
             auto* owner = gameObject();
@@ -445,6 +628,8 @@ public:
 
     bool initialize_joint(RigidBody2DComponent* a, RigidBody2DComponent* b, const JointDesc& desc)
     {
+        if (usage_ != ComponentUsage::Simulation)
+            throw std::logic_error("ARP-PHYSICS2D-AUTHORING-NOT-SIMULATED");
         if (handle_ || !world_ || !a || !b || !a->handle() || !b->handle()
             || a->world() != world_.get() || b->world() != world_.get())
             return false;
@@ -459,10 +644,18 @@ public:
         return bool(handle_);
     }
 
-    Joint2DComponent(core::SharedPtr<PhysicsWorld2D> world, JointDesc desc)
-        : world_(std::move(world)), desc_(desc)
+    Joint2DComponent(core::SharedPtr<PhysicsWorld2D> world,
+        JointDesc desc,
+        ComponentUsage usage = ComponentUsage::Simulation)
+        : world_(std::move(world)), desc_(desc), usage_(requireComponentUsage(usage))
     {
-        if (world_)
+        if (usage_ == ComponentUsage::Authoring) {
+            if (const auto* diagnostic = validateJointDesc(desc_))
+                throw std::invalid_argument(diagnostic);
+            if (desc_.bodyA || desc_.bodyB)
+                throw std::invalid_argument("ARP-PHYSICS2D-AUTHORING-NATIVE-ENDPOINT");
+        }
+        if (world_ && usage_ == ComponentUsage::Simulation)
             handle_ = world_->createJoint(desc_);
     }
 
@@ -474,6 +667,8 @@ public:
 
     JointHandle handle() const { return handle_; }
 
+    ComponentUsage usage() const { return usage_; }
+
     std::uint64_t bodyAObjectId() const { return bodyAObjectId_; }
 
     std::uint64_t bodyBObjectId() const { return bodyBObjectId_; }
@@ -481,6 +676,26 @@ public:
     void onDestroy(const scene::SceneUpdateContext&) override { release(); }
 
 private:
+    static JointDesc describe(const Joint2DEditorProperties& properties)
+    {
+        JointDesc candidate;
+        candidate.type = properties.type;
+        candidate.localAnchorA = properties.localAnchorA;
+        candidate.localAnchorB = properties.localAnchorB;
+        candidate.localAxisA = properties.localAxisA;
+        candidate.length = properties.length;
+        candidate.referenceAngle = properties.referenceAngle;
+        candidate.lowerLimit = properties.lowerLimit;
+        candidate.upperLimit = properties.upperLimit;
+        candidate.motorSpeed = properties.motorSpeed;
+        candidate.maxMotorForce = properties.maxMotorForce;
+        candidate.enableLimit = properties.enableLimit;
+        candidate.enableMotor = properties.enableMotor;
+        candidate.collideConnected = properties.collideConnected;
+
+        return candidate;
+    }
+
     void release()
     {
         if (handle_) {
@@ -491,6 +706,7 @@ private:
 
     core::SharedPtr<PhysicsWorld2D> world_;
     JointDesc desc_;
+    const ComponentUsage usage_;
     JointHandle handle_;
     std::uint64_t bodyAObjectId_ = 0;
     std::uint64_t bodyBObjectId_ = 0;
@@ -498,6 +714,8 @@ private:
 
 inline Collider2DComponent* RigidBody2DComponent::add_collider(const ShapeDesc& desc)
 {
+    if (usage_ == ComponentUsage::Authoring)
+        throw std::logic_error("ARP-PHYSICS2D-AUTHORING-NOT-SIMULATED");
     if (!gameObject() || !handle_)
         return nullptr;
     auto component = core::makeUnique<Collider2DComponent>(world_, handle_, desc);

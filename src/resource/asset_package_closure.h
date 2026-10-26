@@ -31,6 +31,11 @@ struct AssetPackageClosureBudget final {
 // never recursively scans directories, imports assets or invents missing files.
 class ARP_API AssetPackageClosureService final {
 public:
+    explicit AssetPackageClosureService(
+        core::SharedPtr<const AssetPackageCodecRegistry> codecs = {})
+        : codecs_(std::move(codecs))
+    {}
+
     static constexpr std::size_t maxMetadataBytes = 1024u * 1024u;
     static constexpr std::size_t maxResources = 4096u;
     AssetPackageClosureResult inspect(const std::filesystem::path& packageDirectory,
@@ -44,6 +49,9 @@ public:
     AssetPackageClosureResult publish(const std::filesystem::path& preparedDirectory,
         const std::filesystem::path& outputDirectory,
         const AssetPackageClosureBudget& limits = {}) const;
+
+private:
+    core::SharedPtr<const AssetPackageCodecRegistry> codecs_;
 };
 
 } // namespace arp::resource

@@ -437,8 +437,12 @@ public:
         desc.descriptorIndexingEnabled = descriptorIndexingEnabled_;
         desc.indirectFirstInstanceEnablementReported = true;
         desc.indirectFirstInstanceEnabled = indirectFirstInstanceEnabled_;
+        desc.shaderDrawParametersEnablementReported = true;
+        desc.shaderDrawParametersEnabled = shaderDrawParametersEnabled_;
         desc.timelineSemaphoreEnablementReported = true;
         desc.timelineSemaphoreEnabled = timelineSemaphoreEnabled_;
+        desc.hostQueryResetEnablementReported = true;
+        desc.hostQueryResetEnabled = hostQueryResetEnabled_;
         desc.swapchainMaintenance1Enabled = swapchainMaintenance1Enabled_;
         return desc;
     }
@@ -456,8 +460,6 @@ public:
     bool rgba16FloatStorageTextureSupported() const { return rgba16FloatStorageTextureSupported_; }
 
     bool drawIndirectCountSupported() const { return drawIndirectCountSupported_; }
-
-    bool timestampQueriesSupported() const { return timestampQueriesSupported_; }
 
     bool timelineSemaphoreEnabled() const { return timelineSemaphoreEnabled_; }
 
@@ -863,6 +865,8 @@ private:
             enabledFeatures.features.drawIndirectFirstInstance == VK_TRUE;
         descriptorIndexingEnablementReported_ = true;
         timelineSemaphoreEnabled_ = enabledVulkan12.timelineSemaphore == VK_TRUE;
+        shaderDrawParametersEnabled_ = enabledVulkan11.shaderDrawParameters == VK_TRUE;
+        hostQueryResetEnabled_ = enabledVulkan12.hostQueryReset == VK_TRUE;
         swapchainMaintenance1Enabled_ = maintenanceEnabled;
         getDeviceQueue(logicalDevice_, queues.graphics, 0, &graphicsQueue_);
         getDeviceQueue(logicalDevice_, queues.present, 0, &presentQueue_);
@@ -883,7 +887,6 @@ private:
         VkPhysicalDeviceProperties properties{};
         getProperties(physicalDevice, &properties);
         maxPushConstantSizeBytes_ = properties.limits.maxPushConstantsSize;
-        timestampQueriesSupported_ = properties.limits.timestampPeriod > 0.0f;
     }
 
     PFN_vkGetInstanceProcAddr getInstanceProcAddr_ = nullptr;
@@ -909,17 +912,18 @@ private:
     bool rg16FloatStorageTextureSupported_ = false;
     bool rgba16FloatStorageTextureSupported_ = false;
     bool drawIndirectCountSupported_ = false;
-    bool timestampQueriesSupported_ = false;
     bool descriptorIndexingEnablementReported_ = false;
     rhi_vulkan::VulkanDescriptorIndexingFeatures descriptorIndexingEnabled_;
     bool indirectFirstInstanceEnabled_ = false;
     bool timelineSemaphoreEnabled_ = false;
+    bool shaderDrawParametersEnabled_ = false;
+    bool hostQueryResetEnabled_ = false;
     bool swapchainMaintenance1Enabled_ = false;
     bool surfaceMaintenance1Enabled_ = false;
 };
 
 rhi::semantics::vulkan::VulkanDeviceCapabilitySnapshot makeVulkanCapabilitySnapshot(
-    const VulkanSurfaceRuntimeOwner* nativeRuntime)
+    const VulkanSurfaceRuntimeOwner* nativeRuntime, const rhi_vulkan::VulkanRhiRuntime& runtime)
 {
     rhi::semantics::vulkan::VulkanDeviceCapabilitySnapshot snapshot;
     snapshot.queriedFromNativeDevice = nativeRuntime != nullptr;
@@ -952,8 +956,7 @@ rhi::semantics::vulkan::VulkanDeviceCapabilitySnapshot makeVulkanCapabilitySnaps
     // drawIndirectCount probe (Vulkan 1.2 core / VK_KHR_draw_indirect_count).
     snapshot.supportsDrawIndirectCount =
         nativeRuntime ? nativeRuntime->drawIndirectCountSupported() : false;
-    snapshot.supportsTimestampQueries =
-        nativeRuntime ? nativeRuntime->timestampQueriesSupported() : false;
+    snapshot.supportsTimestampQueries = runtime.timestampQueriesEnabled();
     return snapshot;
 }
 
@@ -967,8 +970,6 @@ arp::core::UniquePtr<rhi::GpuDevice> createRhiVulkanDevice(const std::pmr::strin
         diagnostics = "RHI-VULKAN-RUNTIME-OWNER-MISSING";
         return nullptr;
     }
-    const auto snapshot = makeVulkanCapabilitySnapshot(nativeRuntime.get());
-
     rhi_vulkan::VulkanRhiRuntimeDesc runtimeDesc;
     runtimeDesc.label = applicationName.empty() ? "RenderSystemRhiVulkanRuntime"
                                                 : applicationName + "RhiVulkanRuntime";
@@ -981,6 +982,8 @@ arp::core::UniquePtr<rhi::GpuDevice> createRhiVulkanDevice(const std::pmr::strin
         diagnostics = "Vulkan RHI runtime creation failed";
         return nullptr;
     }
+
+    const auto snapshot = makeVulkanCapabilitySnapshot(nativeRuntime.get(), *runtime);
 
     rhi_vulkan::VulkanRhiDeviceDesc deviceDesc;
     deviceDesc.label = applicationName.empty() ? "RenderSystemRhiVulkanDevice"

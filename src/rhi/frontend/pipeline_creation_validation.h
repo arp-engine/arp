@@ -86,12 +86,33 @@ public:
 
     static constexpr const char* validateBudget(const Budget& b) noexcept
     {
+        if (b.contractVersion == 2u)
+            return !b.prototypeOptIn    ? diagnostics.optIn
+                : !b.maxCpuWrapperBytes ? diagnostics.budget
+                                        : nullptr;
         return Shared::validateBudget(b, diagnostics);
     }
 
     static constexpr Decision lowering(
-        Backend backend, bool acceptedOriginalCreation = false) noexcept
+        Backend backend, bool acceptedOriginalCreation = false, std::uint32_t version = 1u) noexcept
     {
+        if (version == 2u) {
+            if (backend == Backend::Vulkan || backend == Backend::Metal)
+                return acceptedOriginalCreation
+                    ? Decision{CapabilityMode::Native, false, true, false, nullptr}
+                    : Decision{CapabilityMode::DiagnosticFailure,
+                          false,
+                          false,
+                          false,
+                          diagnostics.missing};
+            return {CapabilityMode::DiagnosticFailure,
+                backend == Backend::Null,
+                false,
+                false,
+                "RHI-ACCEPTED-GRAPHICS-FACTORY-SYNC-PROFILE"};
+        }
+        if (version != 1u)
+            return {CapabilityMode::DiagnosticFailure, false, false, false, diagnostics.version};
         return Shared::lowering(backend, acceptedOriginalCreation, diagnostics);
     }
 };
@@ -117,12 +138,33 @@ public:
 
     static constexpr const char* validateBudget(const Budget& b) noexcept
     {
+        if (b.contractVersion == 2u)
+            return !b.prototypeOptIn    ? diagnostics.optIn
+                : !b.maxCpuWrapperBytes ? diagnostics.budget
+                                        : nullptr;
         return Shared::validateBudget(b, diagnostics);
     }
 
     static constexpr Decision lowering(
-        Backend backend, bool acceptedOriginalCreation = false) noexcept
+        Backend backend, bool acceptedOriginalCreation = false, std::uint32_t version = 1u) noexcept
     {
+        if (version == 2u) {
+            if (backend == Backend::Vulkan || backend == Backend::Metal)
+                return acceptedOriginalCreation
+                    ? Decision{CapabilityMode::Native, false, true, false, nullptr}
+                    : Decision{CapabilityMode::DiagnosticFailure,
+                          false,
+                          false,
+                          false,
+                          diagnostics.missing};
+            return {CapabilityMode::DiagnosticFailure,
+                backend == Backend::Null,
+                false,
+                false,
+                "RHI-ACCEPTED-COMPUTE-FACTORY-SYNC-PROFILE"};
+        }
+        if (version != 1u)
+            return {CapabilityMode::DiagnosticFailure, false, false, false, diagnostics.version};
         return Shared::lowering(backend, acceptedOriginalCreation, diagnostics);
     }
 };

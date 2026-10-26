@@ -53,6 +53,13 @@ public:
     virtual ~VulkanRhiMappedBufferWriteFlusher() = default;
     virtual bool flushMappedWrite(
         std::uint64_t offsetBytes, std::uint64_t sizeBytes, std::pmr::string& diagnostics) = 0;
+
+    // The cold-pool initializer cannot format owned diagnostics on failure.
+    // Absence is explicit; an unbounded implementation is never substituted.
+    virtual const char* flushMappedWriteBounded(std::uint64_t, std::uint64_t) noexcept
+    {
+        return "RHI-VULKAN-MAPPED-WRITE-BOUNDED-UNAVAILABLE";
+    }
 };
 
 /// Backend-owned readback invalidation hook.  Host-visible Vulkan memory is
@@ -102,6 +109,7 @@ public:
     rhi::MemoryStats memoryStats() const;
 
 private:
+    friend class VulkanRhiStagingUploadPool;
     VulkanRhiAllocation recordAllocation(const VulkanRhiAllocationDesc& desc);
 
     VulkanRhiAllocatorDesc desc_;

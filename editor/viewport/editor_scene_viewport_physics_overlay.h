@@ -30,7 +30,9 @@ struct EditorScenePhysicsOverlay {
     const char* diagnostic = "";
 };
 
-ARP_API EditorScenePhysicsOverlay buildEditorScenePhysicsOverlay(
-    const scene::Scene& scene, std::size_t maxSegments, std::size_t circleSegments);
+ARP_API EditorScenePhysicsOverlay buildEditorScenePhysicsOverlay(const scene::Scene& scene,
+    std::size_t maxSegments,
+    std::size_t circleSegments,
+    const scene::SceneTraversalSnapshot* visibleSnapshot = nullptr);
 
 } // namespace arp::editor

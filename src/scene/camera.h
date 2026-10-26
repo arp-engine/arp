@@ -299,9 +299,9 @@ class Scene;
 class CameraResolver {
 public:
     CameraResolverResult resolve(const Scene& scene, const SceneTraversalSnapshot& snapshot) const;
+    static CameraResolverResult validate(const CameraComponentDesc& desc);
 
 private:
-    CameraResolverResult validate(const CameraComponentDesc& desc) const;
     ResolvedCamera resolveCamera(
         const CameraComponent& component, const SceneTraversalNode& node) const;
 };

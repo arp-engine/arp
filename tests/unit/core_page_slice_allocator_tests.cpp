@@ -1,8 +1,12 @@
 #include "rhi/frontend/completion_page_slice_allocator.h"
+#include "rhi/frontend/memory_upload_staging_budget.h"
 #include "rhi/frontend/page_slice_allocator.h"
 
+#include <array>
 #include <atomic>
 #include <cassert>
+#include <limits>
+#include <string_view>
 #include <thread>
 
 void exactCallbackReservations()
@@ -51,9 +55,148 @@ void exactCallbackReservations()
     assert(survivor->cancel());
 }
 
+void coldStorageContract()
+{
+    using namespace arp::rhi;
+    using namespace arp::rhi::semantics;
+    const UploadStagingColdStorageBudget budget{1u, true, {1u, 64u, 64u, 2u, 128u, 8u}, 2u, 65536u};
+    using Contract = UploadStagingColdStorageContract;
+    assert(!Contract::validate(budget));
+    for (const auto backend : {Backend::Null,
+             Backend::Vulkan,
+             Backend::Metal,
+             Backend::WebGPU,
+             Backend::WebGL,
+             static_cast<Backend>(255u)}) {
+        const auto decision = Contract::lowering(backend, budget);
+        assert(!decision.originalExecutionAvailable);
+        assert(decision.coldPreparationImplemented == (backend == Backend::Vulkan));
+        assert(decision.disposition
+            == (backend == Backend::Null         ? Contract::Disposition::ValidatorOnly
+                    : backend == Backend::Vulkan ? Contract::Disposition::Prototype
+                                                 : Contract::Disposition::DiagnosticFailure));
+        assert((decision.diagnostic == nullptr) == (backend == Backend::Vulkan));
+    }
+    auto bad = budget;
+    bad.contractVersion = 0u;
+    assert(std::string_view(Contract::validate(bad)) == "RHI-STAGING-COLD-STORAGE-VERSION");
+    bad = budget;
+    bad.prototypeOptIn = false;
+    assert(std::string_view(Contract::validate(bad)) == "RHI-STAGING-COLD-STORAGE-OPT-IN");
+    bad = budget;
+    bad.maxLiveSlicesPerPage = 0u;
+    assert(std::string_view(Contract::validate(bad)) == "RHI-STAGING-COLD-STORAGE-SLICE-CAPACITY");
+    bad.maxLiveSlicesPerPage = std::numeric_limits<std::uint32_t>::max();
+    assert(std::string_view(Contract::validate(bad)) == "RHI-STAGING-COLD-STORAGE-SLICE-CAPACITY");
+    bad = budget;
+    bad.maxCpuMetadataBytes = 0u;
+    assert(std::string_view(Contract::validate(bad)) == "RHI-STAGING-COLD-STORAGE-CPU-CAPACITY");
+    bad = budget;
+    bad.capacity.totalCapacityBytes = 127u;
+    assert(Contract::validate(bad));
+    assert(!Contract::lowering(Backend::Vulkan, bad).coldPreparationImplemented);
+}
+
+void coldStorageCapacity()
+{
+    using namespace arp::core;
+    auto quota = makeShared<CpuMemoryQuota>(65536u);
+    std::uint64_t bytes = 0u;
+    {
+        CpuMemoryQuotaScope scope(quota);
+        FrameRetiredPageSliceAllocator allocator({64u, 2u});
+        std::uint32_t created = 0u;
+        assert(!allocator.prepareCold(2u, [&](auto index, auto size) {
+            assert(index == created && size == 64u);
+            ++created;
+            return true;
+        }));
+        assert(created == 2u && allocator.coldStoragePrepared()
+            && allocator.stats().allocatedPageCount == 2u
+            && allocator.stats().allocatedBytes == 128u);
+        bytes = quota->liveBytes();
+        assert(bytes);
+        CpuMemoryQuotaLease pressure(quota, quota->limitBytes() - bytes);
+        assert(pressure.charged());
+        auto* previous = std::pmr::set_default_resource(std::pmr::null_memory_resource());
+        const auto allocations = defaultCpuAllocator().stats().allocationCount;
+        const auto late = [&](auto, auto) {
+            ++created;
+            return false;
+        };
+        std::array<FrameRetiredPageSliceAllocation, 4u> slices;
+        for (std::size_t index = 0u; index < slices.size(); ++index) {
+            slices[index] = allocator.allocate({8u, 8u, index + 1u}, late);
+            assert(slices[index].success && slices[index].pageIndex == index / 2u);
+        }
+        const auto full = allocator.allocate({8u, 8u, 5u}, late);
+        assert(!full.success
+            && std::string_view(full.diagnosticId) == "RHI-STAGING-COLD-SLICE-CAPACITY"
+            && allocator.stats().liveSliceCount == 4u);
+        assert(allocator.cancelAllocation(slices[1]));
+        const auto reused = allocator.allocate({8u, 8u, 6u}, late);
+        assert(reused.success && reused.pageIndex == 0u && reused.offsetBytes == 8u);
+        assert(allocator.rollbackAllocation(reused) && allocator.retireAllocation(slices[0]));
+        const auto whole = allocator.allocate({64u, 8u, 7u}, late);
+        assert(whole.success && whole.pageIndex == 0u && whole.offsetBytes == 0u);
+        const auto noBytes = allocator.allocate({64u, 8u, 8u}, late);
+        assert(
+            !noBytes.success && noBytes.diagnosticId == kFrameRetiredPageSliceDiagnosticPageCount);
+        assert(allocator.cancelAllocation(whole) && allocator.retireAllocation(slices[2])
+            && allocator.retireAllocation(slices[3]) && !allocator.stats().liveSliceCount);
+        assert(std::string_view(allocator.prepareCold(2u, late))
+            == "RHI-STAGING-COLD-PREPARATION-STATE");
+        assert(created == 2u && allocations == defaultCpuAllocator().stats().allocationCount);
+        std::pmr::set_default_resource(previous);
+    }
+    assert(!quota->liveBytes());
+    for (const auto available : {bytes, bytes - 1u, std::uint64_t{0u}}) {
+        CpuMemoryQuotaLease pressure(quota, quota->limitBytes() - available);
+        CpuMemoryQuotaScope scope(quota);
+        FrameRetiredPageSliceAllocator allocator({64u, 2u});
+        std::uint32_t created = 0u;
+        const auto factory = [&](auto, auto) {
+            ++created;
+            return true;
+        };
+        const auto* diagnostic = allocator.prepareCold(2u, factory);
+        assert((diagnostic == nullptr) == (available == bytes));
+        if (available != bytes) {
+            assert(!allocator.coldStoragePrepared() && !allocator.stats().allocatedPageCount);
+            const auto before = created;
+            assert(!allocator.allocate({8u, 8u, 1u}, factory).success && created == before);
+        }
+    }
+    assert(!quota->liveBytes());
+    for (const bool throws : {false, true}) {
+        FrameRetiredPageSliceAllocator allocator({64u, 2u});
+        std::uint32_t calls = 0u;
+        assert(allocator.prepareCold(2u, [&](auto index, auto) {
+            ++calls;
+            if (!index)
+                return true;
+            if (throws)
+                throw std::bad_alloc{};
+            return false;
+        }));
+        assert(calls == 2u && !allocator.coldStoragePrepared()
+            && !allocator.stats().allocatedPageCount);
+        assert(!allocator
+                   .allocate({8u, 8u, 1u},
+                       [&](auto, auto) {
+                           ++calls;
+                           return true;
+                       })
+                   .success
+            && calls == 2u);
+    }
+}
+
 int main()
 {
     exactCallbackReservations();
+    coldStorageContract();
+    coldStorageCapacity();
     using arp::core::FrameRetiredPageSliceAllocator;
     using arp::core::FrameRetiredPageSliceAllocatorDesc;
     using arp::core::FrameRetiredPageSliceRequest;

@@ -5,6 +5,89 @@ namespace arp::rhi::semantics {
 // Versioned value-only decisions. Template results preserve existing public decision types.
 class PipelineCreationLowering final {
 public:
+    template <class Result>
+    static constexpr Result synchronousComputeCreation(
+        Backend backend, bool device, bool methods) noexcept
+    {
+        switch (backend) {
+        case Backend::Null:
+            return {CapabilityMode::Equivalent,
+                true,
+                false,
+                false,
+                "RHI-SYNC-COMPUTE-CREATION-NULL-VALIDATOR-ONLY"};
+        case Backend::Vulkan:
+        case Backend::Metal:
+            if (!device || !methods)
+                return {CapabilityMode::DiagnosticFailure,
+                    false,
+                    false,
+                    false,
+                    !device ? "RHI-SYNC-COMPUTE-CREATION-DEVICE"
+                            : "RHI-SYNC-COMPUTE-CREATION-METHODS"};
+            return {CapabilityMode::Native, false, true, false, nullptr};
+        case Backend::WebGPU:
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                "RHI-SYNC-COMPUTE-CREATION-WEBGPU-ASYNC-REQUIRED"};
+        case Backend::WebGL:
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                "RHI-SYNC-COMPUTE-CREATION-WEBGL-UNAVAILABLE"};
+        }
+        return {};
+    }
+
+    // SPIR-V capability numbers are grammar values, not heuristic feature IDs.
+    // This finite profile admits Shader and proven-enabled DrawParameters only.
+    static constexpr const char* synchronousVulkanGraphicsShaderCapability(
+        std::uint32_t capability, bool drawParametersEnabled) noexcept
+    {
+        if (capability == 1u)
+            return nullptr;
+        if (capability == 4427u)
+            return drawParametersEnabled ? nullptr
+                                         : "RHI-SYNC-GRAPHICS-CREATION-DRAW-PARAMETERS-UNAVAILABLE";
+        return "RHI-SYNC-GRAPHICS-CREATION-SPIRV-CAPABILITY";
+    }
+
+    template <class Result>
+    static constexpr Result synchronousGraphicsCreation(
+        Backend backend, bool device, bool methods) noexcept
+    {
+        switch (backend) {
+        case Backend::Null:
+            return {CapabilityMode::Equivalent,
+                true,
+                false,
+                false,
+                "RHI-SYNC-GRAPHICS-CREATION-NULL-VALIDATOR-ONLY"};
+        case Backend::Vulkan:
+        case Backend::Metal:
+            if (!device || !methods)
+                return {CapabilityMode::DiagnosticFailure,
+                    false,
+                    false,
+                    false,
+                    !device ? "RHI-SYNC-GRAPHICS-CREATION-DEVICE"
+                            : "RHI-SYNC-GRAPHICS-CREATION-METHODS"};
+            return {CapabilityMode::Native, false, true, false, nullptr};
+        case Backend::WebGPU:
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                "RHI-SYNC-GRAPHICS-CREATION-WEBGPU-ASYNC-REQUIRED"};
+        case Backend::WebGL:
+            break;
+        }
+        return {};
+    }
+
     template <class Result, class Value0>
     static constexpr Result OriginalAcceptedPipelineFactory_lowering(
         Backend backend, bool accepted, Value0 d) noexcept

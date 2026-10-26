@@ -1,5 +1,8 @@
 #include "editor/ingress/platform_input_adapter.h"
 
+#include <cmath>
+#include <limits>
+
 namespace arp::editor {
 namespace {
 EditorInputKey normalizeKey(platform::WindowKey key)
@@ -15,6 +18,10 @@ EditorInputKey normalizeKey(platform::WindowKey key)
         return Out::D;
     case In::E:
         return Out::E;
+    case In::F:
+        return Out::F;
+    case In::Escape:
+        return Out::Escape;
     case In::Q:
         return Out::Q;
     case In::R:
@@ -70,6 +77,45 @@ EditorInputKey normalizeKey(platform::WindowKey key)
     }
 }
 } // namespace
+
+EditorCanvasInputMapping::EditorCanvasInputMapping(
+    float windowWidth, float windowHeight, float canvasWidth, float canvasHeight)
+    : windowWidth_(windowWidth), windowHeight_(windowHeight), canvasWidth_(canvasWidth),
+      canvasHeight_(canvasHeight)
+{}
+
+const char* EditorCanvasInputMapping::apply(platform::WindowInputEvent& event) const
+{
+    using Kind = platform::WindowInputEvent::Kind;
+    const bool delta = event.kind == Kind::MouseMoved;
+    const bool position = event.hasPosition || event.kind == Kind::PointerMoved || delta;
+    if (!position)
+        return nullptr;
+    const auto positive = [](float value) {
+        return std::isfinite(value) && value > 0;
+    };
+    if (!positive(windowWidth_) || !positive(windowHeight_) || !positive(canvasWidth_)
+        || !positive(canvasHeight_))
+        return "EDITOR-INPUT-CANVAS-EXTENT";
+    const double sx = double(canvasWidth_) / windowWidth_;
+    const double sy = double(canvasHeight_) / windowHeight_;
+    const double x = double(event.x) * sx;
+    const double y = double(event.y) * sy;
+    const double dx = delta ? double(event.dx) * sx : 0;
+    const double dy = delta ? double(event.dy) * sy : 0;
+    const auto representable = [](double value) {
+        return std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max();
+    };
+    if (!representable(x) || !representable(y) || !representable(dx) || !representable(dy))
+        return "EDITOR-INPUT-CANVAS-COORDINATE";
+    event.x = static_cast<float>(x);
+    event.y = static_cast<float>(y);
+    if (delta) {
+        event.dx = static_cast<float>(dx);
+        event.dy = static_cast<float>(dy);
+    }
+    return nullptr;
+}
 
 EditorInputCommand normalizePlatformInput(const platform::WindowInputEvent& event)
 {

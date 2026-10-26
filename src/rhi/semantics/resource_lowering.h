@@ -134,6 +134,48 @@ public:
     }
 
     template <class Result>
+    static constexpr Result OriginalQueryRegistration_lowering(Backend backend) noexcept
+    {
+        switch (backend) {
+        case Backend::Null:
+            return {1u,
+                CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                false,
+                "RHI-ORIGINAL-QUERY-REGISTRATION-VALIDATOR-ONLY"};
+        case Backend::Vulkan:
+            return {1u, CapabilityMode::Equivalent, true, false, false, false, nullptr};
+        case Backend::Metal:
+            return {1u,
+                CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                false,
+                "RHI-ORIGINAL-QUERY-METAL-ISSUER-UNAVAILABLE"};
+        case Backend::WebGPU:
+            return {1u,
+                CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                false,
+                "RHI-ORIGINAL-QUERY-WEBGPU-ISSUER-UNAVAILABLE"};
+        case Backend::WebGL:
+            return {1u,
+                CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                false,
+                "RHI-WEBGL1-QUERY-UNSUPPORTED"};
+        }
+        return {};
+    }
+
+    template <class Result>
     static constexpr Result OriginalHeapRegistration_lowering(Backend backend) noexcept
     {
         switch (backend) {
@@ -292,6 +334,41 @@ public:
     static constexpr Result OriginalTypedNativeLossJoin_lowering(
         Backend backend, std::uint32_t version = 1u) noexcept
     {
+        if (version == 3u || version == 4u) {
+            switch (backend) {
+            case Backend::Null:
+                return {false,
+                    true,
+                    false,
+                    false,
+                    false,
+                    false,
+                    "RHI-ORIGINAL-TYPED-LOSS-NULL-VALIDATOR-ONLY"};
+            case Backend::Vulkan:
+                return {true, false, true, version == 4u, false, false, nullptr};
+            case Backend::Metal:
+                // /4 is an independent synchronous complete-group loss join.
+                // Native publication and command payloads remain separate gates.
+                return {true, false, true, version == 4u, false, false, nullptr};
+            case Backend::WebGPU:
+                return {false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    "RHI-ORIGINAL-TYPED-LOSS-SYNC-WEBGPU-ASYNC-REQUIRED"};
+            case Backend::WebGL:
+                return {false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    "RHI-WEBGL1-TYPED-LOSS-JOIN-UNAVAILABLE"};
+            }
+            return {};
+        }
         if (version != 1u && version != 2u)
             return {};
         switch (backend) {

@@ -3,6 +3,7 @@
 #include "core/container/array_view.h"
 #include "rhi/backends/vulkan/vulkan_native_commands.h"
 #include "rhi/backends/vulkan/vulkan_resource_registry.h"
+#include "rhi/frontend/command_recording_budget.h"
 #include "rhi/frontend/command_retention_storage.h"
 
 namespace arp::rhi_vulkan {
@@ -74,6 +75,10 @@ public:
         core::UniquePtr<rhi::common::CommandRetentionStorage>,
         core::pmr::String& diagnostic);
 
+    // Cold, one-shot opt-in before pass preparation or any resource admission.
+    bool enableRecordingBudget(const rhi::CommandRecordingBudget&, core::pmr::String& diagnostic);
+    const rhi::CommandRecordingUsage* recordingUsage() const noexcept;
+
     bool copy(const rhi::GpuBuffer& source,
         const rhi::GpuBuffer& destination,
         const rhi::BufferCopyDesc&,
@@ -106,6 +111,10 @@ public:
     const rhi::common::CommandRetentionStorage* retentionStorage() const noexcept;
 
 private:
+    bool preflightRecordingCharge(const rhi::CommandRecordingUsage&, core::pmr::String&) const;
+    bool commitRecordingCharge(const rhi::CommandRecordingUsage&, core::pmr::String&);
+    bool chargeBindings(
+        rhi::CommandRecordingUsage&, const VulkanRhiRetainedBindings&, core::pmr::String&) const;
     bool validateRecording(core::pmr::String&) const;
     bool validateSampledTexture(
         const VulkanRhiRetainedSampledTexture&, bool allowColor, core::pmr::String&) const;
@@ -135,6 +144,7 @@ private:
     rhi::Color preparedPassColor_;
     float preparedPassDepth_ = 1.0f;
     bool preparedPassRecorded_ = false;
+    std::optional<rhi::CommandRecordingMeter> recordingMeter_;
 };
 
 } // namespace arp::rhi_vulkan

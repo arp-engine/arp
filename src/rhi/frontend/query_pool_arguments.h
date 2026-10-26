@@ -220,7 +220,9 @@ private:
         : scalar_(scalar), input_(std::move(input))
     {}
 
-    const CommandScalarArguments scalar_;
-    const std::shared_ptr<const QueryPoolInputSnapshot> input_;
+    // Value declarations remain assignable like the other positional argument
+    // types. The retained snapshot and all public accessors stay immutable.
+    CommandScalarArguments scalar_;
+    std::shared_ptr<const QueryPoolInputSnapshot> input_;
 };
 } // namespace arp::rhi

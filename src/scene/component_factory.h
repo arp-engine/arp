@@ -13,6 +13,15 @@ class SceneComponentFactory final {
 public:
     using Create = core::SharedCallback<core::UniquePtr<Component>()>;
 
+    // Detached archive values only: preparing this schema must not construct a
+    // Component, GameObject or language receiver, or execute user code.
+    struct Inspection {
+        reflection::object state;
+        core::SharedPtr<reflection::SerializationDescriptor> descriptor;
+        core::pmr::String componentType;
+        const reflection::class_info* componentClass = nullptr;
+    };
+
     // Construction and activation consume typed state. YAML field traversal
     // belongs exclusively to the reflection archive.
     struct Persistence {
@@ -26,6 +35,14 @@ public:
             descriptor;
         core::SharedCallback<bool(Component&, const reflection::object&)> prepare;
         core::SharedCallback<bool(Component&)> publish;
+        // Cold package inspection uses value schemas only. It never constructs
+        // components or invokes script constructors/lifecycle callbacks.
+        core::SharedCallback<reflection::object()> inspectionState;
+        core::SharedCallback<bool(const reflection::object&, Inspection&, core::pmr::String&)>
+            inspectConfiguration;
+        core::SharedCallback<bool(const reflection::object&)> validateState;
+        core::pmr::String nativeType;
+        const reflection::class_info* nativeClass = nullptr;
         core::pmr::Vector<core::pmr::String> after{&core::defaultCpuMemoryResource()};
     };
 
@@ -44,6 +61,17 @@ public:
             if (std::string_view(entry.type) == type)
                 return &entry;
         return nullptr;
+    }
+
+    bool setInspectionState(
+        std::string_view type, core::SharedCallback<reflection::object()> schema)
+    {
+        for (auto& entry : persistence_)
+            if (entry.type == type && schema && !entry.inspectionState) {
+                entry.inspectionState = std::move(schema);
+                return true;
+            }
+        return false;
     }
 
     const Persistence* persistence(const Component& component) const
@@ -69,6 +97,8 @@ public:
             return false;
         Persistence entry;
         entry.type = std::move(stableType);
+        entry.nativeType = nativeType;
+        entry.nativeClass = reflection::class_of<C>();
         entry.accepts = [](const Component& value) {
             return dynamic_cast<const C*>(&value) != nullptr;
         };
@@ -84,6 +114,32 @@ public:
         };
         entry.after = std::move(after);
         return addPersistence(std::move(entry));
+    }
+
+    template <class C, class State>
+    bool persistValue(core::pmr::String stableType,
+        const core::pmr::String& nativeType,
+        core::SharedCallback<bool(const State&)> validate = {})
+    {
+        const auto type = stableType;
+        if (!persist<C>(std::move(stableType), nativeType))
+            return false;
+        for (auto& entry : persistence_)
+            if (entry.type == type) {
+                entry.inspectionState = [] {
+                    return reflection::object(State{});
+                };
+                entry.validateState = [validate](const reflection::object& value) {
+                    return value.is<State>() && (!validate || validate(value.cast<const State&>()));
+                };
+                const auto prepare = entry.prepare;
+                const auto check = entry.validateState;
+                entry.prepare = [prepare, check](Component& c, const reflection::object& value) {
+                    return check(value) && prepare(c, value);
+                };
+                return true;
+            }
+        return false;
     }
 
     bool add(core::pmr::String name, Create create)

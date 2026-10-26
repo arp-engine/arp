@@ -5,7 +5,10 @@
 
 namespace arp::renderer::cloud {
 
-// Independent CPU reference for CloudDensity/1 and fixed midpoint integration.
+// Independent CPU reference for CloudDensity/1 and stratified integration.
+// samplePhase is the position in each primary stratum, in [0,1); midpoint is
+// the reference default. extinctionDistance optionally returns the normalized
+// extinction moment used for temporal reprojection (ray limit for vacuum).
 // Borrowed validated asset must outlive this evaluator. No allocations per ray.
 class ARP_API CloudReference final {
 public:
@@ -19,7 +22,9 @@ public:
         core::Vec3 sunRadiance,
         core::Vec3 ambientRadiance,
         float time,
-        volume::MediumIntegral& output) const noexcept;
+        volume::MediumIntegral& output,
+        float samplePhase = 0.5f,
+        float* extinctionDistance = nullptr) const noexcept;
 
 private:
     const assets::cloud::CloudAsset* asset_ = nullptr;

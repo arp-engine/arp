@@ -16,11 +16,17 @@ public:
     enum class NavigationResult { Navigated, Unchanged, Rejected };
 
     void setRoot(std::filesystem::path root);
-    bool refresh();
+    bool refresh(std::size_t entryBudget = 0);
     NavigationResult navigate(const std::filesystem::path& path, bool remember = true);
     bool back();
     bool forward();
     void setSearch(const core::pmr::String& query);
+
+    // Cold, bounded preparation; failure preserves both output values.
+    const char* prepareReveal(const std::filesystem::path& file,
+        ProjectBrowserModel& candidate,
+        std::size_t& visibleIndex) const noexcept;
+    void swap(ProjectBrowserModel& other) noexcept;
 
     const std::filesystem::path& root() const noexcept { return root_; }
 

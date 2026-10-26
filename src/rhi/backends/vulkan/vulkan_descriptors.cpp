@@ -3,9 +3,11 @@
 #include "core/ownership/mutation_journal.h"
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
+#include "rhi/backends/vulkan/vulkan_original_graphics_binding.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 #include "rhi/frontend/bindless_snapshot.h"
 #include "rhi/frontend/completed_depth_texture_source.h"
+#include "rhi/frontend/descriptor_general_write_validation.h"
 #include "rhi/frontend/descriptor_resource_validation.h"
 #include "rhi/frontend/descriptor_set_validation.h"
 #include "rhi/frontend/descriptor_state_copy.h"
@@ -242,6 +244,40 @@ public:
 };
 
 class VulkanRhiDescriptorSet final : public rhi::DescriptorSet {
+    struct OriginalSynchronousPublication {
+        struct Binding {
+            rhi::OriginalCommandDescriptorSetElement element;
+            rhi::OriginalCommandDescriptorDependencies::Owner owner;
+            VulkanOriginalGraphicsBindingInspection::Observation native;
+            VkImageView view = VK_NULL_HANDLE;
+            VkDescriptorImageInfo image{};
+        };
+
+        explicit OriginalSynchronousPublication(std::shared_ptr<VulkanRhiRuntime> runtime)
+            : runtime(std::move(runtime))
+        {}
+
+        ~OriginalSynchronousPublication()
+        {
+            const auto destroy = functionFrom<PFN_vkDestroyImageView>(
+                runtime->getDeviceProcAddr("vkDestroyImageView"));
+            for (auto& binding : bindings)
+                if (binding.view)
+                    destroy(runtime->logicalDevice(), binding.view, nullptr);
+        }
+
+        std::shared_ptr<VulkanRhiRuntime> runtime;
+        rhi::OriginalCommandDescriptorDependencies::PipelineOwner pipeline;
+        std::shared_ptr<const rhi::DescriptorArena> arena;
+        std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u> quotas;
+        std::array<std::uint64_t, 3u> quotaLimits{};
+        core::pmr::Vector<Binding> bindings{&core::defaultCpuMemoryResource()};
+        core::pmr::Vector<VkWriteDescriptorSet> writes{&core::defaultCpuMemoryResource()};
+        std::uint64_t revision = 0u;
+        std::uint32_t set = 0u, contractVersion = 0u;
+        bool committed = false;
+    };
+
 public:
     VulkanRhiDescriptorSet(rhi::DescriptorSetAllocation allocation,
         rhi::DescriptorLayoutDesc layout,
@@ -266,6 +302,343 @@ public:
 
     const rhi::DescriptorLayoutDesc& layout() const override { return layout_; }
 
+    bool hasOriginalGeneralContent() const noexcept override
+    {
+        return originalSynchronous_ && originalSynchronous_->committed;
+    }
+
+    std::uint32_t originalGeneralContentContractVersion() const noexcept override
+    {
+        return hasOriginalGeneralContent() ? originalSynchronous_->contractVersion : 0u;
+    }
+
+    const char* originalScopedContentDiagnostic() const noexcept override
+    {
+        if (!originalSynchronous_)
+            return nullptr;
+        if (!originalSynchronous_->committed)
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-UNCOMMITTED";
+        return originalSynchronousDiagnostic();
+    }
+
+    const char* beginOriginalGeneralWriteImpl(const rhi::GpuDevice& device,
+        const std::shared_ptr<const rhi::DescriptorArena>& arena,
+        const std::shared_ptr<rhi::RenderPipeline>& pipeline,
+        const std::shared_ptr<const rhi::OriginalCommandResourceSources>& sources,
+        std::uint32_t set,
+        const rhi::OriginalCommandDescriptorSetElement* elements,
+        std::size_t count,
+        const rhi::OriginalGeneralDescriptorWriteRequest& request,
+        const std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u>& quotas) override
+    {
+        return beginSynchronousWrite(
+            device, arena, pipeline, sources, set, elements, count, request, quotas);
+    }
+
+    const char* beginOriginalGeneralWriteImpl(const rhi::GpuDevice& device,
+        const std::shared_ptr<const rhi::DescriptorArena>& arena,
+        const std::shared_ptr<rhi::ComputePipeline>& pipeline,
+        const std::shared_ptr<const rhi::OriginalCommandResourceSources>& sources,
+        std::uint32_t set,
+        const rhi::OriginalCommandDescriptorSetElement* elements,
+        std::size_t count,
+        const rhi::OriginalGeneralDescriptorWriteRequest& request,
+        const std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u>& quotas) override
+    {
+        return beginSynchronousWrite(
+            device, arena, pipeline, sources, set, elements, count, request, quotas);
+    }
+
+    template <class PipelineObject>
+    const char* beginSynchronousWrite(const rhi::GpuDevice& device,
+        const std::shared_ptr<const rhi::DescriptorArena>& arena,
+        const std::shared_ptr<PipelineObject>& pipeline,
+        const std::shared_ptr<const rhi::OriginalCommandResourceSources>& sources,
+        std::uint32_t set,
+        const rhi::OriginalCommandDescriptorSetElement* elements,
+        std::size_t count,
+        const rhi::OriginalGeneralDescriptorWriteRequest& request,
+        const std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u>& quotas)
+    {
+        using Dependencies = rhi::OriginalCommandDescriptorDependencies;
+        static constexpr bool compute = std::is_same_v<PipelineObject, rhi::ComputePipeline>;
+        using Pipeline = std::conditional_t<compute,
+            rhi::OriginalCommandComputePipelineSource,
+            rhi::OriginalCommandGraphicsPipelineSource>;
+        if (const auto* id = rhi::OriginalGeneralDescriptorWriteContract::validate(request))
+            return id;
+        if (request.contractVersion != (compute ? 4u : 3u) || !pipeline || originalSynchronous_
+            || !count || count != layout_.bindings.size() || count > request.maxBindings
+            || !elements || !arena || nativePayload_.use_count() != 1u
+            || std::any_of(written_.begin(), written_.end(), [](bool value) {
+                   return value;
+               }))
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-FRESH-COMPLETE-GROUP";
+        if (const auto* id =
+                rhi::OriginalCommandResourceSources::validateRegisteredLifetime(sources, device))
+            return id;
+        if (const auto* id = device.validateOriginalResourceRegistration(*pipeline))
+            return id;
+        for (std::size_t i = 0u; i < quotas.size(); ++i) {
+            if (!quotas[i] || quotas[i]->limitBytes() != request.maxCpuBytes[i])
+                return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-QUOTA";
+            if (core::SharedOwnerProjection::overlapsOwner(
+                    quotas[i], sources->originalMetadataQuota()))
+                return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-QUOTA-DOMAIN";
+            if (const auto* id = pipeline->independentAcceptedCpuQuotaDiagnostic(quotas[i]))
+                return id;
+            if (const auto* id =
+                    originalResourceRegistration().independentCpuQuotaDiagnostic(quotas[i]))
+                return id;
+            if (const auto* id =
+                    arena->originalResourceRegistration().independentCpuQuotaDiagnostic(quotas[i]))
+                return id;
+            for (std::size_t j = 0u; j < i; ++j)
+                if (core::SharedOwnerProjection::overlapsOwner(quotas[i], quotas[j]))
+                    return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-QUOTA-DOMAIN";
+        }
+        std::size_t pipelineIndex = SIZE_MAX;
+        for (std::size_t i = 0u; i < sources->sources().size(); ++i)
+            if (const auto* source =
+                    std::get_if<std::shared_ptr<const Pipeline>>(&sources->sources()[i]);
+                source && *source
+                && core::SharedOwnerProjection::sameOwner((*source)->originalPipeline(), pipeline))
+                pipelineIndex = i;
+        if (pipelineIndex == SIZE_MAX)
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-PIPELINE-SOURCE";
+        const auto runtime = nativeResources_.runtime();
+        if (!contextMatches(runtime, resourceRegistry_))
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-NATIVE-SET";
+        for (const auto* name :
+            {"vkUpdateDescriptorSets", "vkCreateImageView", "vkDestroyImageView"})
+            if (!runtime->getDeviceProcAddr(name))
+                return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-ENTRYPOINT";
+        // Admit the complete group before allocating or creating the first view.
+        for (std::size_t i = 0u; i < count; ++i) {
+            const auto* binding = findBinding(layout_, elements[i].write.binding);
+            const auto* slot =
+                rhi::findDescriptorSetSlot(pipeline->originalLayoutOwner()->desc(), set);
+            const auto* expected = slot
+                ? rhi::findDescriptorSetLayout(
+                      pipeline->originalLayoutOwner()->desc(), slot->layoutName)
+                : nullptr;
+            const auto* pipelineBinding = expected
+                ? rhi::findDescriptorSetBinding(*expected, elements[i].write.binding)
+                : nullptr;
+            if (!binding || !pipelineBinding
+                || !rhi::descriptorLayoutDefinitionMatches(layout_, *expected))
+                return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-LAYOUT";
+            for (std::size_t j = 0u; j < i; ++j)
+                if (elements[j].write.binding == elements[i].write.binding)
+                    return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-DUPLICATE";
+            VulkanOriginalGraphicsBindingInspection::Observation observed;
+            if (const auto* id =
+                    VulkanOriginalGraphicsBindingInspection::inspect({compute ? 2u : 1u, true},
+                        device,
+                        sources,
+                        pipelineIndex,
+                        set,
+                        elements[i],
+                        observed))
+                return id;
+        }
+        try {
+            core::CpuMemoryQuotaScope ownerScope(quotas[0]);
+            auto candidate = core::makeShared<OriginalSynchronousPublication>(runtime);
+            candidate->pipeline =
+                std::get<std::shared_ptr<const Pipeline>>(sources->sources()[pipelineIndex]);
+            candidate->arena = arena;
+            candidate->quotas = quotas;
+            candidate->quotaLimits = request.maxCpuBytes;
+            candidate->revision = contentRevision();
+            candidate->set = set;
+            candidate->contractVersion = request.contractVersion;
+            {
+                core::CpuMemoryQuotaScope bindingScope(quotas[1]);
+                candidate->bindings.reserve(count);
+            }
+            {
+                core::CpuMemoryQuotaScope writeScope(quotas[2]);
+                candidate->writes.resize(count);
+            }
+            std::uint64_t retainedBytes = 0u;
+            for (std::size_t i = 0u; i < count; ++i) {
+                auto owner = Dependencies::capture(*sources, elements[i].sourceIndex);
+                if (!owner)
+                    return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-RESOURCE-SOURCE";
+                candidate->bindings.push_back({elements[i], *owner});
+                auto& binding = candidate->bindings.back();
+                if (const auto* id =
+                        VulkanOriginalGraphicsBindingInspection::inspect({compute ? 2u : 1u, true},
+                            device,
+                            sources,
+                            pipelineIndex,
+                            set,
+                            elements[i],
+                            binding.native))
+                    return id;
+                const auto bytes = std::visit(
+                    [](const auto& source) -> std::uint64_t {
+                        using T = std::remove_const_t<
+                            typename std::decay_t<decltype(source)>::element_type>;
+                        if constexpr (std::is_same_v<T, rhi::OriginalCommandBufferLease>)
+                            return source->originalObject()->allocation().estimatedSizeBytes;
+                        else if constexpr (std::is_same_v<T, rhi::OriginalCommandTextureViewSource>)
+                            return source->originalParentLease()
+                                ->originalObject()
+                                ->allocation()
+                                .estimatedSizeBytes;
+                        else
+                            return 0u;
+                    },
+                    binding.owner);
+                // Conservative sum counts repeated resources too. Vulkan values
+                // originate in allocationFrom(VulkanRhiAllocation), not texel sizes.
+                if (!bytes
+                    && elements[i].write.resourceKind != rhi::DescriptorResourceKind::Sampler)
+                    return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-ALLOCATION-PROVENANCE";
+                if (bytes > request.maxRetainedAllocationBytes - retainedBytes)
+                    return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-ALLOCATION-BUDGET";
+                retainedBytes += bytes;
+                if (binding.native.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) {
+                    const auto result = nativeResources_.createOriginalDescriptorImageView(
+                        binding.native.imageView, binding.view);
+                    if (result != VK_SUCCESS || !binding.view)
+                        return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-VIEW-CREATION";
+                }
+                binding.image = {binding.native.sampler, binding.view, binding.native.imageLayout};
+                auto& write = candidate->writes[i];
+                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet = nativePayload_->backendVulkanDescriptorSetHandle();
+                write.dstBinding = elements[i].write.binding;
+                write.descriptorCount = 1u;
+                write.descriptorType = binding.native.type;
+                if (elements[i].write.resourceKind == rhi::DescriptorResourceKind::Buffer)
+                    write.pBufferInfo = &binding.native.buffer;
+                else
+                    write.pImageInfo = &binding.image;
+            }
+            originalSynchronous_ = std::move(candidate);
+            return nullptr;
+        } catch (const std::bad_alloc&) {
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-CPU-BUDGET";
+        }
+    }
+
+    const char* finishOriginalGeneralWriteImpl() noexcept override
+    {
+        if (!originalSynchronous_ || originalSynchronous_->committed)
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-NO-CANDIDATE";
+        if (const auto* id = originalSynchronousDiagnostic())
+            return id;
+        if (nativePayload_.use_count() != 1u)
+            return "RHI-DESCRIPTOR-RECORDED-STORAGE-IN-USE";
+        const auto update = functionFrom<PFN_vkUpdateDescriptorSets>(
+            originalSynchronous_->runtime->getDeviceProcAddr("vkUpdateDescriptorSets"));
+        if (!update)
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-ENTRYPOINT";
+        update(originalSynchronous_->runtime->logicalDevice(),
+            static_cast<std::uint32_t>(originalSynchronous_->writes.size()),
+            originalSynchronous_->writes.data(),
+            0u,
+            nullptr);
+        for (auto& binding : originalSynchronous_->bindings) {
+            const auto index =
+                rhi::descriptorElementIndex(layout_, binding.element.write.binding, 0u);
+            nativePayload_->imageViews[index] = std::exchange(binding.view, VK_NULL_HANDLE);
+            nativePayload_->resources[index] =
+                resourceRegistry_->payload(binding.element.write.resource);
+            nativePayload_->bufferRanges[index] = {
+                binding.native.buffer.offset, binding.native.buffer.range};
+            lastWrites_[index] = binding.element.write;
+            written_[index] = true;
+        }
+        originalSynchronous_->committed = true;
+        return nullptr;
+    }
+
+    const char* cancelOriginalGeneralWriteImpl() noexcept override
+    {
+        if (!originalSynchronous_ || originalSynchronous_->committed)
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-NO-CANDIDATE";
+        originalSynchronous_.reset();
+        return nullptr;
+    }
+
+    const char* diagnoseOriginalGeneralSourceImpl(
+        const std::shared_ptr<const rhi::RenderPipeline>& pipeline,
+        const std::shared_ptr<const rhi::OriginalCommandResourceSources>& sources,
+        std::uint32_t set,
+        const rhi::OriginalCommandDescriptorSetFrozenElement* elements,
+        std::size_t count,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota) const noexcept override
+    {
+        return diagnoseSynchronousSource(pipeline, sources, set, elements, count, quota);
+    }
+
+    const char* diagnoseOriginalGeneralSourceImpl(
+        const std::shared_ptr<const rhi::ComputePipeline>& pipeline,
+        const std::shared_ptr<const rhi::OriginalCommandResourceSources>& sources,
+        std::uint32_t set,
+        const rhi::OriginalCommandDescriptorSetFrozenElement* elements,
+        std::size_t count,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota) const noexcept override
+    {
+        return diagnoseSynchronousSource(pipeline, sources, set, elements, count, quota);
+    }
+
+    template <class PipelineObject>
+    const char* diagnoseSynchronousSource(const std::shared_ptr<const PipelineObject>& pipeline,
+        const std::shared_ptr<const rhi::OriginalCommandResourceSources>& sources,
+        std::uint32_t set,
+        const rhi::OriginalCommandDescriptorSetFrozenElement* elements,
+        std::size_t count,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota) const noexcept
+    {
+        if (!hasOriginalGeneralContent())
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-UNCOMMITTED";
+        if (const auto* id = originalSynchronousDiagnostic())
+            return id;
+        const auto& publication = *originalSynchronous_;
+        const bool matchesPipeline = std::visit(
+            [&](const auto& source) {
+                using T = std::decay_t<decltype(source)>;
+                if constexpr (std::is_same_v<T, std::monostate>)
+                    return false;
+                else
+                    return source
+                        && core::SharedOwnerProjection::sameOwner(
+                            pipeline, source->originalPipeline());
+            },
+            publication.pipeline);
+        if (!matchesPipeline || set != publication.set || !elements
+            || count != publication.bindings.size())
+            return "RHI-SYNCHRONOUS-GRAPHICS-SOURCE-PIPELINE-GROUP";
+        if (const auto* id =
+                rhi::OriginalCommandDescriptorDependencies::validateInventoryOwner(sources, quota))
+            return id;
+        for (const auto& owner : publication.quotas)
+            if (core::SharedOwnerProjection::overlapsOwner(owner, quota))
+                return "RHI-SYNCHRONOUS-GRAPHICS-SOURCE-QUOTA";
+        for (std::size_t i = 0u; i < count; ++i) {
+            const auto& original = publication.bindings[i];
+            const auto& frozen = elements[i];
+            const auto& e = frozen.declaration;
+            const auto& p = original.element;
+            if (!frozen.observation.matchesObject(*this)
+                || !rhi::descriptorBindingWriteMatches(e.write, p.write)
+                || e.sourceIndex != p.sourceIndex
+                || e.registrationGeneration != p.registrationGeneration
+                || e.bufferAccessOffset != p.bufferAccessOffset
+                || e.bufferAccessBytes != p.bufferAccessBytes || e.stages != p.stages
+                || e.access != p.access || e.dynamicOffset != p.dynamicOffset
+                || !rhi::OriginalCommandDescriptorDependencies::matches(
+                    *sources, e.sourceIndex, original.owner))
+                return "RHI-SYNCHRONOUS-GRAPHICS-SOURCE-BINDING";
+        }
+        return nullptr;
+    }
+
     std::shared_ptr<const rhi::OriginalCompletedDepthTextureSource>
     originalCompletedDepthPublication(
         std::uint32_t binding, std::uint32_t element) const noexcept override
@@ -278,12 +651,20 @@ public:
 
     std::shared_ptr<VulkanRhiNativeResourcePayload> nativePayload() const
     {
+        if (originalSynchronous_)
+            return {};
         // Cell descriptors have no native command consumer yet. Existing
         // completed-image/ordinary exporters cannot acquire that authority.
         for (const auto& publication : nativePayload_->completedTextures)
             if (publication.cellIdentity)
                 return nullptr;
         return isCurrentAllocation() && nativePayload_->hasNativeSet() ? nativePayload_ : nullptr;
+    }
+
+    std::shared_ptr<VulkanRhiNativeResourcePayload> originalGraphicsPayload() const
+    {
+        return hasOriginalGeneralContent() && !originalSynchronousDiagnostic() ? nativePayload_
+                                                                               : nullptr;
     }
 
     std::shared_ptr<VulkanRhiNativeResourcePayload> imageCellPayload(
@@ -345,6 +726,8 @@ public:
 
     rhi::ValidationResult writeImpl(const rhi::DescriptorBindingWrite& write) override
     {
+        if (originalSynchronous_)
+            return {false, "RHI-SYNCHRONOUS-GRAPHICS-WRITE-IMMUTABLE"};
         const auto originalIndex =
             rhi::descriptorElementIndex(layout_, write.binding, write.arrayElement);
         if (originalIndex < nativePayload_->completedTextures.size()
@@ -575,6 +958,13 @@ public:
     rhi::ValidationResult validateBindingElement(
         std::uint32_t binding, std::uint32_t element) const override
     {
+        if (originalSynchronous_) {
+            if (const auto* id = originalScopedContentDiagnostic())
+                return {false, id};
+            return hasWrittenBindingElement(binding, element)
+                ? rhi::ValidationResult{true, {}}
+                : rhi::ValidationResult{false, "RHI-SYNCHRONOUS-GRAPHICS-WRITE-ELEMENT"};
+        }
         if (!isCurrentAllocation())
             return {false,
                 "RHI-DESCRIPTOR-ALLOCATION-STALE: Vulkan descriptor array validation after arena "
@@ -617,6 +1007,66 @@ public:
     }
 
 private:
+    const char* originalSynchronousDiagnostic() const noexcept
+    {
+        if (!originalSynchronous_ || !originalSynchronous_->runtime->valid()
+            || originalSynchronous_->runtime->syntheticRuntime() || !isCurrentAllocation())
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-RETIRED";
+        const auto& publication = *originalSynchronous_;
+        if (contentRevision() != publication.revision + std::uint64_t(publication.committed))
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-REVISION";
+        if (const auto* id = std::visit(
+                [](const auto& source) -> const char* {
+                    using T = std::decay_t<decltype(source)>;
+                    if constexpr (std::is_same_v<T, std::monostate>)
+                        return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-PIPELINE-SOURCE";
+                    else
+                        return std::remove_const_t<typename T::element_type>::validateOriginal(
+                            source);
+                },
+                publication.pipeline))
+            return id;
+        const auto sourceQuota = std::visit(
+            [](const auto& source) -> std::shared_ptr<core::CpuMemoryQuota> {
+                using T = std::decay_t<decltype(source)>;
+                if constexpr (std::is_same_v<T, std::monostate>)
+                    return {};
+                else
+                    return source->originalMetadataQuota();
+            },
+            publication.pipeline);
+        if (const auto* id = originalResourceRegistration().diagnostic())
+            return id;
+        if (const auto* id = publication.arena->originalResourceRegistration().diagnostic())
+            return id;
+        for (std::size_t i = 0u; i < publication.quotas.size(); ++i)
+            if (!publication.quotas[i]
+                || publication.quotas[i]->limitBytes() != publication.quotaLimits[i])
+                return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-QUOTA";
+        for (const auto& binding : publication.bindings) {
+            if (binding.element.write.type == rhi::DescriptorType::StorageBuffer) {
+                const auto* buffer =
+                    std::get_if<std::shared_ptr<const rhi::OriginalCommandBufferLease>>(
+                        &binding.owner);
+                if (!buffer || !*buffer || (*buffer)->originalObject()->gpuWritesSealed())
+                    return "RHI-BUFFER-GPU-WRITES-SEALED";
+            }
+            if (const auto* id = rhi::OriginalCommandDescriptorDependencies::validateOwner(
+                    binding.owner, binding.element.registrationGeneration, sourceQuota))
+                return id;
+            const auto payload = resourceRegistry_->payload(binding.element.write.resource);
+            const auto expected = std::visit(
+                [](const auto& source) {
+                    return vulkanRhiNativePayload(*source->originalObject());
+                },
+                binding.owner);
+            if (!payload || !core::SharedOwnerProjection::sameOwner(payload, expected)
+                || payload->backendVulkanDeviceHandle() != publication.runtime->logicalDevice())
+                return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-RESOURCE-IDENTITY";
+        }
+        return nullptr;
+    }
+
     static bool sameWrite(
         const rhi::DescriptorBindingWrite& lhs, const rhi::DescriptorBindingWrite& rhs) noexcept
     {
@@ -717,6 +1167,8 @@ private:
         std::uint32_t index,
         const VulkanCompletedTexturePublication& publication)
     {
+        if (originalSynchronous_)
+            return {false, "RHI-SYNCHRONOUS-GRAPHICS-WRITE-IMMUTABLE"};
         const auto nativeWrite = writeNativeDescriptor(write);
         if (!nativeWrite.success)
             return nativeWrite;
@@ -890,6 +1342,7 @@ private:
     std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry_;
     core::pmr::Vector<bool> written_;
     core::pmr::Vector<rhi::DescriptorBindingWrite> lastWrites_;
+    std::shared_ptr<OriginalSynchronousPublication> originalSynchronous_;
 };
 
 class VulkanRhiDescriptorTable final : public rhi::DescriptorTable {
@@ -1228,6 +1681,26 @@ std::shared_ptr<VulkanRhiNativeResourcePayload> vulkanRhiNativePayload(
 {
     const auto* vulkanDescriptorSet = dynamic_cast<const VulkanRhiDescriptorSet*>(&descriptorSet);
     return vulkanDescriptorSet ? vulkanDescriptorSet->nativePayload() : nullptr;
+}
+
+std::shared_ptr<VulkanRhiNativeResourcePayload> vulkanOriginalSynchronousDescriptorPayload(
+    const std::shared_ptr<const rhi::OriginalCommandDescriptorSetSource>& source)
+{
+    if (rhi::OriginalCommandDescriptorSetSource::validateOriginal(source)
+        || (source->sourceContractVersion() != 5u && source->sourceContractVersion() != 7u))
+        return {};
+    const auto* set = dynamic_cast<const VulkanRhiDescriptorSet*>(source->originalObject());
+    return set ? set->originalGraphicsPayload() : nullptr;
+}
+
+std::shared_ptr<VulkanRhiNativeResourcePayload> vulkanOriginalGraphicsDescriptorPayload(
+    const std::shared_ptr<const rhi::OriginalCommandDescriptorSetSource>& source)
+{
+    if (rhi::OriginalCommandDescriptorSetSource::validateOriginal(source)
+        || source->sourceContractVersion() != 5u)
+        return {};
+    const auto* set = dynamic_cast<const VulkanRhiDescriptorSet*>(source->originalObject());
+    return set ? set->originalGraphicsPayload() : nullptr;
 }
 
 const char* validateVulkanOriginalDescriptorLossSource(const rhi::DescriptorArena& arena,

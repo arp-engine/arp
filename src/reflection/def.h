@@ -4,6 +4,7 @@
 #include "core/memory/cpu_allocator.h"
 #include "reflection/internal/type_name.h"
 
+#include <atomic>
 #include <bitset>
 #include <cstddef>
 #include <cstdint>
@@ -169,13 +170,13 @@ namespace detail {
 
 template <class T> using SharedPtr = decltype(core::makeShared<T>());
 
-// Reflection values are VM-local and do not require cross-thread reference
-// management. Keep the reference count beside the value to avoid the atomic
-// shared_ptr control-block operations on object copy/move hot paths.
+// Separate owners may retain immutable values after registration has finished.
+// The count protects lifetime only: payload writes, registry changes and access
+// to the same owner still require their existing external synchronization.
 template <class T> class ObjectRef final {
 private:
     struct Control {
-        std::uint32_t references = 1;
+        std::atomic<std::uint32_t> references{1};
         T value;
 
         template <class... Args>
@@ -192,7 +193,7 @@ private:
         Control* control = std::exchange(control_, nullptr);
         if (control == nullptr)
             return;
-        if (--control->references == 0u)
+        if (control->references.fetch_sub(1, std::memory_order_acq_rel) == 1u)
             core::destroyCpuAllocatedUnique<Control>(control);
     }
 
@@ -202,7 +203,7 @@ public:
     ObjectRef(const ObjectRef& other) noexcept : control_(other.control_)
     {
         if (control_ != nullptr)
-            ++control_->references;
+            control_->references.fetch_add(1, std::memory_order_relaxed);
     }
 
     ObjectRef(ObjectRef&& other) noexcept : control_(std::exchange(other.control_, nullptr)) {}
@@ -215,7 +216,7 @@ public:
             return *this;
         Control* next = other.control_;
         if (next != nullptr)
-            ++next->references;
+            next->references.fetch_add(1, std::memory_order_relaxed);
         release();
         control_ = next;
         return *this;
@@ -256,7 +257,11 @@ public:
 
     const void* identity() const noexcept { return control_; }
 
-    bool unique() const noexcept { return control_ != nullptr && control_->references == 1u; }
+    // A momentary observation, never an exclusive payload-write permission.
+    bool unique() const noexcept
+    {
+        return control_ != nullptr && control_->references.load(std::memory_order_acquire) == 1u;
+    }
 
 private:
     Control* control_ = nullptr;

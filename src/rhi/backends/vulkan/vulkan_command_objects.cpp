@@ -4,6 +4,8 @@
 #include "rhi/backends/vulkan/vulkan_bindless.h"
 #include "rhi/backends/vulkan/vulkan_graphics_pass.h"
 #include "rhi/backends/vulkan/vulkan_native_commands.h"
+#include "rhi/backends/vulkan/vulkan_recording_storage.h"
+#include "rhi/backends/vulkan/vulkan_render_pass_storage.h"
 #include "rhi/backends/vulkan/vulkan_staging_upload_pool.h"
 #include "rhi/frontend/bindless_compute_binding.h"
 #include "rhi/frontend/bindless_shader_package.h"
@@ -11,6 +13,8 @@
 #include "rhi/frontend/command_attachment_validation.h"
 #include "rhi/frontend/command_encoder_base.h"
 #include "rhi/frontend/command_retention_validation.h"
+#include "rhi/frontend/command_stream_program.h"
+#include "rhi/frontend/command_transfer_validation.h"
 #include "rhi/frontend/descriptor_bound_descriptor_slots.h"
 #include "rhi/frontend/descriptor_resource_validation.h"
 #include "rhi/frontend/descriptor_set_validation.h"
@@ -24,10 +28,12 @@
 #include "rhi/semantics/native_command_lowering.h"
 #include "rhi/semantics/push_constant_validation.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -38,6 +44,11 @@ namespace {
 // Reservation identity only. Completion is owned by each native command's exact
 // staging journal, never by the magnitude of this or a caller frame serial.
 core::MonotonicIdSequence gNextUploadRetirementSerial;
+
+constexpr std::string_view kColdComputePassCapacity = "RHI-VULKAN-COLD-COMPUTE-PASS-CAPACITY";
+constexpr std::string_view kColdTransferPassCapacity = "RHI-VULKAN-COLD-TRANSFER-PASS-CAPACITY";
+constexpr std::string_view kColdRenderPassUnavailable =
+    "RHI-VULKAN-COLD-RENDER-PASS-STORAGE-UNAVAILABLE";
 
 rhi::CommandValidationResult commandOk(std::uint32_t count)
 {
@@ -98,11 +109,35 @@ std::shared_ptr<VulkanRhiNativeResourcePayload> findNativeResource(
 class VulkanRhiCommandBuffer final : public rhi::RecordedStateCommandBuffer,
                                      public rhi::BindlessCommandBufferExtension {
 public:
+    // Storage only. This form stays private to the encoder until successful
+    // finish replaces it with the original journal and genuine native payload.
+    struct ColdStorage {};
+
+    explicit VulkanRhiCommandBuffer(ColdStorage) noexcept
+        : RecordedStateCommandBuffer(core::UniquePtr<core::MutationJournal>{})
+    {}
+
+    VulkanRhiCommandBuffer(VulkanRhiCommandBuffer&&) noexcept = default;
+
+    ~VulkanRhiCommandBuffer() override
+    {
+        if (nativePayload_)
+            nativePayload_->abandonOrdinaryRecording();
+    }
+
     VulkanRhiCommandBuffer(std::uint32_t commandCount,
         std::shared_ptr<VulkanRhiNativeCommandPayload> nativePayload,
         core::UniquePtr<core::MutationJournal> states,
-        core::UniquePtr<rhi::RecordedStagingUploadJournal> stagingUploads)
+        core::UniquePtr<rhi::RecordedStagingUploadJournal> stagingUploads) noexcept
         : RecordedStateCommandBuffer(std::move(states), std::move(stagingUploads)),
+          commandCount_(commandCount), nativePayload_(std::move(nativePayload))
+    {}
+
+    VulkanRhiCommandBuffer(std::uint32_t commandCount,
+        std::shared_ptr<VulkanRhiNativeCommandPayload> nativePayload,
+        core::MutationJournal& journal) noexcept
+        : RecordedStateCommandBuffer(
+              std::shared_ptr<core::MutationJournal>(nativePayload, &journal)),
           commandCount_(commandCount), nativePayload_(std::move(nativePayload))
     {}
 
@@ -129,9 +164,16 @@ public:
     }
 
 private:
+    bool acceptBackendOwnedRecordedOwnership() const noexcept override
+    {
+        return nativePayload_ && nativePayload_->acceptOrdinaryRecordedOwnership();
+    }
+
     std::uint32_t commandCount_ = 0;
     std::shared_ptr<VulkanRhiNativeCommandPayload> nativePayload_;
 };
+
+static_assert(std::is_nothrow_move_constructible_v<VulkanRhiCommandBuffer>);
 
 class VulkanRhiRenderBundle final : public rhi::RenderBundle {
 public:
@@ -157,15 +199,57 @@ private:
     std::uint32_t commandCount_ = 0;
 };
 
+} // namespace
+
 class VulkanRhiPassState {
 public:
-    VulkanRhiPassState(
-        std::uint32_t& commandCount, std::shared_ptr<VulkanRhiNativeCommandPayload> nativePayload)
-        : commandCount_(commandCount), nativePayload_(std::move(nativePayload))
+    VulkanRhiPassState(std::uint32_t& commandCount,
+        std::shared_ptr<VulkanRhiNativeCommandPayload> nativePayload,
+        VulkanRhiColdFailure failure = {})
+        : commandCount_(commandCount), nativePayload_(std::move(nativePayload)), failure_(failure)
     {}
+
+    bool preflightResources(std::size_t count = 0u)
+    {
+        if (!nativePayload_)
+            return true;
+        if (nativePayload_->hasOrdinaryAttachments()) {
+            rejectStorage("RHI-ORDINARY-MIXED-COMMAND-PROFILE");
+            return false;
+        }
+        if (const auto* id = nativePayload_->resourceRetentionStorageDiagnostic(count)) {
+            rejectStorage(id);
+            return false;
+        }
+        return true;
+    }
+
+    bool retainResources(
+        const std::shared_ptr<VulkanRhiNativeResourcePayload>* resources, std::size_t count)
+    {
+        if (const auto* id = nativePayload_->retainResources(resources, count)) {
+            rejectStorage(id);
+            return false;
+        }
+        return true;
+    }
+
+    rhi::CommandValidationResult rejectStorage(const char* id)
+    {
+        nativePayload_->rejectRecordingStorage(id);
+        if (failure_.publish) {
+            failure_.publish(failure_.context, id);
+            return rejected();
+        }
+        return commandFail(id, commandCount_);
+    }
+
+    rhi::CommandValidationResult rejected() const { return {false, {}, commandCount_}; }
 
     rhi::CommandValidationResult record()
     {
+        if (!preflightResources())
+            return rejected();
         std::pmr::string diagnostics;
         if (!recordVulkanRhiNativeCommand(nativePayload_, diagnostics)) {
             return commandFail(diagnostics, commandCount_);
@@ -176,9 +260,22 @@ public:
 
     std::uint32_t commandCount() const noexcept { return commandCount_; }
 
+    rhi::CommandValidationResult acceptOriginalCommand() noexcept
+    {
+        ++commandCount_;
+        return commandOk(commandCount_);
+    }
+
+    rhi::CommandValidationResult acceptOriginalTimestamp() noexcept
+    {
+        ++commandCount_;
+        return commandOk(commandCount_);
+    }
+
 private:
     std::uint32_t& commandCount_;
     std::shared_ptr<VulkanRhiNativeCommandPayload> nativePayload_;
+    VulkanRhiColdFailure failure_;
 };
 
 class VulkanRhiComputePassEncoder final : public rhi::ComputePassEncoder,
@@ -190,8 +287,9 @@ public:
         std::shared_ptr<VulkanRhiNativeCommandPayload> nativePayload,
         std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry,
         const rhi::semantics::NativeBackendCapabilityContract* capabilityContract,
-        bool bindlessExecutable)
-        : pass_(commandCount, nativePayload), recordingIdentity_(recordingIdentity),
+        bool bindlessExecutable,
+        VulkanRhiColdFailure failure = {})
+        : pass_(commandCount, nativePayload, failure), recordingIdentity_(recordingIdentity),
           nativePayload_(std::move(nativePayload)), resourceRegistry_(std::move(resourceRegistry)),
           capabilityContract_(capabilityContract), active_(active),
           bindlessExecutable_(bindlessExecutable)
@@ -210,6 +308,8 @@ public:
         std::shared_ptr<const rhi::BindlessPreparedComputeBinding> binding,
         const rhi::BindlessAccessDeclarations& accesses) override
     {
+        if (!pass_.preflightResources(0u))
+            return pass_.rejected();
         if (!active_)
             return commandFail("command pass is not active", pass_.commandCount());
         if (!binding || !binding->originalFactoryOwnerMatches(binding)
@@ -240,6 +340,8 @@ public:
         std::uint64_t generation,
         const rhi::BindlessAccessDeclarations& accesses) override
     {
+        if (!pass_.preflightResources(0u))
+            return pass_.rejected();
         if (!active_)
             return commandFail("command pass is not active", pass_.commandCount());
         if (!activeAuthorization_ || !activeAuthorization_->current(activeAuthorization_))
@@ -314,6 +416,12 @@ public:
 
     rhi::CommandValidationResult setPipeline(const rhi::ComputePipeline& pipeline) override
     {
+        if (nativePayload_ && nativePayload_->hasOrdinaryAttachments())
+            return originalCommand(rhi::CommandUsageKind::BindComputePipeline,
+                rhi::CommandScalarArguments::None{},
+                &pipeline);
+        if (!pass_.preflightResources(1u))
+            return pass_.rejected();
         if (pipeline.nativeHandleExposedToUpperLayer()) {
             return commandFail("Vulkan RHI compute pipeline exposed native handle", 0);
         }
@@ -344,7 +452,8 @@ public:
         pipelineLayout_ = pipeline.layout();
         shaderReflection_ = &pipeline.shaderReflection();
         nativeComputePipeline_ = vulkanRhiNativePayload(pipeline);
-        nativePayload_->retainResource(nativeComputePipeline_);
+        if (!pass_.retainResources(&nativeComputePipeline_, 1u))
+            return pass_.rejected();
         std::pmr::string diagnostics;
         if (!nativeComputePipeline_
             || !nativePayload_->recordComputePipelineBind(*nativeComputePipeline_, diagnostics)) {
@@ -364,6 +473,16 @@ public:
         const std::uint32_t* dynamicOffsets,
         std::uint32_t dynamicOffsetCount) override
     {
+        if (nativePayload_ && nativePayload_->hasOrdinaryAttachments()) {
+            if (dynamicOffsetCount || dynamicOffsets)
+                return pass_.rejectStorage("RHI-ORDINARY-MIXED-DYNAMIC-OFFSETS");
+            return originalCommand(rhi::CommandUsageKind::BindComputeDescriptor,
+                rhi::CommandScalarArguments::DescriptorBinding{setIndex},
+                nullptr,
+                &set);
+        }
+        if (!pass_.preflightResources(1u))
+            return pass_.rejected();
         if (activeAuthorization_)
             return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", pass_.commandCount());
         const auto trackingCapacity = boundDescriptors_.validateSetCapacity(setIndex);
@@ -383,7 +502,8 @@ public:
         }
         if (nativePayload_) {
             auto descriptorSet = vulkanRhiNativePayload(set);
-            nativePayload_->retainResource(descriptorSet);
+            if (!pass_.retainResources(&descriptorSet, 1u))
+                return pass_.rejected();
             std::pmr::string diagnostics;
             if (!descriptorSet
                 || !nativePayload_->recordDescriptorSetBind(
@@ -404,6 +524,8 @@ public:
     rhi::CommandValidationResult bindDescriptorTable(
         std::uint32_t, const rhi::DescriptorTable& table) override
     {
+        if (!pass_.preflightResources(0u))
+            return pass_.rejected();
         (void)table;
         if (activeAuthorization_)
             return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", pass_.commandCount());
@@ -415,6 +537,8 @@ public:
         std::uint32_t sizeBytes,
         const void* data) override
     {
+        if (!pass_.preflightResources(0u))
+            return pass_.rejected();
         auto cmdResult =
             rhi::semantics::validatePushConstantCommand(stages, offsetBytes, sizeBytes, data);
         if (!cmdResult.success) {
@@ -458,6 +582,11 @@ public:
     rhi::CommandValidationResult dispatch(
         std::uint32_t groupCountX, std::uint32_t groupCountY, std::uint32_t groupCountZ) override
     {
+        if (nativePayload_ && nativePayload_->hasOrdinaryAttachments())
+            return originalCommand(rhi::CommandUsageKind::Dispatch,
+                rhi::CommandScalarArguments::Dispatch{groupCountX, groupCountY, groupCountZ});
+        if (!pass_.preflightResources(0u))
+            return pass_.rejected();
         const auto descriptorUse = boundDescriptors_.validateLiveBindings();
         if (!descriptorUse.success)
             return commandFail(descriptorUse.diagnostics, pass_.commandCount());
@@ -483,6 +612,8 @@ public:
     rhi::CommandValidationResult dispatchIndirect(
         const rhi::GpuBuffer& indirectBuffer, std::uint64_t indirectOffset) override
     {
+        if (!pass_.preflightResources(1u))
+            return pass_.rejected();
         if (activeAuthorization_)
             return commandFail("RHI-BINDLESS-INDIRECT-DISPATCH-UNSUPPORTED", pass_.commandCount());
         const auto descriptorUse = boundDescriptors_.validateLiveBindings();
@@ -501,7 +632,8 @@ public:
         }
         const auto nativeBuffer =
             resourceRegistry_ ? resourceRegistry_->payload(indirectBuffer.id()) : nullptr;
-        nativePayload_->retainResource(nativeBuffer);
+        if (!pass_.retainResources(&nativeBuffer, 1u))
+            return pass_.rejected();
         std::pmr::string diagnostics;
         if (!nativeBuffer
             || !nativePayload_->recordDispatchIndirect(
@@ -521,6 +653,14 @@ public:
     rhi::CommandValidationResult writeTimestamp(
         const rhi::QueryPool& pool, std::uint32_t queryIndex) override
     {
+        if (!pass_.preflightResources(0u))
+            return pass_.rejected();
+        if (nativePayload_ && nativePayload_->recordingStorageBound()) {
+            if (const auto* id = nativePayload_->recordOriginalTimestamp(
+                    pool, queryIndex, pass_.commandCount(), recordingIdentity_))
+                return pass_.rejectStorage(id);
+            return pass_.acceptOriginalTimestamp();
+        }
         if (!capabilityContract_) {
             return commandFail("Vulkan RHI timestamp write has no capability contract", 0);
         }
@@ -553,6 +693,15 @@ public:
 
     rhi::CommandValidationResult end() override
     {
+        if (nativePayload_ && nativePayload_->hasOrdinaryAttachments()) {
+            const auto result = originalCommand(
+                rhi::CommandUsageKind::EndComputePass, rhi::CommandScalarArguments::None{});
+            if (result.success)
+                active_ = false;
+            return result;
+        }
+        if (!pass_.preflightResources(0u))
+            return pass_.rejected();
         if (activeAuthorization_ && !boundSnapshot_)
             return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", pass_.commandCount());
         if (boundSnapshot_) {
@@ -575,6 +724,21 @@ public:
     }
 
 private:
+    template <class Value>
+    rhi::CommandValidationResult originalCommand(rhi::CommandUsageKind kind,
+        Value value,
+        const rhi::ComputePipeline* pipeline = nullptr,
+        const rhi::DescriptorSet* set = nullptr)
+    {
+        const auto scalar = rhi::CommandScalarArguments::capture(kind, value);
+        if (!active_ || !scalar)
+            return pass_.rejectStorage("RHI-ORDINARY-MIXED-COMPUTE-WRAPPER");
+        if (const auto* id = nativePayload_->recordOrdinaryMixedCommand(
+                pass_.commandCount(), *scalar, pipeline, set))
+            return pass_.rejectStorage(id);
+        return pass_.acceptOriginalCommand();
+    }
+
     rhi::BoundDescriptorSlots boundDescriptors_;
     VulkanRhiPassState pass_;
     std::uint64_t recordingIdentity_ = 0u;
@@ -600,8 +764,9 @@ public:
         std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry,
         VulkanRhiStagingUploadPool* stagingUploadPool,
         rhi::RecordedStagingUploadJournal* stagingUploads,
-        std::uint64_t uploadRetirementSerial)
-        : pass_(commandCount, nativePayload), nativePayload_(std::move(nativePayload)),
+        std::uint64_t uploadRetirementSerial,
+        VulkanRhiColdFailure failure = {})
+        : pass_(commandCount, nativePayload, failure), nativePayload_(std::move(nativePayload)),
           resourceRegistry_(std::move(resourceRegistry)), stagingUploadPool_(stagingUploadPool),
           stagingUploads_(stagingUploads), currentFrameSerial_(uploadRetirementSerial),
           active_(active)
@@ -609,12 +774,16 @@ public:
 
     rhi::CommandValidationResult copyBufferToBuffer(std::uint64_t sizeBytes) override
     {
+        if (!pass_.preflightResources(0u))
+            return pass_.rejected();
         return sizeBytes == 0 ? commandFail("Vulkan RHI copy requires non-zero bytes", 0)
                               : pass_.record();
     }
 
     rhi::CommandValidationResult copyBufferToBuffer(const rhi::BufferCopyDesc& desc) override
     {
+        if (!pass_.preflightResources(2u))
+            return pass_.rejected();
         if (desc.sizeBytes == 0 || !desc.sourceBuffer.isValid()
             || !desc.destinationBuffer.isValid()) {
             return commandFail("Vulkan RHI buffer copy requires resources and bytes", 0);
@@ -627,8 +796,9 @@ public:
                 resourceRegistry_ ? resourceRegistry_->payload(desc.sourceBuffer) : nullptr;
             const auto destination =
                 resourceRegistry_ ? resourceRegistry_->payload(desc.destinationBuffer) : nullptr;
-            nativePayload_->retainResource(source);
-            nativePayload_->retainResource(destination);
+            const std::shared_ptr<VulkanRhiNativeResourcePayload> owners[]{source, destination};
+            if (!pass_.retainResources(owners, 2u))
+                return pass_.rejected();
             std::pmr::string diagnostics;
             if (!source || !destination
                 || !nativePayload_->recordBufferCopy(*source, *destination, desc, diagnostics)) {
@@ -644,6 +814,8 @@ public:
     rhi::CommandValidationResult copyBufferToTexture(
         const rhi::BufferToTextureCopyDesc& desc) override
     {
+        if (!pass_.preflightResources(2u))
+            return pass_.rejected();
         if (!desc.mipLayouts.empty()) {
             return commandFail("RHI-VULKAN-BUFFER-TEXTURE-PER-MIP-LAYOUT-NOT-LOWERED", 0);
         }
@@ -665,8 +837,9 @@ public:
                 resourceRegistry_ ? resourceRegistry_->payload(desc.sourceBuffer) : nullptr;
             const auto destination =
                 resourceRegistry_ ? resourceRegistry_->payload(desc.destinationTexture) : nullptr;
-            nativePayload_->retainResource(source);
-            nativePayload_->retainResource(destination);
+            const std::shared_ptr<VulkanRhiNativeResourcePayload> owners[]{source, destination};
+            if (!pass_.retainResources(owners, 2u))
+                return pass_.rejected();
             std::pmr::string diagnostics;
             if (!source || !destination
                 || !nativePayload_->recordBufferToImageCopy(
@@ -683,6 +856,10 @@ public:
     rhi::CommandValidationResult copyTextureToBuffer(
         const rhi::TextureToBufferCopyDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOrdinaryAttachments())
+            return originalCommand(rhi::CommandUsageKind::TextureToBufferCopy, &desc);
+        if (!pass_.preflightResources(2u))
+            return pass_.rejected();
         if (!desc.mipLayouts.empty()) {
             return commandFail("RHI-VULKAN-TEXTURE-BUFFER-PER-MIP-LAYOUT-NOT-LOWERED", 0);
         }
@@ -697,8 +874,9 @@ public:
                 resourceRegistry_ ? resourceRegistry_->payload(desc.sourceTexture) : nullptr;
             const auto destination =
                 resourceRegistry_ ? resourceRegistry_->payload(desc.destinationBuffer) : nullptr;
-            nativePayload_->retainResource(source);
-            nativePayload_->retainResource(destination);
+            const std::shared_ptr<VulkanRhiNativeResourcePayload> owners[]{source, destination};
+            if (!pass_.retainResources(owners, 2u))
+                return pass_.rejected();
             std::pmr::string diagnostics;
             if (!source || !destination
                 || !nativePayload_->recordImageToBufferCopy(
@@ -715,6 +893,8 @@ public:
     rhi::CommandValidationResult copyTextureToTexture(
         const rhi::TextureToTextureCopyDesc& desc) override
     {
+        if (!pass_.preflightResources(2u))
+            return pass_.rejected();
         if (!desc.mipLayouts.empty()) {
             return commandFail("RHI-VULKAN-TEXTURE-COPY-PER-MIP-LAYOUT-NOT-LOWERED", 0);
         }
@@ -729,8 +909,9 @@ public:
                 resourceRegistry_ ? resourceRegistry_->payload(desc.sourceTexture) : nullptr;
             const auto destination =
                 resourceRegistry_ ? resourceRegistry_->payload(desc.destinationTexture) : nullptr;
-            nativePayload_->retainResource(source);
-            nativePayload_->retainResource(destination);
+            const std::shared_ptr<VulkanRhiNativeResourcePayload> owners[]{source, destination};
+            if (!pass_.retainResources(owners, 2u))
+                return pass_.rejected();
             std::pmr::string diagnostics;
             if (!source || !destination
                 || !nativePayload_->recordImageToImageCopy(
@@ -746,6 +927,10 @@ public:
 
     rhi::CommandValidationResult uploadBuffer(const rhi::UploadBufferDesc& desc) override
     {
+        if (!pass_.preflightResources(2u))
+            return pass_.rejected();
+        if (const auto* id = preflightStagingJournal())
+            return pass_.rejectStorage(id);
         if (!desc.backendOwnedStaging || desc.stagingIntent != rhi::StagingIntent::Upload
             || desc.sizeBytes == 0 || !desc.sourceUploadBuffer.isValid()
             || !desc.destinationResource.isValid()) {
@@ -789,8 +974,9 @@ public:
                 resourceRegistry_ ? resourceRegistry_->payload(desc.sourceUploadBuffer) : nullptr;
             const auto destination =
                 resourceRegistry_ ? resourceRegistry_->payload(desc.destinationResource) : nullptr;
-            nativePayload_->retainResource(source);
-            nativePayload_->retainResource(destination);
+            const std::shared_ptr<VulkanRhiNativeResourcePayload> owners[]{source, destination};
+            if (!pass_.retainResources(owners, 2u))
+                return pass_.rejected();
             std::pmr::string diagnostics;
             const rhi::BufferCopyDesc copy{
                 desc.sourceUploadBuffer,
@@ -813,6 +999,16 @@ public:
 
     rhi::CommandValidationResult uploadTexture(const rhi::UploadTextureDesc& desc) override
     {
+        if (!pass_.preflightResources(1u))
+            return pass_.rejected();
+        if (nativePayload_ && nativePayload_->hasOrdinaryTextureUploads()) {
+            if (const auto* id =
+                    nativePayload_->recordOrdinaryTextureUpload(pass_.commandCount(), desc))
+                return pass_.rejectStorage(id);
+            return pass_.record();
+        }
+        if (const auto* id = preflightStagingJournal())
+            return pass_.rejectStorage(id);
         if (!desc.backendOwnedStaging || desc.stagingIntent != rhi::StagingIntent::Upload
             || desc.pixelDataSize == 0 || desc.pixelData == nullptr) {
             return commandFail(
@@ -875,7 +1071,8 @@ public:
         if (nativePayload_) {
             const auto destination =
                 resourceRegistry_ ? resourceRegistry_->payload(desc.destinationTexture) : nullptr;
-            nativePayload_->retainResource(destination);
+            if (!pass_.retainResources(&destination, 1u))
+                return pass_.rejected();
             std::pmr::string diagnostics;
             if (!destination
                 || !nativePayload_->recordUploadStagingTextureCopy(
@@ -892,6 +1089,8 @@ public:
 
     rhi::CommandValidationResult readbackTexture(const rhi::ReadbackTextureDesc& desc) override
     {
+        if (!pass_.preflightResources(2u))
+            return pass_.rejected();
         if (!desc.mipLayouts.empty() || desc.extent.width != 0u || desc.extent.height != 0u
             || desc.extent.depth != 0u || desc.destinationOffsetBytes != 0u
             || desc.bytesPerRow != 0u || desc.rowsPerImage != 0u
@@ -908,8 +1107,9 @@ public:
             const auto destination = resourceRegistry_
                 ? resourceRegistry_->payload(desc.destinationReadbackBuffer)
                 : nullptr;
-            nativePayload_->retainResource(source);
-            nativePayload_->retainResource(destination);
+            const std::shared_ptr<VulkanRhiNativeResourcePayload> owners[]{source, destination};
+            if (!pass_.retainResources(owners, 2u))
+                return pass_.rejected();
             std::pmr::string diagnostics;
             rhi::TextureToBufferCopyDesc copyDesc;
             copyDesc.sourceTexture = desc.sourceResource;
@@ -929,11 +1129,43 @@ public:
 
     rhi::CommandValidationResult end() override
     {
+        if (nativePayload_ && nativePayload_->hasOrdinaryAttachments()) {
+            const auto result = originalCommand(rhi::CommandUsageKind::EndTransferPass);
+            if (result.success)
+                active_ = false;
+            return result;
+        }
+        if (!pass_.preflightResources(0u))
+            return pass_.rejected();
         active_ = false;
         return pass_.record();
     }
 
 private:
+    rhi::CommandValidationResult originalCommand(
+        rhi::CommandUsageKind kind, const rhi::TextureToBufferCopyDesc* copy = nullptr)
+    {
+        const auto scalar =
+            rhi::CommandScalarArguments::capture(kind, rhi::CommandScalarArguments::None{});
+        if (!active_ || !scalar)
+            return pass_.rejectStorage("RHI-ORDINARY-MIXED-TRANSFER-WRAPPER");
+        if (const auto* id = nativePayload_->recordOrdinaryMixedCommand(
+                pass_.commandCount(), *scalar, nullptr, nullptr, copy))
+            return pass_.rejectStorage(id);
+        return pass_.acceptOriginalCommand();
+    }
+
+    const char* preflightStagingJournal() const noexcept
+    {
+        if (!stagingUploads_ || !stagingUploads_->bounded())
+            return nullptr;
+        if (const auto* id = stagingUploads_->preflightEnlist())
+            return id;
+        // Reserving journal entries does not make the existing pool's page
+        // creation and slice metadata bounded or prove initialized byte input.
+        return VulkanRhiRecordingStorageLimits::unsupportedStagingPoolDiagnostic();
+    }
+
     VulkanRhiPassState pass_;
     std::shared_ptr<VulkanRhiNativeCommandPayload> nativePayload_;
     std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry_;
@@ -942,6 +1174,9 @@ private:
     std::uint64_t currentFrameSerial_ = 1;
     bool& active_;
 };
+
+static_assert(std::is_nothrow_move_constructible_v<VulkanRhiComputePassEncoder>);
+static_assert(std::is_nothrow_move_constructible_v<VulkanRhiTransferPassEncoder>);
 
 class VulkanRhiRenderBundleEncoder final : public rhi::RenderBundleEncoder {
 public:
@@ -1040,7 +1275,11 @@ public:
         const rhi::semantics::NativeBackendCapabilityContract& capabilityContract,
         bool bindlessExecutable,
         bool requireNativeCommandEncoding,
-        const rhi::CommandEncoderDesc& retention)
+        const rhi::CommandEncoderDesc& retention,
+        std::shared_ptr<const rhi::OriginalCommandStreamProgram> coldPassProgram = {},
+        const VulkanRhiRecordingStorageLimits* storage = nullptr,
+        const rhi::semantics::NativeCommandLoweringDecision* queryLowering = nullptr,
+        const rhi::OriginalRenderPassPreparationRequest* renderPreparation = nullptr)
         : requireNativeCommandEncoding_(requireNativeCommandEncoding),
           bindlessExecutable_(bindlessExecutable),
           indirectFirstInstanceEnabled_(nativeResources.runtime()
@@ -1050,21 +1289,182 @@ public:
           nativeAllocator_(nativeResources), resourceRegistry_(std::move(resourceRegistry)),
           stagingUploadPool_(stagingUploadPool), capabilityContract_(&capabilityContract),
           uploadRetirementSerial_(gNextUploadRetirementSerial.tryAcquire()),
-          stagingUploads_(arp::core::makeUnique<rhi::RecordedStagingUploadJournal>())
+          stagingUploads_(arp::core::makeUnique<rhi::RecordedStagingUploadJournal>()),
+          finishedCommand_(
+              core::makeUnique<VulkanRhiCommandBuffer>(VulkanRhiCommandBuffer::ColdStorage{})),
+          coldPassProgram_(std::move(coldPassProgram)), coldStorage_(storage != nullptr)
     {
         if (!uploadRetirementSerial_) {
             markCommandFail("RHI-VULKAN-STAGING-RESERVATION-IDENTITY-EXHAUSTED");
             return;
         }
+        if (coldStorage_) {
+            coldPassFailure_.reserve(std::max({kColdComputePassCapacity.size(),
+                kColdTransferPassCapacity.size(),
+                kColdRenderPassUnavailable.size(),
+                VulkanRhiRecordingStorageLimits::diagnosticCapacity()}));
+            nativeResources_.reserve(storage->resourceReferences);
+            std::size_t compute = 0u, transfer = 0u;
+            const auto count = [&](const auto& operations) {
+                for (const auto& operation : operations) {
+                    compute += operation.kind == rhi::CommandUsageKind::BeginComputePass;
+                    transfer += operation.kind == rhi::CommandUsageKind::BeginTransferPass;
+                }
+            };
+            if (coldPassProgram_)
+                count(coldPassProgram_->operations());
+            else
+                count(storage->originalQueries->inputs->originalScalars()
+                        ->originalUsage()
+                        ->commands());
+            std::uint64_t uploads = 0u;
+            if (coldPassProgram_) {
+                const auto& budget = *coldPassProgram_->recordingBudget();
+                const auto buffers =
+                    budget.limits
+                        .commands[static_cast<std::size_t>(rhi::CommandUsageKind::BufferUpload)];
+                const auto textures =
+                    budget.limits
+                        .commands[static_cast<std::size_t>(rhi::CommandUsageKind::TextureUpload)];
+                if (!core::canAddUnsigned(buffers, textures)) {
+                    markCommandFail("RHI-STAGING-JOURNAL-ENTRY-RANGE");
+                    return;
+                }
+                // The original Program was validated above, including its
+                // exact upload counts. An empty journal needs no untyped
+                // stream reconstruction, which discards a typed state root.
+                // Nonempty staging retains its existing admission contract.
+                if (coldPassProgram_->counts().bufferUploads
+                    || coldPassProgram_->counts().textureUploadMips) {
+                    if (const auto* id =
+                            rhi::OriginalCommandUploadStagingContract::inspectJournalEntries(
+                                coldPassProgram_->originalInputs(),
+                                coldPassProgram_->originalBudget(),
+                                buffers + textures,
+                                uploads)) {
+                        markCommandFail(id);
+                        return;
+                    }
+                }
+            }
+            // The original Query-only preparation has no upload admission.
+            // Its zero-entry journal therefore refuses uploads before mutation.
+            if (uploads > SIZE_MAX) {
+                markCommandFail("RHI-STAGING-JOURNAL-ENTRY-RANGE");
+                return;
+            }
+            if (const auto* id =
+                    stagingUploads_->prepareBounded(static_cast<std::size_t>(uploads))) {
+                markCommandFail(id);
+                return;
+            }
+            coldComputePasses_.reserve(compute);
+            coldTransferPasses_.reserve(transfer);
+            for (std::size_t i = 0u; i < compute; ++i)
+                coldComputePasses_.push_back(
+                    core::makeUnique<VulkanRhiComputePassEncoder>(commandCount_,
+                        activePass_,
+                        recordingIdentity_,
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        false));
+            for (std::size_t i = 0u; i < transfer; ++i)
+                coldTransferPasses_.push_back(core::makeUnique<VulkanRhiTransferPassEncoder>(
+                    commandCount_, activePass_, nullptr, nullptr, nullptr, nullptr, 0u));
+            if (renderPreparation && renderPreparation->contractVersion >= 2u) {
+                // Complete original/profile/count admission already succeeded.
+                // Traverse that same Program directly so allocation exceptions
+                // propagate to the cold factory, never through a noexcept visitor.
+                coldRenderPasses_.reserve(coldPassProgram_->counts().renderPasses);
+                for (const auto& operation : coldPassProgram_->operations()) {
+                    if (operation.kind != rhi::CommandUsageKind::BeginRenderPass)
+                        continue;
+                    const auto& original =
+                        std::get<std::shared_ptr<const rhi::RenderPassArguments>>(
+                            *coldPassProgram_->originalInputs()->descriptorAt(
+                                operation.commandIndex));
+                    auto wrapper = createVulkanRhiColdRenderPassEncoder(commandCount_,
+                        activePass_,
+                        recordingIdentity_,
+                        indirectAccesses_,
+                        original);
+                    if (!wrapper) {
+                        markCommandFail("RHI-VULKAN-COLD-RENDER-PASS-ORIGINAL-OWNER");
+                        return;
+                    }
+                    coldRenderPasses_.push_back(std::move(wrapper));
+                }
+            }
+        }
         std::pmr::string diagnostics;
         nativePayload_ =
-            createVulkanRhiNativeCommandPayload(nativeResources, diagnostics, retention);
+            createVulkanRhiNativeCommandPayload(nativeResources, diagnostics, retention, storage);
         if (!nativePayload_ && requireNativeCommandEncoding_) {
-            markCommandFail(diagnostics);
+            lastValidation_ = {false, std::move(diagnostics), commandCount_};
+        }
+        if (nativePayload_ && coldPassProgram_) {
+            originalRecordingStates_ = recordedStates_.get();
+            if (!nativePayload_->adoptOriginalStreamJournal(recordedStates_, diagnostics)) {
+                originalRecordingStates_ = nullptr;
+                nativePayload_.reset();
+                lastValidation_ = {false, std::move(diagnostics), commandCount_};
+            }
+        }
+        if (nativePayload_ && storage && storage->originalQueries
+            && storage->originalQueries->recordingContractVersion) {
+            originalRecordingStates_ = recordedStates_.get();
+            if (!queryLowering
+                || !nativePayload_->adoptOriginalQueryJournal(
+                    recordedStates_, recordingIdentity_, *queryLowering, diagnostics)) {
+                originalRecordingStates_ = nullptr;
+                nativePayload_.reset();
+                lastValidation_ = {false, std::move(diagnostics), commandCount_};
+            }
         }
     }
 
+    ~VulkanRhiCommandEncoder() override
+    {
+        // A published finished wrapper owns cancellation from this point on.
+        // Failed/unpublished finish still leaves this cold wrapper in place.
+        if (finishedCommand_ && nativePayload_)
+            nativePayload_->abandonOrdinaryRecording();
+    }
+
     const auto& nativePayload() const noexcept { return nativePayload_; }
+
+    VulkanRhiColdRenderPassObservation coldRenderPassObservation(std::size_t index) const noexcept
+    {
+        return index < coldRenderPasses_.size() && coldRenderPasses_[index]
+            ? inspectVulkanRhiColdRenderPass(*coldRenderPasses_[index])
+            : VulkanRhiColdRenderPassObservation{};
+    }
+
+    bool prepareOrdinaryRenderPasses(const rhi::GpuDevice& device,
+        const rhi::OriginalRenderPassPreparationRequest& request,
+        core::pmr::String& diagnostic)
+    {
+        return nativePayload_
+            && nativePayload_->prepareOrdinaryRenderPasses(device, request, diagnostic);
+    }
+
+    bool prepareOrdinaryTextureUploads(rhi::GpuDevice& device,
+        const rhi::OriginalOrdinaryTextureUploadContract::Budget& budget,
+        const rhi::OriginalOrdinaryTextureUploadContract::Binding* bindings,
+        std::size_t count,
+        core::pmr::String& diagnostic)
+    {
+        return nativePayload_ && stagingUploadPool_ && stagingUploads_
+            && nativePayload_->prepareOrdinaryTextureUploads(device,
+                *stagingUploadPool_,
+                *stagingUploads_,
+                uploadRetirementSerial_,
+                budget,
+                bindings,
+                count,
+                diagnostic);
+    }
 
     std::uint64_t recordingIdentity() const noexcept override { return recordingIdentity_; }
 
@@ -1077,16 +1477,29 @@ public:
     rhi::ResourceBarrierResult transition(
         rhi::GpuBuffer& buffer, const rhi::ResourceBarrierDesc& desc) override
     {
+        if (!preflightColdBarrier(rhi::CommandUsageKind::BufferBarrier, 1u))
+            return {};
         if (const auto* id = rhi::semantics::ResourceAccessUsageValidation::validateGeometryBarrier(
                 buffer.desc(), desc, desc.before, desc.after)) {
             markCommandFail(id);
             return {false, lastValidation_.diagnostics};
         }
-        if (!recordedStates_) {
+        if (!statesForRecording()) {
             markCommandFail("RHI-RESOURCE-STATE-RECORDING-FINISHED");
             return {false, lastValidation_.diagnostics};
         }
-        auto result = transitionVulkanRhiBuffer(buffer, desc, recordedStates_.get());
+        if (nativePayload_ && nativePayload_->hasOrdinaryAttachments()) {
+            if (const auto* id = nativePayload_->preflightOrdinaryBufferTransition(
+                    buffer, desc, commandCount_)) {
+                failColdPass(id);
+                return {false, {}};
+            }
+            if (const auto* id = nativePayload_->claimOrdinaryAttachments()) {
+                failColdPass(id);
+                return {false, {}};
+            }
+        }
+        auto result = transitionVulkanRhiBuffer(buffer, desc, statesForRecording());
         if (!result.success) {
             markCommandFail(result.diagnostics);
             return result;
@@ -1108,6 +1521,8 @@ public:
                 return result;
             }
         }
+        if (nativePayload_ && nativePayload_->hasOrdinaryAttachments())
+            nativePayload_->consumeOrdinaryAttachmentOperation();
         record();
         return result;
     }
@@ -1115,12 +1530,14 @@ public:
     rhi::ResourceBarrierResult transition(
         rhi::GpuTexture& texture, const rhi::ResourceBarrierDesc& desc) override
     {
+        if (!preflightColdBarrier(rhi::CommandUsageKind::TextureBarrier, 1u))
+            return {};
         if (const auto* id = rhi::semantics::ResourceAccessUsageValidation::validateGeometryBarrier(
                 texture.desc(), desc, desc.before, desc.after)) {
             markCommandFail(id);
             return {false, lastValidation_.diagnostics};
         }
-        if (!recordedStates_) {
+        if (!statesForRecording()) {
             markCommandFail("RHI-RESOURCE-STATE-RECORDING-FINISHED");
             return {false, lastValidation_.diagnostics};
         }
@@ -1144,7 +1561,22 @@ public:
                 return failed;
             }
         }
-        auto result = transitionVulkanRhiTexture(texture, desc, recordedStates_.get());
+        if (nativePayload_) {
+            if (const auto* id = nativePayload_->preflightOrdinaryTextureTransition(
+                    texture, desc, commandCount_)) {
+                failColdPass(id);
+                return {false, {}};
+            }
+            if (const auto* id = nativePayload_->claimOrdinaryAttachments()) {
+                failColdPass(id);
+                return {false, {}};
+            }
+        }
+        const bool originalUpload = texture.originalContentExclusive() && nativePayload_
+            && (nativePayload_->hasOrdinaryTextureUploads()
+                || nativePayload_->hasOrdinaryAttachments());
+        auto result = transitionVulkanRhiTexture(
+            texture, desc, statesForRecording(), originalUpload ? nativePayload_.get() : nullptr);
         if (std::getenv("ARP_VULKAN_TRACE_IMAGE_BARRIERS") != nullptr) {
             const auto payload = vulkanRhiNativePayload(texture);
             std::cerr << "[vulkan-barrier-result] label=" << texture.desc().label.c_str()
@@ -1166,7 +1598,11 @@ public:
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
-            if (!payload || !nativePayload_->recordImageBarrier(*payload, desc, diagnostics)) {
+            if (!payload
+                || !(originalUpload
+                        ? nativePayload_->recordValidatedOriginalImageBarrier(
+                              *payload, desc, diagnostics)
+                        : nativePayload_->recordImageBarrier(*payload, desc, diagnostics))) {
                 const auto message = diagnostics.empty()
                     ? std::pmr::string("Vulkan RHI native image barrier requires native payload")
                     : diagnostics;
@@ -1176,6 +1612,8 @@ public:
                 return result;
             }
         }
+        if (nativePayload_ && nativePayload_->hasOrdinaryAttachments())
+            nativePayload_->consumeOrdinaryAttachmentOperation();
         record();
         return result;
     }
@@ -1183,6 +1621,8 @@ public:
     rhi::ResourceBarrierResult memoryBarrier(
         rhi::GpuBuffer& buffer, const rhi::ResourceMemoryBarrierDesc& desc) override
     {
+        if (!preflightColdBarrier(rhi::CommandUsageKind::BufferMemoryBarrier, 1u))
+            return {};
         if (const auto* id = rhi::semantics::ResourceAccessUsageValidation::validateGeometryBarrier(
                 buffer.desc(), desc, buffer.state(), buffer.state())) {
             markCommandFail(id);
@@ -1197,7 +1637,7 @@ public:
         result.destinationStages = desc.destinationStages;
         result.sourceAccess = desc.sourceAccess;
         result.destinationAccess = desc.destinationAccess;
-        if (!recordedStates_) {
+        if (!statesForRecording()) {
             result.diagnostics = "RHI-RESOURCE-MEMORY-BARRIER-RECORDING-FINISHED";
             markCommandFail(result.diagnostics);
             return result;
@@ -1248,6 +1688,8 @@ public:
     rhi::ResourceBarrierResult memoryBarrier(
         rhi::GpuTexture& texture, const rhi::ResourceMemoryBarrierDesc& desc) override
     {
+        if (!preflightColdBarrier(rhi::CommandUsageKind::TextureMemoryBarrier, 1u))
+            return {};
         if (const auto* id = rhi::semantics::ResourceAccessUsageValidation::validateGeometryBarrier(
                 texture.desc(), desc, texture.state(), texture.state())) {
             markCommandFail(id);
@@ -1262,7 +1704,7 @@ public:
         result.destinationStages = desc.destinationStages;
         result.sourceAccess = desc.sourceAccess;
         result.destinationAccess = desc.destinationAccess;
-        if (!recordedStates_) {
+        if (!statesForRecording()) {
             result.diagnostics = "RHI-RESOURCE-MEMORY-BARRIER-RECORDING-FINISHED";
             markCommandFail(result.diagnostics);
             return result;
@@ -1317,6 +1759,8 @@ public:
 
     rhi::ResourceBarrierResult aliasBarrier(const rhi::AliasingBarrierDesc& desc) override
     {
+        if (!preflightColdBarrier(rhi::CommandUsageKind::AliasBarrier, 0u))
+            return {};
         rhi::ResourceBarrierResult result;
         result.resource = desc.afterResource;
         result.sourceStages = desc.sourceStages;
@@ -1343,6 +1787,33 @@ public:
     arp::core::UniquePtr<rhi::RenderPassEncoder> beginRenderPass(
         const rhi::RenderPassDesc& desc) override
     {
+        if (coldStorage_) {
+            if (!preflightColdRecording())
+                return {};
+            if (!nativePayload_->hasOrdinaryAttachments()) {
+                failColdPass(kColdRenderPassUnavailable);
+                return {};
+            }
+            if (activePass_ || finished_ || nextColdRenderPass_ >= coldRenderPasses_.size()) {
+                failColdPass("RHI-ORDINARY-ATTACHMENT-RECORDING-PASS-ORDER");
+                return {};
+            }
+            auto& pass = coldRenderPasses_[nextColdRenderPass_];
+            if (const auto* id =
+                    activateVulkanRhiColdRenderPass(*pass, nativePayload_, coldFailure())) {
+                failColdPass(id);
+                return {};
+            }
+            if (const auto* id =
+                    nativePayload_->recordOrdinaryRenderPassBegin(commandCount_, desc)) {
+                failColdPass(id);
+                return {};
+            }
+            activePass_ = true;
+            ++nextColdRenderPass_;
+            markCommandOk();
+            return std::move(pass);
+        }
         const auto operations = rhi::semantics::validateRenderPassAttachmentOperations(desc);
         if (!operations.success) {
             lastValidation_ = commandFail(operations.diagnostics, commandCount_);
@@ -1378,8 +1849,32 @@ public:
     }
 
     arp::core::UniquePtr<rhi::ComputePassEncoder> beginComputePass(
-        const rhi::ComputePassDesc&) override
+        const rhi::ComputePassDesc& desc) override
     {
+        if (!preflightColdRecording())
+            return {};
+        const bool originalMixed = nativePayload_ && nativePayload_->hasOrdinaryMixedPasses();
+        if (nativePayload_ && nativePayload_->hasOrdinaryAttachments() && !originalMixed) {
+            failColdPass("RHI-ORDINARY-ATTACHMENT-RECORDING-COMMAND-PROFILE");
+            return {};
+        }
+        if (coldStorage_ && nextColdComputePass_ == coldComputePasses_.size()) {
+            failColdPass(kColdComputePassCapacity);
+            return {};
+        }
+        if (originalMixed) {
+            if (!desc.label.empty()) {
+                failColdPass("RHI-ORDINARY-MIXED-PASS-LABEL");
+                return {};
+            }
+            const auto scalar = rhi::CommandScalarArguments::capture(
+                rhi::CommandUsageKind::BeginComputePass, rhi::CommandScalarArguments::None{});
+            if (const auto* id =
+                    nativePayload_->recordOrdinaryMixedCommand(commandCount_, *scalar)) {
+                failColdPass(id);
+                return {};
+            }
+        }
         core::pmr::String diagnostic;
         if (nativePayload_ && !nativePayload_->conformanceComputePass(true, diagnostic)) {
             markCommandFail(diagnostic);
@@ -1396,10 +1891,26 @@ public:
                 return nullptr;
             }
         }
-        record();
+        if (originalMixed)
+            markCommandOk();
+        else
+            record();
         if (!lastValidation_.success) {
             rollbackPassBegin();
             return nullptr;
+        }
+        if (coldStorage_) {
+            VulkanRhiComputePassEncoder pass(commandCount_,
+                activePass_,
+                recordingIdentity_,
+                nativePayload_,
+                resourceRegistry_,
+                capabilityContract_,
+                bindlessExecutable_,
+                coldFailure());
+            auto& slot = coldComputePasses_[nextColdComputePass_++];
+            core::replaceCpuObjectByMove(*slot, pass);
+            return std::move(slot);
         }
         return arp::core::makeUnique<VulkanRhiComputePassEncoder>(commandCount_,
             activePass_,
@@ -1411,8 +1922,32 @@ public:
     }
 
     arp::core::UniquePtr<rhi::TransferPassEncoder> beginTransferPass(
-        const rhi::TransferPassDesc&) override
+        const rhi::TransferPassDesc& desc) override
     {
+        if (!preflightColdRecording())
+            return {};
+        const bool originalMixed = nativePayload_ && nativePayload_->hasOrdinaryMixedPasses();
+        if (nativePayload_ && nativePayload_->hasOrdinaryAttachments() && !originalMixed) {
+            failColdPass("RHI-ORDINARY-ATTACHMENT-RECORDING-COMMAND-PROFILE");
+            return {};
+        }
+        if (coldStorage_ && nextColdTransferPass_ == coldTransferPasses_.size()) {
+            failColdPass(kColdTransferPassCapacity);
+            return {};
+        }
+        if (originalMixed) {
+            if (!desc.label.empty()) {
+                failColdPass("RHI-ORDINARY-MIXED-PASS-LABEL");
+                return {};
+            }
+            const auto scalar = rhi::CommandScalarArguments::capture(
+                rhi::CommandUsageKind::BeginTransferPass, rhi::CommandScalarArguments::None{});
+            if (const auto* id =
+                    nativePayload_->recordOrdinaryMixedCommand(commandCount_, *scalar)) {
+                failColdPass(id);
+                return {};
+            }
+        }
         core::pmr::String diagnostic;
         if (nativePayload_ && !nativePayload_->rejectConformanceClearWork(diagnostic)) {
             markCommandFail(diagnostic);
@@ -1429,10 +1964,26 @@ public:
                 return nullptr;
             }
         }
-        record();
+        if (originalMixed)
+            markCommandOk();
+        else
+            record();
         if (!lastValidation_.success) {
             rollbackPassBegin();
             return nullptr;
+        }
+        if (coldStorage_) {
+            VulkanRhiTransferPassEncoder pass(commandCount_,
+                activePass_,
+                nativePayload_,
+                resourceRegistry_,
+                stagingUploadPool_,
+                stagingUploads_.get(),
+                uploadRetirementSerial_,
+                coldFailure());
+            auto& slot = coldTransferPasses_[nextColdTransferPass_++];
+            core::replaceCpuObjectByMove(*slot, pass);
+            return std::move(slot);
         }
         return arp::core::makeUnique<VulkanRhiTransferPassEncoder>(commandCount_,
             activePass_,
@@ -1456,6 +2007,8 @@ public:
 
     void pushDebugGroup(std::string_view label) override
     {
+        if (!preflightDebugLabel())
+            return;
         if (nativePayload_) {
             std::pmr::string diag;
             nativePayload_->recordPushDebugGroup(label, diag);
@@ -1464,6 +2017,8 @@ public:
 
     void popDebugGroup() override
     {
+        if (!preflightDebugLabel())
+            return;
         if (nativePayload_) {
             std::pmr::string diag;
             nativePayload_->recordPopDebugGroup(diag);
@@ -1472,6 +2027,8 @@ public:
 
     void insertDebugMarker(std::string_view label) override
     {
+        if (!preflightDebugLabel())
+            return;
         if (nativePayload_) {
             std::pmr::string diag;
             nativePayload_->recordInsertDebugMarker(label, diag);
@@ -1480,6 +2037,13 @@ public:
 
     arp::core::UniquePtr<rhi::CommandBuffer> finish() override
     {
+        if (!preflightColdRecording())
+            return {};
+        if (nativePayload_)
+            if (const auto* id = nativePayload_->sealOrdinaryAttachments(commandCount_)) {
+                failColdPass(id);
+                return {};
+            }
         if (!finishGuard("Vulkan RHI command encoder has an unclosed pass")) {
             return nullptr;
         }
@@ -1489,7 +2053,15 @@ public:
                 markCommandFail(diagnostics);
                 return nullptr;
             }
+            if (const auto* id = nativePayload_->sealOriginalQueries(commandCount_)) {
+                failColdPass(id);
+                return {};
+            }
             if (!nativePayload_->end(diagnostics)) {
+                if (const auto* id = nativePayload_->recordingStorageDiagnostic()) {
+                    failColdPass(id);
+                    return {};
+                }
                 markCommandFail(diagnostics);
                 return nullptr;
             }
@@ -1498,11 +2070,97 @@ public:
                 return nullptr;
             }
         }
-        return arp::core::makeUnique<VulkanRhiCommandBuffer>(
-            commandCount_, nativePayload_, std::move(recordedStates_), std::move(stagingUploads_));
+        if (originalRecordingStates_) {
+            VulkanRhiCommandBuffer finished(
+                commandCount_, nativePayload_, *originalRecordingStates_);
+            core::replaceCpuObjectByMove(*finishedCommand_, finished);
+        } else {
+            VulkanRhiCommandBuffer finished(commandCount_,
+                nativePayload_,
+                std::move(recordedStates_),
+                std::move(stagingUploads_));
+            core::replaceCpuObjectByMove(*finishedCommand_, finished);
+        }
+        return std::move(finishedCommand_);
     }
 
 private:
+    VulkanRhiColdFailure coldFailure() noexcept
+    {
+        return {this, [](void* owner, std::string_view id) noexcept {
+                    static_cast<VulkanRhiCommandEncoder*>(owner)->failColdPass(id);
+                }};
+    }
+
+    core::MutationJournal* statesForRecording() const noexcept
+    {
+        return finished_      ? nullptr
+            : recordedStates_ ? recordedStates_.get()
+                              : originalRecordingStates_;
+    }
+
+    bool preflightColdRecording() noexcept
+    {
+        if (coldPassFailed_)
+            return false;
+        if (coldStorage_ && nativePayload_) {
+            if (const auto* id = nativePayload_->recordingStorageDiagnostic()) {
+                failColdPass(id);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool preflightDebugLabel() noexcept
+    {
+        if (!preflightColdRecording())
+            return false;
+        if (!coldStorage_)
+            return true;
+        failColdPass(VulkanRhiRecordingStorageLimits::unsupportedDebugLabelDiagnostic());
+        return false;
+    }
+
+    bool preflightColdBarrier(rhi::CommandUsageKind kind, std::size_t references)
+    {
+        if (!preflightColdRecording())
+            return false;
+        if (!coldStorage_)
+            return true;
+        if (nativePayload_->hasOrdinaryAttachments())
+            if (const auto* id =
+                    nativePayload_->preflightOrdinaryAttachmentOperation(kind, commandCount_)) {
+                failColdPass(id);
+                return false;
+            }
+        const char* id = nativePayload_->recordingBarrierStorageDiagnostic(kind);
+        if (!id)
+            id = nativePayload_->resourceRetentionStorageDiagnostic(references);
+        if (!id)
+            return true;
+        nativePayload_->rejectRecordingStorage(id);
+        failColdPass(id);
+        return false;
+    }
+
+    void failColdPass(std::string_view diagnostic) noexcept
+    {
+        if (coldPassFailed_)
+            return;
+        // Every caller supplies a static diagnostic ID. Existing pass wrappers
+        // observe the same terminal native latch before touching any resource.
+        if (nativePayload_)
+            nativePayload_->rejectRecordingStorage(diagnostic.data());
+        coldPassFailure_.assign(diagnostic.data(), diagnostic.size());
+        lastValidation_.diagnostics = std::move(coldPassFailure_);
+        lastValidation_.success = false;
+        lastValidation_.status = rhi::CommandValidationStatus::DiagnosticFailure;
+        lastValidation_.recordedCommandCount = commandCount_;
+        lastValidation_.diagnosticId.clear();
+        coldPassFailed_ = true;
+    }
+
     void record()
     {
         std::pmr::string diagnostics;
@@ -1525,15 +2183,295 @@ private:
     const rhi::semantics::NativeBackendCapabilityContract* capabilityContract_ = nullptr;
     std::uint64_t uploadRetirementSerial_ = 1u;
     core::UniquePtr<rhi::RecordedStagingUploadJournal> stagingUploads_;
+    core::UniquePtr<VulkanRhiCommandBuffer> finishedCommand_;
+    std::shared_ptr<const rhi::OriginalCommandStreamProgram> coldPassProgram_;
+    bool coldStorage_ = false;
+    core::MutationJournal* originalRecordingStates_ = nullptr;
+    core::pmr::Vector<core::UniquePtr<VulkanRhiComputePassEncoder>> coldComputePasses_;
+    core::pmr::Vector<core::UniquePtr<VulkanRhiTransferPassEncoder>> coldTransferPasses_;
+    core::pmr::Vector<core::UniquePtr<rhi::RenderPassEncoder>> coldRenderPasses_;
+    std::size_t nextColdComputePass_ = 0u, nextColdTransferPass_ = 0u, nextColdRenderPass_ = 0u;
+    core::pmr::String coldPassFailure_;
+    bool coldPassFailed_ = false;
     std::pmr::vector<NativeResourceBinding> nativeResources_;
 };
-
-} // namespace
 
 std::shared_ptr<VulkanRhiNativeCommandPayload> vulkanRhiCommandPayload(rhi::CommandEncoder& encoder)
 {
     auto* original = dynamic_cast<VulkanRhiCommandEncoder*>(&encoder);
     return original ? original->nativePayload() : nullptr;
+}
+
+VulkanRhiColdRenderPassObservation inspectVulkanRhiColdRenderPass(
+    const rhi::CommandEncoder& encoder, std::size_t literalPassIndex) noexcept
+{
+    const auto* original = dynamic_cast<const VulkanRhiCommandEncoder*>(&encoder);
+    return original ? original->coldRenderPassObservation(literalPassIndex)
+                    : VulkanRhiColdRenderPassObservation{};
+}
+
+namespace {
+core::UniquePtr<rhi::CommandEncoder> createColdPassEncoder(
+    VulkanRhiNativeResourceAllocator nativeResources,
+    std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry,
+    VulkanRhiStagingUploadPool* stagingUploadPool,
+    const rhi::semantics::NativeBackendCapabilityContract& capabilityContract,
+    std::shared_ptr<const rhi::OriginalCommandStreamProgram> original,
+    core::pmr::String& diagnostic,
+    const rhi::GpuDevice* device,
+    const rhi::OriginalRenderPassPreparationRequest* preparation)
+{
+    diagnostic.clear();
+    if (const auto* id = rhi::OriginalCommandStreamProgram::validateOriginal(original)) {
+        diagnostic = id;
+        return {};
+    }
+    if (!original->recordingBudget()) {
+        diagnostic = "RHI-VULKAN-COLD-PASS-RECORDING-BUDGET-REQUIRED";
+        return {};
+    }
+    const char* projectionDiagnostic = nullptr;
+    auto storage = VulkanRhiRecordingStorageLimits::project(
+        *original->recordingBudget(), projectionDiagnostic);
+    if (!storage) {
+        diagnostic = projectionDiagnostic;
+        return {};
+    }
+    storage->originalProgram = original;
+    if (preparation) {
+        if (!device || !nativeResources.runtime()
+            || capabilityContract.backend != rhi::Backend::Vulkan) {
+            diagnostic = "RHI-VULKAN-COLD-RENDER-PASS-DEVICE";
+            return {};
+        }
+        const auto result = VulkanRhiRenderPassStorageProjection::inspectPreparation(
+            original, *preparation, *device, *nativeResources.runtime());
+        if (result.diagnostic) {
+            diagnostic = result.diagnostic;
+            return {};
+        }
+    } else if (original->counts().renderPasses) {
+        diagnostic = "RHI-VULKAN-COLD-RENDER-PASS-STORAGE-UNAVAILABLE";
+        return {};
+    }
+    if (nativeResources.runtime() && nativeResources.runtime()->syntheticRuntime()) {
+        diagnostic = "RHI-VULKAN-COLD-PASS-SYNTHETIC-RUNTIME";
+        return {};
+    }
+    try {
+        core::UniquePtr<VulkanRhiCommandEncoder> encoder;
+        {
+            core::CpuMemoryQuotaScope scope(original->originalMetadataQuota());
+            encoder = core::makeUnique<VulkanRhiCommandEncoder>(std::move(nativeResources),
+                std::move(resourceRegistry),
+                stagingUploadPool,
+                capabilityContract,
+                false,
+                true,
+                rhi::CommandEncoderDesc{},
+                original,
+                &*storage,
+                nullptr,
+                preparation);
+            if (encoder->ready() && preparation
+                && !encoder->prepareOrdinaryRenderPasses(*device, *preparation, diagnostic))
+                return {};
+        }
+        if (!encoder->ready()) {
+            diagnostic = encoder->lastValidation().diagnostics;
+            return {};
+        }
+        return encoder;
+    } catch (const std::bad_alloc&) {
+        diagnostic = "RHI-VULKAN-COLD-PASS-STORAGE-ALLOCATION";
+        return {};
+    } catch (const std::length_error&) {
+        diagnostic = "RHI-VULKAN-COLD-PASS-STORAGE-ALLOCATION";
+        return {};
+    }
+}
+
+} // namespace
+
+core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoderWithColdPassStorage(
+    VulkanRhiNativeResourceAllocator resources,
+    std::shared_ptr<VulkanRhiResourceRegistry> registry,
+    VulkanRhiStagingUploadPool* pool,
+    const rhi::semantics::NativeBackendCapabilityContract& capabilities,
+    std::shared_ptr<const rhi::OriginalCommandStreamProgram> original,
+    core::pmr::String& diagnostic)
+{
+    return createColdPassEncoder(std::move(resources),
+        std::move(registry),
+        pool,
+        capabilities,
+        std::move(original),
+        diagnostic,
+        nullptr,
+        nullptr);
+}
+
+core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoderWithColdRenderPasses(
+    VulkanRhiNativeResourceAllocator resources,
+    std::shared_ptr<VulkanRhiResourceRegistry> registry,
+    VulkanRhiStagingUploadPool* pool,
+    const rhi::semantics::NativeBackendCapabilityContract& capabilities,
+    std::shared_ptr<const rhi::OriginalCommandStreamProgram> original,
+    const rhi::GpuDevice& device,
+    const rhi::OriginalRenderPassPreparationRequest& request,
+    core::pmr::String& diagnostic)
+{
+    return createColdPassEncoder(std::move(resources),
+        std::move(registry),
+        pool,
+        capabilities,
+        std::move(original),
+        diagnostic,
+        &device,
+        &request);
+}
+
+core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoderWithColdPassStorage(
+    VulkanRhiNativeResourceAllocator resources,
+    std::shared_ptr<VulkanRhiResourceRegistry> registry,
+    VulkanRhiStagingUploadPool* staging,
+    const rhi::semantics::NativeBackendCapabilityContract& capabilities,
+    const rhi::GpuDevice& device,
+    const VulkanRhiRecordingStorageLimits& original,
+    core::pmr::String& diagnostic)
+{
+    diagnostic.clear();
+    if (!original.originalQueries) {
+        diagnostic = "RHI-VULKAN-ORIGINAL-QUERY-INPUTS";
+        return {};
+    }
+    const auto& query = *original.originalQueries;
+    if (const auto* id = original.diagnostic()) {
+        diagnostic = id;
+        return {};
+    }
+    const auto lowering = rhi::semantics::QueryLowering::originalRecording(
+        device.backend(), query.recordingContractVersion, query.recordingOptIn);
+    if (!lowering.privateRecordingAvailable || lowering.diagnostic) {
+        diagnostic = lowering.diagnostic;
+        return {};
+    }
+    const auto& sources = query.inputs->originalScalars()->originalUsage()->originalSources();
+    if (const auto* id =
+            rhi::OriginalCommandResourceSources::validateRegisteredLifetime(sources, device)) {
+        diagnostic = id;
+        return {};
+    }
+    if (const auto* id = rhi::OriginalCommandStreamProgram::validateOriginalRecordingBudget(
+            query.inputs, query.commandBudget)) {
+        diagnostic = id;
+        return {};
+    }
+    rhi::semantics::CommandWorkloadDesc workload;
+    workload.label = "original-query-journal";
+    workload.commandCount = 1u;
+    workload.usesTimestampQuery = true;
+    const auto native = rhi::semantics::lowerCommandWorkload(
+        capabilities, workload, rhi::semantics::CommandRecordingIntent::PrimaryCommandBuffer);
+    if (capabilities.backend != rhi::Backend::Vulkan || !native.success) {
+        diagnostic = native.success ? "RHI-VULKAN-ORIGINAL-QUERY-CAPABILITY" : native.diagnostics;
+        return {};
+    }
+    const char* id = nullptr;
+    auto storage = VulkanRhiRecordingStorageLimits::project(query.commandBudget, id);
+    if (!storage) {
+        diagnostic = id;
+        return {};
+    }
+    storage->originalQueries = query;
+    for (const auto& command : query.inputs->originalScalars()->originalUsage()->commands()) {
+        if (command.kind == rhi::CommandUsageKind::BeginRenderPass) {
+            diagnostic = kColdRenderPassUnavailable;
+            return {};
+        }
+    }
+    try {
+        core::UniquePtr<VulkanRhiCommandEncoder> encoder;
+        {
+            core::CpuMemoryQuotaScope scope(query.recordingQuota);
+            encoder = core::makeUnique<VulkanRhiCommandEncoder>(std::move(resources),
+                std::move(registry),
+                staging,
+                capabilities,
+                false,
+                true,
+                rhi::CommandEncoderDesc{},
+                nullptr,
+                &*storage,
+                &native);
+        }
+        if (!encoder->ready()) {
+            diagnostic = encoder->lastValidation().diagnostics;
+            return {};
+        }
+        return encoder;
+    } catch (const std::bad_alloc&) {
+        diagnostic = "RHI-VULKAN-COLD-PASS-STORAGE-ALLOCATION";
+    } catch (const std::length_error&) {
+        diagnostic = "RHI-VULKAN-COLD-PASS-STORAGE-ALLOCATION";
+    }
+    return {};
+}
+
+core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoderWithColdTextureUploads(
+    VulkanRhiNativeResourceAllocator resources,
+    std::shared_ptr<VulkanRhiResourceRegistry> registry,
+    VulkanRhiStagingUploadPool* pool,
+    const rhi::semantics::NativeBackendCapabilityContract& capabilities,
+    std::shared_ptr<const rhi::OriginalCommandStreamProgram> program,
+    rhi::GpuDevice& device,
+    const rhi::OriginalOrdinaryTextureUploadContract::Budget& budget,
+    const rhi::OriginalOrdinaryTextureUploadContract::Binding* bindings,
+    std::size_t count,
+    core::pmr::String& diagnostic)
+{
+    using Contract = rhi::OriginalOrdinaryTextureUploadContract;
+    diagnostic.clear();
+    const auto decision = Contract::lowering(device.backend(), budget);
+    if (decision.diagnostic) {
+        diagnostic = decision.diagnostic;
+        return {};
+    }
+    if (const auto* id = Contract::inspect(program, budget, bindings, count)) {
+        diagnostic = id;
+        return {};
+    }
+    if (capabilities.backend != rhi::Backend::Vulkan) {
+        diagnostic = "RHI-ORDINARY-TEXTURE-UPLOAD-CAPABILITY";
+        return {};
+    }
+    if (const auto* id = rhi::OriginalCommandResourceSources::validateRegisteredLifetime(
+            program->originalInputs()->originalScalars()->originalUsage()->originalSources(),
+            device)) {
+        diagnostic = id;
+        return {};
+    }
+    if (!pool || !pool->coldStoragePrepared()) {
+        diagnostic = "RHI-ORDINARY-TEXTURE-UPLOAD-COLD-POOL";
+        return {};
+    }
+    auto result = createVulkanRhiCommandEncoderWithColdPassStorage(
+        std::move(resources), std::move(registry), pool, capabilities, program, diagnostic);
+    if (!result)
+        return {};
+    try {
+        core::CpuMemoryQuotaScope scope(program->originalMetadataQuota());
+        if (!static_cast<VulkanRhiCommandEncoder&>(*result).prepareOrdinaryTextureUploads(
+                device, budget, bindings, count, diagnostic))
+            return {};
+    } catch (const std::bad_alloc&) {
+        diagnostic = "RHI-ORDINARY-TEXTURE-UPLOAD-ALLOCATION";
+        return {};
+    } catch (const std::length_error&) {
+        diagnostic = "RHI-ORDINARY-TEXTURE-UPLOAD-ALLOCATION";
+        return {};
+    }
+    return result;
 }
 
 arp::core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoder(

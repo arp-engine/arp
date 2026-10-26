@@ -17,12 +17,14 @@
 #include "rhi/frontend/pipeline_definition_identity.h"
 #include "rhi/frontend/pipeline_graphics_input.h"
 #include "rhi/frontend/pipeline_single_entry_input.h"
+#include "rhi/frontend/query_source.h"
 #include "rhi/frontend/resource_leases.h"
 #include "rhi/frontend/transfer_buffer_readback.h"
 #include "rhi/frontend/transfer_readback_input.h"
 #include "rhi/frontend/transfer_upload_input.h"
 #include "rhi/frontend/transfer_upload_layout_validation.h"
 #include "rhi/frontend/transfer_upload_packing.h"
+#include "rhi/gpu_command_sources.h"
 #include "rhi/gpu_descriptors.h"
 #include "rhi/gpu_device.h"
 #include "rhi/semantics/bindless_original_preparation_lowering.h"
@@ -1028,7 +1030,7 @@ public:
     static constexpr const char* validateBudget(
         const OriginalCommandPipelineSourceBudget& b) noexcept
     {
-        if (b.contractVersion != 1u)
+        if (b.contractVersion != 1u && b.contractVersion != 2u)
             return "RHI-ORIGINAL-PIPELINE-SOURCE-VERSION";
         if (!b.prototypeOptIn)
             return "RHI-ORIGINAL-PIPELINE-SOURCE-OPT-IN";
@@ -1064,7 +1066,7 @@ public:
             return {};
         }
         if ((diagnostic = arp::rhi::semantics::OriginalCommandPipelineSourceLowering::lowering(
-                 device.backend())
+                 device.backend(), budget.contractVersion, graphics)
                     .diagnostic))
             return {};
         if ((diagnostic = validateObject(object, budget, quota)))
@@ -1100,7 +1102,7 @@ public:
         if (const auto* id = validateOriginal(self))
             return id;
         if (const auto* id = arp::rhi::semantics::OriginalCommandPipelineSourceLowering::lowering(
-                device.backend())
+                device.backend(), self->budget_.contractVersion, graphics)
                 .diagnostic)
             return id;
         if (device.overlapsOriginalDeviceCpuOwner(self->originalMetadataQuota()))
@@ -1233,16 +1235,6 @@ using OriginalCommandComputePipelineSource = OriginalCommandPipelineSource<Compu
 class OriginalCommandResourceSources;
 class GpuDevice;
 
-struct OriginalCommandDescriptorSetElement {
-    DescriptorBindingWrite write;
-    std::size_t sourceIndex = SIZE_MAX;
-    std::uint64_t registrationGeneration = 0u;
-    std::uint64_t bufferAccessOffset = 0u, bufferAccessBytes = 0u;
-    PipelineStage stages = PipelineStage::None;
-    ResourceAccess access = ResourceAccess::None;
-    std::uint32_t dynamicOffset = 0u;
-};
-
 struct OriginalCommandDescriptorTableElement {
     DescriptorTableWrite write;
     std::size_t sourceIndex = SIZE_MAX;
@@ -1332,18 +1324,6 @@ public:
 
 // region original_command_descriptor_source
 
-struct OriginalCommandDescriptorSourceBudget {
-    std::uint32_t contractVersion = 0u;
-    bool prototypeOptIn = false;
-    std::uint32_t maxLogicalElements = 0u, maxWrittenElements = 0u, maxExclusiveRetainedOwners = 0u;
-    std::uint64_t sourceCpuBytes = 0u;
-    std::size_t finitePipelineSourceIndex = SIZE_MAX;
-    std::uint32_t finiteLogicalSet = 0u, finiteFootprintContractVersion = 0u,
-                  maxFrozenDynamicOffsets = 0u;
-    bool finiteFullBoundViewOptIn = false;
-    OriginalCompletedDepthReadInputContract::Budget completedDepthInputs;
-};
-
 // The existing frozen storage is also the borrowed General content sequence.
 // No second declaration array or ownership inventory is needed for Source/5.
 struct OriginalCommandDescriptorSetFrozenElement {
@@ -1377,7 +1357,7 @@ public:
 
     static constexpr bool generalFiniteVersion(std::uint32_t version) noexcept
     {
-        return version == 5u;
+        return version == 5u || version == 7u;
     }
 
     static constexpr bool pipelineBoundVersion(std::uint32_t version) noexcept
@@ -1536,17 +1516,26 @@ public:
         if constexpr (isSet) {
             if ((diagnostic = object->originalScopedContentDiagnostic()))
                 return {};
-            if (object->originalGeneralContentContractVersion() == 2u
+            if ((object->originalGeneralContentContractVersion() == 2u
+                    || object->originalGeneralContentContractVersion() == 3u
+                    || object->originalGeneralContentContractVersion() == 4u)
                 && !generalFiniteVersion(budget.contractVersion)) {
                 diagnostic = "RHI-ORIGINAL-GENERAL-SOURCE-LEGACY-PROFILE";
                 return {};
             }
             if (generalFiniteVersion(budget.contractVersion)) {
+                if ((object->originalGeneralContentContractVersion() == 4u)
+                    != (budget.contractVersion == 7u)) {
+                    diagnostic = "RHI-ORIGINAL-COMPUTE-SOURCE-WRITE-PROFILE";
+                    return {};
+                }
                 if ((diagnostic = semantics::OriginalCommandDescriptorSourceLowering::
                             generalFiniteLowering(device.backend())
                                 .diagnostic))
                     return {};
-                if (object->originalGeneralContentContractVersion() != 2u) {
+                if (object->originalGeneralContentContractVersion() != 2u
+                    && object->originalGeneralContentContractVersion() != 3u
+                    && object->originalGeneralContentContractVersion() != 4u) {
                     diagnostic = "RHI-ORIGINAL-GENERAL-SOURCE-WRITE-PROFILE";
                     return {};
                 }
@@ -1935,9 +1924,15 @@ private:
             if (const auto* id = object.originalScopedContentDiagnostic())
                 return id;
         if constexpr (isSet)
-            if ((object.originalGeneralContentContractVersion() == 2u)
+            if ((object.originalGeneralContentContractVersion() == 2u
+                    || object.originalGeneralContentContractVersion() == 3u
+                    || object.originalGeneralContentContractVersion() == 4u)
                 != generalFiniteVersion(budget_.contractVersion))
                 return "RHI-ORIGINAL-GENERAL-SOURCE-WRITE-PROFILE";
+        if constexpr (isSet)
+            if ((object.originalGeneralContentContractVersion() == 4u)
+                != (budget_.contractVersion == 7u))
+                return "RHI-ORIGINAL-COMPUTE-SOURCE-WRITE-PROFILE";
         if constexpr (!isSet)
             if (const auto* id = object.originalDepthTableContentDiagnostic())
                 return id;
@@ -2699,7 +2694,7 @@ public:
     {
         return domain == CommandReferenceDomain::Descriptor
             || domain == CommandReferenceDomain::DescriptorTable
-            || domain == CommandReferenceDomain::Pipeline
+            || domain == CommandReferenceDomain::Pipeline || domain == CommandReferenceDomain::Query
             || domain == CommandReferenceDomain::BindlessRoot;
     }
 
@@ -2715,7 +2710,8 @@ public:
         std::shared_ptr<const OriginalCommandGraphicsPipelineSource>,
         std::shared_ptr<const OriginalCommandComputePipelineSource>,
         std::shared_ptr<const OriginalCommandSamplerLease>,
-        std::shared_ptr<const OriginalCommandBindlessRootSource>>;
+        std::shared_ptr<const OriginalCommandBindlessRootSource>,
+        std::shared_ptr<const OriginalCommandQueryPoolSource>>;
 
     OriginalCommandResourceSources(ConstructionKey,
         std::size_t count,
@@ -2789,7 +2785,8 @@ public:
             return {};
         if (assembly.contractVersion != 1u && assembly.contractVersion != 2u
             && assembly.contractVersion != 3u && assembly.contractVersion != 4u
-            && assembly.contractVersion != 5u && assembly.contractVersion != 6u) {
+            && assembly.contractVersion != 5u && assembly.contractVersion != 6u
+            && assembly.contractVersion != 7u && assembly.contractVersion != 8u) {
             diagnostic = "RHI-ORIGINAL-SOURCES-ASSEMBLY-VERSION";
             return {};
         }
@@ -2807,7 +2804,11 @@ public:
                                               : 0u)
             + (assembly.contractVersion == 6u ? budget.maxSourceOwners[static_cast<std::size_t>(
                                                     CommandReferenceDomain::BindlessRoot)]
-                                              : 0u);
+                                              : 0u)
+            + (assembly.contractVersion == 7u
+                    ? budget
+                          .maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Query)]
+                    : 0u);
         if (!assembly.maxTypedSources || assembly.maxTypedSources != required
             || count > SIZE_MAX - assembly.maxTypedSources) {
             diagnostic = "RHI-ORIGINAL-SOURCES-ASSEMBLY-CAPACITY";
@@ -2876,10 +2877,20 @@ public:
                     return value->matchesCanonicalSources(*self)
                         ? nullptr
                         : "RHI-ORIGINAL-SOURCES-ASSEMBLY-FOREIGN-INVENTORY";
+                } else if constexpr (T::domain == CommandReferenceDomain::Query) {
+                    if (self->assemblyVersion_ != 7u)
+                        return "RHI-ORIGINAL-SOURCES-ASSEMBLY-QUERY-VERSION";
+                    if (const auto* error = T::validateOriginal(value, device))
+                        return error;
+                    return core::SharedOwnerProjection::sameOwner(
+                               value->originalMetadataQuota(), self->originalMetadataQuota())
+                        ? nullptr
+                        : "RHI-ORIGINAL-SOURCES-SOURCE-QUOTA";
                 } else if constexpr (T::domain == CommandReferenceDomain::Pipeline) {
                     if (self->assemblyVersion_ != 2u && self->assemblyVersion_ != 3u
                         && self->assemblyVersion_ != 4u && self->assemblyVersion_ != 5u
-                        && self->assemblyVersion_ != 6u)
+                        && self->assemblyVersion_ != 6u && self->assemblyVersion_ != 7u
+                        && self->assemblyVersion_ != 8u)
                         return "RHI-ORIGINAL-SOURCES-ASSEMBLY-PIPELINE-VERSION";
                     if (const auto* error = T::validateOriginal(value, device))
                         return error;
@@ -2928,10 +2939,11 @@ public:
     static constexpr bool allowsDescriptorSourceVersion(
         std::uint32_t assembly, std::uint32_t source) noexcept
     {
-        return (assembly >= 1u && assembly <= 6u && source == 2u)
+        return (assembly >= 1u && assembly <= 8u && source == 2u)
             || (assembly == 3u && source == 3u) || (assembly == 4u && source == 4u)
-            || ((assembly == 5u || assembly == 6u) && source == 5u)
-            || (assembly == 6u && source == 6u);
+            || ((assembly == 5u || assembly == 6u || assembly == 7u || assembly == 8u)
+                && source == 5u)
+            || (assembly == 8u && source == 7u) || (assembly == 6u && source == 6u);
     }
 
     static bool isTyped(const Source& source) noexcept { return isTypedDomain(domain(source)); }
@@ -2971,6 +2983,9 @@ public:
 
     const char* typedStateJoinDiagnostic() const noexcept
     {
+        for (const auto& source : sources())
+            if (domain(source) == CommandReferenceDomain::Query)
+                return "RHI-ORIGINAL-QUERY-STATE-JOIN-MISSING";
         for (const auto& source : sources())
             if (domain(source) == CommandReferenceDomain::BindlessRoot)
                 return "RHI-ORIGINAL-BINDLESS-ROOT-STATE-JOIN-MISSING";
@@ -3238,11 +3253,16 @@ public:
                                 && value->matchesCanonicalSources(*this)
                             ? nullptr
                             : "RHI-ORIGINAL-SOURCES-ASSEMBLY-BINDLESS-VERSION";
+                    else if constexpr (T::domain == CommandReferenceDomain::Query)
+                        return typedAssembly_ && assemblyVersion_ == 7u
+                            ? nullptr
+                            : "RHI-ORIGINAL-SOURCES-ASSEMBLY-QUERY-VERSION";
                     else if constexpr (T::domain == CommandReferenceDomain::Pipeline)
                         return typedAssembly_
                                 && (assemblyVersion_ == 2u || assemblyVersion_ == 3u
                                     || assemblyVersion_ == 4u || assemblyVersion_ == 5u
-                                    || assemblyVersion_ == 6u)
+                                    || assemblyVersion_ == 6u || assemblyVersion_ == 7u
+                                    || assemblyVersion_ == 8u)
                             ? nullptr
                             : "RHI-ORIGINAL-SOURCES-ASSEMBLY-PIPELINE-VERSION";
                     else if constexpr (isTypedDomain(T::domain))
@@ -3374,7 +3394,8 @@ private:
                                            owner.get(),
                                            3u}
                                  : core::SharedIdentityProjection::Record{};
-                } else if constexpr (T::domain == CommandReferenceDomain::Pipeline) {
+                } else if constexpr (T::domain == CommandReferenceDomain::Pipeline
+                    || T::domain == CommandReferenceDomain::Query) {
                     std::shared_ptr<const void> owner =
                         slot == 0u ? std::shared_ptr<const void>(value) : value->cpuOwner(slot);
                     return owner ? core::SharedIdentityProjection::
@@ -3437,6 +3458,8 @@ private:
                         value->originalSnapshot(),
                         arena,
                         2u};
+                } else if constexpr (T::domain == CommandReferenceDomain::Query) {
+                    return {};
                 } else if constexpr (T::domain == CommandReferenceDomain::Pipeline) {
                     const auto& layout = value->originalLayout();
                     return {layout->originalResourceRegistration().generation(),

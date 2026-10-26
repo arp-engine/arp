@@ -4,17 +4,24 @@
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 #include "rhi/backends/vulkan/vulkan_resource_registry.h"
 #include "rhi/frontend/bindless_graphics_pass_preparation.h"
+#include "rhi/frontend/transfer_upload_recording_validation.h"
 #include "rhi/gpu_device.h"
 #include "rhi/semantics/native_backend_capabilities.h"
 
 #include <memory>
 #include <string_view>
 
+namespace arp::rhi {
+class OriginalCommandStreamProgram;
+struct OriginalRenderPassPreparationRequest;
+} // namespace arp::rhi
+
 namespace arp::rhi_vulkan {
 
 class VulkanRhiNativeResourcePayload;
 class VulkanRhiStagingUploadPool;
 struct VulkanRhiTimelineSubmitInfo;
+struct VulkanRhiRecordingStorageLimits;
 
 /// Private recorder bridge for the optional sanitized texture readback
 /// extension. Native Vulkan handles remain below the public RHI boundary.
@@ -60,6 +67,10 @@ rhi::ResourceBarrierResult transitionVulkanRhiBuffer(rhi::GpuBuffer& buffer,
 rhi::ResourceBarrierResult transitionVulkanRhiTexture(rhi::GpuTexture& texture,
     const rhi::ResourceBarrierDesc& desc,
     core::MutationJournal* journal = nullptr);
+rhi::ResourceBarrierResult transitionVulkanRhiTexture(rhi::GpuTexture& texture,
+    const rhi::ResourceBarrierDesc& desc,
+    core::MutationJournal* journal,
+    const VulkanRhiNativeCommandPayload* originalUploadOwner);
 
 std::shared_ptr<VulkanRhiNativeResourcePayload> vulkanRhiNativePayload(
     const rhi::GpuBuffer& buffer);
@@ -181,6 +192,50 @@ arp::core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoder(
     bool bindlessExecutable,
     bool requireNativeCommandEncoding,
     const rhi::CommandEncoderDesc& retention = {});
+
+// Private storage prerequisite only; does not execute/authorize the original
+// stream. Uses its original Recording quota and independent pass occurrences.
+core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoderWithColdPassStorage(
+    VulkanRhiNativeResourceAllocator nativeResources,
+    std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry,
+    VulkanRhiStagingUploadPool* stagingUploadPool,
+    const rhi::semantics::NativeBackendCapabilityContract& capabilityContract,
+    std::shared_ptr<const rhi::OriginalCommandStreamProgram> original,
+    core::pmr::String& diagnostic);
+
+// Explicit native object preparation opt-in. Graphics recording stays closed.
+core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoderWithColdRenderPasses(
+    VulkanRhiNativeResourceAllocator,
+    std::shared_ptr<VulkanRhiResourceRegistry>,
+    VulkanRhiStagingUploadPool*,
+    const rhi::semantics::NativeBackendCapabilityContract&,
+    std::shared_ptr<const rhi::OriginalCommandStreamProgram>,
+    const rhi::GpuDevice&,
+    const rhi::OriginalRenderPassPreparationRequest&,
+    core::pmr::String&);
+
+// Same ordinary encoder, with the original device issuer, Inputs9 and its
+// existing journal joined to the independently bounded query category.
+core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoderWithColdPassStorage(
+    VulkanRhiNativeResourceAllocator nativeResources,
+    std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry,
+    VulkanRhiStagingUploadPool* stagingUploadPool,
+    const rhi::semantics::NativeBackendCapabilityContract& capabilityContract,
+    const rhi::GpuDevice& device,
+    const VulkanRhiRecordingStorageLimits& originalQueries,
+    core::pmr::String& diagnostic);
+
+core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoderWithColdTextureUploads(
+    VulkanRhiNativeResourceAllocator,
+    std::shared_ptr<VulkanRhiResourceRegistry>,
+    VulkanRhiStagingUploadPool*,
+    const rhi::semantics::NativeBackendCapabilityContract&,
+    std::shared_ptr<const rhi::OriginalCommandStreamProgram>,
+    rhi::GpuDevice&,
+    const rhi::OriginalOrdinaryTextureUploadContract::Budget&,
+    const rhi::OriginalOrdinaryTextureUploadContract::Binding*,
+    std::size_t,
+    core::pmr::String&);
 
 arp::core::UniquePtr<rhi::SecondaryCommandEncoder> createVulkanRhiSecondaryCommandEncoder(
     const rhi::SecondaryCommandEncoderDesc& desc);

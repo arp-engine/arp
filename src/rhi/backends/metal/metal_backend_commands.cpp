@@ -2,8 +2,10 @@
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_binding_validation.h"
 #include "rhi/backends/metal/metal_bindless_validation.h"
+#include "rhi/backends/metal/metal_device.h"
 #include "rhi/backends/metal/metal_native_runtime.h"
 #include "rhi/backends/metal/metal_native_secondary.h"
+#include "rhi/backends/metal/metal_original_ordinary_command.h"
 #include "rhi/backends/metal/metal_staging_upload_pool.h"
 #include "rhi/frontend/bindless_graphics_binding.h"
 #include "rhi/frontend/bindless_shader_package.h"
@@ -462,6 +464,22 @@ bool descriptorSetNeedsArgumentBuffers(const rhi::DescriptorSet& descriptorSet)
 class MetalRhiCommandBuffer final : public rhi::RecordedStateCommandBuffer,
                                     public rhi::BindlessCommandBufferExtension {
 public:
+    struct ColdStorage {};
+
+    explicit MetalRhiCommandBuffer(ColdStorage) noexcept
+        : RecordedStateCommandBuffer(core::UniquePtr<core::MutationJournal>{})
+    {}
+
+    MetalRhiCommandBuffer(MetalRhiCommandBuffer&&) noexcept = default;
+
+    MetalRhiCommandBuffer(std::uint32_t commandCount,
+        std::shared_ptr<MetalRhiNativeCommandPayload> nativePayload,
+        core::MutationJournal& journal) noexcept
+        : RecordedStateCommandBuffer(
+              std::shared_ptr<core::MutationJournal>(nativePayload, &journal)),
+          commandCount_(commandCount), nativePayload_(std::move(nativePayload))
+    {}
+
     MetalRhiCommandBuffer(std::uint32_t commandCount,
         std::shared_ptr<MetalRhiNativeCommandPayload> nativePayload,
         core::UniquePtr<core::MutationJournal> states,
@@ -502,6 +520,11 @@ public:
     std::shared_ptr<MetalRhiNativeCommandPayload> nativePayload() const { return nativePayload_; }
 
 private:
+    bool acceptBackendOwnedRecordedOwnership() const noexcept override
+    {
+        return nativePayload_ && nativePayload_->acceptOriginalOrdinaryOwnership();
+    }
+
     std::uint32_t commandCount_ = 0;
     std::shared_ptr<MetalRhiNativeCommandPayload> nativePayload_;
 };
@@ -523,40 +546,46 @@ public:
         std::uint64_t,
         const rhi::BindlessAccessDeclarations&) override
     {
-        return commandFail("RHI-METAL-BINDLESS-PREPARED-GRAPHICS-REQUIRED", commandCount_);
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
+        return failCommand("RHI-METAL-BINDLESS-PREPARED-GRAPHICS-REQUIRED", commandCount_);
     }
 
     rhi::CommandValidationResult bindPreparedGraphicsBinding(
         std::shared_ptr<const rhi::BindlessPreparedGraphicsBinding> binding,
         const rhi::BindlessAccessDeclarations& accesses) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (!binding || !binding->sharedOwnerMatches(binding))
-            return commandFail("RHI-BINDLESS-PREPARED-GRAPHICS-PAYLOAD-MISMATCH", commandCount_);
+            return failCommand("RHI-BINDLESS-PREPARED-GRAPHICS-PAYLOAD-MISMATCH", commandCount_);
         if (!active_ || ended_ || !graphicsExecutable_ || !scope_ || binding != scope_)
-            return commandFail("RHI-BINDLESS-GRAPHICS-PASS-SCOPE-MISMATCH", commandCount_);
+            return failCommand("RHI-BINDLESS-GRAPHICS-PASS-SCOPE-MISMATCH", commandCount_);
         if (!activePipeline_ || scope_->owners()->desc().pipeline.get() != activePipeline_)
-            return commandFail("RHI-BINDLESS-PREPARED-GRAPHICS-PIPELINE-MISMATCH", commandCount_);
+            return failCommand("RHI-BINDLESS-PREPARED-GRAPHICS-PIPELINE-MISMATCH", commandCount_);
         const auto valid = binding->validateForRecord(*activePipeline_, accesses);
         if (!valid.success)
-            return commandFail(valid.diagnostics, commandCount_);
+            return failCommand(valid.diagnostics, commandCount_);
         const auto& snapshot = binding->owners()->desc().snapshot;
         const auto* descriptors = snapshot->descriptorSet();
         const auto capacity = boundDescriptors_.validateSetCapacity(snapshot->setIndex());
         if (!capacity.success)
-            return commandFail(capacity.diagnostics, commandCount_);
+            return failCommand(capacity.diagnostics, commandCount_);
         const auto compatible =
             rhi::validateDescriptorSetBinding(pipelineLayout_, snapshot->setIndex(), *descriptors);
         if (!compatible.success)
-            return commandFail(compatible.diagnostics, commandCount_);
+            return failCommand(compatible.diagnostics, commandCount_);
         core::pmr::String diagnostic;
         if (!nativePayload_->recordScopedGraphicsBinding(
                 metalRhiPreparedGraphicsPayloadFor(*binding), accesses, diagnostic))
-            return commandFail(diagnostic, commandCount_);
+            return failCommand(diagnostic, commandCount_);
         const auto tracked =
             boundDescriptors_.bindSet(snapshot->setIndex(), *descriptors, nullptr, 0u);
         if (!tracked.success) {
             nativePayload_->poisonRecording(tracked.diagnostics);
-            return commandFail(tracked.diagnostics, commandCount_);
+            return failCommand(tracked.diagnostics, commandCount_);
         }
         return commandOk(++commandCount_);
     }
@@ -592,50 +621,58 @@ public:
 
     rhi::CommandValidationResult setPipeline(const rhi::RenderPipeline& pipeline) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryPipeline(
+                    commandCount_, pipeline, diagnostic))
+                return failCommand(diagnostic, commandCount_);
+            return commandOk(++commandCount_);
+        }
+
         if (ended_ || !active_)
-            return commandFail("RHI-METAL-GRAPHICS-PASS-NOT-OPEN", commandCount_);
+            return failCommand("RHI-METAL-GRAPHICS-PASS-NOT-OPEN", commandCount_);
         if (scope_) {
             if (scope_->owners()->desc().pipeline.get() != &pipeline)
-                return commandFail(
+                return failCommand(
                     "RHI-BINDLESS-GRAPHICS-PASS-SCOPE-PIPELINE-MISMATCH", commandCount_);
             const auto valid = scope_->validateOwners();
             if (!valid.success)
-                return commandFail(valid.diagnostics, commandCount_);
+                return failCommand(valid.diagnostics, commandCount_);
         } else if (pipeline.bindlessAuthorization()
             || !pipeline.shaderReflection().bindlessContractVersion.empty()) {
-            return commandFail("RHI-METAL-BINDLESS-PREPARED-GRAPHICS-REQUIRED", commandCount_);
+            return failCommand("RHI-METAL-BINDLESS-PREPARED-GRAPHICS-REQUIRED", commandCount_);
         }
         if (pipeline.nativeHandleExposedToUpperLayer()) {
-            return commandFail("Metal RHI render pipeline exposed native handle", commandCount_);
+            return failCommand("Metal RHI render pipeline exposed native handle", commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-RENDER-PIPELINE-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-RENDER-PIPELINE-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
             const auto pipelinePayload = metalRhiNativePayloadFor(pipeline);
             if (!pipelinePayload || pipelinePayload->subpassIndex != subpassIndex_) {
-                return commandFail("RHI-METAL-PIPELINE-SUBPASS-INDEX-MISMATCH", commandCount_);
+                return failCommand("RHI-METAL-PIPELINE-SUBPASS-INDEX-MISMATCH", commandCount_);
             }
             if (pipeline.validationReport().colorTargetCount != colorFormats_.size()
                 || pipeline.validationReport().sampleCount != sampleCount_
                 || pipeline.validationReport().depthStencilFormat != depthStencilFormat_
                 || pipeline.validationReport().colorFormats.size() != colorFormats_.size()
                 || sampleCount_ == 0u) {
-                return commandFail(
+                return failCommand(
                     "RHI-METAL-PIPELINE-RENDER-PASS-ATTACHMENT-MISMATCH", commandCount_);
             }
             for (std::size_t formatIndex = 0u; formatIndex < colorFormats_.size(); ++formatIndex) {
                 if (pipeline.validationReport().colorFormats[formatIndex]
                     != colorFormats_[formatIndex]) {
-                    return commandFail(
+                    return failCommand(
                         "RHI-METAL-PIPELINE-RENDER-PASS-COLOR-FORMAT-MISMATCH", commandCount_);
                 }
             }
             if (!subpasses_.empty()) {
                 if (!pipelinePayload->renderPassCompatibilityEnabled
                     || subpassIndex_ >= subpasses_.size()) {
-                    return commandFail(
+                    return failCommand(
                         "RHI-METAL-PIPELINE-SUBPASS-COMPATIBILITY-MISSING", commandCount_);
                 }
                 const auto& subpass = subpasses_[subpassIndex_];
@@ -643,7 +680,7 @@ public:
                         != subpass.colorAttachmentIndices.size()
                     || pipelinePayload->usesDepthStencilAttachment
                         != subpass.useDepthStencilAttachment) {
-                    return commandFail(
+                    return failCommand(
                         "RHI-METAL-PIPELINE-SUBPASS-ATTACHMENT-MISMATCH", commandCount_);
                 }
                 for (const auto& binding : pipeline.shaderReflection().descriptorBindings) {
@@ -653,7 +690,7 @@ public:
                     if (binding.depthTexture) {
                         if (!subpass.readDepthInputAttachment
                             || !subpass.useDepthStencilAttachment) {
-                            return commandFail(
+                            return failCommand(
                                 "RHI-METAL-PIPELINE-DEPTH-FETCH-NOT-IN-CURRENT-SUBPASS",
                                 commandCount_);
                         }
@@ -661,13 +698,13 @@ public:
                                    subpass.inputAttachmentIndices.end(),
                                    binding.subpassAttachmentIndex)
                         == subpass.inputAttachmentIndices.end()) {
-                        return commandFail(
+                        return failCommand(
                             "RHI-METAL-PIPELINE-FETCH-NOT-IN-CURRENT-SUBPASS", commandCount_);
                     }
                 }
             }
             if (!nativePayload_->recordGraphicsPipelineBind(pipelinePayload, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
             boundPipelinePayload_ = pipelinePayload;
         }
@@ -680,19 +717,29 @@ public:
 
     rhi::CommandValidationResult setViewport(const rhi::ViewportState& viewport) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryScalar(commandCount_,
+                    *rhi::CommandScalarArguments::capture(
+                        rhi::CommandUsageKind::SetViewport, viewport),
+                    diagnostic))
+                return failCommand(diagnostic, commandCount_);
+            return commandOk(++commandCount_);
+        }
+
         if (ended_ || !active_)
-            return commandFail("RHI-METAL-GRAPHICS-PASS-NOT-OPEN", commandCount_);
+            return failCommand("RHI-METAL-GRAPHICS-PASS-NOT-OPEN", commandCount_);
         const auto valueResult = rhi::semantics::validateViewportCommand(viewport);
         if (!valueResult.success) {
-            return commandFail(valueResult.diagnostics, commandCount_);
+            return failCommand(valueResult.diagnostics, commandCount_);
         }
         if (!pipelineBound_) {
-            return commandFail(rhi::semantics::ViewportScissorDiagCode::kNoPipeline
+            return failCommand(rhi::semantics::ViewportScissorDiagCode::kNoPipeline
                     + std::pmr::string("Metal RHI setViewport requires a bound pipeline"),
                 commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail(rhi::semantics::ViewportScissorDiagCode::kNoExecPayload
+            return failCommand(rhi::semantics::ViewportScissorDiagCode::kNoExecPayload
                     + std::pmr::string("Metal RHI setViewport requires a native command payload"),
                 commandCount_);
         }
@@ -705,29 +752,39 @@ public:
                 workload,
                 rhi::semantics::CommandRecordingIntent::PrimaryCommandBuffer,
                 diagnostics)) {
-            return commandFail(diagnostics, commandCount_);
+            return failCommand(diagnostics, commandCount_);
         }
         if (!nativePayload_->recordSetViewport(viewport, diagnostics)) {
-            return commandFail(diagnostics, commandCount_);
+            return failCommand(diagnostics, commandCount_);
         }
         return commandOk(++commandCount_);
     }
 
     rhi::CommandValidationResult setScissor(const rhi::ScissorState& scissor) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryScalar(commandCount_,
+                    *rhi::CommandScalarArguments::capture(
+                        rhi::CommandUsageKind::SetScissor, scissor),
+                    diagnostic))
+                return failCommand(diagnostic, commandCount_);
+            return commandOk(++commandCount_);
+        }
+
         if (ended_ || !active_)
-            return commandFail("RHI-METAL-GRAPHICS-PASS-NOT-OPEN", commandCount_);
+            return failCommand("RHI-METAL-GRAPHICS-PASS-NOT-OPEN", commandCount_);
         const auto valueResult = rhi::semantics::validateScissorCommand(scissor);
         if (!valueResult.success) {
-            return commandFail(valueResult.diagnostics, commandCount_);
+            return failCommand(valueResult.diagnostics, commandCount_);
         }
         if (!pipelineBound_) {
-            return commandFail(rhi::semantics::ViewportScissorDiagCode::kNoPipeline
+            return failCommand(rhi::semantics::ViewportScissorDiagCode::kNoPipeline
                     + std::pmr::string("Metal RHI setScissor requires a bound pipeline"),
                 commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail(rhi::semantics::ViewportScissorDiagCode::kNoExecPayload
+            return failCommand(rhi::semantics::ViewportScissorDiagCode::kNoExecPayload
                     + std::pmr::string("Metal RHI setScissor requires a native command payload"),
                 commandCount_);
         }
@@ -740,10 +797,10 @@ public:
                 workload,
                 rhi::semantics::CommandRecordingIntent::PrimaryCommandBuffer,
                 diagnostics)) {
-            return commandFail(diagnostics, commandCount_);
+            return failCommand(diagnostics, commandCount_);
         }
         if (!nativePayload_->recordSetScissor(scissor, diagnostics)) {
-            return commandFail(diagnostics, commandCount_);
+            return failCommand(diagnostics, commandCount_);
         }
         return commandOk(++commandCount_);
     }
@@ -751,11 +808,14 @@ public:
     rhi::CommandValidationResult bindVertexBuffer(
         std::uint32_t slot, const rhi::GpuBuffer& buffer, std::uint64_t offsetBytes) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if ((buffer.desc().usage & rhi::ResourceUsage::VertexBuffer) == rhi::ResourceUsage::None) {
-            return commandFail("RHI-METAL-VERTEX-BUFFER-USAGE-MISSING", commandCount_);
+            return failCommand("RHI-METAL-VERTEX-BUFFER-USAGE-MISSING", commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-VERTEX-BUFFER-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-VERTEX-BUFFER-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             const auto resource =
@@ -764,7 +824,7 @@ public:
             if (!resource
                 || !nativePayload_->recordVertexBufferBind(
                     slot, resource->buffer, offsetBytes, diagnostics)) {
-                return commandFail(diagnostics.empty()
+                return failCommand(diagnostics.empty()
                         ? "Metal RHI vertex buffer native payload is missing"
                         : diagnostics,
                     commandCount_);
@@ -776,11 +836,14 @@ public:
     rhi::CommandValidationResult bindIndexBuffer(
         const rhi::GpuBuffer& buffer, rhi::IndexFormat format, std::uint64_t offsetBytes) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if ((buffer.desc().usage & rhi::ResourceUsage::IndexBuffer) == rhi::ResourceUsage::None) {
-            return commandFail("RHI-METAL-INDEX-BUFFER-USAGE-MISSING", commandCount_);
+            return failCommand("RHI-METAL-INDEX-BUFFER-USAGE-MISSING", commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-INDEX-BUFFER-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-INDEX-BUFFER-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             const auto resource =
@@ -789,7 +852,7 @@ public:
             if (!resource
                 || !nativePayload_->recordIndexBufferBind(
                     resource->buffer, format, offsetBytes, diagnostics)) {
-                return commandFail(diagnostics.empty()
+                return failCommand(diagnostics.empty()
                         ? "Metal RHI index buffer native payload is missing"
                         : diagnostics,
                     commandCount_);
@@ -803,18 +866,21 @@ public:
         std::uint64_t offsetBytes,
         std::uint32_t instanceStrideBytes) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (!hasResourceUsage(buffer.desc().usage, rhi::ResourceUsage::StorageBuffer)) {
-            return commandFail("RHI-METAL-TESSELLATION-FACTOR-BUFFER-USAGE-MISSING", commandCount_);
+            return failCommand("RHI-METAL-TESSELLATION-FACTOR-BUFFER-USAGE-MISSING", commandCount_);
         }
         if (instanceStrideBytes == 0u || (offsetBytes & 3u) != 0u
             || (instanceStrideBytes & 3u) != 0u || offsetBytes > buffer.desc().sizeBytes
             || buffer.desc().sizeBytes - offsetBytes < sizeof(std::uint32_t)) {
-            return commandFail("RHI-METAL-TESSELLATION-FACTOR-BUFFER-RANGE-INVALID", commandCount_);
+            return failCommand("RHI-METAL-TESSELLATION-FACTOR-BUFFER-RANGE-INVALID", commandCount_);
         }
         if (pipelineBound_
             && (!boundPipelinePayload_
                 || boundPipelinePayload_->primitiveTopology != rhi::PrimitiveTopology::PatchList)) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-TESSELLATION-FACTOR-BUFFER-REQUIRES-PATCHLIST", commandCount_);
         }
         if (pipelineBound_ && boundPipelinePayload_
@@ -824,10 +890,10 @@ public:
                 || boundPipelinePayload_->metalTessellationFactorBytesPerPatch == 0u
                 || buffer.desc().sizeBytes - offsetBytes
                     < boundPipelinePayload_->metalTessellationFactorBytesPerPatch)) {
-            return commandFail("RHI-METAL-TESSELLATION-FACTOR-BUFFER-ABI-MISMATCH", commandCount_);
+            return failCommand("RHI-METAL-TESSELLATION-FACTOR-BUFFER-ABI-MISMATCH", commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-TESSELLATION-FACTOR-BUFFER-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         const auto resource =
@@ -836,7 +902,7 @@ public:
         if (!resource
             || !nativePayload_->recordTessellationFactorBufferBind(
                 resource->buffer, offsetBytes, instanceStrideBytes, diagnostics)) {
-            return commandFail(diagnostics.empty()
+            return failCommand(diagnostics.empty()
                     ? "RHI-METAL-TESSELLATION-FACTOR-BUFFER-NATIVE-PAYLOAD-MISSING"
                     : diagnostics,
                 commandCount_);
@@ -850,36 +916,48 @@ public:
         const std::uint32_t* dynamicOffsets,
         std::uint32_t dynamicOffsetCount) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryDescriptor(commandCount_,
+                    set,
+                    descriptorSet,
+                    dynamicOffsets,
+                    dynamicOffsetCount,
+                    diagnostic))
+                return failCommand(diagnostic, commandCount_);
+            return commandOk(++commandCount_);
+        }
+
         if (graphicsScope_)
-            return commandFail("RHI-METAL-GRAPHICS-SCOPE-BINDING-MISMATCH", commandCount_);
+            return failCommand("RHI-METAL-GRAPHICS-SCOPE-BINDING-MISMATCH", commandCount_);
         const auto trackingCapacity = boundDescriptors_.validateSetCapacity(set);
         if (!trackingCapacity.success)
-            return commandFail(trackingCapacity.diagnostics, commandCount_);
+            return failCommand(trackingCapacity.diagnostics, commandCount_);
         if (descriptorSetNeedsArgumentBuffers(descriptorSet)
             && !rhi::semantics::hasExecutableNativeFeature(
                 capabilityContract_, rhi::semantics::NativeBackendFeature::ArgumentBuffers)) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-DESCRIPTOR-ARRAY-CAPABILITY-NOT-AUTHORIZED", commandCount_);
         }
         if (descriptorSet.stats().nativeHandleExposedToUpperLayer) {
-            return commandFail("Metal RHI descriptor set exposed native handle", commandCount_);
+            return failCommand("Metal RHI descriptor set exposed native handle", commandCount_);
         }
         const auto offsets = rhi::validateDynamicOffsetArguments(
             descriptorSet.layout(), dynamicOffsets, dynamicOffsetCount);
         if (!offsets.success) {
-            return commandFail(offsets.diagnostics, commandCount_);
+            return failCommand(offsets.diagnostics, commandCount_);
         }
         if (!descriptorSetMatchesPipeline(pipelineLayout_, set, descriptorSet)) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI descriptor set does not match the bound pipeline layout", commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-DESCRIPTOR-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-DESCRIPTOR-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
             if (!descriptorSetIsComplete(descriptorSet, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
             const auto nativeDescriptorSet = metalRhiNativePayloadFor(descriptorSet);
             if (!nativeDescriptorSet
@@ -889,42 +967,45 @@ public:
                     dynamicOffsets,
                     dynamicOffsetCount,
                     diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         const auto tracked =
             boundDescriptors_.bindSet(set, descriptorSet, dynamicOffsets, dynamicOffsetCount);
         if (!tracked.success)
-            return commandFail(tracked.diagnostics, commandCount_);
+            return failCommand(tracked.diagnostics, commandCount_);
         return commandOk(++commandCount_);
     }
 
     rhi::CommandValidationResult bindDescriptorTable(
         std::uint32_t set, const rhi::DescriptorTable& descriptorTable) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (graphicsScope_)
-            return commandFail("RHI-METAL-GRAPHICS-SCOPE-BINDING-MISMATCH", commandCount_);
+            return failCommand("RHI-METAL-GRAPHICS-SCOPE-BINDING-MISMATCH", commandCount_);
         const auto trackingCapacity = boundDescriptors_.validateTableCapacity(set);
         if (!trackingCapacity.success)
-            return commandFail(trackingCapacity.diagnostics, commandCount_);
+            return failCommand(trackingCapacity.diagnostics, commandCount_);
         if (!rhi::semantics::hasExecutableNativeFeature(
                 capabilityContract_, rhi::semantics::NativeBackendFeature::ArgumentBuffers)) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-DESCRIPTOR-TABLE-CAPABILITY-NOT-AUTHORIZED", commandCount_);
         }
         if (!pipelineLayout_
             || !declaresDescriptorTableSlot(pipelineLayout_, set, descriptorTable)) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI descriptor table does not match the bound pipeline layout",
                 commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-DESCRIPTOR-TABLE-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-DESCRIPTOR-TABLE-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
             if (!descriptorTableIsComplete(descriptorTable, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
             const auto nativeTable = metalRhiNativePayloadFor(descriptorTable);
             if (!nativeTable
@@ -932,7 +1013,7 @@ public:
                     nativeTable,
                     rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment,
                     diagnostics)) {
-                return commandFail(diagnostics.empty()
+                return failCommand(diagnostics.empty()
                         ? "Metal RHI descriptor table native payload is missing"
                         : diagnostics,
                     commandCount_);
@@ -940,7 +1021,7 @@ public:
         }
         const auto tracked = boundDescriptors_.bindTable(set, descriptorTable);
         if (!tracked.success)
-            return commandFail(tracked.diagnostics, commandCount_);
+            return failCommand(tracked.diagnostics, commandCount_);
         return commandOk(++commandCount_);
     }
 
@@ -949,10 +1030,13 @@ public:
         std::uint32_t sizeBytes,
         const void* data) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         auto cmdResult =
             rhi::semantics::validatePushConstantCommand(stages, offsetBytes, sizeBytes, data);
         if (!cmdResult.success) {
-            return commandFail(cmdResult.diagnostics, commandCount_);
+            return failCommand(cmdResult.diagnostics, commandCount_);
         }
         auto bindResult = rhi::semantics::validatePushConstantBinding(pipelineLayout_,
             rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment,
@@ -961,10 +1045,10 @@ public:
             sizeBytes,
             shaderReflection_);
         if (!bindResult.success) {
-            return commandFail(bindResult.diagnostics, commandCount_);
+            return failCommand(bindResult.diagnostics, commandCount_);
         }
         if (pushState_.hasUnconsumedUpdate()) {
-            return commandFail(rhi::semantics::PushConstantDiagCode::kDuplicateUnconsumed
+            return failCommand(rhi::semantics::PushConstantDiagCode::kDuplicateUnconsumed
                     + std::pmr::string(
                         "push constants already set without intervening draw/dispatch"),
                 commandCount_);
@@ -977,11 +1061,11 @@ public:
                 workload,
                 rhi::semantics::CommandRecordingIntent::PrimaryCommandBuffer,
                 loweringDiagnostics)) {
-            return commandFail(loweringDiagnostics, commandCount_);
+            return failCommand(loweringDiagnostics, commandCount_);
         }
         // P2 executable-payload gate.
         if (!nativePayload_) {
-            return commandFail(rhi::semantics::PushConstantDiagCode::kNoExecPayload
+            return failCommand(rhi::semantics::PushConstantDiagCode::kNoExecPayload
                     + std::pmr::string("Metal push constants require a native command payload"),
                 commandCount_);
         }
@@ -989,7 +1073,7 @@ public:
             std::pmr::string diagnostics;
             if (!nativePayload_->recordPushConstants(
                     stages, offsetBytes, sizeBytes, data, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         pushState_.onPush();
@@ -1007,36 +1091,39 @@ public:
         std::int32_t vertexOffset,
         std::uint32_t firstInstance) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (ended_ || !active_)
-            return commandFail("RHI-METAL-GRAPHICS-PASS-NOT-OPEN", commandCount_);
+            return failCommand("RHI-METAL-GRAPHICS-PASS-NOT-OPEN", commandCount_);
         if (scope_) {
             const auto valid = scope_->validateOwners();
             if (!valid.success)
-                return commandFail(valid.diagnostics, commandCount_);
+                return failCommand(valid.diagnostics, commandCount_);
         }
         const auto descriptorUse = boundDescriptors_.validateLiveBindings();
         if (!descriptorUse.success)
-            return commandFail(descriptorUse.diagnostics, commandCount_);
+            return failCommand(descriptorUse.diagnostics, commandCount_);
         if (indexCount == 0) {
-            return commandFail("Metal RHI draw indexed requires indices", commandCount_);
+            return failCommand("Metal RHI draw indexed requires indices", commandCount_);
         }
         if (!indexBufferBound_) {
-            return commandFail("RHI-METAL-DRAW-INDEXED-REQUIRES-INDEX-BUFFER", commandCount_);
+            return failCommand("RHI-METAL-DRAW-INDEXED-REQUIRES-INDEX-BUFFER", commandCount_);
         }
         const auto lowering = rhi::semantics::validateNativeCommandLoweringUse(drawLowering_,
             rhi::semantics::NativeCommandSemantic::MetalRenderCommandEncoder,
             drawLowering_.fallbackMode,
             "Metal indexed draw");
         if (!lowering.success)
-            return commandFail(lowering.diagnostics, commandCount_);
+            return failCommand(lowering.diagnostics, commandCount_);
         if (boundPipelinePayload_
             && boundPipelinePayload_->primitiveTopology == rhi::PrimitiveTopology::PatchList
             && !tessellationFactorBufferBound_) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-PATCH-DRAW-REQUIRES-TESSELLATION-FACTOR-BUFFER", commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-DRAW-INDEXED-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-DRAW-INDEXED-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
@@ -1046,7 +1133,7 @@ public:
                     vertexOffset,
                     firstInstance,
                     diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         pushState_.onConsume();
@@ -1058,13 +1145,16 @@ public:
         std::uint32_t drawCount,
         std::uint32_t stride) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (graphicsScope_)
-            return commandFail("RHI-METAL-GRAPHICS-SCOPE-INDIRECT-UNSUPPORTED", commandCount_);
+            return failCommand("RHI-METAL-GRAPHICS-SCOPE-INDIRECT-UNSUPPORTED", commandCount_);
         const auto descriptorUse = boundDescriptors_.validateLiveBindings();
         if (!descriptorUse.success)
-            return commandFail(descriptorUse.diagnostics, commandCount_);
+            return failCommand(descriptorUse.diagnostics, commandCount_);
         if (!indexBufferBound_) {
-            return commandFail("RHI-METAL-INDIRECT-DRAW-REQUIRES-INDEX-BUFFER", commandCount_);
+            return failCommand("RHI-METAL-INDIRECT-DRAW-REQUIRES-INDEX-BUFFER", commandCount_);
         }
         rhi::semantics::CommandWorkloadDesc workload;
         workload.commandCount = 1u;
@@ -1080,7 +1170,7 @@ public:
             rhi::FallbackMode::Native,
             "Metal indirect draw");
         if (!loweringUse.success) {
-            return commandFail(loweringUse.diagnostics, commandCount_);
+            return failCommand(loweringUse.diagnostics, commandCount_);
         }
         if (drawCount == 0 || stride < sizeof(rhi::DrawIndexedIndirectCommand)
             || (stride & 3u) != 0u || (indirectOffset & 3u) != 0u
@@ -1093,7 +1183,7 @@ public:
             || drawCount - 1u > (indirectBuffer.desc().sizeBytes - indirectOffset
                                     - sizeof(rhi::DrawIndexedIndirectCommand))
                     / stride) {
-            return commandFail("Metal RHI indirect draw arguments are invalid", commandCount_);
+            return failCommand("Metal RHI indirect draw arguments are invalid", commandCount_);
         }
         const auto resource =
             resourceRegistry_ ? resourceRegistry_->find(indirectBuffer.id()) : std::nullopt;
@@ -1101,7 +1191,7 @@ public:
         if (!nativePayload_ || !resource
             || !nativePayload_->recordDrawIndexedIndirect(
                 resource->buffer, indirectOffset, drawCount, stride, diagnostics)) {
-            return commandFail(diagnostics.empty()
+            return failCommand(diagnostics.empty()
                     ? "Metal RHI indirect draw native payload is missing"
                     : diagnostics,
                 commandCount_);
@@ -1117,17 +1207,20 @@ public:
         std::uint32_t maxDrawCount,
         std::uint32_t stride) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (graphicsScope_)
-            return commandFail("RHI-METAL-GRAPHICS-SCOPE-INDIRECT-UNSUPPORTED", commandCount_);
+            return failCommand("RHI-METAL-GRAPHICS-SCOPE-INDIRECT-UNSUPPORTED", commandCount_);
         const auto descriptorUse = boundDescriptors_.validateLiveBindings();
         if (!descriptorUse.success)
-            return commandFail(descriptorUse.diagnostics, commandCount_);
+            return failCommand(descriptorUse.diagnostics, commandCount_);
         if (!pipelineBound_ || !boundPipelinePayload_) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-GPU-COUNTED-INDIRECT-REQUIRES-BOUND-PIPELINE", commandCount_);
         }
         if (!indexBufferBound_) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-GPU-COUNTED-INDIRECT-REQUIRES-INDEX-BUFFER", commandCount_);
         }
         rhi::semantics::CommandWorkloadDesc workload;
@@ -1152,14 +1245,14 @@ public:
             rhi::FallbackMode::Emulated,
             "Metal GPU-counted indirect draw");
         if (!indirectUse.success) {
-            return commandFail(indirectUse.diagnostics, commandCount_);
+            return failCommand(indirectUse.diagnostics, commandCount_);
         }
         const auto maskUse = rhi::semantics::validateNativeCommandLoweringUse(lowering,
             rhi::semantics::NativeCommandSemantic::MetalGpuCountedIndirectMask,
             rhi::FallbackMode::Emulated,
             "Metal GPU-counted indirect mask");
         if (!maskUse.success) {
-            return commandFail(maskUse.diagnostics, commandCount_);
+            return failCommand(maskUse.diagnostics, commandCount_);
         }
         const auto recordSize = sizeof(rhi::DrawIndexedIndirectCommand);
         if (maxDrawCount == 0u || stride < recordSize || (stride & 3u) != 0u
@@ -1180,7 +1273,7 @@ public:
             || argsBuffer.desc().sizeBytes
                     - (argsOffset + static_cast<std::uint64_t>(maxDrawCount - 1u) * stride)
                 < recordSize) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-DRAW-INDEXED-INDIRECT-COUNT-ARGUMENTS-INVALID", commandCount_);
         }
         const auto argsResource =
@@ -1188,11 +1281,11 @@ public:
         const auto countResource =
             resourceRegistry_ ? resourceRegistry_->find(countBuffer.id()) : std::nullopt;
         if (!argsResource || !countResource || !argsResource->buffer || !countResource->buffer) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-DRAW-INDEXED-INDIRECT-COUNT-RESOURCE-MISSING", commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-DRAW-INDEXED-INDIRECT-COUNT-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         std::pmr::string diagnostics;
@@ -1203,7 +1296,7 @@ public:
                 maxDrawCount,
                 stride,
                 diagnostics)) {
-            return commandFail(diagnostics.empty()
+            return failCommand(diagnostics.empty()
                     ? "RHI-METAL-DRAW-INDEXED-INDIRECT-COUNT-NATIVE-PAYLOAD-MISSING"
                     : diagnostics,
                 commandCount_);
@@ -1217,39 +1310,50 @@ public:
         std::uint32_t firstVertex,
         std::uint32_t firstInstance) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryScalar(commandCount_,
+                    *rhi::CommandScalarArguments::capture(rhi::CommandUsageKind::Draw,
+                        rhi::CommandScalarArguments::Draw{
+                            vertexCount, instanceCount, firstVertex, firstInstance}),
+                    diagnostic))
+                return failCommand(diagnostic, commandCount_);
+            return commandOk(++commandCount_);
+        }
+
         if (ended_ || !active_)
-            return commandFail("RHI-METAL-GRAPHICS-PASS-NOT-OPEN", commandCount_);
+            return failCommand("RHI-METAL-GRAPHICS-PASS-NOT-OPEN", commandCount_);
         if (scope_) {
             const auto valid = scope_->validateOwners();
             if (!valid.success)
-                return commandFail(valid.diagnostics, commandCount_);
+                return failCommand(valid.diagnostics, commandCount_);
         }
         const auto descriptorUse = boundDescriptors_.validateLiveBindings();
         if (!descriptorUse.success)
-            return commandFail(descriptorUse.diagnostics, commandCount_);
+            return failCommand(descriptorUse.diagnostics, commandCount_);
         if (vertexCount == 0) {
-            return commandFail("Metal RHI draw requires vertices", commandCount_);
+            return failCommand("Metal RHI draw requires vertices", commandCount_);
         }
         const auto lowering = rhi::semantics::validateNativeCommandLoweringUse(drawLowering_,
             rhi::semantics::NativeCommandSemantic::MetalRenderCommandEncoder,
             drawLowering_.fallbackMode,
             "Metal draw");
         if (!lowering.success)
-            return commandFail(lowering.diagnostics, commandCount_);
+            return failCommand(lowering.diagnostics, commandCount_);
         if (boundPipelinePayload_
             && boundPipelinePayload_->primitiveTopology == rhi::PrimitiveTopology::PatchList
             && !tessellationFactorBufferBound_) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-PATCH-DRAW-REQUIRES-TESSELLATION-FACTOR-BUFFER", commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-DRAW-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-DRAW-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
             if (!nativePayload_->recordDraw(
                     vertexCount, instanceCount, firstVertex, firstInstance, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         pushState_.onConsume();
@@ -1259,10 +1363,13 @@ public:
     rhi::CommandValidationResult writeTimestamp(
         const rhi::QueryPool& pool, std::uint32_t queryIndex) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         const auto* metalPool = asMetalRhiQueryPool(pool);
         if (!metalPool || metalPool->type() != rhi::QueryType::Timestamp || !metalPool->payload()
             || queryIndex >= metalPool->count()) {
-            return commandFail("RHI-METAL-TIMESTAMP-QUERY-POOL-INVALID", commandCount_);
+            return failCommand("RHI-METAL-TIMESTAMP-QUERY-POOL-INVALID", commandCount_);
         }
         rhi::semantics::CommandWorkloadDesc workload;
         workload.commandCount = 1u;
@@ -1273,12 +1380,12 @@ public:
                 workload,
                 rhi::semantics::CommandRecordingIntent::PrimaryCommandBuffer,
                 loweringDiagnostics)) {
-            return commandFail(loweringDiagnostics, commandCount_);
+            return failCommand(loweringDiagnostics, commandCount_);
         }
         std::pmr::string diagnostics;
         if (!nativePayload_
             || !nativePayload_->recordTimestamp(metalPool->payload(), queryIndex, diagnostics)) {
-            return commandFail(diagnostics.empty()
+            return failCommand(diagnostics.empty()
                     ? "RHI-METAL-TIMESTAMP-QUERY-NATIVE-PAYLOAD-MISSING"
                     : diagnostics,
                 commandCount_);
@@ -1289,10 +1396,13 @@ public:
     rhi::CommandValidationResult writePipelineStatistics(
         const rhi::QueryPool& pool, std::uint32_t queryIndex) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         const auto* metalPool = asMetalRhiQueryPool(pool);
         if (!metalPool || metalPool->type() != rhi::QueryType::PipelineStatistics
             || !metalPool->payload() || queryIndex >= metalPool->count()) {
-            return commandFail("RHI-METAL-PIPELINE-STATISTICS-QUERY-POOL-INVALID", commandCount_);
+            return failCommand("RHI-METAL-PIPELINE-STATISTICS-QUERY-POOL-INVALID", commandCount_);
         }
         rhi::semantics::CommandWorkloadDesc workload;
         workload.commandCount = 1u;
@@ -1303,13 +1413,13 @@ public:
                 workload,
                 rhi::semantics::CommandRecordingIntent::PrimaryCommandBuffer,
                 loweringDiagnostics)) {
-            return commandFail(loweringDiagnostics, commandCount_);
+            return failCommand(loweringDiagnostics, commandCount_);
         }
         std::pmr::string diagnostics;
         if (!nativePayload_
             || !nativePayload_->recordPipelineStatistics(
                 metalPool->payload(), queryIndex, diagnostics)) {
-            return commandFail(diagnostics.empty()
+            return failCommand(diagnostics.empty()
                     ? "RHI-METAL-PIPELINE-STATISTICS-QUERY-NATIVE-PAYLOAD-MISSING"
                     : diagnostics,
                 commandCount_);
@@ -1319,20 +1429,23 @@ public:
 
     rhi::CommandValidationResult nextSubpass() override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (graphicsScope_)
-            return commandFail("RHI-METAL-GRAPHICS-SCOPE-SUBPASS-UNSUPPORTED", commandCount_);
+            return failCommand("RHI-METAL-GRAPHICS-SCOPE-SUBPASS-UNSUPPORTED", commandCount_);
         if (subpassCount_ <= 1u) {
             return commandOk(commandCount_);
         }
         if (subpassIndex_ + 1u >= subpassCount_) {
-            return commandFail("RHI-METAL-NEXT-SUBPASS-EXCEEDS-SUBPASS-COUNT", commandCount_);
+            return failCommand("RHI-METAL-NEXT-SUBPASS-EXCEEDS-SUBPASS-COUNT", commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-NEXT-SUBPASS-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-NEXT-SUBPASS-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         std::pmr::string diagnostics;
         if (!nativePayload_->recordNextSubpass(diagnostics)) {
-            return commandFail(diagnostics, commandCount_);
+            return failCommand(diagnostics, commandCount_);
         }
         ++subpassIndex_;
         // Dynamic state and the pipeline are subpass-local in the RHI
@@ -1350,15 +1463,25 @@ public:
 
     rhi::CommandValidationResult end() override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryScope(
+                    rhi::CommandUsageKind::EndRenderPass, commandCount_, nullptr, diagnostic))
+                return failCommand(diagnostic, commandCount_);
+            active_ = false;
+            ended_ = true;
+            return commandOk(++commandCount_);
+        }
+
         if (ended_ || !active_)
-            return commandFail("RHI-METAL-GRAPHICS-PASS-NOT-OPEN", commandCount_);
+            return failCommand("RHI-METAL-GRAPHICS-PASS-NOT-OPEN", commandCount_);
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-RENDER-PASS-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-RENDER-PASS-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
             if (!nativePayload_->recordRenderPassEnd(diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         active_ = false;
@@ -1370,6 +1493,14 @@ public:
     }
 
 private:
+    rhi::CommandValidationResult failCommand(
+        const core::pmr::String& diagnostic, std::uint32_t count)
+    {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            nativePayload_->poisonRecording(diagnostic);
+        return commandFail(diagnostic, count);
+    }
+
     rhi::BoundDescriptorSlots boundDescriptors_;
     std::uint32_t& commandCount_;
     bool& active_;
@@ -1406,28 +1537,34 @@ public:
         std::uint64_t,
         const rhi::BindlessAccessDeclarations&) override
     {
-        return commandFail("RHI-METAL-BINDLESS-PREPARED-COMPUTE-REQUIRED", commandCount_);
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
+        return failCommand("RHI-METAL-BINDLESS-PREPARED-COMPUTE-REQUIRED", commandCount_);
     }
 
     rhi::CommandValidationResult bindPreparedComputeBinding(
         std::shared_ptr<const rhi::BindlessPreparedComputeBinding> binding,
         const rhi::BindlessAccessDeclarations& accesses) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (!binding || !binding->sharedOwnerMatches(binding))
-            return commandFail("RHI-BINDLESS-PREPARED-COMPUTE-PAYLOAD-MISMATCH", commandCount_);
+            return failCommand("RHI-BINDLESS-PREPARED-COMPUTE-PAYLOAD-MISMATCH", commandCount_);
         const auto* prepared = dynamic_cast<const MetalRhiPreparedComputeBinding*>(binding.get());
         if (!prepared || !activePipeline_ || !binding->owners()
             || !binding->owners()->authorization()
             || binding->owners()->desc().pipeline.get() != activePipeline_)
-            return commandFail("RHI-BINDLESS-PREPARED-COMPUTE-PIPELINE-MISMATCH", commandCount_);
+            return failCommand("RHI-BINDLESS-PREPARED-COMPUTE-PIPELINE-MISMATCH", commandCount_);
         if (const auto* id =
                 rhi::semantics::BindlessPipelineInterfaceContract::standaloneSnapshotDiagnostic(
                     binding->owners()->authorization()->package().artifact()))
-            return commandFail(id, commandCount_);
+            return failCommand(id, commandCount_);
         const auto valid =
             binding->validateForRecord(*binding->owners()->desc().pipeline, accesses);
         if (!valid.success)
-            return commandFail(valid.diagnostics, commandCount_);
+            return failCommand(valid.diagnostics, commandCount_);
         const auto& desc = binding->owners()->desc();
         preparingBinding_ = std::move(binding);
         const auto result =
@@ -1468,16 +1605,16 @@ public:
     {
         if (!active_ || !bindlessExecutable_ || !activeAuthorization_
             || !activeAuthorization_->current(activeAuthorization_)) {
-            return commandFail("RHI-BINDLESS-RECORD-AUTHORIZATION-INVALID", commandCount_);
+            return failCommand("RHI-BINDLESS-RECORD-AUTHORIZATION-INVALID", commandCount_);
         }
         if (boundSnapshot_) {
-            return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-ALREADY-BOUND", commandCount_);
+            return failCommand("RHI-BINDLESS-RECORD-SNAPSHOT-ALREADY-BOUND", commandCount_);
         }
         if (!snapshot) {
-            return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-MISSING", commandCount_);
+            return failCommand("RHI-BINDLESS-RECORD-SNAPSHOT-MISSING", commandCount_);
         }
         if (!snapshot->sharedOwnerMatches(snapshot))
-            return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-OWNER-MISMATCH", commandCount_);
+            return failCommand("RHI-BINDLESS-RECORD-SNAPSHOT-OWNER-MISMATCH", commandCount_);
         const auto& authorizedPlan = activeAuthorization_->plan();
         const auto& artifact = activeAuthorization_->package().artifact();
         if (!selected.success || !selected.executable
@@ -1487,51 +1624,51 @@ public:
             || selected.shaderPackageIdentity != artifact.shaderPackageIdentity
             || artifact.execution != rhi::BindlessExecution::Native
             || snapshot->plan().identity != authorizedPlan.identity) {
-            return commandFail("RHI-BINDLESS-RECORD-PLAN-MISMATCH", commandCount_);
+            return failCommand("RHI-BINDLESS-RECORD-PLAN-MISMATCH", commandCount_);
         }
         auto valid =
             snapshot->validateForRecord(selected, generation, accesses, rhi::ShaderStage::Compute);
         if (!valid.success)
-            return commandFail(valid.diagnostics, commandCount_);
+            return failCommand(valid.diagnostics, commandCount_);
         valid = snapshot->validateForRecord(
             authorizedPlan, generation, accesses, rhi::ShaderStage::Compute);
         if (!valid.success)
-            return commandFail(valid.diagnostics, commandCount_);
+            return failCommand(valid.diagnostics, commandCount_);
         if (!snapshot->faultLatchBuffer() || !snapshot->faultReadbackBuffer()) {
-            return commandFail("RHI-BINDLESS-FAULT-READBACK-UNAVAILABLE", commandCount_);
+            return failCommand("RHI-BINDLESS-FAULT-READBACK-UNAVAILABLE", commandCount_);
         }
         const auto* descriptors = snapshot->descriptorSet();
         if (!descriptors) {
-            return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-INVALID", commandCount_);
+            return failCommand("RHI-BINDLESS-RECORD-SNAPSHOT-INVALID", commandCount_);
         }
         const auto capacity = boundDescriptors_.validateSetCapacity(snapshot->setIndex());
         if (!capacity.success)
-            return commandFail(capacity.diagnostics, commandCount_);
+            return failCommand(capacity.diagnostics, commandCount_);
         valid =
             rhi::validateDescriptorSetBinding(pipelineLayout_, snapshot->setIndex(), *descriptors);
         if (!valid.success)
-            return commandFail(valid.diagnostics, commandCount_);
+            return failCommand(valid.diagnostics, commandCount_);
         const auto* prepared =
             dynamic_cast<const MetalRhiPreparedComputeBinding*>(preparingBinding_.get());
         if (!prepared || !prepared->payload()) {
-            return commandFail("RHI-METAL-BINDLESS-DESCRIPTOR-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-BINDLESS-DESCRIPTOR-PAYLOAD-MISSING", commandCount_);
         }
         std::pmr::string diagnostics;
         if (!nativePayload_->validatePreparedComputeBinding(
                 prepared->payload(), preparingBinding_, diagnostics))
-            return commandFail(diagnostics, commandCount_);
+            return failCommand(diagnostics, commandCount_);
         if (!nativePayload_->recordBindlessFaultLatchClear(
                 snapshot, snapshot->faultLatchPriorState(), diagnostics)
             || !nativePayload_->recordPreparedComputeBinding(
                 prepared->payload(), preparingBinding_, diagnostics)) {
             nativePayload_->poisonRecording(diagnostics);
-            return commandFail(diagnostics, commandCount_);
+            return failCommand(diagnostics, commandCount_);
         }
         const auto tracked =
             boundDescriptors_.bindSet(snapshot->setIndex(), *descriptors, nullptr, 0u);
         if (!tracked.success) {
             nativePayload_->poisonRecording(tracked.diagnostics);
-            return commandFail(tracked.diagnostics, commandCount_);
+            return failCommand(tracked.diagnostics, commandCount_);
         }
         boundSnapshot_ = std::move(snapshot);
         return commandOk(++commandCount_);
@@ -1539,45 +1676,53 @@ public:
 
     rhi::CommandValidationResult setPipeline(const rhi::ComputePipeline& pipeline) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryPipeline(
+                    commandCount_, pipeline, diagnostic))
+                return failCommand(diagnostic, commandCount_);
+            return commandOk(++commandCount_);
+        }
+
         if (pipeline.nativeHandleExposedToUpperLayer()) {
-            return commandFail("Metal RHI compute pipeline exposed native handle", commandCount_);
+            return failCommand("Metal RHI compute pipeline exposed native handle", commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-COMPUTE-PIPELINE-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-COMPUTE-PIPELINE-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (boundSnapshot_) {
-            return commandFail("RHI-BINDLESS-PIPELINE-CHANGE-AFTER-SNAPSHOT", commandCount_);
+            return failCommand("RHI-BINDLESS-PIPELINE-CHANGE-AFTER-SNAPSHOT", commandCount_);
         }
         auto authorization = pipeline.bindlessAuthorization();
         if (authorization
             && (authorization->plan().originalExecutionContractVersion == 6u
                 || authorization->plan().originalExecutionContractVersion == 9u))
-            return commandFail(
+            return failCommand(
                 "RHI-BINDLESS-ORIGINAL-EXECUTION-PUBLIC-ROOT-REQUIRED", commandCount_);
         if (authorization
             && rhi::semantics::OriginalBindlessPreparationLowering::hasPlan(
                 authorization->plan(), 6u))
-            return commandFail("RHI-BINDLESS-ORIGINAL-PREPARATION-NOT-EXECUTABLE", commandCount_);
+            return failCommand("RHI-BINDLESS-ORIGINAL-PREPARATION-NOT-EXECUTABLE", commandCount_);
         if (authorization
             && (!authorization->current(authorization) || !authorization->plan().executable
                 || authorization->plan().execution != rhi::BindlessExecution::Native
                 || authorization->plan().deviceIdentity != bindlessDeviceIdentity_
                 || !bindlessExecutable_)) {
-            return commandFail("RHI-METAL-BINDLESS-PIPELINE-AUTHORIZATION-INVALID", commandCount_);
+            return failCommand("RHI-METAL-BINDLESS-PIPELINE-AUTHORIZATION-INVALID", commandCount_);
         }
         if (!authorization && !pipeline.shaderReflection().bindlessContractVersion.empty()) {
-            return commandFail("RHI-BINDLESS-RECORD-AUTHORIZATION-INVALID", commandCount_);
+            return failCommand("RHI-BINDLESS-RECORD-AUTHORIZATION-INVALID", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
             const auto pipelinePayload = metalRhiNativePayloadFor(pipeline);
             if (authorization
                 && !nativePayload_->retainIndexedPipeline(authorization, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
             if (!pipelinePayload
                 || !nativePayload_->recordComputePipelineBind(pipelinePayload, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         pipelineLayout_ = pipeline.layout();
@@ -1593,37 +1738,49 @@ public:
         const std::uint32_t* dynamicOffsets,
         std::uint32_t dynamicOffsetCount) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryDescriptor(commandCount_,
+                    set,
+                    descriptorSet,
+                    dynamicOffsets,
+                    dynamicOffsetCount,
+                    diagnostic))
+                return failCommand(diagnostic, commandCount_);
+            return commandOk(++commandCount_);
+        }
+
         if (activeAuthorization_) {
-            return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", commandCount_);
+            return failCommand("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", commandCount_);
         }
         const auto trackingCapacity = boundDescriptors_.validateSetCapacity(set);
         if (!trackingCapacity.success)
-            return commandFail(trackingCapacity.diagnostics, commandCount_);
+            return failCommand(trackingCapacity.diagnostics, commandCount_);
         if (descriptorSetNeedsArgumentBuffers(descriptorSet)
             && !rhi::semantics::hasExecutableNativeFeature(
                 capabilityContract_, rhi::semantics::NativeBackendFeature::ArgumentBuffers)) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-DESCRIPTOR-ARRAY-CAPABILITY-NOT-AUTHORIZED", commandCount_);
         }
         if (descriptorSet.stats().nativeHandleExposedToUpperLayer) {
-            return commandFail("Metal RHI descriptor set exposed native handle", commandCount_);
+            return failCommand("Metal RHI descriptor set exposed native handle", commandCount_);
         }
         const auto offsets = rhi::validateDynamicOffsetArguments(
             descriptorSet.layout(), dynamicOffsets, dynamicOffsetCount);
         if (!offsets.success) {
-            return commandFail(offsets.diagnostics, commandCount_);
+            return failCommand(offsets.diagnostics, commandCount_);
         }
         if (!descriptorSetMatchesPipeline(pipelineLayout_, set, descriptorSet)) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI descriptor set does not match the bound pipeline layout", commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-DESCRIPTOR-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-DESCRIPTOR-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
             if (!descriptorSetIsComplete(descriptorSet, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
             const auto nativeDescriptorSet = metalRhiNativePayloadFor(descriptorSet);
             if (!nativeDescriptorSet
@@ -1633,49 +1790,52 @@ public:
                     dynamicOffsets,
                     dynamicOffsetCount,
                     diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         const auto tracked =
             boundDescriptors_.bindSet(set, descriptorSet, dynamicOffsets, dynamicOffsetCount);
         if (!tracked.success)
-            return commandFail(tracked.diagnostics, commandCount_);
+            return failCommand(tracked.diagnostics, commandCount_);
         return commandOk(++commandCount_);
     }
 
     rhi::CommandValidationResult bindDescriptorTable(
         std::uint32_t set, const rhi::DescriptorTable& descriptorTable) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (activeAuthorization_) {
-            return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", commandCount_);
+            return failCommand("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", commandCount_);
         }
         const auto trackingCapacity = boundDescriptors_.validateTableCapacity(set);
         if (!trackingCapacity.success)
-            return commandFail(trackingCapacity.diagnostics, commandCount_);
+            return failCommand(trackingCapacity.diagnostics, commandCount_);
         if (!rhi::semantics::hasExecutableNativeFeature(
                 capabilityContract_, rhi::semantics::NativeBackendFeature::ArgumentBuffers)) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-DESCRIPTOR-TABLE-CAPABILITY-NOT-AUTHORIZED", commandCount_);
         }
         if (!pipelineLayout_
             || !declaresDescriptorTableSlot(pipelineLayout_, set, descriptorTable)) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI descriptor table does not match the bound pipeline layout",
                 commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-DESCRIPTOR-TABLE-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-DESCRIPTOR-TABLE-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
             if (!descriptorTableIsComplete(descriptorTable, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
             const auto nativeTable = metalRhiNativePayloadFor(descriptorTable);
             if (!nativeTable
                 || !nativePayload_->recordDescriptorTableBind(
                     set, nativeTable, rhi::ShaderStage::Compute, diagnostics)) {
-                return commandFail(diagnostics.empty()
+                return failCommand(diagnostics.empty()
                         ? "Metal RHI descriptor table native payload is missing"
                         : diagnostics,
                     commandCount_);
@@ -1683,7 +1843,7 @@ public:
         }
         const auto tracked = boundDescriptors_.bindTable(set, descriptorTable);
         if (!tracked.success)
-            return commandFail(tracked.diagnostics, commandCount_);
+            return failCommand(tracked.diagnostics, commandCount_);
         return commandOk(++commandCount_);
     }
 
@@ -1692,10 +1852,13 @@ public:
         std::uint32_t sizeBytes,
         const void* data) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         auto cmdResult =
             rhi::semantics::validatePushConstantCommand(stages, offsetBytes, sizeBytes, data);
         if (!cmdResult.success) {
-            return commandFail(cmdResult.diagnostics, commandCount_);
+            return failCommand(cmdResult.diagnostics, commandCount_);
         }
         auto bindResult = rhi::semantics::validatePushConstantBinding(pipelineLayout_,
             rhi::ShaderStage::Compute,
@@ -1704,10 +1867,10 @@ public:
             sizeBytes,
             shaderReflection_);
         if (!bindResult.success) {
-            return commandFail(bindResult.diagnostics, commandCount_);
+            return failCommand(bindResult.diagnostics, commandCount_);
         }
         if (pushState_.hasUnconsumedUpdate()) {
-            return commandFail(rhi::semantics::PushConstantDiagCode::kDuplicateUnconsumed
+            return failCommand(rhi::semantics::PushConstantDiagCode::kDuplicateUnconsumed
                     + std::pmr::string(
                         "push constants already set without intervening draw/dispatch"),
                 commandCount_);
@@ -1721,11 +1884,11 @@ public:
                 workload,
                 rhi::semantics::CommandRecordingIntent::PrimaryCommandBuffer,
                 loweringDiagnostics)) {
-            return commandFail(loweringDiagnostics, commandCount_);
+            return failCommand(loweringDiagnostics, commandCount_);
         }
         // P2 executable-payload gate.
         if (!nativePayload_) {
-            return commandFail(rhi::semantics::PushConstantDiagCode::kNoExecPayload
+            return failCommand(rhi::semantics::PushConstantDiagCode::kNoExecPayload
                     + std::pmr::string("Metal push constants require a native command payload"),
                 commandCount_);
         }
@@ -1733,7 +1896,7 @@ public:
             std::pmr::string diagnostics;
             if (!nativePayload_->recordPushConstants(
                     stages, offsetBytes, sizeBytes, data, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         pushState_.onPush();
@@ -1743,11 +1906,14 @@ public:
     rhi::CommandValidationResult dispatchIndirect(
         const rhi::GpuBuffer& indirectBuffer, std::uint64_t indirectOffset) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (activeAuthorization_)
-            return commandFail("RHI-BINDLESS-INDIRECT-DISPATCH-UNSUPPORTED", commandCount_);
+            return failCommand("RHI-BINDLESS-INDIRECT-DISPATCH-UNSUPPORTED", commandCount_);
         const auto descriptorUse = boundDescriptors_.validateLiveBindings();
         if (!descriptorUse.success)
-            return commandFail(descriptorUse.diagnostics, commandCount_);
+            return failCommand(descriptorUse.diagnostics, commandCount_);
         constexpr std::uint64_t kDispatchArgumentsSize = sizeof(std::uint32_t) * 3u;
         rhi::semantics::CommandWorkloadDesc workload;
         workload.commandCount = 1u;
@@ -1758,7 +1924,7 @@ public:
                 workload,
                 rhi::semantics::CommandRecordingIntent::PrimaryCommandBuffer,
                 loweringDiagnostics)) {
-            return commandFail(loweringDiagnostics, commandCount_);
+            return failCommand(loweringDiagnostics, commandCount_);
         }
         if ((indirectOffset & 3u) != 0u
             || static_cast<std::uint32_t>(
@@ -1766,7 +1932,7 @@ public:
                 == 0u
             || indirectOffset > indirectBuffer.desc().sizeBytes
             || kDispatchArgumentsSize > indirectBuffer.desc().sizeBytes - indirectOffset) {
-            return commandFail("Metal RHI indirect dispatch arguments are invalid", commandCount_);
+            return failCommand("Metal RHI indirect dispatch arguments are invalid", commandCount_);
         }
         const auto resource =
             resourceRegistry_ ? resourceRegistry_->find(indirectBuffer.id()) : std::nullopt;
@@ -1774,7 +1940,7 @@ public:
         if (!nativePayload_ || !resource
             || !nativePayload_->recordDispatchIndirect(
                 resource->buffer, indirectOffset, diagnostics)) {
-            return commandFail(diagnostics.empty()
+            return failCommand(diagnostics.empty()
                     ? "Metal RHI indirect dispatch native payload is missing"
                     : diagnostics,
                 commandCount_);
@@ -1786,28 +1952,38 @@ public:
     rhi::CommandValidationResult dispatch(
         std::uint32_t x, std::uint32_t y, std::uint32_t z) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryScalar(commandCount_,
+                    *rhi::CommandScalarArguments::capture(rhi::CommandUsageKind::Dispatch,
+                        rhi::CommandScalarArguments::Dispatch{x, y, z}),
+                    diagnostic))
+                return failCommand(diagnostic, commandCount_);
+            return commandOk(++commandCount_);
+        }
+
         if (activeAuthorization_ && !boundSnapshot_) {
-            return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", commandCount_);
+            return failCommand("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", commandCount_);
         }
         const auto descriptorUse = boundDescriptors_.validateLiveBindings();
         if (!descriptorUse.success)
-            return commandFail(descriptorUse.diagnostics, commandCount_);
+            return failCommand(descriptorUse.diagnostics, commandCount_);
         if (x == 0 || y == 0 || z == 0) {
-            return commandFail("Metal RHI dispatch requires non-zero groups", commandCount_);
+            return failCommand("Metal RHI dispatch requires non-zero groups", commandCount_);
         }
         const auto lowering = rhi::semantics::validateNativeCommandLoweringUse(dispatchLowering_,
             rhi::semantics::NativeCommandSemantic::MetalComputeCommandEncoder,
             rhi::FallbackMode::Native,
             "Metal compute dispatch");
         if (!lowering.success)
-            return commandFail(lowering.diagnostics, commandCount_);
+            return failCommand(lowering.diagnostics, commandCount_);
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-DISPATCH-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-DISPATCH-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
             if (!nativePayload_->recordDispatch(x, y, z, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         pushState_.onConsume();
@@ -1817,10 +1993,13 @@ public:
     rhi::CommandValidationResult writeTimestamp(
         const rhi::QueryPool& pool, std::uint32_t queryIndex) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         const auto* metalPool = asMetalRhiQueryPool(pool);
         if (!metalPool || metalPool->type() != rhi::QueryType::Timestamp || !metalPool->payload()
             || queryIndex >= metalPool->count()) {
-            return commandFail("RHI-METAL-TIMESTAMP-QUERY-POOL-INVALID", commandCount_);
+            return failCommand("RHI-METAL-TIMESTAMP-QUERY-POOL-INVALID", commandCount_);
         }
         rhi::semantics::CommandWorkloadDesc workload;
         workload.commandCount = 1u;
@@ -1830,12 +2009,12 @@ public:
                 workload,
                 rhi::semantics::CommandRecordingIntent::PrimaryCommandBuffer,
                 loweringDiagnostics)) {
-            return commandFail(loweringDiagnostics, commandCount_);
+            return failCommand(loweringDiagnostics, commandCount_);
         }
         std::pmr::string diagnostics;
         if (!nativePayload_
             || !nativePayload_->recordTimestamp(metalPool->payload(), queryIndex, diagnostics)) {
-            return commandFail(diagnostics.empty()
+            return failCommand(diagnostics.empty()
                     ? "RHI-METAL-TIMESTAMP-QUERY-NATIVE-PAYLOAD-MISSING"
                     : diagnostics,
                 commandCount_);
@@ -1846,10 +2025,13 @@ public:
     rhi::CommandValidationResult writePipelineStatistics(
         const rhi::QueryPool& pool, std::uint32_t queryIndex) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         const auto* metalPool = asMetalRhiQueryPool(pool);
         if (!metalPool || metalPool->type() != rhi::QueryType::PipelineStatistics
             || !metalPool->payload() || queryIndex >= metalPool->count()) {
-            return commandFail("RHI-METAL-PIPELINE-STATISTICS-QUERY-POOL-INVALID", commandCount_);
+            return failCommand("RHI-METAL-PIPELINE-STATISTICS-QUERY-POOL-INVALID", commandCount_);
         }
         rhi::semantics::CommandWorkloadDesc workload;
         workload.commandCount = 1u;
@@ -1859,13 +2041,13 @@ public:
                 workload,
                 rhi::semantics::CommandRecordingIntent::PrimaryCommandBuffer,
                 loweringDiagnostics)) {
-            return commandFail(loweringDiagnostics, commandCount_);
+            return failCommand(loweringDiagnostics, commandCount_);
         }
         std::pmr::string diagnostics;
         if (!nativePayload_
             || !nativePayload_->recordPipelineStatistics(
                 metalPool->payload(), queryIndex, diagnostics)) {
-            return commandFail(diagnostics.empty()
+            return failCommand(diagnostics.empty()
                     ? "RHI-METAL-PIPELINE-STATISTICS-QUERY-NATIVE-PAYLOAD-MISSING"
                     : diagnostics,
                 commandCount_);
@@ -1875,18 +2057,27 @@ public:
 
     rhi::CommandValidationResult end() override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryScope(
+                    rhi::CommandUsageKind::EndComputePass, commandCount_, nullptr, diagnostic))
+                return failCommand(diagnostic, commandCount_);
+            active_ = false;
+            return commandOk(++commandCount_);
+        }
+
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-COMPUTE-PASS-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-COMPUTE-PASS-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
             if (!nativePayload_->recordComputePassEnd(diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
             if (boundSnapshot_
                 && !nativePayload_->scheduleBindlessFaultReadback(boundSnapshot_, diagnostics)) {
                 nativePayload_->poisonRecording(diagnostics);
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         active_ = false;
@@ -1896,6 +2087,14 @@ public:
     }
 
 private:
+    rhi::CommandValidationResult failCommand(
+        const core::pmr::String& diagnostic, std::uint32_t count)
+    {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            nativePayload_->poisonRecording(diagnostic);
+        return commandFail(diagnostic, count);
+    }
+
     rhi::BoundDescriptorSlots boundDescriptors_;
     std::uint32_t& commandCount_;
     bool& active_;
@@ -1933,25 +2132,31 @@ public:
 
     rhi::CommandValidationResult copyBufferToBuffer(std::uint64_t sizeBytes) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         (void)sizeBytes;
-        return commandFail(
+        return failCommand(
             "Metal RHI buffer copy requires explicit source and destination resources",
             commandCount_);
     }
 
     rhi::CommandValidationResult copyBufferToBuffer(const rhi::BufferCopyDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (desc.sizeBytes == 0 || !desc.sourceBuffer.isValid()
             || !desc.destinationBuffer.isValid()) {
-            return commandFail("Metal RHI buffer copy requires resources and bytes", commandCount_);
+            return failCommand("Metal RHI buffer copy requires resources and bytes", commandCount_);
         }
         if (const auto destination =
                 registry_ ? registry_->find(desc.destinationBuffer) : std::nullopt;
             destination && destination->gpuTransferWritesSealed)
-            return commandFail("RHI-BUFFER-GPU-WRITES-SEALED", commandCount_);
+            return failCommand("RHI-BUFFER-GPU-WRITES-SEALED", commandCount_);
         std::pmr::string diagnostics;
         if (!nativePayload_ || !nativePayload_->recordBlitCopy(desc, diagnostics)) {
-            return commandFail(diagnostics.empty()
+            return failCommand(diagnostics.empty()
                     ? "Metal RHI native buffer copy payload is missing"
                     : diagnostics,
                 commandCount_);
@@ -1962,21 +2167,24 @@ public:
     rhi::CommandValidationResult copyBufferToTexture(
         const rhi::BufferToTextureCopyDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (const auto* id = metalRhiTextureWriteDiagnostic(registry_, desc.destinationTexture))
-            return commandFail(id, commandCount_);
+            return failCommand(id, commandCount_);
         if (!desc.sourceBuffer.isValid() || !desc.destinationTexture.isValid()
             || (desc.mipLayouts.empty()
                 && (desc.extent.width == 0 || desc.extent.height == 0 || desc.extent.depth == 0))) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI buffer-to-texture copy requires non-zero extent", commandCount_);
         }
         if (desc.mipLayouts.empty() && (desc.bytesPerRow == 0 || desc.rowsPerImage == 0)) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI texture upload requires explicit row and slice pitch", commandCount_);
         }
         if (!desc.mipLayouts.empty()) {
             if (desc.mipLayouts.size() != desc.textureSubresources.mipLevelCount) {
-                return commandFail("Metal RHI buffer-to-texture mip layout count does not match "
+                return failCommand("Metal RHI buffer-to-texture mip layout count does not match "
                                    "the subresource range",
                     commandCount_);
             }
@@ -1984,17 +2192,17 @@ public:
                 if (layout.bytesPerRow == 0u || layout.rowsPerImage == 0u
                     || (layout.bytesPerRow % 256u) != 0u || layout.extent.width == 0u
                     || layout.extent.height == 0u || layout.extent.depth == 0u) {
-                    return commandFail(
+                    return failCommand(
                         "Metal RHI buffer-to-texture mip layout is invalid", commandCount_);
                 }
             }
         } else if ((desc.bytesPerRow % 256u) != 0u) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI texture upload row pitch must be 256-byte aligned", commandCount_);
         }
         std::pmr::string diagnostics;
         if (!nativePayload_ || !nativePayload_->recordBlitBufferToTexture(desc, diagnostics)) {
-            return commandFail(diagnostics.empty()
+            return failCommand(diagnostics.empty()
                     ? "Metal RHI native buffer-to-texture copy payload is missing"
                     : diagnostics,
                 commandCount_);
@@ -2005,28 +2213,35 @@ public:
     rhi::CommandValidationResult copyTextureToBuffer(
         const rhi::TextureToBufferCopyDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryCopy(commandCount_, desc, diagnostic))
+                return failCommand(diagnostic, commandCount_);
+            return commandOk(++commandCount_);
+        }
+
         if (const auto* id = metalRhiOriginalTextureAccessDiagnostic(registry_, desc.sourceTexture))
-            return commandFail(id, commandCount_);
+            return failCommand(id, commandCount_);
         if (!desc.sourceTexture.isValid() || !desc.destinationBuffer.isValid()
             || (desc.mipLayouts.empty()
                 && (desc.extent.width == 0 || desc.extent.height == 0 || desc.extent.depth == 0))) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI texture-to-buffer copy requires resources and extent", commandCount_);
         }
         if (const auto destination =
                 registry_ ? registry_->find(desc.destinationBuffer) : std::nullopt;
             destination && destination->gpuTransferWritesSealed)
-            return commandFail("RHI-BUFFER-GPU-WRITES-SEALED", commandCount_);
+            return failCommand("RHI-BUFFER-GPU-WRITES-SEALED", commandCount_);
         if (desc.mipLayouts.empty()
             && (desc.bytesPerRow == 0u || desc.rowsPerImage == 0u
                 || (desc.bytesPerRow % 256u) != 0u)) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI texture-to-buffer copy requires a 256-byte aligned row layout",
                 commandCount_);
         }
         if (!desc.mipLayouts.empty()) {
             if (desc.mipLayouts.size() != desc.textureSubresources.mipLevelCount) {
-                return commandFail("Metal RHI texture-to-buffer mip layout count does not match "
+                return failCommand("Metal RHI texture-to-buffer mip layout count does not match "
                                    "the subresource range",
                     commandCount_);
             }
@@ -2034,14 +2249,14 @@ public:
                 if (layout.bytesPerRow == 0u || layout.rowsPerImage == 0u
                     || (layout.bytesPerRow % 256u) != 0u || layout.extent.width == 0u
                     || layout.extent.height == 0u || layout.extent.depth == 0u) {
-                    return commandFail(
+                    return failCommand(
                         "Metal RHI texture-to-buffer mip layout is invalid", commandCount_);
                 }
             }
         }
         std::pmr::string diagnostics;
         if (!nativePayload_ || !nativePayload_->recordBlitTextureToBuffer(desc, diagnostics)) {
-            return commandFail(diagnostics.empty()
+            return failCommand(diagnostics.empty()
                     ? "Metal RHI native texture-to-buffer copy payload is missing"
                     : diagnostics,
                 commandCount_);
@@ -2052,26 +2267,29 @@ public:
     rhi::CommandValidationResult copyTextureToTexture(
         const rhi::TextureToTextureCopyDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (const auto* id = metalRhiOriginalTextureAccessDiagnostic(registry_, desc.sourceTexture))
-            return commandFail(id, commandCount_);
+            return failCommand(id, commandCount_);
         if (const auto* id = metalRhiTextureWriteDiagnostic(registry_, desc.destinationTexture))
-            return commandFail(id, commandCount_);
+            return failCommand(id, commandCount_);
         if (!desc.sourceTexture.isValid() || !desc.destinationTexture.isValid()) {
-            return commandFail("Metal RHI texture copy requires resources", commandCount_);
+            return failCommand("Metal RHI texture copy requires resources", commandCount_);
         }
         if ((desc.mipLayouts.empty()
                 && (desc.extent.width == 0 || desc.extent.height == 0 || desc.extent.depth == 0))
             || (!desc.mipLayouts.empty()
                 && desc.mipLayouts.size() != desc.sourceSubresources.mipLevelCount)) {
-            return commandFail("Metal RHI texture copy requires non-zero extent", commandCount_);
+            return failCommand("Metal RHI texture copy requires non-zero extent", commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-TEXTURE-COPY-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-TEXTURE-COPY-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
             if (!nativePayload_->recordBlitTextureCopy(desc, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         return commandOk(++commandCount_);
@@ -2079,19 +2297,22 @@ public:
 
     rhi::CommandValidationResult uploadBuffer(const rhi::UploadBufferDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (!desc.backendOwnedStaging || desc.stagingIntent != rhi::StagingIntent::Upload
             || desc.sizeBytes == 0 || !desc.sourceUploadBuffer.isValid()
             || !desc.destinationResource.isValid()) {
-            return commandFail("Metal RHI upload requires backend-owned staging, source buffer, "
+            return failCommand("Metal RHI upload requires backend-owned staging, source buffer, "
                                "destination buffer, and bytes",
                 commandCount_);
         }
         if (const auto destination =
                 registry_ ? registry_->find(desc.destinationResource) : std::nullopt;
             destination && destination->gpuTransferWritesSealed)
-            return commandFail("RHI-BUFFER-GPU-WRITES-SEALED", commandCount_);
+            return failCommand("RHI-BUFFER-GPU-WRITES-SEALED", commandCount_);
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-UPLOAD-BUFFER-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-UPLOAD-BUFFER-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
@@ -2103,7 +2324,7 @@ public:
                 desc.sizeBytes,
             };
             if (!nativePayload_->recordBlitCopy(copy, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         return commandOk(++commandCount_);
@@ -2111,27 +2332,30 @@ public:
 
     rhi::CommandValidationResult uploadTexture(const rhi::UploadTextureDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (const auto* id = metalRhiTextureWriteDiagnostic(registry_, desc.destinationTexture))
-            return commandFail(id, commandCount_);
+            return failCommand(id, commandCount_);
         if (!desc.backendOwnedStaging || desc.stagingIntent != rhi::StagingIntent::Upload
             || desc.pixelDataSize == 0 || desc.pixelData == nullptr) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI texture upload requires backend-owned staging and valid pixel data",
                 commandCount_);
         }
         if (!stagingUploadPool_) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI texture upload requires a backend-owned staging pool", commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-UPLOAD-TEXTURE-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-UPLOAD-TEXTURE-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (desc.format == rhi::TextureFormat::Unknown
             || (desc.mipLayouts.empty()
                 && (desc.bytesPerRow == 0 || desc.rowsPerImage == 0 || desc.extent.width == 0
                     || desc.extent.height == 0 || desc.extent.depth == 0))
             || !desc.destinationTexture.isValid()) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI texture upload requires explicit destination, extent, format, and pitch",
                 commandCount_);
         }
@@ -2140,21 +2364,21 @@ public:
         if (!destination || destination->kind != rhi::DescriptorResourceKind::TextureView
             || !hasTextureUsage(destination->textureUsage, rhi::TextureUsage::CopyDst)
             || destination->textureFormat != desc.format) {
-            return commandFail(
+            return failCommand(
                 "RHI-METAL-TEXTURE-UPLOAD-DESTINATION-FORMAT-OR-USAGE-MISMATCH", commandCount_);
         }
         auto effectiveDesc = desc;
         if (desc.mipLevel != 0u) {
             if (desc.subresources.baseMipLevel != 0u
                 && desc.subresources.baseMipLevel != desc.mipLevel) {
-                return commandFail("RHI-METAL-TEXTURE-UPLOAD-MIP-IDENTITY-MISMATCH", commandCount_);
+                return failCommand("RHI-METAL-TEXTURE-UPLOAD-MIP-IDENTITY-MISMATCH", commandCount_);
             }
             effectiveDesc.subresources.baseMipLevel = desc.mipLevel;
         }
         if (desc.arrayLayer != 0u) {
             if (desc.subresources.baseArrayLayer != 0u
                 && desc.subresources.baseArrayLayer != desc.arrayLayer) {
-                return commandFail(
+                return failCommand(
                     "RHI-METAL-TEXTURE-UPLOAD-LAYER-IDENTITY-MISMATCH", commandCount_);
             }
             effectiveDesc.subresources.baseArrayLayer = desc.arrayLayer;
@@ -2164,7 +2388,7 @@ public:
             || (effectiveDesc.mipLayouts.empty() ? effectiveDesc.subresources.mipLevelCount != 1u
                                                  : effectiveDesc.mipLayouts.size()
                         != effectiveDesc.subresources.mipLevelCount)) {
-            return commandFail("RHI-METAL-TEXTURE-UPLOAD-MIP-LAYOUT-INVALID", commandCount_);
+            return failCommand("RHI-METAL-TEXTURE-UPLOAD-MIP-LAYOUT-INVALID", commandCount_);
         }
         const auto frameSerial = currentFrameSerial_;
         auto staging =
@@ -2174,9 +2398,9 @@ public:
         }
         if (!stagingUploads_) {
             if (!stagingUploadPool_->rollback(staging)) {
-                return commandFail("RHI-METAL-STAGING-UPLOAD-ROLLBACK-FAILED", commandCount_);
+                return failCommand("RHI-METAL-STAGING-UPLOAD-ROLLBACK-FAILED", commandCount_);
             }
-            return commandFail("RHI-STAGING-RECORDING-JOURNAL-MISSING", commandCount_);
+            return failCommand("RHI-STAGING-RECORDING-JOURNAL-MISSING", commandCount_);
         }
         if (!stagingUploadPool_->enlist(*stagingUploads_,
                 {
@@ -2186,13 +2410,13 @@ public:
                     staging.frameSerial,
                 })) {
             (void)stagingUploadPool_->rollback(staging);
-            return commandFail("RHI-METAL-STAGING-RESERVATION-IDENTITY-INVALID", commandCount_);
+            return failCommand("RHI-METAL-STAGING-RESERVATION-IDENTITY-INVALID", commandCount_);
         }
         const auto failStaging = [&](const std::pmr::string& diagnostics) {
             if (!stagingUploads_->rollbackLast()) {
-                return commandFail("RHI-METAL-STAGING-UPLOAD-ROLLBACK-FAILED", commandCount_);
+                return failCommand("RHI-METAL-STAGING-UPLOAD-ROLLBACK-FAILED", commandCount_);
             }
-            return commandFail(diagnostics, commandCount_);
+            return failCommand(diagnostics, commandCount_);
         };
         if (!staging.mappedData) {
             return failStaging("Metal RHI texture upload staging page is not CPU-mappable");
@@ -2222,15 +2446,18 @@ public:
 
     rhi::CommandValidationResult readbackTexture(const rhi::ReadbackTextureDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            return failCommand("RHI-METAL-ORDINARY-COMMAND-PROFILE", commandCount_);
+
         if (!desc.backendOwnedStaging || desc.stagingIntent != rhi::StagingIntent::Readback
             || desc.sizeBytes == 0 || !desc.sourceResource.isValid()
             || !desc.destinationReadbackBuffer.isValid()) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI readback requires backend-owned staging, resources, and bytes",
                 commandCount_);
         }
         if (!nativePayload_) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI readback requires a native command payload", commandCount_);
         }
         const auto source = registry_ ? registry_->find(desc.sourceResource) : std::nullopt;
@@ -2243,7 +2470,7 @@ public:
             || (destination->buffer->resource.storageMode != MetalRhiNativeStorageMode::Shared
                 && destination->buffer->resource.storageMode
                     != MetalRhiNativeStorageMode::Managed)) {
-            return commandFail("Metal RHI readback requires a tracked single-sample texture and "
+            return failCommand("Metal RHI readback requires a tracked single-sample texture and "
                                "CPU-readable destination buffer",
                 commandCount_);
         }
@@ -2251,7 +2478,7 @@ public:
             && desc.extent.depth == 0u && desc.mipLayouts.empty();
         if (!legacyWholeResource
             && (desc.extent.width == 0u || desc.extent.height == 0u || desc.extent.depth == 0u)) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI readback extent must be complete when explicit layout is used",
                 commandCount_);
         }
@@ -2273,7 +2500,7 @@ public:
                 > source->textureArrayLayerCount - sourceRange.baseArrayLayer
             || (!desc.mipLayouts.empty() && desc.mipLayouts.size() != sourceRange.mipLevelCount)
             || (desc.mipLayouts.empty() && sourceRange.mipLevelCount != 1u)) {
-            return commandFail(
+            return failCommand(
                 "Metal RHI readback subresource range or mip layout is invalid", commandCount_);
         }
         const auto extentAt = [&](std::uint32_t mipIndex) {
@@ -2321,7 +2548,7 @@ public:
                 relativeOffset = layout.bufferOffsetBytes;
                 if (mipIndex > std::numeric_limits<std::uint32_t>::max() - sourceRange.baseMipLevel
                     || mipLevel != sourceRange.baseMipLevel + mipIndex) {
-                    return commandFail(
+                    return failCommand(
                         "Metal RHI readback mip layouts are not in ascending order", commandCount_);
                 }
             } else if (!legacyWholeResource && sourceRange.baseMipLevel != 0u) {
@@ -2332,11 +2559,11 @@ public:
             if (bytesPerRow == 0u) {
                 std::uint64_t aligned = 0u;
                 if (!checkedMetalAdd(requiredRowBytes, 255u, aligned)) {
-                    return commandFail("Metal RHI readback row pitch overflows", commandCount_);
+                    return failCommand("Metal RHI readback row pitch overflows", commandCount_);
                 }
                 const auto alignedRowBytes = aligned & ~255ull;
                 if (alignedRowBytes > std::numeric_limits<std::uint32_t>::max()) {
-                    return commandFail(
+                    return failCommand(
                         "Metal RHI readback row pitch exceeds the RHI limit", commandCount_);
                 }
                 bytesPerRow = static_cast<std::uint32_t>(alignedRowBytes);
@@ -2347,7 +2574,7 @@ public:
             if (bytesPerRow < requiredRowBytes || rowsPerImage < requiredRows
                 || (bytesPerRow % 256u) != 0u
                 || bytesPerRow > std::numeric_limits<std::uint32_t>::max()) {
-                return commandFail("Metal RHI readback row layout is invalid", commandCount_);
+                return failCommand("Metal RHI readback row layout is invalid", commandCount_);
             }
             std::uint64_t bytesPerImage = 0u;
             std::uint64_t lastSlice = 0u;
@@ -2361,7 +2588,7 @@ public:
                     bytesPerImage, sourceRange.arrayLayerCount - 1u, requiredAllLayers)
                 || !checkedMetalAdd(requiredAllLayers, requiredOneLayer, requiredAllLayers)
                 || requiredAllLayers == 0u) {
-                return commandFail(
+                return failCommand(
                     "Metal RHI readback destination is smaller than the packed texture copy",
                     commandCount_);
             }
@@ -2370,7 +2597,7 @@ public:
             if (!checkedMetalAdd(desc.destinationOffsetBytes, relativeOffset, destinationOffset)
                 || !checkedMetalAdd(destinationOffset, requiredAllLayers, destinationEnd)
                 || destinationEnd > desc.sizeBytes) {
-                return commandFail(
+                return failCommand(
                     "Metal RHI readback destination is smaller than the packed texture copy",
                     commandCount_);
             }
@@ -2389,13 +2616,13 @@ public:
         for (const auto& copy : readbackCopies) {
             std::pmr::string diagnostics;
             if (!nativePayload_->preflightBlitTextureToBuffer(copy, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         for (const auto& copy : readbackCopies) {
             std::pmr::string diagnostics;
             if (!nativePayload_->recordBlitTextureToBuffer(copy, diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         return commandOk(++commandCount_);
@@ -2403,13 +2630,22 @@ public:
 
     rhi::CommandValidationResult end() override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryScope(
+                    rhi::CommandUsageKind::EndTransferPass, commandCount_, nullptr, diagnostic))
+                return failCommand(diagnostic, commandCount_);
+            active_ = false;
+            return commandOk(++commandCount_);
+        }
+
         if (!nativePayload_) {
-            return commandFail("RHI-METAL-BLIT-PASS-NATIVE-PAYLOAD-MISSING", commandCount_);
+            return failCommand("RHI-METAL-BLIT-PASS-NATIVE-PAYLOAD-MISSING", commandCount_);
         }
         if (nativePayload_) {
             std::pmr::string diagnostics;
             if (!nativePayload_->recordBlitPassEnd(diagnostics)) {
-                return commandFail(diagnostics, commandCount_);
+                return failCommand(diagnostics, commandCount_);
             }
         }
         active_ = false;
@@ -2417,6 +2653,14 @@ public:
     }
 
 private:
+    rhi::CommandValidationResult failCommand(
+        const core::pmr::String& diagnostic, std::uint32_t count)
+    {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            nativePayload_->poisonRecording(diagnostic);
+        return commandFail(diagnostic, count);
+    }
+
     std::uint32_t& commandCount_;
     bool& active_;
     std::shared_ptr<MetalRhiNativeCommandPayload> nativePayload_;
@@ -2463,6 +2707,81 @@ public:
           uploadRetirementSerial_(stagingUploadPool ? stagingUploadPool->beginSubmission() : 0u)
     {}
 
+    bool prepareOriginalOrdinary(std::shared_ptr<const rhi::OriginalCommandStreamProgram> program,
+        const rhi::GpuDevice& device,
+        const rhi::OriginalRenderPassPreparationRequest& request,
+        core::pmr::String& diagnostic)
+    {
+        if (!nativePayload_) {
+            diagnostic = "RHI-METAL-ORDINARY-NATIVE-PAYLOAD";
+            return false;
+        }
+        finishedCommand_ =
+            core::makeUnique<MetalRhiCommandBuffer>(MetalRhiCommandBuffer::ColdStorage{});
+        if (const auto* id = stagingUploads_->prepareBounded(0u)) {
+            diagnostic = id;
+            return false;
+        }
+        std::size_t compute = 0u, transfer = 0u;
+        for (const auto& operation : program->operations()) {
+            compute += operation.kind == rhi::CommandUsageKind::BeginComputePass;
+            transfer += operation.kind == rhi::CommandUsageKind::BeginTransferPass;
+        }
+        coldComputePasses_.reserve(compute);
+        coldTransferPasses_.reserve(transfer);
+        coldRenderPasses_.reserve(program->counts().renderPasses);
+        for (std::size_t i = 0u; i < compute; ++i)
+            coldComputePasses_.push_back(core::makeUnique<MetalRhiComputePassEncoder>(commandCount_,
+                activePass_,
+                nativePayload_,
+                capabilityContract_,
+                registry_,
+                false,
+                0u,
+                rhi::semantics::NativeCommandLoweringDecision{}));
+        for (std::size_t i = 0u; i < transfer; ++i)
+            coldTransferPasses_.push_back(
+                core::makeUnique<MetalRhiTransferPassEncoder>(commandCount_,
+                    activePass_,
+                    nativePayload_,
+                    capabilityContract_,
+                    nullptr,
+                    stagingUploads_.get(),
+                    registry_,
+                    0u));
+        for (const auto& operation : program->operations()) {
+            if (operation.kind != rhi::CommandUsageKind::BeginRenderPass)
+                continue;
+            const auto& args = std::get<std::shared_ptr<const rhi::RenderPassArguments>>(
+                *program->originalInputs()->descriptorAt(operation.commandIndex));
+            const auto& desc = args->desc();
+            const auto first = desc.colorAttachments.empty() ? desc.depthStencilAttachment.target
+                                                             : desc.colorAttachments.front().target;
+            const auto resource = registry_ ? registry_->find(first) : std::nullopt;
+            if (!resource || !resource->textureSampleCount) {
+                diagnostic = "RHI-METAL-ORDINARY-PASS-SAMPLE-COUNT";
+                return false;
+            }
+            coldRenderPasses_.push_back(core::makeUnique<MetalRhiRenderPassEncoder>(commandCount_,
+                activePass_,
+                nativePayload_,
+                capabilityContract_,
+                registry_,
+                1u,
+                core::pmr::Vector<rhi::SubpassDesc>{&core::defaultCpuMemoryResource()},
+                desc.colorAttachments,
+                desc.hasDepthStencilAttachment ? desc.depthStencilAttachment.format
+                                               : rhi::TextureFormat::Unknown,
+                resource->textureSampleCount,
+                false,
+                recordingIdentity_,
+                std::shared_ptr<const rhi::BindlessPreparedGraphicsBinding>{},
+                rhi::semantics::NativeCommandLoweringDecision{}));
+        }
+        return nativePayload_->prepareOriginalOrdinary(
+            std::move(program), device, request, recordedStates_, diagnostic);
+    }
+
     ~MetalRhiCommandEncoder() override
     {
         if (nativePayload_ && !submissionOwnershipTransferred_) {
@@ -2477,6 +2796,11 @@ public:
         std::shared_ptr<const rhi::BindlessPreparedGraphicsBinding> binding,
         const rhi::BindlessAccessDeclarations& accesses) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            markCommandFail("RHI-METAL-ORDINARY-COMMAND-PROFILE");
+            return lastValidation_;
+        }
+
         const auto fail = [&](std::string_view diagnostic) {
             markCommandFail(core::pmr::String(diagnostic));
             return lastValidation_;
@@ -2511,6 +2835,19 @@ public:
     rhi::ResourceBarrierResult transition(
         rhi::GpuBuffer& buffer, const rhi::ResourceBarrierDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryTransition(
+                    commandCount_, buffer, desc, diagnostic)) {
+                markCommandFail(diagnostic);
+                return barrierFailure(buffer.id(), desc, false, diagnostic);
+            }
+            markCommandOk();
+            auto result = barrierFailure(buffer.id(), desc, false, {});
+            result.success = true;
+            return result;
+        }
+
         if (const auto* id =
                 rhi::semantics::GeometryInputAccessLowering::geometryInputBarrierDiagnostic(
                     rhi::Backend::Metal, desc)) {
@@ -2576,6 +2913,19 @@ public:
     rhi::ResourceBarrierResult transition(
         rhi::GpuTexture& texture, const rhi::ResourceBarrierDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryTransition(
+                    commandCount_, texture, desc, diagnostic)) {
+                markCommandFail(diagnostic);
+                return barrierFailure(texture.id(), desc, true, diagnostic);
+            }
+            markCommandOk();
+            auto result = barrierFailure(texture.id(), desc, true, {});
+            result.success = true;
+            return result;
+        }
+
         if (texture.originalContentExclusive()) {
             markCommandFail("RHI-TEXTURE-CONTENT-EXCLUSIVE-USE");
             return barrierFailure(texture.id(), desc, true, lastValidation_.diagnostics);
@@ -2646,6 +2996,11 @@ public:
     rhi::ResourceBarrierResult memoryBarrier(
         rhi::GpuBuffer& buffer, const rhi::ResourceMemoryBarrierDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            markCommandFail("RHI-METAL-ORDINARY-COMMAND-PROFILE");
+            return {false, lastValidation_.diagnostics};
+        }
+
         if (const auto* id =
                 rhi::semantics::GeometryInputAccessLowering::geometryInputBarrierDiagnostic(
                     rhi::Backend::Metal, desc)) {
@@ -2712,6 +3067,11 @@ public:
     rhi::ResourceBarrierResult memoryBarrier(
         rhi::GpuTexture& texture, const rhi::ResourceMemoryBarrierDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            markCommandFail("RHI-METAL-ORDINARY-COMMAND-PROFILE");
+            return {false, lastValidation_.diagnostics};
+        }
+
         if (texture.originalContentExclusive()) {
             markCommandFail("RHI-TEXTURE-CONTENT-EXCLUSIVE-USE");
             return {false, lastValidation_.diagnostics};
@@ -2791,6 +3151,11 @@ public:
 
     rhi::ResourceBarrierResult aliasBarrier(const rhi::AliasingBarrierDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            markCommandFail("RHI-METAL-ORDINARY-COMMAND-PROFILE");
+            return {false, lastValidation_.diagnostics};
+        }
+
         if (pendingGraphics_) {
             markCommandFail("RHI-METAL-GRAPHICS-SCOPE-NOT-CONSUMED");
             return {false, lastValidation_.diagnostics};
@@ -2851,6 +3216,22 @@ public:
     arp::core::UniquePtr<rhi::RenderPassEncoder> beginRenderPass(
         const rhi::RenderPassDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            if (isFinished() || hasActivePass() || nextRenderPass_ >= coldRenderPasses_.size()) {
+                markCommandFail("RHI-METAL-ORDINARY-PASS-WRAPPER-CAPACITY");
+                return {};
+            }
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryScope(
+                    rhi::CommandUsageKind::BeginRenderPass, commandCount_, &desc, diagnostic)) {
+                markCommandFail(diagnostic);
+                return {};
+            }
+            activePass_ = true;
+            markCommandOk();
+            return std::move(coldRenderPasses_[nextRenderPass_++]);
+        }
+
         const auto operations = rhi::semantics::validateRenderPassAttachmentOperations(desc);
         if (!operations.success) {
             markCommandFail(operations.diagnostics);
@@ -2950,8 +3331,28 @@ public:
     }
 
     arp::core::UniquePtr<rhi::ComputePassEncoder> beginComputePass(
-        const rhi::ComputePassDesc&) override
+        const rhi::ComputePassDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            if (isFinished() || hasActivePass() || nextComputePass_ >= coldComputePasses_.size()) {
+                markCommandFail("RHI-METAL-ORDINARY-PASS-WRAPPER-CAPACITY");
+                return {};
+            }
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryScope(
+                    rhi::CommandUsageKind::BeginComputePass,
+                    commandCount_,
+                    nullptr,
+                    diagnostic,
+                    desc.label)) {
+                markCommandFail(diagnostic);
+                return {};
+            }
+            activePass_ = true;
+            markCommandOk();
+            return std::move(coldComputePasses_[nextComputePass_++]);
+        }
+
         if (pendingGraphics_) {
             markCommandFail("RHI-METAL-GRAPHICS-SCOPE-NOT-CONSUMED");
             return nullptr;
@@ -2997,8 +3398,29 @@ public:
     }
 
     arp::core::UniquePtr<rhi::TransferPassEncoder> beginTransferPass(
-        const rhi::TransferPassDesc&) override
+        const rhi::TransferPassDesc& desc) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            if (isFinished() || hasActivePass()
+                || nextTransferPass_ >= coldTransferPasses_.size()) {
+                markCommandFail("RHI-METAL-ORDINARY-PASS-WRAPPER-CAPACITY");
+                return {};
+            }
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryScope(
+                    rhi::CommandUsageKind::BeginTransferPass,
+                    commandCount_,
+                    nullptr,
+                    diagnostic,
+                    desc.label)) {
+                markCommandFail(diagnostic);
+                return {};
+            }
+            activePass_ = true;
+            markCommandOk();
+            return std::move(coldTransferPasses_[nextTransferPass_++]);
+        }
+
         if (pendingGraphics_) {
             markCommandFail("RHI-METAL-GRAPHICS-SCOPE-NOT-CONSUMED");
             return nullptr;
@@ -3045,6 +3467,11 @@ public:
 
     void pushDebugGroup(std::string_view label) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            markCommandFail("RHI-METAL-ORDINARY-COMMAND-PROFILE");
+            return;
+        }
+
         if (!nativePayload_) {
             markCommandFail("RHI-METAL-DEBUG-GROUP-NATIVE-PAYLOAD-MISSING");
             return;
@@ -3059,6 +3486,11 @@ public:
 
     void popDebugGroup() override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            markCommandFail("RHI-METAL-ORDINARY-COMMAND-PROFILE");
+            return;
+        }
+
         if (!nativePayload_) {
             markCommandFail("RHI-METAL-DEBUG-GROUP-NATIVE-PAYLOAD-MISSING");
             return;
@@ -3073,6 +3505,11 @@ public:
 
     void insertDebugMarker(std::string_view label) override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            markCommandFail("RHI-METAL-ORDINARY-COMMAND-PROFILE");
+            return;
+        }
+
         if (!nativePayload_) {
             markCommandFail("RHI-METAL-DEBUG-MARKER-NATIVE-PAYLOAD-MISSING");
             return;
@@ -3087,6 +3524,26 @@ public:
 
     arp::core::UniquePtr<rhi::CommandBuffer> finish() override
     {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary()) {
+            auto* journal = nativePayload_->originalOrdinaryJournal();
+            if (isFinished() || hasActivePass() || !finishedCommand_ || !journal) {
+                markCommandFail("RHI-METAL-ORDINARY-FINISH-STATE");
+                return {};
+            }
+            core::pmr::String diagnostic;
+            if (!nativePayload_->recordOriginalOrdinaryScope(
+                    rhi::CommandUsageKind::Finish, commandCount_, nullptr, diagnostic)) {
+                markCommandFail(diagnostic);
+                return {};
+            }
+            markCommandOk();
+            MetalRhiCommandBuffer finished(commandCount_, nativePayload_, *journal);
+            core::replaceCpuObjectByMove(*finishedCommand_, finished);
+            finished_ = true;
+            submissionOwnershipTransferred_ = true;
+            return std::move(finishedCommand_);
+        }
+
         if (pendingGraphics_) {
             markCommandFail("RHI-METAL-GRAPHICS-SCOPE-NOT-CONSUMED");
             return nullptr;
@@ -3112,6 +3569,22 @@ public:
     }
 
 private:
+    rhi::CommandValidationResult markCommandFail(core::pmr::String diagnostic) noexcept
+    {
+        if (nativePayload_ && nativePayload_->hasOriginalOrdinary())
+            nativePayload_->poisonRecording(diagnostic);
+        return CommandEncoderBase::markCommandFail(std::move(diagnostic));
+    }
+
+    core::UniquePtr<MetalRhiCommandBuffer> finishedCommand_;
+    core::pmr::Vector<core::UniquePtr<MetalRhiRenderPassEncoder>> coldRenderPasses_{
+        &core::defaultCpuMemoryResource()};
+    core::pmr::Vector<core::UniquePtr<MetalRhiComputePassEncoder>> coldComputePasses_{
+        &core::defaultCpuMemoryResource()};
+    core::pmr::Vector<core::UniquePtr<MetalRhiTransferPassEncoder>> coldTransferPasses_{
+        &core::defaultCpuMemoryResource()};
+    std::size_t nextRenderPass_ = 0u, nextComputePass_ = 0u, nextTransferPass_ = 0u;
+
     static rhi::ResourceBarrierResult barrierFailure(rhi::GpuResourceId resource,
         const rhi::ResourceBarrierDesc& desc,
         bool subresourceAware,
@@ -4461,6 +4934,736 @@ rhi::CommandValidationResult MetalRhiRenderPassEncoder::executeRenderBundle(
 
 } // namespace
 
+const char* MetalOriginalOrdinaryCommand::inspect(const std::shared_ptr<const Program>& program,
+    const rhi::GpuDevice& device,
+    const rhi::OriginalRenderPassPreparationRequest& request) noexcept
+{
+    if (const auto* id = metalRhiOriginalSubmissionOwnerDiagnostic(device))
+        return id;
+    if (!metalRhiOriginalSubmissionDomain(device))
+        return "RHI-SUBMISSION-COMPLETION-UNPREPARED";
+    if (const auto* id = rhi::OriginalRenderPassPreparationContract::validate(request))
+        return id;
+    if (request.contractVersion != 6u || device.backend() != rhi::Backend::Metal)
+        return "RHI-METAL-ORDINARY-PREPARATION-PROFILE";
+    if (const auto* id = Program::validateOriginal(program))
+        return id;
+    if (!program->recordingBudget())
+        return "RHI-METAL-ORDINARY-RECORDING-BUDGET";
+    const auto& sources =
+        program->originalInputs()->originalScalars()->originalUsage()->originalSources();
+    if (const auto* id =
+            rhi::OriginalCommandResourceSources::validateRegisteredLifetime(sources, device))
+        return id;
+    const rhi::OriginalComputeDispatchRecordingInput admission{device, request.dispatchDomain};
+    const auto checked = rhi::OriginalRenderPassRecordingContract::inspect(program,
+        request.storage,
+        *request.content,
+        *request.recording,
+        request.dispatchDomain ? &admission : nullptr);
+    if (checked.diagnostic)
+        return checked.diagnostic;
+    const auto passes = program->counts().renderPasses;
+    if (const auto* id =
+            rhi::OriginalRenderPassPreparationContract::inspectWrapperCapacity(request, passes))
+        return id;
+    // One command buffer, one reusable sequential encoder slot, one completion
+    // storage object and one immutable native descriptor per literal render pass.
+    if (request.maxNativeObjects < 3u || passes > request.maxNativeObjects - 3u)
+        return "RHI-METAL-ORDINARY-NATIVE-OBJECT-CAPACITY";
+    for (const auto& operation : program->operations())
+        if (operation.kind == K::Dispatch && !request.dispatchDomain)
+            return "RHI-DISPATCH-RECORDING-ADMISSION-INPUT";
+    return nullptr;
+}
+
+rhi::CommandRecordingUsage MetalOriginalOrdinaryCommand::increment(
+    std::size_t command) const noexcept
+{
+    const auto& operation = program_->operations()[command];
+    const auto& args = *program_->originalInputs()->originalScalars()->originalArguments();
+    const auto& record = args.records()[command];
+    rhi::CommandRecordingUsage value;
+    (void)value.appendArguments({record.scalar,
+        args.text(command),
+        args.offsets(command),
+        static_cast<std::uint32_t>(record.offsetCount),
+        args.bytes(command),
+        static_cast<std::uint32_t>(record.byteCount)});
+    value.resourceReferences = operation.referenceCount;
+    if (operation.kind == K::BindRenderDescriptor || operation.kind == K::BindComputeDescriptor)
+        if (const auto* source =
+                rhi::OriginalReadOnlyGraphicsPassProjection::descriptor(*program_, command))
+            value.descriptorElements = source->frozenElements().size();
+    return value;
+}
+
+const rhi::OriginalCommandTextureViewSource& MetalOriginalOrdinaryCommand::attachmentSource(
+    const Attachment& attachment) const
+{
+    const auto& operation = program_->operations()[attachment.command];
+    const auto& usage = *program_->originalInputs()->originalScalars()->originalUsage();
+    const auto index =
+        usage.references()[operation.firstReference + attachment.operand].sourceIndex;
+    return *std::get<std::shared_ptr<const rhi::OriginalCommandTextureViewSource>>(
+        usage.originalSources()->sources()[index]);
+}
+
+const char* MetalOriginalOrdinaryCommand::validate() const noexcept
+{
+    if (owner_ != std::this_thread::get_id())
+        return "RHI-SUBMISSION-COMPLETION-THREAD";
+    if (failure_)
+        return failure_;
+    const auto check = [&]() noexcept -> const char* {
+        if (!originalMetadataQuota()
+            || originalMetadataQuota()->limitBytes()
+                != program_->originalBudget().maxCpuMetadataBytes)
+            return "RHI-METAL-ORDINARY-METADATA-QUOTA";
+        const auto& sources =
+            program_->originalInputs()->originalScalars()->originalUsage()->originalSources();
+        if (const auto* id = rhi::OriginalCommandResourceSources::validateOriginal(sources))
+            return id;
+        for (const auto& dispatch : dispatches_)
+            if (const auto* id = dispatch.frozen.diagnostic())
+                return id;
+        for (const auto& pass : passes_)
+            if (const auto* id = validateMetalRhiNativeRenderPassResources(
+                    pass.native, registry_, nativeDevice_))
+                return id;
+        return nullptr;
+    };
+    failure_ = check();
+    return failure_;
+}
+
+const char* MetalOriginalOrdinaryCommand::preflight(K kind, std::uint32_t command) const noexcept
+{
+    if (owner_ != std::this_thread::get_id())
+        return "RHI-SUBMISSION-COMPLETION-THREAD";
+    if (terminal_ || sealed_ || !journal_ || !command_ || command_->recordingPoisoned_
+        || command_->abandoned_ || command_->readbackWasSubmitted()
+        || command != meter_.commandCount() || command >= program_->operations().size()
+        || program_->operations()[command].kind != kind)
+        return "RHI-METAL-ORDINARY-RECORDING-ORDINAL";
+    if (const auto* id = validate())
+        return id;
+    return meter_.preflight(increment(command));
+}
+
+void MetalOriginalOrdinaryCommand::consume() noexcept
+{
+    (void)meter_.consume(increment(static_cast<std::size_t>(meter_.commandCount())));
+}
+
+const char* MetalOriginalOrdinaryCommand::claim() noexcept
+{
+    if (owner_ != std::this_thread::get_id())
+        return "RHI-SUBMISSION-COMPLETION-THREAD";
+    if (claimed_)
+        return validatePending();
+    if (const auto* id = validate())
+        return id;
+    if (const auto* id = visitBuffers([&](const auto& object) noexcept -> const char* {
+            const auto native = metalRhiNativePayloadFor(object);
+            if (!native || !native->originalHostDefinedBytesMatch(object))
+                return "RHI-METAL-ORDINARY-BUFFER-INITIALIZATION";
+            return rhi::OriginalCommandStateTransaction::preflightOrdinaryInitializedBuffer(
+                object, *journal_);
+        }))
+        return id;
+    for (const auto& attachment : attachments_) {
+        const auto& object = *attachmentSource(attachment).originalParentLease()->originalObject();
+        if (const auto* id = object.validateOriginalCommittedState(attachment.initialState))
+            return id;
+        if (const auto* id = object.validateOriginalContent(attachment.initialContent))
+            return id;
+        if (attachment.claimOwner)
+            if (const auto* id = rhi::OriginalCommandStateTransaction::preflightOrdinaryAttachment(
+                    object, attachment.initialContent, *journal_))
+                return id;
+    }
+    if (const auto* id = visitBuffers([&](const auto& object) noexcept {
+            return rhi::OriginalCommandStateTransaction::claimOrdinaryInitializedBuffer(
+                object, *journal_);
+        }))
+        return id;
+    for (auto& attachment : attachments_)
+        if (attachment.claimOwner)
+            if (const auto* id = rhi::OriginalCommandStateTransaction::proposeOrdinaryAttachment(
+                    *attachmentSource(attachment).originalParentLease()->originalObject(),
+                    attachment.initialContent,
+                    attachment.finalStored,
+                    *journal_,
+                    attachment.proposed,
+                    attachment.pending))
+                return id;
+    claimed_ = true;
+    return validatePending();
+}
+
+const char* MetalOriginalOrdinaryCommand::validatePending() const noexcept
+{
+    if (const auto* id = validate())
+        return id;
+    if (!claimed_ || !journal_)
+        return "RHI-METAL-ORDINARY-CONTENT-UNCLAIMED";
+    if (const auto* id = visitBuffers([&](const auto& object) noexcept -> const char* {
+            return rhi::OriginalCommandStateTransaction::ordinaryInitializedBufferPending(
+                       object, *journal_)
+                ? nullptr
+                : "RHI-METAL-ORDINARY-BUFFER-PENDING";
+        }))
+        return id;
+    for (const auto& attachment : attachments_)
+        if (attachment.claimOwner) {
+            if (!attachment.pending)
+                return "RHI-METAL-ORDINARY-CONTENT-PENDING";
+            if (const auto* id =
+                    rhi::OriginalCommandStateTransaction::validateOrdinaryAttachmentPending(
+                        *attachmentSource(attachment).originalParentLease()->originalObject(),
+                        attachment.initialContent,
+                        *journal_,
+                        attachment.proposed,
+                        *attachment.pending))
+                return id;
+        }
+    return journal_->canInvalidate() ? nullptr : "RHI-METAL-ORDINARY-INVALIDATION-UNAVAILABLE";
+}
+
+bool MetalOriginalOrdinaryCommand::beforeSubmit(
+    const MetalRhiNativeCommandPayload& native, core::pmr::String& diagnostic) noexcept
+{
+    if (owner_ != std::this_thread::get_id()) {
+        diagnostic = "RHI-SUBMISSION-COMPLETION-THREAD";
+        return false;
+    }
+    if (&native != command_ || terminal_ || !sealed_
+        || meter_.commandCount() != program_->operations().size()) {
+        diagnostic = "RHI-METAL-ORDINARY-RECORDING-INCOMPLETE";
+        return false;
+    }
+    if (const auto* id = validatePending()) {
+        diagnostic = id;
+        return false;
+    }
+    return true;
+}
+
+const char* MetalOriginalOrdinaryCommand::beforeNativeCommit() noexcept
+{
+    if (owner_ != std::this_thread::get_id())
+        return "RHI-SUBMISSION-COMPLETION-THREAD";
+    return terminal_ || !sealed_ ? "RHI-METAL-ORDINARY-RECORDING-INCOMPLETE" : validatePending();
+}
+
+bool MetalOriginalOrdinaryCommand::nativeCompleted(bool success) noexcept
+{
+    if (terminal_ || !journal_)
+        return false;
+    if (success)
+        success = sealed_ && !validatePending();
+    if (success)
+        for (const auto& attachment : attachments_)
+            if (attachment.claimOwner)
+                if (rhi::OriginalCommandStateTransaction::completeOrdinaryAttachment(
+                        *attachmentSource(attachment).originalParentLease()->originalObject(),
+                        attachment.initialContent,
+                        *journal_,
+                        attachment.proposed,
+                        *attachment.pending)) {
+                    success = false;
+                    break;
+                }
+    terminal_ = true;
+    if (success)
+        journal_->commit();
+    else if (!journal_->invalidate())
+        journal_->discard();
+    return success;
+}
+
+void MetalOriginalOrdinaryCommand::abandonUnsubmitted() noexcept
+{
+    if (owner_ != std::this_thread::get_id())
+        std::terminate();
+    if (terminal_)
+        return;
+    terminal_ = true;
+    if (encoderSlot_)
+        encoderSlot_->reset();
+    if (journal_)
+        journal_->rollback();
+}
+
+core::MutationJournal* MetalRhiNativeCommandPayload::originalOrdinaryJournal() const noexcept
+{
+    return originalOrdinary_ ? originalOrdinary_->journal_.get() : nullptr;
+}
+
+bool MetalRhiNativeCommandPayload::acceptOriginalOrdinaryOwnership() const noexcept
+{
+    return originalOrdinary_ && originalOrdinary_->sealed_ && readbackWasSubmitted()
+        && !submissionFailed_.load(std::memory_order_acquire) && publishOriginalQueueAcceptance();
+}
+
+const char* MetalOriginalQueueAcceptance::validateOriginal(
+    const std::shared_ptr<const MetalOriginalQueueAcceptance>& observation) noexcept
+{
+    if (!observation
+        || !core::SharedOwnerProjection::sameOwner(observation, observation->self_.lock()))
+        return "RHI-QUEUE-ACCEPTANCE-OWNER";
+    return observation->diagnostic();
+}
+
+const char* MetalOriginalQueueAcceptance::diagnostic() const noexcept
+{
+    if (!published_.load(std::memory_order_acquire) || !nativeAccepted_ || !ordinal_)
+        return "RHI-QUEUE-ACCEPTANCE-NOT-ACCEPTED";
+    if (const auto* id = device_.diagnostic())
+        return id;
+    if (!queue_ || registry_.expired() || !completion_)
+        return "RHI-QUEUE-ACCEPTANCE-OWNER";
+    return completion_->outcome() == MetalRhiCompletionState::Outcome::Failed
+        ? "RHI-QUEUE-ACCEPTANCE-COMPLETION-FAILED"
+        : nullptr;
+}
+
+const char* MetalOriginalQueueAcceptance::precedes(
+    const MetalOriginalQueueAcceptance& successor) const noexcept
+{
+    if (const auto* id = diagnostic())
+        return id;
+    if (const auto* id = successor.diagnostic())
+        return id;
+    if (!core::SharedOwnerProjection::sameOwner(queue_, successor.queue_)
+        || !core::SharedOwnerProjection::sameOwner(registry_.lock(), successor.registry_.lock()))
+        return "RHI-QUEUE-ACCEPTANCE-FOREIGN-QUEUE";
+    return ordinal_ < successor.ordinal_ ? nullptr : "RHI-QUEUE-ACCEPTANCE-ORDER";
+}
+
+bool MetalOriginalQueueAcceptance::matchesProgram(
+    const std::shared_ptr<const rhi::OriginalCommandStreamProgram>& program) const noexcept
+{
+    const auto original = program_.lock();
+    return !diagnostic() && original && core::SharedOwnerProjection::sameOwner(original, program);
+}
+
+bool MetalRhiNativeCommandPayload::rejectOriginalOrdinary(
+    std::string_view message, core::pmr::String& diagnostic)
+{
+    diagnostic = message;
+    if (originalOrdinary_ && originalOrdinary_->owner_ != std::this_thread::get_id())
+        return false;
+    poisonRecording(diagnostic);
+    return false;
+}
+
+bool MetalRhiNativeCommandPayload::recordOriginalOrdinaryScope(rhi::CommandUsageKind kind,
+    std::uint32_t command,
+    const rhi::RenderPassDesc* incoming,
+    core::pmr::String& diagnostic,
+    std::string_view label)
+{
+    using K = rhi::CommandUsageKind;
+    if (!originalOrdinary_)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-OWNER-MISSING", diagnostic);
+    auto& owner = *originalOrdinary_;
+    if (const auto* id = owner.preflight(kind, command))
+        return rejectOriginalOrdinary(id, diagnostic);
+    if ((kind == K::BeginComputePass || kind == K::BeginTransferPass)
+        && owner.program_->originalInputs()->originalScalars()->originalArguments()->text(command)
+            != label)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-PASS-LABEL", diagnostic);
+    if (const auto* id = owner.claim())
+        return rejectOriginalOrdinary(id, diagnostic);
+    bool recorded = false;
+    if (kind == K::BeginRenderPass) {
+        const auto& args = std::get<std::shared_ptr<const rhi::RenderPassArguments>>(
+            *owner.program_->originalInputs()->descriptorAt(command));
+        if (!incoming || !args->matches(*incoming))
+            return rejectOriginalOrdinary("RHI-METAL-ORDINARY-PASS-INPUT", diagnostic);
+        const auto pass =
+            std::find_if(owner.passes_.begin(), owner.passes_.end(), [&](const auto& value) {
+                return value.command == command;
+            });
+        if (pass == owner.passes_.end())
+            return rejectOriginalOrdinary("RHI-METAL-ORDINARY-PASS-STORAGE", diagnostic);
+        for (const auto& attachment : owner.attachments_)
+            if (attachment.command == command) {
+                const auto required = attachment.operand < incoming->colorAttachments.size()
+                    ? rhi::ResourceState::ColorAttachment
+                    : rhi::ResourceState::DepthAttachment;
+                if (!rhi::OriginalCommandStateTransaction::ordinaryAttachmentState(
+                        *owner.attachmentSource(attachment).originalParentLease()->originalObject(),
+                        attachment.initialContent.range(),
+                        required,
+                        *owner.journal_))
+                    return rejectOriginalOrdinary("RHI-METAL-ORDINARY-PASS-STATE", diagnostic);
+            }
+        recorded = encodeOriginalOrdinary([&] {
+            return beginPreparedNativeRenderPass(pass->native, owner.encoderSlot_, diagnostic);
+        });
+    } else if (incoming) {
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-PASS-INPUT", diagnostic);
+    } else {
+        recorded = encodeOriginalOrdinary([&] {
+            switch (kind) {
+            case K::EndRenderPass:
+                return recordRenderPassEnd(diagnostic);
+            case K::BeginComputePass:
+                return beginPreparedNativeComputePass(owner.encoderSlot_, diagnostic);
+            case K::EndComputePass:
+                return recordComputePassEnd(diagnostic);
+            case K::BeginTransferPass:
+                return beginPreparedNativeBlitPass(owner.encoderSlot_, diagnostic);
+            case K::EndTransferPass:
+                return recordBlitPassEnd(diagnostic);
+            case K::Finish:
+                if (command + 1u != owner.program_->operations().size())
+                    return false;
+                return finish(diagnostic);
+            default:
+                return false;
+            }
+        });
+    }
+    if (!recorded)
+        return rejectOriginalOrdinary(
+            diagnostic.empty() ? "RHI-METAL-ORDINARY-NATIVE-SCOPE" : std::string_view(diagnostic),
+            diagnostic);
+    if (kind == K::EndRenderPass || kind == K::EndComputePass || kind == K::EndTransferPass)
+        owner.encoderSlot_->reset();
+    owner.computePipeline_ = nullptr;
+    owner.graphicsPipeline_ = nullptr;
+    owner.descriptor_ = nullptr;
+    owner.viewport_ = owner.scissor_ = false;
+    owner.consume();
+    if (kind == K::Finish) {
+        owner.meter_.seal();
+        owner.sealed_ = true;
+    }
+    return true;
+}
+
+bool MetalRhiNativeCommandPayload::recordOriginalOrdinaryPipeline(
+    std::uint32_t command, const rhi::ComputePipeline& pipeline, core::pmr::String& diagnostic)
+{
+    constexpr auto kind = rhi::CommandUsageKind::BindComputePipeline;
+    if (!originalOrdinary_)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-OWNER-MISSING", diagnostic);
+    auto& owner = *originalOrdinary_;
+    if (const auto* id = owner.preflight(kind, command))
+        return rejectOriginalOrdinary(id, diagnostic);
+    const auto& binding = std::get<rhi::OriginalCommandPipelineBinding>(
+        *owner.program_->originalInputs()->descriptorAt(command));
+    const auto& source = std::get<std::shared_ptr<const rhi::OriginalCommandComputePipelineSource>>(
+        owner.program_->originalInputs()
+            ->originalScalars()
+            ->originalUsage()
+            ->originalSources()
+            ->sources()[binding.sourceIndex]);
+    if (source->originalObject() != &pipeline)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-PIPELINE-INPUT", diagnostic);
+    const auto native = metalRhiNativePayloadFor(pipeline);
+    if (!native || !encodeOriginalOrdinary([&] {
+            return recordComputePipelineBind(native, diagnostic);
+        }))
+        return rejectOriginalOrdinary(diagnostic.empty() ? "RHI-METAL-ORDINARY-NATIVE-PIPELINE"
+                                                         : std::string_view(diagnostic),
+            diagnostic);
+    owner.computePipeline_ = &pipeline;
+    owner.descriptor_ = nullptr;
+    owner.consume();
+    return true;
+}
+
+bool MetalRhiNativeCommandPayload::recordOriginalOrdinaryPipeline(
+    std::uint32_t command, const rhi::RenderPipeline& pipeline, core::pmr::String& diagnostic)
+{
+    constexpr auto kind = rhi::CommandUsageKind::BindGraphicsPipeline;
+    if (!originalOrdinary_)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-OWNER-MISSING", diagnostic);
+    auto& owner = *originalOrdinary_;
+    if (const auto* id = owner.preflight(kind, command))
+        return rejectOriginalOrdinary(id, diagnostic);
+    const auto& binding = std::get<rhi::OriginalCommandPipelineBinding>(
+        *owner.program_->originalInputs()->descriptorAt(command));
+    const auto& source =
+        std::get<std::shared_ptr<const rhi::OriginalCommandGraphicsPipelineSource>>(
+            owner.program_->originalInputs()
+                ->originalScalars()
+                ->originalUsage()
+                ->originalSources()
+                ->sources()[binding.sourceIndex]);
+    if (source->originalObject() != &pipeline)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-PIPELINE-INPUT", diagnostic);
+    const auto native = metalRhiNativePayloadFor(pipeline);
+    if (!native || !encodeOriginalOrdinary([&] {
+            return recordGraphicsPipelineBind(native, diagnostic);
+        }))
+        return rejectOriginalOrdinary(diagnostic.empty() ? "RHI-METAL-ORDINARY-NATIVE-PIPELINE"
+                                                         : std::string_view(diagnostic),
+            diagnostic);
+    owner.graphicsPipeline_ = &pipeline;
+    owner.descriptor_ = nullptr;
+    owner.viewport_ = owner.scissor_ = false;
+    owner.consume();
+    return true;
+}
+
+bool MetalRhiNativeCommandPayload::recordOriginalOrdinaryDescriptor(std::uint32_t command,
+    std::uint32_t set,
+    const rhi::DescriptorSet& descriptor,
+    const std::uint32_t* offsets,
+    std::uint32_t offsetCount,
+    core::pmr::String& diagnostic)
+{
+    if (!originalOrdinary_)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-OWNER-MISSING", diagnostic);
+    auto& owner = *originalOrdinary_;
+    const bool compute = bool(nativeComputeEncoder_);
+    const auto kind = compute ? rhi::CommandUsageKind::BindComputeDescriptor
+                              : rhi::CommandUsageKind::BindRenderDescriptor;
+    if (const auto* id = owner.preflight(kind, command))
+        return rejectOriginalOrdinary(id, diagnostic);
+    const auto& binding = std::get<rhi::OriginalCommandDescriptorBinding>(
+        *owner.program_->originalInputs()->descriptorAt(command));
+    const auto& sources = owner.program_->originalInputs()
+                              ->originalScalars()
+                              ->originalUsage()
+                              ->originalSources()
+                              ->sources();
+    const auto& source = std::get<std::shared_ptr<const rhi::OriginalCommandDescriptorSetSource>>(
+        sources[binding.sourceIndex]);
+    const auto& scalar = owner.program_->originalInputs()
+                             ->originalScalars()
+                             ->originalArguments()
+                             ->records()[command]
+                             .scalar;
+    if (offsets || offsetCount || source->originalObject() != &descriptor
+        || set != source->frozenLogicalSet()
+        || scalar.get<rhi::CommandScalarArguments::DescriptorBinding>()->set != set)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-DESCRIPTOR-INPUT", diagnostic);
+    if (compute ? std::get<std::shared_ptr<const rhi::OriginalCommandComputePipelineSource>>(
+                      sources[binding.pipelineSourceIndex])
+                      ->originalObject()
+                != owner.computePipeline_
+                : std::get<std::shared_ptr<const rhi::OriginalCommandGraphicsPipelineSource>>(
+                      sources[binding.pipelineSourceIndex])
+                      ->originalObject()
+                != owner.graphicsPipeline_)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-DESCRIPTOR-PIPELINE", diagnostic);
+    const auto native = metalRhiOriginalSynchronousPayloadFor(source);
+    if (!native || !encodeOriginalOrdinary([&] {
+            return recordDescriptorSetBindContents(set,
+                native,
+                compute ? rhi::ShaderStage::Compute
+                        : rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment,
+                nullptr,
+                0u,
+                diagnostic,
+                true);
+        }))
+        return rejectOriginalOrdinary(diagnostic.empty() ? "RHI-METAL-ORDINARY-NATIVE-DESCRIPTOR"
+                                                         : std::string_view(diagnostic),
+            diagnostic);
+    owner.descriptor_ = &descriptor;
+    owner.consume();
+    return true;
+}
+
+bool MetalRhiNativeCommandPayload::recordOriginalOrdinaryScalar(
+    std::uint32_t command, const rhi::CommandScalarArguments& scalar, core::pmr::String& diagnostic)
+{
+    using K = rhi::CommandUsageKind;
+    if (!originalOrdinary_)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-OWNER-MISSING", diagnostic);
+    auto& owner = *originalOrdinary_;
+    if (const auto* id = owner.preflight(scalar.kind(), command))
+        return rejectOriginalOrdinary(id, diagnostic);
+    const auto& expected = owner.program_->originalInputs()
+                               ->originalScalars()
+                               ->originalArguments()
+                               ->records()[command];
+    if (!expected.scalar.matches(scalar) || expected.offsetCount || expected.byteCount)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-SCALAR-INPUT", diagnostic);
+    if (const auto* id = owner.validatePending())
+        return rejectOriginalOrdinary(id, diagnostic);
+    const bool recorded = encodeOriginalOrdinary([&] {
+        switch (scalar.kind()) {
+        case K::SetViewport:
+            return owner.graphicsPipeline_
+                && recordSetViewport(*scalar.get<rhi::ViewportState>(), diagnostic);
+        case K::SetScissor:
+            return owner.graphicsPipeline_
+                && recordSetScissor(*scalar.get<rhi::ScissorState>(), diagnostic);
+        case K::Draw: {
+            const auto& draw = *scalar.get<rhi::CommandScalarArguments::Draw>();
+            return owner.graphicsPipeline_ && owner.descriptor_ && owner.viewport_ && owner.scissor_
+                && recordDraw(draw.vertices,
+                    draw.instances,
+                    draw.firstVertex,
+                    draw.firstInstance,
+                    diagnostic);
+        }
+        case K::Dispatch: {
+            const auto& groups = *scalar.get<rhi::CommandScalarArguments::Dispatch>();
+            const auto found = std::find_if(
+                owner.dispatches_.begin(), owner.dispatches_.end(), [&](const auto& value) {
+                    return value.command == command;
+                });
+            if (!owner.computePipeline_ || !owner.descriptor_ || found == owner.dispatches_.end())
+                return false;
+            const auto& source =
+                std::get<std::shared_ptr<const rhi::OriginalCommandComputePipelineSource>>(
+                    owner.program_->originalInputs()
+                        ->originalScalars()
+                        ->originalUsage()
+                        ->originalSources()
+                        ->sources()[found->pipelineSource]);
+            if (source->originalObject() != owner.computePipeline_
+                || found->frozen.diagnostic(source, {groups.x, groups.y, groups.z}))
+                return false;
+            const auto& local =
+                source->originalPipeline()->originalComputeCreation()->definition().computeShader;
+            if (!computePipeline_
+                || computePipeline_->computeWorkgroupSizeX != local.computeWorkgroupSizeX
+                || computePipeline_->computeWorkgroupSizeY != local.computeWorkgroupSizeY
+                || computePipeline_->computeWorkgroupSizeZ != local.computeWorkgroupSizeZ)
+                return false;
+            return recordDispatch(groups.x, groups.y, groups.z, diagnostic);
+        }
+        default:
+            return false;
+        }
+    });
+    if (!recorded)
+        return rejectOriginalOrdinary(
+            diagnostic.empty() ? "RHI-METAL-ORDINARY-NATIVE-SCALAR" : std::string_view(diagnostic),
+            diagnostic);
+    if (scalar.kind() == K::SetViewport)
+        owner.viewport_ = true;
+    if (scalar.kind() == K::SetScissor)
+        owner.scissor_ = true;
+    owner.consume();
+    return true;
+}
+
+bool MetalRhiNativeCommandPayload::recordOriginalOrdinaryTransition(std::uint32_t command,
+    rhi::GpuBuffer& object,
+    const rhi::ResourceBarrierDesc& desc,
+    core::pmr::String& diagnostic)
+{
+    constexpr auto kind = rhi::CommandUsageKind::BufferBarrier;
+    if (!originalOrdinary_)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-OWNER-MISSING", diagnostic);
+    auto& owner = *originalOrdinary_;
+    if (const auto* id = owner.preflight(kind, command))
+        return rejectOriginalOrdinary(id, diagnostic);
+    const auto& operation = owner.program_->operations()[command];
+    const auto* input = owner.program_->originalInputs()->descriptorAt(command);
+    const auto* expected = input ? std::get_if<rhi::ResourceDependencyArguments>(input) : nullptr;
+    const auto& usage = *owner.program_->originalInputs()->originalScalars()->originalUsage();
+    if (!expected || !expected->matches(kind, desc) || operation.referenceCount != 1u
+        || std::get<std::shared_ptr<const rhi::OriginalCommandBufferLease>>(
+               usage.originalSources()
+                   ->sources()[usage.references()[operation.firstReference].sourceIndex])
+                ->originalObject()
+            != &object)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-BARRIER-INPUT", diagnostic);
+    if (const auto* id = owner.claim())
+        return rejectOriginalOrdinary(id, diagnostic);
+    if (!rhi::OriginalCommandStateTransaction::ordinaryBufferState(
+            object, desc.before, *owner.journal_))
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-BARRIER-STATE", diagnostic);
+    if (!encodeOriginalOrdinary([&] {
+            return recordBufferBarrier(diagnostic);
+        }))
+        return rejectOriginalOrdinary(diagnostic, diagnostic);
+    const auto changed = setMetalRhiBufferStateForBarrier(object, desc, owner.journal_.get());
+    if (!changed.success)
+        return rejectOriginalOrdinary(changed.diagnostics, diagnostic);
+    owner.consume();
+    return true;
+}
+
+bool MetalRhiNativeCommandPayload::recordOriginalOrdinaryTransition(std::uint32_t command,
+    rhi::GpuTexture& object,
+    const rhi::ResourceBarrierDesc& desc,
+    core::pmr::String& diagnostic)
+{
+    constexpr auto kind = rhi::CommandUsageKind::TextureBarrier;
+    if (!originalOrdinary_)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-OWNER-MISSING", diagnostic);
+    auto& owner = *originalOrdinary_;
+    if (const auto* id = owner.preflight(kind, command))
+        return rejectOriginalOrdinary(id, diagnostic);
+    const auto& operation = owner.program_->operations()[command];
+    const auto* input = owner.program_->originalInputs()->descriptorAt(command);
+    const auto* expected = input ? std::get_if<rhi::ResourceDependencyArguments>(input) : nullptr;
+    const auto& usage = *owner.program_->originalInputs()->originalScalars()->originalUsage();
+    if (!expected || !expected->matches(kind, desc) || operation.referenceCount != 1u
+        || std::get<std::shared_ptr<const rhi::OriginalCommandTextureLease>>(
+               usage.originalSources()
+                   ->sources()[usage.references()[operation.firstReference].sourceIndex])
+                ->originalObject()
+            != &object)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-BARRIER-INPUT", diagnostic);
+    if (const auto* id = owner.claim())
+        return rejectOriginalOrdinary(id, diagnostic);
+    if (!rhi::OriginalCommandStateTransaction::ordinaryAttachmentState(
+            object, desc.textureSubresources, desc.before, *owner.journal_))
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-BARRIER-STATE", diagnostic);
+    if (!encodeOriginalOrdinary([&] {
+            return recordTextureBarrier(diagnostic);
+        }))
+        return rejectOriginalOrdinary(
+            diagnostic.empty() ? "RHI-METAL-ORDINARY-BARRIER-CLAIM" : std::string_view(diagnostic),
+            diagnostic);
+    if (const auto* id = rhi::OriginalCommandStateTransaction::transitionOrdinaryAttachment(
+            object, desc, *owner.journal_))
+        return rejectOriginalOrdinary(id, diagnostic);
+    owner.consume();
+    return true;
+}
+
+bool MetalRhiNativeCommandPayload::recordOriginalOrdinaryCopy(
+    std::uint32_t command, const rhi::TextureToBufferCopyDesc& desc, core::pmr::String& diagnostic)
+{
+    constexpr auto kind = rhi::CommandUsageKind::TextureToBufferCopy;
+    if (!originalOrdinary_)
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-OWNER-MISSING", diagnostic);
+    auto& owner = *originalOrdinary_;
+    if (const auto* id = owner.preflight(kind, command))
+        return rejectOriginalOrdinary(id, diagnostic);
+    const auto* input = owner.program_->originalInputs()->descriptorAt(command);
+    const auto* expected = input ? std::get_if<rhi::TransferCopyArguments>(input) : nullptr;
+    if (!expected || !expected->matches(desc))
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-COPY-INPUT", diagnostic);
+    const auto& operation = owner.program_->operations()[command];
+    const auto& usage = *owner.program_->originalInputs()->originalScalars()->originalUsage();
+    const auto& sources = usage.originalSources()->sources();
+    const auto& source = std::get<std::shared_ptr<const rhi::OriginalCommandTextureLease>>(
+        sources[usage.references()[operation.firstReference].sourceIndex]);
+    const auto& destination = std::get<std::shared_ptr<const rhi::OriginalCommandBufferLease>>(
+        sources[usage.references()[operation.firstReference + 1u].sourceIndex]);
+    if (destination->originalObject()->gpuTransferWritesSealed()
+        || !rhi::OriginalCommandStateTransaction::ordinaryAttachmentState(*source->originalObject(),
+            desc.textureSubresources,
+            rhi::ResourceState::CopySrc,
+            *owner.journal_)
+        || !rhi::OriginalCommandStateTransaction::ordinaryBufferState(
+            *destination->originalObject(), rhi::ResourceState::CopyDst, *owner.journal_))
+        return rejectOriginalOrdinary("RHI-METAL-ORDINARY-COPY-STATE", diagnostic);
+    if (!encodeOriginalOrdinary([&] {
+            return recordBlitTextureToBufferContents(desc, diagnostic);
+        }))
+        return rejectOriginalOrdinary(diagnostic, diagnostic);
+    owner.consume();
+    return true;
+}
+
 std::shared_ptr<const rhi::BindlessPreparedComputeBinding> prepareMetalRhiComputeBinding(
     std::shared_ptr<const rhi::BindlessComputeBindingOwners> owners,
     const rhi::BindlessComputeBindingBudget& budget,
@@ -4603,6 +5806,40 @@ std::shared_ptr<const MetalRhiNativePreparedGraphicsBindings> metalRhiPreparedGr
 {
     const auto* prepared = dynamic_cast<const MetalRhiPreparedGraphicsBinding*>(&binding);
     return prepared ? prepared->payload() : nullptr;
+}
+
+core::UniquePtr<rhi::CommandEncoder> createMetalRhiOriginalOrdinaryCommandEncoder(
+    std::shared_ptr<const rhi::OriginalCommandStreamProgram> program,
+    const rhi::GpuDevice& device,
+    const rhi::OriginalRenderPassPreparationRequest& request,
+    std::shared_ptr<MetalRhiResourceRegistry> registry,
+    core::pmr::String& diagnostic)
+{
+    diagnostic.clear();
+    if (const auto* id = MetalOriginalOrdinaryCommand::inspect(program, device, request)) {
+        diagnostic = id;
+        return {};
+    }
+    try {
+        core::CpuMemoryQuotaScope scope(program->originalMetadataQuota());
+        auto encoder = core::makeUnique<MetalRhiCommandEncoder>(rhi::CommandEncoderDesc{},
+            rhi::semantics::nativeBackendCapabilityContract(rhi::Backend::Metal),
+            nullptr,
+            std::move(registry),
+            nullptr,
+            nullptr);
+        if (!encoder->prepareOriginalOrdinary(std::move(program), device, request, diagnostic))
+            return {};
+        return encoder;
+    } catch (const std::bad_alloc&) {
+        core::CpuMemoryQuotaScope diagnosticScope(nullptr);
+        diagnostic = "RHI-METAL-ORDINARY-COLD-ALLOCATION";
+        return {};
+    } catch (const std::length_error&) {
+        core::CpuMemoryQuotaScope diagnosticScope(nullptr);
+        diagnostic = "RHI-METAL-ORDINARY-COLD-ALLOCATION";
+        return {};
+    }
 }
 
 arp::core::UniquePtr<rhi::CommandEncoder> createMetalRhiCommandEncoder(

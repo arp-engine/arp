@@ -9,8 +9,119 @@ def json_string(value: string) -> string:
     return "\"" + escaped + "\""
 
 
+def json_number(value: string, positive: bool) -> bool:
+    # Bounded ASCII JSON syntax only. The server owns double range/rounding.
+    # Keep the original token: default float-to-string formatting truncates digits.
+    if value.length() == 0 or value.length() > 64:
+        return false
+    var characters: bytes = value as bytes
+    # States: start, zero, integer, dot, fraction, exponent, sign, exponent digits.
+    var state: int = 0
+    var nonzero: bool = false
+    var index: int = 0
+    if characters[0] == 45:
+        if positive or len(characters) == 1:
+            return false
+        index = 1
+    while index < len(characters):
+        var character: int = characters[index]
+        var digit: bool = character >= 48 and character <= 57
+        if state <= 4 and character >= 49 and character <= 57:
+            nonzero = true
+        if state == 0:
+            if character == 48:
+                state = 1
+            elif digit:
+                state = 2
+            else:
+                return false
+        elif state == 1 or state == 2:
+            if state == 2 and digit:
+                state = 2
+            elif character == 46:
+                state = 3
+            elif character == 69 or character == 101:
+                state = 5
+            else:
+                return false
+        elif state == 3:
+            if not digit:
+                return false
+            state = 4
+        elif state == 4:
+            if character == 69 or character == 101:
+                state = 5
+            elif not digit:
+                return false
+        elif state == 5:
+            if character == 43 or character == 45:
+                state = 6
+            elif digit:
+                state = 7
+            else:
+                return false
+        elif state == 6:
+            if not digit:
+                return false
+            state = 7
+        elif not digit:
+            return false
+        index = index + 1
+    return (not positive or nonzero) and (state == 1 or state == 2 or state == 4 or state == 7)
+
+
+def positive_json_number(value: string) -> bool:
+    return json_number(value, true)
+
+
+def positive_json_id(value: string) -> bool:
+    # Preserve uint64 tokens without a float/int round-trip. The server checks
+    # the exact numeric range; the adapter accepts only unsigned decimal syntax.
+    var characters: bytes = value as bytes
+    if len(characters) == 0 or len(characters) > 20:
+        return false
+    if characters[0] < 49 or characters[0] > 57:
+        return false
+    for character in characters:
+        if character < 48 or character > 57:
+            return false
+    return true
+
+
 def usage() -> string:
-    return "Usage: arp_editor_cli [--url BASE_URL] [--token TOKEN] <command> [arguments]\n" + "Commands: state | activate <source> | search <source> <value>\n" + "          scene.hierarchy.get | scene.component.catalog.get\n" + "          scene.inspector.get [objectId]\n" + "          scene.reparent <objectId> <parentId> <childIndex>\n" + "          scene.component.add <objectId> <type> [properties-json]\n" + "          scene.component.remove <objectId> <componentId>\n" + "          scene.component.property.set <objectId> <componentId> <property> <kind> <value-json>\n" + "          scene.undo | scene.redo\n" + "          script.replace <documentId> <text> | script.save <documentId>\n" + "          script.undo <documentId> | script.redo <documentId>\n" + "Defaults: ARP_EDITOR_REMOTE_URL or http://127.0.0.1:8765;\n" + "          ARP_EDITOR_REMOTE_TOKEN supplies the bearer token.\n"
+    var output: string = "Usage: arp_editor_cli [--url BASE_URL] [--token TOKEN] <command> [arguments]\n"
+    output = output + "Commands: state | activate <source> | search <source> <value>\n"
+    output = output + "          project.create <path> <manifest-yaml> [empty|2d|3d] [discard]\n"
+    output = output + "          project.open <path> [discard] | project.close [discard]\n"
+    output = output + "          project.rename <name> | project.save\n"
+    output = output + "          project.settings.set <name> <entry-scene-id-or-none>\n"
+    output = output + "          scene.save <path> [overwrite] | scene.load <path> [discard] | scene.task.get <taskId>\n"
+    output = output + "          scene.new [discard] | editor.text.set <source> <value>\n"
+    output = output + "          scene.duplicate | scene.export <new-directory> | scene.export.task.get <taskId>\n"
+    output = output + "          scene.hierarchy.get | scene.component.catalog.get\n"
+    output = output + "          scene.inspector.get [objectId]\n"
+    output = output + "          scene.active.set <objectId> <true|false>\n"
+    output = output + "          scene.object.view.set <objectId> <documentEpoch> <hidden:true|false> <locked:true|false>\n"
+    output = output + "          scene.rename <objectId> <name> | scene.select <objectId>\n"
+    output = output + "          scene.selection.focus\n"
+    output = output + "          scene.selection.transform <move|rotate|scale> <world|local> <active|center|individual> <0|1|2> <amount>\n"
+    output = output + "          Amount: signed decimal JSON number; distance, radians or scale delta. No implicit snap.\n"
+    output = output + "          scene.transform.pivot.set <active|center|individual>\n"
+    output = output + "          scene.transform.settings.get\n"
+    output = output + "          scene.transform.settings.set <select|move|rotate|scale> <world|local> <active|center|individual> <true|false> <moveStep> <rotateStepRadians> <scaleStep>\n"
+    output = output + "          Steps: positive decimal JSON numbers (up to 64 bytes); rotation uses radians.\n"
+    output = output + "          scene.reparent <objectId> <parentId> <childIndex>\n"
+    output = output + "          scene.component.add <objectId> <type> [properties-json]\n"
+    output = output + "          scene.component.remove <objectId> <componentId>\n"
+    output = output + "          scene.component.property.set <objectId> <componentId> <property> <kind> <value-json>\n"
+    output = output + "          scene.undo | scene.redo\n"
+    output = output + "          script.replace <documentId> <text> | script.save <documentId>\n"
+    output = output + "          script.undo <documentId> | script.redo <documentId>\n"
+    output = output + "          script.reload <documentId> [discard] | script.close <documentId> [discard]\n"
+    output = output + "          editor.exit [discard]\n"
+    output = output + "Defaults: ARP_EDITOR_REMOTE_URL or http://127.0.0.1:8765;\n"
+    output = output + "          ARP_EDITOR_REMOTE_TOKEN supplies the bearer token.\n"
+    return output
 
 
 def cli_result(code: string, output: string) -> string:
@@ -26,6 +137,8 @@ def main(args: [string], configured_url: string, configured_token: string) -> st
     var third: string = ""
     var fourth: string = ""
     var fifth: string = ""
+    var sixth: string = ""
+    var seventh: string = ""
     var positional_count: int = 0
     var parse_options: bool = true
     var needs_url: bool = false
@@ -60,6 +173,10 @@ def main(args: [string], configured_url: string, configured_token: string) -> st
                 fourth = value
             elif positional_count == 6:
                 fifth = value
+            elif positional_count == 7:
+                sixth = value
+            elif positional_count == 8:
+                seventh = value
             else:
                 return cli_result("2", "error: too many command arguments\n")
 
@@ -83,18 +200,105 @@ def main(args: [string], configured_url: string, configured_token: string) -> st
         if positional_count != 2:
             return cli_result("2", "error: activate requires a source\n")
         body = "{\"schemaVersion\":1,\"command\":\"editor.activate\",\"source\":" + json_string(first) + "}"
-    elif command == "search":
+    elif command == "search" or command == "editor.text.set":
         if positional_count != 3:
-            return cli_result("2", "error: search requires a source and value\n")
-        body = "{\"schemaVersion\":1,\"command\":\"editor.search\",\"source\":" + json_string(first) + ",\"value\":" + json_string(second) + "}"
+            return cli_result("2", "error: " + command + " requires a source and value\n")
+        var request_name: string = "editor.search"
+        if command == "editor.text.set":
+            request_name = "editor.text.set"
+        body = "{\"schemaVersion\":1,\"command\":" + json_string(request_name) + ",\"source\":" + json_string(first) + ",\"value\":" + json_string(second) + "}"
     elif command == "script.replace":
         if positional_count != 3:
             return cli_result("2", "error: script.replace requires a documentId and text\n")
         body = "{\"schemaVersion\":1,\"command\":\"script.replace\",\"documentId\":" + first + ",\"text\":" + json_string(second) + "}"
+    elif command == "script.reload" or command == "script.close":
+        if positional_count != 2 and positional_count != 3:
+            return cli_result("2", "error: " + command + " requires documentId and optional discard\n")
+        body = "{\"schemaVersion\":1,\"command\":" + json_string(command) + ",\"documentId\":" + first
+        if positional_count == 3:
+            if second != "discard":
+                return cli_result("2", "error: explicit argument must be 'discard'\n")
+            body = body + ",\"discardChanges\":true"
+        body = body + "}"
     elif command == "script.save" or command == "script.undo" or command == "script.redo":
         if positional_count != 2:
             return cli_result("2", "error: " + command + " requires a documentId\n")
         body = "{\"schemaVersion\":1,\"command\":" + json_string(command) + ",\"documentId\":" + first + "}"
+    elif command == "project.open" or command == "scene.load":
+        if positional_count != 2 and positional_count != 3:
+            return cli_result("2", "error: " + command + " requires a path and optional discard\n")
+        body = "{\"schemaVersion\":1,\"command\":" + json_string(command)
+        body = body + ",\"path\":" + json_string(first)
+        if positional_count == 3:
+            if second != "discard":
+                return cli_result("2", "error: explicit discard argument must be 'discard'\n")
+            body = body + ",\"discardChanges\":true"
+        body = body + "}"
+    elif command == "project.create":
+        if positional_count < 3 or positional_count > 5:
+            return cli_result("2", "error: project.create requires path, manifest-yaml, optional template and discard\n")
+        body = "{\"schemaVersion\":1,\"command\":\"project.create\""
+        body = body + ",\"path\":" + json_string(first)
+        body = body + ",\"manifestYaml\":" + json_string(second)
+        if positional_count >= 4:
+            if third == "discard":
+                if positional_count != 4:
+                    return cli_result("2", "error: discard must be the final argument\n")
+                body = body + ",\"discardChanges\":true"
+            elif third == "empty" or third == "2d" or third == "3d":
+                body = body + ",\"template\":" + json_string(third)
+            else:
+                return cli_result("2", "error: template must be empty, 2d or 3d\n")
+        if positional_count == 5:
+            if fourth != "discard":
+                return cli_result("2", "error: explicit discard argument must be 'discard'\n")
+            body = body + ",\"discardChanges\":true"
+        body = body + "}"
+    elif command == "project.close" or command == "scene.new" or command == "editor.exit":
+        if positional_count != 1 and positional_count != 2:
+            return cli_result("2", "error: " + command + " accepts optional discard\n")
+        body = "{\"schemaVersion\":1,\"command\":" + json_string(command)
+        if positional_count == 2:
+            if first != "discard":
+                return cli_result("2", "error: explicit discard argument must be 'discard'\n")
+            body = body + ",\"discardChanges\":true"
+        body = body + "}"
+    elif command == "project.rename":
+        if positional_count != 2:
+            return cli_result("2", "error: project.rename requires a name\n")
+        body = "{\"schemaVersion\":1,\"command\":\"project.rename\",\"name\":" + json_string(first) + "}"
+    elif command == "project.settings.set":
+        if positional_count != 3:
+            return cli_result("2", "error: project.settings.set requires name and entry scene ID (or none)\n")
+        var entry: string = second
+        if entry == "none":
+            entry = ""
+        body = "{\"schemaVersion\":1,\"command\":\"project.settings.set\",\"name\":" + json_string(first) + ",\"entryScene\":" + json_string(entry) + "}"
+    elif command == "project.save":
+        if positional_count != 1:
+            return cli_result("2", "error: project.save takes no arguments\n")
+        body = "{\"schemaVersion\":1,\"command\":\"project.save\"}"
+    elif command == "scene.save":
+        if positional_count != 2 and positional_count != 3:
+            return cli_result("2", "error: scene.save requires a project-relative path and optional overwrite\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.save\",\"path\":" + json_string(first)
+        if positional_count == 3:
+            if second != "overwrite":
+                return cli_result("2", "error: explicit overwrite argument must be 'overwrite'\n")
+            body = body + ",\"overwriteExisting\":true"
+        body = body + "}"
+    elif command == "scene.export":
+        if positional_count != 2:
+            return cli_result("2", "error: scene.export requires a new project-relative directory\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.export\",\"path\":" + json_string(first) + "}"
+    elif command == "scene.export.task.get":
+        if positional_count != 2:
+            return cli_result("2", "error: scene.export.task.get requires a taskId\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.export.task.get\",\"taskId\":" + first + "}"
+    elif command == "scene.task.get":
+        if positional_count != 2:
+            return cli_result("2", "error: scene.task.get requires a taskId\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.task.get\",\"taskId\":" + first + "}"
     elif command == "scene.inspector.get":
         if positional_count == 1:
             body = "{\"schemaVersion\":1,\"command\":\"scene.inspector.get\"}"
@@ -106,6 +310,70 @@ def main(args: [string], configured_url: string, configured_token: string) -> st
         if positional_count != 1:
             return cli_result("2", "error: " + command + " takes no arguments\n")
         body = "{\"schemaVersion\":1,\"command\":" + json_string(command) + "}"
+    elif command == "scene.select":
+        if positional_count != 2:
+            return cli_result("2", "error: scene.select requires objectId\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.select\",\"objectId\":" + first + "}"
+    elif command == "scene.object.view.set":
+        if positional_count != 5 or not positive_json_id(first) or not positive_json_id(second):
+            return cli_result("2", "error: scene.object.view.set requires objectId, documentEpoch, hidden and locked\n")
+        if (third != "true" and third != "false") or (fourth != "true" and fourth != "false"):
+            return cli_result("2", "error: hidden and locked must be true or false\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.object.view.set\",\"objectId\":" + first
+        body = body + ",\"documentEpoch\":" + second + ",\"hidden\":" + third + ",\"locked\":" + fourth + "}"
+    elif command == "scene.active.set":
+        if positional_count != 3 or (second != "true" and second != "false"):
+            return cli_result("2", "error: scene.active.set requires objectId and true|false\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.active.set\",\"objectId\":" + first + ",\"active\":" + second + "}"
+    elif command == "scene.rename":
+        if positional_count != 3:
+            return cli_result("2", "error: scene.rename requires objectId and name\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.rename\",\"objectId\":" + first + ",\"name\":" + json_string(second) + "}"
+    elif command == "scene.selection.transform":
+        if positional_count != 6:
+            return cli_result("2", "error: scene.selection.transform requires tool, space, pivot, axis and amount\n")
+        if first != "move" and first != "rotate" and first != "scale":
+            return cli_result("2", "error: tool must be move, rotate or scale\n")
+        if second != "world" and second != "local":
+            return cli_result("2", "error: space must be world or local\n")
+        if third != "active" and third != "center" and third != "individual":
+            return cli_result("2", "error: pivot must be active, center or individual\n")
+        if fourth != "0" and fourth != "1" and fourth != "2":
+            return cli_result("2", "error: axis must be 0, 1 or 2\n")
+        if not json_number(fifth, false):
+            return cli_result("2", "error: amount requires a signed JSON number of at most 64 bytes\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.selection.transform\",\"tool\":" + json_string(first)
+        body = body + ",\"space\":" + json_string(second) + ",\"pivot\":" + json_string(third)
+        body = body + ",\"axis\":" + fourth + ",\"amount\":" + fifth + "}"
+    elif command == "scene.transform.pivot.set":
+        # Preferences use the same typed command as the toolbar and MCP.
+        # Reject spelling/arity errors before issuing a network request.
+        if positional_count != 2:
+            return cli_result("2", "error: scene.transform.pivot.set requires one pivot value\n")
+        if first != "active" and first != "center" and first != "individual":
+            return cli_result("2", "error: pivot must be active, center or individual\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.transform.pivot.set\",\"pivot\":" + json_string(first) + "}"
+    elif command == "scene.transform.settings.get":
+        if positional_count != 1:
+            return cli_result("2", "error: scene.transform.settings.get takes no arguments\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.transform.settings.get\"}"
+    elif command == "scene.transform.settings.set":
+        if positional_count != 8:
+            return cli_result("2", "error: scene.transform.settings.set requires all seven settings arguments\n")
+        if first != "select" and first != "move" and first != "rotate" and first != "scale":
+            return cli_result("2", "error: tool must be select, move, rotate or scale\n")
+        if second != "world" and second != "local":
+            return cli_result("2", "error: space must be world or local\n")
+        if third != "active" and third != "center" and third != "individual":
+            return cli_result("2", "error: pivot must be active, center or individual\n")
+        if fourth != "true" and fourth != "false":
+            return cli_result("2", "error: snapEnabled must be true or false\n")
+        if not positive_json_number(fifth) or not positive_json_number(sixth) or not positive_json_number(seventh):
+            return cli_result("2", "error: steps require positive JSON numbers of at most 64 bytes; rotation uses radians\n")
+        # Every raw scalar is now a complete validated JSON token, never a fragment.
+        body = "{\"schemaVersion\":1,\"command\":\"scene.transform.settings.set\",\"settings\":{\"tool\":" + json_string(first)
+        body = body + ",\"space\":" + json_string(second) + ",\"pivot\":" + json_string(third) + ",\"snapEnabled\":" + fourth
+        body = body + ",\"moveStep\":" + fifth + ",\"rotateStepRadians\":" + sixth + ",\"scaleStep\":" + seventh + "}}"
     elif command == "scene.reparent":
         if positional_count != 4:
             return cli_result("2", "error: scene.reparent requires objectId, parentId and childIndex\n")
@@ -125,7 +393,7 @@ def main(args: [string], configured_url: string, configured_token: string) -> st
         if positional_count != 6:
             return cli_result("2", "error: scene.component.property.set requires objectId, componentId, property, kind and value-json\n")
         body = "{\"schemaVersion\":1,\"command\":\"scene.component.property.set\",\"objectId\":" + first + ",\"componentId\":" + second + ",\"property\":" + json_string(third) + ",\"kind\":" + json_string(fourth) + ",\"value\":" + fifth + "}"
-    elif command == "scene.undo" or command == "scene.redo":
+    elif command == "scene.undo" or command == "scene.redo" or command == "scene.duplicate" or command == "scene.selection.focus":
         if positional_count != 1:
             return cli_result("2", "error: " + command + " takes no arguments\n")
         body = "{\"schemaVersion\":1,\"command\":" + json_string(command) + "}"

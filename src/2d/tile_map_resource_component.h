@@ -34,8 +34,10 @@ public:
     const char* scriptTypeName() const override { return "TileMapResourceComponent"; }
 
     TileMapResourceComponent(core::SharedCallback<resource::ResourceManager*()> resourcesProvider,
-        core::SharedCallback<core::SharedPtr<physics2d::PhysicsWorld2D>()> worldProvider)
-        : resourcesProvider_(std::move(resourcesProvider)), worldProvider_(std::move(worldProvider))
+        core::SharedCallback<core::SharedPtr<physics2d::PhysicsWorld2D>()> worldProvider,
+        physics2d::ComponentUsage usage = physics2d::ComponentUsage::Simulation)
+        : usage_(physics2d::requireComponentUsage(usage)),
+          resourcesProvider_(std::move(resourcesProvider)), worldProvider_(std::move(worldProvider))
     {
         synchronizeRuntimeOwner();
     }
@@ -43,8 +45,10 @@ public:
     TileMapResourceComponent(resource::ResourceManager& resources,
         resource::ResourceHandle<TileMapResource> map,
         core::SharedPtr<physics2d::PhysicsWorld2D> world,
-        TileMapRuntimeDesc desc)
-        : resources_(&resources), map_(map), world_(std::move(world)), desc_(desc)
+        TileMapRuntimeDesc desc,
+        physics2d::ComponentUsage usage = physics2d::ComponentUsage::Simulation)
+        : usage_(physics2d::requireComponentUsage(usage)), resources_(&resources), map_(map),
+          world_(std::move(world)), desc_(desc)
     {
         authoring_.tileMapResourceId = map_.id();
         authoring_.maxResidentChunks = desc_.maxResidentChunks;
@@ -56,9 +60,13 @@ public:
         resourceGeneration_ = map_.generation();
         const auto tileset = resources.find<TileSetResource>(map_.get()->tileSetId());
         tileSetGeneration_ = tileset.generation();
-        runtime_ = core::makeUnique<TileMapRuntime>(resources, map_, *world_, desc_);
+        runtime_ = usage_ == physics2d::ComponentUsage::Authoring
+            ? core::makeUnique<TileMapRuntime>(resources, map_, desc_)
+            : core::makeUnique<TileMapRuntime>(resources, map_, *world_, desc_);
         editorDiagnostic_ = nullptr;
     }
+
+    physics2d::ComponentUsage usage() const { return usage_; }
 
     TileMapRuntime* runtime() { return runtime_.get(); }
 
@@ -77,6 +85,12 @@ public:
 
     bool applyEditorAuthoringProperties(const arp::reflection::object& value) override
     {
+        return applyRestoredAuthoringProperties(value, nullptr);
+    }
+
+    bool applyRestoredAuthoringProperties(
+        const arp::reflection::object& value, const scene::Scene::IdentityRestoration* transaction)
+    {
         if (!value.is<TileMapResourceComponentEditorProperties>())
             return false;
         const auto& candidateProperties =
@@ -86,6 +100,7 @@ public:
             || candidateProperties.maxVisibleCells > kEditorTileMapMaxVisibleCells)
             return false;
 
+        auto preparedProperties = candidateProperties;
         synchronizeRuntimeOwner();
         const bool configured = !candidateProperties.tileMapResourceId.empty()
             && candidateProperties.maxResidentChunks != 0u
@@ -93,7 +108,7 @@ public:
         if (!configured) {
             if (runtime_)
                 return false;
-            authoring_ = candidateProperties;
+            authoring_ = std::move(preparedProperties);
             editorDiagnostic_ = "EDITOR-TILEMAP-AUTHORING-INCOMPLETE";
             return true;
         }
@@ -105,12 +120,13 @@ public:
         const auto candidateDesc = TileMapRuntimeDesc{candidateProperties.maxResidentChunks,
             candidateProperties.maxVisibleCells,
             candidateProperties.firstObjectId};
-        if (!prepareRuntime(candidateProperties, resources, world, map, candidateRuntime))
+        if (!prepareRuntime(
+                candidateProperties, resources, world, map, candidateRuntime, transaction))
             return false;
 
         auto previousWorld = world_;
         auto previousRuntime = std::move(runtime_);
-        authoring_ = candidateProperties;
+        authoring_ = std::move(preparedProperties);
         resources_ = resources;
         resourceGeneration_ = map.generation();
         const auto tileset = resources->find<TileSetResource>(map.get()->tileSetId());
@@ -138,12 +154,17 @@ private:
         return worldProvider_ ? worldProvider_() : world_;
     }
 
-    bool ownerTransformIsUnit() const
+    bool ownerTransformIsUnit(const scene::Scene::IdentityRestoration* transaction = nullptr) const
     {
         const auto* owner = gameObject();
         if (!owner)
             return false;
-        const auto transform = owner->world_transform();
+        scene::Transform transform;
+        if (transaction) {
+            if (!transaction->worldTransform(owner->id(), transform))
+                return false;
+        } else
+            transform = owner->world_transform();
         return transform.translation.x == 0.0f && transform.translation.y == 0.0f
             && transform.translation.z == 0.0f && transform.rotation.x == 0.0f
             && transform.rotation.y == 0.0f && transform.rotation.z == 0.0f
@@ -155,9 +176,10 @@ private:
         resource::ResourceManager* resources,
         const core::SharedPtr<physics2d::PhysicsWorld2D>& world,
         resource::ResourceHandle<TileMapResource>& map,
-        core::UniquePtr<TileMapRuntime>& runtime)
+        core::UniquePtr<TileMapRuntime>& runtime,
+        const scene::Scene::IdentityRestoration* transaction = nullptr)
     {
-        if (!resources || !world || !world->valid() || !ownerTransformIsUnit()) {
+        if (!resources || !world || !world->valid() || !ownerTransformIsUnit(transaction)) {
             editorDiagnostic_ = "EDITOR-TILEMAP-OWNER-OR-TRANSFORM";
             return false;
         }
@@ -178,7 +200,9 @@ private:
             editorDiagnostic_ = "EDITOR-TILEMAP-RUNTIME-BUDGET-INVALID";
             return false;
         }
-        runtime = core::makeUnique<TileMapRuntime>(*resources, map, *world, candidateDesc);
+        runtime = usage_ == physics2d::ComponentUsage::Authoring
+            ? core::makeUnique<TileMapRuntime>(*resources, map, candidateDesc)
+            : core::makeUnique<TileMapRuntime>(*resources, map, *world, candidateDesc);
         return true;
     }
 
@@ -232,6 +256,7 @@ private:
         previousRuntime.reset();
     }
 
+    const physics2d::ComponentUsage usage_;
     core::SharedCallback<resource::ResourceManager*()> resourcesProvider_;
     core::SharedCallback<core::SharedPtr<physics2d::PhysicsWorld2D>()> worldProvider_;
     resource::ResourceManager* resources_ = nullptr;

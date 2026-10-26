@@ -17,7 +17,7 @@ from spirv_layout import SpirvLayoutFacts
 
 def main():
     ap=argparse.ArgumentParser()
-    for name in ('exe','directory','library','slangc'): ap.add_argument('--'+name,required=True,type=Path)
+    for name in ('exe','directory','library','slangc','reflect'): ap.add_argument('--'+name,required=True,type=Path)
     args=ap.parse_args()
     template=args.directory.resolve()
     cases=[
@@ -158,7 +158,7 @@ def main():
         except RuntimeError: assert not program.exists()
         else: raise AssertionError('failed composition accepted')
         refused_dir=Path(temporary)/'unsupported-existing-shader'
-        reflect=args.slangc.with_name('spirv-reflect.exe')
+        reflect=args.reflect.resolve()
         subprocess.run([sys.executable,'-X','utf8',str(Path(__file__).resolve().parents[2]/'scripts/compile_shaders.py'),
             '--slangc',str(args.slangc),'--spirv-reflect',str(reflect),'--module','clear','--single-entry','vertexMain',
             '--glsl-es-100','--spirv-cross-library',str(args.library),'--out-dir',str(refused_dir)],check=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)

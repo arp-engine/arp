@@ -15,6 +15,7 @@ enum class SceneDiagnosticCode {
     InvalidChildIndex,
     TraversalBudgetExceeded,
     ScriptExecutionFailed,
+    PassiveExecutionRejected,
 };
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)

@@ -6,7 +6,7 @@ import unittest
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tooling"))
 from source_contract_sections import decision_bodies, fragment as source_fragment
-from cpp_source_evidence import CppSource
+from cpp_source_evidence import CppSource, tokens as cpp_tokens
 
 
 class CommandRecordingApiInventoryTest(unittest.TestCase):
@@ -439,6 +439,19 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
 
     def test_webgpu_dependency_bodies_cannot_return_stat_only_success(self):
         source = self.read_source("src/rhi/backends/webgpu/webgpu_native_commands.cpp")
+
+        def guarded_block(body, guard):
+            self.assertEqual(body.count(guard), 1)
+            start = body.index(guard)
+            opening = body.index("{", start + len(guard))
+            depth = 0
+            for token, _, end in cpp_tokens(str(body)[opening:]):
+                depth += (token == "{") - (token == "}")
+                if not depth:
+                    closing = opening + end
+                    return start, closing, CppSource(body[opening:closing])
+            self.fail("Unclosed explicitly guarded Prototype block")
+
         for name, descriptor, gate in (
             ("recordBufferBarrier", "ResourceBarrierDesc", "transitionRecordingDiagnostic"),
             ("recordTextureBarrier", "ResourceBarrierDesc", "transitionRecordingDiagnostic"),
@@ -450,9 +463,30 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
                 self.assertIn("const rhi::" + descriptor + "& desc", body)
                 self.assertIn("diagnostics = " + gate + "();", body)
                 self.assertIn("return false;", body)
-                self.assertNotIn("return true;", body)
-                self.assertNotIn("recordCommand(", body)
-                self.assertNotIn("impl_->stats", body)
+                # PrototypeCommandBatch/2 has its own explicit immutable replay
+                # and automatic WebGPU usage-scope lowering. Its success cannot
+                # become evidence or authorization for the ordinary encoder.
+                capture_start, capture_end, capture = guarded_block(
+                    body, "if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->capturing())")
+                replay_start, replay_end, replay = guarded_block(
+                    body, "if (impl_ && impl_->prototypeBatch && impl_->prototypeBatch->replaying())")
+                self.assertLess(capture_end, replay_start)
+                self.assertIn("return b.capture(", capture)
+                self.assertIn("return b.resource(", capture)
+                self.assertIn("#if defined(ARP_RHI_WEBGPU_NATIVE_PAYLOADS_HAS_NATIVE)", replay)
+                self.assertIn("PrototypeCommandBatchBarrierLowering::", replay)
+                self.assertIn("impl_->prototypeBatch->latch(id)", replay)
+                self.assertIn('diagnostics = "RHI-PROTOTYPE-BATCH-NATIVE-UNAVAILABLE";', replay)
+                self.assertEqual(replay.count("return true;"), 1)
+                self.assertLess(replay.index("PrototypeCommandBatchBarrierLowering::"),
+                                replay.index("recordCommand("))
+                self.assertLess(replay.index("recordCommand("), replay.index("return true;"))
+                ordinary = CppSource(body[:capture_start] + body[capture_end:replay_start]
+                                     + body[replay_end:])
+                self.assertIn("diagnostics = " + gate + "();", ordinary)
+                self.assertNotIn("return true;", ordinary)
+                self.assertNotIn("recordCommand(", ordinary)
+                self.assertNotIn("impl_->stats", ordinary)
         for gate, diagnostic in (
             ("transitionRecordingDiagnostic", "RHI-WEBGPU-BARRIER-LOWERING-UNPROVEN"),
             ("memoryBarrierRecordingDiagnostic", "RHI-WEBGPU-MEMORY-BARRIER-LOWERING-UNPROVEN"),
@@ -2472,7 +2506,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         web=self.read_source("src/rhi/backends/webgpu/webgpu_backend_objects.cpp")
         self.assertIn("if(nativePayload_ && nativePayload_->texture && nativePayload_->ownerDevice)",web)
         array=CppSource((self.ROOT / "src/core/ownership/versioned_mutation_array.h").read_text(encoding="utf-8-sig"))
-        for token in ["snapshot_(values_)", "stamp_.tryWrite(false,journal)", "indexAt(i)>=size()", "pmr::Vector<T>", "snapshot_.prepare(*journal)"]:self.assertIn(token,array)
+        for token in ["snapshot_(values_,this,nullptr,", "static_cast<VersionedMutationArray*>(context)->invalidate();", "stamp_.tryWrite(false,journal)", "indexAt(i)>=size()", "pmr::Vector<T>", "snapshot_.prepare(*journal)"]:self.assertIn(token,array)
         for token in ["new ", "std::make_shared", "std::vector", "resize(", "push_back("]:self.assertNotIn(token,array)
         runner=CppSource((self.ROOT / "tests/fixtures/bindless_webgpu_rhi_runner.html").read_text(encoding="utf-8-sig"))
         self.assertIn("&& originalTextureControlPassed",runner)
@@ -3201,8 +3235,31 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
             self.assertTrue(bodies)
             for body in bodies:
                 body = body.split("\n}", 1)[0]
+                if method == "recordImageToBufferCopy":
+                    self.assertRegex(body, r'return\s+recordImageToBufferCopyImpl\(source,\s*destination,\s*desc,\s*diagnostics,\s*false\);')
+                    self.assertNotIn("vkCmd", body)
+                    continue
                 self.assertIn("backendVulkanOriginalContentExclusive()", body)
                 self.assertIn("RHI-TEXTURE-CONTENT-EXCLUSIVE-USE", body)
+        copy_impl = native.split("bool VulkanRhiNativeCommandPayload::recordImageToBufferCopyImpl(", 1)[1].split("\n}", 1)[0]
+        guard = copy_impl.index("source.backendVulkanOriginalContentExclusive() && !validatedOriginal")
+        self.assertLess(guard, copy_impl.index('diagnostics = "RHI-TEXTURE-CONTENT-EXCLUSIVE-USE"'))
+        self.assertLess(guard, copy_impl.index("impl_->device.syntheticRuntime()"))
+        self.assertLess(guard, copy_impl.index("source.backendVulkanImageHandle()"))
+        self.assertLess(guard, copy_impl.index("cmdCopyImageToBuffer("))
+        self.assertIn("return false;", copy_impl[guard:copy_impl.index("impl_->device.syntheticRuntime()")])
+        header = self.read_source("src/rhi/backends/vulkan/vulkan_native_commands.h")
+        self.assertLess(header.index("private:"), header.index("recordImageToBufferCopyImpl("))
+        storage = self.read_source("src/rhi/backends/vulkan/vulkan_render_pass_storage.cpp")
+        mixed = storage.split("VulkanRhiNativeCommandPayload::recordOrdinaryMixedCommand(", 1)[1].split("\n}", 1)[0]
+        for token in ["preflightOrdinaryAttachmentOperation(scalar.kind(), command)",
+                      "expected.scalar.matches(scalar)", "claimOrdinaryAttachments()", "validateOrdinaryAttachmentsPending()"]:
+            self.assertLess(mixed.index(token), mixed.index("recordImageToBufferCopyImpl("))
+        original_copy = mixed.split("case K::TextureToBufferCopy:", 1)[1]
+        for token in ["copy->matches(*incomingCopy)", "originalSources()->sources()", "ordinaryAttachmentState(",
+                      "ordinaryBufferState(", "gpuTransferWritesSealed()"]:
+            self.assertIn(token, mixed)
+        self.assertRegex(original_copy, r'recordImageToBufferCopyImpl\(\s*\*nativeSource,\s*\*nativeDestination,\s*\*incomingCopy,\s*diagnostic,\s*true\)')
         control = self.read_source("src/rhi/frontend/resource_texture_content_control.h")
         for method in ["canUpload", "propose", "complete"]:
             body = control.split("const char* " + method + "(", 1)[1].split("\n    }", 1)[0]
@@ -3211,6 +3268,58 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         fixture = self.read_source("tests/fixtures/vulkan_original_texture_creation_fixture.h")
         for token in ["queryOriginalContentTextureAllocation", "--tooSmall.maxNativeAllocationBytes", "pressure.verify", "Uninitialized", "texture->state()==ResourceState::Undefined", "q[index]", "owner->liveBytes()"]:
             self.assertIn(token, fixture)
+
+    def test_dispatch_domain_admission_uses_same_mixed_source_and_scalar_projection(self):
+        admission = self.read_source("src/rhi/frontend/compute_dispatch_recording.h")
+        for token in ["OriginalCommandComputePipelineSource::validateOriginal(source, input.device)",
+                      "source->originalPipeline()->originalComputeCreation()",
+                      "OriginalComputePipelineCreation::validateOriginal(creation)",
+                      "creation->definition().computeShader", "input.device.validateOriginalComputeDispatchDomain(input.domain",
+                      "entry.computeWorkgroupSizeX", "entry.computeWorkgroupSizeY", "entry.computeWorkgroupSizeZ"]:
+            self.assertIn(token, admission)
+        for forbidden in ["makeShared", "makeUnique", "Vector<", "MutationJournal", "vkCmd", "MTL", "recordDispatch", "maxComputeWorkgroupCount"]:
+            self.assertNotIn(forbidden, admission)
+        mixed = CppSource(self.read_source("src/rhi/frontend/command_read_only_graphics.h"))
+        binding = mixed.split("case K::BindComputePipeline:", 1)[1].split("case K::BindComputeDescriptor:", 1)[0]
+        self.assertIn("sources[binding.sourceIndex]", binding)
+        self.assertIn("computePipelineOwner=owner", binding)
+        dispatch = mixed.split("case K::Dispatch:", 1)[1].split("case K::BeginTransferPass:", 1)[0]
+        self.assertIn("OriginalComputeDispatchRecordingAdmission::inspect(*dispatchAdmission,*computePipelineOwner,{dispatch->x,dispatch->y,dispatch->z})", dispatch)
+        preparation = self.read_source("src/rhi/frontend/command_render_pass_preparation.h")
+        for token in ["dispatchDomainVersion = 0u", "dispatchDomainOptIn = false", "std::shared_ptr<const ComputeDispatchValidationDomain> dispatchDomain",
+                      "RHI-DISPATCH-RECORDING-DOMAIN-INPUT", "RHI-DISPATCH-RECORDING-ADMISSION-INPUT",
+                      "RHI-DISPATCH-RECORDING-PROFILE", "RHI-RENDER-PASS-PREPARATION-METAL-PAYLOAD-MISSING"]:
+            self.assertIn(token, preparation)
+        native = CppSource(self.read_source("src/rhi/backends/vulkan/vulkan_render_pass_storage.cpp"))
+        self.assertIn("OriginalComputeDispatchRecordingInput admission{device,request.dispatchDomain}", native)
+        self.assertIn("request.dispatchDomain?&admission:nullptr", native)
+        self.assertIn("DISPATCH_RECORDING_INTENT_PASS", self.read_source("tests/contract/cloud_prepared_history_tests.cpp"))
+        self.assertIn("METAL_PIPELINE_DISPATCH_REVOKE_PASS", self.read_source("tests/integration/rhi_metal_dispatch_validation_session_tests.mm"))
+
+    def test_public_source_assembly_owns_declarations_and_compiles_canonical_operations(self):
+        public = self.read_source("src/rhi/gpu_command_sources.h")
+        implementation = self.read_source("src/rhi/frontend/command_source_assembly.cpp")
+        internal = self.read_source("src/rhi/frontend/command_sources.h")
+        for name in ["OriginalCommandDescriptorSetElement", "OriginalCommandDescriptorSourceBudget"]:
+            self.assertIn("struct " + name + " {", public)
+            self.assertNotIn("struct " + name + " {", internal)
+        for forbidden in ['#include "rhi/frontend/command_', "std::variant", "sources()", "nativePayload", "makeShared", "makeUnique"]:
+            self.assertNotIn(forbidden, public)
+        for token in ["OriginalCommandResourceSources::validateRegisteredLifetime", "std::get_if",
+                      "source->originalPipeline()", "source->originalViewLease()", "source->originalParentLease()",
+                      "OriginalCommandDescriptorSetSource::prepareOriginal", "OriginalCommandResourceSources::appendOriginalTyped",
+                      "inventory->cpuOwnerCount", "inventory->originalBudget().maxGraphOwners", "output = {}", "index = SIZE_MAX"]:
+            self.assertIn(token, implementation)
+        for forbidden in ["makeShared", "makeUnique", "MutationJournal", "std::vector", "core::pmr::Vector", "recordDispatch", "vkCmd", "wgpu", "MTL"]:
+            self.assertNotIn(forbidden, implementation)
+        renderer = self.read_source("src/renderer/volumetric_cloud/cloud_prepared_descriptors.cpp")
+        for forbidden in ["std::get_if", "->sources()", "OriginalCommandDescriptorSetSource", "OriginalCommandComputePipelineSource", "OriginalCommandGraphicsPipelineSource"]:
+            self.assertNotIn(forbidden, renderer)
+        for token in ["Assembly::inspectBuffer", "Assembly::inspectTextureView", "Assembly::inspectComputePipeline",
+                      "Assembly::inspectGraphicsPipeline", "Assembly::appendDescriptorSet", "Assembly::cpuOwnerCount",
+                      "auto next = std::move(c.inventory)"]:
+            self.assertIn(token, renderer)
+        self.assertIn("src/rhi/frontend/command_source_assembly.cpp", self.read_source("CMakeLists.txt"))
 
     def test_undefined_texture_upload_plan_keeps_original_graph_and_completion_closed(self):
         root = self.read_source("src/rhi/frontend/command_state.h")
@@ -3967,13 +4076,90 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
 
     def test_pipeline_positional_inputs_use_same_sequence_and_original_scope_contract(self):
         inputs=self.read_validation_section("src/rhi/frontend/command_usage.h","original_command_inputs")
-        for token in ["OriginalCommandPipelineBinding,OriginalCommandDescriptorBinding,OriginalCommandGeometryBinding>", "const RenderPipeline*", "const ComputePipeline*", "OriginalCommandInputsBudget budget", "inputBudget.contractVersion>=2u", "semantics::CommandRecordingOrder order", "order.append(kind)", "CommandInputContract::consumeDescriptor", "OriginalCommandPipelineBindingContract::validate", "scopeBegin=i", "order.complete()", "PIPELINE-CAPACITY"]: self.assertIn(token,inputs)
+        for token in ["OriginalCommandPipelineBinding,OriginalCommandDescriptorBinding,OriginalCommandGeometryBinding,OriginalCommandQueryBinding>", "const RenderPipeline*", "const ComputePipeline*", "OriginalCommandInputsBudget budget", "inputBudget.contractVersion>=2u", "semantics::CommandRecordingOrder order", "order.append(kind)", "CommandInputContract::consumeDescriptor", "OriginalCommandPipelineBindingContract::validate", "scopeBegin=i", "order.complete()", "PIPELINE-CAPACITY"]: self.assertIn(token,inputs)
         contract=self.read_command_contract_sections("src/rhi/frontend/command_usage.h","src/rhi/semantics/command_lowering.h","original_command_pipeline_binding")
         for token in ["validatePipelineKind", "Adapter::validateOriginal", "registrationGeneration", "scopeBeginCommandIndex", "command.firstReference", "lowering(Backend", "executionAvailable=false"]: self.assertIn(token,contract)
         for forbidden in ["std::vector", "WebGpuNative", "RecordedCommandProof", "makeShared", "MutationJournal", "OriginalCommandState"]: self.assertNotIn(forbidden,contract)
         fixture=CppSource((self.ROOT / "tests/fixtures/original_command_pipeline_binding_fixture.h").read_text(encoding="utf-8-sig"))
         for token in ["pressure.measure", "pressure.verify", "verifyHotNoAllocation", "null_memory_resource", "wrongUsage", "PIPELINE-GENERATION", "PIPELINE-SOURCE", "PIPELINE-SCOPE"]: self.assertIn(token,fixture)
         self.assertIn("&& originalPipelinePositionalPassed &&",CppSource((self.ROOT / "tests/fixtures/bindless_webgpu_rhi_runner.html").read_text(encoding="utf-8-sig")))
+
+    def test_query_sources_join_registered_wrapper_and_same_original_points(self):
+        source = self.read_source("src/rhi/frontend/query_source.h")
+        for token in ["matchesOriginalFactoryOwner", "validateOriginalResourceRegistration",
+                      "matchesObjectIdentity", "registrationGeneration", "originalInput()",
+                      "originalQueryOwnerQuota", "independentCpuQuotaDiagnostic",
+                      "nativeExecutionProven() const noexcept { return false; }"]:
+            self.assertIn(token, source)
+        inputs = self.read_validation_section("src/rhi/frontend/command_usage.h", "original_command_inputs")
+        for token in ["OriginalCommandQueryBinding", "QueryCommandPoints::validateOriginalStream",
+                      "inputBudget.contractVersion!=9u", "point.commandOrdinal!=i",
+                      "point.pipelineBindOrdinal", "point.original.matches(binding->original)",
+                      "RHI-ORIGINAL-QUERY-INPUT-GENERATION", "RHI-ORIGINAL-QUERY-POINT-COVERAGE"]:
+            self.assertIn(token, inputs)
+        sources = self.read_source("src/rhi/frontend/command_sources.h")
+        self.assertIn("RHI-ORIGINAL-QUERY-STATE-JOIN-MISSING", sources)
+        device = self.read_source("src/rhi/frontend/device_device.inl")
+        self.assertLess(device.index("reserveOriginalRegistrationRecord("),
+                        device.index("createOriginalQueryPoolCandidate("))
+
+    def test_original_query_cold_storage_does_not_open_execution_or_borrow_domains(self):
+        projection = self.read_source("src/rhi/frontend/query_recording_storage.h")
+        for token in ["OriginalCommandInputs::validateOriginal", "CpuDomain",
+                      "D::Recording", "maxQueryPools", "maxTimestampWrites",
+                      "SharedOwnerProjection::sameOwner(pool, previousPool)",
+                      "independentCpuQuotaDiagnostic", "cpuAllocationOverlapsQuotaOwner"]:
+            self.assertIn(token, projection)
+        for forbidden in ["MutationJournal", "makeShared", "makeUnique", "vkCmd"]:
+            self.assertNotIn(forbidden, projection)
+        native = self.read_source("src/rhi/backends/vulkan/vulkan_native_commands.cpp")
+        record = native.split("bool VulkanRhiNativeCommandPayload::recordTimestamp(", 1)[1]
+        record = record.split("bool VulkanRhiNativeCommandPayload::end(", 1)[0]
+        self.assertLess(record.index("RHI-VULKAN-COLD-QUERY-STORAGE-UNAVAILABLE"),
+                        record.index("markRecorded("))
+        self.assertIn("if (!storage && createQueryPool && resetQueryPool && writeTimestamp)", native)
+        self.assertNotIn("(!storage || !storage->originalQueries)", native)
+        self.assertIn("RHI-VULKAN-COLD-INTERNAL-PROFILING-DISABLED", native)
+
+    def test_original_query_cold_observations_are_not_recorded_work(self):
+        projection = self.read_source("src/rhi/frontend/query_recording_storage.h")
+        self.assertIn("RHI-ORIGINAL-QUERY-STORAGE-DUPLICATE-SLOT", projection)
+        native = self.read_source("src/rhi/backends/vulkan/vulkan_native_commands.cpp")
+        impl = self.read_source("src/rhi/backends/vulkan/vulkan_native_commands_impl.h")
+        self.assertIn("std::optional<VulkanRhiQueryPoolPayload::SlotObservation> originalSlot", impl)
+        self.assertIn("bool recorded = true", impl)
+        self.assertIn("originalQuerySlotDiagnostic", native)
+        factory = native.split("std::shared_ptr<VulkanRhiNativeCommandPayload> createVulkanRhiNativeCommandPayload(", 1)[1]
+        self.assertLess(factory.index("observeSlot("), factory.index("functionFrom<PFN_vkCreateCommandPool>"))
+        self.assertIn("preflightRecord(*observation)", factory)
+        self.assertIn("if (!query.recorded)", native)
+
+    def test_original_query_recording_preserves_one_journal_and_atomic_native_write(self):
+        base = "src/rhi/backends/vulkan/"
+        native = self.read_source(base + "vulkan_native_commands.cpp")
+        join = native.split("bool VulkanRhiNativeCommandPayload::adoptOriginalQueryJournal(", 1)[1].split(
+            "const char* VulkanRhiNativeCommandPayload::recordOriginalTimestamp(", 1)[0]
+        self.assertIn("impl_->retainedResourceStates = std::move(journal)", join)
+        for forbidden in ("makeUnique", "makeShared", "MutationJournal journal", "new "):
+            self.assertNotIn(forbidden, join)
+        record = native.split("const char* VulkanRhiNativeCommandPayload::recordOriginalTimestamp(", 1)[1].split(
+            "const char* VulkanRhiNativeCommandPayload::sealOriginalQueries(", 1)[0]
+        mutation = record.index("prepared->pool->declareRecorded(")
+        write = record.index("write(impl_->commandBuffer,")
+        for gate in ("OriginalCommandInputs::validateOriginal", "descriptorAt(ordinal)",
+                     "source->originalObject() != &pool", "validateOriginalInput",
+                     "originalQueryMeter->preflight", "recordingRetention->preflightTimestamp",
+                     "timestampQueryDiagnostic()", 'getDeviceProcAddr("vkCmdWriteTimestamp")'):
+            self.assertLess(record.index(gate), mutation)
+        self.assertLess(mutation, record.index("recordingRetention->admitTimestamp"))
+        self.assertLess(record.index("prepared->recorded = true"), write)
+        for forbidden in ("makeShared", "makeUnique", "reserve(", "lowerCommandWorkload", "MutationJournal journal"):
+            self.assertNotIn(forbidden, record)
+        encoder = self.read_source(base + "vulkan_command_objects.cpp")
+        self.assertIn("std::shared_ptr<core::MutationJournal>(nativePayload, &journal)", encoder)
+        submit = native.split("bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo&", 1)[1]
+        failure = submit.split("if (submitted != VK_SUCCESS)", 1)[1].split("return false;", 1)[0]
+        self.assertLess(failure.index("markSubmissionUnproven"), failure.index("retainedResourceStates->invalidate()"))
 
     def test_descriptor_whole_buffer_guard_does_not_infer_remaining_tail(self):
         policy=self.read_source("src/rhi/frontend/descriptor_whole_buffer_binding.h")
@@ -4509,6 +4695,141 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         proof=self.read_source("src/rhi/backends/webgpu/webgpu_recorded_command_proof.h")
         self.assertEqual(proof.count("friend class "),2)
 
+    def test_original_metal_texture_facts_share_bounded_native_collector_without_execution_authority(self):
+        native = self.read_source("src/rhi/backends/metal/metal_native_pipelines.mm", follow_decisions=False)
+        self.assertEqual(native.count("class TextureBindingFactCollector final"), 1)
+        self.assertNotIn("class GraphicsTextureFactCollector", native)
+        self.assertIn("binding.arrayCount > (facts.max_size() - capacity) / stages", native)
+        collector = native.split("class TextureBindingFactCollector final", 1)[1].split("class GraphicsBufferPointeeFactCollector", 1)[0]
+        for token in ("argument.textureType", "argument.textureDataType", "argument.isDepthTexture",
+                      "argument.access", "argument.isActive != NO", "facts_.size() == facts_.capacity()"):
+            self.assertIn(token, collector)
+        compute = native.split("createMetalRhiNativeComputePipelinePayloadImpl", 1)[1]
+        self.assertLess(compute.index("TextureBindingFactCollector::reserve("), compute.index("createLibrary("))
+        for token in ("TextureBindingFactCollector facts(payload->computeTextureFacts)",
+                      "facts.collect(reflection.arguments,rhi::ShaderStage::Compute)",
+                      "payload->computeTextureFactsVersion = 1u", "payload->computeTextureFacts.clear()"):
+            self.assertIn(token, compute)
+        facts = self.read_source("src/rhi/backends/metal/metal_binding_facts.h", follow_decisions=False)
+        texture = facts.split("struct MetalRhiTextureBindingFact", 1)[1].split("// endregion", 1)[0]
+        self.assertIn("access = UINT32_MAX,active = UINT32_MAX", texture)
+        self.assertIn("access == other.access && active == other.active", texture)
+        self.assertIn("RHI-METAL-ORIGINAL-SAMPLED-TEXTURE-DEPTH-ABI", texture)
+        self.assertIn("fact.depth == depth ? nullptr", texture)
+        self.assertIn("RHI-GRAPHICS-BINDING-INSPECTION-METAL-ADAPTER-MISSING",
+                      self.read_source("src/rhi/semantics/descriptor_lowering.h", follow_decisions=False))
+
+    def test_metal_synchronous_group_reuses_descriptor_owner_and_has_no_inventory_cycle(self):
+        metal = self.read_source("src/rhi/backends/metal/metal_backend_descriptors.cpp", follow_decisions=False)
+        state = metal.split("struct OriginalSynchronousPublication", 1)[1].split("public:", 1)[0]
+        self.assertIn("PipelineOwner pipeline", state)
+        self.assertNotIn("OriginalCommandResourceSources", state)
+        for token in ("MetalOriginalBufferBindingInspection::inspectRetained<compute>",
+                      "MetalOriginalTextureBindingInspection::inspectRetained<compute>",
+                      "MetalRhiPreparedDescriptorIdentityValidator::capture(",
+                      "MetalRhiPreparedDescriptorIdentityValidator::validate(",
+                      "writes_.swap(originalSynchronous_->writes)", "diagnoseSynchronousSource(",
+                      "metalRhiOriginalSynchronousPayloadFor("):
+            self.assertIn(token, metal)
+        begin = metal.split("const char* beginSynchronousWrite", 1)[1].split("const char* beginOriginalGeneralWriteImpl", 1)[0]
+        self.assertLess(begin.index("maxRetainedAllocationBytes-retained"), begin.index("makeShared<OriginalSynchronousPublication>"))
+        finish = metal.split("const char* finishOriginalGeneralWriteImpl", 1)[1].split("const char* cancelOriginalGeneralWriteImpl", 1)[0]
+        self.assertLess(finish.index("originalSynchronousDiagnostic()"), finish.index("writes_.swap"))
+        for forbidden in ("makeShared", "makeUnique", "createMetal", "submit"):
+            self.assertNotIn(forbidden, finish)
+        general = self.read_source("src/rhi/frontend/device_device.inl", follow_decisions=False).split("GpuDevice::beginOriginalGeneralDescriptorWrite", 1)[1].split("GpuDevice::originalResourceRegistrationDiagnostic", 1)[0]
+        self.assertIn("!synchronousLossJoin", general)
+        self.assertIn("RHI-ORIGINAL-TYPED-LOSS-SYNC-GROUP-OPT-IN", general)
+
+    def test_original_texture_binding_preflight_reuses_l2_identity_and_grants_no_publication(self):
+        metal = self.read_source("src/rhi/backends/metal/metal_original_texture_binding.h", follow_decisions=False)
+        for token in ("Contract::inspectPipeline<compute>", "Contract::inspectBinding<compute>",
+                      "sources->originalLeaseIndex((*originalView)->originalParentLease())", "originalResourceRegistration().diagnostic()",
+                      "Contract::validateTexture(", "validateMetalRhiNativeCompletedDepthView(",
+                      "validateMetalRhiNativeCompletedTextureView(", "observeMetalRhiOriginalContentAllocation(",
+                      "MetalRhiNativeResourceObservation(parent->resource)", "MetalRhiNativeResourceObservation(view->resource)",
+                      "SingleEntryShaderArtifact::validateOriginal(entries[i])", "SpirvImageDeclarationVerifier::inspect(",
+                      "MetalRhiOriginalSampledTexture2DFloatAbi::inspect(", "metalOriginalBindingStagesMatch("):
+            self.assertIn(token, metal)
+        for forbidden in ("makeShared", "makeUnique", "appendOriginalTyped", "createMetal", "commitOriginal", "submit", "Dependencies::validateOwner("):
+            self.assertNotIn(forbidden, metal)
+        self.assertIn("output = {}", metal)
+        self.assertIn("RHI-GRAPHICS-BINDING-INSPECTION-METAL-ADAPTER-MISSING",
+                      self.read_source("src/rhi/semantics/descriptor_lowering.h", follow_decisions=False))
+
+    def test_original_buffer_binding_preflight_has_one_l2_owner_and_no_publication_authority(self):
+        common = self.read_source("src/rhi/frontend/descriptor_graphics_binding_inspection.h", follow_decisions=False)
+        for token in ("OriginalCommandResourceSources::validateOriginal(sources)",
+                      "PipelineSource<compute>::validateOriginal(*source,device)",
+                      "Dependencies::validateOwner(", "Dependencies::validateRegistered(*owner,device)",
+                      "OriginalGeneralDescriptorBindingContract::validateFootprint(",
+                      "SingleEntryShaderArtifact::originalBufferDeclarationLayout("):
+            self.assertIn(token, common)
+        for forbidden in ("makeShared", "makeUnique", "VkBuffer", "MTLBuffer", "wgpu", "backends/"):
+            self.assertNotIn(forbidden, common)
+        vulkan = self.read_source("src/rhi/backends/vulkan/vulkan_original_graphics_binding.cpp", follow_decisions=False)
+        metal = self.read_source("src/rhi/backends/metal/metal_original_buffer_binding.h", follow_decisions=False)
+        for source in (vulkan, metal):
+            for entry in ("Contract::inspectPipeline<compute>", "Contract::inspectBinding<compute>", "Contract::inspectBufferExtent("):
+                self.assertIn(entry, source)
+            self.assertNotIn("Dependencies::validateOwner(", source)
+        for token in ("originalNativeBufferMemory(", "validateMetalRhiTrackedNativeBufferObject(",
+                      "observeMetalRhiNativeBufferAllocation(", "MetalRhiNativeResourceObservation(buffer->resource)"):
+            self.assertIn(token, metal)
+        self.assertLess(metal.index("SingleEntryShaderArtifact::originalReadOnlyStorageDiagnostic("),
+                        metal.index("semantics::metalOriginalBufferAccessDiagnostic("))
+        for token in ("fact->active > 1u", "semantics::metalOriginalBufferStagesDiagnostic(",
+                      "binding.stages,stages,activeStages,compute"):
+            self.assertIn(token, metal)
+        native = self.read_source("src/rhi/backends/metal/metal_native_pipelines.mm", follow_decisions=False)
+        self.assertIn("argument.isActive != NO ? 1u : 0u", native)
+        artifact = self.read_source("src/shader/single_entry_shader_artifact.h", follow_decisions=False)
+        readonly = artifact.split("static const char* originalReadOnlyStorageDiagnostic", 1)[1].split("static const char* originalNativeBufferMemory", 1)[0]
+        self.assertLess(readonly.index("originalBufferDeclarationLayout(self,set,binding,facts)"),
+                        readonly.index("SpirvBufferDeclarationLayoutVerifier::inspectReadOnlyStorage("))
+        for forbidden in ("makeShared", "makeUnique", "appendOriginalTyped", "createMetal", "commitOriginal", "submit"):
+            self.assertNotIn(forbidden, metal)
+        self.assertIn("RHI-GRAPHICS-BINDING-INSPECTION-METAL-ADAPTER-MISSING",
+                      self.read_source("src/rhi/semantics/descriptor_lowering.h", follow_decisions=False))
+
+    def test_ordinary_metal_member_memory_uses_original_artifact_and_shared_shader_relation(self):
+        artifact=self.read_source("src/shader/single_entry_shader_artifact.h",follow_decisions=False)
+        lookup=artifact.split("static const char* originalNativeBufferMemory",1)[1].split("bool nativeBufferMemoryRequested",1)[0]
+        self.assertLess(lookup.index("output=nullptr"),lookup.index("validateOriginal(self)"))
+        self.assertIn("self->nativeMemory_",lookup)
+        load=self.read_source("src/shader/single_entry_shader_artifact.cpp",follow_decisions=False)
+        for token in ["NativeBufferMemoryDeclarations::validateRequest", "verifyWithTypes(", "declarations.size()==budget.nativeMemory->bindingCount", "result->nativeMemory_.build("]:
+            self.assertIn(token,load)
+        backend=self.read_source("src/rhi/backends/metal/metal_backend_pipelines.cpp",follow_decisions=False)
+        graphics=backend.split("MetalOriginalPipeline::createValidatedGraphicsPayload",1)[1].split("MetalOriginalPipeline::createValidatedComputePayload",1)[0]
+        compute=backend.split("MetalOriginalPipeline::createValidatedComputePayload",1)[1].split("MetalOriginalPipeline::create(",1)[0]
+        for method in [graphics,compute]:
+            self.assertIn("input->artifact()",method)
+            self.assertNotIn("BindlessAuthorization",method)
+        native=self.read_source("src/rhi/backends/metal/metal_native_pipelines.mm",follow_decisions=False)
+        ordinary=native.split("static const char* collectOrdinaryMemberMemory",1)[1].split("static std::shared_ptr<MetalRhiNativePipelinePayload>",1)[0]
+        for token in ["SingleEntryShaderArtifact::validateOriginal(artifact)", "SingleEntryShaderArtifact::originalNativeBufferMemory", "collectOriginalMemberMemory("]:
+            self.assertIn(token,ordinary)
+        for forbidden in ["BindlessShaderPackage", "MTLCommand", "submit", "GeneralDescriptorWrite", "publishOriginal"]:
+            self.assertNotIn(forbidden,ordinary)
+
+    def test_synchronous_descriptor_loss_group_joins_original_closure_without_publication_authority(self):
+        contract=self.read_source("src/rhi/frontend/descriptor_general_write_validation.h")
+        for token in ["lossGroupJoinVersion=0u", "lossGroupJoinOptIn=false", "r.contractVersion<3u", "r.lossGroupJoinVersion!=4u"]:
+            self.assertIn(token,contract)
+        lowering=self.read_source("src/rhi/semantics/resource_lowering.h",follow_decisions=False)
+        typed=lowering.split("OriginalTypedNativeLossJoin_lowering",1)[1].split("template<classResult>",1)[0]
+        self.assertIn("version==3u||version==4u",typed)
+        self.assertEqual(typed.count("true,false,true,version==4u,false,false,nullptr"),2)
+        device=self.read_rhi_api_and_implementation("src/rhi/gpu_device.h")
+        general=device.split("const char* GpuDevice::beginOriginalGeneralDescriptorWrite",1)[1].split("inline const char* GpuDevice::originalResourceRegistrationDiagnostic",1)[0]
+        self.assertLess(general.index("validateOriginalTypedNativeLossGroupInputs(object,pipeline,quotas,&join)"),general.index("synchronousGraphicsLowering(backend())"))
+        group=device.split("const char* GpuDevice::validateOriginalTypedNativeLossGroupInputs",1)[1].split("inline const char* GpuDevice::validateOriginalResourceRegistration",1)[0]
+        for token in ["synchronousJoin->contractVersion!=4u", "observeOriginalDeviceNativeLoss(id)", "validateOriginalTypedNativeLossJoin(*loss,*synchronousJoin)", "pipeline->sharedOwnerMatches(pipeline)", "originalAcceptedSharedQuotaBound()", "arena->sharedOwnerMatches(arena)", "matchesParent(arena->originalResourceRegistration())", "loss->overlapsMetadataOwner(quota)", "independentAcceptedCpuQuotaDiagnostic(quota)", "overlapsOwner(quota,quotas[j])"]:
+            self.assertIn(token,group)
+        for token in ["makeShared", "makeUnique", "nativeHandle", "createOriginalResourceRegistry", "Dispatch", "submit"]:
+            self.assertNotIn(token,group)
+
     def test_typed_native_cold_has_independent_value_schema_without_native_or_legacy_adaptation(self):
         contract=self.read_command_contract_sections("src/rhi/frontend/command_shader_validation.h","src/rhi/semantics/command_lowering.h","original_typed_native_cold")
         for token in ["OriginalTypedNativeColdRequest", "contractVersion!=1u", "prototypeOptIn", "synchronizationVersion!=1u", "OriginalUsageScopeBoundaries1", "maxWork", "maxCallbacks", "maxEncoders", "maxCommandBuffers", "maxRetainedOwners", "maxCpuMetadataBytes", "core::MemoryBudgetLedger::canAdd", "commands=nativeCalls=0u", "COUNT-OVERFLOW", "CALLBACK-RESERVATION"]:
@@ -4664,7 +4985,8 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         self.assertEqual(consumption.count("friend class "),1)
         self.assertIn("template<bool Joined=false,class Visitor> static Result walkOriginal",consumption)
         timeline=self.read_source("src/rhi/frontend/command_state.h", "frontend_command_state_sequence_h")
-        self.assertEqual(timeline.count("friend class "),2)
+        self.assertEqual(timeline.count("friend class "),3)
+        self.assertIn("friend class arp::rhi::OriginalCommandResourceStates;",timeline)
         self.assertIn("friend class OriginalTypedUsageProjection;",timeline)
         self.assertIn("friend class arp::rhi::OriginalCommandStateTransaction;",timeline)
         self.assertIn("return resolveValidatedTextureCell(*graph",timeline)
@@ -6504,8 +6826,18 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
                       "cell.textureCommitted->revision!=frozen.revision()", "OriginalGeneralOutputReadbackDependencyContract::validatePendingStates",
                       "OriginalGeneralOutputReadbackDependencyContract::validate", "delegated==1u"]:
             self.assertIn(token,handoff)
-        # Handoff is private; only the seal and completed-output association are authorized.
-        self.assertEqual(re.findall(r"friend class ([^;]+);",state),["OriginalCommandRecordingSeal","OriginalGeneralOutputSnapshotContract","OriginalCommandStateTransaction"])
+        # General handoff stays private. The existing ordinary native owner also
+        # uses the private whole-upload gateway with its sole external journal.
+        self.assertEqual(re.findall(r"friend class ([^;]+);",state),["rhi_vulkan::VulkanRhiNativeCommandPayload","rhi_metal::MetalOriginalOrdinaryCommand","rhi_metal::MetalRhiNativeCommandPayload","OriginalCommandRecordingSeal","OriginalGeneralOutputSnapshotContract","OriginalCommandStateTransaction"])
+        private_upload=state.split("class ConstructionKey",1)[0]
+        self.assertNotIn("public:",private_upload)
+        for token in ["preflightOrdinaryWholeUpload", "proposeOrdinaryWholeUpload",
+                      "validateOrdinaryWholeUploadPending", "completeOrdinaryWholeUpload",
+                      "object.validateOriginalContent(initial)", "initial.controlVersion()",
+                      "object.originalContent_->canUpload(journal,1u,7u)",
+                      "matchesPending(pending,journal)", "complete(journal,7u)"]:
+            self.assertIn(token,private_upload)
+        self.assertNotIn("MutationJournal journal_",private_upload)
         seal=self.read_validation_section("src/rhi/frontend/command_recording.h", "original_command_recording_seal")
         pending=seal.split("const char* validateGeneralOutputReadPending",1)[1].split("const char* validateInitializedTexturePending",1)[0]
         for token in ["hasQuotaBoundSharedOwner(self)", "validateRetainedOwnership()", "!lifecycleReserved_", "!nativeColdCommandClaimed_"]:
@@ -8130,6 +8462,37 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
                 self.assertIn("OriginalBindlessProducedProgramContract::inspectNativePushRecording<Closure>", command)
         for forbidden in ("commitOriginal", "applyOriginalRecordingPlan", "publish", "vkCmd", "MTLCommand"):
             self.assertNotIn(forbidden, program)
+
+    def test_native_query_slots_use_one_original_versioned_control_and_quarantine(self):
+        base = "src/rhi/backends/vulkan/"
+        header = CppSource((self.ROOT / (base + "vulkan_query_pool.h")).read_text(encoding="utf-8-sig"))
+        source = CppSource((self.ROOT / (base + "vulkan_query_pool.cpp")).read_text(encoding="utf-8-sig"))
+        # These guard ownership/ordering boundaries, not native-success claims.
+        self.assertIn("core::pmr::Vector<core::UniquePtr<SlotControl>>slots_", header)
+        self.assertNotIn("Vector<rhi::QueryExecutionState>", header)
+        self.assertNotIn("MutationJournal journal", header + source)
+        reset = source.split("VulkanRhiQueryPoolPayload::reset()", 1)[1].split(
+            "VulkanRhiQueryPoolPayload::executionStatus()", 1)[0]
+        self.assertLess(reset.index("slot->preflight(SlotControl::Event::Reset)"),
+                        reset.index("resetQueryPool(runtime_->logicalDevice()"))
+        self.assertIn("control.preflight(SlotControl::Event::Record,journal,4u)", source)
+        self.assertIn("control.preflight(SlotControl::Event::Submit,journal,3u)", source)
+        complete = source.split("VulkanRhiQueryPoolPayload::markCompleted(", 1)[1].split(
+            "VulkanRhiQueryPoolPayload::reset()", 1)[0]
+        self.assertLess(complete.index("control.preflight(SlotControl::Event::Complete,nullptr,2u)"),
+                        complete.index("getResults(runtime.logicalDevice()"))
+        native = CppSource((self.ROOT / (base + "vulkan_native_commands.cpp")).read_text(encoding="utf-8-sig"))
+        submit = native.split("bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo&", 1)[1]
+        # Search the entire failure block; it also sets submitted=true.
+        failure = submit.split("if(submitted!=VK_SUCCESS){", 1)[1].split(
+            "diagnostics=submitted==VK_ERROR_DEVICE_LOST", 1)[0]
+        self.assertIn("query.pool->markSubmissionUnproven(query.queryIndex)", failure)
+        self.assertNotIn("rollbackSubmitted", failure)
+        retain = submit.split("const bool retainBeforeInvocation=", 1)[1].split(";", 1)[0]
+        self.assertIn("impl_->hasRecordedTimestampQueries()", retain)
+        impl = self.read_source(base + "vulkan_native_commands_impl.h")
+        self.assertIn("if (query.recorded)", impl)
+        self.assertIn("query.recorded&&query.pool", failure)
 
     def test_visibility_shader_abi_contracts_have_no_reverse_pcg_dependency(self):
         for name in ("layout", "frozen_inputs", "root_inputs", "root_producer", "root_consumer",

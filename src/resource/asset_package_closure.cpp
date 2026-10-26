@@ -72,7 +72,8 @@ bool copyContent(const std::filesystem::path& root,
 bool discoverFiles(const std::filesystem::path& root,
     AssetPackageClosureResult& result,
     std::size_t maxFiles,
-    core::pmr::UnorderedSet<core::pmr::String>& required)
+    core::pmr::UnorderedSet<core::pmr::String>& required,
+    core::SharedPtr<const AssetPackageCodecRegistry> codecs)
 {
     const auto addFile = [&](core::pmr::String path) {
         require(safePath(path), "PACKAGE-CLOSURE-UNSAFE-PATH");
@@ -87,7 +88,7 @@ bool discoverFiles(const std::filesystem::path& root,
             "PACKAGE-CLOSURE-FILE-COUNT");
         required.insert(std::move(path));
     };
-    const auto dependency = [&](const ResourceDependency& binding, const char* type) {
+    const auto dependency = [&](const ResourceDependency& binding, NameView type) {
         const auto found = std::find_if(
             result.package.entries.begin(), result.package.entries.end(), [&](const auto& e) {
                 return e.resourceId == binding.id;
@@ -95,7 +96,8 @@ bool discoverFiles(const std::filesystem::path& root,
         require(found != result.package.entries.end() && found->resourceType == type,
             "PACKAGE-CLOSURE-DEPENDENCY-MISSING-OR-TYPE");
     };
-    AssetPackagePayloadInspector payloads;
+    AssetPackagePayloadInspector payloads(codecs, root);
+    std::size_t codecDecodedBytes = 0;
     for (const auto& entry : result.package.entries) {
         require(entry.status == "Contract Complete", "PACKAGE-CLOSURE-RESOURCE-STATUS");
         if (payloads.supports(entry.resourceType)) {
@@ -104,6 +106,9 @@ bool discoverFiles(const std::filesystem::path& root,
                 result.diagnostics = payload.diagnostics;
                 return false;
             }
+            require(payload.maxDecodedBytes <= result.maxDecodedBytes - codecDecodedBytes,
+                "PACKAGE-CODEC-DECODED-BUDGET");
+            codecDecodedBytes += payload.maxDecodedBytes;
             for (const auto& binding : payload.dependencies)
                 dependency(binding.binding, binding.expectedType);
             for (const auto& path : payload.files)
@@ -165,6 +170,7 @@ AssetPackageClosureResult AssetPackageClosureService::inspect(
 {
     AssetPackageClosureResult result;
     try {
+        require(!codecs_ || codecs_->frozen(), "PACKAGE-CODEC-REGISTRY-NOT-FROZEN");
         const auto package = InternalAssetPackageReader().read(
             directory, maxMetadataBytes, constrained(maxResources, limits.maxResources));
         if (!package.success) {
@@ -212,7 +218,7 @@ AssetPackageClosureResult AssetPackageClosureService::inspect(
         const auto& files = Yaml::sequence(index, "files");
         require(files.size() <= maxFiles, "PACKAGE-CLOSURE-FILE-COUNT");
         core::pmr::UnorderedSet<core::pmr::String> required{&core::defaultCpuMemoryResource()};
-        if (!discoverFiles(root, result, maxFiles, required))
+        if (!discoverFiles(root, result, maxFiles, required, codecs_))
             return result;
         std::size_t total = 0u;
         for (const auto& node : files) {
@@ -261,6 +267,7 @@ AssetPackageClosureResult AssetPackageClosureService::prepareIndex(
     result.package = package;
     result.maxDecodedBytes = budget.maxDecodedBytes;
     try {
+        require(!codecs_ || codecs_->frozen(), "PACKAGE-CODEC-REGISTRY-NOT-FROZEN");
         require(budget.maxResources && budget.maxResources <= maxResources
                 && package.entries.size() <= budget.maxResources && budget.maxFiles
                 && budget.maxFileBytes && budget.maxTotalFileBytes && budget.maxDecodedBytes,
@@ -278,7 +285,7 @@ AssetPackageClosureResult AssetPackageClosureService::prepareIndex(
         }
         const auto root = std::filesystem::canonical(directory);
         core::pmr::UnorderedSet<core::pmr::String> required{&core::defaultCpuMemoryResource()};
-        if (!discoverFiles(root, result, budget.maxFiles, required))
+        if (!discoverFiles(root, result, budget.maxFiles, required, codecs_))
             return result;
         core::pmr::Vector<core::pmr::String> paths(
             required.begin(), required.end(), &core::defaultCpuMemoryResource());
@@ -367,7 +374,7 @@ AssetPackageClosureResult AssetPackageClosureService::publish(const std::filesys
         ResourceBudgetConfig decodeBudget;
         decodeBudget.maxDecodedBytes = result.maxDecodedBytes;
         candidate.setBudgetConfig(decodeBudget);
-        const auto verified = InternalAssetPackageReader().load(staging.path(), candidate);
+        const auto verified = InternalAssetPackageReader().load(staging.path(), candidate, codecs_);
         if (!verified.success) {
             result.diagnostics = verified.diagnostics;
             return result;

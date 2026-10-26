@@ -356,33 +356,61 @@ private:
 // original typed view/parent and perform its independent domain validation.
 class RenderPassReferenceSequenceContract final {
 public:
+    enum class Role { Color, Resolve, DepthStencil };
+
+    template <class ViewAt>
+    static const char* visit(const RenderPassDesc& desc,
+        std::size_t referenceCount,
+        ViewAt&& viewAt,
+        const char* referenceDiagnostic) noexcept
+    {
+        std::size_t consumed = 0u;
+        const auto view = [&](GpuResourceId target,
+                              TextureFormat format,
+                              Role role,
+                              std::size_t colorIndex) -> const char* {
+            if (consumed == referenceCount)
+                return referenceDiagnostic;
+            return viewAt(consumed++, target, format, role, colorIndex);
+        };
+        std::size_t colorIndex = 0u;
+        for (const auto& color : desc.colorAttachments) {
+            if (const auto* id = view(color.target, color.format, Role::Color, colorIndex))
+                return id;
+            if (color.hasResolveTarget != color.resolveTarget.isValid())
+                return referenceDiagnostic;
+            if (color.hasResolveTarget)
+                if (const auto* id =
+                        view(color.resolveTarget, color.format, Role::Resolve, colorIndex))
+                    return id;
+            ++colorIndex;
+        }
+        if (desc.hasDepthStencilAttachment)
+            if (const auto* id = view(desc.depthStencilAttachment.target,
+                    desc.depthStencilAttachment.format,
+                    Role::DepthStencil,
+                    SIZE_MAX))
+                return id;
+        return consumed == referenceCount ? nullptr : referenceDiagnostic;
+    }
+
     template <class ViewAt>
     static const char* validate(const RenderPassDesc& desc,
         std::size_t referenceCount,
         ViewAt&& viewAt,
         const char* referenceDiagnostic) noexcept
     {
-        std::size_t consumed = 0u;
-        const auto view =
-            [&](GpuResourceId target, TextureFormat format, bool depth) -> const char* {
-            if (consumed == referenceCount)
-                return referenceDiagnostic;
-            return viewAt(consumed++, target, format, depth);
-        };
-        for (const auto& color : desc.colorAttachments) {
-            if (const auto* id = view(color.target, color.format, false))
-                return id;
-            if (color.hasResolveTarget != color.resolveTarget.isValid())
-                return referenceDiagnostic;
-            if (color.hasResolveTarget)
-                if (const auto* id = view(color.resolveTarget, color.format, false))
-                    return id;
-        }
-        if (desc.hasDepthStencilAttachment)
-            if (const auto* id = view(
-                    desc.depthStencilAttachment.target, desc.depthStencilAttachment.format, true))
-                return id;
-        return consumed == referenceCount ? nullptr : referenceDiagnostic;
+        return visit(
+            desc,
+            referenceCount,
+            [&](std::size_t operand,
+                GpuResourceId target,
+                TextureFormat format,
+                Role role,
+                std::size_t) noexcept -> const char* {
+                return viewAt(operand, target, format, role == Role::DepthStencil);
+            },
+            referenceDiagnostic);
     }
 };
 

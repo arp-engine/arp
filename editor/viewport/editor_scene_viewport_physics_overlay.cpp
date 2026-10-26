@@ -20,6 +20,14 @@ bool finite(core::Vec2 point)
     return std::isfinite(point.x) && std::isfinite(point.y);
 }
 
+bool readPose(const physics2d::RigidBody2DComponent* body, physics2d::BodyState& state)
+{
+    return body && body->enabled()
+        && (body->usage() == physics2d::ComponentUsage::Authoring
+                ? body->authoringPose(state)
+                : body->handle() && body->world() && body->world()->state(body->handle(), state));
+}
+
 bool activeInHierarchy(const scene::Scene& scene, const scene::GameObject& object)
 {
     const scene::GameObject* current = &object;
@@ -34,8 +42,10 @@ bool activeInHierarchy(const scene::Scene& scene, const scene::GameObject& objec
 }
 } // namespace
 
-EditorScenePhysicsOverlay buildEditorScenePhysicsOverlay(
-    const scene::Scene& scene, std::size_t maxSegments, std::size_t circleSegments)
+EditorScenePhysicsOverlay buildEditorScenePhysicsOverlay(const scene::Scene& scene,
+    std::size_t maxSegments,
+    std::size_t circleSegments,
+    const scene::SceneTraversalSnapshot* visibleSnapshot)
 {
     EditorScenePhysicsOverlay result;
     auto fail = [&](const char* diagnostic) {
@@ -45,6 +55,8 @@ EditorScenePhysicsOverlay buildEditorScenePhysicsOverlay(
     };
     if (maxSegments == 0u || circleSegments < 8u || circleSegments % 4u != 0u)
         return fail("ARP-EDITOR-PHYSICS-OVERLAY-BUDGET-INVALID");
+    if (visibleSnapshot && !visibleSnapshot->ok())
+        return fail("ARP-EDITOR-PHYSICS-OVERLAY-VIEW-SNAPSHOT-INVALID");
     auto add = [&](scene::GameObjectId objectId,
                    scene::ComponentId componentId,
                    EditorScenePhysicsOverlayKind kind,
@@ -67,18 +79,20 @@ EditorScenePhysicsOverlay buildEditorScenePhysicsOverlay(
 
     for (const auto& owned : scene.objects()) {
         const auto* object = owned.get();
-        if (!object || !activeInHierarchy(scene, *object))
+        if (!object || !activeInHierarchy(scene, *object)
+            || (visibleSnapshot && !visibleSnapshot->findNode(object->id())))
             continue;
         const auto* body = object->getComponent<physics2d::RigidBody2DComponent>();
         physics2d::BodyState state{};
-        const bool bodyReady = body && body->enabled() && body->handle() && body->world()
-            && body->world()->state(body->handle(), state);
+        const bool bodyReady = readPose(body, state);
         for (const auto& component : object->components()) {
             if (!component->enabled())
                 continue;
             const auto* collider =
                 dynamic_cast<const physics2d::Collider2DComponent*>(component.get());
-            if (!collider || !collider->handle())
+            if (!collider
+                || (collider->usage() == physics2d::ComponentUsage::Simulation
+                    && !collider->handle()))
                 continue;
             if (!bodyReady)
                 return fail("ARP-EDITOR-PHYSICS-OVERLAY-BODY-UNAVAILABLE");
@@ -172,23 +186,29 @@ EditorScenePhysicsOverlay buildEditorScenePhysicsOverlay(
 
     for (const auto& owned : scene.objects()) {
         const auto& object = *owned;
-        if (!activeInHierarchy(scene, object))
+        if (!activeInHierarchy(scene, object)
+            || (visibleSnapshot && !visibleSnapshot->findNode(object.id())))
             continue;
         for (const auto& component : object.components()) {
             const auto* joint = dynamic_cast<const physics2d::Joint2DComponent*>(component.get());
-            if (!joint || !joint->enabled() || !joint->handle())
+            if (!joint || !joint->enabled()
+                || (joint->usage() == physics2d::ComponentUsage::Simulation && !joint->handle())
+                || !joint->bodyAObjectId() || !joint->bodyBObjectId())
                 continue;
             const auto* a =
                 scene.findObject(scene::GameObjectId::fromValue(joint->bodyAObjectId()));
             const auto* b =
                 scene.findObject(scene::GameObjectId::fromValue(joint->bodyBObjectId()));
+            if (visibleSnapshot
+                && (!a || !b || !visibleSnapshot->findNode(a->id())
+                    || !visibleSnapshot->findNode(b->id())))
+                continue;
             const auto* bodyA = a ? a->getComponent<physics2d::RigidBody2DComponent>() : nullptr;
             const auto* bodyB = b ? b->getComponent<physics2d::RigidBody2DComponent>() : nullptr;
             physics2d::BodyState stateA{}, stateB{};
             if (!bodyA || !bodyB || !bodyA->enabled() || !bodyB->enabled() || !bodyA->world()
-                || bodyA->world() != bodyB->world()
-                || !bodyA->world()->state(bodyA->handle(), stateA)
-                || !bodyB->world()->state(bodyB->handle(), stateB))
+                || bodyA->world() != bodyB->world() || !readPose(bodyA, stateA)
+                || !readPose(bodyB, stateB))
                 return fail("ARP-EDITOR-PHYSICS-OVERLAY-JOINT-BODY-UNAVAILABLE");
             const auto& desc = joint->desc();
             if (!add(object.id(),

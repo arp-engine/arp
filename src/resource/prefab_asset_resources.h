@@ -523,6 +523,9 @@ struct MaterialResource : public ResourceBase {
     APROP(Serialize)
     arp::core::pmr::String emissiveTextureId{&arp::core::defaultCpuMemoryResource()};
 
+    // Payload v1 covers every serialized material field in declaration order.
+    void appendContentFingerprint(core::StableHash64& hasher) const noexcept override;
+
     arp::core::pmr::Vector<ResourceDependency> dependencies() const;
     AssetResourcePackageBuildResult buildPackageEntry(
         const AssetResourcePackageBuildDesc& desc) const;

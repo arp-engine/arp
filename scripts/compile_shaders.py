@@ -3251,6 +3251,8 @@ SHADER_SOURCES = [
     ("CloudRaymarch", "cloud_raymarch", "renderer/cloud_raymarch.slang", ["computeMain"]),
     ("CloudDensitySlice", "cloud_density_slice", "renderer/cloud_density_slice.slang", ["computeMain"]),
     ("CloudTemporal", "cloud_temporal", "renderer/cloud_temporal.slang", ["computeMain"]),
+    ("CloudSpatialResolve", "cloud_spatial_resolve", "renderer/cloud_spatial_resolve.slang", ["computeMain"]),
+    ("CloudSpatialComposite", "cloud_spatial_composite", "renderer/cloud_spatial_composite.slang", ["vertexMain", "fragmentMain"]),
     ("CloudComposite", "cloud_composite", "renderer/cloud_composite.slang", ["vertexMain", "fragmentMain"]),
     ("CloudDemoPresent", "cloud_demo_present", "samples/fog_demo_present.slang", ["vertexMain", "fragmentMain"]),
     ("FogScatter", "fog_scatter", "renderer/fog_scatter.slang", ["computeMain"]),
@@ -3387,6 +3389,7 @@ WGSL_PUSH_CONSTANT_SHADERS = {
 # Shaders that need WGSL vertex output location annotation (keyed by prefix)
 WGSL_VERTEX_LOCATION_SHADERS = {
     "cloud_composite",
+    "cloud_spatial_composite",
     "cloud_demo_present",
     "fog_composite",
     "fog_demo_scene", "fog_demo_shadow", "fog_demo_glass", "fog_demo_plain_glass", "fog_demo_present",
@@ -3571,7 +3574,7 @@ def main():
     parser.add_argument("--metal-runtime-length-diagnostic", action="store_true",
                         help="Explicit MetalRuntimeLengthDiagnostic/1; requires actual E36107 and SPIR-V runtime length operations")
     parser.add_argument("--graphics-write-proof-tool", help="Path to arp_fragment_atomic_write_verifier; required by graphics atomic diagnostic policy")
-    parser.add_argument("--fixture", choices=["gpu_visibility_layout", "ordinary_pbr_material", "ordinary_terrain27", "conformance_storage_fill", "conformance_storage_mrt", "webgl1_extension_execution", "webgl1_extensions", "webgl1_graphics", "descriptor_array", "descriptor_depth", "ordinary_implicit_2d", "ordinary_implicit_array", "ordinary_graphics_uniform", "ordinary_graphics_uniform_array", "ordinary_graphics_push", "ordinary_graphics_matrix_push", "ordinary_graphics_storage", "ordinary_graphics_storage_array", "ordinary_graphics_storage_write", "ordinary_graphics_storage_read", "ordinary_graphics_uniform_read",
+    parser.add_argument("--fixture", choices=["compute_dispatch_grid_probe", "cloud_foreground", "gpu_visibility_layout", "ordinary_pbr_material", "ordinary_terrain27", "conformance_storage_fill", "conformance_storage_mrt", "webgl1_extension_execution", "webgl1_extensions", "webgl1_graphics", "descriptor_array", "descriptor_depth", "ordinary_implicit_2d", "ordinary_implicit_array", "ordinary_graphics_uniform", "ordinary_graphics_uniform_array", "ordinary_graphics_push", "ordinary_graphics_matrix_push", "ordinary_graphics_storage", "ordinary_graphics_storage_array", "ordinary_graphics_storage_write", "ordinary_graphics_storage_read", "ordinary_graphics_uniform_read",
                                             "runtime_length_structured", "runtime_length_rwstructured", "runtime_length_byteaddress", "runtime_length_rwbyteaddress", "runtime_length_graphics", "runtime_length_graphics_probe",
                                             "descriptor_compute", "descriptor_depth_compute", "descriptor_state_slots", "buffer_layout_probe", "buffer_matrix_probe", "ordinary_indirect_producer", "ordinary_indirect_noop", "ordinary_indirect_boundaries",
                                             "ddgi_atlas_fill", "ddgi_atlas_consumer", "ddgi_sampling_consumer", "ddgi_uniform_consumer", "ddgi_shared_input_consumer", "ddgi_bvh_input_consumer", "ddgi_bvh_trace_consumer", "vertex_stream_instancing", "original_vertex_geometry_execution", "original_general_shader_resources", "original_general_readonly_shader_resources", "original_general_graphics_shader_resources", "original_general_graphics_readonly_shader_resources"],
@@ -3596,7 +3599,7 @@ def main():
          ["computeMain", "cacheReadMain"] if args.fixture == "ddgi_sampling_consumer" else
          ["positiveBaseMain", "zeroInstanceBaseMain", "outOfRangeIndexMain", "outOfRangeInstanceMain"] if args.fixture == "ordinary_indirect_boundaries" else
          ["noopIndexMain", "noopInstanceMain"] if args.fixture == "ordinary_indirect_noop" else
-         ["computeMain"] if args.fixture in ("gpu_visibility_layout", "conformance_storage_fill", "runtime_length_structured", "runtime_length_rwstructured", "runtime_length_byteaddress", "runtime_length_rwbyteaddress", "descriptor_compute", "descriptor_depth_compute", "descriptor_state_slots", "buffer_layout_probe", "buffer_matrix_probe", "ordinary_indirect_producer", "original_general_shader_resources", "original_general_readonly_shader_resources", "ddgi_atlas_fill", "ddgi_atlas_consumer", "ddgi_uniform_consumer", "ddgi_shared_input_consumer", "ddgi_bvh_input_consumer", "ddgi_bvh_trace_consumer")
+         ["computeMain"] if args.fixture in ("compute_dispatch_grid_probe", "gpu_visibility_layout", "conformance_storage_fill", "runtime_length_structured", "runtime_length_rwstructured", "runtime_length_byteaddress", "runtime_length_rwbyteaddress", "descriptor_compute", "descriptor_depth_compute", "descriptor_state_slots", "buffer_layout_probe", "buffer_matrix_probe", "ordinary_indirect_producer", "original_general_shader_resources", "original_general_readonly_shader_resources", "ddgi_atlas_fill", "ddgi_atlas_consumer", "ddgi_uniform_consumer", "ddgi_shared_input_consumer", "ddgi_bvh_input_consumer", "ddgi_bvh_trace_consumer")
          else ["vertexMain", "fragmentMain"])]
     if args.module:
         if args.fixture:

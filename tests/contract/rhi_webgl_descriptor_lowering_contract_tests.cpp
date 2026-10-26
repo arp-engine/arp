@@ -114,10 +114,12 @@ void verifyMetadata()
         }
         for (std::uint32_t version = 1u; version <= 4u; ++version) {
             const auto usage = OriginalRenderDescriptorUsageContract::lowering(backend, version);
-            assert(usage.validatorOnly == validator && usage.projectionAvailable == available);
+            const bool projection = available
+                || (version == 4u && (backend == Backend::Vulkan || backend == Backend::Metal));
+            assert(usage.validatorOnly == validator && usage.projectionAvailable == projection);
             assert(!usage.stateAvailable && !usage.executionAvailable);
             assert(usage.mode
-                == (available ? CapabilityMode::Equivalent : CapabilityMode::DiagnosticFailure));
+                == (projection ? CapabilityMode::Equivalent : CapabilityMode::DiagnosticFailure));
             if (backend == Backend::WebGL)
                 expect(usage.diagnostic, "RHI-WEBGL1-ORIGINAL-RENDER-USAGE-UNAVAILABLE");
         }

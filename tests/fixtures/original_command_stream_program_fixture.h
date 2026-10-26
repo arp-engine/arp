@@ -2,6 +2,7 @@
 
 #include "cpu_quota_factory_fixture.h"
 #include "original_command_ordered_upload_contract_fixture.h"
+#include "original_command_recording_budget_fixture.h"
 #include "original_command_upload_staging_contract_fixture.h"
 #include "rhi/frontend/command_recording.h"
 #include "rhi/semantics/command_lowering.h"
@@ -154,6 +155,7 @@ public:
         const auto source = inputs->originalScalars()->originalUsage()->originalSources();
         const auto b = exactBudget(expected, inputs->retainedOwnerCount() + 1u);
         const char* diagnostic = nullptr;
+        OriginalCommandUploadStagingContractFixture::verifyJournalEntries(inputs, b);
         if (staging.totalBytes)
             OriginalCommandUploadStagingContractFixture::verify(inputs, b, staging, profile);
         if (staging.totalBytes)
@@ -176,6 +178,10 @@ public:
         }
         auto program = make();
         assert(program && !diagnostic && !program->validate());
+        program = OriginalCommandRecordingBudgetFixture::verify(
+            program, 0u, [&](const rhi::CommandRecordingBudget& recording, const char*& id) {
+                return Program::prepareRecordingBoundOriginal(inputs, b, recording, quota, id);
+            });
         assert(program->counts().matches(expected)
             && program->retainedOwnerCount() == b.maxRetainedOwners);
         assert(core::SharedOwnerProjection::sameOwner(program->originalInputs(), inputs));

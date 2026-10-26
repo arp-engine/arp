@@ -41,9 +41,85 @@
 #include <string>
 #include <thread>
 
+namespace {
+
+// Passive suppresses callbacks; native physics/audio ownership still tears down.
+void passiveNativeResourcesAreReleased()
+{
+    using namespace arp;
+    const physics2d::WorldConfig budget{{0, 0}, 2, 2, 1, 2, 8, 2, 4, 4, 1.f / 60.f};
+    audio::AudioSystem audio({1, false});
+    std::array<float, 16> pcm{};
+    std::array<float, 2> output{};
+    const audio::AudioClipView clip{pcm.data(), 8};
+    auto baseline = core::defaultCpuAllocator().stats();
+    for (unsigned cycle = 0; cycle <= 20; ++cycle) {
+        auto world = core::makeShared<physics2d::PhysicsWorld2D>(budget);
+        assert(world->valid());
+        audio::VoiceId voice;
+        physics2d::BodyHandle staleBody;
+        {
+            editor::EditorSceneDocument document(false);
+            auto& scene = document.scene();
+            auto& anchor = scene.createObject("anchor");
+            auto& bodyA = anchor.addComponent<physics2d::RigidBody2DComponent>(world);
+            assert(bodyA.initialize_body({}));
+            auto& object = scene.createObject("dynamic");
+            auto& bodyB = object.addComponent<physics2d::RigidBody2DComponent>(world);
+            physics2d::BodyDesc dynamic;
+            dynamic.type = physics2d::BodyType::Dynamic;
+            assert(bodyB.initialize_body(dynamic));
+            staleBody = bodyB.handle();
+            physics2d::ShapeDesc circle;
+            circle.radius = 0.5f;
+            auto& collider =
+                object.addComponent<physics2d::Collider2DComponent>(world, bodyB.handle(), circle);
+            assert(collider.handle());
+            auto& joint = object.addComponent<physics2d::Joint2DComponent>(world);
+            assert(joint.initialize_joint(&bodyA, &bodyB, {}));
+            const auto live = world->telemetry();
+            assert(live.bodies == 2 && live.colliders == 1 && live.joints == 1);
+            auto& source = object.addComponent<audio::AudioSourceComponent>(
+                audio::AudioSourceComponentDesc{&audio});
+            // Explicit preview playback is separate from gameplay enable hooks.
+            assert(source.playClip(clip, 1.0f, audio::AudioBus::Sfx, true));
+            voice = source.voice();
+            audio.render(output.data(), 1);
+            assert(audio.telemetry().activeVoices == 1);
+        }
+        const auto released = world->telemetry();
+        assert(released.bodies == 0 && released.colliders == 0 && released.joints == 0);
+        physics2d::BodyState state;
+        assert(!world->state(staleBody, state));
+        audio.render(output.data(), 1); // Consume the real stop command, no timed wait.
+        assert(audio.completionObserved(voice) && audio.telemetry().activeVoices == 0);
+        assert(audio.telemetry().droppedCommands == 0);
+        world.reset();
+        const auto releasedMemory = core::defaultCpuAllocator().stats();
+        if (cycle == 0)
+            baseline = releasedMemory; // One complete warm-up including Box2D globals.
+        assert(releasedMemory.liveBytes == baseline.liveBytes);
+        assert(releasedMemory.allocationCount - releasedMemory.deallocationCount
+            == baseline.allocationCount - baseline.deallocationCount);
+    }
+    std::puts("PASS Passive native owners: 20 cycles; core live bytes/count delta = 0");
+}
+
+} // namespace
+
 int main()
 {
     using namespace arp;
+    passiveNativeResourcesAreReleased();
+    {
+        editor::EditorSceneDocument document(false);
+        editor::EditorSceneDocument candidate(false);
+        assert(document.scene().executionMode() == scene::SceneExecutionMode::Passive);
+        assert(candidate.scene().executionMode() == scene::SceneExecutionMode::Passive);
+        assert(!document.scene().update({}).ok());
+        assert(document.replaceWith(std::move(candidate)));
+        assert(document.scene().executionMode() == scene::SceneExecutionMode::Passive);
+    }
     {
         auto mesh = assets::MeshAsset::debugTriangle();
         auto unreferenced = mesh.vertices.front();
@@ -387,8 +463,11 @@ int main()
                     && command.text == "MeshInstance" && command.rect.y >= firstVisibleRowY
                     && command.rect.y < firstVisibleRowY + editor::layout::kSceneHierarchyRowHeight;
             }));
-        const float scrollbarX = editor::layout::kSceneHierarchyLeft
-            + editor::layout::kSceneHierarchyWidth - editor::layout::kSceneHierarchyScrollbarWidth;
+        const auto actualHierarchyClip = editor::layout::sceneHierarchyClip(
+            hierarchyScrollShell.runtime().canvas().resolveLayout(),
+            hierarchyScrollShell.id("left_scene"));
+        const float scrollbarX = actualHierarchyClip.x + actualHierarchyClip.width
+            - editor::layout::kSceneHierarchyScrollbarWidth;
         assert(std::any_of(scrolledDraw.commands().begin(),
             scrolledDraw.commands().end(),
             [&](const auto& command) {
@@ -1534,11 +1613,25 @@ int main()
     bool hasWrongTypeChoice = false;
     bool hasPendingChoice = false;
     ui::WidgetId readyMeshChoiceWidget;
+    ui::WidgetId meshResourcePopup;
     for (const auto widgetId : shell.runtime().canvas().traversal()) {
         const auto* widget = shell.runtime().canvas().findWidget(widgetId);
-        if (!widget || widget->parentId() != shell.runtime().canvas().rootId())
+        if (widget && widget->name() == meshResourceSource + "_popup")
+            meshResourcePopup = widgetId;
+    }
+    assert(meshResourcePopup.valid());
+    for (const auto widgetId : shell.runtime().canvas().traversal()) {
+        const auto* widget = shell.runtime().canvas().findWidget(widgetId);
+        if (!widget || widget->parentId() != meshResourcePopup)
             continue;
-        const std::string_view label(widget->desc().text.data(), widget->desc().text.size());
+        core::pmr::String label;
+        for (const auto child : widget->childIds()) {
+            const auto* identity = shell.runtime().canvas().findWidget(child);
+            if (identity
+                && (identity->name() == widget->name() + "_identity_1"
+                    || identity->name() == widget->name() + "_identity_2"))
+                label += identity->desc().text;
+        }
         if (label.find(readyMeshId) != std::string_view::npos) {
             hasReadyMeshChoice = true;
             readyMeshChoiceWidget = widgetId;
@@ -2337,7 +2430,7 @@ int main()
             && tileMap->desc().firstObjectId == 100u);
         assert(tileMap->runtime()->updateResidency({-2.0f, -1.0f, 4.0f, 2.0f})
             && tileMap->runtime()->residentCount() == 2u);
-        assert(activeTileWorld->telemetry().bodies == 2u);
+        assert(activeTileWorld->telemetry().bodies == 0u);
 
         const auto tileMapComponentId = tileMap->id().value();
         editor::SetSceneComponentPropertyCommand lowerTileMapBudget("maxResidentChunks");
@@ -2387,14 +2480,14 @@ int main()
         tileMap->onUpdate(scene::SceneUpdateContext{});
         assert(
             tileMap->runtime() && tileMap->runtime()->updateResidency({-2.0f, -1.0f, 4.0f, 2.0f}));
-        assert(replacementTileWorld->telemetry().bodies == 2u);
+        assert(replacementTileWorld->telemetry().bodies == 0u);
         activeTileResources = &replacementTileResources;
         tileMap->onUpdate(scene::SceneUpdateContext{});
         assert(tileMap->runtime() && tileMap->map().ready()
             && editorPhysicsWorld->telemetry().bodies == 0u
             && replacementTileWorld->telemetry().bodies == 0u);
         assert(tileMap->runtime()->updateResidency({-2.0f, -1.0f, 4.0f, 2.0f})
-            && replacementTileWorld->telemetry().bodies == 2u);
+            && replacementTileWorld->telemetry().bodies == 0u);
 
         editor::EditorSceneDocument tileMapAuthoring(false);
         tileMapAuthoring.setResourceManagerProvider([&] {
@@ -2519,7 +2612,7 @@ int main()
                                   .scene()
                                   .findObject(selected)
                                   ->getComponent<physics2d::RigidBody2DComponent>();
-    assert(authoredRigidBody && authoredRigidBody->handle());
+    assert(authoredRigidBody && !authoredRigidBody->handle());
     const auto rigidBodyId = authoredRigidBody->id().value();
     const auto rigidBodyProperties = shell.sceneDocument().inspectorProperties(selected);
     assert(std::any_of(rigidBodyProperties.begin(), rigidBodyProperties.end(), [&](const auto& p) {
@@ -2561,7 +2654,7 @@ int main()
                                  .scene()
                                  .findObject(selected)
                                  ->getComponent<physics2d::Collider2DComponent>();
-    assert(authoredCollider && authoredCollider->handle());
+    assert(authoredCollider && !authoredCollider->handle());
     const auto colliderId = authoredCollider->id().value();
     const auto colliderInspector = shell.sceneDocument().inspectorProperties(selected);
     for (const auto* field : {"type",
@@ -2582,6 +2675,8 @@ int main()
         }));
     }
     const auto originalColliderHandle = authoredCollider->handle();
+    assert(!originalColliderHandle
+        && authoredCollider->usage() == physics2d::ComponentUsage::Authoring);
     editor::SetSceneComponentPropertyCommand setCollider2DRadius("radius");
     setCollider2DRadius.objectId = selected.value();
     setCollider2DRadius.componentId = colliderId;
@@ -2589,8 +2684,8 @@ int main()
     setCollider2DRadius.numberValue = 0.75f;
     assert(
         shell.submitCommand(setCollider2DRadius).status == editor::EditorResponseStatus::Completed);
-    assert(authoredCollider->desc().radius == 0.75f && authoredCollider->handle()
-        && !(authoredCollider->handle() == originalColliderHandle));
+    assert(authoredCollider->desc().radius == 0.75f && !authoredCollider->handle()
+        && authoredCollider->usage() == physics2d::ComponentUsage::Authoring);
     const auto colliderChangedVersion = shell.stateVersion();
     auto invalidColliderRadius = setCollider2DRadius;
     invalidColliderRadius.numberValue = 0.0f;
@@ -2600,10 +2695,10 @@ int main()
         shell.stateVersion() == colliderChangedVersion && authoredCollider->desc().radius == 0.75f);
     assert(shell.submitCommand(editor::UndoSceneCommand{}).status
         == editor::EditorResponseStatus::Completed);
-    assert(authoredCollider->desc().radius == 0.5f && authoredCollider->handle());
+    assert(authoredCollider->desc().radius == 0.5f && !authoredCollider->handle());
     assert(shell.submitCommand(editor::RedoSceneCommand{}).status
         == editor::EditorResponseStatus::Completed);
-    assert(authoredCollider->desc().radius == 0.75f && authoredCollider->handle());
+    assert(authoredCollider->desc().radius == 0.75f && !authoredCollider->handle());
     editor::SetSceneComponentPropertyCommand setCollider2DLoop("loop");
     setCollider2DLoop.objectId = selected.value();
     setCollider2DLoop.componentId = colliderId;
@@ -2635,7 +2730,7 @@ int main()
     assert(
         shell.submitCommand(setCollider2DType).status == editor::EditorResponseStatus::Completed);
     assert(authoredCollider->desc().type == physics2d::ShapeType::Convex
-        && authoredCollider->handle());
+        && !authoredCollider->handle());
     const auto colliderPointsVersion = shell.stateVersion();
     auto invalidColliderPoints = setCollider2DPoints;
     invalidColliderPoints.vector2ListValue[1].x = std::numeric_limits<float>::quiet_NaN();
@@ -3844,7 +3939,7 @@ int main()
             == editor::SceneInspectorWriteResult::Changed);
         auto* authoredPhysicsBody = dynamic_cast<physics2d::RigidBody2DComponent*>(
             authoring.addComponent("RigidBody2DComponent", childId));
-        assert(authoredPhysicsBody && authoredPhysicsBody->handle());
+        assert(authoredPhysicsBody && !authoredPhysicsBody->handle());
         assert(authoring.setComponentProperty(childId,
                    authoredPhysicsBody->id(),
                    "linearDamping",
@@ -3856,7 +3951,7 @@ int main()
             == editor::SceneInspectorWriteResult::Changed);
         auto* authoredCollider2D = dynamic_cast<physics2d::Collider2DComponent*>(
             authoring.addComponent("Collider2DComponent", childId));
-        assert(authoredCollider2D && authoredCollider2D->handle());
+        assert(authoredCollider2D && !authoredCollider2D->handle());
         core::pmr::Vector<core::Vec2> authoredColliderPoints{&core::defaultCpuMemoryResource()};
         authoredColliderPoints = {{-2.0f, 0.0f}, {2.0f, 0.0f}, {0.0f, 2.0f}};
         assert(authoring.setComponentProperty(childId,
@@ -4046,10 +4141,10 @@ int main()
             && loadedParticleValues.velocitySpread.y == 0.25f);
         const auto* loadedPhysicsBody =
             loadedChild->getComponent<physics2d::RigidBody2DComponent>();
-        assert(loadedPhysicsBody && loadedPhysicsBody->handle()
+        assert(loadedPhysicsBody && !loadedPhysicsBody->handle()
             && std::abs(loadedPhysicsBody->desc().linearDamping - 0.33f) < 0.0001f);
         const auto* loadedCollider2D = loadedChild->getComponent<physics2d::Collider2DComponent>();
-        assert(loadedCollider2D && loadedCollider2D->handle()
+        assert(loadedCollider2D && !loadedCollider2D->handle()
             && loadedCollider2D->desc().type == physics2d::ShapeType::Convex
             && std::abs(loadedCollider2D->desc().radius - 0.8f) < 0.0001f);
         assert(loadedCollider2D->desc().filter.mask == UINT64_MAX);
@@ -4067,9 +4162,9 @@ int main()
 
         const auto preservedName = loaded.scene().name();
         auto invalidYaml = core::pmr::String(yaml, &core::defaultCpuMemoryResource());
-        const auto versionToken = invalidYaml.find("contractVersion: 2");
+        const auto versionToken = invalidYaml.find("contractVersion: 3");
         assert(versionToken != core::pmr::String::npos);
-        invalidYaml.replace(versionToken, sizeof("contractVersion: 2") - 1u, "contractVersion: 99");
+        invalidYaml.replace(versionToken, sizeof("contractVersion: 3") - 1u, "contractVersion: 99");
         assert(!editor::EditorSceneAuthoringCodec::decode(
             std::string_view(invalidYaml.data(), invalidYaml.size()),
             loaded,
@@ -4114,10 +4209,10 @@ int main()
                 == std::string_view(yaml.data(), yaml.size()));
 
             auto invalidReplacement = yaml;
-            const auto replacementVersion = invalidReplacement.find("contractVersion: 2");
+            const auto replacementVersion = invalidReplacement.find("contractVersion: 3");
             assert(replacementVersion != core::pmr::String::npos);
             invalidReplacement.replace(
-                replacementVersion, sizeof("contractVersion: 2") - 1u, "contractVersion: 99");
+                replacementVersion, sizeof("contractVersion: 3") - 1u, "contractVersion: 99");
             core::io::AtomicFileResult invalidSave;
             finish(persistence.save(persistenceRoot, "scenes/test.arp.yaml", invalidReplacement),
                 invalidSave);
@@ -4208,7 +4303,7 @@ int main()
                    {},
                    bodyBId.value())
             == editor::SceneInspectorWriteResult::Changed);
-        assert(joint->handle() && joint->bodyAObjectId() == bodyAId.value()
+        assert(!joint->handle() && joint->bodyAObjectId() == bodyAId.value()
             && joint->bodyBObjectId() == bodyBId.value());
         const auto firstJointHandle = joint->handle();
         assert(source.setComponentProperty(jointOwnerId,
@@ -4226,12 +4321,14 @@ int main()
                    {},
                    bodyCId.value())
             == editor::SceneInspectorWriteResult::Changed);
-        assert(joint->handle() && !(joint->handle() == firstJointHandle)
+        assert(!joint->handle() && !firstJointHandle
+            && joint->usage() == physics2d::ComponentUsage::Authoring
             && joint->bodyAObjectId() == bodyAId.value()
-            && joint->bodyBObjectId() == bodyCId.value() && sourceWorld->telemetry().joints == 1u);
+            && joint->bodyBObjectId() == bodyCId.value() && sourceWorld->telemetry().joints == 0u);
         auto* colliderA = dynamic_cast<physics2d::Collider2DComponent*>(
             source.addComponent("Collider2DComponent", bodyAId));
-        assert(colliderA && colliderA->handle());
+        assert(colliderA && !colliderA->handle()
+            && colliderA->usage() == physics2d::ComponentUsage::Authoring);
         const auto physicsOverlay =
             editor::buildEditorScenePhysicsOverlay(source.scene(), 128u, 16u);
         assert(physicsOverlay.valid && physicsOverlay.segments.size() == 17u);
@@ -4321,10 +4418,10 @@ int main()
             if (auto* candidate = object->getComponent<physics2d::Joint2DComponent>())
                 loadedJoint = candidate;
         }
-        assert(loadedJoint && loadedJoint->handle() && loadedBodyA != bodyAId.value()
+        assert(loadedJoint && !loadedJoint->handle() && loadedBodyA != bodyAId.value()
             && loadedJoint->bodyAObjectId() == loadedBodyA && loadedBodyB != bodyCId.value()
             && loadedJoint->bodyBObjectId() == loadedBodyB
-            && destinationWorld->telemetry().joints == 1u);
+            && destinationWorld->telemetry().joints == 0u);
         assert(!source.removeComponent(bodyAId,
             source.scene()
                 .findObject(bodyAId)

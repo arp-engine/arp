@@ -1,4 +1,5 @@
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
+#include "rhi/backends/vulkan/vulkan_native_commands.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 
 #include <algorithm>
@@ -451,9 +452,19 @@ rhi::ResourceBarrierResult transitionVulkanRhiBuffer(
 rhi::ResourceBarrierResult transitionVulkanRhiTexture(
     rhi::GpuTexture& texture, const rhi::ResourceBarrierDesc& desc, core::MutationJournal* journal)
 {
+    return transitionVulkanRhiTexture(texture, desc, journal, nullptr);
+}
+
+rhi::ResourceBarrierResult transitionVulkanRhiTexture(rhi::GpuTexture& texture,
+    const rhi::ResourceBarrierDesc& desc,
+    core::MutationJournal* journal,
+    const VulkanRhiNativeCommandPayload* originalUploadOwner)
+{
     auto result = barrierResultFrom(texture.id(), desc);
     result.subresourceAware = true;
-    if (texture.originalContentExclusive()) {
+    if (texture.originalContentExclusive()
+        && (!originalUploadOwner
+            || !originalUploadOwner->authorizesOrdinaryTextureTransition(texture, desc, journal))) {
         result.diagnostics = "RHI-TEXTURE-CONTENT-EXCLUSIVE-USE";
         return result;
     }

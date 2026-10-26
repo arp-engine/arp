@@ -6,6 +6,9 @@
 #include "rhi/conformance/clear_execution.h"
 #include "rhi/conformance/sampled_execution.h"
 #include "rhi/conformance/storage_mrt_execution.h"
+#include "rhi/frontend/compute_dispatch_validation_domain.h"
+#include "rhi/frontend/compute_dispatch_validation_preparation.h"
+#include "rhi/frontend/compute_dispatch_validation_session.h"
 #include "rhi/frontend/descriptor_buffer_declaration_validation.h"
 #include "rhi/frontend/descriptor_buffer_write_validation.h"
 #include "rhi/frontend/descriptor_general_write_validation.h"
@@ -19,6 +22,8 @@
 #include "rhi/frontend/pipeline_shader_interface_validation.h"
 #include "rhi/frontend/pipeline_single_entry_input.h"
 #include "rhi/frontend/pipeline_state_copy.h"
+#include "rhi/frontend/pipeline_synchronous_compute_creation.h"
+#include "rhi/frontend/pipeline_synchronous_graphics_creation.h"
 #include "rhi/frontend/resource_device_lifetime.h"
 #include "rhi/frontend/resource_device_native_loss.h"
 #include "rhi/frontend/resource_device_validation.h"
@@ -38,10 +43,16 @@
 #include <string_view>
 #include <type_traits>
 
+namespace arp::rhi_metal {
+class MetalDispatchValidationSession;
+}
+
 namespace arp::rhi {
 
 class PipelineCache;
 class DescriptorCache;
+class QueryPoolInputSnapshot;
+struct OriginalQueryPoolCreationBudget;
 
 struct QueueSubmitResult {
     bool success = false;
@@ -148,11 +159,26 @@ private:
     bool originalAllocationLifetimeBound_ = false;
 };
 
-class ARP_API QueryPool {
+class ARP_API QueryPool : public OriginalRegisteredObject {
 public:
+    QueryPool() : OriginalRegisteredObject(OriginalRegisteredResourceKind::QueryPool) {}
+
     virtual ~QueryPool() = default;
     virtual std::uint32_t count() const = 0;
     virtual QueryType type() const = 0;
+
+    virtual std::shared_ptr<const QueryPoolInputSnapshot> originalInput() const noexcept
+    {
+        return {};
+    }
+
+    bool matchesOriginalFactoryOwner(const std::shared_ptr<const QueryPool>& owner) const noexcept
+    {
+        return owner && owner.get() == this
+            && core::SharedOwnerProjection::sameOwner(originalFactoryOwner_.lock(), owner);
+    }
+
+    const auto& originalQueryOwnerQuota() const noexcept { return originalOwnerQuota_; }
 
     virtual QueryExecutionStatus executionStatus() const
     {
@@ -174,6 +200,11 @@ public:
             0,
         };
     }
+
+private:
+    friend class GpuDevice;
+    std::weak_ptr<const QueryPool> originalFactoryOwner_;
+    std::shared_ptr<core::CpuMemoryQuota> originalOwnerQuota_;
 };
 
 /// Queue family role for multi-queue submission. Used by GpuQueue::role()
@@ -220,6 +251,27 @@ public:
     OriginalDeviceLifetime::Ticket originalDeviceLifetimeTicket() const noexcept;
     const char* validateOriginalDeviceLifetime(
         const OriginalDeviceLifetime::Ticket& ticket) const noexcept;
+    std::shared_ptr<OriginalComputeDispatchValidation> prepareOriginalComputeDispatchValidation(
+        const ComputeDispatchValidationRequest&,
+        const ComputeDispatchValidationSessionBudget&,
+        ComputeDispatchValidationSessionQuotas,
+        const char*& diagnostic);
+    std::shared_ptr<const ComputeDispatchValidationDomain> issueOriginalComputeDispatchDomain(
+        const std::shared_ptr<OriginalComputeDispatchValidation>&,
+        const ComputeDispatchValidationDomainBudget&,
+        std::shared_ptr<core::CpuMemoryQuota>,
+        const char*& diagnostic);
+    std::shared_ptr<const ComputeDispatchValidationReservation>
+    reserveOriginalComputeDispatchValidation(const ComputeDispatchValidationRequest&,
+        const ComputeDispatchValidationSessionBudget&,
+        std::shared_ptr<core::CpuMemoryQuota>,
+        const char*& diagnostic);
+    // Coverage admission only. Recording must separately consume this exact
+    // issuer/domain and a supported ordinary preparation payload.
+    const char* validateOriginalComputeDispatchDomain(
+        const std::shared_ptr<const ComputeDispatchValidationDomain>& domain,
+        Extent3D workgroup,
+        Extent3D groups) const noexcept;
     /// Permanently closes only this opt-in logical domain; it cannot be reopened
     /// on the same device. This is neither a GPU drain nor a native-loss report.
     void retireOriginalDeviceLifetime() noexcept;
@@ -235,6 +287,16 @@ public:
         std::shared_ptr<core::CpuMemoryQuota> quota);
 
 private:
+    friend class arp::rhi_metal::MetalDispatchValidationSession;
+    std::shared_ptr<const ComputeDispatchValidationDomain> issueOriginalComputeDispatchDomain(
+        const ComputeDispatchValidationRequest&,
+        const OriginalDeviceLifetime::Ticket&,
+        const OriginalDeviceNativeLossObservation&,
+        const ComputeDispatchValidationDomainBudget&,
+        std::shared_ptr<core::CpuMemoryQuota>,
+        std::shared_ptr<const void>,
+        ComputeDispatchValidationDomain::ProofDiagnostic,
+        const char*& diagnostic);
     template <class Bind>
     const char* prepareOriginalLossBinding(
         std::shared_ptr<core::CpuMemoryQuota> quota, Bind&& bind);
@@ -271,7 +333,8 @@ private:
     template <class Pipeline>
     const char* validateOriginalTypedNativeLossGroupInputs(const DescriptorSet& object,
         const std::shared_ptr<Pipeline>& pipeline,
-        const std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u>& quotas) const noexcept;
+        const std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u>& quotas,
+        const OriginalTypedNativeLossJoinRequest* synchronousJoin = nullptr) const noexcept;
 
 public:
     const char* validateOriginalResourceRegistration(
@@ -279,6 +342,11 @@ public:
     template <class T>
     const char* validateOriginalResourceRegistration(const T& resource) const noexcept;
     std::string_view lastOriginalResourceRegistrationDiagnostic() const noexcept;
+    std::shared_ptr<QueryPool> createOriginalQueryPool(
+        std::shared_ptr<const QueryPoolInputSnapshot> input,
+        const OriginalQueryPoolCreationBudget& budget,
+        std::shared_ptr<core::CpuMemoryQuota> ownerQuota,
+        const char*& diagnostic);
     // OriginalRuntimeLengthIntervalDiagnostic/1: exact original metadata join
     // only. A success cannot authorize a descriptor write or native command.
     template <class Pipeline>
@@ -526,6 +594,37 @@ public:
         const std::shared_ptr<const OriginalGraphicsPipelineCreation>& creation,
         OriginalAcceptedGraphicsPipelineFactoryContract::Budget budget,
         const std::shared_ptr<core::CpuMemoryQuota>& wrapperQuota);
+
+    virtual std::shared_ptr<const OriginalComputePipelineCreation>
+    createOriginalSynchronousComputeCreation(
+        const std::shared_ptr<const OriginalSingleEntryPipelineInput>&,
+        const std::shared_ptr<PipelineLayout>&,
+        const ComputePipelineDesc&,
+        const OriginalSynchronousComputeCreationContract::Budget& budget,
+        const std::shared_ptr<core::CpuMemoryQuota>&,
+        const std::shared_ptr<core::CpuMemoryQuota>&,
+        const char*& diagnostic)
+    {
+        diagnostic =
+            OriginalSynchronousComputeCreationContract::lowering(backend(), budget, {}).diagnostic;
+        return {};
+    }
+
+    virtual std::shared_ptr<const OriginalGraphicsPipelineCreation>
+    createOriginalSynchronousGraphicsCreation(
+        const std::shared_ptr<const OriginalGraphicsPipelineInput>&,
+        const std::shared_ptr<PipelineLayout>&,
+        const RenderPipelineDesc&,
+        const OriginalSynchronousGraphicsCreationContract::Budget& budget,
+        const std::shared_ptr<core::CpuMemoryQuota>&,
+        const std::shared_ptr<core::CpuMemoryQuota>&,
+        const char*& diagnostic)
+    {
+        diagnostic =
+            OriginalSynchronousGraphicsCreationContract::lowering(backend(), budget, {}).diagnostic;
+        return {};
+    }
+
     core::UniquePtr<ComputePipeline> createOriginalTableExpansionComputePipeline(
         const std::shared_ptr<const OriginalComputePipelineCreation>& creation,
         OriginalAcceptedTableExpansionPipelineContract::Budget budget,
@@ -610,6 +709,22 @@ public:
     virtual void* queryInterface(std::string_view extensionId) noexcept;
 
 protected:
+    virtual std::shared_ptr<QueryPool> createOriginalQueryPoolCandidate(
+        std::shared_ptr<const QueryPoolInputSnapshot>,
+        const OriginalQueryPoolCreationBudget&,
+        std::shared_ptr<core::CpuMemoryQuota>,
+        const char*& diagnostic)
+    {
+        diagnostic = "RHI-ORIGINAL-QUERY-FACTORY-UNAVAILABLE";
+        return {};
+    }
+
+    virtual const char* validateOriginalQueryPoolCandidate(
+        const std::shared_ptr<const QueryPool>&) const noexcept
+    {
+        return "RHI-ORIGINAL-QUERY-FACTORY-UNAVAILABLE";
+    }
+
     virtual core::UniquePtr<RenderPipeline> createAcceptedOriginalGraphicsPipeline(
         const RenderPipelineDesc&,
         const std::shared_ptr<const OriginalGraphicsPipelineCreation>&,
@@ -627,6 +742,11 @@ protected:
     virtual std::uint64_t queryOriginalContentTextureAllocationPayload(
         const TextureDesc&, const char*& diagnostic);
     void closeOriginalDeviceLifetimeForShutdown() noexcept;
+    virtual std::shared_ptr<OriginalComputeDispatchValidation>
+    prepareOriginalComputeDispatchValidationPayload(const ComputeDispatchValidationRequest&,
+        const ComputeDispatchValidationSessionBudget&,
+        ComputeDispatchValidationSessionQuotas,
+        const char*& diagnostic);
     virtual std::shared_ptr<OriginalDeviceNativeLossBinding> bindOriginalDeviceNativeLoss(
         const OriginalDeviceLifetime::NativeLossReceiver&,
         const OriginalDeviceNativeLossBudget&,

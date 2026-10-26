@@ -256,7 +256,8 @@ class WebGlShaderTargetCompiler:
             if any(ext not in ('GL_OES_standard_derivatives', 'GL_EXT_shader_texture_lod') for ext in extensions):
                 raise RuntimeError('SHADER-WEBGL1-EXTENSION-UNSUPPORTED')
             path = parent / (original_entry.stem + '.glsl-es-100')
-            path.write_text(text, encoding='utf-8', newline='\n')
+            with path.open('w', encoding='utf-8', newline='\n') as stream:
+                stream.write(text)
             return dict(type='WebGlShaderTargetArtifact', contractVersion=1,
                 target='glsl-es-100', status='Available', stage=stage, entry=original['entry'],
                 matrixLayout='SlangRowMajorTransposedLogicalMatrix/1',

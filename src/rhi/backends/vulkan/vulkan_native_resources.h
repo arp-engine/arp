@@ -5,6 +5,7 @@
 #include "rhi/backends/vulkan/vulkan_device.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -60,7 +61,43 @@ private:
 };
 
 class VulkanRhiNativeResourcePayload {
+    friend class VulkanRhiDevice;
+    const rhi::GpuBuffer* originalHostInitializedObject_ = nullptr;
+    std::uint64_t originalHostInitializedBytes_ = 0u;
+    std::optional<rhi::GpuBuffer::CommittedStateObservation> originalHostInitialization_;
+    mutable std::atomic<bool> originalFrozenHostInitialization_{false};
+
 public:
+    // Full mapped write + flush is the only issuer. Before the first sealed
+    // validation, the exact committed revision excludes intervening GPU work.
+    // Monotonic host/shader/transfer seals preserve immutable contents across
+    // read-only journal cancellation. Writable profiles use the separate
+    // defined-byte proof below and never infer immutability or output values.
+    bool originalHostInitializationMatches(const rhi::GpuBuffer& object) const noexcept
+    {
+        return object.gpuWritesSealed() && object.gpuTransferWritesSealed()
+            && originalHostDefinedBytesMatch(object);
+    }
+
+    // A full flushed host initialization remains defined under bounded GPU
+    // writes. It proves no shader output values, coverage or immutability.
+    bool originalHostDefinedBytesMatch(const rhi::GpuBuffer& object) const noexcept
+    {
+        if (originalHostInitializedObject_ != &object
+            || originalHostInitializedBytes_ != object.desc().sizeBytes
+            || !originalHostInitialization_ || !object.hostWritesSealed()
+            || object.originalCommittedStateDiagnostic()
+            || object.originalResourceRegistration().generation()
+                != originalHostInitialization_->resourceGeneration())
+            return false;
+        if (originalFrozenHostInitialization_.load(std::memory_order_acquire))
+            return true;
+        if (object.validateOriginalCommittedState(*originalHostInitialization_))
+            return false;
+        originalFrozenHostInitialization_.store(true, std::memory_order_release);
+        return true;
+    }
+
     // The base outlives derived native allocation owners during destruction.
     // Retained commands/views keep this budget charge alongside the payload.
     std::shared_ptr<void> allocationReleaseToken;
@@ -225,6 +262,8 @@ public:
     std::uint64_t queryTextureAllocationBytes(
         const rhi::TextureDesc& desc, const char*& diagnostic) const;
     VulkanRhiNativeResourceResult createDescriptorSet(const rhi::DescriptorLayoutDesc& layout);
+    VkResult createOriginalDescriptorImageView(
+        const VkImageViewCreateInfo&, VkImageView&) const noexcept;
     VulkanRhiNativeResourceResult createRenderPipeline(const rhi::RenderPipelineDesc& desc);
     VulkanRhiNativeResourceResult createComputePipeline(const rhi::ComputePipelineDesc& desc);
     VulkanRhiNativeResourceResult createComputePipelineFromBytes(
@@ -243,6 +282,7 @@ public:
 
 private:
     friend class VulkanConformanceClearExecution;
+    friend class VulkanOriginalArtifactGraphicsCreation;
     VulkanRhiNativeResourceResult createRenderPipelineFromBytes(const rhi::RenderPipelineDesc&,
         const std::uint32_t* vertexWords,
         std::size_t vertexCount,

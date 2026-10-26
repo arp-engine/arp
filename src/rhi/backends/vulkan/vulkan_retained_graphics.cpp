@@ -65,7 +65,21 @@ bool VulkanRhiRetainedCommand::drawPreparedPass(const rhi::GpuTexture& target,
             return reject("RHI-VULKAN-RETENTION-GRAPHICS-ENTRYPOINT");
     if (!request.bindings.sets.empty() && !runtime->getDeviceProcAddr("vkCmdBindDescriptorSets"))
         return reject("RHI-VULKAN-RETENTION-GRAPHICS-ENTRYPOINT");
-    if (!retainBindings(request.bindings, pipeline, diagnostic))
+    rhi::CommandRecordingUsage charge;
+    for (const auto kind : {rhi::CommandUsageKind::BeginRenderPass,
+             rhi::CommandUsageKind::BindGraphicsPipeline,
+             rhi::CommandUsageKind::SetViewport,
+             rhi::CommandUsageKind::SetScissor,
+             rhi::CommandUsageKind::Draw,
+             rhi::CommandUsageKind::EndRenderPass})
+        charge.append(kind);
+    charge.append(rhi::CommandUsageKind::BindRenderDescriptor, request.bindings.sets.size());
+    charge.resourceReferences = 1u; // Attachment visit in addition to bindings.
+    if (!chargeBindings(charge, request.bindings, diagnostic)
+        || !preflightRecordingCharge(charge, diagnostic))
+        return false;
+    if (!retainBindings(request.bindings, pipeline, diagnostic)
+        || !commitRecordingCharge(charge, diagnostic))
         return false;
     if (!beginPreparedPass(target, diagnostic)) {
         failed_ = true;

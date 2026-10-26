@@ -16,7 +16,9 @@ class EditorShell;
 class GamePreviewHost final {
 public:
     enum class Update { Idle, Starting, Running, Exited };
-    GamePreviewHost();
+    // Empty means the general project Player; until implemented it fails closed.
+    // A non-empty absolute path explicitly selects the old WOCC prototype.
+    explicit GamePreviewHost(std::filesystem::path legacyWoccExecutable = {});
     ~GamePreviewHost();
     GamePreviewHost(const GamePreviewHost&) = delete;
     GamePreviewHost& operator=(const GamePreviewHost&) = delete;
@@ -29,5 +31,6 @@ public:
 private:
     struct Impl;
     core::UniquePtr<Impl> impl_;
+    std::filesystem::path legacyWoccExecutable_;
 };
 } // namespace arp::editor

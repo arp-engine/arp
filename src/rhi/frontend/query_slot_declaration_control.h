@@ -17,7 +17,17 @@ public:
         Quarantined,
         FailedIdle
     };
-    enum class Event { Record, Submit, Complete, DeclareSnapshot, Fail, RetireFailure, Reset };
+    enum class Event {
+        Record,
+        Submit,
+        Complete,
+        DeclareSnapshot,
+        Fail,
+        RetireFailure,
+        Reset,
+        CancelRecord,
+        CancelSubmit
+    };
 
 private:
     using Value = core::VersionedMutationValue<Phase>;
@@ -97,6 +107,14 @@ public:
             if (resettable(phase))
                 return Phase::NotRecorded;
             break;
+        case Event::CancelRecord:
+            if (phase == Phase::Recorded)
+                return Phase::NotRecorded;
+            break;
+        case Event::CancelSubmit:
+            if (phase == Phase::Submitted)
+                return Phase::Recorded;
+            break;
         }
         return {};
     }
@@ -112,6 +130,11 @@ public:
     bool active() const noexcept { return value_.active() && known(phase()); }
 
     bool pending() const noexcept { return value_.pending(); }
+
+    bool discardPending(core::MutationJournal& journal) noexcept
+    {
+        return value_.discardPending(journal);
+    }
 
     auto observe() const noexcept
     {
@@ -136,6 +159,34 @@ public:
     }
 
     void invalidate() noexcept { value_.invalidate(); }
+
+    // Revision writes may cover a known serialized sequence (e.g. native
+    // completion then snapshot publication). No identity or enlistment mutates.
+    const char* preflight(Event event,
+        core::MutationJournal* journal = nullptr,
+        std::uint64_t revisionWrites = 1u) const noexcept
+    {
+        if (!active())
+            return "RHI-QUERY-SLOT-INACTIVE";
+        if (event == Event::Reset && pending())
+            return "RHI-QUERY-SLOT-RESET-PENDING";
+        if (!revisionWrites || !after(phase(), event))
+            return "RHI-QUERY-SLOT-TRANSITION";
+        if (journal) {
+            if (value_.enlistmentExhausted())
+                return "RHI-QUERY-SLOT-ENLISTMENT-EXHAUSTED";
+            if (!value_.canPrepare(*journal))
+                return "RHI-QUERY-SLOT-JOURNAL-CONFLICT";
+            if (!value_.canWriteBatch(*journal, revisionWrites))
+                return "RHI-QUERY-SLOT-REVISION-EXHAUSTED";
+        } else {
+            if (pending())
+                return "RHI-QUERY-SLOT-JOURNAL-CONFLICT";
+            if (!value_.canWriteBatch(revisionWrites))
+                return "RHI-QUERY-SLOT-REVISION-EXHAUSTED";
+        }
+        return nullptr;
+    }
 
     const char* declare(Event event, core::MutationJournal* journal = nullptr) noexcept
     {

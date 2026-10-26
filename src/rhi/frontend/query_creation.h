@@ -3,6 +3,28 @@
 #include "rhi/frontend/query_pool_arguments.h"
 #include "rhi/semantics/query_lowering.h"
 
+namespace arp::rhi {
+struct OriginalQueryPoolCreationBudget {
+    std::uint32_t contractVersion = 0u;
+    bool prototypeOptIn = false;
+    std::uint32_t maxNativeQueryPools = 0u, maxQuerySlots = 0u, maxScopeIds = 0u;
+    std::uint64_t maxLabelBytes = 0u, maxCpuOwnerBytes = 0u;
+
+    // Preserve the established private /1 diagnostic IDs when moving its
+    // descriptor to the semantic owner; only Vulkan currently admits creation.
+    const char* diagnostic() const noexcept
+    {
+        if (contractVersion != 1u)
+            return "RHI-VULKAN-ORIGINAL-QUERY-VERSION";
+        if (!prototypeOptIn)
+            return "RHI-VULKAN-ORIGINAL-QUERY-OPT-IN";
+        if (!maxCpuOwnerBytes || maxLabelBytes > SIZE_MAX)
+            return "RHI-VULKAN-ORIGINAL-QUERY-BUDGET";
+        return maxNativeQueryPools ? nullptr : "RHI-VULKAN-ORIGINAL-QUERY-POOL-CAPACITY";
+    }
+};
+} // namespace arp::rhi
+
 namespace arp::rhi::semantics {
 // OriginalQueryCreation/1 admits cold creation only, never command execution.
 class OriginalQueryCreationLowering final {

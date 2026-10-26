@@ -3,6 +3,7 @@
 #include "../fixtures/original_buffer_state_fixture.h"
 #include "../fixtures/original_command_sampler_custody_fixture.h"
 #include "../fixtures/original_heap_registration_fixture.h"
+#include "../fixtures/original_query_registration_fixture.h"
 #include "../fixtures/original_texture_state_fixture.h"
 #include "core/memory/cpu_allocator.h"
 #include "rhi/backends/metal/metal_allocator.h"
@@ -1539,6 +1540,7 @@ int main()
     arp::test::OriginalCommandSamplerCustodyFixture::verify([&]() {
         return arp::tests::createMetalContractDevice(desc);
     });
+    arp::test::OriginalQueryRegistrationFixture::verifyRejected(*device);
     arp::test::OriginalBufferStateFixture::verify(
         [&]() {
             return arp::tests::createMetalContractDevice(desc);

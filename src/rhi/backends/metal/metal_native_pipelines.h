@@ -17,6 +17,11 @@ namespace arp::rhi {
 class BindlessShaderPackage;
 }
 
+namespace arp::shader {
+class SingleEntryShaderArtifact;
+class GraphicsShaderModuleArtifact;
+} // namespace arp::shader
+
 namespace arp::rhi_metal {
 class MetalOriginalPipeline;
 
@@ -114,8 +119,12 @@ struct MetalRhiNativePipelinePayload {
     std::array<MetalRhiStageBufferBindingFacts, 2u> graphicsBufferFacts;
     std::array<MetalRhiStageBufferPointeeFacts, 2u> graphicsBufferPointeeFacts;
     std::array<MetalRhiNativeStageBufferMemberMemory, 2u> graphicsBufferMemberMemory;
+    MetalRhiNativeStageBufferMemberMemory computeBufferMemberMemory;
     std::uint32_t graphicsTextureFactsVersion = 0u;
     core::pmr::Vector<MetalRhiTextureBindingFact> graphicsTextureFacts{
+        &core::defaultCpuMemoryResource()};
+    std::uint32_t computeTextureFactsVersion = 0u;
+    core::pmr::Vector<MetalRhiTextureBindingFact> computeTextureFacts{
         &core::defaultCpuMemoryResource()};
     std::uint32_t computeWorkgroupSizeX = 0;
     std::uint32_t computeWorkgroupSizeY = 0;
@@ -229,11 +238,23 @@ std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeRenderPipelin
     const rhi::semantics::MetalVertexStreamMapping&,
     const std::shared_ptr<const rhi::BindlessShaderPackage>&);
 
+// Ordinary original artifacts retain their own declaration relation. This
+// overload never consumes or manufactures bindless authorization.
+std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeRenderPipelinePayload(
+    const rhi::RenderPipelineDesc&,
+    const rhi::PipelineValidationReport&,
+    const rhi::semantics::MetalVertexStreamMapping&,
+    const std::shared_ptr<const shader::GraphicsShaderModuleArtifact>&);
+
 std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeComputePipelinePayload(
     const rhi::ComputePipelineDesc& desc, const rhi::PipelineValidationReport& report);
 std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeComputePipelinePayload(
     const rhi::ComputePipelineDesc& desc,
     const rhi::PipelineValidationReport& report,
     std::string_view verifiedMslSource);
+std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeComputePipelinePayload(
+    const rhi::ComputePipelineDesc&,
+    const rhi::PipelineValidationReport&,
+    const std::shared_ptr<const shader::SingleEntryShaderArtifact>&);
 
 } // namespace arp::rhi_metal

@@ -43,6 +43,7 @@ public:
     void closeMenu() noexcept { menuOpen_ = false; }
 
 private:
+    friend class EditorShell;
     core::pmr::String selected_;
     core::pmr::String workspace_;
     core::pmr::String scene_;

@@ -1,9 +1,35 @@
 # Included by the checked-in and generated project. Cloud implementation belongs
 # to renderer; no domain implementation is compiled into core.
+add_executable(arp_command_recording_budget_tests tests/contract/command_recording_budget_tests.cpp)
+target_link_libraries(arp_command_recording_budget_tests PRIVATE arp_core)
+target_compile_options(arp_command_recording_budget_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_command_recording_budget_tests)
+add_test(NAME arp_command_recording_budget_contract COMMAND arp_command_recording_budget_tests)
+
+add_executable(arp_rhi_render_pass_storage_tests tests/contract/rhi_render_pass_storage_tests.cpp)
+target_link_libraries(arp_rhi_render_pass_storage_tests PRIVATE arp_rhi arp_rhi_semantics)
+target_include_directories(arp_rhi_render_pass_storage_tests PRIVATE .)
+target_compile_options(arp_rhi_render_pass_storage_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_rhi_render_pass_storage_tests)
+add_test(NAME arp_rhi_render_pass_storage_contract COMMAND arp_rhi_render_pass_storage_tests)
+add_test(NAME arp_rhi_render_pass_storage_null_smoke COMMAND arp_rhi_render_pass_storage_tests --null-hidden-frame)
+set_tests_properties(arp_rhi_render_pass_storage_null_smoke PROPERTIES LABELS "rhi;null-smoke")
+
 target_sources(arp_renderer PRIVATE src/renderer/volumetric_cloud/cloud_contract.cpp)
 target_sources(arp_renderer PRIVATE src/renderer/volumetric_cloud/cloud_execution_plan.cpp)
+target_sources(arp_renderer PRIVATE src/renderer/volumetric_cloud/cloud_quality.cpp)
+target_sources(arp_renderer PRIVATE src/renderer/volumetric_cloud/cloud_frame_parameters.cpp)
+target_sources(arp_renderer PRIVATE src/renderer/volumetric_cloud/cloud_prepared_history.cpp)
+target_sources(arp_renderer PRIVATE src/renderer/volumetric_cloud/detail/cloud_prepared_submission.cpp)
+
+target_sources(arp_renderer PRIVATE src/renderer/volumetric_cloud/cloud_prepared_pipelines.cpp)
+
+target_sources(arp_renderer PRIVATE src/renderer/volumetric_cloud/cloud_prepared_resources.cpp)
+
+target_sources(arp_renderer PRIVATE src/renderer/volumetric_cloud/cloud_prepared_descriptors.cpp)
 target_sources(arp_renderer PRIVATE src/renderer/volumetric_cloud/cloud_reference.cpp)
 target_sources(arp_renderer PRIVATE src/renderer/volumetric_cloud/volumetric_cloud_feature.cpp)
+target_sources(arp_renderer PRIVATE src/renderer/volumetric_cloud/volumetric_cloud_prepared_graph.cpp)
 
 set(cloud_shader_dir "${CMAKE_CURRENT_BINARY_DIR}/shaders/volumetric_cloud")
 set(cloud_shader_outputs)
@@ -11,7 +37,8 @@ set(cloud_shader_compiler_args)
 if(SLANGC_EXECUTABLE)
     list(APPEND cloud_shader_compiler_args --slangc "${SLANGC_EXECUTABLE}")
 endif()
-foreach(cloud_shader cloud_raymarch cloud_temporal cloud_composite cloud_demo_present cloud_density_slice)
+foreach(cloud_shader cloud_raymarch cloud_temporal cloud_composite cloud_demo_present cloud_density_slice
+        cloud_spatial_resolve cloud_spatial_composite)
     if(cloud_shader STREQUAL "cloud_demo_present")
         set(cloud_shader_source "shaders/samples/fog_demo_present.slang")
     else()
@@ -26,6 +53,8 @@ foreach(cloud_shader cloud_raymarch cloud_temporal cloud_composite cloud_demo_pr
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
             --module "${cloud_shader}" --out-dir "${cloud_shader_dir}" ${cloud_shader_compiler_args}
         DEPENDS "${cloud_shader_source}"
+            shaders/renderer/cloud_ray_integration.slang shaders/renderer/cloud_history.slang
+            shaders/renderer/cloud_composite_impl.slang
             shaders/renderer/cloud_common.slang shaders/renderer/volume/medium_integration.slang
             scripts/compile_shaders.py VERBATIM)
     list(APPEND cloud_shader_outputs "${cloud_reflection}")
@@ -45,7 +74,14 @@ add_executable(arp_cloud_asset_tool tools/cloud_asset/main.cpp)
 target_link_libraries(arp_cloud_asset_tool PRIVATE arp_resource)
 arp_add_mingw_static_runtime(arp_cloud_asset_tool)
 
-add_executable(arp_volumetric_cloud examples/volumetric_cloud/main.cpp src/platform/common/renderdoc_capture_scope.cpp)
+include("${CMAKE_CURRENT_LIST_DIR}/ArpCloudPreparedShaders.cmake")
+add_executable(arp_volumetric_cloud examples/volumetric_cloud/main.cpp
+    examples/volumetric_cloud/prepared_offscreen.cpp src/platform/common/renderdoc_capture_scope.cpp)
+add_dependencies(arp_volumetric_cloud arp_rhi_original_cloud_graphics_module
+    arp_rhi_original_cloud_spatial_graphics_module arp_rhi_original_cloud_compute_entries)
+target_compile_definitions(arp_volumetric_cloud PRIVATE
+    ARP_CLOUD_PREPARED_COMPUTE_DIR="${original_cloud_compute_dir}"
+    ARP_CLOUD_PREPARED_GRAPHICS_DIR="${original_cloud_module_dir}")
 target_link_libraries(arp_volumetric_cloud PRIVATE arp_renderer arp_platform ${ARP_RENDERER_RHI_LINK_LIBS})
 target_compile_definitions(arp_volumetric_cloud PRIVATE ARP_CLOUD_SHADER_DIR="${cloud_shader_dir}")
 add_dependencies(arp_volumetric_cloud arp_volumetric_cloud_shaders)
@@ -62,6 +98,29 @@ if(NOT CMAKE_CROSSCOMPILING AND NOT EMSCRIPTEN)
     add_test(NAME arp_volumetric_cloud_example_null COMMAND arp_volumetric_cloud --backend null --frames 3
         --asset "${CMAKE_CURRENT_BINARY_DIR}/cloud-reference.cooked.yaml")
     set_tests_properties(arp_volumetric_cloud_example_null PROPERTIES FIXTURES_REQUIRED cloud_reference_cook TIMEOUT 60)
+    add_test(NAME arp_cloud_prepared_demo_contract
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/contract/cloud_prepared_demo_tests.py"
+            --exe "$<TARGET_FILE:arp_volumetric_cloud>"
+            --asset "${CMAKE_CURRENT_BINARY_DIR}/cloud-reference.cooked.yaml")
+    set_tests_properties(arp_cloud_prepared_demo_contract PROPERTIES
+        FIXTURES_REQUIRED cloud_reference_cook TIMEOUT 300)
+    if(TARGET arp_rhi_vulkan AND NOT APPLE)
+        foreach(resolve temporal reconstruction)
+            add_test(NAME arp_cloud_prepared_demo_${resolve}_native
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/contract/cloud_prepared_demo_tests.py"
+                    --exe "$<TARGET_FILE:arp_volumetric_cloud>"
+                    --asset "${CMAKE_CURRENT_BINARY_DIR}/cloud-reference.cooked.yaml" --native ${resolve})
+            set_tests_properties(arp_cloud_prepared_demo_${resolve}_native PROPERTIES
+                FIXTURES_REQUIRED cloud_reference_cook TIMEOUT 180 LABELS "cloud;native-smoke")
+        endforeach()
+    endif()
+    foreach(quality reference high medium)
+        add_test(NAME arp_volumetric_cloud_example_quality_${quality}_null
+            COMMAND arp_volumetric_cloud --backend null --frames 3 --width 64 --height 48
+                --quality ${quality} --asset "${CMAKE_CURRENT_BINARY_DIR}/cloud-reference.cooked.yaml")
+        set_tests_properties(arp_volumetric_cloud_example_quality_${quality}_null
+            PROPERTIES FIXTURES_REQUIRED cloud_reference_cook TIMEOUT 60)
+    endforeach()
 endif()
 
 add_executable(arp_volumetric_cloud_tests tests/contract/volumetric_cloud_tests.cpp)
@@ -79,6 +138,31 @@ target_compile_options(arp_volumetric_cloud_feature_tests PRIVATE -UNDEBUG)
 target_compile_definitions(arp_volumetric_cloud_feature_tests PRIVATE ARP_CLOUD_SHADER_DIR="${cloud_shader_dir}")
 add_dependencies(arp_volumetric_cloud_feature_tests arp_volumetric_cloud_shaders)
 add_test(NAME arp_volumetric_cloud_feature_null_smoke COMMAND arp_volumetric_cloud_feature_tests)
+
+add_executable(arp_cloud_prepared_history_tests tests/contract/cloud_prepared_history_tests.cpp)
+target_link_libraries(arp_cloud_prepared_history_tests PRIVATE arp_renderer arp_rhi)
+target_include_directories(arp_cloud_prepared_history_tests PRIVATE .)
+target_compile_options(arp_cloud_prepared_history_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_cloud_prepared_history_tests)
+add_test(NAME arp_cloud_prepared_history_contract COMMAND arp_cloud_prepared_history_tests)
+add_dependencies(arp_cloud_prepared_history_tests arp_rhi_original_cloud_compute_entries
+    arp_rhi_original_cloud_graphics_module arp_rhi_original_cloud_spatial_graphics_module arp_cloud_foreground_module)
+add_test(NAME arp_cloud_ordinary_native_memory_contract
+    COMMAND arp_cloud_prepared_history_tests --ordinary-native-memory "${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME arp_cloud_spatial_motion_reference
+    COMMAND arp_cloud_prepared_history_tests --spatial-motion-reference)
+set_tests_properties(arp_cloud_spatial_motion_reference PROPERTIES TIMEOUT 180)
+add_test(NAME arp_cloud_quality_integration_cpu
+    COMMAND arp_cloud_prepared_history_tests --quality-integration-probe)
+set_tests_properties(arp_cloud_quality_integration_cpu PROPERTIES TIMEOUT 300)
+add_test(NAME arp_cloud_quality_reconstruction_cpu
+    COMMAND arp_cloud_prepared_history_tests --quality-reconstruction-probe)
+set_tests_properties(arp_cloud_quality_reconstruction_cpu PROPERTIES TIMEOUT 300)
+foreach(camera inside above)
+    add_test(NAME arp_cloud_quality_reconstruction_cpu_${camera}
+        COMMAND arp_cloud_prepared_history_tests --quality-reconstruction-probe ${camera})
+    set_tests_properties(arp_cloud_quality_reconstruction_cpu_${camera} PROPERTIES TIMEOUT 300)
+endforeach()
 
 add_executable(arp_volumetric_cloud_asset_tests tests/contract/volumetric_cloud_asset_tests.cpp)
 target_link_libraries(arp_volumetric_cloud_asset_tests PRIVATE arp_renderer arp_scriptvm_runtime)

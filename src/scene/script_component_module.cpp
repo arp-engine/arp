@@ -202,15 +202,45 @@ const ScriptComponentModule::Type* ScriptComponentModule::find(const core::pmr::
 
 bool ScriptComponentModule::bind(scene::Scene& scene)
 {
-    auto registration = core::makeShared<ScriptComponentModule>(*this);
     core::pmr::Vector<core::pmr::String> names;
     for (const auto& type : types_)
         names.push_back(type->name);
+    return bind(scene, names, RegistrationScope::Unqualified);
+}
+
+core::pmr::String ScriptComponentModule::qualifiedTypeName(const core::pmr::String& type) const
+{
+    if (resourceId_.empty() || resourceId_.find("::") != core::pmr::String::npos || !find(type)
+        || type.find("::") != core::pmr::String::npos)
+        return {};
+    return resourceId_ + "::" + type;
+}
+
+bool ScriptComponentModule::bind(
+    scene::Scene& scene, const core::pmr::Vector<core::pmr::String>& types, RegistrationScope scope)
+{
+    if (types.empty())
+        return fail("ARP-SCRIPT-COMPONENT-REGISTRATION-TYPES");
+    auto registration = core::makeShared<ScriptComponentModule>(*this);
+    core::pmr::Map<core::pmr::String, core::pmr::String> bindings;
+    core::pmr::Vector<core::pmr::String> names;
+    for (const auto& type : types) {
+        auto name = scope == RegistrationScope::ResourceQualified ? qualifiedTypeName(type) : type;
+        if (!find(type) || name.empty() || !bindings.emplace(name, type).second)
+            return fail("ARP-SCRIPT-COMPONENT-REGISTRATION-TYPES");
+        names.push_back(std::move(name));
+    }
     if (!scene.registerScriptComponentTypes(
             resourceId_,
             names,
-            [registration](scene::GameObject& object, const core::pmr::String& type) {
-                return registration->create(object, type);
+            [registration, bindings = std::move(bindings)](
+                scene::GameObject& object, const core::pmr::String& name) {
+                const auto found = bindings.find(name);
+                if (found == bindings.end())
+                    return core::UniquePtr<scene::Component>{};
+                return registration->create(object,
+                    found->second,
+                    object.scene()->executionMode() == scene::SceneExecutionMode::Runtime);
             },
             session_.get()))
         return fail("ARP-SCRIPT-COMPONENT-REGISTRATION-CONFLICT");
@@ -220,6 +250,11 @@ bool ScriptComponentModule::bind(scene::Scene& scene)
 core::UniquePtr<scene::Component> ScriptComponentModule::create(
     scene::GameObject& owner, const core::pmr::String& name, bool runConstructor)
 {
+    if (runConstructor && owner.scene()
+        && owner.scene()->executionMode() == scene::SceneExecutionMode::Passive) {
+        fail("ARP-SCRIPT-COMPONENT-PASSIVE-CONSTRUCTOR");
+        return {};
+    }
     core::SharedPtr<Type> type;
     for (const auto& candidate : types_)
         if (candidate->name == name)

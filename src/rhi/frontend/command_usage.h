@@ -9,6 +9,7 @@
 #include "rhi/frontend/descriptor_set_validation.h"
 #include "rhi/frontend/descriptor_validation.h"
 #include "rhi/frontend/pipeline_shader_interface_validation.h"
+#include "rhi/frontend/query_command_points.h"
 #include "rhi/frontend/query_pool_arguments.h"
 #include "rhi/frontend/resource_access_scope.h"
 #include "rhi/frontend/resource_access_usage.h"
@@ -132,7 +133,8 @@ public:
             || std::is_same_v<T, OriginalCommandBufferUploadSource>
             || std::is_same_v<T, TextureReadbackRequestDeclaration>
             || std::is_same_v<T, DescriptorSet> || std::is_same_v<T, DescriptorTable>
-            || std::is_same_v<T, RenderPipeline> || std::is_same_v<T, ComputePipeline>);
+            || std::is_same_v<T, RenderPipeline> || std::is_same_v<T, ComputePipeline>
+            || std::is_same_v<T, QueryPool>);
         if (const auto* id = validate())
             return id;
         if (index >= references().size())
@@ -168,9 +170,14 @@ private:
                 [&](const auto& value) -> const char* {
                     using Lease =
                         std::remove_const_t<typename std::decay_t<decltype(value)>::element_type>;
-                    if constexpr (Lease::domain == CommandReferenceDomain::Pipeline)
+                    if constexpr (Lease::domain == CommandReferenceDomain::Pipeline
+                        || Lease::domain == CommandReferenceDomain::Query)
                         if (const auto* error = value->independentCpuQuotaDiagnostic(quota))
                             return error;
+                    if constexpr (Lease::domain == CommandReferenceDomain::Query)
+                        if (!core::SharedOwnerProjection::sameOwner(
+                                value->originalInput()->originalMetadataQuota(), quota))
+                            return "RHI-ORIGINAL-USAGE-QUERY-GRAPH-QUOTA";
                     if constexpr (Lease::domain == CommandReferenceDomain::Upload)
                         if (!core::SharedOwnerProjection::sameOwner(
                                 value->originalInputQuota(), quota))
@@ -1224,6 +1231,8 @@ struct OriginalCommandInputsBudget {
     std::uint32_t maxDescriptorBindings = 0u, maxTableBindings = 0u, maxFrozenDynamicOffsets = 0u;
     OriginalRetainedReadbackCorrespondence retainedReadback{};
     std::uint32_t maxVertexBindings = 0u, maxIndexBindings = 0u;
+    std::uint32_t maxQueryBindings = 0u;
+    std::shared_ptr<const QueryCommandPoints> queryPoints;
 };
 
 // Selected canonical positional /2. No new ownership inventory or state/native
@@ -1236,14 +1245,22 @@ public:
             return id;
         if (b.contractVersion != 1u && b.contractVersion != 2u && b.contractVersion != 3u
             && b.contractVersion != 4u && b.contractVersion != 5u && b.contractVersion != 6u
-            && b.contractVersion != 7u && b.contractVersion != 8u)
+            && b.contractVersion != 7u && b.contractVersion != 8u && b.contractVersion != 9u
+            && b.contractVersion != 10u)
             return "RHI-ORIGINAL-INPUTS-VERSION";
+        if (b.contractVersion != 9u && (b.maxQueryBindings || b.queryPoints))
+            return "RHI-ORIGINAL-QUERY-POSITIONAL-PROFILE";
+        if (b.contractVersion == 9u && (!b.maxQueryBindings || !b.queryPoints))
+            return "RHI-ORIGINAL-QUERY-POSITIONAL-BUDGET";
         if (b.contractVersion != 5u && b.contractVersion != 7u && b.contractVersion != 8u
             && (b.maxVertexBindings || b.maxIndexBindings))
             return "RHI-ORIGINAL-INPUTS-VERSION";
         // Inputs6 independently joins Source5 mixed ordinary sets. Existing
         // table/geometry profiles cannot borrow this positional version.
-        if (b.contractVersion == 6u && (b.maxTableBindings || !b.maxDescriptorBindings))
+        if ((b.contractVersion == 6u || b.contractVersion == 10u)
+            && (b.maxTableBindings || !b.maxDescriptorBindings))
+            return "RHI-ORIGINAL-INPUTS-GENERAL-FINITE-SCHEMA";
+        if (b.contractVersion == 9u && b.maxTableBindings)
             return "RHI-ORIGINAL-INPUTS-GENERAL-FINITE-SCHEMA";
         if ((b.contractVersion == 5u || b.contractVersion == 7u || b.contractVersion == 8u)
             && !b.maxVertexBindings && !b.maxIndexBindings)
@@ -1262,6 +1279,8 @@ public:
                                                              : nullptr;
         if (!b.prototypeOptIn)
             return "RHI-ORIGINAL-TYPED-INPUT-OPT-IN";
+        if (b.contractVersion == 9u)
+            return nullptr;
         if (b.contractVersion >= 3u && b.contractVersion != 5u && b.contractVersion != 7u
             && b.contractVersion != 8u && !b.maxDescriptorBindings && !b.maxTableBindings)
             return "RHI-ORIGINAL-TYPED-INPUT-BUDGET";
@@ -1540,7 +1559,11 @@ public:
     static constexpr const char* validateSetProfile(
         std::uint32_t inputsVersion, std::uint32_t sourceVersion) noexcept
     {
-        if (inputsVersion == 6u)
+        if (inputsVersion == 10u)
+            return sourceVersion == 5u || sourceVersion == 7u
+                ? nullptr
+                : "RHI-ORIGINAL-TYPED-INPUT-SYNCHRONOUS-SOURCE";
+        if (inputsVersion == 6u || inputsVersion == 9u)
             return sourceVersion == 5u ? nullptr : "RHI-ORIGINAL-TYPED-INPUT-GENERAL-FINITE-SOURCE";
         if (inputsVersion != 3u && inputsVersion != 4u && inputsVersion != 5u)
             return "RHI-ORIGINAL-INPUTS-VERSION";
@@ -1585,8 +1608,8 @@ public:
         semantics::CommandRecordingOrder::Scope scope,
         std::uint32_t inputsVersion = 3u) noexcept
     {
-        if (inputsVersion != 3u && inputsVersion != 4u && inputsVersion != 5u
-            && inputsVersion != 6u)
+        if (inputsVersion != 3u && inputsVersion != 4u && inputsVersion != 5u && inputsVersion != 6u
+            && inputsVersion != 9u && inputsVersion != 10u)
             return "RHI-ORIGINAL-INPUTS-VERSION";
         const auto& usage = *scalars.originalUsage();
         const auto& sources = *usage.originalSources();
@@ -1626,7 +1649,7 @@ public:
                 return "RHI-ORIGINAL-TYPED-INPUT-PIPELINE-KIND";
             const auto& original = sources.sources()[binding.sourceIndex];
             if (isTable(command.kind)) {
-                if (inputsVersion == 6u)
+                if (inputsVersion == 6u || inputsVersion == 9u)
                     return "RHI-ORIGINAL-INPUTS-GENERAL-FINITE-SCHEMA";
                 if (inputsVersion == 4u || inputsVersion == 5u)
                     return validateDepthTable(binding, input, pipeline, sources);
@@ -1665,7 +1688,7 @@ public:
                     != source.frozenLogicalSet())
                     return "RHI-ORIGINAL-TYPED-INPUT-FINITE-SET";
                 std::size_t consumed = 0u;
-                if (inputsVersion == 6u) {
+                if (inputsVersion == 6u || inputsVersion == 9u) {
                     // The same mixed sequence supplies binding identity and
                     // ordered offsets. Do not fill the legacy finite-only list.
                     for (const auto& frozen : source.frozenElements()) {
@@ -1895,6 +1918,14 @@ public:
 
 // region original_command_inputs
 
+struct OriginalCommandQueryBinding {
+    std::size_t sourceIndex = SIZE_MAX;
+    std::uint64_t registrationGeneration = 0u;
+    QueryPoolOriginalInputArguments original;
+
+    CommandUsageKind kind() const noexcept { return original.kind(); }
+};
+
 // OriginalCommandInputs/1: complete positional CPU field ownership binding.
 // Unsupported original source adapters reject before allocation. Successful
 // copy/dependency bindings prove neither transfer legality nor registry/state/
@@ -1919,7 +1950,8 @@ public:
         std::shared_ptr<const TransferCopyInputSnapshot>,
         OriginalCommandPipelineBinding,
         OriginalCommandDescriptorBinding,
-        OriginalCommandGeometryBinding>;
+        OriginalCommandGeometryBinding,
+        OriginalCommandQueryBinding>;
 
     struct OriginalDescriptor {
         std::size_t commandIndex;
@@ -1951,7 +1983,8 @@ public:
         const DescriptorSet*,
         const DescriptorTable*,
         const RenderPipeline*,
-        const ComputePipeline*>;
+        const ComputePipeline*,
+        const QueryPool*>;
     using IncomingCopy = std::variant<const BufferCopyDesc*,
         const BufferToTextureCopyDesc*,
         const TextureToBufferCopyDesc*,
@@ -1969,7 +2002,8 @@ public:
             IncomingCopy,
             const UploadTextureDesc*,
             const UploadBufferDesc*,
-            const ReadbackTextureDesc*>
+            const ReadbackTextureDesc*,
+            QueryPoolOriginalInputArguments>
             descriptor;
         const IncomingReference* references = nullptr;
         std::size_t referenceCount = 0u;
@@ -2207,7 +2241,8 @@ public:
             if (id)
                 return id;
         }
-        if (CommandInputContract::family(incoming.scalar.scalar.kind()) == Family::Scalar)
+        if (CommandInputContract::family(incoming.scalar.scalar.kind()) == Family::Scalar
+            && !isQuery(incoming.scalar.scalar.kind()))
             return std::holds_alternative<std::monostate>(incoming.descriptor)
                 ? nullptr
                 : "RHI-ORIGINAL-INPUTS-PAYLOAD";
@@ -2263,6 +2298,12 @@ public:
                             return input && *input && value.originalInput()->matches(**input)
                                 ? nullptr
                                 : "RHI-ORIGINAL-INPUTS-PAYLOAD";
+                        } else if constexpr (std::is_same_v<T, OriginalCommandQueryBinding>) {
+                            const auto* input =
+                                std::get_if<QueryPoolOriginalInputArguments>(&incoming.descriptor);
+                            return input && value.original.matches(*input)
+                                ? nullptr
+                                : "RHI-ORIGINAL-INPUTS-PAYLOAD";
                         } else
                             return sourceAdapterDiagnostic(
                                 CommandInputContract::family(original.kind()));
@@ -2281,6 +2322,11 @@ public:
     bool nativeExecutionProven() const noexcept { return false; }
 
 private:
+    static constexpr bool isQuery(CommandUsageKind kind) noexcept
+    {
+        return kind == CommandUsageKind::Timestamp || kind == CommandUsageKind::PipelineStatistics;
+    }
+
     template <class Visitor>
     OriginalCommandGeometryBindingContract::AccessResult walkGeometryAccesses(
         const OriginalCommandGeometryBindingContract::AccessBudget& budget,
@@ -2589,6 +2635,18 @@ private:
         if (inputBudget.maxVertexBindings > budget.maxInputDescriptors
             || inputBudget.maxIndexBindings > budget.maxInputDescriptors)
             return "RHI-ORIGINAL-GEOMETRY-GRAPH-CAPACITY";
+        if (inputBudget.maxQueryBindings > budget.maxInputDescriptors)
+            return "RHI-ORIGINAL-QUERY-GRAPH-CAPACITY";
+        if (inputBudget.contractVersion == 9u) {
+            if (const auto* id = QueryCommandPoints::validateOriginalStream(
+                    inputBudget.queryPoints, scalars->originalArguments()))
+                return id;
+            if (!core::SharedOwnerProjection::sameOwner(
+                    inputBudget.queryPoints->originalMetadataQuota(), quota))
+                return "RHI-ORIGINAL-QUERY-POINTS-GRAPH-QUOTA";
+            if (inputBudget.queryPoints->points().size() > inputBudget.maxQueryBindings)
+                return "RHI-ORIGINAL-QUERY-INPUT-CAPACITY";
+        }
         if (count > budget.maxInputDescriptors || (count && !descriptors))
             return "RHI-ORIGINAL-INPUTS-CAPACITY";
         // Pointer-free fields add no owners; each distinct canonical copy/pass
@@ -2604,7 +2662,7 @@ private:
             budget.maxPassDependencies,
             budget.maxLabelBytes - scalars->originalArguments()->storedTextBytes(),
             quota->limitBytes()};
-        std::size_t consumed = 0u, mips = 0u, passReferences = 0u;
+        std::size_t consumed = 0u, mips = 0u, passReferences = 0u, queryBindings = 0u;
         std::size_t pipelineBindings = 0u, descriptorBindings = 0u, tableBindings = 0u,
                     frozenOffsets = 0u, scopeBegin = SIZE_MAX, activePipeline = SIZE_MAX,
                     pipelineBind = SIZE_MAX, vertexBindings = 0u, indexBindings = 0u;
@@ -2776,6 +2834,55 @@ private:
                     || kind == CommandUsageKind::DrawIndexedIndirectCount
                     || kind == CommandUsageKind::IndirectProcessorDraw))
                 return "RHI-ORIGINAL-BINDLESS-INDIRECT-INPUT-CONSUMER";
+            if (isQuery(kind)) {
+                if (inputBudget.contractVersion != 9u)
+                    return "RHI-ORIGINAL-QUERY-POSITIONAL-PROFILE";
+                const auto& points = inputBudget.queryPoints->points();
+                if (queryBindings >= inputBudget.maxQueryBindings || queryBindings >= points.size())
+                    return "RHI-ORIGINAL-QUERY-INPUT-CAPACITY";
+                if (const auto* id = CommandInputContract::consumeDescriptor(i,
+                        kind,
+                        descriptors,
+                        count,
+                        consumed,
+                        "RHI-ORIGINAL-INPUTS-ORDER",
+                        "RHI-ORIGINAL-INPUTS-KIND"))
+                    return id;
+                const auto* binding =
+                    std::get_if<OriginalCommandQueryBinding>(&descriptors[consumed - 1u].arguments);
+                if (!binding)
+                    return "RHI-ORIGINAL-INPUTS-KIND";
+                const auto& point = points[queryBindings];
+                if (point.commandOrdinal != i || !point.original.matches(binding->original)
+                    || point.passIndex >= inputBudget.queryPoints->passes().size()
+                    || inputBudget.queryPoints->passes()[point.passIndex].begin != scopeBegin
+                    || point.pipelineBindOrdinal
+                        != (pipelineBind == SIZE_MAX ? std::optional<std::size_t>{}
+                                                     : std::optional<std::size_t>{pipelineBind}))
+                    return "RHI-ORIGINAL-QUERY-POINT-BINDING";
+                const auto& command = usage.commands()[i];
+                if (command.referenceCount != 1u
+                    || binding->sourceIndex >= usage.originalSources()->sources().size()
+                    || binding->sourceIndex
+                        != usage.references()[command.firstReference].sourceIndex)
+                    return "RHI-ORIGINAL-QUERY-INPUT-SOURCE";
+                const auto* source =
+                    std::get_if<std::shared_ptr<const OriginalCommandQueryPoolSource>>(
+                        &usage.originalSources()->sources()[binding->sourceIndex]);
+                if (!source
+                    || !core::SharedOwnerProjection::sameOwner(
+                        (*source)->originalInput(), binding->original.originalInput()))
+                    return "RHI-ORIGINAL-QUERY-INPUT-SOURCE";
+                if (binding->registrationGeneration
+                    != (*source)->originalObject()->originalResourceRegistration().generation())
+                    return "RHI-ORIGINAL-QUERY-INPUT-GENERATION";
+                const auto& fields = scalars->originalArguments()->records()[i].scalar;
+                if (const auto* id = OriginalCommandTypedInputContract::validateQueryBinding(
+                        {fields}, binding->original))
+                    return id;
+                ++queryBindings;
+                continue;
+            }
             if (required == Family::Scalar)
                 continue;
             if (const auto* id = CommandInputContract::consumeDescriptor(i,
@@ -2944,7 +3051,12 @@ private:
             return "RHI-COMMAND-ORDER-INCOMPLETE";
         if (consumed != count)
             return "RHI-ORIGINAL-INPUTS-ORDER";
-        const auto baseOwners = scalars->retainedOwnerCount() + 1u;
+        const auto extraOwners = inputBudget.queryPoints ? 2u : 1u;
+        if (extraOwners > budget.maxGraphOwners - scalars->retainedOwnerCount())
+            return "RHI-ORIGINAL-INPUTS-OWNER-CAPACITY";
+        if (inputBudget.queryPoints && queryBindings != inputBudget.queryPoints->points().size())
+            return "RHI-ORIGINAL-QUERY-POINT-COVERAGE";
+        const auto baseOwners = scalars->retainedOwnerCount() + extraOwners;
         const auto owners = core::SharedIdentityProjection::inspect(count,
             count,
             budget.maxGraphOwners - baseOwners,
@@ -3130,7 +3242,7 @@ private:
 
     // Same original render-binding walker after the State2 facade's captured
     // device/source join. Only that existing friend can enter this helper.
-    template <bool Joined = false, class Visitor>
+    template <bool Joined = false, bool IncludeCompute = false, class Visitor>
     static RenderBindingResult renderBindingsOriginal(const std::shared_ptr<const Inputs>& inputs,
         const RenderBindingBudget& budget,
         Visitor&& visitor) noexcept
@@ -3181,7 +3293,10 @@ private:
                 point.pipelineSourceIndex = pipeline->sourceIndex;
                 point.pipelineBindCommandIndex = command;
             }
-            if (kind != K::BindRenderDescriptor
+            const bool compute = IncludeCompute
+                && (kind == K::BindComputeDescriptor
+                    || (budget.contractVersion >= 2u && kind == K::BindComputeDescriptorTable));
+            if (!compute && kind != K::BindRenderDescriptor
                 && (budget.contractVersion < 2u || kind != K::BindRenderDescriptorTable))
                 continue;
             if (result.bindings == budget.maxBindings)
@@ -3199,7 +3314,8 @@ private:
                         command,
                         point.pipelineSourceIndex,
                         point.scopeBeginCommandIndex,
-                        semantics::CommandRecordingOrder::Scope::Render,
+                        compute ? semantics::CommandRecordingOrder::Scope::Compute
+                                : semantics::CommandRecordingOrder::Scope::Render,
                         inputs->originalBudget().contractVersion))
                     return fail(id);
             const auto* set = inputs->originalScalars()
@@ -3212,13 +3328,25 @@ private:
             point.descriptorBindCommandIndex = command;
             point.descriptorContentRevision = binding->contentRevision;
             point.set = set->set;
-            if (kind == K::BindRenderDescriptorTable) {
-                const auto& pipeline =
-                    *std::get<std::shared_ptr<const OriginalCommandGraphicsPipelineSource>>(
-                        sources.sources()[point.pipelineSourceIndex]);
-                if (const auto* id = projectBoundTable(
-                        pipeline, *inputs, *binding, command, budget, point, result, visitor))
-                    return fail(id);
+            if (kind == K::BindRenderDescriptorTable
+                || (compute && kind == K::BindComputeDescriptorTable)) {
+                const auto project = [&](const auto& pipeline) noexcept -> const char* {
+                    return projectBoundTable(
+                        pipeline, *inputs, *binding, command, budget, point, result, visitor);
+                };
+                if (compute) {
+                    const auto& pipeline =
+                        *std::get<std::shared_ptr<const OriginalCommandComputePipelineSource>>(
+                            sources.sources()[point.pipelineSourceIndex]);
+                    if (const auto* id = project(pipeline))
+                        return fail(id);
+                } else {
+                    const auto& pipeline =
+                        *std::get<std::shared_ptr<const OriginalCommandGraphicsPipelineSource>>(
+                            sources.sources()[point.pipelineSourceIndex]);
+                    if (const auto* id = project(pipeline))
+                        return fail(id);
+                }
                 continue;
             }
             const auto& descriptor =
@@ -3301,7 +3429,8 @@ private:
             OriginalCommandDescriptorSetSource::finiteVersion(descriptor.sourceContractVersion());
         if (!mixed && (finite ? !budget.finiteFullBoundViewOptIn : !budget.wholeFullBoundViewOptIn))
             return "RHI-ORIGINAL-CONSUMPTION-SOURCE-FOOTPRINT-OPT-IN";
-        if (mixed ? descriptor.sourceContractVersion() != 5u
+        if (mixed ? (descriptor.sourceContractVersion() != 5u
+                        && descriptor.sourceContractVersion() != 7u)
                   : (!finite && descriptor.sourceContractVersion() != 2u))
             return "RHI-ORIGINAL-CONSUMPTION-SOURCE-VERSION";
         for (const auto& frozen : descriptor.frozenElements()) {

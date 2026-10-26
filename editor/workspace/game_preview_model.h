@@ -14,6 +14,8 @@ public:
 
     bool starting() const noexcept { return starting_; }
 
+    bool hasPendingRequest() const noexcept { return request_ != Request::None; }
+
 private:
     Request request_ = Request::None;
     bool running_ = false;

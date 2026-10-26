@@ -114,7 +114,8 @@ public:
             const auto captured =
                 rhi::semantics::OriginalCommandStateAdmissionLowering::typedLowering(backend, 5u);
             assert(captured.contractVersion == 5u && !captured.executionAvailable
-                && captured.stateAvailable == (backend == rhi::Backend::WebGPU)
+                && captured.stateAvailable
+                    == (backend == rhi::Backend::WebGPU || backend == rhi::Backend::Vulkan)
                 && captured.projectionAvailable == captured.stateAvailable
                 && captured.validatorOnly == (backend == rhi::Backend::Null));
             const auto compiled =

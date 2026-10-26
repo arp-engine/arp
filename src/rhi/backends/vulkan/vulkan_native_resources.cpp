@@ -497,6 +497,21 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createTexture(
     return result;
 }
 
+VkResult VulkanRhiNativeResourceAllocator::createOriginalDescriptorImageView(
+    const VkImageViewCreateInfo& info, VkImageView& output) const noexcept
+{
+    output = VK_NULL_HANDLE;
+    if (!runtime_ || !runtime_->valid() || runtime_->syntheticRuntime())
+        return VK_ERROR_INITIALIZATION_FAILED;
+    const auto create =
+        functionFrom<PFN_vkCreateImageView>(runtime_->getDeviceProcAddr("vkCreateImageView"));
+    if (!create)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    const auto result = create(runtime_->logicalDevice(), &info, nullptr, &output);
+    runtime_->captureOriginalDeviceLoss(result);
+    return result;
+}
+
 VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createDescriptorSet(
     const rhi::DescriptorLayoutDesc& layout)
 {

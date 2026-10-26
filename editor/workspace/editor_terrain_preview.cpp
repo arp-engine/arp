@@ -4,6 +4,7 @@
 #include "core/encoding/yaml_contract.h"
 #include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
+#include "editor/project/project_input_snapshot.h"
 #include "resource/terrain_asset_resource.h"
 #include "resource/vegetation_catalog_resource.h"
 
@@ -24,6 +25,7 @@ public:
     std::filesystem::path root;
     std::size_t remainingFileBytes = 0;
     std::size_t remainingDecodedBytes = 0;
+    ProjectInputSnapshot* snapshot = nullptr;
 
     std::filesystem::path contained(core::StringView relative) const
     {
@@ -41,6 +43,13 @@ public:
         const auto path = contained(relative);
         auto result = core::readBinaryFile(path, std::min(maxBytes, remainingFileBytes));
         require(result.success, "EDITOR-TERRAIN-PREVIEW-READ-BUDGET");
+        if (snapshot) {
+            core::pmr::String diagnostic;
+            require(snapshot->record(path,
+                        {reinterpret_cast<const char*>(result.bytes.data()), result.bytes.size()},
+                        diagnostic),
+                "EDITOR-TERRAIN-PREVIEW-INPUT-SNAPSHOT");
+        }
         remainingFileBytes -= result.bytes.size();
         return std::move(result.bytes);
     }
@@ -58,6 +67,10 @@ public:
         require(core::FilePath::contains(root, resolved), "EDITOR-TERRAIN-PREVIEW-PATH");
         const auto bytes = std::filesystem::file_size(resolved);
         require(bytes <= remainingFileBytes, "EDITOR-TERRAIN-PREVIEW-READ-BUDGET");
+        if (snapshot) {
+            core::pmr::String diagnostic;
+            require(snapshot->read(resolved, diagnostic), "EDITOR-TERRAIN-PREVIEW-INPUT-SNAPSHOT");
+        }
         remainingFileBytes -= static_cast<std::size_t>(bytes);
     }
 
@@ -116,11 +129,13 @@ void materialFields(resource::MaterialResource& material,
 bool loadEditorTerrainPreview(const std::filesystem::path& projectRoot,
     std::string_view relativeConfig,
     resource::ResourceManager& candidate,
-    core::pmr::String& diagnostic)
+    core::pmr::String& diagnostic,
+    ProjectInputSnapshot* inputSnapshot)
 {
     try {
         PreviewInput input;
         input.root = std::filesystem::canonical(projectRoot);
+        input.snapshot = inputSnapshot;
         // Metadata bootstrap has a fixed 1 MiB hard limit, as project manifests do.
         input.remainingFileBytes = 1024u * 1024u;
         const auto config = input.yaml(relativeConfig);

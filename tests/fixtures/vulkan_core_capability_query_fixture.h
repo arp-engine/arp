@@ -4,6 +4,7 @@
 #include "tests/fixtures/vulkan_query_only_runtime_owner.h"
 
 #include <array>
+#include <cstdlib>
 #include <cstring>
 
 namespace arp::tests {
@@ -45,6 +46,14 @@ public:
     bool familyQueryAvailable = true;
     bool queueQueryAvailable = true;
     bool memoryQueryAvailable = true;
+    bool propertiesQueryAvailable = false;
+    bool featuresQueryAvailable = false;
+    bool timestampEntrypointsAvailable = false;
+    bool hostResetSupported = false;
+    bool shaderDrawParametersSupported = false;
+    bool loseDeviceOnQueryCreate = false;
+    std::uint32_t apiVersion = VK_API_VERSION_1_2;
+    float timestampPeriod = 1.0f;
     VkQueue queriedQueue = rhi_vulkan::syntheticHandle<VkQueue>(4u);
 
 private:
@@ -58,14 +67,59 @@ private:
             return active_->memoryQueryAvailable
                 ? reinterpret_cast<PFN_vkVoidFunction>(&memoryProperties)
                 : nullptr;
+        if (std::strcmp(name, "vkGetPhysicalDeviceProperties") == 0)
+            return active_->propertiesQueryAvailable
+                ? reinterpret_cast<PFN_vkVoidFunction>(&deviceProperties)
+                : nullptr;
+        if (std::strcmp(name, "vkGetPhysicalDeviceFeatures2") == 0)
+            return active_->featuresQueryAvailable
+                ? reinterpret_cast<PFN_vkVoidFunction>(&deviceFeatures)
+                : nullptr;
         return nullptr;
     }
 
     static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL deviceProcedure(VkDevice, const char* name)
     {
+        if (active_->loseDeviceOnQueryCreate && std::strcmp(name, "vkCreateQueryPool") == 0)
+            return reinterpret_cast<PFN_vkVoidFunction>(&queryCreateDeviceLost);
+        if (active_->timestampEntrypointsAvailable
+            && (std::strcmp(name, "vkCreateQueryPool") == 0
+                || std::strcmp(name, "vkDestroyQueryPool") == 0
+                || std::strcmp(name, "vkResetQueryPool") == 0
+                || std::strcmp(name, "vkCmdWriteTimestamp") == 0
+                || std::strcmp(name, "vkGetQueryPoolResults") == 0))
+            return &timestampProcedureNeverExecuted;
         return active_->queueQueryAvailable && std::strcmp(name, "vkGetDeviceQueue") == 0
             ? reinterpret_cast<PFN_vkVoidFunction>(&deviceQueue)
             : nullptr;
+    }
+
+    static VKAPI_ATTR void VKAPI_CALL timestampProcedureNeverExecuted() { std::abort(); }
+
+    static VKAPI_ATTR VkResult VKAPI_CALL queryCreateDeviceLost(
+        VkDevice, const VkQueryPoolCreateInfo*, const VkAllocationCallbacks*, VkQueryPool*)
+    {
+        return VK_ERROR_DEVICE_LOST;
+    }
+
+    static VKAPI_ATTR void VKAPI_CALL deviceProperties(
+        VkPhysicalDevice, VkPhysicalDeviceProperties* output)
+    {
+        *output = {};
+        output->apiVersion = active_->apiVersion;
+        output->limits.timestampPeriod = active_->timestampPeriod;
+    }
+
+    static VKAPI_ATTR void VKAPI_CALL deviceFeatures(
+        VkPhysicalDevice, VkPhysicalDeviceFeatures2* output)
+    {
+        auto* features = static_cast<VkPhysicalDeviceVulkan12Features*>(output->pNext);
+        features->hostQueryReset = active_->hostResetSupported ? VK_TRUE : VK_FALSE;
+        for (auto* next = static_cast<VkBaseOutStructure*>(features->pNext); next;
+            next = next->pNext)
+            if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES)
+                reinterpret_cast<VkPhysicalDeviceVulkan11Features*>(next)->shaderDrawParameters =
+                    active_->shaderDrawParametersSupported ? VK_TRUE : VK_FALSE;
     }
 
     static VKAPI_ATTR void VKAPI_CALL familyProperties(

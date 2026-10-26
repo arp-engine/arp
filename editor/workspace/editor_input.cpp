@@ -1,14 +1,3 @@
-#include <cwchar>
-#include <limits>
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#endif
 #include "core/text/utf8_cursor.h"
 #include "editor/ingress/platform_input_adapter.h"
 #include "editor/workspace/editor_layout.h"
@@ -17,129 +6,61 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 
 namespace arp::editor {
 using namespace layout;
 
-namespace {
-bool writeSystemClipboardText(std::string_view utf8)
+bool EditorShell::handlePlatformInput(const platform::WindowInputEvent& event)
 {
-#if defined(_WIN32)
-    if (utf8.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-        return false;
-    const int wideLength = MultiByteToWideChar(
-        CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
-    if (wideLength < 0 || (!utf8.empty() && wideLength == 0))
-        return false;
-    core::pmr::Vector<wchar_t> wide(
-        static_cast<std::size_t>(wideLength), L'\0', &core::defaultCpuMemoryResource());
-    if (wideLength > 0
-        && MultiByteToWideChar(CP_UTF8,
-               MB_ERR_INVALID_CHARS,
-               utf8.data(),
-               static_cast<int>(utf8.size()),
-               wide.data(),
-               wideLength)
-            != wideLength)
-        return false;
-    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (wide.size() + 1) * sizeof(wchar_t));
-    if (!memory)
-        return false;
-    auto* target = static_cast<wchar_t*>(GlobalLock(memory));
-    if (!target) {
-        GlobalFree(memory);
-        return false;
-    }
-    if (!wide.empty())
-        std::memcpy(target, wide.data(), wide.size() * sizeof(wchar_t));
-    target[wide.size()] = L'\0';
-    GlobalUnlock(memory);
-    if (!OpenClipboard(nullptr)) {
-        GlobalFree(memory);
-        return false;
-    }
-    const bool ok =
-        EmptyClipboard() != FALSE && SetClipboardData(CF_UNICODETEXT, memory) != nullptr;
-    CloseClipboard();
-    if (!ok)
-        GlobalFree(memory);
-    return ok;
-#else
-    (void)utf8;
-    return false;
-#endif
-}
-
-bool readSystemClipboardText(core::pmr::String& utf8)
-{
-#if defined(_WIN32)
-    if (!OpenClipboard(nullptr))
-        return false;
-    HANDLE data = GetClipboardData(CF_UNICODETEXT);
-    if (!data) {
-        CloseClipboard();
-        return false;
-    }
-    const auto* source = static_cast<const wchar_t*>(GlobalLock(data));
-    if (!source) {
-        CloseClipboard();
-        return false;
-    }
-    const auto wideLength = std::wcslen(source);
-    bool ok = wideLength <= static_cast<std::size_t>(std::numeric_limits<int>::max());
-    int bytes = 0;
-    if (ok && wideLength > 0) {
-        bytes = WideCharToMultiByte(CP_UTF8,
-            WC_ERR_INVALID_CHARS,
-            source,
-            static_cast<int>(wideLength),
-            nullptr,
-            0,
-            nullptr,
-            nullptr);
-        ok = bytes > 0;
-    }
-    if (ok) {
-        utf8.resize(static_cast<std::size_t>(bytes));
-        if (bytes > 0)
-            ok = WideCharToMultiByte(CP_UTF8,
-                     WC_ERR_INVALID_CHARS,
-                     source,
-                     static_cast<int>(wideLength),
-                     utf8.data(),
-                     bytes,
-                     nullptr,
-                     nullptr)
-                == bytes;
-        if (!ok)
-            utf8.clear();
-    }
-    GlobalUnlock(data);
-    CloseClipboard();
-    return ok;
-#else
-    (void)utf8;
-    return false;
-#endif
-}
-
-} // namespace
-
-void EditorShell::handlePlatformInput(const platform::WindowInputEvent& event)
-{
+    using Kind = platform::WindowInputEvent::Kind;
+    const bool pointer = event.kind == Kind::MouseButtonDown || event.kind == Kind::MouseButtonUp
+        || event.kind == Kind::PointerMoved || event.kind == Kind::MouseMoved
+        || event.kind == Kind::MouseWheel;
+    // Admission itself may fail under OOM. An already owned sequence must still
+    // fail closed before UI dispatch, even if the executor never runs.
+    platformPointerConsumed_ = pointer
+        && (scriptDraggingSelection_ || scriptDraggingScrollbar_ || scriptPointerSuppressRelease_
+            || sceneViewPointer_.captured
+            || (sceneViewPointer_.suppressRelease && event.kind == Kind::MouseButtonUp
+                && event.mouseButton == platform::WindowMouseButton::Left)
+            || sceneReferenceDrag_.captured
+            || (sceneReferenceDrag_.suppressRelease && event.kind == Kind::MouseButtonUp
+                && event.mouseButton == platform::WindowMouseButton::Left));
     (void)submitCommand(normalizePlatformInput(event), EditorCommandOrigin::PlatformInput);
+    return platformPointerConsumed_;
 }
 
-void EditorShell::applyPlatformInput(const EditorInputCommand& event)
+EditorCommandOutcome EditorShell::applyPlatformInput(const EditorInputCommand& event)
 {
     using Kind = EditorInputKind;
+    const auto scriptBefore = captureScriptInputState();
+    const bool keyboard =
+        event.kind == Kind::KeyDown || event.kind == Kind::KeyUp || event.kind == Kind::Text;
+    const bool scriptKeyboard = presentationState_.workspace() == "Script" && keyboard;
+    const auto accepted = [&]() -> EditorCommandOutcome {
+        return scriptKeyboard ? scriptInputOutcome(scriptBefore)
+                              : EditorCommandOutcome{true, !keyboard, EditorDiagnosticCode::None};
+    };
+    platformPointerConsumed_ = handleSceneViewPointer(event);
+    if (!platformPointerConsumed_)
+        platformPointerConsumed_ = handleSceneReferenceDrag(event);
+    if (platformPointerConsumed_) {
+        // Escape cancels an owned local pointer sequence. Unlike an ignored
+        // keyboard event this is a real change; the old pointer tail stays owned.
+        if (keyboard && !scriptKeyboard)
+            return {true, stateVersion() == scriptBefore.version, EditorDiagnosticCode::None};
+        return accepted();
+    }
+    const auto hierarchyContains = [&] {
+        return sceneHierarchyPointerHit(runtime().canvas().resolveLayout(), event.x, event.y);
+    };
     if (event.kind == Kind::FocusLost) {
-        if (activeTransformEditObjectId_ != 0u)
-            (void)submitCommand(EndSceneTransformEditCommand{activeTransformEditObjectId_},
-                EditorCommandOrigin::PlatformInput);
-        sceneGizmoObject_ = scene::GameObjectId::invalid();
-        controlHeld_ = shiftHeld_ = scriptDraggingSelection_ = false;
+        const bool endingTransform =
+            activeTransformEditObjectId_ || activeSceneSelectionTransformEditId();
+        const bool clearingModifiers = modifiers_.control() || modifiers_.shift();
+        auto ended = finishSceneTransformGesture(true);
+        modifiers_.clear();
+        cancelScriptPointerCapture();
         sceneViewportRightButtonHeld_ = false;
         sceneViewportGesture_ = SceneViewportGesture::None;
         sceneGizmoAxis_ = SceneGizmoAxis::None;
@@ -147,19 +68,43 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
         hierarchyDragTarget_ = scene::GameObjectId::invalid();
         hierarchyDragging_ = false;
         sceneHierarchyDraggingScrollbar_ = false;
-        return;
+        fileDraggingScrollbar_ = false;
+        scriptDraggingScrollbar_ = false;
+        if (endingTransform && ended.success && clearingModifiers)
+            ended.stateChanged = true;
+        return endingTransform ? std::move(ended) : accepted();
     }
+    // Physical-side bookkeeping must receive releases even while modal or
+    // floating panels suppress authoring shortcuts. No allocation or UI calls.
+    if ((event.kind == Kind::KeyDown || event.kind == Kind::KeyUp)
+        && EditorModifierState::handles(event.key))
+        return {true,
+            modifiers_.update(event.key, event.kind == Kind::KeyDown),
+            EditorDiagnosticCode::None};
+    if (scriptPointerSuppressRelease_) {
+        if (const auto tail = applyScriptPointerInput(event))
+            return *tail;
+    }
+    if (event.kind == Kind::PointerUp && event.primaryButton
+        && (scriptDraggingSelection_ || scriptDraggingScrollbar_)) {
+        if (const auto released = applyScriptPointerInput(event))
+            return *released;
+    }
+    if (authoringUiBlocked())
+        return accepted();
     // UI dispatch still handles this floating panel; suppress viewport gestures
     // and shortcuts behind it. FocusLost above must always release gestures.
     if (const auto* panel =
             runtime().canvas().findWidget(terrainBrowserWidget("terrain_browser_panel"));
         panel && panel->visible())
-        return;
+        return accepted();
+    if (const auto script = applyScriptPointerInput(event))
+        return *script;
     if (event.kind == Kind::PointerUp && event.button == EditorPointerButton::Right) {
         sceneViewportRightButtonHeld_ = false;
         if (sceneViewportGesture_ == SceneViewportGesture::Look)
             sceneViewportGesture_ = SceneViewportGesture::None;
-        return;
+        return accepted();
     }
     if (event.kind == Kind::PointerUp && event.primaryButton
         && sceneViewportGesture_ == SceneViewportGesture::BoxSelect) {
@@ -178,6 +123,8 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                 scene::GameObjectId nearest = scene::GameObjectId::invalid();
                 float nearestDistance = 14.0f;
                 for (const auto& object : sceneDocument_.scene().objects()) {
+                    if (!sceneObjectPickable(object->id()))
+                        continue;
                     float x = 0.0f, y = 0.0f;
                     if (!sceneViewportCamera_.project(object->world_transform().translation,
                             viewport->rect.width,
@@ -197,13 +144,15 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                     (void)submitCommand(SelectSceneObjectCommand{nearest.value()},
                         EditorCommandOrigin::PlatformInput);
             } else {
-                if (shiftHeld_) {
+                if (modifiers_.shift()) {
                     selection.objectIds.push_back(sceneDocument_.selectedObject().value());
                     selection.primaryObjectId = sceneDocument_.selectedObject().value();
                     for (const auto selected : sceneViewportAdditionalSelection_)
                         selection.objectIds.push_back(selected.value());
                 }
                 for (const auto& object : sceneDocument_.scene().objects()) {
+                    if (!sceneObjectPickable(object->id()))
+                        continue;
                     float x = 0.0f, y = 0.0f;
                     if (!sceneViewportCamera_.project(object->world_transform().translation,
                             viewport->rect.width,
@@ -234,10 +183,11 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
         sceneViewportGesture_ = SceneViewportGesture::None;
     }
     if (event.kind == Kind::PointerUp && event.primaryButton) {
-        if (activeTransformEditObjectId_ != 0u)
-            (void)submitCommand(EndSceneTransformEditCommand{activeTransformEditObjectId_},
-                EditorCommandOrigin::PlatformInput);
-        sceneGizmoObject_ = scene::GameObjectId::invalid();
+        if (activeTransformEditObjectId_ || activeSceneSelectionTransformEditId()
+            || sceneViewportGesture_ == SceneViewportGesture::TransformAxis) {
+            platformPointerConsumed_ = true;
+            return finishSceneTransformGesture(true);
+        }
         if (hierarchyDragging_ && hierarchyDragObject_.valid() && hierarchyDragTarget_.valid()) {
             const auto hierarchy = visibleSceneHierarchyEntries();
             const auto targetIt =
@@ -308,7 +258,7 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
         scriptDraggingScrollbar_ = false;
         sceneHierarchyDraggingScrollbar_ = false;
         scriptDraggingSelection_ = false;
-        return;
+        return accepted();
     }
     if (event.kind == Kind::PointerMoved && sceneHierarchyDraggingScrollbar_) {
         const auto hierarchy = visibleSceneHierarchyEntries();
@@ -329,29 +279,26 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
             sceneHierarchyScrollOffset_ = static_cast<std::size_t>(
                 std::lround(fraction * static_cast<float>(thumb.maxOffset)));
         }
-        return;
+        return accepted();
     }
     if (event.kind == Kind::PointerUp
         && (event.button == EditorPointerButton::Middle
             || event.button == EditorPointerButton::Right)) {
         sceneViewportGesture_ = SceneViewportGesture::None;
-        return;
+        return accepted();
     }
     if (event.kind == Kind::PointerUp && event.primaryButton) {
         fileDraggingScrollbar_ = false;
         scriptDraggingScrollbar_ = false;
         scriptDraggingSelection_ = false;
-        return;
+        return accepted();
     }
     if (event.kind == Kind::PointerDelta && hierarchyDragObject_.valid()) {
         const float dx = event.x - hierarchyDragStartX_;
         const float dy = event.y - hierarchyDragStartY_;
         if (!hierarchyDragging_ && dx * dx + dy * dy >= 25.0f)
             hierarchyDragging_ = true;
-        if (hierarchyDragging_ && event.x >= layout::kSceneHierarchyLeft
-            && event.x < layout::kSceneHierarchyLeft + layout::kSceneHierarchyWidth
-            && event.y >= layout::kSceneHierarchyTop
-            && event.y < layout::kSceneHierarchyTop + layout::kSceneHierarchyVisibleHeight) {
+        if (hierarchyDragging_ && hierarchyContains()) {
             const auto row = static_cast<std::size_t>(
                 (event.y - layout::kSceneHierarchyTop) / layout::kSceneHierarchyRowHeight);
             const auto hierarchy = visibleSceneHierarchyEntries();
@@ -364,7 +311,7 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                 : scene::GameObjectId::invalid();
         } else if (hierarchyDragging_)
             hierarchyDragTarget_ = scene::GameObjectId::invalid();
-        return;
+        return accepted();
     }
     if (event.kind == Kind::PointerMoved && fileDraggingScrollbar_) {
         const auto thumb = ui::ScrollbarGeometry::thumb(kFileScrollbarY,
@@ -383,43 +330,13 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                 std::lround(fraction * static_cast<float>(thumb.maxOffset)));
             updateFileSlots();
         }
-        return;
-    }
-    if (event.kind == Kind::PointerMoved && scriptDraggingScrollbar_
-        && presentationState_.workspace() == "Script") {
-        const auto layout = runtime().canvas().resolveLayout();
-        const auto* viewport = layout.findWidget(id("viewport"));
-        if (viewport) {
-            const float trackY = viewport->rect.y + 34.0f,
-                        trackHeight = viewport->rect.height - 58.0f;
-            const auto visible =
-                static_cast<std::size_t>((viewport->rect.height - 42.0f) / kCodeLineHeight);
-            const auto thumb = ui::ScrollbarGeometry::thumb(trackY,
-                trackHeight,
-                scriptLineCount(scriptTextView()),
-                visible,
-                scriptDocuments_.activeScrollLine(),
-                32.0f);
-            if (thumb.visible) {
-                const float travel = trackHeight - thumb.height;
-                const float fraction = travel > 0.0f
-                    ? std::clamp(
-                          (event.y - trackY - scriptScrollbarGrabOffset_) / travel, 0.0f, 1.0f)
-                    : 0.0f;
-                scriptDocuments_.setActiveScrollLine(static_cast<std::size_t>(
-                    std::lround(fraction * static_cast<float>(thumb.maxOffset))));
-            }
-        }
-        return;
+        return accepted();
     }
     if (event.kind == Kind::Wheel) {
         const auto layout = runtime().canvas().resolveLayout();
         const auto* viewport = layout.findWidget(id("viewport"));
         const bool inSceneHierarchy = presentationState_.workspace() == "3D"
-            && sceneDockTab_ == "Scene" && event.x >= layout::kSceneHierarchyLeft
-            && event.x < layout::kSceneHierarchyLeft + layout::kSceneHierarchyWidth
-            && event.y >= layout::kSceneHierarchyTop
-            && event.y < layout::kSceneHierarchyTop + layout::kSceneHierarchyVisibleHeight;
+            && sceneDockTab_ == "Scene" && sceneHierarchyPointerHit(layout, event.x, event.y);
         if (inSceneHierarchy) {
             const auto hierarchy = visibleSceneHierarchyEntries();
             const auto delta = static_cast<int>(std::lround(event.wheelDelta * 3.0f));
@@ -443,24 +360,8 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                                     viewport->rect.width,
                                     viewport->rect.height},
                 EditorCommandOrigin::PlatformInput);
-        } else if (presentationState_.workspace() == "Script" && viewport
-            && event.x >= viewport->rect.x && event.x < viewport->rect.x + viewport->rect.width
-            && event.y >= viewport->rect.y && event.y < viewport->rect.y + viewport->rect.height) {
-            const auto delta = static_cast<int>(std::lround(event.wheelDelta * 3.0f));
-            const auto visible =
-                static_cast<std::size_t>((viewport->rect.height - 42.0f) / kCodeLineHeight);
-            const auto maxOffset = scriptLineCount(scriptTextView()) > visible
-                ? scriptLineCount(scriptTextView()) - visible
-                : 0u;
-            if (delta > 0)
-                scriptDocuments_.setActiveScrollLine(
-                    scriptDocuments_.activeScrollLine() > static_cast<std::size_t>(delta)
-                        ? scriptDocuments_.activeScrollLine() - static_cast<std::size_t>(delta)
-                        : 0);
-            else if (delta < 0)
-                scriptDocuments_.setActiveScrollLine(std::min(maxOffset,
-                    scriptDocuments_.activeScrollLine() + static_cast<std::size_t>(-delta)));
-        } else if (event.x < 285.0f && event.y >= 700.0f && event.y < 1034.0f) {
+        } else if (!filesPresentationFailed_ && event.x < 285.0f && event.y >= 700.0f
+            && event.y < 1034.0f) {
             const auto delta = static_cast<int>(std::lround(event.wheelDelta * 3.0f));
             if (delta > 0)
                 fileScrollOffset_ = fileScrollOffset_ > static_cast<std::size_t>(delta)
@@ -470,26 +371,10 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                 fileScrollOffset_ += static_cast<std::size_t>(-delta);
             updateFileSlots();
         }
-        return;
+        return accepted();
     }
-    if (event.kind == Kind::KeyUp) {
-        if (event.key == EditorInputKey::LeftControl || event.key == EditorInputKey::RightControl)
-            controlHeld_ = false;
-        if (event.key == EditorInputKey::LeftShift || event.key == EditorInputKey::RightShift)
-            shiftHeld_ = false;
-        return;
-    }
-    if (event.kind == Kind::KeyDown
-        && (event.key == EditorInputKey::LeftControl
-            || event.key == EditorInputKey::RightControl)) {
-        controlHeld_ = true;
-        return;
-    }
-    if (event.kind == Kind::KeyDown
-        && (event.key == EditorInputKey::LeftShift || event.key == EditorInputKey::RightShift)) {
-        shiftHeld_ = true;
-        return;
-    }
+    if (event.kind == Kind::KeyUp)
+        return accepted();
 
     if (presentationState_.workspace() == "3D" && event.kind == Kind::PointerDown
         && event.button == EditorPointerButton::Right) {
@@ -501,19 +386,18 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
             sceneViewportRightButtonHeld_ = true;
             sceneViewportGesture_ = SceneViewportGesture::Look;
         }
-        return;
+        return accepted();
     }
     if (presentationState_.workspace() == "3D" && event.kind == Kind::PointerDown
         && event.primaryButton) {
-        if (event.x >= layout::kSceneHierarchyLeft
-            && event.x < layout::kSceneHierarchyLeft + layout::kSceneHierarchyWidth
-            && event.y >= layout::kSceneHierarchyTop
-            && event.y < layout::kSceneHierarchyTop + layout::kSceneHierarchyVisibleHeight) {
+        if (sceneDockTab_ == "Scene" && hierarchyContains()) {
             const auto hierarchy = visibleSceneHierarchyEntries();
             const auto maxOffset = layout::sceneHierarchyMaxScrollOffset(hierarchy.size());
             sceneHierarchyScrollOffset_ = std::min(sceneHierarchyScrollOffset_, maxOffset);
-            const float scrollbarX = layout::kSceneHierarchyLeft + layout::kSceneHierarchyWidth
-                - layout::kSceneHierarchyScrollbarWidth;
+            const auto hierarchyClip =
+                layout::sceneHierarchyClip(runtime().canvas().resolveLayout(), id("left_scene"));
+            const float scrollbarX =
+                hierarchyClip.x + hierarchyClip.width - layout::kSceneHierarchyScrollbarWidth;
             if (event.x >= scrollbarX && maxOffset > 0u) {
                 const auto thumb = ui::ScrollbarGeometry::thumb(layout::kSceneHierarchyTop,
                     layout::kSceneHierarchyVisibleHeight,
@@ -534,7 +418,7 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                             : std::min(maxOffset, sceneHierarchyScrollOffset_ + page);
                     }
                 }
-                return;
+                return accepted();
             }
             const auto row = static_cast<std::size_t>(
                 (event.y - layout::kSceneHierarchyTop) / layout::kSceneHierarchyRowHeight);
@@ -561,7 +445,7 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                         layout::sceneHierarchyMaxScrollOffset(updatedHierarchy.size()));
                     (void)submitCommand(SelectSceneObjectCommand{objectId.value()},
                         EditorCommandOrigin::PlatformInput);
-                    return;
+                    return accepted();
                 }
                 (void)submitCommand(
                     SelectSceneObjectCommand{objectId.value()}, EditorCommandOrigin::PlatformInput);
@@ -575,7 +459,7 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                     hierarchyDragging_ = false;
                 }
             }
-            return;
+            return accepted();
         }
         const auto layout = runtime().canvas().resolveLayout();
         const auto* viewport = layout.findWidget(id("viewport"));
@@ -584,15 +468,15 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
             && event.y < viewport->rect.y + viewport->rect.height) {
             const auto selectedId = sceneDocument_.selectedObject();
             const auto* selectedObject = sceneDocument_.scene().findObject(selectedId);
-            if (selectedObject) {
+            if (selectedObject && sceneSelectionGizmoVisible()) {
                 sceneGizmoAxis_ = SceneGizmoAxis::None;
-                const auto origin = selectedObject->world_transform().translation;
-                constexpr core::Vec3 axes[] = {
-                    {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
-                constexpr core::Vec3 planeU[] = {
-                    {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f}};
-                constexpr core::Vec3 planeV[] = {
-                    {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+                core::Vec3 origin;
+                EditorSceneTransformFrame frame;
+                if (const auto* diagnostic = sceneTransformSelectionView(origin, frame)) {
+                    feedback(diagnostic);
+                    return accepted();
+                }
+                const auto& axes = frame.axes;
                 if (sceneTransformTool_ == SceneTransformTool::Rotate) {
                     float centerX = 0.0f, centerY = 0.0f;
                     if (sceneViewportCamera_.project(origin,
@@ -602,8 +486,8 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                             centerY)) {
                         centerX += viewport->rect.x;
                         centerY += viewport->rect.y;
-                        constexpr float radius = 1.25f;
-                        constexpr unsigned segments = 48u;
+                        constexpr float radius = EditorSceneTransformFrame::ringRadius;
+                        constexpr unsigned segments = EditorSceneTransformFrame::ringSegments;
                         float bestDistance = 9.0f;
                         for (std::size_t axisIndex = 0; axisIndex < 3u; ++axisIndex) {
                             float priorX = 0.0f, priorY = 0.0f;
@@ -611,12 +495,12 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                             float orientationSign = 1.0f;
                             float ux = 0.0f, uy = 0.0f, vx = 0.0f, vy = 0.0f;
                             const bool basisValid =
-                                sceneViewportCamera_.project(origin + planeU[axisIndex],
+                                sceneViewportCamera_.project(origin + frame.planeU(axisIndex),
                                     viewport->rect.width,
                                     viewport->rect.height,
                                     ux,
                                     uy)
-                                && sceneViewportCamera_.project(origin + planeV[axisIndex],
+                                && sceneViewportCamera_.project(origin + frame.planeV(axisIndex),
                                     viewport->rect.width,
                                     viewport->rect.height,
                                     vx,
@@ -627,16 +511,19 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                                 vx -= centerX - viewport->rect.x;
                                 vy -= centerY - viewport->rect.y;
                                 const float determinant = ux * vy - uy * vx;
-                                if (std::abs(determinant) > 0.001f)
-                                    orientationSign = determinant < 0.0f ? -1.0f : 1.0f;
-                            }
+                                if (!std::isfinite(determinant) || std::abs(determinant) <= 0.001f)
+                                    continue;
+                                orientationSign = determinant < 0.0f ? -1.0f : 1.0f;
+                            } else
+                                continue;
                             for (unsigned segment = 0u; segment <= segments; ++segment) {
                                 const float angle = 6.283185307179586f
                                     * static_cast<float>(segment % segments)
                                     / static_cast<float>(segments);
                                 const auto point = origin
-                                    + core::scale(planeU[axisIndex], radius * std::cos(angle))
-                                    + core::scale(planeV[axisIndex], radius * std::sin(angle));
+                                    + core::scale(frame.planeU(axisIndex), radius * std::cos(angle))
+                                    + core::scale(
+                                        frame.planeV(axisIndex), radius * std::sin(angle));
                                 float px = 0.0f, py = 0.0f;
                                 const bool valid = sceneViewportCamera_.project(
                                     point, viewport->rect.width, viewport->rect.height, px, py);
@@ -660,7 +547,6 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                                             bestDistance = distance;
                                             sceneGizmoAxis_ =
                                                 static_cast<SceneGizmoAxis>(axisIndex + 1u);
-                                            sceneGizmoWorldAxis_ = axes[axisIndex];
                                             sceneGizmoScreenOrientationSign_ = orientationSign;
                                         }
                                     }
@@ -671,13 +557,14 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                             }
                         }
                         if (sceneGizmoAxis_ != SceneGizmoAxis::None) {
-                            sceneGizmoObject_ = selectedId;
-                            sceneGizmoStartTransform_ = selectedObject->world_transform();
-                            sceneGizmoLastPointer_ = {event.x - centerX, event.y - centerY, 0.0f};
+                            if (!beginSceneTransformGesture(
+                                    *selectedObject, static_cast<unsigned>(sceneGizmoAxis_) - 1)) {
+                                sceneGizmoAxis_ = SceneGizmoAxis::None;
+                                return accepted();
+                            }
+                            sceneGizmoAccumulator_.reset({event.x - centerX, event.y - centerY, 0});
                             sceneViewportGesture_ = SceneViewportGesture::TransformAxis;
-                            (void)submitCommand(BeginSceneTransformEditCommand{selectedId.value()},
-                                EditorCommandOrigin::PlatformInput);
-                            return;
+                            return accepted();
                         }
                     }
                 } else if (sceneTransformTool_ == SceneTransformTool::Move
@@ -687,7 +574,9 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                         float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
                         if (!sceneViewportCamera_.project(
                                 origin, viewport->rect.width, viewport->rect.height, x0, y0)
-                            || !sceneViewportCamera_.project(origin + axes[axisIndex],
+                            || !sceneViewportCamera_.project(origin
+                                    + core::scale(
+                                        axes[axisIndex], EditorSceneTransformFrame::axisLength),
                                 viewport->rect.width,
                                 viewport->rect.height,
                                 x1,
@@ -711,24 +600,27 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                         if (distance < bestDistance) {
                             bestDistance = distance;
                             sceneGizmoAxis_ = static_cast<SceneGizmoAxis>(axisIndex + 1u);
-                            sceneGizmoWorldAxis_ = axes[axisIndex];
                             sceneGizmoScreenAxis_ = {sx, sy, 0.0f};
                         }
                     }
                     if (sceneGizmoAxis_ != SceneGizmoAxis::None) {
-                        sceneGizmoObject_ = selectedId;
-                        sceneGizmoStartTransform_ = selectedObject->world_transform();
+                        if (!beginSceneTransformGesture(
+                                *selectedObject, static_cast<unsigned>(sceneGizmoAxis_) - 1)) {
+                            sceneGizmoAxis_ = SceneGizmoAxis::None;
+                            return accepted();
+                        }
+                        sceneGizmoAccumulator_.reset();
                         sceneViewportGesture_ = SceneViewportGesture::TransformAxis;
-                        (void)submitCommand(BeginSceneTransformEditCommand{selectedId.value()},
-                            EditorCommandOrigin::PlatformInput);
-                        return;
+                        return accepted();
                     }
                 }
             }
-            if (!shiftHeld_) {
+            if (!modifiers_.shift()) {
                 scene::GameObjectId nearest = scene::GameObjectId::invalid();
                 float nearestDistance = 14.0f;
                 for (const auto& object : sceneDocument_.scene().objects()) {
+                    if (!sceneObjectPickable(object->id()))
+                        continue;
                     float x = 0.0f, y = 0.0f;
                     if (!sceneViewportCamera_.project(object->world_transform().translation,
                             viewport->rect.width,
@@ -751,7 +643,7 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
             sceneViewportGesture_ = SceneViewportGesture::BoxSelect;
             sceneViewportBoxStartX_ = sceneViewportBoxEndX_ = event.x;
             sceneViewportBoxStartY_ = sceneViewportBoxEndY_ = event.y;
-            return;
+            return accepted();
         }
     }
     if (presentationState_.workspace() == "3D" && event.kind == Kind::PointerDown
@@ -762,8 +654,8 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
             && event.x < viewport->rect.x + viewport->rect.width && event.y >= viewport->rect.y
             && event.y < viewport->rect.y + viewport->rect.height) {
             sceneViewportGesture_ =
-                shiftHeld_ ? SceneViewportGesture::Pan : SceneViewportGesture::Orbit;
-            if (!shiftHeld_) {
+                modifiers_.shift() ? SceneViewportGesture::Pan : SceneViewportGesture::Orbit;
+            if (!modifiers_.shift()) {
                 const auto* selected =
                     sceneDocument_.scene().findObject(sceneDocument_.selectedObject());
                 if (selected) {
@@ -777,74 +669,79 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                 }
             }
         }
-        return;
+        return accepted();
     }
     if (presentationState_.workspace() == "3D" && event.kind == Kind::PointerDelta
         && sceneViewportGesture_ != SceneViewportGesture::None) {
         const auto layout = runtime().canvas().resolveLayout();
         const auto* viewport = layout.findWidget(id("viewport"));
         if (viewport && sceneViewportGesture_ == SceneViewportGesture::TransformAxis) {
+            if (!sceneTransformGestureCurrent()) {
+                auto ended = finishSceneTransformGesture();
+                // Retire stale input without overwriting external content. The
+                // actual End receipt is preserved even when it rejects stale state.
+                return ended;
+            }
             const float lengthSquared = sceneGizmoScreenAxis_.x * sceneGizmoScreenAxis_.x
                 + sceneGizmoScreenAxis_.y * sceneGizmoScreenAxis_.y;
             const auto* object = sceneDocument_.scene().findObject(sceneGizmoObject_);
             if (object
                 && (sceneTransformTool_ == SceneTransformTool::Rotate || lengthSquared >= 1.0f)) {
-                auto transform = sceneGizmoStartTransform_;
+                auto accumulated = sceneGizmoAccumulator_;
                 if (sceneTransformTool_ == SceneTransformTool::Rotate) {
-                    const core::Vec3 nextPointer = {sceneGizmoLastPointer_.x + event.deltaX,
-                        sceneGizmoLastPointer_.y + event.deltaY,
-                        0.0f};
-                    const float cross = sceneGizmoLastPointer_.x * nextPointer.y
-                        - sceneGizmoLastPointer_.y * nextPointer.x;
-                    const float dot = sceneGizmoLastPointer_.x * nextPointer.x
-                        + sceneGizmoLastPointer_.y * nextPointer.y;
-                    if (std::isfinite(cross) && std::isfinite(dot)
-                        && (std::abs(cross) + std::abs(dot) > 0.0001f)) {
-                        const float angle =
-                            std::atan2(cross, dot) * sceneGizmoScreenOrientationSign_;
-                        transform.rotation =
-                            core::normalize(core::Quat::fromAxisAngle(sceneGizmoWorldAxis_, angle)
-                                * sceneGizmoStartTransform_.rotation);
-                        sceneGizmoLastPointer_ = nextPointer;
-                    } else
-                        return;
+                    if (!accumulated.addRotation(
+                            event.deltaX, event.deltaY, sceneGizmoScreenOrientationSign_))
+                        return accepted();
                 } else if (lengthSquared >= 1.0f
-                    && sceneTransformTool_ == SceneTransformTool::Move) {
-                    const float worldDelta = (event.deltaX * sceneGizmoScreenAxis_.x
-                                                 + event.deltaY * sceneGizmoScreenAxis_.y)
-                        / lengthSquared;
-                    transform.translation =
-                        transform.translation + core::scale(sceneGizmoWorldAxis_, worldDelta);
-                } else if (lengthSquared >= 1.0f
-                    && sceneTransformTool_ == SceneTransformTool::Scale) {
-                    const float worldDelta = (event.deltaX * sceneGizmoScreenAxis_.x
-                                                 + event.deltaY * sceneGizmoScreenAxis_.y)
-                        / lengthSquared;
-                    if (sceneGizmoAxis_ == SceneGizmoAxis::X)
-                        transform.scale.x += worldDelta;
-                    else if (sceneGizmoAxis_ == SceneGizmoAxis::Y)
-                        transform.scale.y += worldDelta;
-                    else if (sceneGizmoAxis_ == SceneGizmoAxis::Z)
-                        transform.scale.z += worldDelta;
+                    && (sceneTransformTool_ == SceneTransformTool::Scale
+                        || sceneTransformTool_ == SceneTransformTool::Move)) {
+                    if (!accumulated.addLinear(event.deltaX, event.deltaY, sceneGizmoScreenAxis_))
+                        return accepted();
                 } else
-                    return;
-                const auto* parent = object->parent_object();
-                const auto parentWorld =
-                    parent ? parent->world_transform() : scene::Transform::identity();
-                constexpr float minimumInvertibleScale = 0.000001f;
-                if (!std::isfinite(parentWorld.scale.x) || !std::isfinite(parentWorld.scale.y)
-                    || !std::isfinite(parentWorld.scale.z)
-                    || std::abs(parentWorld.scale.x) <= minimumInvertibleScale
-                    || std::abs(parentWorld.scale.y) <= minimumInvertibleScale
-                    || std::abs(parentWorld.scale.z) <= minimumInvertibleScale)
-                    return;
-                const auto localTransform = scene::deriveLocalTransform(parentWorld, transform);
+                    return accepted();
+                double total = 0;
+                if (const auto* diagnostic = sceneTransformSnap_.prepare(
+                        sceneTransformTool_, accumulated.amount(), total)) {
+                    feedback(diagnostic);
+                    return accepted();
+                }
+                if (sceneGizmoBatchEditId_) {
+                    auto response = submitCommand(
+                        UpdateSceneSelectionTransformEditCommand{sceneGizmoBatchEditId_, total},
+                        EditorCommandOrigin::PlatformInput);
+                    if (response.status == EditorResponseStatus::Completed)
+                        sceneGizmoAccumulator_ = accumulated;
+                    return std::move(response).intoNestedOutcome();
+                }
+                scene::Transform localTransform;
+                if (const auto* diagnostic = EditorSceneTransformFrame::prepare(sceneTransformTool_,
+                        sceneTransformSpace_,
+                        static_cast<unsigned>(sceneGizmoAxis_) - 1,
+                        total,
+                        sceneGizmoStartLocal_,
+                        sceneGizmoParentWorld_,
+                        localTransform)) {
+                    feedback(diagnostic);
+                    return accepted();
+                }
+                if (EditorSceneTransformFrame::same(localTransform, object->local_transform())) {
+                    // A sub-step event is accepted input even when its snapped
+                    // pose is unchanged. Keep its raw amount without re-running
+                    // normalization or rebuilding the Inspector.
+                    sceneGizmoAccumulator_ = accumulated;
+                    return accepted();
+                }
                 SetSceneObjectTransformCommand command;
                 command.objectId = sceneGizmoObject_.value();
                 command.translation = localTransform.translation;
                 command.rotation = localTransform.rotation;
                 command.scale = localTransform.scale;
-                (void)submitCommand(command, EditorCommandOrigin::PlatformInput);
+                auto response = submitCommand(command, EditorCommandOrigin::PlatformInput);
+                if (response.status == EditorResponseStatus::Completed) {
+                    sceneGizmoAccumulator_ = accumulated;
+                    sceneGizmoLastLocal_ = object->local_transform();
+                }
+                return std::move(response).intoNestedOutcome();
             }
         } else if (viewport && sceneViewportGesture_ == SceneViewportGesture::BoxSelect) {
             sceneViewportBoxEndX_ = event.x;
@@ -864,10 +761,11 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                 camera.pivot = sceneViewportOrbitPivot_;
             (void)submitCommand(camera, EditorCommandOrigin::PlatformInput);
         }
-        return;
+        return accepted();
     }
 
-    if (event.kind == Kind::PointerDown && event.primaryButton && event.x >= kFileScrollbarX - 2.0f
+    if (!filesPresentationFailed_ && event.kind == Kind::PointerDown && event.primaryButton
+        && event.x >= kFileScrollbarX - 2.0f
         && event.x < kFileScrollbarX + kFileScrollbarWidth + 2.0f && event.y >= kFileScrollbarY
         && event.y < kFileScrollbarY + kFileScrollbarHeight) {
         const auto thumb = ui::ScrollbarGeometry::thumb(kFileScrollbarY,
@@ -890,7 +788,7 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
                 std::lround(fraction * static_cast<float>(thumb.maxOffset)));
             updateFileSlots();
         }
-        return;
+        return accepted();
     }
     if (presentationState_.workspace() == "Script" && event.kind == Kind::PointerDown
         && event.primaryButton) {
@@ -903,298 +801,25 @@ void EditorShell::applyPlatformInput(const EditorInputCommand& event)
             for (std::size_t index = 0; index < documents.size(); ++index) {
                 const float width = scriptTabWidth(documents[index].path);
                 if (event.x >= tabX && event.x < tabX + width) {
-                    if (event.x >= tabX + width - 24.0f)
-                        closeScriptDocument(index);
-                    else
+                    if (event.x >= tabX + width - 24.0f) {
+                        const auto outcome =
+                            scriptFilePanel_.requestClose(*this, documents[index].id);
+                        scriptPointerSuppressRelease_ = true;
+                        platformPointerConsumed_ = true;
+                        return outcome;
+                    } else
                         activateScriptDocument(index);
-                    return;
+                    return accepted();
                 }
                 tabX += width + 2.0f;
             }
-            return;
+            return accepted();
         }
     }
-    if (presentationState_.workspace() == "Script" && event.kind == Kind::PointerDown
-        && event.primaryButton) {
-        const auto layout = runtime().canvas().resolveLayout();
-        const auto* viewport = layout.findWidget(id("viewport"));
-        if (viewport) {
-            const float trackX =
-                viewport->rect.x + viewport->rect.width - kScriptScrollbarWidth - 2.0f;
-            const float trackY = viewport->rect.y + 34.0f,
-                        trackHeight = viewport->rect.height - 58.0f;
-            if (event.x >= trackX && event.x < trackX + kScriptScrollbarWidth && event.y >= trackY
-                && event.y < trackY + trackHeight) {
-                const auto visible =
-                    static_cast<std::size_t>((viewport->rect.height - 42.0f) / kCodeLineHeight);
-                const auto thumb = ui::ScrollbarGeometry::thumb(trackY,
-                    trackHeight,
-                    scriptLineCount(scriptTextView()),
-                    visible,
-                    scriptDocuments_.activeScrollLine(),
-                    32.0f);
-                if (thumb.visible) {
-                    scriptFocused_ = true;
-                    scriptDraggingScrollbar_ = true;
-                    scriptScrollbarGrabOffset_ =
-                        (event.y >= thumb.y && event.y < thumb.y + thumb.height)
-                        ? event.y - thumb.y
-                        : thumb.height * 0.5f;
-                    const float travel = trackHeight - thumb.height;
-                    const float fraction = travel > 0.0f
-                        ? std::clamp(
-                              (event.y - trackY - scriptScrollbarGrabOffset_) / travel, 0.0f, 1.0f)
-                        : 0.0f;
-                    scriptDocuments_.setActiveScrollLine(static_cast<std::size_t>(
-                        std::lround(fraction * static_cast<float>(thumb.maxOffset))));
-                }
-                return;
-            }
-        }
-    }
-    if (presentationState_.workspace() == "Script" && event.kind == Kind::PointerDown
-        && event.primaryButton && [&]() {
-               const auto layout = runtime().canvas().resolveLayout();
-               const auto* viewport = layout.findWidget(id("viewport"));
-               return viewport && event.x >= viewport->rect.x + 54.0f
-                   && event.x < viewport->rect.x + viewport->rect.width - 8.0f
-                   && event.y >= viewport->rect.y + kScriptEditorHeaderHeight + 4.0f
-                   && event.y < viewport->rect.y + viewport->rect.height - 24.0f;
-           }()) {
-        scriptFocused_ = true;
-        auto offset = scriptOffsetAt(event.x, event.y);
-        const auto now = std::chrono::steady_clock::now();
-        const bool doubleClick = now - lastEditorClickTime_ < std::chrono::milliseconds(450)
-            && (offset == lastScriptClickOffset_
-                || offset == core::Utf8Cursor::next(scriptTextView(), lastScriptClickOffset_)
-                || core::Utf8Cursor::next(scriptTextView(), offset) == lastScriptClickOffset_);
-        lastEditorClickTime_ = now;
-        lastScriptClickOffset_ = offset;
-        if (doubleClick && !scriptTextView().empty()) {
-            std::size_t probe = offset;
-            if (probe == scriptTextView().size()
-                || (probe < scriptTextView().size() && scriptTextView()[probe] == '\n')) {
-                if (probe > 0)
-                    probe = core::Utf8Cursor::previous(scriptTextView(), probe);
-            }
-            auto isWordByte = [&](std::size_t at) {
-                if (at >= scriptTextView().size() || scriptTextView()[at] == '\n')
-                    return false;
-                const auto ch = static_cast<unsigned char>(scriptTextView()[at]);
-                return ch >= 0x80u || std::isalnum(ch) || ch == '_';
-            };
-            if (isWordByte(probe)) {
-                auto begin = probe, end = core::Utf8Cursor::next(scriptTextView(), probe);
-                while (begin > 0) {
-                    const auto prev = core::Utf8Cursor::previous(scriptTextView(), begin);
-                    if (!isWordByte(prev))
-                        break;
-                    begin = prev;
-                }
-                while (end < scriptTextView().size() && isWordByte(end))
-                    end = core::Utf8Cursor::next(scriptTextView(), end);
-                scriptDocuments_.setActiveSelection(end, begin);
-            } else {
-                scriptDocuments_.setActiveSelection(offset, offset);
-            }
-            scriptDraggingSelection_ = false;
-        } else {
-            moveScriptCursor(offset, shiftHeld_);
-            scriptDraggingSelection_ = true;
-        }
-        return;
-    }
-    if (event.kind == Kind::PointerUp && event.primaryButton) {
-        scriptDraggingSelection_ = false;
-        return;
-    }
-    if (event.kind == Kind::PointerMoved && presentationState_.workspace() == "Script"
-        && scriptDraggingSelection_) {
-        moveScriptCursor(scriptOffsetAt(event.x, event.y), true);
-        return;
-    }
-    if (event.kind == Kind::KeyDown && controlHeld_ && presentationState_.workspace() == "3D"
-        && event.key == EditorInputKey::Z && !shiftHeld_) {
-        (void)submitCommand(UndoSceneCommand{}, EditorCommandOrigin::PlatformInput);
-        return;
-    }
-    if (event.kind == Kind::KeyDown && controlHeld_ && presentationState_.workspace() == "3D"
-        && (event.key == EditorInputKey::Y || (event.key == EditorInputKey::Z && shiftHeld_))) {
-        (void)submitCommand(RedoSceneCommand{}, EditorCommandOrigin::PlatformInput);
-        return;
-    }
-    if (event.kind == Kind::KeyDown && sceneViewportRightButtonHeld_
-        && presentationState_.workspace() == "3D") {
-        float horizontal = 0.0f, forward = 0.0f;
-        if (event.key == EditorInputKey::A)
-            horizontal = -1.0f;
-        else if (event.key == EditorInputKey::D)
-            horizontal = 1.0f;
-        else if (event.key == EditorInputKey::W)
-            forward = 1.0f;
-        else if (event.key == EditorInputKey::S)
-            forward = -1.0f;
-        if (horizontal != 0.0f || forward != 0.0f) {
-            const auto layout = runtime().canvas().resolveLayout();
-            const auto* viewport = layout.findWidget(id("viewport"));
-            if (viewport) {
-                SceneViewportCameraCommand camera;
-                camera.operation = SceneViewportCameraOperation::Move;
-                camera.deltaX = horizontal;
-                camera.deltaY = forward;
-                camera.viewportWidth = viewport->rect.width;
-                camera.viewportHeight = viewport->rect.height;
-                (void)submitCommand(camera, EditorCommandOrigin::PlatformInput);
-            }
-            return;
-        }
-    }
-    if (event.kind == Kind::KeyDown && !controlHeld_ && presentationState_.workspace() == "3D") {
-        const auto focusedId = runtime().focusedControl();
-        const auto* focused =
-            focusedId.valid() ? runtime().canvas().findWidget(focusedId) : nullptr;
-        const bool textEntryFocused = focused
-            && (focused->desc().controlType == ui::UiControlType::TextInput
-                || focused->desc().controlType == ui::UiControlType::NumericInput);
-        if (!textEntryFocused) {
-            const char* toolControl = event.key == EditorInputKey::Q ? "tool_4"
-                : event.key == EditorInputKey::W                     ? "tool_1"
-                : event.key == EditorInputKey::E                     ? "tool_2"
-                : event.key == EditorInputKey::R                     ? "tool_3"
-                                                                     : nullptr;
-            if (toolControl) {
-                activate(toolControl);
-                return;
-            }
-        }
-    }
-    if (!scriptEditorCapturesKeyboard())
-        return;
-    if (event.kind == Kind::Text) {
-        if (!controlHeld_)
-            insertScriptText(event.text.data(), event.text.size());
-        return;
-    }
-    if (event.kind != Kind::KeyDown)
-        return;
-    if (controlHeld_ && event.key == EditorInputKey::S) {
-        saveScript();
-        return;
-    }
-    if (controlHeld_ && event.key == EditorInputKey::Z && !shiftHeld_) {
-        (void)submitCommand(
-            UndoScriptCommand{activeScriptDocumentId()}, EditorCommandOrigin::PlatformInput);
-        return;
-    }
-    if (controlHeld_
-        && (event.key == EditorInputKey::Y || (shiftHeld_ && event.key == EditorInputKey::Z))) {
-        (void)submitCommand(
-            RedoScriptCommand{activeScriptDocumentId()}, EditorCommandOrigin::PlatformInput);
-        return;
-    }
-    if (controlHeld_ && event.key == EditorInputKey::A) {
-        scriptDocuments_.setActiveSelection(scriptTextView().size(), 0);
-        return;
-    }
-    if (controlHeld_ && event.key == EditorInputKey::C) {
-        if (scriptSelectionStart() != scriptSelectionEnd())
-            writeSystemClipboardText(
-                std::string_view(scriptTextView().data() + scriptSelectionStart(),
-                    scriptSelectionEnd() - scriptSelectionStart()));
-        return;
-    }
-    if (controlHeld_ && event.key == EditorInputKey::X) {
-        if (scriptSelectionStart() != scriptSelectionEnd()
-            && writeSystemClipboardText(
-                std::string_view(scriptTextView().data() + scriptSelectionStart(),
-                    scriptSelectionEnd() - scriptSelectionStart())))
-            replaceScriptRange(
-                scriptSelectionStart(), scriptSelectionEnd() - scriptSelectionStart(), "", 0);
-        return;
-    }
-    if (controlHeld_ && event.key == EditorInputKey::V) {
-        core::pmr::String pasted(&core::defaultCpuMemoryResource());
-        if (!readSystemClipboardText(pasted))
-            return;
-        core::pmr::String normalized(&core::defaultCpuMemoryResource());
-        normalized.reserve(pasted.size());
-        for (std::size_t i = 0; i < pasted.size(); ++i) {
-            if (pasted[i] == '\r') {
-                if (i + 1 < pasted.size() && pasted[i + 1] == '\n')
-                    ++i;
-                normalized.push_back('\n');
-            } else
-                normalized.push_back(pasted[i]);
-        }
-        insertScriptText(normalized.data(), normalized.size());
-        return;
-    }
-    if (event.key == EditorInputKey::Backspace) {
-        if (scriptSelectionStart() != scriptSelectionEnd())
-            replaceScriptRange(
-                scriptSelectionStart(), scriptSelectionEnd() - scriptSelectionStart(), "", 0);
-        else if (scriptDocuments_.activeCursor() > 0) {
-            const auto cursor = scriptDocuments_.activeCursor();
-            const auto start = core::Utf8Cursor::previous(scriptTextView(), cursor);
-            replaceScriptRange(start, cursor - start, "", 0);
-        }
-        return;
-    }
-    if (event.key == EditorInputKey::Delete) {
-        if (scriptSelectionStart() != scriptSelectionEnd())
-            replaceScriptRange(
-                scriptSelectionStart(), scriptSelectionEnd() - scriptSelectionStart(), "", 0);
-        else if (scriptDocuments_.activeCursor() < scriptTextView().size()) {
-            const auto cursor = scriptDocuments_.activeCursor();
-            const auto end = core::Utf8Cursor::next(scriptTextView(), cursor);
-            replaceScriptRange(cursor, end - cursor, "", 0);
-        }
-        return;
-    }
-    if (event.key == EditorInputKey::Enter || event.key == EditorInputKey::NumpadEnter) {
-        insertScriptText("\n", 1);
-        return;
-    }
-    if (event.key == EditorInputKey::Tab) {
-        insertScriptText("    ", 4);
-        return;
-    }
-    if (event.key == EditorInputKey::ArrowLeft) {
-        auto target = scriptDocuments_.activeCursor();
-        if (!shiftHeld_ && scriptSelectionStart() != scriptSelectionEnd())
-            target = scriptSelectionStart();
-        else
-            target = core::Utf8Cursor::previous(scriptTextView(), target);
-        moveScriptCursor(target, shiftHeld_);
-        return;
-    }
-    if (event.key == EditorInputKey::ArrowRight) {
-        auto target = scriptDocuments_.activeCursor();
-        if (!shiftHeld_ && scriptSelectionStart() != scriptSelectionEnd())
-            target = scriptSelectionEnd();
-        else
-            target = core::Utf8Cursor::next(scriptTextView(), target);
-        moveScriptCursor(target, shiftHeld_);
-        return;
-    }
-    if (event.key == EditorInputKey::Home || event.key == EditorInputKey::End) {
-        const auto cursor = scriptDocuments_.activeCursor();
-        const auto previous = scriptTextView().rfind('\n', cursor == 0 ? 0 : cursor - 1);
-        const auto lineStart = previous == core::pmr::String::npos ? 0 : previous + 1;
-        const auto next = scriptTextView().find('\n', cursor);
-        const auto lineEnd = next == core::pmr::String::npos ? scriptTextView().size() : next;
-        moveScriptCursor(event.key == EditorInputKey::Home ? lineStart : lineEnd, shiftHeld_);
-        return;
-    }
-    if (event.key == EditorInputKey::ArrowUp || event.key == EditorInputKey::ArrowDown) {
-        moveScriptCursorVertical(event.key == EditorInputKey::ArrowUp ? -1 : 1);
-        return;
-    }
-    if (event.key == EditorInputKey::PageUp || event.key == EditorInputKey::PageDown) {
-        for (int i = 0; i < 30; ++i)
-            moveScriptCursorVertical(event.key == EditorInputKey::PageUp ? -1 : 1);
-        return;
-    }
+    if (keyboard && presentationState_.workspace() == "3D")
+        return applySceneKeyboardInput(event);
+    return presentationState_.workspace() == "Script" ? applyScriptKeyboardInput(event)
+                                                      : accepted();
 }
 
 } // namespace arp::editor

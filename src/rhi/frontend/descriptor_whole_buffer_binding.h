@@ -10,13 +10,50 @@ namespace arp::rhi::semantics {
 // Scalar facts are validation inputs, never an original-device receipt.
 class DescriptorWholeBufferBinding final {
 public:
+    static constexpr std::uint32_t uniformKind = 1u, storageKind = 2u;
+
     struct Limits {
         std::uint32_t contractVersion = 0u;
         std::uint32_t uniformOffsetAlignment = 0u;
         std::uint32_t storageOffsetAlignment = 0u;
         std::uint64_t maxUniformBindingBytes = 0u;
         std::uint64_t maxStorageBindingBytes = 0u;
+        // Limits/2: version1 proves the exact kind mask, including empty.
+        // Zero is unknown coverage, never proof that a kind is absent.
+        std::uint32_t bufferKindCoverageVersion = 0u;
+        std::uint32_t bufferKindMask = 0u;
     };
+
+    static constexpr bool validLimits(const Limits& limits) noexcept
+    {
+        if (limits.contractVersion == 1u)
+            return !limits.bufferKindCoverageVersion && !limits.bufferKindMask
+                && limits.uniformOffsetAlignment && limits.storageOffsetAlignment
+                && limits.maxUniformBindingBytes && limits.maxStorageBindingBytes;
+        if (limits.contractVersion != 2u || limits.bufferKindCoverageVersion != 1u
+            || (limits.bufferKindMask & ~(uniformKind | storageKind)))
+            return false;
+        const auto validKind = [&](std::uint32_t kind,
+                                   std::uint32_t alignment,
+                                   std::uint64_t maximum) {
+            return (limits.bufferKindMask & kind) ? alignment && maximum : !alignment && !maximum;
+        };
+        return validKind(uniformKind, limits.uniformOffsetAlignment, limits.maxUniformBindingBytes)
+            && validKind(storageKind, limits.storageOffsetAlignment, limits.maxStorageBindingBytes);
+    }
+
+    static constexpr bool kindAvailable(DescriptorType type, const Limits& limits) noexcept
+    {
+        const auto kind = type == DescriptorType::UniformBuffer ? uniformKind
+            : (type == DescriptorType::StorageBuffer
+                  || type == DescriptorType::ReadOnlyStorageBuffer)
+            ? storageKind
+            : 0u;
+        return kind
+            && (limits.contractVersion == 1u
+                || (limits.contractVersion == 2u && limits.bufferKindCoverageVersion == 1u
+                    && (limits.bufferKindMask & kind)));
+    }
     enum class Failure {
         None,
         Version,
@@ -48,12 +85,17 @@ public:
         std::uint32_t dynamicOffset,
         const Limits& limits) noexcept
     {
-        if (limits.contractVersion != 1u)
+        if (limits.contractVersion != 1u && limits.contractVersion != 2u)
             return Failure::Version;
         const bool uniform = type == DescriptorType::UniformBuffer;
         if (!uniform && type != DescriptorType::StorageBuffer
             && type != DescriptorType::ReadOnlyStorageBuffer)
             return Failure::BufferType;
+        if (limits.contractVersion == 2u && (!validLimits(limits) || !kindAvailable(type, limits)))
+            return Failure::LimitsUnavailable;
+        if (limits.contractVersion == 1u
+            && (limits.bufferKindCoverageVersion || limits.bufferKindMask))
+            return Failure::LimitsUnavailable;
         if (!preservesRange(dynamicOffset))
             return Failure::DynamicRangeUnproven;
         const auto alignment =

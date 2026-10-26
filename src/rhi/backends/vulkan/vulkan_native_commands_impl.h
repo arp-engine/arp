@@ -4,7 +4,9 @@
 #include "core/ownership/bounded_retainer.h"
 #include "rhi/backends/vulkan/vulkan_native_commands.h"
 #include "rhi/backends/vulkan/vulkan_query_pool.h"
+#include "rhi/backends/vulkan/vulkan_recording_storage.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
+#include "rhi/backends/vulkan/vulkan_staging_upload_pool.h"
 #include "rhi/frontend/bindless_binding_preparation.h"
 #include "rhi/frontend/bindless_snapshot.h"
 #include "rhi/frontend/command_retention_storage.h"
@@ -21,6 +23,8 @@ class VulkanRhiQueryPoolPayload;
 class VulkanOriginalCommandCustody;
 class VulkanConformanceClearFrame;
 
+struct VulkanRhiOrdinaryRenderPassContent;
+
 struct VulkanRhiNativeRenderPassResources {
     VkRenderPass renderPass = VK_NULL_HANDLE;
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
@@ -35,6 +39,30 @@ struct VulkanRhiNativeRenderPassResources {
     /// Current subpass index during recording (0-based). Advanced by
     /// recordNextSubpass; bounds-checked against subpassCount.
     std::uint32_t currentSubpassIndex = 0;
+    std::shared_ptr<VulkanRhiOrdinaryRenderPassContent> originalContent;
+};
+
+// Observation metadata on the existing prepared native pass. Canonical source
+// identities remain in the original Program; command/operand positions select
+// them directly. No resource inventory, journal or execution authority is owned.
+struct VulkanRhiOrdinaryRenderPassContent {
+    struct Attachment {
+        rhi::GpuTexture::ContentRangeExpectation initialContent;
+        rhi::GpuTexture::CommittedStateObservation initialState;
+        bool finalStored = false;
+        bool claimOwner = false;
+        rhi::common::OriginalTextureContentControl::Value proposed;
+        std::optional<rhi::common::OriginalTextureContentControl::Cells::PendingObservation>
+            pending;
+    };
+
+    explicit VulkanRhiOrdinaryRenderPassContent(std::size_t command) : commandIndex(command) {}
+
+    const std::size_t commandIndex;
+    rhi::Extent3D extent{};
+    bool began = false, ended = false;
+    std::array<std::optional<Attachment>, VulkanRhiNativeRenderPassResources::kMaxImageViews>
+        attachments;
 };
 
 struct VulkanRhiNativeCommandPayload::Impl {
@@ -43,7 +71,8 @@ struct VulkanRhiNativeCommandPayload::Impl {
         std::shared_ptr<VulkanRhiNativeResourceStats> stats,
         VkCommandPool commandPool,
         VkCommandBuffer commandBuffer,
-        const rhi::CommandEncoderDesc& retention)
+        const rhi::CommandEncoderDesc& retention,
+        const VulkanRhiRecordingStorageLimits* storage)
         : deviceOwner(std::move(deviceOwner)), device(*this->deviceOwner), allocator(allocator),
           stats(std::move(stats)), commandPool(commandPool), commandBuffer(commandBuffer),
           indexedPipelines(retention.maxBindlessPipelines),
@@ -54,6 +83,18 @@ struct VulkanRhiNativeCommandPayload::Impl {
         pendingBindlessFaults.reserve(retention.maxBindlessSnapshots);
         bindlessFaultOutcomes.reserve(retention.maxBindlessSnapshots);
         leasedBindlessFaultLatches.reserve(retention.maxBindlessSnapshots);
+        if (storage) {
+            recordingStorage = *storage;
+            pendingBufferBarriers.reserve(storage->bufferBarriers);
+            pendingImageBarriers.reserve(storage->imageBarriers);
+            pendingMemoryBarriers.reserve(storage->memoryBarriers);
+            retainedResources.reserve(storage->resourceReferences);
+            if (storage->originalQueries) {
+                retainedTimingPools.reserve(storage->originalQueries->budget.maxQueryPools);
+                recordedTimestampQueries.reserve(
+                    storage->originalQueries->budget.maxTimestampWrites);
+            }
+        }
     }
 
     std::shared_ptr<VulkanRhiRuntime> deviceOwner;
@@ -66,6 +107,8 @@ struct VulkanRhiNativeCommandPayload::Impl {
     VkFence submitFence = VK_NULL_HANDLE;
     VkQueryPool timestampQueryPool = VK_NULL_HANDLE;
     float timestampPeriodNs = 0.0f;
+    std::optional<rhi::CommandProfilingContract::Decision> internalProfiling;
+    const char* internalTimingFailure = nullptr;
     VkSemaphore waitSemaphore = VK_NULL_HANDLE;
     VkSemaphore signalSemaphore = VK_NULL_HANDLE;
     VkPipelineStageFlags waitStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -86,6 +129,10 @@ struct VulkanRhiNativeCommandPayload::Impl {
     core::pmr::Vector<VkImageMemoryBarrier> pendingImageBarriers;
     core::pmr::Vector<VkBufferMemoryBarrier> pendingBufferBarriers;
     core::pmr::Vector<VkMemoryBarrier> pendingMemoryBarriers;
+    std::optional<VulkanRhiRecordingStorageLimits> recordingStorage;
+    std::size_t recordedBufferBarriers = 0u, recordedImageBarriers = 0u,
+                recordedMemoryBarriers = 0u;
+    const char* recordingStorageFailure = nullptr;
     VkPipelineStageFlags pendingSourceStages = 0;
     VkPipelineStageFlags pendingDestinationStages = 0;
     VkBuffer scratchIndexBuffer = VK_NULL_HANDLE;
@@ -94,6 +141,32 @@ struct VulkanRhiNativeCommandPayload::Impl {
     core::pmr::Vector<std::shared_ptr<VulkanRhiNativeResourcePayload>> retainedResources;
     core::UniquePtr<rhi::common::CommandRetentionStorage> recordingRetention;
     core::UniquePtr<core::MutationJournal> retainedResourceStates;
+    // Finished ordinary wrappers alias this exact journal through this payload.
+    // Preserve its empty object until the payload's last owner is destroyed.
+    bool ordinaryJournalAliased = false;
+    std::optional<rhi::CommandRecordingMeter> ordinaryAttachmentMeter;
+    bool ordinaryAttachmentClaimed = false, ordinaryAttachmentSealed = false;
+    bool ordinaryReadOnlyGraphics = false, ordinaryMixedPasses = false;
+    bool ordinaryComputeActive = false, ordinaryTransferActive = false;
+    const rhi::ComputePipeline* ordinaryComputePipeline = nullptr;
+    const rhi::DescriptorSet* ordinaryComputeDescriptor = nullptr;
+    const rhi::RenderPipeline* ordinaryGraphicsPipeline = nullptr;
+    const rhi::DescriptorSet* ordinaryGraphicsDescriptor = nullptr;
+    bool ordinaryGraphicsViewport = false, ordinaryGraphicsScissor = false;
+
+    struct OrdinaryTextureUpload {
+        std::size_t commandIndex;
+        std::shared_ptr<const rhi::OriginalCommandTextureUploadPackingSource> packing;
+        rhi::GpuTexture::ContentExpectation initial;
+        rhi::GpuTexture::CommittedStateObservation initialState;
+        VulkanRhiStagingUploadSlice slice;
+        std::optional<rhi::common::OriginalTextureContentControl::PendingObservation> pending;
+    };
+
+    core::pmr::Vector<OrdinaryTextureUpload> ordinaryTextureUploads;
+    std::uint64_t originalQueryRecordingIdentity = 0u;
+    rhi::FallbackMode originalQueryFallback = rhi::FallbackMode::DiagnosticFailure;
+    std::optional<rhi::CommandRecordingMeter> originalQueryMeter;
     core::UniquePtr<rhi::RecordedStagingUploadJournal> stagingUploads;
     // Populated only by indexed recording after semantic authorization. Opaque
     // objects own the typed snapshot/state, native storage and budget leases.
@@ -131,9 +204,21 @@ struct VulkanRhiNativeCommandPayload::Impl {
     struct RecordedTimestampQuery {
         std::shared_ptr<VulkanRhiQueryPoolPayload> pool;
         std::uint32_t queryIndex = 0u;
+        std::optional<VulkanRhiQueryPoolPayload::SlotObservation> originalSlot;
+        bool recorded = true;
+        std::size_t commandOrdinal = SIZE_MAX;
     };
 
     core::pmr::Vector<RecordedTimestampQuery> recordedTimestampQueries;
+
+    bool hasRecordedTimestampQueries() const noexcept
+    {
+        for (const auto& query : recordedTimestampQueries)
+            if (query.recorded)
+                return true;
+        return false;
+    }
+
     core::pmr::Vector<VkQueryPool> resetTimestampPools;
     std::uint64_t frameSerial = 0;
     bool indexBufferBound = false;
@@ -169,6 +254,21 @@ public:
         std::uint32_t colorCount,
         bool depth,
         rhi::Extent3D,
+        VulkanRhiNativeRenderPassResources&) noexcept;
+
+    static bool create(const VulkanRhiRuntime&,
+        const Attachment*,
+        const rhi::RenderPassDesc&,
+        rhi::Extent3D,
+        VulkanRhiNativeRenderPassResources&) noexcept;
+
+private:
+    static bool createImpl(const VulkanRhiRuntime&,
+        const Attachment*,
+        std::uint32_t colorCount,
+        bool depth,
+        rhi::Extent3D,
+        const rhi::RenderPassDesc*,
         VulkanRhiNativeRenderPassResources&) noexcept;
 };
 

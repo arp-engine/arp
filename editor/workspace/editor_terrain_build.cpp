@@ -1,6 +1,5 @@
 #include "editor/workspace/editor_terrain_build.h"
 
-#include "core/encoding/yaml_contract.h"
 #include "core/io/atomic_file_service.h"
 #include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
@@ -9,7 +8,6 @@
 namespace arp::editor {
 namespace {
 constexpr std::size_t manifestBudget = EditorProjectResources::maxManifestBytes;
-using Yaml = core::YamlContract;
 } // namespace
 
 struct EditorTerrainBuild::Task final {
@@ -44,40 +42,41 @@ struct EditorTerrainBuild::Task final {
                 task.result.diagnostic = "EDITOR-TERRAIN-MANIFEST-STAT";
                 return core::runtime::WorkStatus::Failed;
             }
-            Yaml::Node manifest;
-            if (task.manifestExisted) {
-                const auto path = std::filesystem::canonical(task.root / "project.arp.yaml", error);
-                if (error || !core::FilePath::contains(task.root, path)) {
-                    task.result.diagnostic = "EDITOR-TERRAIN-MANIFEST-PATH";
-                    return core::runtime::WorkStatus::Failed;
-                }
-                const auto file = core::readTextFile(path, manifestBudget);
-                if (!file.success) {
-                    task.result.diagnostic = file.diagnostics;
-                    return core::runtime::WorkStatus::Failed;
-                }
-                task.previousManifest = file.text;
-                manifest = Yaml::parseSingleDocument(file.text);
-            } else {
-                manifest = Yaml::Node::mapping();
-                manifest["format"] = "ArpEditorProject";
-                manifest["version"] = 1;
-                manifest["assetPackages"] = Yaml::Node::sequence();
+            if (!task.manifestExisted) {
+                task.result.diagnostic =
+                    "EDITOR-TERRAIN-PROJECT-REQUIRED: create or open an authoring project first";
+                return core::runtime::WorkStatus::Failed;
             }
+            const auto path = std::filesystem::canonical(task.root / "project.arp.yaml", error);
+            if (error || !core::FilePath::contains(task.root, path)) {
+                task.result.diagnostic = "EDITOR-TERRAIN-MANIFEST-PATH";
+                return core::runtime::WorkStatus::Failed;
+            }
+            const auto file = core::readTextFile(path, manifestBudget);
+            if (!file.success) {
+                task.result.diagnostic = file.diagnostics;
+                return core::runtime::WorkStatus::Failed;
+            }
+            task.previousManifest = file.text;
             if (task.expectedManifest && task.previousManifest != *task.expectedManifest) {
                 task.result.diagnostic = "EDITOR-TERRAIN-PROJECT-RELOAD-REQUIRED";
                 return core::runtime::WorkStatus::Failed;
             }
-            // Validate the current project before producing a new package.
+            // Validate current resources before producing a new package. Project
+            // identity and settings are preserved by the same authoring codec.
             EditorProjectResources previous;
-            const auto validated = previous.loadManifest(task.root, Yaml::serialize(manifest));
+            const auto validated = previous.loadManifest(task.root, task.previousManifest);
             if (!validated.success) {
                 task.result.diagnostic = validated.diagnostics;
                 return core::runtime::WorkStatus::Failed;
             }
-            auto& packages = manifest["assetPackages"].get_value_ref<Yaml::Node::sequence_type&>();
-            if (packages.size() >= EditorProjectResources::maxAssetPackages) {
-                task.result.diagnostic = "EDITOR-PROJECT-MANIFEST-BUDGET";
+            auto manifest = *previous.manifest();
+            manifest.assetPackages.push_back(task.packageRelative);
+            ProjectDiagnostic diagnostic;
+            if (!ProjectManifestCodec::encode(manifest, task.nextManifest, diagnostic)) {
+                task.result.diagnostic = diagnostic.code;
+                task.result.diagnostic += ": ";
+                task.result.diagnostic += diagnostic.field;
                 return core::runtime::WorkStatus::Failed;
             }
             // Fresh output only: a failed import cannot replace a loaded asset.
@@ -94,8 +93,6 @@ struct EditorTerrainBuild::Task final {
                 return core::runtime::WorkStatus::Failed;
             }
             task.ownsOutput = true;
-            packages.emplace_back(task.packageRelative.c_str());
-            task.nextManifest = Yaml::serialize(manifest);
             task.result.resources = core::makeUnique<EditorProjectResources>();
             const auto loaded = task.result.resources->loadManifest(task.root, task.nextManifest);
             task.result.success = loaded.success;

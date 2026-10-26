@@ -1065,6 +1065,42 @@ root:
       event: "none"
       fontToken: "font.editor"
       text: ""
+    - id: "file_navigation_failed"
+      type: "Label"
+      layer: "file_navigation_failed"
+      rect: {"x": 10, "y": 735, "width": 260, "height": 24}
+      style: "muted"
+      state: "enabled"
+      event: "none"
+      fontToken: "font.editor"
+      text: "Files view unavailable."
+    - id: "file_navigation_retry"
+      type: "Button"
+      layer: "file_navigation_retry"
+      rect: {"x": 10, "y": 767, "width": 180, "height": 26}
+      style: "button"
+      state: "enabled"
+      event: "activate"
+      fontToken: "font.editor"
+      text: "Retry files view"
+    - id: "file_definition_unavailable"
+      type: "Label"
+      layer: "file_definition_unavailable"
+      rect: {"x": 10, "y": 999, "width": 260, "height": 24}
+      style: "muted"
+      state: "enabled"
+      event: "none"
+      fontToken: "font.editor"
+      text: "Definition unavailable."
+    - id: "file_definition_retry_hint"
+      type: "Label"
+      layer: "file_definition_retry_hint"
+      rect: {"x": 10, "y": 1023, "width": 260, "height": 24}
+      style: "muted"
+      state: "enabled"
+      event: "none"
+      fontToken: "font.editor"
+      text: "Files kept. Retry Locate."
     - id: "file_search_hint"
       type: "Label"
       layer: "file_search_hint"
@@ -1533,6 +1569,42 @@ root:
       event: "none"
       resourceRole: "texture"
       resourceId: "icon-tool-select"
+    - id: scene_transform_space
+      type: Button
+      layer: scene_transform_space
+      rect: {x: 466, y: 82, width: 90, height: 29}
+      style: plain
+      state: enabled
+      event: activate
+      fontToken: font.editor
+      text: World
+    - id: scene_transform_pivot
+      type: Button
+      layer: scene_transform_pivot
+      rect: {x: 560, y: 82, width: 170, height: 29}
+      style: plain
+      state: enabled
+      event: activate
+      fontToken: font.editor
+      text: Pivot Active
+    - id: scene_transform_snap
+      type: Button
+      layer: scene_transform_snap
+      rect: {x: 734, y: 82, width: 580, height: 29}
+      style: plain
+      state: enabled
+      event: activate
+      fontToken: font.editor
+      text: "Snap Off | Move 1 | Turn 0.261799 rad | Scale 0.1"
+    - id: scene_transform_settings
+      type: Button
+      layer: scene_transform_settings
+      rect: {x: 1320, y: 82, width: 220, height: 29}
+      style: plain
+      state: enabled
+      event: activate
+      fontToken: font.editor
+      text: Transform Settings
     - id: "tool_5"
       type: "Button"
       layer: "tool_5"
@@ -1879,6 +1951,33 @@ root:
       state: "enabled"
       event: "none"
       children:
+        - id: "scene_inspector_pending"
+          type: "Label"
+          layer: "scene_inspector_pending"
+          rect: {"x": 6, "y": 5, "width": 290, "height": 24}
+          style: "muted"
+          state: "enabled"
+          event: "none"
+          fontToken: "font.editor"
+          text: "Preparing Inspector..."
+        - id: "scene_inspector_failed"
+          type: "Label"
+          layer: "scene_inspector_failed"
+          rect: {"x": 6, "y": 5, "width": 290, "height": 24}
+          style: "text"
+          state: "enabled"
+          event: "none"
+          fontToken: "font.editor"
+          text: "Inspector unavailable. Scene kept."
+        - id: "scene_inspector_retry"
+          type: "Button"
+          layer: "scene_inspector_retry"
+          rect: {"x": 6, "y": 37, "width": 200, "height": 28}
+          style: "button"
+          state: "enabled"
+          event: "activate"
+          fontToken: "font.editor"
+          text: "Retry Inspector"
         - id: "inspector_content"
           type: "Panel"
           layer: "inspector_content"
@@ -3084,8 +3183,18 @@ root:
       event: "none"
       fontToken: "font.editor"
       text: "Name"
+    - id: "scene_active"
+      type: "Button"
+      layer: "scene_active"
+      rect: {"x": 1800, "y": 190, "width": 136, "height": 24}
+      style: "plain"
+      state: "enabled"
+      event: "activate"
+      fontToken: "font.editor"
+      text: "Active: On"
     - id: "scene_name"
       type: "TextInput"
+      maxTextBytes: 128
       layer: "scene_name"
       rect: {"x": 1600, "y": 218, "width": 290, "height": 28}
       style: "input"
@@ -3295,38 +3404,850 @@ root:
           event: "none"
           fontToken: "font.editor"
           text: "Viewport: static reference preview."
+        - id: "script_presentation_failed"
+          type: "Label"
+          layer: "script_presentation_failed"
+          rect: {"x": 18, "y": 48, "width": 600, "height": 24}
+          style: "text"
+          state: "enabled"
+          event: "none"
+          fontToken: "font.editor"
+          text: "Script state kept; display update failed."
+        - id: "scene_file_failed"
+          type: "Label"
+          layer: "scene_file_failed"
+          rect: {"x": 18, "y": 112, "width": 800, "height": 24}
+          style: "text"
+          state: "enabled"
+          event: "none"
+          fontToken: "font.editor"
+          text: "Scene state kept; display update failed."
+        - id: "scene_file_retry"
+          type: "Button"
+          layer: "scene_file_retry"
+          rect: {"x": 870, "y": 108, "width": 220, "height": 32}
+          style: "button"
+          state: "enabled"
+          event: "activate"
+          fontToken: "font.editor"
+          text: "Retry Scene Display"
+        - id: "script_presentation_retry"
+          type: "Button"
+          layer: "script_presentation_retry"
+          rect: {"x": 636, "y": 44, "width": 152, "height": 30}
+          style: "button"
+          state: "enabled"
+          event: "activate"
+          fontToken: "font.editor"
+          text: "Retry Display"
     - id: "menu_popup"
       type: "Panel"
       layer: "menu_popup"
-      rect: {"x": 8, "y": 39, "width": 230, "height": 145}
+      rect: {"x": 8, "y": 39, "width": 300, "height": 296}
       style: "section"
       state: "enabled"
       event: "none"
       children:
+        - id: "scene_ui_new"
+          type: "Button"
+          layer: "scene_ui_new"
+          rect: {"x": 12, "y": 10, "width": 276, "height": 36}
+          style: "plain"
+          state: "enabled"
+          event: "activate"
+          fontToken: "font.editor"
+          text: "New Scene..."
+        - id: "open_scene"
+          type: "Button"
+          layer: "open_scene"
+          rect: {"x": 12, "y": 50, "width": 276, "height": 36}
+          style: "plain"
+          state: "enabled"
+          event: "activate"
+          fontToken: "font.editor"
+          text: "Open Scene..."
         - id: "save_scene"
           type: "Button"
           layer: "save_scene"
-          rect: {"x": 12, "y": 10, "width": 205, "height": 32}
+          rect: {"x": 12, "y": 90, "width": 276, "height": 36}
           style: "plain"
           state: "enabled"
           event: "activate"
           fontToken: "font.editor"
           text: "Save Scene  Ctrl+S"
-        - id: "open_scene"
+        - id: "save_scene_as"
           type: "Button"
-          layer: "open_scene"
-          rect: {"x": 12, "y": 49, "width": 205, "height": 32}
+          layer: "save_scene_as"
+          rect: {"x": 12, "y": 130, "width": 276, "height": 36}
           style: "plain"
           state: "enabled"
           event: "activate"
           fontToken: "font.editor"
-          text: "Open Scene"
+          text: "Save Scene As  Ctrl+Shift+S"
+        - id: "duplicate_scene"
+          type: "Button"
+          layer: "duplicate_scene"
+          rect: {"x": 12, "y": 170, "width": 276, "height": 36}
+          style: "plain"
+          state: "enabled"
+          event: "activate"
+          fontToken: "font.editor"
+          text: "Duplicate Scene..."
+        - id: "export_scene"
+          type: "Button"
+          layer: "export_scene"
+          rect: {"x": 12, "y": 210, "width": 276, "height": 36}
+          style: "plain"
+          state: "enabled"
+          event: "activate"
+          fontToken: "font.editor"
+          text: "Export Scene Package..."
         - id: "close_menu"
           type: "Button"
           layer: "close_menu"
-          rect: {"x": 12, "y": 88, "width": 205, "height": 32}
+          rect: {"x": 12, "y": 250, "width": 276, "height": 36}
           style: "plain"
           state: "enabled"
           event: "activate"
           fontToken: "font.editor"
           text: "Close Menu"
+    - id: "project_ui_menu"
+      type: "Panel"
+      layer: "project_ui_menu"
+      rect: {"x": 67, "y": 39, "width": 260, "height": 180}
+      style: "section"
+      state: "enabled"
+      event: "none"
+      children:
+        - id: "project_ui_new"
+          type: "Button"
+          layer: "project_ui_new"
+          rect: {"x": 12, "y": 10, "width": 236, "height": 36}
+          style: "plain"
+          state: "enabled"
+          event: "activate"
+          fontToken: "font.editor"
+          text: "New Project..."
+        - id: "project_ui_open"
+          type: "Button"
+          layer: "project_ui_open"
+          rect: {"x": 12, "y": 50, "width": 236, "height": 36}
+          style: "plain"
+          state: "enabled"
+          event: "activate"
+          fontToken: "font.editor"
+          text: "Open Project..."
+        - id: "project_ui_settings"
+          type: "Button"
+          layer: "project_ui_settings"
+          rect: {"x": 12, "y": 90, "width": 236, "height": 36}
+          style: "plain"
+          state: "enabled"
+          event: "activate"
+          fontToken: "font.editor"
+          text: "Project Settings..."
+        - id: "project_ui_close"
+          type: "Button"
+          layer: "project_ui_close"
+          rect: {"x": 12, "y": 130, "width": 236, "height": 36}
+          style: "plain"
+          state: "enabled"
+          event: "activate"
+          fontToken: "font.editor"
+          text: "Close Project..."
+    - id: "project_ui_modal"
+      type: "Button"
+      layer: "project_ui_modal"
+      rect: {"x": 0, "y": 0, "width": 1920, "height": 1080}
+      style: "project_modal_shade"
+      state: "enabled"
+      event: "activate"
+      fontToken: "font.editor"
+      text: ""
+      children:
+        - id: "project_ui_panel"
+          type: "Panel"
+          layer: "project_ui_panel"
+          rect: {"x": 510, "y": 220, "width": 900, "height": 640}
+          style: "section"
+          state: "enabled"
+          event: "none"
+          children:
+            - id: "project_ui_title"
+              type: "Label"
+              layer: "project_ui_title"
+              rect: {"x": 24, "y": 20, "width": 850, "height": 32}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Project"
+            - id: "project_ui_description"
+              type: "Label"
+              layer: "project_ui_description"
+              rect: {"x": 24, "y": 65, "width": 850, "height": 32}
+              style: "muted"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: ""
+            - id: "project_ui_name_label"
+              type: "Label"
+              layer: "project_ui_name_label"
+              rect: {"x": 24, "y": 110, "width": 850, "height": 28}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Name (128 UTF-8 bytes)"
+            - id: "project_ui_name_background"
+              type: "Panel"
+              layer: "project_ui_name_background"
+              rect: {"x": 24, "y": 145, "width": 850, "height": 40}
+              style: "input"
+              state: "enabled"
+              event: "none"
+            - id: "project_ui_name"
+              type: "TextInput"
+              maxTextBytes: 128
+              layer: "project_ui_name"
+              rect: {"x": 24, "y": 145, "width": 850, "height": 40}
+              style: "input"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: ""
+            - id: "project_ui_path_label"
+              type: "Label"
+              layer: "project_ui_path_label"
+              rect: {"x": 24, "y": 205, "width": 850, "height": 28}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Project folder"
+            - id: "project_ui_entry_label"
+              type: "Label"
+              layer: "project_ui_entry_label"
+              rect: {"x": 24, "y": 205, "width": 850, "height": 28}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Startup scene (Ready project assets)"
+            - id: "project_ui_path_background"
+              type: "Panel"
+              layer: "project_ui_path_background"
+              rect: {"x": 24, "y": 240, "width": 850, "height": 40}
+              style: "input"
+              state: "enabled"
+              event: "none"
+            - id: "project_ui_path"
+              type: "TextInput"
+              maxTextBytes: 512
+              layer: "project_ui_path"
+              rect: {"x": 24, "y": 240, "width": 850, "height": 40}
+              style: "input"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: ""
+            - id: "project_ui_template_label"
+              type: "Label"
+              layer: "project_ui_template_label"
+              rect: {"x": 24, "y": 305, "width": 850, "height": 28}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Template"
+            - id: "project_ui_empty"
+              type: "Button"
+              layer: "project_ui_empty"
+              rect: {"x": 24, "y": 345, "width": 260, "height": 40}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "Empty"
+            - id: "project_ui_2d"
+              type: "Button"
+              layer: "project_ui_2d"
+              rect: {"x": 312, "y": 345, "width": 260, "height": 40}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "2D"
+            - id: "project_ui_3d"
+              type: "Button"
+              layer: "project_ui_3d"
+              rect: {"x": 600, "y": 345, "width": 274, "height": 40}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "3D"
+            - id: "project_ui_status"
+              type: "Label"
+              layer: "project_ui_status"
+              rect: {"x": 24, "y": 430, "width": 850, "height": 80}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: ""
+            - id: "project_ui_submit"
+              type: "Button"
+              layer: "project_ui_submit"
+              rect: {"x": 24, "y": 550, "width": 300, "height": 42}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "Create Project"
+            - id: "project_ui_discard"
+              type: "Button"
+              layer: "project_ui_discard"
+              rect: {"x": 24, "y": 550, "width": 380, "height": 42}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "Discard and Continue"
+            - id: "project_ui_cancel"
+              type: "Button"
+              layer: "project_ui_cancel"
+              rect: {"x": 674, "y": 550, "width": 200, "height": 42}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "Cancel"
+    - id: "scene_ui_modal"
+      type: "Button"
+      layer: "scene_ui_modal"
+      rect: {"x": 0, "y": 0, "width": 1920, "height": 1080}
+      style: "project_modal_shade"
+      state: "enabled"
+      event: "activate"
+      fontToken: "font.editor"
+      text: ""
+      children:
+        - id: "scene_ui_panel"
+          type: "Panel"
+          layer: "scene_ui_panel"
+          rect: {"x": 510, "y": 280, "width": 900, "height": 520}
+          style: "section"
+          state: "enabled"
+          event: "none"
+          children:
+            - id: "scene_ui_title"
+              type: "Label"
+              layer: "scene_ui_title"
+              rect: {"x": 24, "y": 20, "width": 850, "height": 32}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Scene"
+            - id: "scene_ui_description"
+              type: "Label"
+              layer: "scene_ui_description"
+              rect: {"x": 24, "y": 65, "width": 850, "height": 28}
+              style: "muted"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: ""
+            - id: "scene_ui_description_detail"
+              type: "Label"
+              layer: "scene_ui_description_detail"
+              rect: {"x": 24, "y": 100, "width": 850, "height": 28}
+              style: "muted"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: ""
+            - id: "scene_ui_path_label"
+              type: "Label"
+              layer: "scene_ui_path_label"
+              rect: {"x": 24, "y": 140, "width": 850, "height": 28}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Project-relative .arp.yaml path (512 UTF-8 bytes)"
+            - id: "scene_ui_path_background"
+              type: "Panel"
+              layer: "scene_ui_path_background"
+              rect: {"x": 24, "y": 177, "width": 850, "height": 40}
+              style: "input"
+              state: "enabled"
+              event: "none"
+            - id: "scene_ui_path"
+              type: "TextInput"
+              maxTextBytes: 512
+              layer: "scene_ui_path"
+              rect: {"x": 24, "y": 177, "width": 850, "height": 40}
+              style: "input"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: ""
+            - id: "scene_ui_status"
+              type: "Label"
+              layer: "scene_ui_status"
+              rect: {"x": 24, "y": 250, "width": 850, "height": 28}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: ""
+            - id: "scene_ui_status_detail"
+              type: "Label"
+              layer: "scene_ui_status_detail"
+              rect: {"x": 24, "y": 285, "width": 850, "height": 96}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: ""
+            - id: "scene_ui_submit"
+              type: "Button"
+              layer: "scene_ui_submit"
+              rect: {"x": 24, "y": 418, "width": 300, "height": 42}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "Save Scene"
+            - id: "scene_ui_confirm"
+              type: "Button"
+              layer: "scene_ui_confirm"
+              rect: {"x": 24, "y": 418, "width": 380, "height": 42}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "Discard and Continue"
+            - id: "scene_ui_cancel"
+              type: "Button"
+              layer: "scene_ui_cancel"
+              rect: {"x": 674, "y": 418, "width": 200, "height": 42}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "Cancel"
+            - id: "scene_ui_failed"
+              type: "Label"
+              layer: "scene_ui_failed"
+              rect: {"x": 24, "y": 250, "width": 850, "height": 28}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Scene state kept; display update failed. Retry the display or cancel."
+            - id: "scene_ui_retry"
+              type: "Button"
+              layer: "scene_ui_retry"
+              rect: {"x": 24, "y": 330, "width": 260, "height": 36}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "Retry Scene Display"
+
+    - id: "script_ui_reload"
+      type: "Button"
+      layer: "script_ui_reload"
+      rect: {"x": 1400, "y": 100, "width": 160, "height": 24}
+      style: "button"
+      state: "enabled"
+      event: "activate"
+      fontToken: "font.editor"
+      text: "Reload Disk"
+    - id: "script_ui_modal"
+      type: "Button"
+      layer: "script_ui_modal"
+      rect: {"x": 0, "y": 0, "width": 1920, "height": 1080}
+      style: "project_modal_shade"
+      state: "enabled"
+      event: "activate"
+      fontToken: "font.editor"
+      text: ""
+      children:
+        - id: "script_ui_panel"
+          type: "Panel"
+          layer: "script_ui_panel"
+          rect: {"x": 510, "y": 360, "width": 900, "height": 300}
+          style: "section"
+          state: "enabled"
+          event: "none"
+          children:
+            - id: "script_ui_title"
+              type: "Label"
+              layer: "script_ui_title"
+              rect: {"x": 24, "y": 20, "width": 850, "height": 32}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Reload Script From Disk?"
+            - id: "script_ui_description"
+              type: "Label"
+              layer: "script_ui_description"
+              rect: {"x": 24, "y": 70, "width": 850, "height": 28}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Discard local edits and read the latest disk version of this script."
+            - id: "script_ui_detail"
+              type: "Label"
+              layer: "script_ui_detail"
+              rect: {"x": 24, "y": 108, "width": 850, "height": 28}
+              style: "muted"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Successful reload clears this document's Undo history. Other documents are retained."
+            - id: "script_ui_status"
+              type: "Label"
+              layer: "script_ui_status"
+              rect: {"x": 24, "y": 152, "width": 850, "height": 28}
+              style: "muted"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: ""
+            - id: "script_ui_failed"
+              type: "Label"
+              layer: "script_ui_failed"
+              rect: {"x": 24, "y": 152, "width": 850, "height": 28}
+              style: "muted"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "The action failed. Cancel to review the document and retry."
+            - id: "script_ui_stale"
+              type: "Label"
+              layer: "script_ui_stale"
+              rect: {"x": 24, "y": 152, "width": 850, "height": 28}
+              style: "muted"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "The document changed. Cancel and review the action again."
+            - id: "script_ui_confirm"
+              type: "Button"
+              layer: "script_ui_confirm"
+              rect: {"x": 24, "y": 218, "width": 380, "height": 42}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "Discard and Reload"
+            - id: "script_ui_cancel"
+              type: "Button"
+              layer: "script_ui_cancel"
+              rect: {"x": 674, "y": 218, "width": 200, "height": 42}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "Cancel"
+
+    - id: "exit_ui_modal"
+      type: "Button"
+      layer: "exit_ui_modal"
+      rect: {"x": 0, "y": 0, "width": 1920, "height": 1080}
+      style: "project_modal_shade"
+      state: "enabled"
+      event: "activate"
+      fontToken: "font.editor"
+      text: ""
+      children:
+        - id: "exit_ui_panel"
+          type: "Panel"
+          layer: "exit_ui_panel"
+          rect: {"x": 510, "y": 360, "width": 900, "height": 300}
+          style: "section"
+          state: "enabled"
+          event: "none"
+          children:
+            - id: "exit_ui_title"
+              type: "Label"
+              layer: "exit_ui_title"
+              rect: {"x": 24, "y": 20, "width": 850, "height": 32}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Exit Editor With Unsaved Changes?"
+            - id: "exit_ui_description"
+              type: "Label"
+              layer: "exit_ui_description"
+              rect: {"x": 24, "y": 70, "width": 850, "height": 28}
+              style: "text"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Scene, project settings or an open script have unsaved changes."
+            - id: "exit_ui_detail"
+              type: "Label"
+              layer: "exit_ui_detail"
+              rect: {"x": 24, "y": 108, "width": 850, "height": 28}
+              style: "muted"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: "Exiting without saving discards all local edits. Existing files are kept."
+            - id: "exit_ui_status"
+              type: "Label"
+              layer: "exit_ui_status"
+              rect: {"x": 24, "y": 152, "width": 850, "height": 28}
+              style: "muted"
+              state: "enabled"
+              event: "none"
+              fontToken: "font.editor"
+              text: ""
+            - id: "exit_ui_confirm"
+              type: "Button"
+              layer: "exit_ui_confirm"
+              rect: {"x": 24, "y": 218, "width": 380, "height": 42}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "Discard and Exit"
+            - id: "exit_ui_cancel"
+              type: "Button"
+              layer: "exit_ui_cancel"
+              rect: {"x": 674, "y": 218, "width": 200, "height": 42}
+              style: "button"
+              state: "enabled"
+              event: "activate"
+              fontToken: "font.editor"
+              text: "Cancel"
+
+    - id: transform_ui_modal
+      type: Button
+      layer: transform_ui_modal
+      rect: {x: 0, y: 0, width: 1920, height: 1080}
+      style: project_modal_shade
+      state: enabled
+      event: activate
+      fontToken: font.editor
+      text: ""
+      children:
+        - id: transform_ui_panel
+          type: Panel
+          layer: transform_ui_panel
+          rect: {x: 510, y: 205, width: 900, height: 665}
+          style: section
+          state: enabled
+          event: none
+          children:
+            - id: transform_ui_title
+              type: Label
+              layer: transform_ui_title
+              rect: {x: 24, y: 20, width: 850, height: 35}
+              style: text
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "Transform Settings"
+            - id: transform_ui_description
+              type: Label
+              layer: transform_ui_description
+              rect: {x: 24, y: 62, width: 850, height: 28}
+              style: text
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "Configure the next transform gesture. Rotation steps use radians."
+            - id: transform_ui_note
+              type: Label
+              layer: transform_ui_note
+              rect: {x: 24, y: 95, width: 850, height: 28}
+              style: text
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "Editor session only. Scene files and Undo are unchanged."
+            - id: transform_ui_tool_label
+              type: Label
+              layer: transform_ui_tool_label
+              rect: {x: 24, y: 145, width: 280, height: 38}
+              style: text
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "Tool"
+            - id: transform_ui_tool
+              type: Button
+              layer: transform_ui_tool
+              rect: {x: 320, y: 145, width: 550, height: 38}
+              style: button
+              state: enabled
+              event: activate
+              fontToken: font.editor
+              text: "select"
+            - id: transform_ui_space_label
+              type: Label
+              layer: transform_ui_space_label
+              rect: {x: 24, y: 190, width: 280, height: 38}
+              style: text
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "Axis space"
+            - id: transform_ui_space
+              type: Button
+              layer: transform_ui_space
+              rect: {x: 320, y: 190, width: 550, height: 38}
+              style: button
+              state: enabled
+              event: activate
+              fontToken: font.editor
+              text: "world"
+            - id: transform_ui_pivot_label
+              type: Label
+              layer: transform_ui_pivot_label
+              rect: {x: 24, y: 235, width: 280, height: 38}
+              style: text
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "Pivot"
+            - id: transform_ui_pivot
+              type: Button
+              layer: transform_ui_pivot
+              rect: {x: 320, y: 235, width: 550, height: 38}
+              style: button
+              state: enabled
+              event: activate
+              fontToken: font.editor
+              text: "active"
+            - id: transform_ui_snap_label
+              type: Label
+              layer: transform_ui_snap_label
+              rect: {x: 24, y: 280, width: 280, height: 38}
+              style: text
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "Snap to relative increments"
+            - id: transform_ui_snap
+              type: Button
+              layer: transform_ui_snap
+              rect: {x: 320, y: 280, width: 550, height: 38}
+              style: button
+              state: enabled
+              event: activate
+              fontToken: font.editor
+              text: "Off"
+            - id: transform_ui_move_label
+              type: Label
+              layer: transform_ui_move_label
+              rect: {x: 24, y: 345, width: 280, height: 38}
+              style: text
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "Move step (world units)"
+            - id: transform_ui_move
+              type: TextInput
+              layer: transform_ui_move
+              rect: {x: 320, y: 345, width: 550, height: 38}
+              style: input
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "1.0"
+              maxTextBytes: 64
+            - id: transform_ui_rotate_label
+              type: Label
+              layer: transform_ui_rotate_label
+              rect: {x: 24, y: 395, width: 280, height: 38}
+              style: text
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "Rotation step (radians)"
+            - id: transform_ui_rotate
+              type: TextInput
+              layer: transform_ui_rotate
+              rect: {x: 320, y: 395, width: 550, height: 38}
+              style: input
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "0.2617993877991494"
+              maxTextBytes: 64
+            - id: transform_ui_scale_label
+              type: Label
+              layer: transform_ui_scale_label
+              rect: {x: 24, y: 445, width: 280, height: 38}
+              style: text
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "Scale step"
+            - id: transform_ui_scale
+              type: TextInput
+              layer: transform_ui_scale
+              rect: {x: 320, y: 445, width: 550, height: 38}
+              style: input
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "0.1"
+              maxTextBytes: 64
+            - id: transform_ui_invalid
+              type: Label
+              layer: transform_ui_invalid
+              rect: {x: 24, y: 505, width: 850, height: 28}
+              style: text
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "Enter a positive finite number in every step field (rotation uses radians)."
+            - id: transform_ui_failed
+              type: Label
+              layer: transform_ui_failed
+              rect: {x: 24, y: 505, width: 850, height: 28}
+              style: text
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "Could not apply. Settings are unchanged. Finish pending work or retry."
+            - id: transform_ui_hint
+              type: Label
+              layer: transform_ui_hint
+              rect: {x: 24, y: 540, width: 850, height: 28}
+              style: text
+              state: enabled
+              event: none
+              fontToken: font.editor
+              text: "Click choices to cycle values. Steps also accept scientific notation."
+            - id: transform_ui_apply
+              type: Button
+              layer: transform_ui_apply
+              rect: {x: 24, y: 595, width: 260, height: 42}
+              style: button
+              state: enabled
+              event: activate
+              fontToken: font.editor
+              text: "Apply"
+            - id: transform_ui_cancel
+              type: Button
+              layer: transform_ui_cancel
+              rect: {x: 674, y: 595, width: 200, height: 42}
+              style: button
+              state: enabled
+              event: activate
+              fontToken: font.editor
+              text: "Cancel"

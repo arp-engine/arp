@@ -1,6 +1,6 @@
 #pragma once
+#include "core/time/tween.h"
 #include "scene/scene.h"
-#include "scene/time/tween.h"
 
 #include <cmath>
 #include <stdexcept>

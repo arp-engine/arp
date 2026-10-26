@@ -8,6 +8,8 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <limits>
+#include <string_view>
 #include <utility>
 
 namespace {
@@ -234,6 +236,104 @@ void verifyUploadStagingReadinessClassification()
     assert(!classifyUploadStagingFailure({}).retryAfterCompletion());
 }
 
+void verifyColdJournalCapacityAndOwnership()
+{
+    using namespace arp;
+    using rhi::RecordedStagingUploadJournal;
+    auto quota = core::makeShared<core::CpuMemoryQuota>(64u * 1024u);
+    std::uint64_t bytes = 0u;
+    {
+        core::CpuMemoryQuotaScope scope(quota);
+        RecordedStagingUploadJournal journal;
+        assert(!journal.prepareBounded(2u));
+        bytes = quota->liveBytes();
+        assert(bytes);
+    }
+    assert(!quota->liveBytes());
+    for (const auto available : {bytes, bytes - 1u, std::uint64_t{0u}}) {
+        core::CpuMemoryQuotaLease pressure(quota, quota->limitBytes() - available);
+        assert(pressure.charged());
+        core::CpuMemoryQuotaScope scope(quota);
+        RecordedStagingUploadJournal journal;
+        const auto* diagnostic = journal.prepareBounded(2u);
+        assert((diagnostic == nullptr) == (available == bytes));
+        assert(journal.empty());
+        assert(std::string_view(journal.prepareBounded(0u))
+            == "RHI-STAGING-JOURNAL-PREPARATION-STATE");
+        if (available != bytes) {
+            assert(std::string_view(diagnostic) == "RHI-STAGING-JOURNAL-COLD-ALLOCATION"
+                && journal.preflightEnlist() == diagnostic
+                && quota->liveBytes() == quota->limitBytes() - available);
+        }
+    }
+    assert(!quota->liveBytes());
+    auto pool = core::makeShared<TestStagingPool>();
+    const auto first = recorded(pool->allocate(8u, 1u));
+    const auto second = recorded(pool->allocate(8u, 2u));
+    const auto third = recorded(pool->allocate(8u, 3u));
+    auto page = core::makeShared<int>(37);
+    std::weak_ptr<int> observedPage = page;
+    std::weak_ptr<TestStagingPool> observedPool = pool;
+    {
+        core::CpuMemoryQuotaScope scope(quota);
+        RecordedStagingUploadJournal journal;
+        assert(!journal.prepareBounded(2u));
+        core::CpuMemoryQuotaLease pressure(quota, quota->limitBytes() - quota->liveBytes());
+        const auto allocations = core::defaultCpuAllocator().stats().allocationCount;
+        auto* previous = std::pmr::set_default_resource(std::pmr::null_memory_resource());
+        assert(!journal.preflightEnlist());
+        assert(journal.enlist(pool, first, page) && journal.enlist(pool, second, page));
+        const auto owners = pool.use_count(), pages = page.use_count();
+        assert(std::string_view(journal.preflightEnlist()) == "RHI-STAGING-JOURNAL-ENTRY-CAPACITY");
+        assert(!journal.enlist(pool, third, page));
+        assert(!journal.enlist(*pool, third));
+        // Converted shared_ptr arguments live through the full expression.
+        // Inspect retained ownership only after those temporary copies expire.
+        assert(journal.size() == 2u && pool.use_count() == owners && page.use_count() == pages
+            && !pool->cancelCount() && pool->stats().liveSliceCount == 3u);
+        assert(journal.rollbackLast() && pool->cancelOffset(0u) == second.offsetBytes);
+        assert(!journal.preflightEnlist() && journal.enlist(pool, third, page));
+        assert(journal.rollbackLast() && pool->cancelOffset(1u) == third.offsetBytes);
+        pool.reset();
+        page.reset();
+        assert(!observedPool.expired() && !observedPage.expired());
+        assert(journal.retireCompleted() && journal.empty() && observedPool.expired()
+            && observedPage.expired() && journal.retireCompleted());
+        assert(core::defaultCpuAllocator().stats().allocationCount == allocations);
+        std::pmr::set_default_resource(previous);
+    }
+    assert(!quota->liveBytes());
+    {
+        TestStagingPool raw;
+        const auto slice = recorded(raw.allocate());
+        core::CpuMemoryQuotaScope scope(quota);
+        RecordedStagingUploadJournal journal;
+        assert(!journal.prepareBounded(1u) && journal.enlist(raw, slice));
+        core::CpuMemoryQuotaLease pressure(quota, quota->limitBytes() - quota->liveBytes());
+        assert(pressure.charged());
+        const auto allocations = core::defaultCpuAllocator().stats().allocationCount;
+        auto* previous = std::pmr::set_default_resource(std::pmr::null_memory_resource());
+        assert(!journal.retireCompleted() && journal.size() == 1u && journal.rollback()
+            && raw.cancelCount() == 1u && !raw.stats().liveSliceCount);
+        assert(core::defaultCpuAllocator().stats().allocationCount == allocations);
+        std::pmr::set_default_resource(previous);
+    }
+    {
+        RecordedStagingUploadJournal zero, range, legacy;
+        TestStagingPool raw;
+        const auto slice = recorded(raw.allocate());
+        const auto allocations = core::defaultCpuAllocator().stats().allocationCount;
+        assert(!zero.prepareBounded(0u) && zero.preflightEnlist() && !zero.enlist(raw, slice));
+        assert(std::string_view(range.prepareBounded(std::numeric_limits<std::size_t>::max()))
+                == "RHI-STAGING-JOURNAL-ENTRY-RANGE"
+            && range.preflightEnlist() && !range.enlist(raw, slice));
+        assert(core::defaultCpuAllocator().stats().allocationCount == allocations);
+        assert(legacy.enlist(raw, slice) && legacy.rollback());
+        assert(
+            std::string_view(legacy.prepareBounded(1u)) == "RHI-STAGING-JOURNAL-PREPARATION-STATE");
+    }
+}
+
 } // namespace
 
 int main()
@@ -305,5 +405,6 @@ int main()
     verifyCommitLeavesCompletionOwnedSliceLive();
     verifyCommandBufferTransferRejectRetryAndAcceptance();
     verifyUploadStagingReadinessClassification();
+    verifyColdJournalCapacityAndOwnership();
     return 0;
 }

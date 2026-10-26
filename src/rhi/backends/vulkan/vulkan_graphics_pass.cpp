@@ -5,6 +5,7 @@
 #include "rhi/frontend/bindless_graphics_binding.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "rhi/frontend/bindless_snapshot.h"
+#include "rhi/frontend/command_arguments.h"
 #include "rhi/frontend/descriptor_bound_descriptor_slots.h"
 #include "rhi/frontend/descriptor_resource_validation.h"
 #include "rhi/frontend/descriptor_set_validation.h"
@@ -43,15 +44,35 @@ public:
         std::shared_ptr<VulkanRhiNativeCommandPayload> nativePayload,
         std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry,
         const rhi::semantics::NativeBackendCapabilityContract* capabilityContract,
-        bool bindlessExecutable)
+        bool bindlessExecutable,
+        std::shared_ptr<const rhi::RenderPassArguments> originalPass = {})
         : commandCount_(commandCount), active_(active), recordingIdentity_(recordingIdentity),
           indirectFirstInstanceEnabled_(indirectFirstInstanceEnabled),
-          indirectAccesses_(indirectAccesses), passDesc_(passDesc),
-          nativePayload_(std::move(nativePayload)), resourceRegistry_(std::move(resourceRegistry)),
-          capabilityContract_(capabilityContract), bindlessExecutable_(bindlessExecutable)
+          indirectAccesses_(indirectAccesses),
+          passDesc_(originalPass ? rhi::RenderPassDesc{} : passDesc),
+          originalPass_(std::move(originalPass)), nativePayload_(std::move(nativePayload)),
+          resourceRegistry_(std::move(resourceRegistry)), capabilityContract_(capabilityContract),
+          bindlessExecutable_(bindlessExecutable)
     {}
 
     std::uint64_t recordingIdentity() const noexcept override { return recordingIdentity_; }
+
+    const char* activate(std::shared_ptr<VulkanRhiNativeCommandPayload> payload,
+        VulkanRhiColdFailure failure) noexcept
+    {
+        if (!originalPass_ || nativePayload_ || !payload || !payload->hasOrdinaryAttachments())
+            return "RHI-ORDINARY-ATTACHMENT-RECORDING-WRAPPER";
+        nativePayload_ = std::move(payload);
+        failure_ = failure;
+        return nullptr;
+    }
+
+    VulkanRhiColdRenderPassObservation coldObservation() const noexcept
+    {
+        return originalPass_ && !nativePayload_
+            ? VulkanRhiColdRenderPassObservation{this, originalPass_.get(), &passDescriptor()}
+            : VulkanRhiColdRenderPassObservation{};
+    }
 
     void* queryInterface(std::string_view extension) noexcept override
     {
@@ -62,6 +83,10 @@ public:
 
     rhi::CommandValidationResult setPipeline(const rhi::RenderPipeline& pipeline) override
     {
+        if (originalPass_)
+            return originalCommand(rhi::CommandUsageKind::BindGraphicsPipeline,
+                rhi::CommandScalarArguments::None{},
+                &pipeline);
         if (boundSnapshot_) {
             return commandFail("RHI-BINDLESS-PIPELINE-CHANGE-AFTER-SNAPSHOT", commandCount_);
         }
@@ -113,6 +138,8 @@ public:
         std::shared_ptr<const rhi::BindlessPreparedGraphicsBinding> binding,
         const rhi::BindlessAccessDeclarations& accesses) override
     {
+        if (originalPass_)
+            return rejectOriginal();
         if (!active_)
             return commandFail("command pass is not active", commandCount_);
         if (!binding || !binding->originalFactoryOwnerMatches(binding)
@@ -140,6 +167,8 @@ public:
         std::uint64_t generation,
         const rhi::BindlessAccessDeclarations& accesses) override
     {
+        if (originalPass_)
+            return rejectOriginal();
         if (!active_ || !bindlessExecutable_ || !activeAuthorization_
             || !activeAuthorization_->current(activeAuthorization_)) {
             return commandFail("RHI-BINDLESS-RECORD-AUTHORIZATION-INVALID", commandCount_);
@@ -183,7 +212,7 @@ public:
             return commandFail("RHI-BINDLESS-FAULT-READBACK-UNAVAILABLE", commandCount_);
         }
 
-        valid = rhi::validateBindlessRenderPass(activePipelineReport_, passDesc_);
+        valid = rhi::validateBindlessRenderPass(activePipelineReport_, passDescriptor());
         if (!valid.success)
             return commandFail(valid.diagnostics, commandCount_);
 
@@ -223,6 +252,8 @@ public:
 
     rhi::CommandValidationResult setViewport(const rhi::ViewportState& viewport) override
     {
+        if (originalPass_)
+            return originalCommand(rhi::CommandUsageKind::SetViewport, viewport);
         // L1 value validation - every backend calls this before lowering.
         const auto valueResult = rhi::semantics::validateViewportCommand(viewport);
         if (!valueResult.success) {
@@ -251,6 +282,8 @@ public:
 
     rhi::CommandValidationResult setScissor(const rhi::ScissorState& scissor) override
     {
+        if (originalPass_)
+            return originalCommand(rhi::CommandUsageKind::SetScissor, scissor);
         const auto valueResult = rhi::semantics::validateScissorCommand(scissor);
         if (!valueResult.success) {
             return commandFail(valueResult.diagnostics, 0);
@@ -275,6 +308,8 @@ public:
     rhi::CommandValidationResult bindVertexBuffer(
         std::uint32_t slot, const rhi::GpuBuffer& buffer, std::uint64_t offsetBytes) override
     {
+        if (originalPass_)
+            return rejectOriginal();
         if (!nativePayload_) {
             return commandFail("RHI-VULKAN-NATIVE-RENDER-PASS-PAYLOAD-MISSING", 0);
         }
@@ -296,6 +331,8 @@ public:
     rhi::CommandValidationResult bindIndexBuffer(
         const rhi::GpuBuffer& buffer, rhi::IndexFormat format, std::uint64_t offsetBytes) override
     {
+        if (originalPass_)
+            return rejectOriginal();
         if (!nativePayload_) {
             return commandFail("RHI-VULKAN-NATIVE-RENDER-PASS-PAYLOAD-MISSING", 0);
         }
@@ -319,6 +356,14 @@ public:
         const std::uint32_t* dynamicOffsets,
         std::uint32_t dynamicOffsetCount) override
     {
+        if (originalPass_) {
+            if (dynamicOffsetCount || dynamicOffsets)
+                return rejectOriginal();
+            return originalCommand(rhi::CommandUsageKind::BindRenderDescriptor,
+                rhi::CommandScalarArguments::DescriptorBinding{setIndex},
+                nullptr,
+                &set);
+        }
         if (activeAuthorization_) {
             return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", commandCount_);
         }
@@ -361,6 +406,8 @@ public:
     rhi::CommandValidationResult bindDescriptorTable(
         std::uint32_t, const rhi::DescriptorTable& table) override
     {
+        if (originalPass_)
+            return rejectOriginal();
         if (activeAuthorization_) {
             return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", commandCount_);
         }
@@ -373,6 +420,8 @@ public:
         std::uint32_t sizeBytes,
         const void* data) override
     {
+        if (originalPass_)
+            return rejectOriginal();
         auto cmdResult =
             rhi::semantics::validatePushConstantCommand(stages, offsetBytes, sizeBytes, data);
         if (!cmdResult.success) {
@@ -413,12 +462,16 @@ public:
     rhi::CommandValidationResult executeSecondary(
         const rhi::SecondaryCommandBuffer& commandBuffer) override
     {
+        if (originalPass_)
+            return rejectOriginal();
         (void)commandBuffer;
         return commandFail("RHI-VULKAN-SECONDARY-COMMAND-NATIVE-LOWERING-UNAVAILABLE", 0);
     }
 
     rhi::CommandValidationResult executeRenderBundle(const rhi::RenderBundle&) override
     {
+        if (originalPass_)
+            return rejectOriginal();
         return commandFail("Vulkan RHI render bundle has no executable native payload", 0);
     }
 
@@ -428,6 +481,8 @@ public:
         std::int32_t vertexOffset,
         std::uint32_t firstInstance) override
     {
+        if (originalPass_)
+            return rejectOriginal();
         if (activeAuthorization_ && !boundSnapshot_) {
             return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", commandCount_);
         }
@@ -454,6 +509,8 @@ public:
         std::uint32_t drawCount,
         std::uint32_t stride) override
     {
+        if (originalPass_)
+            return rejectOriginal();
         if (activeAuthorization_) {
             if (!boundSnapshot_)
                 return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", commandCount_);
@@ -494,6 +551,8 @@ public:
         std::uint32_t count,
         std::uint32_t stride) override
     {
+        if (originalPass_)
+            return rejectOriginal();
         const rhi::IndexedIndirectSequenceRange range(buffer.desc(), offset, count, stride);
         if (!range.valid())
             return commandFail("RHI-INDIRECT-SEQUENCE-RANGE-INVALID", commandCount_);
@@ -530,6 +589,8 @@ public:
         std::uint32_t maxDrawCount,
         std::uint32_t stride) override
     {
+        if (originalPass_)
+            return rejectOriginal();
         if (activeAuthorization_) {
             return commandFail("RHI-BINDLESS-INDIRECT-DRAW-UNAVAILABLE", commandCount_);
         }
@@ -568,6 +629,10 @@ public:
         std::uint32_t firstVertex,
         std::uint32_t firstInstance) override
     {
+        if (originalPass_)
+            return originalCommand(rhi::CommandUsageKind::Draw,
+                rhi::CommandScalarArguments::Draw{
+                    vertexCount, instanceCount, firstVertex, firstInstance});
         if (activeAuthorization_ && !boundSnapshot_) {
             return commandFail("RHI-BINDLESS-RECORD-SNAPSHOT-REQUIRED", commandCount_);
         }
@@ -592,6 +657,8 @@ public:
     rhi::CommandValidationResult writeTimestamp(
         const rhi::QueryPool& pool, std::uint32_t queryIndex) override
     {
+        if (originalPass_)
+            return rejectOriginal();
         if (!capabilityContract_) {
             return commandFail("Vulkan RHI timestamp write has no capability contract", 0);
         }
@@ -625,6 +692,8 @@ public:
 
     rhi::CommandValidationResult nextSubpass() override
     {
+        if (originalPass_)
+            return rejectOriginal();
         if (activeAuthorization_) {
             return commandFail("RHI-BINDLESS-RENDER-PASS-ABI-UNAVAILABLE", commandCount_);
         }
@@ -645,6 +714,16 @@ public:
 
     rhi::CommandValidationResult end() override
     {
+        if (originalPass_) {
+            if (!nativePayload_ || !active_)
+                return rejectOriginal();
+            if (const auto* id = nativePayload_->recordOrdinaryRenderPassEnd(commandCount_)) {
+                publishOriginalFailure(id);
+                return {false, "", commandCount_};
+            }
+            active_ = false;
+            return commandOk(++commandCount_);
+        }
         if (!nativePayload_) {
             return commandFail("RHI-VULKAN-NATIVE-RENDER-PASS-PAYLOAD-MISSING", 0);
         }
@@ -674,6 +753,42 @@ public:
     }
 
 private:
+    template <class Value>
+    rhi::CommandValidationResult originalCommand(rhi::CommandUsageKind kind,
+        const Value& value,
+        const rhi::RenderPipeline* pipeline = nullptr,
+        const rhi::DescriptorSet* set = nullptr) noexcept
+    {
+        const auto scalar = rhi::CommandScalarArguments::capture(kind, value);
+        const auto* id = !active_ || !nativePayload_ || !scalar
+            ? "RHI-ORDINARY-GRAPHICS-WRAPPER"
+            : nativePayload_->recordOrdinaryGraphicsCommand(commandCount_, *scalar, pipeline, set);
+        if (id) {
+            publishOriginalFailure(id);
+            return {false, "", commandCount_};
+        }
+        return commandOk(++commandCount_);
+    }
+
+    void publishOriginalFailure(const char* id) noexcept
+    {
+        if (failure_.publish)
+            failure_.publish(failure_.context, id);
+        else if (nativePayload_)
+            nativePayload_->rejectRecordingStorage(id);
+    }
+
+    rhi::CommandValidationResult rejectOriginal() noexcept
+    {
+        publishOriginalFailure("RHI-ORDINARY-ATTACHMENT-RECORDING-COMMAND-PROFILE");
+        return {false, "", commandCount_};
+    }
+
+    const rhi::RenderPassDesc& passDescriptor() const noexcept
+    {
+        return originalPass_ ? originalPass_->desc() : passDesc_;
+    }
+
     rhi::BoundDescriptorSlots boundDescriptors_;
     std::uint32_t& commandCount_;
     bool& active_;
@@ -681,6 +796,8 @@ private:
     bool indirectFirstInstanceEnabled_ = false;
     rhi::BindlessIndirectDeclarations& indirectAccesses_;
     rhi::RenderPassDesc passDesc_;
+    std::shared_ptr<const rhi::RenderPassArguments> originalPass_;
+    VulkanRhiColdFailure failure_;
     std::shared_ptr<VulkanRhiNativeCommandPayload> nativePayload_;
     std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry_;
     const rhi::semantics::NativeBackendCapabilityContract* capabilityContract_ = nullptr;
@@ -698,6 +815,44 @@ private:
 };
 
 } // namespace
+
+core::UniquePtr<rhi::RenderPassEncoder> createVulkanRhiColdRenderPassEncoder(
+    std::uint32_t& commandCount,
+    bool& active,
+    std::uint64_t recordingIdentity,
+    rhi::BindlessIndirectDeclarations& indirectAccesses,
+    std::shared_ptr<const rhi::RenderPassArguments> original)
+{
+    if (!original || !original->hasQuotaBoundSharedOwner(original))
+        return {};
+    return core::makeUnique<VulkanRhiRenderPassEncoder>(commandCount,
+        active,
+        recordingIdentity,
+        false,
+        indirectAccesses,
+        original->desc(),
+        nullptr,
+        nullptr,
+        nullptr,
+        false,
+        original);
+}
+
+VulkanRhiColdRenderPassObservation inspectVulkanRhiColdRenderPass(
+    const rhi::RenderPassEncoder& pass) noexcept
+{
+    const auto* original = dynamic_cast<const VulkanRhiRenderPassEncoder*>(&pass);
+    return original ? original->coldObservation() : VulkanRhiColdRenderPassObservation{};
+}
+
+const char* activateVulkanRhiColdRenderPass(rhi::RenderPassEncoder& pass,
+    std::shared_ptr<VulkanRhiNativeCommandPayload> payload,
+    VulkanRhiColdFailure failure) noexcept
+{
+    auto* original = dynamic_cast<VulkanRhiRenderPassEncoder*>(&pass);
+    return original ? original->activate(std::move(payload), failure)
+                    : "RHI-ORDINARY-ATTACHMENT-RECORDING-WRAPPER";
+}
 
 arp::core::UniquePtr<rhi::RenderPassEncoder> createVulkanRhiRenderPassEncoder(
     std::uint32_t& commandCount,

@@ -3,11 +3,31 @@
 #include "ui/ui.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <string_view>
 
 namespace arp::ui {
 namespace {
+// Event ownership must be released even when an owner callback propagates an
+// allocation failure. Already accepted mutations remain queued for draining.
+class DispatchFlagReset final {
+public:
+    explicit DispatchFlagReset(bool& flag, bool active = true) noexcept
+        : flag_(flag), active_(active)
+    {}
+
+    ~DispatchFlagReset()
+    {
+        if (active_)
+            flag_ = false;
+    }
+
+private:
+    bool& flag_;
+    bool active_;
+};
+
 UiResult failure(UiDiagnosticCode code, const char* message)
 {
     return UiResult::failure(
@@ -110,7 +130,12 @@ void Control::notifyValueChanged(const UiControlValue& previous)
 {
     if (!sameValue(previous, value())) {
         notifying_ = true;
-        onValueChanged(previous, value());
+        try {
+            onValueChanged(previous, value());
+        } catch (...) {
+            notifying_ = false;
+            throw;
+        }
         notifying_ = false;
     }
 }
@@ -254,11 +279,13 @@ UiResult TextInput::applyDefaultAction(const UiEvent& event, UiEventContext& con
                 updated.resize(boundary);
             }
         } else {
-            if (const auto* diagnostic = arp::core::Utf8Decoder::validate(event.text))
-                return failure(UiDiagnosticCode::InvalidUtf8Input, diagnostic);
-            if (event.text.size() > 64u - std::min(updated.size(), size_t(64u)))
-                return failure(
-                    UiDiagnosticCode::TextEditOverflow, "UI text input limit is 64 UTF-8 bytes.");
+            const auto checked = TextInputContract::validate(event.text, desc().maxTextBytes);
+            if (!checked.ok())
+                return checked;
+            if (event.text.size()
+                > desc().maxTextBytes - std::min(updated.size(), size_t(desc().maxTextBytes)))
+                return failure(UiDiagnosticCode::TextEditOverflow,
+                    "UI-TEXT-BUDGET-EXCEEDED: input exceeds declared maxTextBytes.");
             updated += event.text;
         }
         return commit(*this, UiControlValue::fromText(std::move(updated)), context);
@@ -408,11 +435,8 @@ bool UiControlRuntime::pendingRemoval(WidgetId id) const
 
 bool UiControlRuntime::eventEligible(WidgetId id) const
 {
-    if (pendingRemoval(id))
+    if (pendingRemoval(id) || pendingCreation(id))
         return false;
-    for (const auto& mutation : mutations_.values())
-        if (mutation.kind == MutationKind::Create && mutation.widget == id)
-            return false;
     auto current = id;
     for (size_t depth = 0; current.valid() && depth < canvas_.desc().maxWidgetCount; ++depth) {
         const auto* widget = canvas_.findWidget(current);
@@ -422,6 +446,14 @@ bool UiControlRuntime::eventEligible(WidgetId id) const
             return true;
         current = widget->parentId();
     }
+    return false;
+}
+
+bool UiControlRuntime::pendingCreation(WidgetId id) const
+{
+    for (const auto& mutation : mutations_.values())
+        if (mutation.kind == MutationKind::Create && mutation.widget == id)
+            return true;
     return false;
 }
 
@@ -555,6 +587,7 @@ UiResult UiControlRuntime::cancelSubtree(WidgetId id)
 UiResult UiControlRuntime::cancelInput()
 {
     const bool outer = !dispatching_;
+    DispatchFlagReset release(dispatching_, outer);
     if (outer)
         dispatching_ = true;
     pointerValid_ = false;
@@ -655,16 +688,46 @@ UiResult UiControlRuntime::reparentControl(WidgetId id, WidgetId parent)
     }
     if (mutations_.values().size() >= canvas_.desc().maxWidgetCount)
         return failure(UiDiagnosticCode::EventCapacityExceeded, "UI-MUTATION-BUDGET-EXCEEDED");
+    prepareParentAttachment(parent);
     mutations_.append({MutationKind::Reparent, id, parent});
     return UiResult::success();
+}
+
+void UiControlRuntime::prepareParentAttachment(WidgetId parent)
+{
+    const auto* widget = canvas_.findWidget(parent);
+    assert(widget);
+    std::size_t incoming = 1;
+    for (std::size_t index = nextMutation_; index < mutations_.values().size(); ++index) {
+        const auto& mutation = mutations_.values()[index];
+        incoming += mutation.kind != MutationKind::Remove && mutation.parent == parent;
+    }
+    // Repeated reparent requests can overestimate simultaneous children. The
+    // explicit canvas count bounds actual attachments, including queued creates.
+    canvas_.reserveChildSlots(
+        parent, std::min(canvas_.desc().maxWidgetCount, widget->childIds().size() + incoming));
+}
+
+void UiControlRuntime::discardUnpublishedControl(WidgetId id) noexcept
+{
+    if (auto* control = findControlObject(id))
+        control->owner_ = nullptr;
+    controls_.erase(std::remove_if(controls_.begin(),
+                        controls_.end(),
+                        [id](const auto& object) {
+                            return object->widgetId() == id;
+                        }),
+        controls_.end());
+    canvas_.discardUnpublishedLeaf(id);
 }
 
 UiResult UiControlRuntime::finishMutations()
 {
     dispatching_ = true;
+    DispatchFlagReset release(dispatching_);
     auto result = UiResult::success();
-    for (size_t index = 0; index < mutations_.values().size(); ++index) {
-        const auto mutation = mutations_.values()[index];
+    for (; nextMutation_ < mutations_.values().size(); ++nextMutation_) {
+        const auto mutation = mutations_.values()[nextMutation_];
         if (mutation.kind == MutationKind::Remove) {
             const auto cancelled = cancelSubtree(mutation.widget);
             if (result.ok())
@@ -682,16 +745,10 @@ UiResult UiControlRuntime::finishMutations()
             }
         } else {
             // A parent removed later in this dispatch invalidates an unpublished child.
-            if (pendingRemoval(mutation.parent) || pendingRemoval(mutation.widget)) {
-                if (mutation.kind == MutationKind::Create && canvas_.findWidget(mutation.widget)) {
-                    canvas_.removeSubtree(mutation.widget);
-                    controls_.erase(std::remove_if(controls_.begin(),
-                                        controls_.end(),
-                                        [&](const auto& object) {
-                                            return object->widgetId() == mutation.widget;
-                                        }),
-                        controls_.end());
-                }
+            if (!canvas_.findWidget(mutation.parent) || pendingRemoval(mutation.parent)
+                || pendingRemoval(mutation.widget)) {
+                if (mutation.kind == MutationKind::Create)
+                    discardUnpublishedControl(mutation.widget);
                 continue;
             }
             const auto moved = canvas_.reparent(mutation.widget, mutation.parent);
@@ -706,6 +763,7 @@ UiResult UiControlRuntime::finishMutations()
     }
     mutations_.clear();
     pendingRemoval_.clear();
+    nextMutation_ = 0;
     dispatching_ = false;
     return result;
 }
@@ -742,6 +800,14 @@ UiInputDispatchResult UiControlRuntime::dispatch(UiEvent event)
         return UiInputDispatchResult::failure(UiDiagnosticCode::ReentrantEventDispatch,
             arp::core::pmr::String("UI-EVENT-REENTRANT: recursive dispatch is forbidden.",
                 &arp::core::defaultCpuMemoryResource()));
+    // A previous callback may have propagated an exception after accepting
+    // earlier mutations. Drain them before routing another input event.
+    if (!mutations_.values().empty()) {
+        const auto finished = finishMutations();
+        if (!finished.ok())
+            return UiInputDispatchResult::failure(
+                finished.diagnostic().code, finished.diagnostic().message);
+    }
     if ((event.kind == UiInputEventKind::PointerDown || event.kind == UiInputEventKind::PointerUp)
         && static_cast<size_t>(event.button)
             > static_cast<size_t>(arp::input::InputMouseButton::Middle))
@@ -764,6 +830,7 @@ UiInputDispatchResult UiControlRuntime::dispatch(UiEvent event)
         return UiInputDispatchResult::failure(
             eventLayout_.diagnostic().code, eventLayout_.diagnostic().message);
     dispatching_ = true;
+    DispatchFlagReset release(dispatching_);
     clicked_ = false;
     auto result = UiResult::success();
     // Also reconcile legacy callers that changed Widget visibility directly.

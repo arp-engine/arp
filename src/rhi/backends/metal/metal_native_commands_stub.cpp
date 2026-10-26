@@ -14,6 +14,49 @@
 #include "rhi/semantics/push_constant_validation.h"
 
 namespace arp::rhi_metal {
+std::shared_ptr<const MetalOriginalQueueAcceptance>
+MetalRhiNativeCommandPayload::originalQueueAcceptance() const noexcept
+{
+    return {};
+}
+
+bool MetalRhiNativeCommandPayload::publishOriginalQueueAcceptance() const noexcept
+{
+    return false;
+}
+
+bool MetalRhiNativeCommandPayload::prepareOriginalOrdinary(
+    std::shared_ptr<const rhi::OriginalCommandStreamProgram>,
+    const rhi::GpuDevice&,
+    const rhi::OriginalRenderPassPreparationRequest&,
+    core::UniquePtr<core::MutationJournal>&,
+    core::pmr::String& diagnostic)
+{
+    diagnostic = "RHI-METAL-ORDINARY-NATIVE-RUNTIME-UNAVAILABLE";
+    return false;
+}
+
+bool MetalRhiNativeCommandPayload::recordDescriptorSetBindContents(std::uint32_t,
+    const std::shared_ptr<const MetalRhiNativeDescriptorGroupPayload>&,
+    rhi::ShaderStage,
+    const std::uint32_t*,
+    std::uint32_t,
+    core::pmr::String& diagnostic,
+    bool)
+{
+    diagnostic = "RHI-METAL-ORDINARY-NATIVE-RUNTIME-UNAVAILABLE";
+    return false;
+}
+
+bool MetalRhiNativeCommandPayload::beginPreparedNativeRenderPass(
+    const MetalRhiNativeRenderPassPreparation&,
+    const std::shared_ptr<core::ExternalObjectSlot>&,
+    core::pmr::String& diagnostic)
+{
+    diagnostic = "RHI-METAL-ORDINARY-NATIVE-RUNTIME-UNAVAILABLE";
+    return false;
+}
+
 std::shared_ptr<MetalRhiNativeCommandPayload> MetalOriginalTextureUploadCommand::prepareOriginal(
     std::shared_ptr<const Reservation>,
     std::shared_ptr<const Program>,
@@ -868,6 +911,12 @@ bool MetalRhiNativeCommandPayload::recordBlitTextureToBuffer(
     return false;
 }
 
+bool MetalRhiNativeCommandPayload::recordBlitTextureToBufferContents(
+    const rhi::TextureToBufferCopyDesc& desc, core::pmr::String& diagnostic)
+{
+    return recordBlitTextureToBuffer(desc, diagnostic);
+}
+
 bool MetalRhiNativeCommandPayload::preflightBlitTextureToBuffer(
     const rhi::TextureToBufferCopyDesc&, std::pmr::string& diagnostics)
 {
@@ -907,6 +956,15 @@ bool MetalRhiNativeCommandPayload::submit(MetalRhiNativeQueueStats& queueStats,
     return false;
 }
 
+void MetalRhiNativeCommandPayload::closeUnsubmittedNativeScopes() noexcept
+{
+    nativeRenderEncoder_.reset();
+    nativeComputeEncoder_.reset();
+    nativeBlitEncoder_.reset();
+    nativeCommandBuffer_.reset();
+    nativeSubmitWaitCommandBuffer_.reset();
+}
+
 void MetalRhiNativeCommandPayload::abandonUnsubmitted()
 {
     // Mirrors the Apple lowering: submitted GPU work is never abandoned, the
@@ -917,6 +975,10 @@ void MetalRhiNativeCommandPayload::abandonUnsubmitted()
         return;
     }
     abandoned_ = true;
+    closeUnsubmittedNativeScopes();
+    if (originalCommandCustody_)
+        originalCommandCustody_->abandonUnsubmitted();
+    originalCommandCustody_.reset();
     stagingUploads_.reset();
     cancelClosedConsumerReservation(false);
     nativeRenderEncoder_.reset();
@@ -997,8 +1059,14 @@ MetalRhiNativeQueueDrainState drainMetalRhiNativeQueueForShutdown(
 
 void MetalRhiNativeCommandPayload::poisonRecording(std::string_view)
 {
-    cancelClosedConsumerReservation(true);
+    if (readbackWasSubmitted() || recordingPoisoned_)
+        return;
     recordingPoisoned_ = true;
+    closeUnsubmittedNativeScopes();
+    if (originalCommandCustody_)
+        originalCommandCustody_->abandonUnsubmitted();
+    originalCommandCustody_.reset();
+    cancelClosedConsumerReservation(true);
 }
 
 bool MetalRhiNativeCommandPayload::recordPushDebugGroup(

@@ -39,7 +39,11 @@ class VulkanHeadlessRuntime final {
 public:
     explicit VulkanHeadlessRuntime(bool enableDescriptorIndexing = false,
         PFN_vkGetDeviceProcAddr deviceResolver = vkGetDeviceProcAddr,
-        bool useGraphicsQueueForPresent = false)
+        bool useGraphicsQueueForPresent = false,
+        bool enableHostQueryReset = true,
+        bool enableShaderDrawParameters = true,
+        bool reportShaderDrawParameters = true,
+        PFN_vkGetInstanceProcAddr instanceResolver = vkGetInstanceProcAddr)
         : owner_(core::makeShared<NativeOwner>())
     {
         VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -106,9 +110,11 @@ public:
             VkPhysicalDeviceVulkan12Features enabled12{
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
             enabled12.timelineSemaphore = VK_TRUE;
+            enabled12.hostQueryReset = enableHostQueryReset ? supported12.hostQueryReset : VK_FALSE;
             VkPhysicalDeviceVulkan11Features enabled11{
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
-            enabled11.shaderDrawParameters = supported11.shaderDrawParameters;
+            enabled11.shaderDrawParameters =
+                enableShaderDrawParameters ? supported11.shaderDrawParameters : VK_FALSE;
             enabled11.pNext = &enabled12;
             VkPhysicalDeviceFeatures2 enabled{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
             enabled.pNext = &enabled11;
@@ -158,7 +164,7 @@ public:
                 desc.presentQueue = useGraphicsQueueForPresent ? queue : VK_NULL_HANDLE;
                 desc.graphicsQueueFamilyIndex = family;
                 desc.queueFamilyCount = 1;
-                desc.getInstanceProcAddr = vkGetInstanceProcAddr;
+                desc.getInstanceProcAddr = instanceResolver;
                 desc.getDeviceProcAddr = deviceResolver;
                 desc.descriptorIndexingEnablementReported = true;
                 desc.descriptorIndexingEnabled =
@@ -167,8 +173,12 @@ public:
                 desc.indirectFirstInstanceEnablementReported = true;
                 desc.indirectFirstInstanceEnabled =
                     enabled.features.drawIndirectFirstInstance == VK_TRUE;
+                desc.shaderDrawParametersEnablementReported = reportShaderDrawParameters;
+                desc.shaderDrawParametersEnabled = enabled11.shaderDrawParameters == VK_TRUE;
                 desc.timelineSemaphoreEnablementReported = true;
                 desc.timelineSemaphoreEnabled = true;
+                desc.hostQueryResetEnablementReported = true;
+                desc.hostQueryResetEnabled = enabled12.hostQueryReset == VK_TRUE;
                 runtime_ = rhi_vulkan::createVulkanRhiRuntime(desc);
                 if (!runtime_)
                     std::fprintf(stderr,

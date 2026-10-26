@@ -323,9 +323,14 @@ void VolumetricFogFeature::recordCompute(
     auto encoder = context.commands().beginComputePass({pipelines_[pass].bindings.name});
     if (!encoder)
         throw std::runtime_error("FOG-COMPUTE-ENCODER");
+    auto* timing = context.gpuTimingPool();
+    if (timing)
+        require(encoder->writeTimestamp(*timing, context.gpuTimingBeginQuery()));
     require(encoder->setPipeline(*pipelines_[pass].compute));
     require(encoder->bindDescriptorSet(0u, *slots_[slot].sets[pass]));
     require(encoder->dispatch((grid_.width + 7u) / 8u, (grid_.height + 7u) / 8u, z));
+    if (timing)
+        require(encoder->writeTimestamp(*timing, context.gpuTimingEndQuery()));
     require(encoder->end());
 }
 

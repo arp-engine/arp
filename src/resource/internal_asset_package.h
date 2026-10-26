@@ -10,6 +10,8 @@
 
 namespace arp::resource {
 
+class AssetPackageCodecRegistry;
+
 constexpr NameView kInternalAssetPackageFormat = "ArpInternalAssetPackage";
 constexpr std::uint32_t kInternalAssetPackageVersion = 1;
 
@@ -56,6 +58,9 @@ struct InternalAssetPackageValidationResult {
 
 ARP_API ResourceEnvelopeBuildResult buildResourceEnvelope(
     const ResourceEnvelopeBuildDesc& desc, const reflection::object& payload);
+// Explicit domain YAML payloads share the canonical hash/envelope writer.
+ARP_API ResourceEnvelopeBuildResult buildResourceEnvelopeFromYaml(
+    const ResourceEnvelopeBuildDesc& desc, NameView payloadYaml);
 
 class ARP_API InternalAssetPackageWriter final {
 public:
@@ -71,6 +76,10 @@ public:
 
     ResourceLoadResult load(const std::filesystem::path& packageDirectory,
         ResourceManager& manager,
+        ResourceLoadPolicy policy = {}) const;
+    ResourceLoadResult load(const std::filesystem::path& packageDirectory,
+        ResourceManager& manager,
+        core::SharedPtr<const AssetPackageCodecRegistry> codecs,
         ResourceLoadPolicy policy = {}) const;
 };
 

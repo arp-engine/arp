@@ -24,6 +24,9 @@ public:
     void pump();
     void stop();
     bool running() const noexcept;
+
+    bool hasPendingResponses() const noexcept { return pendingResponses_ != 0; }
+
     network::uint16 port() const noexcept;
     const core::pmr::String& diagnostic() const noexcept;
 
@@ -39,5 +42,6 @@ private:
     std::thread reactor_;
     EditorShell* shell_ = nullptr;
     bool requestPending_ = false;
+    std::size_t pendingResponses_ = 0;
 };
 } // namespace arp::editor

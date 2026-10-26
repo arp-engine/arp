@@ -13,6 +13,32 @@
 
 namespace arp::rhi_vulkan {
 
+bool VulkanRhiRetainedCommand::chargeBindings(rhi::CommandRecordingUsage& charge,
+    const VulkanRhiRetainedBindings& bindings,
+    core::pmr::String& diagnostic) const
+{
+    const auto add = [&](std::uint64_t& total, std::uint64_t value) {
+        if (!core::canAddUnsigned(total, value)) {
+            diagnostic = "RHI-COMMAND-RECORDING-BUDGET-CHARGE-OVERFLOW";
+            return false;
+        }
+        total += value;
+        return true;
+    };
+    // Pipeline, descriptor sets, supplied buffer wrappers, and original view/
+    // parent pairs. These are visits, deliberately independent of owner dedup.
+    if (!add(charge.resourceReferences, 1u) || !add(charge.resourceReferences, bindings.sets.size())
+        || !add(charge.resourceReferences, bindings.buffers.size())
+        || !add(charge.resourceReferences, bindings.sampledTextures.size())
+        || !add(charge.resourceReferences, bindings.sampledTextures.size()))
+        return false;
+    for (const auto& slot : bindings.sets)
+        for (const auto& binding : slot.descriptors->layout().bindings)
+            if (!add(charge.descriptorElements, binding.arrayCount))
+                return false;
+    return true;
+}
+
 bool VulkanRhiRetainedCommand::validateSampledTexture(const VulkanRhiRetainedSampledTexture& input,
     bool allowColor,
     core::pmr::String& diagnostic) const

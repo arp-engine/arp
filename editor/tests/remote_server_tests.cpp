@@ -6,6 +6,8 @@
 #include "3d/animator_component.h"
 #include "3d/components.h"
 #include "editor/remote/editor_remote_server.h"
+#include "editor/tests/fixtures/editor_remote_client_fixture.h"
+#include "editor/tests/fixtures/project_fixture.h"
 #include "editor/workspace/editor_scene_authoring_codec.h"
 #include "editor/workspace/editor_shell.h"
 #include "network/http/client.h"
@@ -114,8 +116,9 @@ std::string createAnimatorPackage(const std::filesystem::path& projectRoot)
     assert(resource::InternalAssetPackageWriter().write(package.package, packageRoot).success);
     {
         std::ofstream manifest(projectRoot / "project.arp.yaml", std::ios::binary);
-        manifest << "format: ArpEditorProject\nversion: 1\nassetPackages:\n"
-                    "  - Assets/Animator.arpkg\n";
+        manifest << arp::editor::tests::ProjectFixture::document("assetPackages:\n"
+                                                                 "  - Assets/Animator.arpkg\n"
+                                                                 "physics2d: null\n");
         assert(manifest.good());
     }
     return package.ids.prefabId.c_str();
@@ -332,54 +335,13 @@ int main()
     assert(remote.start(shell, token, 0));
     assert(remote.running() && remote.port() != 0);
 
-    network::SocketRuntime clientRuntime;
-    assert(clientRuntime.valid());
-    network::io_service clientService;
-    network::io_context clientContext(&clientService);
-    std::thread clientReactor([&] {
-        clientService.run();
-    });
-    network::http::Client client(&clientContext);
-
+    editor::tests::EditorRemoteClientFixture transport(remote, token);
     const auto send = [&](network::http::Method method,
                           std::string_view path,
                           std::string_view body,
                           bool authorized,
                           std::string_view protocolVersion = {}) {
-        network::http::ClientRequest request(
-            method, "http://127.0.0.1:" + std::to_string(remote.port()) + std::string(path));
-        if (authorized)
-            assert(request.add_header("Authorization", "Bearer " + std::string(token))
-                == network::http::DiagnosticCode::none);
-        if (!body.empty()) {
-            request.set_content_type(network::http::ContentType::Json);
-            request.set_body_text(body);
-        }
-        assert(request.add_header("Accept", "application/json, text/event-stream")
-            == network::http::DiagnosticCode::none);
-        if (!protocolVersion.empty())
-            assert(request.add_header("MCP-Protocol-Version", protocolVersion)
-                == network::http::DiagnosticCode::none);
-        bool done = false;
-        network::http::ClientStatus resultStatus;
-        std::uint16_t statusCode = 0;
-        std::string responseBody;
-        client.async_send(request,
-            [&](const network::http::ClientStatus& status,
-                const network::http::Response& response) {
-                resultStatus = status;
-                statusCode = response.status().value();
-                responseBody.assign(response.body_text());
-                done = true;
-            });
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (!done && std::chrono::steady_clock::now() < deadline) {
-            remote.pump();
-            clientContext.dispatch();
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        assert(done && resultStatus.success());
-        return std::pair<std::uint16_t, std::string>{statusCode, std::move(responseBody)};
+        return transport.send(method, path, body, authorized, protocolVersion);
     };
 
     const auto unauthorized = send(network::http::Method::Get, "/api/v1/discovery", {}, false);
@@ -450,7 +412,8 @@ int main()
     assert(inspectorMesh);
     assert(inspectorParticleEmitter);
     assert(inspectorAnimator);
-    assert(inspectorCollider && inspectorCollider->handle());
+    assert(inspectorCollider && !inspectorCollider->handle()
+        && inspectorCollider->usage() == physics2d::ComponentUsage::Authoring);
     const auto inspectorObjectId = inspectorObject->id().value();
     const auto inspectorMeshId = inspectorMesh->id().value();
     const auto inspectorParticleEmitterId = inspectorParticleEmitter->id().value();
@@ -486,7 +449,9 @@ int main()
             + std::to_string(jointBodyObjectId) + "}}}",
         true,
         "2025-11-25");
-    assert(mcpJointBodyB.first == 200 && inspectorJoint->handle());
+    assert(mcpJointBodyB.first == 200 && !inspectorJoint->handle()
+        && inspectorJoint->bodyAObjectId() == inspectorObjectId
+        && inspectorJoint->bodyBObjectId() == jointBodyObjectId);
     const auto bodyBObject =
         shell.sceneDocument().scene().findObject(scene::GameObjectId::fromValue(jointBodyObjectId));
     const auto bodyBComponentId =
@@ -497,7 +462,8 @@ int main()
                    editor::RemoveSceneComponentCommand{jointBodyObjectId, bodyBComponentId.value()})
                .status
         == editor::EditorResponseStatus::Failed);
-    assert(shell.stateVersion() == bodyRemovalVersion && inspectorJoint->handle());
+    assert(shell.stateVersion() == bodyRemovalVersion && !inspectorJoint->handle()
+        && inspectorJoint->bodyBObjectId() == jointBodyObjectId);
     const auto mcpJointUndo = send(network::http::Method::Post,
         "/mcp",
         R"json({"jsonrpc":"2.0","id":55,"method":"tools/call","params":{"name":"scene.undo","arguments":{}}})json",
@@ -512,7 +478,8 @@ int main()
                true)
                .first
         == 200);
-    assert(inspectorJoint->handle());
+    assert(!inspectorJoint->handle() && inspectorJoint->bodyAObjectId() == inspectorObjectId
+        && inspectorJoint->bodyBObjectId() == jointBodyObjectId);
     assert(
         shell
             .submitCommand(editor::RemoveSceneComponentCommand{inspectorObjectId, jointComponentId})
@@ -1050,7 +1017,7 @@ int main()
         "/api/v1/commands",
         "{\"schemaVersion\":1,\"command\":\"scene.component.add\",\"objectId\":"
             + std::to_string(inspectorObjectId)
-            + ",\"type\":\"TileMapResourceComponent\",\"properties\":[{\"property\":\"tileMapResourceId\",\"kind\":\"string\",\"value\":\""
+            + ",\"type\":\"TileMapResourceComponent\",\"properties\":[{\"property\":\"tileMapResourceId\",\"kind\":\"resourceReference\",\"value\":\""
             + tests::tileMapId
             + "\"},{\"property\":\"maxResidentChunks\",\"kind\":\"unsignedInteger\",\"value\":2},{\"property\":\"maxVisibleCells\",\"kind\":\"unsignedInteger\",\"value\":12},{\"property\":\"firstObjectId\",\"kind\":\"unsignedInteger\",\"value\":100}]}",
         true);
@@ -1409,7 +1376,8 @@ int main()
     for (const auto& object : shell.sceneDocument().scene().objects()) {
         const auto* body = object->getComponent<physics2d::RigidBody2DComponent>();
         loadedRigidBodyBoundToRemoteWorld = loadedRigidBodyBoundToRemoteWorld
-            || (body && body->handle() && body->world() == remotePhysicsWorld.get());
+            || (body && !body->handle() && body->usage() == physics2d::ComponentUsage::Authoring
+                && body->world() == remotePhysicsWorld.get());
     }
     assert(loadedRigidBodyBoundToRemoteWorld);
 
@@ -1435,10 +1403,77 @@ int main()
     }
 #endif
 
+    assert(runEditorCli(remote, cliEndpoint, token, {"project.rename", "CLI saved project"}));
+    assert(shell.projectDirty() && shell.projectManifest()->name == "CLI saved project");
+    assert(runEditorCli(remote, cliEndpoint, token, {"project.save"}));
+    const auto projectDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    bool projectSaved = false;
+    while (std::chrono::steady_clock::now() < projectDeadline) {
+        shell.pollTasks();
+        const auto state = shell.submitCommand(editor::GetEditorStateQuery{});
+        if (state.hasSnapshot && !state.snapshot.projectSavePending) {
+            projectSaved = !state.snapshot.projectDirty && state.snapshot.projectDiagnostic.empty();
+            break;
+        }
+        std::this_thread::yield();
+    }
+    assert(projectSaved);
+    // The actual CLI runs ArpScript in Interpreter mode and enters the same command gate.
+    const auto retainedScriptId = shell.activeScriptDocumentId();
+    const auto originalSceneIdentity = shell.sceneDocument().runtimeSceneId();
+    const auto originalObjectCount = shell.sceneDocument().scene().objects().size();
+    assert(runEditorCli(remote, cliEndpoint, token, {"scene.duplicate"}));
+    assert(shell.sceneDirty() && shell.sceneDocument().runtimeSceneId() != originalSceneIdentity
+        && resource::isResourceUuid(shell.sceneDocument().runtimeSceneId())
+        && shell.sceneDocument().scene().objects().size() == originalObjectCount
+        && shell.activeScriptDocumentId() == retainedScriptId);
+    assert(runEditorCli(remote, cliEndpoint, token, {"scene.new", "discard"}));
+    assert(shell.sceneDirty() && shell.sceneDocument().scene().name() == "Untitled"
+        && shell.sceneDocument().scene().objects().empty()
+        && shell.activeScriptDocumentId() == retainedScriptId);
+    assert(runEditorCli(remote, cliEndpoint, token, {"scene.export", "cli-export"}));
+    const auto exportDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    bool exported = false;
+    while (std::chrono::steady_clock::now() < exportDeadline) {
+        shell.pollTasks();
+        const auto task = shell.submitCommand(editor::GetSceneExportTaskQuery{1});
+        assert(task.hasSnapshot);
+        if (task.snapshot.sceneExportTask.status != editor::SceneExportStatus::Pending) {
+            exported = task.snapshot.sceneExportTask.status
+                == editor::SceneExportStatus::ExportedUnregistered;
+            break;
+        }
+        std::this_thread::yield();
+    }
+    assert(exported && shell.sceneDirty());
+    assert(runEditorCli(remote, cliEndpoint, token, {"scene.export.task.get", "1"}));
+    assert(runEditorCli(remote, cliEndpoint, token, {"activate", "save_scene_as"}));
+    assert(runEditorCli(
+        remote, cliEndpoint, token, {"editor.text.set", "scene_ui_path", "cli-scene.arp.yaml"}));
+    assert(shell.runtime().findControl(shell.id("scene_ui_path"))->value().text
+        == "cli-scene.arp.yaml");
+    assert(runEditorCli(remote, cliEndpoint, token, {"activate", "scene_ui_submit"}));
+    const auto finishCliScene = [&](std::string_view path) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (std::chrono::steady_clock::now() < deadline) {
+            shell.pollTasks();
+            const auto state = shell.submitCommand(editor::GetEditorStateQuery{});
+            assert(state.hasSnapshot);
+            if (!state.snapshot.sceneIoPending) {
+                assert(state.snapshot.scenePath == path && !state.snapshot.sceneDirty);
+                assert(std::filesystem::exists(root / std::filesystem::u8path(path)));
+                return;
+            }
+            std::this_thread::yield();
+        }
+        assert(false && "CLI scene save timeout");
+    };
+    finishCliScene("cli-scene.arp.yaml");
+    assert(runEditorCli(
+        remote, cliEndpoint, token, {"scene.save", "remote-scene.arp.yaml", "overwrite"}));
+    finishCliScene("remote-scene.arp.yaml");
     remote.stop();
-    clientContext.shutdown();
-    clientReactor.join();
-    clientContext.dispatch();
+    transport.shutdown();
     std::error_code cleanupError;
     std::filesystem::remove_all(root, cleanupError);
     assert(!cleanupError);

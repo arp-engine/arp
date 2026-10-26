@@ -3,9 +3,45 @@
 #include "assets/cloud/cloud_asset.h"
 #include "renderer/render_graph/render_graph.h"
 #include "renderer/volumetric_cloud/cloud_execution_plan.h"
+#include "renderer/volumetric_cloud/cloud_frame_parameters.h"
 #include "renderer/volumetric_cloud/cloud_gpu_contract.h"
+#include "renderer/volumetric_cloud/detail/cloud_prepared_submission.h"
+
+namespace arp::render_graph {
+class OriginalFrameGraphExecution;
+}
 
 namespace arp::renderer::cloud {
+
+class CloudPreparedHistory;
+class CloudPreparedResources;
+class CloudPreparedPipelines;
+struct CloudPreparedFrameBuffers;
+struct CloudPreparedResourceCreateContext;
+struct CloudPreparedFeatureCreateContext;
+struct CloudPreparedFeatureGraphContext;
+struct CloudReconstructionResources;
+
+// Explicit finite Prototype frame. Resources, artifacts and frozen descriptors
+// belong to the original inventory retained by execution. History selection is
+// explicit; this API neither rewrites nor unseals a previous frame's buffers.
+struct CloudPreparedGraphContext {
+    std::uint32_t contractVersion = 0u;
+    bool prototypeOptIn = false;
+    render_graph::OriginalFrameGraphExecution& execution;
+    CloudExecutionPlan plan;
+    render_graph::TextureHandle color, depth, output;
+    render_graph::BufferHandle constants, density, raw, previous, resolved;
+    std::array<std::size_t, kCloudPipelineCount> pipelines{}, descriptors{};
+    // Version 2 binds the immutable uniform and sample owners selected by this
+    // history controller and attaches its ordinary submission observer.
+    CloudPreparedHistory* history = nullptr;
+    std::uint64_t historyGeneration = 0u;
+    // /3 explicitly selects Reconstruction/1, including a distinct full-size
+    // resolved grid and an immutable policy uniform owned by history.
+    const CloudReconstructionResources* reconstruction = nullptr;
+    render_graph::BufferHandle reconstructionConstants;
+};
 
 struct CloudCreateContext {
     rhi::GpuDevice& device;
@@ -42,21 +78,31 @@ struct CloudOutputs {
 // reuse. Feature/device must outlive graphs and completion fences using it.
 class ARP_API VolumetricCloudFeature final : public render_graph::PassSubmissionObserver {
 public:
-    ~VolumetricCloudFeature() override { release(); }
+    VolumetricCloudFeature();
+    ~VolumetricCloudFeature() override;
 
     CloudResult create(const CloudCreateContext& context);
+    // Explicit original path: all budgets, publications and memory intents
+    // come from the caller. No conversion from legacy creation is inferred.
+    CloudResult create(const CloudPreparedFeatureCreateContext&, core::pmr::String& diagnostic);
     CloudResult resize(rhi::Extent2D extent);
+    CloudResult resize(const CloudPreparedResourceCreateContext&);
     CloudResult contributeGraph(const CloudGraphContext& context, CloudOutputs& output);
+    CloudResult contributeGraph(const CloudPreparedFeatureGraphContext&, CloudOutputs&);
+    // Cold preparation precedes assembly of the caller's single inventory.
+    CloudResult prepareFrame(const CloudGraphContext&, CloudPreparedFrameBuffers&);
+    const CloudPreparedResources* preparedResources() const noexcept;
+    const CloudPreparedPipelines* preparedPipelines() const noexcept;
+    CloudPreparedHistory* preparedHistory() noexcept;
+    render_graph::PassSubmissionToken preparedToken() const noexcept;
+    static CloudResult contributePreparedGraph(
+        const CloudPreparedGraphContext& context, CloudOutputs& output);
 
     bool created() const noexcept { return device_ != nullptr; }
 
     bool frameReady() const noexcept;
 
-    void resetHistory() noexcept
-    {
-        historyValid_ = false;
-        samplingFrame_ = 0u;
-    }
+    CloudResult resetHistory() noexcept;
 
     // Only a graph that has never entered execution validation may be cancelled.
     // After execution failure retain the graph, release/drain, then destroy it.
@@ -70,6 +116,14 @@ public:
         const std::shared_ptr<const rhi::GpuFence>& completion) noexcept override;
 
 private:
+    struct PreparedState;
+    detail::CloudPreparedSubmission preparedSubmission_;
+    core::UniquePtr<PreparedState> prepared_;
+    static CloudResult contributePreparedGraph(const CloudPreparedGraphContext&,
+        CloudOutputs&,
+        render_graph::PassSubmissionObserver*,
+        render_graph::PassSubmissionToken);
+
     struct Pipeline {
         rhi::ShaderPackageDesc package;
         rhi::DescriptorLayoutDesc bindings;
@@ -85,10 +139,7 @@ private:
         std::array<core::UniquePtr<rhi::GpuTextureView>, 2> views;
         std::array<rhi::GpuResourceId, 2> viewedTextures{};
         std::shared_ptr<const rhi::GpuFence> completion;
-        CloudGpuConstants parameters{};
-        core::Mat4 viewProjection, canonicalProjection;
-        core::Vec3 planetCenter;
-        std::uint64_t sceneRevision = 0u;
+        CloudFrameState frame;
     };
 
     CloudResult createPipelines();

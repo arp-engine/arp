@@ -16,7 +16,17 @@ public:
         resource::ResourceHandle<TileMapResource>,
         physics2d::PhysicsWorld2D&,
         TileMapRuntimeDesc);
+    // Read-only residency and visual projection; owns no collision world.
+    TileMapRuntime(
+        resource::ResourceManager&, resource::ResourceHandle<TileMapResource>, TileMapRuntimeDesc);
     ~TileMapRuntime();
+
+    physics2d::ComponentUsage usage() const
+    {
+        return world_ ? physics2d::ComponentUsage::Simulation
+                      : physics2d::ComponentUsage::Authoring;
+    }
+
     TileMapRuntime(const TileMapRuntime&) = delete;
     TileMapRuntime& operator=(const TileMapRuntime&) = delete;
     bool updateResidency(core::Rect2<float> visibleWorld);
@@ -29,6 +39,11 @@ public:
     const char* diagnostic() const { return diagnostic_; }
 
 private:
+    TileMapRuntime(resource::ResourceManager&,
+        resource::ResourceHandle<TileMapResource>,
+        physics2d::PhysicsWorld2D*,
+        TileMapRuntimeDesc);
+
     struct Resident {
         std::uint32_t index;
         physics2d::BodyHandle body;
@@ -45,7 +60,7 @@ private:
     resource::ResourceManager& resources_;
     resource::ResourceHandle<TileMapResource> map_;
     resource::ResourceHandle<TileSetResource> set_;
-    physics2d::PhysicsWorld2D& world_;
+    physics2d::PhysicsWorld2D* world_;
     TileMapRuntimeDesc desc_;
     const char* diagnostic_ = nullptr;
     core::pmr::Vector<Resident> resident_, pending_;

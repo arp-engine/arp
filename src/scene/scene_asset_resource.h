@@ -50,6 +50,10 @@ class SceneDocumentResource : public resource::ResourceBase {
 public:
     core::UniquePtr<Scene> instantiate(
         resource::ResourceManager&, const SceneComponentFactory&, core::pmr::String&) const;
+    core::UniquePtr<Scene> instantiate(resource::ResourceManager&,
+        const SceneComponentFactory&,
+        core::pmr::String&,
+        SceneExecutionMode) const;
     GameObjectId instantiateInto(Scene&,
         GameObjectId,
         resource::ResourceManager&,
@@ -61,6 +65,10 @@ public:
         const core::pmr::String&,
         core::pmr::String&,
         core::pmr::String&);
+    static bool validateDocument(const core::YamlContract::Node&,
+        const core::pmr::String& documentType,
+        const core::pmr::String& id,
+        std::uint32_t maxObjects);
     resource::ResourceLoadResult load(
         resource::ResourceManager&, const resource::ResourceLoadContext&) override;
     bool collectFileReadIntents(resource::ResourceManager&,
@@ -162,6 +170,13 @@ public:
 
     bool applyEditorAuthoringProperties(const arp::reflection::object& value) override
     {
+        return applyRestoredAuthoringProperties(value, nullptr);
+    }
+
+    // An explicit candidate resolver never changes ordinary Scene visibility.
+    bool applyRestoredAuthoringProperties(
+        const arp::reflection::object& value, const Scene::IdentityRestoration* transaction)
+    {
         if (!value.is<ObjectLinksEditorProperties>())
             return false;
         const auto& properties = value.cast<const ObjectLinksEditorProperties&>();
@@ -182,7 +197,8 @@ public:
         if (!ownerScene)
             return false;
         for (const auto& link : prepared)
-            if (!ownerScene->findObject(link.target))
+            if (!(transaction ? transaction->resolveObject(link.target)
+                              : ownerScene->findObject(link.target)))
                 return false;
         links = std::move(prepared);
         return true;

@@ -39,7 +39,8 @@ bool activeInHierarchy(const scene::Scene& scene, const scene::GameObject& objec
 EditorSceneComponentGizmos buildEditorSceneComponentGizmos(const scene::Scene& scene,
     const resource::ResourceManager& resources,
     float viewportAspect,
-    std::size_t maxSegments)
+    std::size_t maxSegments,
+    const scene::SceneTraversalSnapshot* visibleSnapshot)
 {
     EditorSceneComponentGizmos result;
     auto fail = [&](const char* diagnostic) {
@@ -52,6 +53,8 @@ EditorSceneComponentGizmos buildEditorSceneComponentGizmos(const scene::Scene& s
         return fail("ARP-EDITOR-COMPONENT-GIZMO-VIEWPORT-ASPECT-INVALID");
     if (maxSegments == 0u)
         return fail("ARP-EDITOR-COMPONENT-GIZMO-BUDGET-INVALID");
+    if (visibleSnapshot && !visibleSnapshot->ok())
+        return fail("ARP-EDITOR-COMPONENT-GIZMO-VIEW-SNAPSHOT-INVALID");
 
     auto add = [&](const scene::GameObject& object,
                    const scene::Component& component,
@@ -71,7 +74,8 @@ EditorSceneComponentGizmos buildEditorSceneComponentGizmos(const scene::Scene& s
 
     for (const auto& owned : scene.objects()) {
         const auto& object = *owned;
-        if (!activeInHierarchy(scene, object))
+        if (!activeInHierarchy(scene, object)
+            || (visibleSnapshot && !visibleSnapshot->findNode(object.id())))
             continue;
         const auto world = object.world_transform();
         const auto transform =

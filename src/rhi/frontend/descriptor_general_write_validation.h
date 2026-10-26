@@ -12,6 +12,9 @@ struct OriginalGeneralDescriptorWriteRequest {
     std::uint32_t maxBindings = 0u, maxRetainedOwnerSlots = 0u, maxCallbacks = 0u;
     std::array<std::uint64_t, 3u> maxCpuBytes{};
     std::uint64_t maxRetainedAllocationBytes = 0u;
+    // Independent TypedNativeLossJoin/4; registry10 alone grants no group join.
+    std::uint32_t lossGroupJoinVersion = 0u;
+    bool lossGroupJoinOptIn = false;
 };
 
 class OriginalGeneralDescriptorWriteContract final {
@@ -29,19 +32,37 @@ public:
     static constexpr auto bindingOwnerSlots =
         OriginalCommandTextureViewSource::completeRetainedOwnerCount + 3u + 3u + 1u;
 
-    static constexpr std::uint64_t ownerSlots(std::uint32_t bindings) noexcept
+    // Synchronous native textures retain two payload owners plus two complete
+    // device/object/allocation identity observations (three owners each), plus
+    // the published binding identity captured by native group preparation.
+    static constexpr auto synchronousBindingOwnerSlots =
+        OriginalCommandTextureViewSource::completeRetainedOwnerCount + 3u + 2u + 2u * 3u + 1u + 3u;
+
+    // The retained native pipeline payload plus its device/state identity and
+    // selected shader library/function owners are fixed synchronous custody.
+    static constexpr auto synchronousFixedOwnerSlots = fixedOwnerSlots + 1u + 2u + 3u;
+
+    static constexpr std::uint64_t ownerSlots(
+        std::uint32_t bindings, std::uint32_t version = 1u) noexcept
     {
-        return std::uint64_t(fixedOwnerSlots) + std::uint64_t(bindings) * bindingOwnerSlots;
+        return std::uint64_t(version >= 3u ? synchronousFixedOwnerSlots : fixedOwnerSlots)
+            + std::uint64_t(bindings)
+            * (version >= 3u ? synchronousBindingOwnerSlots : bindingOwnerSlots);
     }
 
     static constexpr const char* validate(const OriginalGeneralDescriptorWriteRequest& r) noexcept
     {
-        if (r.contractVersion != 1u && r.contractVersion != 2u)
+        if (r.contractVersion != 1u && r.contractVersion != 2u && r.contractVersion != 3u
+            && r.contractVersion != 4u)
             return "RHI-ORIGINAL-GENERAL-WRITE-VERSION";
         if (!r.prototypeOptIn)
             return "RHI-ORIGINAL-GENERAL-WRITE-OPT-IN";
-        if (!r.maxBindings || ownerSlots(r.maxBindings) > r.maxRetainedOwnerSlots
-            || r.maxCallbacks != callbackCount || !r.maxRetainedAllocationBytes)
+        if ((r.lossGroupJoinVersion || r.lossGroupJoinOptIn)
+            && (r.contractVersion < 3u || r.lossGroupJoinVersion != 4u || !r.lossGroupJoinOptIn))
+            return "RHI-ORIGINAL-GENERAL-WRITE-LOSS-JOIN-INTENT";
+        if (!r.maxBindings || ownerSlots(r.maxBindings, r.contractVersion) > r.maxRetainedOwnerSlots
+            || r.maxCallbacks != (r.contractVersion >= 3u ? 0u : callbackCount)
+            || !r.maxRetainedAllocationBytes)
             return "RHI-ORIGINAL-GENERAL-WRITE-BUDGET";
         for (const auto bytes : r.maxCpuBytes)
             if (!bytes)
@@ -53,6 +74,23 @@ public:
     {
         return semantics::DescriptorLowering::OriginalGeneralDescriptorWrite_decide<Decision>(
             backend, f);
+    }
+
+    // GeneralWrite3 is synchronous, cold, fresh-set-only and read-only Graphics.
+    // It has no WebGPU error-scope participants and grants no command authority.
+    static constexpr Decision synchronousGraphicsLowering(Backend backend) noexcept
+    {
+        return semantics::DescriptorLowering::OriginalSynchronousGraphicsWrite_lowering<Decision>(
+            backend);
+    }
+
+    // /4 reuses the fresh-set atomic transaction for the selected Compute
+    // entry, including full finite storage-buffer read/write footprints.
+    // Publication alone grants neither Dispatch nor initialization authority.
+    static constexpr Decision synchronousComputeLowering(Backend backend) noexcept
+    {
+        return semantics::DescriptorLowering::OriginalSynchronousComputeWrite_lowering<Decision>(
+            backend);
     }
 };
 } // namespace arp::rhi

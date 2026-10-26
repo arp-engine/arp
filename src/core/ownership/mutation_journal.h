@@ -94,6 +94,16 @@ public:
             first_->detach();
     }
 
+    // Drop only this participant's saved value. An unrelated journal cannot
+    // release it, and no restore/invalidation callback is invoked.
+    bool discard(MutationRecord& record) noexcept
+    {
+        if (!record.ownedBy(*this))
+            return false;
+        record.detach();
+        return true;
+    }
+
     void rollback() noexcept
     {
         while (first_) {
@@ -147,6 +157,8 @@ public:
     bool pending() const noexcept { return record_.pending(); }
 
     bool ownedBy(const MutationJournal& journal) const noexcept { return record_.ownedBy(journal); }
+
+    bool discard(MutationJournal& journal) noexcept { return journal.discard(record_); }
 
     bool canPrepare(const MutationJournal& journal) const noexcept
     {

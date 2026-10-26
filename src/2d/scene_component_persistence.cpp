@@ -16,7 +16,8 @@ bool register_scene2d_authoring_reflection(arp::scriptvm::ModuleRegistration*);
 namespace arp::scene2d {
 bool registerScene2DPersistence(scene::SceneComponentFactory& factory,
     resource::ResourceManager& resources,
-    core::SharedPtr<physics2d::PhysicsWorld2D> world)
+    core::SharedPtr<physics2d::PhysicsWorld2D> world,
+    physics2d::ComponentUsage usage)
 {
     static const bool schema =
         reflection::generated::register_scene2d_authoring_reflection(nullptr);
@@ -30,16 +31,16 @@ bool registerScene2DPersistence(scene::SceneComponentFactory& factory,
                    return core::makeUnique<SpriteRendererComponent>(SpriteRendererComponentDesc{});
                })
         && add("RigidBody2DComponent",
-            [world] {
-                return core::makeUnique<physics2d::RigidBody2DComponent>(world);
+            [world, usage] {
+                return core::makeUnique<physics2d::RigidBody2DComponent>(world, usage);
             })
         && add("Collider2DComponent",
-            [world] {
-                return core::makeUnique<physics2d::Collider2DComponent>(world);
+            [world, usage] {
+                return core::makeUnique<physics2d::Collider2DComponent>(world, usage);
             })
         && add("Joint2DComponent",
-            [world] {
-                return core::makeUnique<physics2d::Joint2DComponent>(world);
+            [world, usage] {
+                return core::makeUnique<physics2d::Joint2DComponent>(world, usage);
             })
         && add("SpriteAnimationComponent",
             [&resources] {
@@ -47,14 +48,15 @@ bool registerScene2DPersistence(scene::SceneComponentFactory& factory,
                     resources, kEditorSpriteAnimationEventBudget);
             })
         && add("TileMapResourceComponent",
-            [&resources, world] {
+            [&resources, world, usage] {
                 return core::makeUnique<TileMapResourceComponent>(
                     [&resources] {
                         return &resources;
                     },
-                    [world] {
+                    [world, usage] {
                         return world;
-                    });
+                    },
+                    usage);
             })
         && add("ObjectLinksComponent",
             [] {
@@ -80,6 +82,33 @@ bool registerScene2DPersistence(scene::SceneComponentFactory& factory,
                 return component.runtime() != nullptr;
             })
         && factory.persist<scene::ObjectLinksComponent>(
-            "arp.object-links/1", "ObjectLinksComponent");
+            "arp.object-links/1", "ObjectLinksComponent")
+        && factory.setInspectionState("arp.sprite/1",
+            [] {
+                return reflection::object(SpriteRendererComponentDesc{});
+            })
+        && factory.setInspectionState("arp.rigid-body2d/1",
+            [] {
+                return reflection::object(physics2d::RigidBody2DEditorProperties{});
+            })
+        && factory.setInspectionState("arp.collider2d/1",
+            [] {
+                return reflection::object(physics2d::Collider2DEditorProperties{});
+            })
+        && factory.setInspectionState("arp.joint2d/1",
+            [] {
+                return reflection::object(physics2d::Joint2DEditorProperties{});
+            })
+        && factory.setInspectionState("arp.sprite-animation/1",
+            [] {
+                return reflection::object(SpriteAnimationEditorProperties{});
+            })
+        && factory.setInspectionState("arp.tile-map/1",
+            [] {
+                return reflection::object(TileMapResourceComponentEditorProperties{});
+            })
+        && factory.setInspectionState("arp.object-links/1", [] {
+               return reflection::object(scene::ObjectLinksEditorProperties{});
+           });
 }
 } // namespace arp::scene2d

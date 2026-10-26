@@ -333,9 +333,10 @@ VulkanRhiVmaBufferAllocation VulkanRhiAllocator::createBuffer(
         VmaBufferPayload(std::shared_ptr<VmaState> state,
             VkBuffer buffer,
             VmaAllocation allocation,
-            std::shared_ptr<rhi::OriginalAllocationLifetime> charge)
+            std::shared_ptr<rhi::OriginalAllocationLifetime> charge,
+            std::uint64_t logicalBytes)
             : state_(std::move(state)), buffer_(buffer), allocation_(allocation),
-              charge_(std::move(charge))
+              charge_(std::move(charge)), logicalBytes_(logicalBytes)
         {}
 
         ~VmaBufferPayload()
@@ -379,17 +380,34 @@ VulkanRhiVmaBufferAllocation VulkanRhiAllocator::createBuffer(
             return true;
         }
 
+        const char* flushMappedWriteBounded(
+            std::uint64_t offsetBytes, std::uint64_t sizeBytes) noexcept override
+        {
+            if (!state_ || !state_->allocator || !allocation_)
+                return "RHI-VULKAN-MAPPED-WRITE-ALLOCATION";
+            if (!sizeBytes || offsetBytes > logicalBytes_
+                || sizeBytes > logicalBytes_ - offsetBytes)
+                return "RHI-VULKAN-MAPPED-WRITE-RANGE";
+            const auto flushed =
+                vmaFlushAllocation(state_->allocator, allocation_, offsetBytes, sizeBytes);
+            state_->runtimeOwner->captureOriginalDeviceLoss(flushed);
+            return flushed == VK_SUCCESS          ? nullptr
+                : flushed == VK_ERROR_DEVICE_LOST ? "RHI-VULKAN-MAPPED-WRITE-DEVICE-LOST"
+                                                  : "RHI-VULKAN-MAPPED-WRITE-FLUSH";
+        }
+
     private:
         std::shared_ptr<VmaState> state_;
         VkBuffer buffer_ = VK_NULL_HANDLE;
         VmaAllocation allocation_ = VK_NULL_HANDLE;
         std::shared_ptr<rhi::OriginalAllocationLifetime> charge_;
+        std::uint64_t logicalBytes_ = 0u;
     };
 
     std::shared_ptr<VmaBufferPayload> payload;
     try {
         payload = arp::core::makeShared<VmaBufferPayload>(
-            vma_, buffer, allocation, recorded.originalLifetime.lock());
+            vma_, buffer, allocation, recorded.originalLifetime.lock(), desc.sizeBytes);
     } catch (...) {
         vmaDestroyBuffer(vma_->allocator, buffer, allocation);
         throw;

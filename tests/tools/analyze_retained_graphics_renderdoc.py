@@ -12,30 +12,7 @@ sys.path.insert(0, os.path.join(os.environ["ARP_REPO_ROOT"], "tests", "tools"))
 from analyze_ui_text_renderdoc import flatten, descriptor_resource, texture_bytes, write_bmp
 
 
-def fields(node):
-    return {node.GetChild(i).name: node.GetChild(i) for i in range(node.NumChildren())}
-
-
-def number(node):
-    return int(node.data.basic.u)
-
-
-def succeeded(status):
-    return status.code == rd.ResultCode.Succeeded if hasattr(status, "code") else status == rd.ReplayStatus.Succeeded
-
-
-def resource(pipeline, reflection, binding):
-    matches = [b.descriptor for entries, reflected in (
-        (pipeline.GetReadOnlyResources(rd.ShaderStage.Fragment), reflection.readOnlyResources),
-        (pipeline.GetReadWriteResources(rd.ShaderStage.Fragment), reflection.readWriteResources))
-        for b in entries if reflected[b.access.index].fixedBindNumber == binding]
-    assert len(matches) == 1, (binding, matches)
-    return matches[0]
-
-
-def display(value):
-    linear = value / (1 + value)
-    return round(255 * (12.92 * linear if linear <= .0031308 else 1.055 * linear ** (1 / 2.4) - .055))
+from renderdoc_cloud_common import fields, number, succeeded, resource, display
 
 
 def main():

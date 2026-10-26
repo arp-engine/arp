@@ -3,6 +3,7 @@
 #include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 #include "rhi/backends/vulkan/vulkan_timeline_semaphore.h"
+#include "rhi/frontend/transfer_upload_recording_validation.h"
 #include "rhi/gpu_bindless.h"
 #include "rhi/gpu_common.h"
 #include "rhi/gpu_device.h"
@@ -15,13 +16,27 @@
 #include <string_view>
 
 namespace arp::rhi {
+enum class CommandUsageKind : std::uint32_t;
 class BindlessPreparedBinding;
+class CommandScalarArguments;
 class RecordedStagingUploadJournal;
+struct OriginalRenderPassPreparationRequest;
+
+namespace semantics {
+struct NativeCommandLoweringDecision;
+}
+
+namespace common {
+class CommandRetentionStorage;
+}
 } // namespace arp::rhi
 
 namespace arp::rhi_vulkan {
 
+class VulkanRhiStagingUploadPool;
+
 class VulkanRhiQueryPoolPayload;
+struct VulkanRhiRecordingStorageLimits;
 
 class VulkanRhiBindlessFaultReadback final {
 public:
@@ -251,6 +266,22 @@ public:
         std::pmr::string& diagnostics,
         bool* acceptedThisAttempt = nullptr);
     void retainResource(std::shared_ptr<VulkanRhiNativeResourcePayload> payload);
+    // Private original-derived storage preflight. No mutation/allocation.
+    const char* recordingBarrierStorageDiagnostic(rhi::CommandUsageKind kind) const noexcept;
+    const char* resourceRetentionStorageDiagnostic(std::size_t count) const noexcept;
+    const char* recordingStorageDiagnostic() const noexcept;
+    // Read-only authentication of prepared attachment observations. This cannot
+    // propose/complete content or activate the private cold Graphics wrappers.
+    const char* preparedOrdinaryRenderPassContentDiagnostic() const noexcept;
+    const char* originalQuerySlotDiagnostic() const noexcept;
+    bool recordingStorageBound() const noexcept;
+    // Cancel entries without destroying the journal aliased by ordinary wrappers.
+    void abandonOrdinaryRecording() noexcept;
+    const char* internalTimingDiagnostic() const noexcept;
+    const rhi::common::CommandRetentionStorage* queryRecordingStorage() const noexcept;
+    void rejectRecordingStorage(const char* diagnostic) noexcept;
+    const char* retainResources(
+        const std::shared_ptr<VulkanRhiNativeResourcePayload>* payloads, std::size_t count);
     void retainTimingQueryPool(std::shared_ptr<VulkanRhiQueryPoolPayload> payload);
     void observeFrameSerial(std::uint64_t frameSerial);
     bool retainIndexedPipeline(const std::shared_ptr<const void>&, core::pmr::String& diagnostic);
@@ -261,18 +292,87 @@ public:
     bool retainIndexedSnapshot(const std::shared_ptr<const void>&, core::pmr::String& diagnostic);
     std::uint64_t observedFrameSerial() const;
     bool submittedFenceCompleted();
+    bool acceptOrdinaryRecordedOwnership() const noexcept;
+    // Private original ordinary attachment profile; no public capability is
+    // inferred from these backend implementation entrypoints.
+    bool hasOrdinaryAttachments() const noexcept;
+    bool hasOrdinaryMixedPasses() const noexcept;
+    const char* recordOrdinaryRenderPassBegin(std::uint32_t, const rhi::RenderPassDesc&) noexcept;
+    const char* recordOrdinaryRenderPassEnd(std::uint32_t) noexcept;
+    const char* recordOrdinaryGraphicsCommand(std::uint32_t,
+        const rhi::CommandScalarArguments&,
+        const rhi::RenderPipeline* = nullptr,
+        const rhi::DescriptorSet* = nullptr) noexcept;
     void resolveBindlessFaultReadbacks();
 
 private:
     // Only sealed canonical issuers may use these shared native emitters for
     // exclusive original content, after validating the same pending journal.
+    friend class VulkanRhiCommandEncoder;
+    friend class VulkanRhiComputePassEncoder;
+    friend class VulkanRhiTransferPassEncoder;
+    bool prepareOrdinaryRenderPasses(const rhi::GpuDevice&,
+        const rhi::OriginalRenderPassPreparationRequest&,
+        core::pmr::String&);
+    bool prepareOrdinaryTextureUploads(rhi::GpuDevice&,
+        VulkanRhiStagingUploadPool&,
+        rhi::RecordedStagingUploadJournal&,
+        std::uint64_t,
+        const rhi::OriginalOrdinaryTextureUploadContract::Budget&,
+        const rhi::OriginalOrdinaryTextureUploadContract::Binding*,
+        std::size_t,
+        core::pmr::String&);
+    bool hasOrdinaryTextureUploads() const noexcept;
+    const char* preflightOrdinaryAttachmentOperation(
+        rhi::CommandUsageKind, std::uint32_t) const noexcept;
+    const char* preflightOrdinaryBufferTransition(
+        const rhi::GpuBuffer&, const rhi::ResourceBarrierDesc&, std::uint32_t) const noexcept;
+    const char* recordOrdinaryMixedCommand(std::uint32_t,
+        const rhi::CommandScalarArguments&,
+        const rhi::ComputePipeline* = nullptr,
+        const rhi::DescriptorSet* = nullptr,
+        const rhi::TextureToBufferCopyDesc* = nullptr) noexcept;
+    bool recordImageToBufferCopyImpl(const VulkanRhiNativeResourcePayload&,
+        const VulkanRhiNativeResourcePayload&,
+        const rhi::TextureToBufferCopyDesc&,
+        core::pmr::String&,
+        bool);
+    const char* claimOrdinaryAttachments() noexcept;
+    const char* validateOrdinaryAttachmentsPending() const noexcept;
+    const char* completeOrdinaryAttachments() noexcept;
+    const char* sealOrdinaryAttachments(std::uint32_t) noexcept;
+    void consumeOrdinaryAttachmentOperation() noexcept;
+    const char* preflightOrdinaryAttachmentTransition(
+        const rhi::GpuTexture&, const rhi::ResourceBarrierDesc&, std::uint32_t) const noexcept;
+    const char* preflightOrdinaryTextureTransition(
+        const rhi::GpuTexture&, const rhi::ResourceBarrierDesc&, std::uint32_t) const noexcept;
+    bool authorizesOrdinaryTextureTransition(const rhi::GpuTexture&,
+        const rhi::ResourceBarrierDesc&,
+        const core::MutationJournal*) const noexcept;
+    friend rhi::ResourceBarrierResult transitionVulkanRhiTexture(rhi::GpuTexture&,
+        const rhi::ResourceBarrierDesc&,
+        core::MutationJournal*,
+        const VulkanRhiNativeCommandPayload*);
+    const char* recordOrdinaryTextureUpload(std::uint32_t, const rhi::UploadTextureDesc&) noexcept;
+    bool adoptOriginalStreamJournal(core::UniquePtr<core::MutationJournal>&, core::pmr::String&);
+    bool adoptOriginalQueryJournal(core::UniquePtr<core::MutationJournal>&,
+        std::uint64_t recordingIdentity,
+        const rhi::semantics::NativeCommandLoweringDecision&,
+        core::pmr::String&);
+    const char* recordOriginalTimestamp(const rhi::QueryPool&,
+        std::uint32_t queryIndex,
+        std::uint32_t commandOrdinal,
+        std::uint64_t recordingIdentity) noexcept;
+    const char* sealOriginalQueries(std::uint32_t commandCount) noexcept;
     bool recordValidatedOriginalImageBarrier(
         const VulkanRhiNativeResourcePayload&, const rhi::ResourceBarrierDesc&, core::pmr::String&);
     bool recordValidatedOriginalTextureCopy(VkBuffer,
         std::uint64_t,
         const VulkanRhiNativeResourcePayload&,
         const rhi::UploadTextureDesc&,
-        core::pmr::String&);
+        core::pmr::String&,
+        bool coldPreflight = false,
+        bool coldEmission = false);
     bool prepareOriginalSubmissionFence(core::pmr::String& diagnostic);
     bool recordBindlessFaultLatchClearPreamble(
         const std::shared_ptr<VulkanRhiNativeResourcePayload>& latch,
@@ -288,19 +388,22 @@ private:
     friend class VulkanOriginalTextureUploadCommand;
     friend class VulkanRhiRetainedCommand;
     friend void drainVulkanRhiSubmittedCommandsForShutdown();
+    bool prepareInternalProfiling(core::pmr::String&);
     friend const char* waitIdleAndRetireVulkanRhiSubmittedCommands(
         const std::shared_ptr<VulkanRhiRuntime>&);
 
     friend std::shared_ptr<VulkanRhiNativeCommandPayload> createVulkanRhiNativeCommandPayload(
         const VulkanRhiNativeResourceAllocator& nativeResources,
         std::pmr::string& diagnostics,
-        const rhi::CommandEncoderDesc& retention);
+        const rhi::CommandEncoderDesc& retention,
+        const VulkanRhiRecordingStorageLimits* storage);
 };
 
 std::shared_ptr<VulkanRhiNativeCommandPayload> createVulkanRhiNativeCommandPayload(
     const VulkanRhiNativeResourceAllocator& nativeResources,
     std::pmr::string& diagnostics,
-    const rhi::CommandEncoderDesc& retention = {});
+    const rhi::CommandEncoderDesc& retention = {},
+    const VulkanRhiRecordingStorageLimits* storage = nullptr);
 
 bool recordVulkanRhiNativeCommand(
     const std::shared_ptr<VulkanRhiNativeCommandPayload>& nativePayload,

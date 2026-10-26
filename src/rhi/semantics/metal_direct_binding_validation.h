@@ -6,6 +6,39 @@
 
 namespace arp::rhi::semantics {
 
+// MetalOriginalBufferStages/1: native formal signatures may retain inactive
+// arguments outside the original visibility. Active native use may not widen it.
+inline constexpr bool metalOriginalBindingStagesMatch(
+    ShaderStage logical, ShaderStage formal, ShaderStage active, bool compute) noexcept
+{
+    const auto domain =
+        compute ? ShaderStage::Compute : ShaderStage::Vertex | ShaderStage::Fragment;
+    return logical != ShaderStage::None && (logical & domain) == logical
+        && (formal & domain) == formal && (formal & logical) == logical
+        && (active & logical) == active;
+}
+
+inline constexpr const char* metalOriginalBufferStagesDiagnostic(
+    ShaderStage logical, ShaderStage formal, ShaderStage active, bool compute) noexcept
+{
+    return metalOriginalBindingStagesMatch(logical, formal, active, compute)
+        ? nullptr
+        : "RHI-METAL-ORIGINAL-BUFFER-BINDING-STAGES";
+}
+
+// MetalOriginalBufferAccess/1. MSL device pointer permission can exceed the
+// original Slang/SPIR-V read-only declaration. That declaration must be proved
+// independently; native permission never upgrades the L2 access footprint.
+inline constexpr const char* metalOriginalBufferAccessDiagnostic(
+    DescriptorType type, std::uint32_t access, bool originalNonWritable) noexcept
+{
+    const bool valid = type == DescriptorType::UniformBuffer ? access == 0u
+        : type == DescriptorType::StorageBuffer              ? access == 1u
+                                                : type == DescriptorType::ReadOnlyStorageBuffer
+            && originalNonWritable && (access == 0u || access == 1u);
+    return valid ? nullptr : "RHI-METAL-ORIGINAL-BUFFER-BINDING-ACCESS";
+}
+
 // MetalSecondaryHostStorage/1: ICB inheritance contains buffer bindings,
 // including argument-buffer roots, but no direct texture/sampler bindings.
 inline constexpr bool metalIndirectCommandSupportsDirectBinding(DescriptorType type)

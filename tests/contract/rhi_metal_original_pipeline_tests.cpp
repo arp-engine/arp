@@ -1,4 +1,5 @@
 #include "rhi/backends/metal/metal_backend_objects.h"
+#include "rhi/backends/metal/metal_compute_workgroup_limits.h"
 #include "rhi/backends/metal/metal_native_features.h"
 #include "rhi/backends/metal/metal_native_runtime.h"
 #include "rhi/backends/metal/metal_original_pipeline.h"
@@ -26,6 +27,48 @@ constexpr Factory::Budget budget{1u, true, 1024u * 1024u, metadata, 5000000000u}
 
 void contracts()
 {
+    using Workgroup = rhi_metal::MetalRhiComputeWorkgroupLimits;
+    const Workgroup limits{32u, 16u, 8u, 64u};
+    assert(!limits.validate(8u, 8u, 1u));
+    assert(!limits.validate(4u, 4u, 4u));
+    assert(!limits.validate(32u, 2u, 1u));
+    assert(!limits.validate(1u, 8u, 8u));
+    for (unsigned i = 0u; i < 7u; ++i) {
+        auto changed = limits;
+        if (i == 0u)
+            changed.x = 0u;
+        if (i == 1u)
+            changed.y = 0u;
+        if (i == 2u)
+            changed.z = 0u;
+        if (i == 3u)
+            changed.total = 0u;
+        if (i == 4u)
+            changed.x = 7u;
+        if (i == 5u)
+            changed.y = 7u;
+        if (i == 6u)
+            changed.total = 63u;
+        const auto* id = changed.validate(8u, 8u, 1u);
+        assert(id && !std::strcmp(id, "RHI-METAL-COMPUTE-WORKGROUP-LIMIT"));
+    }
+    assert(
+        limits.validate(0u, 8u, 1u) && limits.validate(8u, 0u, 1u) && limits.validate(8u, 8u, 0u));
+    assert(limits.validate(33u, 1u, 1u) && limits.validate(1u, 17u, 1u)
+        && limits.validate(1u, 1u, 9u));
+    assert(limits.validate(8u, 8u, 2u));
+    const Workgroup huge{UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT64_MAX};
+    assert(!huge.validate(UINT32_MAX, UINT32_MAX, 1u));
+    assert(huge.validate(UINT32_MAX, UINT32_MAX, UINT32_MAX));
+    assert(Workgroup::deviceInvocationEnvelope(1024u, 1024u, 64u) == 1024u);
+    assert(Workgroup::deviceInvocationEnvelope(32u, 64u, 128u) == 128u);
+    assert(Workgroup::deviceInvocationEnvelope(128u, 32u, 64u) == 128u);
+    assert(!Workgroup::deviceInvocationEnvelope(0u, 1024u, 64u));
+    assert(!Workgroup::deviceInvocationEnvelope(1024u, 0u, 64u));
+    assert(!Workgroup::deviceInvocationEnvelope(1024u, 64u, 0u));
+    assert(!Workgroup::deviceInvocationEnvelope(UINT64_MAX, 64u, 64u));
+    assert(!Workgroup::deviceInvocationEnvelope(64u, UINT64_MAX, 64u));
+    assert(!Workgroup::deviceInvocationEnvelope(64u, 64u, UINT64_MAX));
     using Contract = rhi::OriginalSynchronousPipelineCreationContract;
     using Lowering = rhi::semantics::OriginalSynchronousPipelineCreationLowering;
     assert(!Contract::validateBudget(budget));
@@ -218,6 +261,11 @@ void verify(Desc state,
 int main(int argc, char** argv)
 {
     using namespace arp;
+    if (argc == 2 && std::strcmp(argv[1], "--workgroup-limits") == 0) {
+        contracts();
+        std::puts("METAL_COMPUTE_WORKGROUP_LIMITS_CONTRACT_PASS");
+        return 0;
+    }
     assert(argc == 5);
     const bool deleted = std::strcmp(argv[1], "--deleted") == 0;
     const bool native = std::strcmp(argv[1], "--native") == 0;

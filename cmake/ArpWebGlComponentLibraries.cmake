@@ -45,6 +45,7 @@ function(arp_add_webgl_component_libraries)
     arp_add_webgl_runtime(arp_core arp_shader)
     target_link_libraries(arp_rhi_webgl PUBLIC arp_rhi)
     add_library(arp_ordered_graphics STATIC
+        "${arp_component_root}/src/renderer/render_graph/original_frame_graph_execution.cpp"
         "${arp_component_root}/src/rhi/semantics/gpu_timing_lowering.cpp"
         "${arp_component_root}/src/renderer/render_graph/compiled_retirement_source.cpp"
         "${arp_component_root}/src/renderer/render_graph/frame_graph_ordered_execution.cpp"

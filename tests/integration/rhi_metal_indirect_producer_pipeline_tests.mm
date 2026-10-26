@@ -1,7 +1,9 @@
 #include "../fixtures/cpu_quota_factory_fixture.h"
 #include "../fixtures/metal_indirect_producer_pipeline_fixture.h"
 #include "../fixtures/metal_native_identity_fixture.h"
+#include "rhi/backends/metal/metal_compute_workgroup_limits.h"
 #include "rhi/backends/metal/metal_indirect_preparation.h"
+#include "rhi/backends/metal/metal_native_features.h"
 #include "rhi/backends/metal/metal_native_resources.h"
 #include "rhi/backends/metal/metal_native_runtime.h"
 
@@ -22,6 +24,72 @@ static_assert(
 static_assert(MetalRhiWritableUint32BufferAbiValidator::uintElementType == MTLDataTypeUInt);
 using Fixture = test::MetalIndirectProducerPipelineFixture;
 
+void workgroupLimits(const MetalRhiIndirectProducerPipeline& root)
+{
+    const auto native = root.native();
+    const auto pipeline =
+        reinterpret_cast<id<MTLComputePipelineState>>(native->pipelineState.get());
+    const auto device = pipeline.device;
+    const auto axes = device.maxThreadsPerThreadgroup;
+    const auto total = pipeline.maxTotalThreadsPerThreadgroup;
+    assert(total && axes.width && axes.height && axes.depth);
+    const MetalRhiComputeWorkgroupLimits limits{axes.width, axes.height, axes.depth, total};
+    assert(!limits.validate(native->computeWorkgroupSizeX,
+        native->computeWorkgroupSizeY,
+        native->computeWorkgroupSizeZ));
+    const auto probe = probeMetalRhiNativeFeatures();
+    assert(probe.maxComputeWorkgroupInvocations
+        == MetalRhiComputeWorkgroupLimits::deviceInvocationEnvelope(
+            axes.width, axes.height, axes.depth));
+    assert(probe.maxComputeWorkgroupInvocations != 0u);
+    rhi::ComputePipelineDesc desc;
+    desc.layout = &root.layout();
+    desc.shaderPackage = &root.interface();
+    desc.computeShader = root.interface().entrypoints.front();
+    const auto& bytes = root.artifact()->bytes(shader::ShaderArtifactRole::Metal);
+    const std::string_view source{reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+    rhi::PipelineValidationReport report;
+    report.selectedComputeWorkgroupSizeX = native->computeWorkgroupSizeX;
+    report.selectedComputeWorkgroupSizeY = native->computeWorkgroupSizeY;
+    report.selectedComputeWorkgroupSizeZ = native->computeWorkgroupSizeZ;
+    auto accepted = createMetalRhiNativeComputePipelinePayload(desc, report, source);
+    assert(accepted && accepted->nativeRuntimeBacked && accepted->pipelineState);
+    assert(accepted->computeWorkgroupSizeX == native->computeWorkgroupSizeX
+        && accepted->computeWorkgroupSizeY == native->computeWorkgroupSizeY
+        && accepted->computeWorkgroupSizeZ == native->computeWorkgroupSizeZ);
+    for (unsigned i = 0u; i < 5u; ++i) {
+        auto invalid = report;
+        if (i == 0u)
+            invalid.selectedComputeWorkgroupSizeX = 0u;
+        if (i == 1u)
+            invalid.selectedComputeWorkgroupSizeX = static_cast<std::uint32_t>(axes.width + 1u);
+        if (i == 2u)
+            invalid.selectedComputeWorkgroupSizeY = static_cast<std::uint32_t>(axes.height + 1u);
+        if (i == 3u)
+            invalid.selectedComputeWorkgroupSizeZ = static_cast<std::uint32_t>(axes.depth + 1u);
+        if (i == 4u) {
+            // Each axis is legal; only the independent total rejects this.
+            invalid.selectedComputeWorkgroupSizeX = static_cast<std::uint32_t>(axes.width);
+            invalid.selectedComputeWorkgroupSizeY = static_cast<std::uint32_t>(axes.height);
+            invalid.selectedComputeWorkgroupSizeZ = static_cast<std::uint32_t>(axes.depth);
+            assert(limits.validate(invalid.selectedComputeWorkgroupSizeX,
+                invalid.selectedComputeWorkgroupSizeY,
+                invalid.selectedComputeWorkgroupSizeZ));
+        }
+        auto rejected = createMetalRhiNativeComputePipelinePayload(desc, invalid, source);
+        assert(rejected && !rejected->nativeRuntimeBacked && rejected->nativeRuntimeDiagnosticOnly
+            && !rejected->computePipelinePayloadPresent && !rejected->pipelineState
+            && rejected->diagnostics == "RHI-METAL-COMPUTE-WORKGROUP-LIMIT");
+    }
+    std::printf(
+        "Metal compute workgroup axes%llu/%llu/%llu selectedTotal%llu envelope%u acceptedExactShape/zero/axisOver/totalOver PASS; no dispatch\n",
+        static_cast<unsigned long long>(axes.width),
+        static_cast<unsigned long long>(axes.height),
+        static_cast<unsigned long long>(axes.depth),
+        static_cast<unsigned long long>(total),
+        probe.maxComputeWorkgroupInvocations);
+}
+
 void run(const char* path, const char* fragment, const std::shared_ptr<core::CpuMemoryQuota>& quota)
 {
     Fixture f(path, quota);
@@ -29,6 +97,7 @@ void run(const char* path, const char* fragment, const std::shared_ptr<core::Cpu
     if (!root)
         std::fprintf(stderr, "Producer pipeline: %s\n", f.diagnostic.c_str());
     assert(root && !root->validate());
+    workgroupLimits(*root);
     const auto native = root->native();
     const auto fact = root->fact();
     std::printf(

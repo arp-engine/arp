@@ -104,9 +104,7 @@ public:
 
     static constexpr const char* validateLimits(const Limits& limits) noexcept
     {
-        return limits.contractVersion == 1u && limits.uniformOffsetAlignment
-                && limits.storageOffsetAlignment && limits.maxUniformBindingBytes
-                && limits.maxStorageBindingBytes
+        return semantics::DescriptorWholeBufferBinding::validLimits(limits)
             ? nullptr
             : "RHI-ORIGINAL-DESCRIPTOR-BUFFER-LIMITS-UNAVAILABLE";
     }
@@ -146,6 +144,8 @@ public:
         if (!uniform && type != DescriptorType::StorageBuffer
             && type != DescriptorType::ReadOnlyStorageBuffer)
             return "RHI-ORIGINAL-DESCRIPTOR-BUFFER-FINITE-TYPE";
+        if (!semantics::DescriptorWholeBufferBinding::kindAvailable(type, limits))
+            return "RHI-ORIGINAL-DESCRIPTOR-BUFFER-FINITE-KIND-ABSENT";
         const auto alignment =
             uniform ? limits.uniformOffsetAlignment : limits.storageOffsetAlignment;
         const auto maximum =

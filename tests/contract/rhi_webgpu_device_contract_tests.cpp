@@ -3,6 +3,7 @@
 #include "../fixtures/depth_stencil_attachment_input_fixture.h"
 #include "../fixtures/frame_input_lifecycle_checks.h"
 #include "../fixtures/original_heap_registration_fixture.h"
+#include "../fixtures/original_query_registration_fixture.h"
 #include "../fixtures/render_pass_arguments_fixture.h"
 #include "../fixtures/webgpu_frozen_render_pass_binding_fixture.h"
 #include "../fixtures/webgpu_frozen_transfer_arguments_fixture.h"
@@ -1350,6 +1351,8 @@ int main(int argc, char** argv)
         assert(!arp::rhi_webgpu::createWebGpuRhiHostDiagnosticDevice(desc, 1u));
     }
     auto device = arp::tests::createWebGpuContractDevice(desc);
+    assert(device);
+    arp::test::OriginalQueryRegistrationFixture::verifyRejected(*device);
     assert(device);
     assert(!device->capabilities().features.nativeSync);
     assert(!device->createFence());

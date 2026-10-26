@@ -20,7 +20,8 @@ enum class OriginalRegisteredResourceKind {
     Descriptor,
     DescriptorTable,
     Sampler,
-    MemoryHeap
+    MemoryHeap,
+    QueryPool
 };
 
 // Independent opt-in; ordinary sampler creation does not acquire original custody.
@@ -69,6 +70,28 @@ struct OriginalHeapRegistrationRequest {
     }
 };
 
+struct OriginalQueryRegistrationRequest {
+    std::uint32_t contractVersion = 0u;
+    bool prototypeOptIn = false;
+    std::uint32_t maxQueryPools = 0u;
+
+    constexpr bool requested() const noexcept
+    {
+        return contractVersion || prototypeOptIn || maxQueryPools;
+    }
+
+    constexpr const char* diagnostic() const noexcept
+    {
+        if (!requested())
+            return nullptr;
+        if (contractVersion != 1u)
+            return "RHI-ORIGINAL-QUERY-REGISTRATION-VERSION";
+        if (!prototypeOptIn)
+            return "RHI-ORIGINAL-QUERY-REGISTRATION-OPT-IN";
+        return maxQueryPools ? nullptr : "RHI-ORIGINAL-QUERY-REGISTRATION-CAPACITY";
+    }
+};
+
 struct OriginalResourceRegistrationBudget {
     std::uint32_t contractVersion = 0u;
     bool prototypeOptIn = false;
@@ -78,13 +101,14 @@ struct OriginalResourceRegistrationBudget {
     std::uint32_t maxDescriptorArenas = 0u, maxDescriptorSets = 0u, maxDescriptorTables = 0u;
     OriginalSamplerRegistrationRequest samplers;
     OriginalHeapRegistrationRequest heaps;
+    OriginalQueryRegistrationRequest queries;
 };
 
 class OriginalResourceRegistrationContract final {
 public:
     static constexpr bool observesNativeLoss(std::uint32_t version) noexcept
     {
-        return version == 7u || version == 8u || version == 9u;
+        return version == 7u || version == 8u || version == 9u || version == 10u;
     }
 
     static constexpr std::uint32_t fixedOwnerCount = 3u, perResourceOwnerCount = 2u;
@@ -107,7 +131,8 @@ public:
     static constexpr bool isTypedObject(OriginalRegisteredResourceKind kind) noexcept
     {
         return kind == OriginalRegisteredResourceKind::PipelineLayout || isPipeline(kind)
-            || kind == OriginalRegisteredResourceKind::DescriptorArena || isDescriptor(kind);
+            || kind == OriginalRegisteredResourceKind::DescriptorArena || isDescriptor(kind)
+            || kind == OriginalRegisteredResourceKind::QueryPool;
     }
 
     static constexpr bool hasResourceId(OriginalRegisteredResourceKind kind) noexcept
@@ -135,7 +160,7 @@ public:
     static constexpr const char* validateIntent(
         const OriginalResourceRegistrationBudget& b) noexcept
     {
-        if (b.contractVersion < 1u || b.contractVersion > 9u)
+        if (b.contractVersion < 1u || b.contractVersion > 10u)
             return "RHI-ORIGINAL-REGISTRATION-VERSION";
         if (!b.prototypeOptIn)
             return "RHI-ORIGINAL-REGISTRATION-OPT-IN";
@@ -143,6 +168,10 @@ public:
             return id;
         if (const auto* id = b.heaps.diagnostic())
             return id;
+        if (const auto* id = b.queries.diagnostic())
+            return id;
+        if (b.queries.requested() && observesNativeLoss(b.contractVersion))
+            return "RHI-ORIGINAL-QUERY-NATIVE-LOSS-JOIN-UNAVAILABLE";
         if (b.heaps.requested() && observesNativeLoss(b.contractVersion))
             return "RHI-ORIGINAL-HEAP-NATIVE-LOSS-JOIN-UNAVAILABLE";
         const auto typed = b.maxPipelineLayouts || b.maxGraphicsPipelines || b.maxComputePipelines;
@@ -153,7 +182,7 @@ public:
         if (b.contractVersion < 3u && descriptors)
             return "RHI-ORIGINAL-REGISTRATION-DESCRIPTOR-VERSION";
         if (!b.maxBuffers && !b.maxTextures && !b.maxTextureViews && !typed && !descriptors
-            && !b.samplers.maxSamplers && !b.heaps.maxHeaps)
+            && !b.samplers.maxSamplers && !b.heaps.maxHeaps && !b.queries.maxQueryPools)
             return "RHI-ORIGINAL-REGISTRATION-KIND-BUDGET";
         if (b.maxTextureViews && !b.maxTextures)
             return "RHI-ORIGINAL-REGISTRATION-PARENT-BUDGET";
@@ -221,6 +250,22 @@ public:
         if (const auto* id = request.diagnostic())
             return {1u, CapabilityMode::DiagnosticFailure, false, false, false, false, id};
         return semantics::ResourceLowering::OriginalHeapRegistration_lowering<Decision>(backend);
+    }
+
+    static constexpr Decision queryLowering(
+        Backend backend, const OriginalQueryRegistrationRequest& request) noexcept
+    {
+        if (!request.requested())
+            return {1u,
+                CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                false,
+                "RHI-ORIGINAL-QUERY-REGISTRATION-OPT-IN"};
+        if (const auto* id = request.diagnostic())
+            return {1u, CapabilityMode::DiagnosticFailure, false, false, false, false, id};
+        return semantics::ResourceLowering::OriginalQueryRegistration_lowering<Decision>(backend);
     }
 
     // CPU factory identity/custody only. Neither this request nor a sampler
@@ -344,7 +389,7 @@ public:
           graphics_(budget.maxGraphicsPipelines), compute_(budget.maxComputePipelines),
           arenas_(budget.maxDescriptorArenas), sets_(budget.maxDescriptorSets),
           tables_(budget.maxDescriptorTables), samplers_(budget.samplers.maxSamplers),
-          heaps_(budget.heaps.maxHeaps),
+          heaps_(budget.heaps.maxHeaps), queries_(budget.queries.maxQueryPools),
           owners_(budget.maxRetainedOwners - OriginalResourceRegistrationContract::fixedOwnerCount)
     {}
 
@@ -404,6 +449,8 @@ private:
             return &samplers_;
         case OriginalRegisteredResourceKind::MemoryHeap:
             return &heaps_;
+        case OriginalRegisteredResourceKind::QueryPool:
+            return &queries_;
         case OriginalRegisteredResourceKind::Unsupported:
             return nullptr;
         }
@@ -418,7 +465,7 @@ private:
     // Device-issued weak custody: no extra strong owner, callback or facade.
     const std::weak_ptr<const OriginalDeviceNativeLossBinding> loss_;
     core::AtomicCapacityBudget buffers_, textures_, views_, layouts_, graphics_, compute_, arenas_,
-        sets_, tables_, samplers_, heaps_, owners_;
+        sets_, tables_, samplers_, heaps_, queries_, owners_;
     core::MonotonicIdSequence generations_;
 };
 

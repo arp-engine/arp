@@ -44,6 +44,7 @@ enum class UiDocumentDiagnosticCode {
     MissingRequiredResourceBinding,
     MissingPsdLayerBinding,
     InvalidTextureMetadata,
+    InvalidTextInputContract,
 };
 
 struct UiDocumentDiagnostic {
@@ -123,6 +124,7 @@ struct UiDocumentNodeDesc {
     UiDocumentNodeId parentNodeId;
     arp::core::pmr::String sourceId{&arp::core::defaultCpuMemoryResource()};
     UiControlType controlType = UiControlType::Unknown;
+    std::uint32_t maxTextBytes = TextInputContract::defaultMaxTextBytes;
     LayoutRect layout;
     UiLayoutMode layoutMode = UiLayoutMode::None;
     UiStackLayout stackLayout;
@@ -146,6 +148,7 @@ struct NodeDesc {
     NodeId nodeId;
     NodeId parentNodeId;
     UiControlType controlType = UiControlType::Unknown;
+    std::uint32_t maxTextBytes = TextInputContract::defaultMaxTextBytes;
     LayoutRect layout;
     UiLayoutMode layoutMode = UiLayoutMode::None;
     UiStackLayout stackLayout;

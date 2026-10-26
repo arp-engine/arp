@@ -1,9 +1,21 @@
 import {WebGlShaderProgram} from './webgl_shader_program.js';
 const canvas = document.querySelector('canvas');
 const report = {type:'WebGlShaderProgramValidation',contractVersion:1,success:false,productionBackendValidated:false};
+const query = new URLSearchParams(location.search);
+report.messages = [];
+async function progress(message) {
+    if(query.get('progress') !== '1') return;
+    const first = report.messages.length;
+    report.messages.push(message);
+    const response = await fetch('/progress',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({contractVersion:1,first,messages:[message]})});
+    if(!response.ok) throw Error('WEBGL1-PROGRESS-REJECTED');
+}
 const need = (condition,id) => { if (!condition) throw Error(id); };
 try {
+    await progress('fixture module entered');
     const fixture = await (await fetch('./fixture.json')).json();
+    await progress('fixture loaded');
     const gl = canvas.getContext('webgl',{alpha:false,depth:true,stencil:false,antialias:false,preserveDrawingBuffer:true});
     need(gl,'WEBGL1-CONTEXT'); report.version = gl.getParameter(gl.VERSION);
     report.renderer = gl.getParameter(gl.RENDERER); report.programIdentity = fixture.snapshots.programIdentity;
@@ -126,7 +138,7 @@ try {
     gl.readPixels(0,0,64,64,gl.RGBA,gl.UNSIGNED_BYTE,final);
     need(JSON.stringify(sample(final,32,32))==='[8,8,8]','WEBGL1-DERIVATIVE-LOD-NUMERICAL: '+sample(final,32,32));
     extensionProgram.destroy();report.derivativeLod=true;
-    const query=new URLSearchParams(location.search);
+    await progress('shader interface and native numeric checks completed');
     if(query.get('captureGate')==='1') {
         await fetch('/ready',{method:'POST'});
         for(let attempt=0;attempt<400;++attempt) {
@@ -136,7 +148,12 @@ try {
         }
     }
     const frames=Number(query.get('frames')||2);
-    for(let frame=0;frame<frames;++frame) { render(); await new Promise(requestAnimationFrame); }
+    for(let frame=0;frame<frames;++frame) {
+        render();
+        await progress('frame '+frame+' drawn and read back');
+        await new Promise(requestAnimationFrame);
+        await progress('frame '+frame+' animation callback completed');
+    }
     report.success=true;report.activeInterfaceValidated=true;report.negativeCases=rejected;
     report.immutableTwoDraws=true;report.twoTextures=true;report.matrixNumerical=true;report.clipDepth=true;
     report.blendVertexColor=true;report.cpuRasterScissor=true;report.attachmentRoundtrip=true;report.frames=frames;

@@ -377,7 +377,8 @@ std::shared_ptr<const GraphicsShaderModuleArtifact> GraphicsShaderModuleArtifact
                     : nullptr,
                 budget.runtimeLength
                     ? (i == 0u ? &budget.runtimeLength->vertex : &budget.runtimeLength->fragment)
-                    : nullptr};
+                    : nullptr,
+                budget.nativeMemory[i]};
             core::pmr::String childDiagnostic{&core::defaultCpuMemoryResource()};
             auto child = SingleEntryShaderArtifact::load(path.parent_path() / references[i].c_str(),
                 childBudget,

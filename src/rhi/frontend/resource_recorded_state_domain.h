@@ -8,6 +8,7 @@ namespace arp::rhi::common {
 // original factory publisher; no second state owner or resource inventory.
 class OriginalRecordedStateDomain final {
     friend class rhi::GpuDevice;
+    friend class rhi::OriginalSubmittedBufferReadPins;
 
 public:
     OriginalRecordedStateDomain() = default;

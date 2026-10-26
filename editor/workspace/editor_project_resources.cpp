@@ -1,27 +1,23 @@
 #include "editor/workspace/editor_project_resources.h"
 
 #include "2d/sprite_resources.h"
-#include "core/io/filesystem_path.h"
+#include "core/io/file_io.h"
+#include "editor/project/project_scene_authoring.h"
+#include "editor/workspace/editor_scene_document.h"
 #include "editor/workspace/editor_terrain_preview.h"
+#include "editor/workspace/script_document_session.h"
 #include "resource/internal_asset_package.h"
 #include "resource/prefab_asset_resources.h"
 
 #include <algorithm>
-#include <array>
-#include <cmath>
-#include <fkYAML/Node.hpp>
-#include <fstream>
-#include <limits>
-#include <optional>
+#include <exception>
 #include <string_view>
 #include <system_error>
 
 namespace arp::editor {
 namespace {
-using YamlNode = fkyaml::node;
 constexpr const char* kProjectManifestName = "project.arp.yaml";
 constexpr std::size_t kMaxManifestBytes = EditorProjectResources::maxManifestBytes;
-constexpr std::size_t kMaxAssetPackages = EditorProjectResources::maxAssetPackages;
 
 EditorProjectResourceLoadResult failure(EditorProjectResourceLoadResult result, const char* message)
 {
@@ -29,219 +25,68 @@ EditorProjectResourceLoadResult failure(EditorProjectResourceLoadResult result, 
     return result;
 }
 
-const YamlNode* findValue(const YamlNode& root, const char* key)
+bool resolveContainedPath(const std::filesystem::path& root,
+    std::string_view relative,
+    ProjectPathIntent intent,
+    std::filesystem::path& resolved)
 {
-    if (!root.is_mapping())
-        return nullptr;
-    const auto& mapping = root.get_value_ref<const YamlNode::mapping_type&>();
-    const auto found = mapping.find(YamlNode(key));
-    return found == mapping.end() ? nullptr : &found->second;
-}
-
-bool resolveContainedPath(
-    const std::filesystem::path& root, std::string_view relative, std::filesystem::path& resolved)
-{
-    if (!core::FilePath::isSafeRelativePath(relative))
-        return false;
-    std::error_code error;
-    resolved = std::filesystem::canonical(root / std::filesystem::u8path(relative), error);
-    return !error && core::FilePath::contains(root, resolved);
+    ProjectDiagnostic diagnostic;
+    return ProjectManifestCodec::resolvePath(root, relative, intent, resolved, diagnostic);
 }
 
 bool readManifest(const std::filesystem::path& path,
     core::pmr::String& text,
     EditorProjectResourceLoadResult& result)
 {
-    std::error_code error;
-    const auto size = std::filesystem::file_size(path, error);
-    if (error || size > kMaxManifestBytes) {
-        result.diagnostics =
-            "EDITOR-PROJECT-MANIFEST-SIZE: manifest is unreadable or exceeds 1 MiB";
+    const auto read = core::readTextFile(path, kMaxManifestBytes);
+    if (!read.success) {
+        result.diagnostics = "EDITOR-PROJECT-MANIFEST-READ: ";
+        result.diagnostics += read.diagnostics;
         return false;
     }
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        result.diagnostics = "EDITOR-PROJECT-MANIFEST-READ: cannot open project manifest";
-        return false;
-    }
-    text.resize(static_cast<std::size_t>(size));
-    if (size > 0u)
-        input.read(text.data(), static_cast<std::streamsize>(size));
-    if (!input && !input.eof()) {
-        result.diagnostics = "EDITOR-PROJECT-MANIFEST-READ: cannot read project manifest";
-        return false;
-    }
+    text = read.text;
     return true;
 }
 
-template <std::size_t N>
-bool containsOnlyFields(const YamlNode& node, const std::array<std::string_view, N>& allowed)
+void reportProjectDiagnostic(
+    EditorProjectResourceLoadResult& result, const ProjectDiagnostic& diagnostic)
 {
-    if (!node.is_mapping())
-        return false;
-    const auto& mapping = node.get_value_ref<const YamlNode::mapping_type&>();
-    for (const auto& entry : mapping) {
-        if (!entry.first.is_string())
-            return false;
-        const auto key = entry.first.get_value<YamlNode::string_type>();
-        if (std::find(allowed.begin(), allowed.end(), key) == allowed.end())
-            return false;
-    }
-    return true;
-}
-
-bool readUnsigned32(const YamlNode* value, std::uint32_t& output)
-{
-    if (!value || !value->is_integer())
-        return false;
-    const auto integer = value->get_value<YamlNode::integer_type>();
-    if (integer <= 0
-        || static_cast<std::uint64_t>(integer) > std::numeric_limits<std::uint32_t>::max())
-        return false;
-    output = static_cast<std::uint32_t>(integer);
-    return true;
-}
-
-bool readFiniteFloat(const YamlNode* value, float& output)
-{
-    if (!value || (!value->is_integer() && !value->is_float_number()))
-        return false;
-    output = value->is_integer()
-        ? static_cast<float>(value->get_value<YamlNode::integer_type>())
-        : static_cast<float>(value->get_value<YamlNode::float_number_type>());
-    return std::isfinite(output);
-}
-
-bool parsePhysicsWorldConfig(const YamlNode* node,
-    std::optional<physics2d::WorldConfig>& config,
-    core::pmr::String& diagnostics)
-{
-    if (!node)
-        return true;
-    constexpr std::array<std::string_view, 10> fields{"gravity",
-        "maxBodies",
-        "maxColliders",
-        "maxJoints",
-        "maxNativeShapes",
-        "maxEvents",
-        "maxQueryResults",
-        "maxChainPoints",
-        "substeps",
-        "fixedSeconds"};
-    if (!containsOnlyFields(*node, fields)) {
-        diagnostics = "EDITOR-PROJECT-PHYSICS2D-SCHEMA: unknown field or non-mapping config";
-        return false;
-    }
-    const auto* gravity = findValue(*node, "gravity");
-    constexpr std::array<std::string_view, 2> gravityFields{"x", "y"};
-    physics2d::WorldConfig parsed{};
-    if (!gravity || !containsOnlyFields(*gravity, gravityFields)
-        || !readFiniteFloat(findValue(*gravity, "x"), parsed.gravity.x)
-        || !readFiniteFloat(findValue(*gravity, "y"), parsed.gravity.y)
-        || !readUnsigned32(findValue(*node, "maxBodies"), parsed.maxBodies)
-        || !readUnsigned32(findValue(*node, "maxColliders"), parsed.maxColliders)
-        || !readUnsigned32(findValue(*node, "maxJoints"), parsed.maxJoints)
-        || !readUnsigned32(findValue(*node, "maxNativeShapes"), parsed.maxNativeShapes)
-        || !readUnsigned32(findValue(*node, "maxEvents"), parsed.maxEvents)
-        || !readUnsigned32(findValue(*node, "maxQueryResults"), parsed.maxQueryResults)
-        || !readUnsigned32(findValue(*node, "maxChainPoints"), parsed.maxChainPoints)
-        || !readUnsigned32(findValue(*node, "substeps"), parsed.substeps)
-        || !readFiniteFloat(findValue(*node, "fixedSeconds"), parsed.fixedSeconds)) {
-        diagnostics =
-            "EDITOR-PROJECT-PHYSICS2D-SCHEMA: all world capacities and timing fields are required and bounded";
-        return false;
-    }
-    config = parsed;
-    return true;
-}
-
-bool parsePackagePaths(std::string_view yaml,
-    core::pmr::Vector<core::pmr::String>& paths,
-    core::pmr::Vector<core::pmr::String>& terrainPreviews,
-    std::optional<physics2d::WorldConfig>& physicsConfig,
-    core::pmr::String& diagnostics)
-{
-    YamlNode root;
-    try {
-        root = YamlNode::deserialize(yaml.data(), yaml.data() + yaml.size());
-    } catch (const std::exception&) {
-        diagnostics = "EDITOR-PROJECT-MANIFEST-YAML: malformed project manifest";
-        return false;
-    }
-    if (!root.is_mapping()) {
-        diagnostics = "EDITOR-PROJECT-MANIFEST-SCHEMA: root must be a mapping";
-        return false;
-    }
-    constexpr std::array<std::string_view, 5> allowed{
-        "format", "version", "assetPackages", "physics2d", "terrainPreviews"};
-    if (!containsOnlyFields(root, allowed)) {
-        diagnostics = "EDITOR-PROJECT-MANIFEST-SCHEMA: keys must be known strings";
-        return false;
-    }
-    const auto* format = findValue(root, "format");
-    const auto* version = findValue(root, "version");
-    const auto* packages = findValue(root, "assetPackages");
-    if (!format || !format->is_string()
-        || format->get_value<YamlNode::string_type>() != "ArpEditorProject" || !version
-        || !version->is_integer() || version->get_value<YamlNode::integer_type>() != 1 || !packages
-        || !packages->is_sequence()) {
-        diagnostics =
-            "EDITOR-PROJECT-MANIFEST-SCHEMA: expected ArpEditorProject/v1 and assetPackages sequence";
-        return false;
-    }
-    const auto& sequence = packages->get_value_ref<const YamlNode::sequence_type&>();
-    if (sequence.size() > kMaxAssetPackages) {
-        diagnostics = "EDITOR-PROJECT-MANIFEST-BUDGET: asset package count exceeds 256";
-        return false;
-    }
-    if (!parsePhysicsWorldConfig(findValue(root, "physics2d"), physicsConfig, diagnostics))
-        return false;
-    if (const auto* previews = findValue(root, "terrainPreviews")) {
-        if (!previews->is_sequence() || previews->size() > kMaxAssetPackages) {
-            diagnostics = "EDITOR-PROJECT-TERRAIN-PREVIEW-SCHEMA";
-            return false;
-        }
-        for (const auto& entry : previews->get_value_ref<const YamlNode::sequence_type&>()) {
-            if (!entry.is_string()) {
-                diagnostics = "EDITOR-PROJECT-TERRAIN-PREVIEW-SCHEMA";
-                return false;
-            }
-            const auto& path = entry.get_value_ref<const YamlNode::string_type&>();
-            if (!core::FilePath::isSafeRelativePath(path)) {
-                diagnostics = "EDITOR-PROJECT-TERRAIN-PREVIEW-PATH";
-                return false;
-            }
-            terrainPreviews.emplace_back(path.data(), path.size());
-        }
-    }
-    core::pmr::UnorderedSet<core::pmr::String> unique{&core::defaultCpuMemoryResource()};
-    for (const auto& entry : sequence) {
-        if (!entry.is_string()) {
-            diagnostics =
-                "EDITOR-PROJECT-MANIFEST-SCHEMA: each asset package path must be a string";
-            return false;
-        }
-        const auto value = entry.get_value<YamlNode::string_type>();
-        const std::string_view path(value.data(), value.size());
-        if (!core::FilePath::isSafeRelativePath(path)) {
-            diagnostics =
-                "EDITOR-PROJECT-MANIFEST-PATH: asset package path must be a safe relative path";
-            return false;
-        }
-        core::pmr::String owned(path, &core::defaultCpuMemoryResource());
-        if (!unique.insert(owned).second) {
-            diagnostics = "EDITOR-PROJECT-MANIFEST-DUPLICATE: duplicate asset package path";
-            return false;
-        }
-        paths.push_back(std::move(owned));
-    }
-    return true;
+    result.diagnostics = diagnostic.code;
+    result.diagnostics += ": ";
+    result.diagnostics += diagnostic.field;
 }
 } // namespace
 
 EditorProjectResources::EditorProjectResources()
-    : manager_(core::makeUnique<resource::ResourceManager>())
+    : manager_(core::makeShared<resource::ResourceManager>())
 {}
+
+bool EditorProjectResources::bindSceneServices(
+    EditorSceneDocument& document, core::pmr::String& diagnostic) const
+{
+    diagnostic.clear();
+    if (!manager_) {
+        diagnostic = "EDITOR-SCENE-SERVICES-OWNER-UNAVAILABLE";
+        return false;
+    }
+    try {
+        // Prepare both callbacks before mutating the document. Components may
+        // copy them and outlive this bundle; never capture its address.
+        core::SharedCallback<resource::ResourceManager*()> resources([owner = manager_] {
+            return owner.get();
+        });
+        core::SharedCallback<core::SharedPtr<physics2d::PhysicsWorld2D>()> physics(
+            [owner = physicsWorld2D_] {
+                return owner;
+            });
+        document.setResourceManagerProvider(std::move(resources));
+        document.setPhysicsWorld2DProvider(std::move(physics));
+        return true;
+    } catch (const std::bad_alloc&) {
+        diagnostic = "EDITOR-SCENE-SERVICES-PREPARATION-FAILED";
+        return false;
+    }
+}
 
 EditorProjectResourceLoadResult EditorProjectResources::load(
     const std::filesystem::path& projectRoot)
@@ -258,28 +103,37 @@ EditorProjectResourceLoadResult EditorProjectResources::load(
     }
 
     const auto manifestPath = root / kProjectManifestName;
-    if (!std::filesystem::exists(manifestPath, error) && !error) {
-        auto emptyManager = core::makeUnique<resource::ResourceManager>();
-        manager_ = std::move(emptyManager);
-        physicsWorld2D_.reset();
-        packageRoots_.clear();
-        manifestSnapshot_.clear();
-        result.success = true;
-        result.diagnostics =
-            "EDITOR-PROJECT-MANIFEST-MISSING: opened with an empty project resource set";
-        lastLoad_ = result;
-        return result;
-    }
-    if (error) {
+    const auto status = std::filesystem::symlink_status(manifestPath, error);
+    if (error && error != std::errc::no_such_file_or_directory) {
         result = failure(
             std::move(result), "EDITOR-PROJECT-MANIFEST-STAT: cannot inspect project manifest");
         lastLoad_ = result;
         return result;
     }
-
+    error.clear();
+    if (status.type() == std::filesystem::file_type::not_found) {
+        auto emptyManager = core::makeShared<resource::ResourceManager>();
+        manager_ = std::move(emptyManager);
+        physicsWorld2D_.reset();
+        packageRoots_.clear();
+        resourceLocations_ = {};
+        manifestSnapshot_.clear();
+        manifest_.reset();
+        metadata_ = {};
+        metadataSnapshot_.clear();
+        inputBindings_.clear();
+        packageBindings_.clear();
+        packageProvenanceDiagnostic_ = "EDITOR-PROJECT-PACKAGE-PROVENANCE-NO-PROJECT";
+        result.success = true;
+        result.diagnostics =
+            "EDITOR-PROJECT-MANIFEST-MISSING: directory browsing only; create or open an authoring project before project operations";
+        lastLoad_ = result;
+        return result;
+    }
     result.manifestFound = true;
     std::filesystem::path canonicalManifest;
-    if (!resolveContainedPath(root, kProjectManifestName, canonicalManifest)
+    if (!resolveContainedPath(
+            root, kProjectManifestName, ProjectPathIntent::ExistingFile, canonicalManifest)
         || !std::filesystem::is_regular_file(canonicalManifest, error) || error) {
         result = failure(std::move(result),
             "EDITOR-PROJECT-MANIFEST-PATH: manifest must resolve inside project root");
@@ -309,22 +163,65 @@ EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
         lastLoad_ = result;
         return result;
     }
-    core::pmr::Vector<core::pmr::String> packagePaths{&core::defaultCpuMemoryResource()};
-    core::pmr::Vector<core::pmr::String> terrainPreviews{&core::defaultCpuMemoryResource()};
-    std::optional<physics2d::WorldConfig> physicsConfig;
-    if (!parsePackagePaths(std::string_view(yaml.data(), yaml.size()),
-            packagePaths,
-            terrainPreviews,
-            physicsConfig,
-            result.diagnostics)) {
+    ProjectManifest project;
+    ProjectMetadata metadata;
+    core::pmr::String metadataBytes;
+    ProjectInputSnapshot inputs(root);
+    ProjectDiagnostic diagnostic;
+    if (!ProjectManifestCodec::decode(yaml, project, diagnostic)) {
+        reportProjectDiagnostic(result, diagnostic);
         lastLoad_ = result;
         return result;
     }
+    if (!project.editorMetadata.empty()) {
+        std::filesystem::path path;
+        if (!ProjectManifestCodec::resolvePath(
+                root, project.editorMetadata, ProjectPathIntent::ExistingFile, path, diagnostic)) {
+            reportProjectDiagnostic(result, diagnostic);
+            lastLoad_ = result;
+            return result;
+        }
+        const auto read = core::readTextFile(path, kMaxManifestBytes);
+        if (!read.success) {
+            result.diagnostics = "EDITOR-PROJECT-METADATA-READ: ";
+            result.diagnostics += read.diagnostics;
+            lastLoad_ = result;
+            return result;
+        }
+        if (!ProjectMetadataCodec::decode(read.text, metadata, diagnostic)) {
+            reportProjectDiagnostic(result, diagnostic);
+            lastLoad_ = result;
+            return result;
+        }
+        metadataBytes = read.text;
+        if (!inputs.record(path, read.text, result.diagnostics)) {
+            lastLoad_ = result;
+            return result;
+        }
+    }
+    // Source paths are explicit authoring references. Opening a project does not
+    // compile modules or run constructors, but may not accept an escaping path.
+    for (const auto& module : project.scriptModules) {
+        std::filesystem::path source;
+        if (!ProjectManifestCodec::resolvePath(
+                root, module.source, ProjectPathIntent::ExistingFile, source, diagnostic)) {
+            reportProjectDiagnostic(result, diagnostic);
+            lastLoad_ = result;
+            return result;
+        }
+        const auto read = core::readTextFile(source, ScriptDocumentSession::maxScriptBytes);
+        if (!read.success || !inputs.record(source, read.text, result.diagnostics)) {
+            if (result.diagnostics.empty())
+                result.diagnostics = "EDITOR-PROJECT-MODULE-SOURCE-READ-OR-BUDGET";
+            lastLoad_ = result;
+            return result;
+        }
+    }
 
-    auto candidate = core::makeUnique<resource::ResourceManager>();
+    auto candidate = core::makeShared<resource::ResourceManager>();
     core::SharedPtr<physics2d::PhysicsWorld2D> candidatePhysicsWorld;
-    if (physicsConfig) {
-        candidatePhysicsWorld = core::makeShared<physics2d::PhysicsWorld2D>(*physicsConfig);
+    if (project.physics2d) {
+        candidatePhysicsWorld = core::makeShared<physics2d::PhysicsWorld2D>(*project.physics2d);
         if (!candidatePhysicsWorld->valid()) {
             result.diagnostics = "EDITOR-PROJECT-PHYSICS2D-CREATE: ";
             result.diagnostics += candidatePhysicsWorld->diagnostic();
@@ -332,11 +229,29 @@ EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
             return result;
         }
     }
+    const auto sceneFactory =
+        ProjectSceneAuthoring::factory(*candidate, candidatePhysicsWorld, result.diagnostics);
+    const auto codecs = sceneFactory
+        ? ProjectSceneAuthoring::packageCodecs(sceneFactory, result.diagnostics)
+        : nullptr;
+    if (!codecs) {
+        lastLoad_ = result;
+        return result;
+    }
+    // Capture before resource loading. An unsupported recovery profile remains
+    // explicitly unbound; it cannot acquire provenance from an after-only read.
+    core::pmr::Vector<ProjectPackageBinding> packageBindings;
+    core::pmr::String packageDiagnostic;
+    const bool packagesBound = ProjectPackageSnapshot::capture(
+        root, project.assetPackages, codecs, packageBindings, packageDiagnostic);
     core::pmr::Vector<PackageResourceRoot> candidatePackageRoots{&core::defaultCpuMemoryResource()};
-    for (const auto& relative : packagePaths) {
+    ProjectInputSnapshot definitionInputs(root, ProjectResourceLocations::budget);
+    for (const auto& relative : project.assetPackages) {
         std::filesystem::path packagePath;
-        if (!resolveContainedPath(
-                root, std::string_view(relative.data(), relative.size()), packagePath)
+        if (!resolveContainedPath(root,
+                std::string_view(relative.data(), relative.size()),
+                ProjectPathIntent::ExistingDirectory,
+                packagePath)
             || !std::filesystem::is_directory(packagePath, error) || error) {
             result.diagnostics =
                 "EDITOR-PROJECT-ASSET-PACKAGE-PATH: package must resolve to a directory inside project root";
@@ -344,6 +259,10 @@ EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
             return result;
         }
         const auto reader = resource::InternalAssetPackageReader();
+        if (!definitionInputs.read(packagePath / "manifest.arpkg.yaml", result.diagnostics)) {
+            lastLoad_ = result;
+            return result;
+        }
         const auto package = reader.read(packagePath);
         if (!package.success) {
             result.diagnostics = "EDITOR-PROJECT-ASSET-PACKAGE-LOAD: ";
@@ -351,7 +270,15 @@ EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
             lastLoad_ = result;
             return result;
         }
-        const auto loaded = reader.load(packagePath, *candidate);
+        for (const auto& entry : package.package.entries) {
+            if (!definitionInputs.record(packagePath / std::filesystem::u8path(entry.envelopePath),
+                    entry.envelopeYaml,
+                    result.diagnostics)) {
+                lastLoad_ = result;
+                return result;
+            }
+        }
+        const auto loaded = reader.load(packagePath, *candidate, codecs);
         if (!loaded.success) {
             result.diagnostics = "EDITOR-PROJECT-ASSET-PACKAGE-LOAD: ";
             result.diagnostics += loaded.diagnostics;
@@ -359,7 +286,8 @@ EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
             return result;
         }
         for (const auto& entry : package.package.entries) {
-            if (entry.resourceType != resource::PrefabResource::resourceTypeName())
+            if (entry.resourceType != resource::PrefabResource::resourceTypeName()
+                && entry.resourceType != "SceneAssetResource")
                 continue;
             PackageResourceRoot mapping;
             mapping.resourceId = entry.resourceId;
@@ -369,19 +297,61 @@ EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
         ++result.packageCount;
     }
 
-    for (const auto& preview : terrainPreviews) {
-        if (!loadEditorTerrainPreview(root, preview, *candidate, result.diagnostics)) {
+    if (!project.entryScene.empty()
+        && !candidate->find<scene::SceneAssetResource>(project.entryScene).ready()) {
+        result.diagnostics = "EDITOR-PROJECT-ENTRY-SCENE-NOT-READY-OR-TYPE";
+        lastLoad_ = result;
+        return result;
+    }
+    for (const auto& preview : metadata.terrainPreviews) {
+        if (!loadEditorTerrainPreview(root, preview, *candidate, result.diagnostics, &inputs)) {
             lastLoad_ = result;
             return result;
         }
     }
+    if (!inputs.verify(result.diagnostics)) {
+        lastLoad_ = result;
+        return result;
+    }
+    if (packagesBound) {
+        core::pmr::Vector<ProjectPackageBinding> current;
+        if (!ProjectPackageSnapshot::capture(
+                root, project.assetPackages, codecs, current, result.diagnostics)) {
+            lastLoad_ = result;
+            return result;
+        }
+        if (!ProjectPackageSnapshot::equal(packageBindings, current)) {
+            result.diagnostics = "EDITOR-PROJECT-PACKAGE-PROVENANCE-CHANGED";
+            lastLoad_ = result;
+            return result;
+        }
+    }
+    ProjectResourceLocations locations;
+    if (const auto* issue =
+            ProjectResourceLocations::capture(root, project.assetPackages, candidate, locations)) {
+        result.diagnostics = issue;
+        lastLoad_ = result;
+        return result;
+    }
+    if (!definitionInputs.verify(result.diagnostics)) {
+        lastLoad_ = result;
+        return result;
+    }
+    core::pmr::String snapshot(yaml);
     result.success = true;
     result.physicsWorld2DReady = bool(candidatePhysicsWorld);
     result.diagnostics.clear();
     manager_ = std::move(candidate);
     physicsWorld2D_ = std::move(candidatePhysicsWorld);
     packageRoots_ = std::move(candidatePackageRoots);
-    manifestSnapshot_.assign(yaml.data(), yaml.size());
+    resourceLocations_ = std::move(locations);
+    manifestSnapshot_ = std::move(snapshot);
+    manifest_ = std::move(project);
+    metadata_ = std::move(metadata);
+    metadataSnapshot_ = std::move(metadataBytes);
+    inputBindings_ = inputs.takeBindings();
+    packageBindings_ = std::move(packageBindings);
+    packageProvenanceDiagnostic_ = std::move(packageDiagnostic);
     lastLoad_ = result;
     return result;
 }
@@ -390,9 +360,23 @@ void EditorProjectResources::publishAssetPackages(EditorProjectResources&& candi
 {
     manager_ = std::move(candidate.manager_);
     packageRoots_ = std::move(candidate.packageRoots_);
+    resourceLocations_ = std::move(candidate.resourceLocations_);
     lastLoad_ = std::move(candidate.lastLoad_);
     manifestSnapshot_ = std::move(candidate.manifestSnapshot_);
+    manifest_ = std::move(candidate.manifest_);
+    metadata_ = std::move(candidate.metadata_);
+    metadataSnapshot_ = std::move(candidate.metadataSnapshot_);
+    inputBindings_ = std::move(candidate.inputBindings_);
+    packageBindings_ = std::move(candidate.packageBindings_);
+    packageProvenanceDiagnostic_ = std::move(candidate.packageProvenanceDiagnostic_);
     lastLoad_.physicsWorld2DReady = bool(physicsWorld2D_);
+}
+
+void EditorProjectResources::publishSavedSettings(
+    ProjectManifest manifest, core::pmr::String snapshot)
+{
+    manifest_ = std::move(manifest);
+    manifestSnapshot_ = std::move(snapshot);
 }
 
 bool EditorProjectResources::packageRootForResource(

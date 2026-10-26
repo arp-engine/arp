@@ -7,5 +7,6 @@
 namespace arp::scene2d {
 bool registerScene2DPersistence(scene::SceneComponentFactory&,
     resource::ResourceManager&,
-    core::SharedPtr<physics2d::PhysicsWorld2D>);
+    core::SharedPtr<physics2d::PhysicsWorld2D>,
+    physics2d::ComponentUsage usage = physics2d::ComponentUsage::Simulation);
 }

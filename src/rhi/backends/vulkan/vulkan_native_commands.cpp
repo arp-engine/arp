@@ -9,7 +9,10 @@
 #include "rhi/backends/vulkan/vulkan_retained_command.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 #include "rhi/frontend/command_retention_validation.h"
+#include "rhi/frontend/command_state.h"
 #include "rhi/frontend/transfer_readback_borrowed_retirement.h"
+#include "rhi/semantics/native_command_lowering.h"
+#include "rhi/semantics/query_lowering.h"
 
 #include <algorithm>
 #include <array>
@@ -459,11 +462,13 @@ std::uint64_t& completedSubmittedFrameSerial()
 }
 
 struct CompletedGpuTiming {
+    std::atomic<std::uint64_t> sequence{0u};
     std::atomic<std::uint64_t> frameSerial{0u};
-    std::atomic<std::uint64_t> elapsedNanoseconds{0u};
+    std::atomic<rhi::GpuTimingAvailability> availability{rhi::GpuTimingAvailability::Pending};
+    std::atomic<const char*> diagnostic{"RHI-VULKAN-TIMING-PUBLICATION-PENDING"};
     std::atomic<std::uint32_t> scopeCount{0u};
     std::array<std::atomic<std::uint64_t>, rhi::GpuTimingSample::kMaxScopes> scopeIds{};
-    std::array<std::atomic<std::uint64_t>, rhi::GpuTimingSample::kMaxScopes> scopeNanoseconds{};
+    std::array<std::atomic<float>, rhi::GpuTimingSample::kMaxScopes> scopeMilliseconds{};
 };
 
 CompletedGpuTiming& completedGpuTiming()
@@ -472,64 +477,53 @@ CompletedGpuTiming& completedGpuTiming()
     return timing;
 }
 
+// One existing fixed cache, one bounded publication attempt. Atomics avoid
+// reader data races; the sequence prevents a mixed frame/count/scope snapshot.
+// Completion owners serialize their work; a concurrent publisher fails closed
+// instead of spinning or blocking the recording/completion path.
+bool publishCompletedTiming(const rhi::GpuTimingSample& sample) noexcept
+{
+    auto& result = completedGpuTiming();
+    auto sequence = result.sequence.load(std::memory_order_acquire);
+    if (sample.scopeCount > rhi::GpuTimingSample::kMaxScopes || (sequence & 1u)
+        || sequence > UINT64_MAX - 2u
+        || !result.sequence.compare_exchange_strong(
+            sequence, sequence + 1u, std::memory_order_acq_rel, std::memory_order_acquire))
+        return false;
+    // Pair with the reader's acquire fence through any newly observed payload
+    // atomic. Seeing new fields then requires observing at least the odd
+    // sequence, including on weakly ordered hosts.
+    std::atomic_thread_fence(std::memory_order_release);
+    result.frameSerial.store(sample.completedFrameSerial, std::memory_order_relaxed);
+    result.availability.store(sample.availability, std::memory_order_relaxed);
+    result.diagnostic.store(sample.diagnostic, std::memory_order_relaxed);
+    for (std::uint32_t i = 0u; i < sample.scopeCount; ++i) {
+        result.scopeIds[i].store(sample.scopes[i].scopeId, std::memory_order_relaxed);
+        result.scopeMilliseconds[i].store(sample.scopes[i].elapsedMs, std::memory_order_relaxed);
+    }
+    result.scopeCount.store(sample.scopeCount, std::memory_order_relaxed);
+    result.sequence.store(sequence + 2u, std::memory_order_release);
+    return true;
+}
+
 void publishCompletedTimingPool(const VulkanRhiRuntime& runtime,
     const VulkanRhiQueryPoolPayload& pool,
-    const std::uint64_t frameSerial)
+    const std::uint64_t frameSerial,
+    const std::uint64_t* fullFrameNanoseconds)
 {
-    const auto& scopeIds = pool.scopeIds();
-    if (scopeIds.empty() || scopeIds.size() >= rhi::GpuTimingSample::kMaxScopes)
+    auto sample = pool.completedTimingSample(runtime, frameSerial);
+    if (sample.availability != rhi::GpuTimingAvailability::Available)
         return;
-    const auto getResults =
-        functionFrom<PFN_vkGetQueryPoolResults>(runtime.getDeviceProcAddr("vkGetQueryPoolResults"));
-    if (!getResults)
-        return;
-    core::pmr::Vector<std::uint64_t> timestamps(
-        scopeIds.size() * 2u, &arp::core::defaultCpuMemoryResource());
-    const auto queryResult = getResults(runtime.logicalDevice(),
-        pool.nativeHandle(),
-        0u,
-        static_cast<std::uint32_t>(timestamps.size()),
-        timestamps.size() * sizeof(std::uint64_t),
-        timestamps.data(),
-        sizeof(std::uint64_t),
-        VK_QUERY_RESULT_64_BIT);
-    if (queryResult != VK_SUCCESS) {
-        if (std::getenv("ARP_FRAME_GRAPH_GPU_TIMING_DIAG") != nullptr) {
-            std::fprintf(stderr,
-                "[frame-graph-gpu-timing] readback-failed result=%d queries=%u\n",
-                static_cast<int>(queryResult),
-                static_cast<unsigned>(timestamps.size()));
-        }
-        return;
+    // Include this command's actual full-frame result when space permits.
+    // A previous command's result cannot supply this scope. All 32 names fit.
+    if (fullFrameNanoseconds && sample.scopeCount < rhi::GpuTimingSample::kMaxScopes) {
+        for (auto i = sample.scopeCount; i > 0u; --i)
+            sample.scopes[i] = sample.scopes[i - 1u];
+        sample.scopes[0] = {0u, static_cast<float>(*fullFrameNanoseconds) / 1000000.0f};
+        ++sample.scopeCount;
     }
-    VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(runtime.physicalDevice(), &properties);
-    auto& result = completedGpuTiming();
-    // Preserve the command payload's full-frame scope alongside the named
-    // FrameGraph samples. Adding pass profiling must not turn frame timing
-    // into a partial sum.
-    std::uint32_t outputIndex = 0u;
-    result.scopeIds[outputIndex].store(0u, std::memory_order_relaxed);
-    result.scopeNanoseconds[outputIndex].store(
-        result.elapsedNanoseconds.load(std::memory_order_relaxed), std::memory_order_relaxed);
-    ++outputIndex;
-    for (std::size_t i = 0; i < scopeIds.size(); ++i, ++outputIndex) {
-        const auto elapsed = timestamps[i * 2u + 1u] >= timestamps[i * 2u]
-            ? static_cast<std::uint64_t>(
-                  static_cast<double>(timestamps[i * 2u + 1u] - timestamps[i * 2u])
-                  * static_cast<double>(properties.limits.timestampPeriod))
-            : 0u;
-        result.scopeIds[outputIndex].store(scopeIds[i], std::memory_order_relaxed);
-        result.scopeNanoseconds[outputIndex].store(elapsed, std::memory_order_relaxed);
-    }
-    result.scopeCount.store(outputIndex, std::memory_order_relaxed);
-    result.frameSerial.store(frameSerial, std::memory_order_relaxed);
-    if (std::getenv("ARP_FRAME_GRAPH_GPU_TIMING_DIAG") != nullptr) {
-        std::fprintf(stderr,
-            "[frame-graph-gpu-timing] published scopes=%u frame=%llu\n",
-            outputIndex,
-            static_cast<unsigned long long>(frameSerial));
-    }
+    sample.diagnostic = "Vulkan timestamp query";
+    (void)publishCompletedTiming(sample);
 }
 
 void retireCompletedSubmittedCommands()
@@ -602,13 +596,13 @@ VulkanRhiNativeCommandPayload::~VulkanRhiNativeCommandPayload()
             resolveSubmittedCompletion();
         if (fenceWaited) {
             for (const auto& query : impl_->recordedTimestampQueries) {
-                if (query.pool) {
+                if (query.recorded && query.pool) {
                     query.pool->markCompleted(impl_->device, query.queryIndex);
                 }
             }
         } else if (!impl_->submitted) {
             for (const auto& query : impl_->recordedTimestampQueries) {
-                if (query.pool) {
+                if (query.recorded && query.pool && !query.originalSlot) {
                     query.pool->rollbackRecorded(query.queryIndex);
                 }
             }
@@ -623,7 +617,7 @@ VulkanRhiNativeCommandPayload::~VulkanRhiNativeCommandPayload()
         }
     } else if (!impl_->submitted) {
         for (const auto& query : impl_->recordedTimestampQueries) {
-            if (query.pool) {
+            if (query.recorded && query.pool && !query.originalSlot) {
                 query.pool->rollbackRecorded(query.queryIndex);
             }
         }
@@ -683,6 +677,12 @@ bool VulkanRhiNativeCommandPayload::submittedFenceCompleted()
         return false;
     if (impl_->submitFenceCompleted)
         return true;
+    // A failed query submission has no usable fence provenance. Only this
+    // device's explicit idle-retirement path may release its quarantine.
+    if (impl_->originalSubmissionUnproven
+        && (impl_->ordinaryJournalAliased || impl_->hasRecordedTimestampQueries()
+            || impl_->internalProfiling))
+        return false;
     if (impl_->device.syntheticRuntime()) {
         // Explicit validator runtime only. This never authorizes Native work.
         resolveSubmittedCompletion();
@@ -734,6 +734,14 @@ bool VulkanRhiNativeCommandPayload::waitSubmittedFenceUntil(
         diagnostics.clear();
         return true;
     }
+    if (impl_->originalSubmissionUnproven
+        && (impl_->ordinaryJournalAliased || impl_->hasRecordedTimestampQueries()
+            || impl_->internalProfiling)) {
+        diagnostics = impl_->recordingStorage && impl_->recordingStorage->originalProgram
+            ? "RHI-VULKAN-ORIGINAL-STREAM-QUEUE-QUARANTINED"
+            : "RHI-VULKAN-QUERY-QUEUE-QUARANTINED";
+        return false;
+    }
     if (!impl_->submitFence) {
         diagnostics = "RHI-VULKAN-COMPLETION-FENCE-MISSING";
         return false;
@@ -776,15 +784,53 @@ bool VulkanRhiNativeCommandPayload::waitSubmittedFenceUntil(
 
 void VulkanRhiNativeCommandPayload::resolveSubmittedCompletion()
 {
+    if (impl_->submitFenceCompleted)
+        return;
+    if ((!impl_->ordinaryTextureUploads.empty() || hasOrdinaryAttachments())
+        && !impl_->originalSubmissionUnproven) {
+        const char* failure = validateOrdinaryAttachmentsPending();
+        for (const auto& upload : impl_->ordinaryTextureUploads) {
+            const auto& object =
+                *upload.packing->originalSource()->originalDestinationLease()->originalObject();
+            failure = upload.pending
+                ? rhi::OriginalCommandStateTransaction::validateOrdinaryWholeUploadPending(
+                      object, *impl_->retainedResourceStates, *upload.pending)
+                : "RHI-ORDINARY-TEXTURE-UPLOAD-CONTENT-PENDING";
+            if (failure)
+                break;
+        }
+        if (!failure)
+            for (const auto& upload : impl_->ordinaryTextureUploads) {
+                const auto& object =
+                    *upload.packing->originalSource()->originalDestinationLease()->originalObject();
+                failure = rhi::OriginalCommandStateTransaction::completeOrdinaryWholeUpload(
+                    object, *impl_->retainedResourceStates, *upload.pending);
+                if (failure)
+                    break;
+            }
+        if (!failure)
+            failure = completeOrdinaryAttachments();
+        if (failure) {
+            rejectRecordingStorage(failure);
+            (void)impl_->retainedResourceStates->invalidate();
+        } else {
+            impl_->retainedResourceStates->commit();
+        }
+    }
     // The private bounded transfer domain retains its buffers only here.
     // Retire them before publishing completion; preserve the existing guard
     // against reentrant retirement while other native owners are released.
-    impl_->retainedResourceStates.reset();
+    // Finished ordinary wrappers alias this exact journal through the native
+    // payload owner. Keep its empty object alive for that owner's full lifetime.
+    if (!impl_->ordinaryJournalAliased)
+        impl_->retainedResourceStates.reset();
+    // Both retained commands and private ordinary cold preparation use this
+    // same native owner array. Actual completion retires its objects before
+    // any original source ownership can be released.
+    for (std::uint32_t i = 0u; i < impl_->retainedRenderPassCount; ++i)
+        destroyVulkanRhiNativeRenderPassResources(impl_->device, impl_->retainedRenderPasses[i]);
+    impl_->retainedRenderPassCount = 0u;
     if (impl_->recordingRetention) {
-        for (std::uint32_t i = 0u; i < impl_->retainedRenderPassCount; ++i)
-            destroyVulkanRhiNativeRenderPassResources(
-                impl_->device, impl_->retainedRenderPasses[i]);
-        impl_->retainedRenderPassCount = 0u;
         (void)impl_->recordingRetention->retireAfterCompletion(true);
         impl_->recordingRetention.reset();
     }
@@ -804,6 +850,8 @@ void VulkanRhiNativeCommandPayload::resolveSubmittedCompletion()
     // An uncertain queue invocation may never have executed the query reset
     // or either timestamp write. Real device-idle proves safe retirement,
     // not query initialization or publishable timing results.
+    std::uint64_t fullFrameNanoseconds = 0u;
+    bool fullFrameAvailable = false;
     if (!impl_->originalSubmissionUnproven && !impl_->timestampResolved && impl_->timestampQueryPool
         && impl_->timestampPeriodNs > 0.0f) {
         if (auto* getResults = functionFrom<PFN_vkGetQueryPoolResults>(
@@ -817,27 +865,77 @@ void VulkanRhiNativeCommandPayload::resolveSubmittedCompletion()
                 timestamps,
                 sizeof(std::uint64_t),
                 VK_QUERY_RESULT_64_BIT);
-            if (result == VK_SUCCESS && timestamps[1] >= timestamps[0]) {
-                completedGpuTiming().elapsedNanoseconds.store(
-                    static_cast<std::uint64_t>(static_cast<double>(timestamps[1] - timestamps[0])
-                        * static_cast<double>(impl_->timestampPeriodNs)),
-                    std::memory_order_relaxed);
-                completedGpuTiming().frameSerial.store(
-                    impl_->frameSerial, std::memory_order_relaxed);
+            impl_->device.captureOriginalDeviceLoss(result);
+            const auto duration = rhi::semantics::QueryLowering::timestampDuration(
+                timestamps[0], timestamps[1], impl_->timestampPeriodNs);
+            if (result == VK_SUCCESS && !duration.diagnostic) {
+                fullFrameNanoseconds = duration.nanoseconds;
+                fullFrameAvailable = true;
+                if (!impl_->internalProfiling) {
+                    rhi::GpuTimingSample sample;
+                    sample.availability = rhi::GpuTimingAvailability::Available;
+                    sample.completedFrameSerial = impl_->frameSerial;
+                    sample.scopeCount = 1u;
+                    sample.scopes[0] = {0u, static_cast<float>(fullFrameNanoseconds) / 1000000.0f};
+                    sample.diagnostic = "Vulkan timestamp query";
+                    (void)publishCompletedTiming(sample);
+                }
             }
         }
         impl_->timestampResolved = true;
     }
-    for (const auto& pool : impl_->retainedTimingPools) {
-        if (pool)
-            publishCompletedTimingPool(impl_->device, *pool, impl_->frameSerial);
-    }
-    impl_->retainedTimingPools.clear();
     for (const auto& query : impl_->recordedTimestampQueries) {
-        if (query.pool) {
-            query.pool->markCompleted(impl_->device, query.queryIndex);
+        if (query.recorded && query.pool) {
+            if (impl_->originalSubmissionUnproven)
+                query.pool->markDiagnosticFailure(
+                    query.queryIndex, "RHI-VULKAN-TIMESTAMP-RESULT-SUBMISSION-UNPROVEN");
+            else
+                query.pool->markCompleted(impl_->device, query.queryIndex);
         }
     }
+    if (impl_->internalProfiling && !impl_->originalSubmissionUnproven) {
+        rhi::GpuTimingSample sample;
+        sample.completedFrameSerial = impl_->frameSerial;
+        sample.availability = rhi::GpuTimingAvailability::Available;
+        sample.diagnostic = "Vulkan budgeted command timestamps";
+        if (fullFrameAvailable) {
+            sample.scopes[0] = {rhi::CommandProfilingContract::wholeCommandScopeId,
+                static_cast<float>(fullFrameNanoseconds) / 1000000.0f};
+            sample.scopeCount = 1u;
+        } else {
+            impl_->internalTimingFailure = "RHI-COMMAND-PROFILING-RESULT-UNAVAILABLE";
+        }
+        const auto limit =
+            impl_->recordingStorage->originalQueries->profilingBudget->maxPublishedScopes;
+        for (const auto& pool : impl_->retainedTimingPools) {
+            if (!pool || impl_->internalTimingFailure)
+                break;
+            const auto named = pool->completedTimingSample(impl_->device, impl_->frameSerial);
+            if (named.availability != rhi::GpuTimingAvailability::Available
+                || named.scopeCount > limit - sample.scopeCount) {
+                impl_->internalTimingFailure = "RHI-COMMAND-PROFILING-NAMED-RESULT-UNAVAILABLE";
+                break;
+            }
+            for (std::uint32_t i = 0u; i < named.scopeCount; ++i)
+                sample.scopes[sample.scopeCount++] = named.scopes[i];
+        }
+        if (impl_->internalTimingFailure) {
+            sample.availability = rhi::GpuTimingAvailability::DiagnosticFailure;
+            sample.scopeCount = 0u;
+            sample.diagnostic = impl_->internalTimingFailure;
+        }
+        if (!publishCompletedTiming(sample))
+            impl_->internalTimingFailure = "RHI-COMMAND-PROFILING-PUBLICATION-CONTENTION";
+    } else if (!impl_->originalSubmissionUnproven) {
+        for (const auto& pool : impl_->retainedTimingPools) {
+            if (pool)
+                publishCompletedTimingPool(impl_->device,
+                    *pool,
+                    impl_->frameSerial,
+                    fullFrameAvailable ? &fullFrameNanoseconds : nullptr);
+        }
+    }
+    impl_->retainedTimingPools.clear();
     if (impl_->stagingUploads)
         (void)impl_->stagingUploads->retireCompleted();
     impl_->retainedResources.clear();
@@ -927,9 +1025,142 @@ bool VulkanRhiNativeCommandPayload::retainIndexedSnapshot(
 void VulkanRhiNativeCommandPayload::retainResource(
     std::shared_ptr<VulkanRhiNativeResourcePayload> payload)
 {
-    if (impl_ && payload) {
-        impl_->retainedResources.push_back(std::move(payload));
+    if (impl_ && (payload || recordingStorageBound())) {
+        (void)retainResources(&payload, 1u);
     }
+}
+
+const char* VulkanRhiNativeCommandPayload::recordingStorageDiagnostic() const noexcept
+{
+    if (impl_ && impl_->recordingStorageFailure)
+        return impl_->recordingStorageFailure;
+    return originalQuerySlotDiagnostic();
+}
+
+const char* VulkanRhiNativeCommandPayload::originalQuerySlotDiagnostic() const noexcept
+{
+    if (!impl_ || !impl_->recordingStorage || !impl_->recordingStorage->originalQueries)
+        return nullptr;
+    for (const auto& query : impl_->recordedTimestampQueries) {
+        if (query.recorded)
+            continue;
+        if (!query.pool || !query.originalSlot)
+            return "RHI-VULKAN-COLD-QUERY-SLOT-MISSING";
+        if (const auto* id = query.pool->preflightRecord(*query.originalSlot))
+            return id;
+    }
+    return nullptr;
+}
+
+bool VulkanRhiNativeCommandPayload::recordingStorageBound() const noexcept
+{
+    return impl_ && impl_->recordingStorage.has_value();
+}
+
+void VulkanRhiNativeCommandPayload::abandonOrdinaryRecording() noexcept
+{
+    if (!impl_ || !impl_->ordinaryJournalAliased || impl_->submitted)
+        return;
+    if (impl_->retainedResourceStates)
+        impl_->retainedResourceStates->rollback();
+    if (impl_->stagingUploads)
+        (void)impl_->stagingUploads->rollback();
+    rejectRecordingStorage("RHI-VULKAN-ORIGINAL-RECORDING-CANCELLED");
+    impl_->ended = false;
+}
+
+const char* VulkanRhiNativeCommandPayload::internalTimingDiagnostic() const noexcept
+{
+    if (impl_ && impl_->internalTimingFailure)
+        return impl_->internalTimingFailure;
+    if (impl_ && impl_->internalProfiling)
+        return impl_->timestampQueryPool ? nullptr : "RHI-COMMAND-PROFILING-POOL-MISSING";
+    if (impl_ && impl_->recordingStorage && impl_->recordingStorage->originalQueries)
+        return "RHI-VULKAN-COLD-INTERNAL-PROFILING-DISABLED";
+    return impl_ && impl_->timestampQueryPool ? nullptr : "RHI-VULKAN-INTERNAL-TIMING-UNAVAILABLE";
+}
+
+const rhi::common::CommandRetentionStorage*
+VulkanRhiNativeCommandPayload::queryRecordingStorage() const noexcept
+{
+    return impl_ && impl_->recordingStorage && impl_->recordingStorage->originalQueries
+        ? impl_->recordingRetention.get()
+        : nullptr;
+}
+
+void VulkanRhiNativeCommandPayload::rejectRecordingStorage(const char* diagnostic) noexcept
+{
+    if (impl_ && impl_->recordingStorage && !impl_->recordingStorageFailure) {
+        impl_->recordingStorageFailure = diagnostic;
+        impl_->recording = false;
+    }
+}
+
+const char* VulkanRhiNativeCommandPayload::resourceRetentionStorageDiagnostic(
+    std::size_t count) const noexcept
+{
+    if (const auto* id = recordingStorageDiagnostic())
+        return id;
+    if (impl_ && impl_->recordingStorage
+        && count > impl_->recordingStorage->resourceReferences - impl_->retainedResources.size())
+        return "RHI-VULKAN-COLD-RESOURCE-REFERENCE-CAPACITY";
+    return nullptr;
+}
+
+const char* VulkanRhiNativeCommandPayload::recordingBarrierStorageDiagnostic(
+    rhi::CommandUsageKind kind) const noexcept
+{
+    if (const auto* id = recordingStorageDiagnostic())
+        return id;
+    if (!impl_ || !impl_->recordingStorage)
+        return nullptr;
+    using K = rhi::CommandUsageKind;
+    const auto& storage = *impl_->recordingStorage;
+    switch (kind) {
+    case K::BufferBarrier:
+    case K::BufferMemoryBarrier:
+        return impl_->recordedBufferBarriers < storage.bufferBarriers
+            ? nullptr
+            : "RHI-VULKAN-COLD-BUFFER-BARRIER-CAPACITY";
+    case K::TextureBarrier:
+        return impl_->recordedImageBarriers < storage.imageBarriers
+            ? nullptr
+            : "RHI-VULKAN-COLD-IMAGE-BARRIER-CAPACITY";
+    case K::TextureMemoryBarrier:
+    case K::AliasBarrier:
+        return impl_->recordedMemoryBarriers < storage.memoryBarriers
+            ? nullptr
+            : "RHI-VULKAN-COLD-MEMORY-BARRIER-CAPACITY";
+    default:
+        return "RHI-VULKAN-COLD-BARRIER-STORAGE-KIND";
+    }
+}
+
+const char* VulkanRhiNativeCommandPayload::retainResources(
+    const std::shared_ptr<VulkanRhiNativeResourcePayload>* payloads, std::size_t count)
+{
+    if (!impl_)
+        return "RHI-VULKAN-COLD-RESOURCE-PAYLOAD-MISSING";
+    if (const auto* id = resourceRetentionStorageDiagnostic(count)) {
+        rejectRecordingStorage(id);
+        return id;
+    }
+    if (count && !payloads) {
+        rejectRecordingStorage("RHI-VULKAN-COLD-RESOURCE-PAYLOAD-MISSING");
+        return "RHI-VULKAN-COLD-RESOURCE-PAYLOAD-MISSING";
+    }
+    if (recordingStorageBound()) {
+        for (std::size_t i = 0u; i < count; ++i) {
+            if (!payloads[i]) {
+                rejectRecordingStorage("RHI-VULKAN-COLD-RESOURCE-PAYLOAD-MISSING");
+                return "RHI-VULKAN-COLD-RESOURCE-PAYLOAD-MISSING";
+            }
+        }
+    }
+    for (std::size_t i = 0u; i < count; ++i)
+        if (payloads[i])
+            impl_->retainedResources.push_back(payloads[i]);
+    return nullptr;
 }
 
 void VulkanRhiNativeCommandPayload::observeFrameSerial(std::uint64_t frameSerial)
@@ -990,6 +1221,10 @@ const char* waitIdleAndRetireVulkanRhiSubmittedCommands(
 void VulkanRhiNativeCommandPayload::retainTimingQueryPool(
     std::shared_ptr<VulkanRhiQueryPoolPayload> payload)
 {
+    if (recordingStorageBound()) {
+        rejectRecordingStorage("RHI-VULKAN-COLD-QUERY-STORAGE-UNAVAILABLE");
+        return;
+    }
     if (!impl_ || !payload)
         return;
     const auto existing = std::find_if(impl_->retainedTimingPools.begin(),
@@ -1105,6 +1340,10 @@ bool VulkanRhiNativeCommandPayload::retainRecordedStagingUploads(
 
 bool VulkanRhiNativeCommandPayload::flushPendingBarriers(std::pmr::string& diagnostics)
 {
+    if (const auto* id = recordingStorageDiagnostic()) {
+        diagnostics = id;
+        return false;
+    }
     if (!impl_ || !impl_->recording) {
         diagnostics = "Vulkan RHI native command buffer is not recording";
         return false;
@@ -1150,6 +1389,11 @@ bool VulkanRhiNativeCommandPayload::recordBufferBarrier(
     const rhi::ResourceBarrierDesc& desc,
     std::pmr::string& diagnostics)
 {
+    if (const auto* id = recordingBarrierStorageDiagnostic(rhi::CommandUsageKind::BufferBarrier)) {
+        rejectRecordingStorage(id);
+        diagnostics = id;
+        return false;
+    }
     if (impl_ && impl_->conformanceClear
         && !impl_->conformanceClear->bufferBarrier(buffer, desc, diagnostics))
         return false;
@@ -1197,6 +1441,7 @@ bool VulkanRhiNativeCommandPayload::recordBufferBarrier(
     impl_->pendingSourceStages |= sourceStages;
     impl_->pendingDestinationStages |= destinationStages;
     impl_->pendingBufferBarriers.push_back(barrier);
+    ++impl_->recordedBufferBarriers;
     if (impl_->stats) {
         ++impl_->stats->nativeCommandBufferRecordCount;
         ++impl_->stats->nativeBufferBarrierRecordCount;
@@ -1207,6 +1452,11 @@ bool VulkanRhiNativeCommandPayload::recordBufferBarrier(
 bool VulkanRhiNativeCommandPayload::recordAliasingBarrier(
     const rhi::AliasingBarrierDesc& desc, std::pmr::string& diagnostics)
 {
+    if (const auto* id = recordingBarrierStorageDiagnostic(rhi::CommandUsageKind::AliasBarrier)) {
+        rejectRecordingStorage(id);
+        diagnostics = id;
+        return false;
+    }
     if (impl_ && impl_->conformanceClear)
         return impl_->conformanceClear->reject(diagnostics);
     if (!impl_ || !impl_->recording) {
@@ -1236,6 +1486,7 @@ bool VulkanRhiNativeCommandPayload::recordAliasingBarrier(
     impl_->pendingSourceStages |= sourceStages;
     impl_->pendingDestinationStages |= destinationStages;
     impl_->pendingMemoryBarriers.push_back(barrier);
+    ++impl_->recordedMemoryBarriers;
     if (impl_->stats)
         ++impl_->stats->nativeCommandBufferRecordCount;
     return true;
@@ -1244,6 +1495,12 @@ bool VulkanRhiNativeCommandPayload::recordAliasingBarrier(
 bool VulkanRhiNativeCommandPayload::recordResourceMemoryBarrier(
     const rhi::ResourceMemoryBarrierDesc& desc, std::pmr::string& diagnostics)
 {
+    if (const auto* id =
+            recordingBarrierStorageDiagnostic(rhi::CommandUsageKind::TextureMemoryBarrier)) {
+        rejectRecordingStorage(id);
+        diagnostics = id;
+        return false;
+    }
     if (impl_ && impl_->conformanceClear)
         return impl_->conformanceClear->reject(diagnostics);
     if (!impl_ || !impl_->recording) {
@@ -1268,6 +1525,7 @@ bool VulkanRhiNativeCommandPayload::recordResourceMemoryBarrier(
     impl_->pendingSourceStages |= sourceStages;
     impl_->pendingDestinationStages |= destinationStages;
     impl_->pendingMemoryBarriers.push_back(barrier);
+    ++impl_->recordedMemoryBarriers;
     if (impl_->stats)
         ++impl_->stats->nativeCommandBufferRecordCount;
     return true;
@@ -1356,6 +1614,11 @@ bool VulkanRhiNativeCommandPayload::recordValidatedOriginalImageBarrier(
     const rhi::ResourceBarrierDesc& desc,
     core::pmr::String& diagnostics)
 {
+    if (const auto* id = recordingBarrierStorageDiagnostic(rhi::CommandUsageKind::TextureBarrier)) {
+        rejectRecordingStorage(id);
+        diagnostics = id;
+        return false;
+    }
     if (!impl_ || !impl_->recording) {
         diagnostics = "Vulkan RHI native command buffer is not recording";
         return false;
@@ -1404,6 +1667,7 @@ bool VulkanRhiNativeCommandPayload::recordValidatedOriginalImageBarrier(
     impl_->pendingSourceStages |= sourceStages;
     impl_->pendingDestinationStages |= destinationStages;
     impl_->pendingImageBarriers.push_back(barrier);
+    ++impl_->recordedImageBarriers;
     if (impl_->stats) {
         ++impl_->stats->nativeCommandBufferRecordCount;
         ++impl_->stats->nativeImageBarrierRecordCount;
@@ -1794,6 +2058,11 @@ bool VulkanRhiNativeCommandPayload::recordUploadStagingBufferCopy(VkBuffer stagi
     std::uint64_t sizeBytes,
     std::pmr::string& diagnostics)
 {
+    if (recordingStorageBound()) {
+        rejectRecordingStorage(VulkanRhiRecordingStorageLimits::unsupportedStagingPoolDiagnostic());
+        diagnostics.clear();
+        return false;
+    }
     if (impl_ && impl_->conformanceClear)
         return impl_->conformanceClear->reject(diagnostics);
     if (!impl_ || !impl_->recording) {
@@ -1834,12 +2103,247 @@ bool VulkanRhiNativeCommandPayload::recordUploadStagingBufferCopy(VkBuffer stagi
     return true;
 }
 
+namespace {
+rhi::UploadTextureDesc ordinaryPackedMip(
+    const rhi::semantics::TextureUploadPackedMip& mip, rhi::TextureFormat format)
+{
+    rhi::UploadTextureDesc result;
+    result.format = format;
+    result.extent = mip.extent;
+    result.destinationOffset = mip.origin;
+    result.subresources = mip.range;
+    result.bytesPerRow = mip.packedBytesPerRow;
+    result.rowsPerImage = mip.rowCount;
+    result.pixelDataSize = mip.packedSize;
+    return result;
+}
+} // namespace
+
+bool VulkanRhiNativeCommandPayload::acceptOrdinaryRecordedOwnership() const noexcept
+{
+    if (!impl_ || !impl_->retainedResourceStates)
+        return false;
+    if (!impl_->ordinaryTextureUploads.empty() || hasOrdinaryAttachments())
+        return impl_->submitted && !impl_->originalSubmissionUnproven;
+    impl_->retainedResourceStates->commit();
+    return true;
+}
+
+bool VulkanRhiNativeCommandPayload::hasOrdinaryTextureUploads() const noexcept
+{
+    return impl_ && !impl_->ordinaryTextureUploads.empty();
+}
+
+bool VulkanRhiNativeCommandPayload::prepareOrdinaryTextureUploads(rhi::GpuDevice& device,
+    VulkanRhiStagingUploadPool& pool,
+    rhi::RecordedStagingUploadJournal& journal,
+    std::uint64_t serial,
+    const rhi::OriginalOrdinaryTextureUploadContract::Budget& budget,
+    const rhi::OriginalOrdinaryTextureUploadContract::Binding* bindings,
+    std::size_t count,
+    core::pmr::String& diagnostic)
+{
+    const auto reject = [&](const char* id) {
+        diagnostic = id;
+        return false;
+    };
+    if (!impl_ || !impl_->recording || !impl_->recordingStorage
+        || !impl_->recordingStorage->originalProgram || !impl_->ordinaryJournalAliased
+        || !impl_->retainedResourceStates || !impl_->retainedResourceStates->empty()
+        || !impl_->ordinaryTextureUploads.empty())
+        return reject("RHI-ORDINARY-TEXTURE-UPLOAD-COLD-OWNER");
+    const auto& program = impl_->recordingStorage->originalProgram;
+    if (const auto* id =
+            rhi::OriginalOrdinaryTextureUploadContract::inspect(program, budget, bindings, count))
+        return reject(id);
+    impl_->ordinaryTextureUploads.reserve(count);
+    for (std::size_t i = 0u; i < count; ++i) {
+        const auto& binding = bindings[i];
+        const auto& object =
+            *binding.packing->originalSource()->originalDestinationLease()->originalObject();
+        const auto content = object.observeOriginalContent();
+        const auto state = object.observeOriginalCommittedState(
+            rhi::defaultTextureSubresourceRange(object.desc()));
+        if (!content || !state || state->state() != rhi::ResourceState::Undefined)
+            return reject("RHI-ORDINARY-TEXTURE-UPLOAD-FRESH-DESTINATION");
+        if (const auto* id = rhi::OriginalCommandStateTransaction::preflightOrdinaryWholeUpload(
+                object, *content, *impl_->retainedResourceStates))
+            return reject(id);
+        impl_->ordinaryTextureUploads.push_back(
+            {binding.commandIndex, binding.packing, *content, *state, {}, {}});
+    }
+    const rhi::OriginalTexturePoolInitializationBudget initialization{
+        2u, true, budget.maxPackedBytes, budget.maxMipMappings};
+    for (auto& upload : impl_->ordinaryTextureUploads) {
+        upload.slice = pool.initializeOriginalTexture(program->originalInputs(),
+            program->originalBudget(),
+            upload.commandIndex,
+            upload.packing,
+            initialization,
+            journal,
+            serial,
+            &device);
+        if (!upload.slice.success)
+            return reject(upload.slice.storageDiagnostic
+                    ? upload.slice.storageDiagnostic
+                    : "RHI-ORDINARY-TEXTURE-UPLOAD-POOL-INITIALIZATION");
+        const auto& object =
+            *upload.packing->originalSource()->originalDestinationLease()->originalObject();
+        const auto native = vulkanRhiNativePayload(object);
+        if (!native)
+            return reject("RHI-ORDINARY-TEXTURE-UPLOAD-DESTINATION-PAYLOAD");
+        for (const auto& mip : upload.packing->packing()->mipLayouts()) {
+            const auto desc = ordinaryPackedMip(mip, object.desc().format);
+            if (!recordValidatedOriginalTextureCopy(upload.slice.buffer,
+                    upload.slice.offsetBytes + mip.packedOffset,
+                    *native,
+                    desc,
+                    diagnostic,
+                    true,
+                    false))
+                return reject(recordingStorageDiagnostic());
+        }
+    }
+    return true;
+}
+
+const char* VulkanRhiNativeCommandPayload::preflightOrdinaryTextureTransition(
+    const rhi::GpuTexture& object,
+    const rhi::ResourceBarrierDesc& desc,
+    std::uint32_t commandIndex) const noexcept
+{
+    if (hasOrdinaryAttachments())
+        return preflightOrdinaryAttachmentTransition(object, desc, commandIndex);
+    if (!hasOrdinaryTextureUploads())
+        return nullptr;
+    if (!object.originalContentExclusive())
+        return nullptr;
+    if (desc.textureSubresources != rhi::defaultTextureSubresourceRange(object.desc()))
+        return "RHI-ORDINARY-TEXTURE-UPLOAD-TRANSITION-RANGE";
+    if (!impl_->retainedResourceStates
+        || !vulkanRhiTextureCanTransition(object, *impl_->retainedResourceStates)
+        || object.state() != desc.before)
+        return "RHI-ORDINARY-TEXTURE-UPLOAD-TRANSITION-STATE";
+    const auto* input =
+        impl_->recordingStorage->originalProgram->originalInputs()->descriptorAt(commandIndex);
+    const auto* expected = input ? std::get_if<rhi::ResourceDependencyArguments>(input) : nullptr;
+    if (!expected || !expected->matches(rhi::CommandUsageKind::TextureBarrier, desc))
+        return "RHI-ORDINARY-TEXTURE-UPLOAD-TRANSITION-JOIN";
+    for (const auto& upload : impl_->ordinaryTextureUploads) {
+        if (upload.packing->originalSource()->originalDestinationLease()->originalObject()
+            != &object)
+            continue;
+        if (upload.pending)
+            return rhi::OriginalCommandStateTransaction::validateOrdinaryWholeUploadPending(
+                object, *impl_->retainedResourceStates, *upload.pending);
+        if (const auto* id = object.validateOriginalCommittedState(upload.initialState))
+            return id;
+        if (!(desc.before == rhi::ResourceState::Undefined
+                && desc.after == rhi::ResourceState::CopyDst
+                && desc.textureSubresources == rhi::defaultTextureSubresourceRange(object.desc())))
+            return "RHI-ORDINARY-TEXTURE-UPLOAD-INITIAL-TRANSITION";
+        return rhi::OriginalCommandStateTransaction::preflightOrdinaryWholeUpload(
+            object, upload.initial, *impl_->retainedResourceStates);
+    }
+    return "RHI-ORDINARY-TEXTURE-UPLOAD-TRANSITION-DESTINATION";
+}
+
+bool VulkanRhiNativeCommandPayload::authorizesOrdinaryTextureTransition(
+    const rhi::GpuTexture& object,
+    const rhi::ResourceBarrierDesc& desc,
+    const core::MutationJournal* journal) const noexcept
+{
+    if (hasOrdinaryAttachments())
+        return journal && journal == impl_->retainedResourceStates.get()
+            && impl_->ordinaryAttachmentClaimed && !validateOrdinaryAttachmentsPending()
+            && !preflightOrdinaryAttachmentTransition(object,
+                desc,
+                static_cast<std::uint32_t>(impl_->ordinaryAttachmentMeter->commandCount()));
+    if (!hasOrdinaryTextureUploads() || !impl_->recording || !journal
+        || journal != impl_->retainedResourceStates.get()
+        || desc.textureSubresources != rhi::defaultTextureSubresourceRange(object.desc()))
+        return false;
+    for (const auto& upload : impl_->ordinaryTextureUploads) {
+        if (upload.packing->originalSource()->originalDestinationLease()->originalObject()
+            != &object)
+            continue;
+        if (upload.pending)
+            return !rhi::OriginalCommandStateTransaction::validateOrdinaryWholeUploadPending(
+                object, *impl_->retainedResourceStates, *upload.pending);
+        return !object.validateOriginalCommittedState(upload.initialState)
+            && desc.before == rhi::ResourceState::Undefined
+            && desc.after == rhi::ResourceState::CopyDst;
+    }
+    return false;
+}
+
+const char* VulkanRhiNativeCommandPayload::recordOrdinaryTextureUpload(
+    std::uint32_t commandIndex, const rhi::UploadTextureDesc& desc) noexcept
+{
+    if (!hasOrdinaryTextureUploads() || !impl_->recording || !impl_->retainedResourceStates)
+        return "RHI-ORDINARY-TEXTURE-UPLOAD-RECORDING-OWNER";
+    for (auto& upload : impl_->ordinaryTextureUploads) {
+        if (upload.commandIndex != commandIndex)
+            continue;
+        const auto& object =
+            *upload.packing->originalSource()->originalDestinationLease()->originalObject();
+        if (upload.pending || desc.destinationTexture != object.id()
+            || !upload.packing->originalInput()->matches(desc))
+            return "RHI-ORDINARY-TEXTURE-UPLOAD-INPUT-JOIN";
+        if (vulkanRhiTextureStateCommitted(object)
+            || !vulkanRhiTextureStateAvailable(
+                object, desc.subresources, impl_->retainedResourceStates.get())
+            || object.state() != rhi::ResourceState::CopyDst)
+            return "RHI-ORDINARY-TEXTURE-UPLOAD-DESTINATION-STATE";
+        if (const auto* id = rhi::OriginalCommandStateTransaction::preflightOrdinaryWholeUpload(
+                object, upload.initial, *impl_->retainedResourceStates))
+            return id;
+        const auto native = vulkanRhiNativePayload(object);
+        core::pmr::String diagnostic;
+        if (!native)
+            return "RHI-ORDINARY-TEXTURE-UPLOAD-DESTINATION-PAYLOAD";
+        for (const auto& mip : upload.packing->packing()->mipLayouts()) {
+            const auto packed = ordinaryPackedMip(mip, object.desc().format);
+            if (!recordValidatedOriginalTextureCopy(upload.slice.buffer,
+                    upload.slice.offsetBytes + mip.packedOffset,
+                    *native,
+                    packed,
+                    diagnostic,
+                    true,
+                    false))
+                return "RHI-ORDINARY-TEXTURE-UPLOAD-NATIVE-PREFLIGHT";
+        }
+        if (const auto* id = rhi::OriginalCommandStateTransaction::proposeOrdinaryWholeUpload(
+                object, upload.initial, *impl_->retainedResourceStates, upload.pending))
+            return id;
+        retainResource(native);
+        for (const auto& mip : upload.packing->packing()->mipLayouts()) {
+            const auto packed = ordinaryPackedMip(mip, object.desc().format);
+            if (!recordValidatedOriginalTextureCopy(upload.slice.buffer,
+                    upload.slice.offsetBytes + mip.packedOffset,
+                    *native,
+                    packed,
+                    diagnostic,
+                    false,
+                    true))
+                return "RHI-ORDINARY-TEXTURE-UPLOAD-NATIVE-EMISSION";
+        }
+        return nullptr;
+    }
+    return "RHI-ORDINARY-TEXTURE-UPLOAD-ORDINAL";
+}
+
 bool VulkanRhiNativeCommandPayload::recordUploadStagingTextureCopy(VkBuffer stagingBuffer,
     std::uint64_t stagingOffsetBytes,
     const VulkanRhiNativeResourcePayload& destination,
     const rhi::UploadTextureDesc& desc,
     std::pmr::string& diagnostics)
 {
+    if (recordingStorageBound()) {
+        rejectRecordingStorage(VulkanRhiRecordingStorageLimits::unsupportedStagingPoolDiagnostic());
+        diagnostics.clear();
+        return false;
+    }
     if (impl_ && impl_->conformanceClear)
         return impl_->conformanceClear->reject(diagnostics);
     if (destination.backendVulkanOriginalContentExclusive()) {
@@ -1854,28 +2358,45 @@ bool VulkanRhiNativeCommandPayload::recordValidatedOriginalTextureCopy(VkBuffer 
     std::uint64_t stagingOffsetBytes,
     const VulkanRhiNativeResourcePayload& destination,
     const rhi::UploadTextureDesc& desc,
-    core::pmr::String& diagnostics)
+    core::pmr::String& diagnostics,
+    bool coldPreflight,
+    bool coldEmission)
 {
-    if (impl_ && impl_->conformanceClear)
-        return impl_->conformanceClear->reject(diagnostics);
-    if (!impl_ || !impl_->recording) {
-        diagnostics = "Vulkan RHI native command buffer is not recording";
+    const auto rejectCopy = [&](const char* text) {
+        if (coldPreflight || coldEmission) {
+            rejectRecordingStorage("RHI-ORDINARY-TEXTURE-UPLOAD-NATIVE-COPY");
+            diagnostics.clear();
+        } else {
+            diagnostics = text;
+        }
         return false;
+    };
+    if (recordingStorageBound() && !coldPreflight && !coldEmission) {
+        rejectRecordingStorage(VulkanRhiRecordingStorageLimits::unsupportedStagingPoolDiagnostic());
+        diagnostics.clear();
+        return false;
+    }
+    if (impl_ && impl_->conformanceClear) {
+        if (coldPreflight || coldEmission)
+            return rejectCopy("Original upload cannot use conformance-clear recording");
+        return impl_->conformanceClear->reject(diagnostics);
+    }
+    if (!impl_ || !impl_->recording) {
+        return rejectCopy("Vulkan RHI native command buffer is not recording");
     }
     if (desc.pixelDataSize == 0 || desc.extent.width == 0 || desc.extent.height == 0
         || desc.extent.depth == 0) {
-        diagnostics = "Vulkan RHI native texture upload requires non-zero data and extent";
-        return false;
+        return rejectCopy("Vulkan RHI native texture upload requires non-zero data and extent");
     }
     if (desc.bytesPerRow == 0 || desc.rowsPerImage == 0) {
-        diagnostics = "Vulkan RHI native texture upload requires explicit row/slice pitch";
-        return false;
+        return rejectCopy("Vulkan RHI native texture upload requires explicit row/slice pitch");
     }
     if ((desc.bytesPerRow % 256u) != 0u) {
-        diagnostics = "Vulkan RHI native texture upload row pitch must be 256-byte aligned";
-        return false;
+        return rejectCopy("Vulkan RHI native texture upload row pitch must be 256-byte aligned");
     }
     if (impl_->device.syntheticRuntime()) {
+        if (coldPreflight || coldEmission)
+            return rejectCopy("Original upload requires a genuine native runtime");
         if (impl_->stats) {
             ++impl_->stats->nativeCommandBufferRecordCount;
             ++impl_->stats->nativeBufferToImageCopyRecordCount;
@@ -1884,9 +2405,8 @@ bool VulkanRhiNativeCommandPayload::recordValidatedOriginalTextureCopy(VkBuffer 
     }
     const auto destinationHandle = destination.backendVulkanImageHandle();
     if (!stagingBuffer || !destinationHandle) {
-        diagnostics =
-            "Vulkan RHI native texture upload requires staging buffer and destination texture";
-        return false;
+        return rejectCopy(
+            "Vulkan RHI native texture upload requires staging buffer and destination texture");
     }
     const auto vkFormat = destination.backendVulkanImageFormat();
     // Block-compressed formats (BC1/BC3/BC7) require block-aware copy math:
@@ -1899,28 +2419,24 @@ bool VulkanRhiNativeCommandPayload::recordValidatedOriginalTextureCopy(VkBuffer 
     if (blockCompressed) {
         rowLengthTexels = vulkanBlockRowLengthTexels(desc.bytesPerRow, vkFormat);
         if (rowLengthTexels == 0u) {
-            diagnostics =
-                "Vulkan RHI native BC texture upload requires bytesPerRow aligned to block size";
-            return false;
+            return rejectCopy(
+                "Vulkan RHI native BC texture upload requires bytesPerRow aligned to block size");
         }
     } else {
         const auto texelBytes = bytesPerPixelForVulkanCopy(vkFormat);
         if (texelBytes == 0u) {
-            diagnostics = "Vulkan RHI native texture upload requires known texture format";
-            return false;
+            return rejectCopy("Vulkan RHI native texture upload requires known texture format");
         }
         if (desc.bytesPerRow % texelBytes != 0u) {
-            diagnostics =
-                "Vulkan RHI native texture upload requires bytesPerRow aligned to texel size";
-            return false;
+            return rejectCopy(
+                "Vulkan RHI native texture upload requires bytesPerRow aligned to texel size");
         }
         rowLengthTexels = desc.bytesPerRow / texelBytes;
     }
     auto* cmdCopyBufferToImage = functionFrom<PFN_vkCmdCopyBufferToImage>(
         impl_->device.getDeviceProcAddr("vkCmdCopyBufferToImage"));
     if (!cmdCopyBufferToImage) {
-        diagnostics = "Vulkan RHI native command buffer missing vkCmdCopyBufferToImage";
-        return false;
+        return rejectCopy("Vulkan RHI native command buffer missing vkCmdCopyBufferToImage");
     }
     VkBufferImageCopy region{};
     region.bufferOffset = stagingOffsetBytes;
@@ -1945,6 +2461,8 @@ bool VulkanRhiNativeCommandPayload::recordValidatedOriginalTextureCopy(VkBuffer 
         static_cast<std::int32_t>(desc.destinationOffset.depth),
     };
     region.imageExtent = vulkanImageCopyExtent(desc.extent, desc.subresources);
+    if (coldPreflight)
+        return true;
     cmdCopyBufferToImage(impl_->commandBuffer,
         stagingBuffer,
         destinationHandle,
@@ -2050,9 +2568,19 @@ bool VulkanRhiNativeCommandPayload::recordImageToBufferCopy(
     const rhi::TextureToBufferCopyDesc& desc,
     std::pmr::string& diagnostics)
 {
+    return recordImageToBufferCopyImpl(source, destination, desc, diagnostics, false);
+}
+
+bool VulkanRhiNativeCommandPayload::recordImageToBufferCopyImpl(
+    const VulkanRhiNativeResourcePayload& source,
+    const VulkanRhiNativeResourcePayload& destination,
+    const rhi::TextureToBufferCopyDesc& desc,
+    core::pmr::String& diagnostics,
+    bool validatedOriginal)
+{
     if (impl_ && impl_->conformanceClear && !impl_->conformanceClear->internalCopy_)
         return impl_->conformanceClear->reject(diagnostics);
-    if (source.backendVulkanOriginalContentExclusive()) {
+    if (source.backendVulkanOriginalContentExclusive() && !validatedOriginal) {
         diagnostics = "RHI-TEXTURE-CONTENT-EXCLUSIVE-USE";
         return false;
     }
@@ -2441,6 +2969,11 @@ bool VulkanRhiNativeCommandPayload::recordDispatchIndirect(
 bool VulkanRhiNativeCommandPayload::recordPushDebugGroup(
     std::string_view label, std::pmr::string& diagnostics)
 {
+    if (recordingStorageBound()) {
+        rejectRecordingStorage(VulkanRhiRecordingStorageLimits::unsupportedDebugLabelDiagnostic());
+        diagnostics.clear();
+        return false;
+    }
     if (!impl_ || !impl_->recording) {
         diagnostics = "Vulkan RHI native command buffer not recording";
         return false;
@@ -2459,6 +2992,11 @@ bool VulkanRhiNativeCommandPayload::recordPushDebugGroup(
 
 bool VulkanRhiNativeCommandPayload::recordPopDebugGroup(std::pmr::string& diagnostics)
 {
+    if (recordingStorageBound()) {
+        rejectRecordingStorage(VulkanRhiRecordingStorageLimits::unsupportedDebugLabelDiagnostic());
+        diagnostics.clear();
+        return false;
+    }
     if (!impl_ || !impl_->recording) {
         diagnostics = "Vulkan RHI native command buffer not recording";
         return false;
@@ -2475,6 +3013,11 @@ bool VulkanRhiNativeCommandPayload::recordPopDebugGroup(std::pmr::string& diagno
 bool VulkanRhiNativeCommandPayload::recordInsertDebugMarker(
     std::string_view label, std::pmr::string& diagnostics)
 {
+    if (recordingStorageBound()) {
+        rejectRecordingStorage(VulkanRhiRecordingStorageLimits::unsupportedDebugLabelDiagnostic());
+        diagnostics.clear();
+        return false;
+    }
     if (!impl_ || !impl_->recording) {
         diagnostics = "Vulkan RHI native command buffer not recording";
         return false;
@@ -2491,9 +3034,182 @@ bool VulkanRhiNativeCommandPayload::recordInsertDebugMarker(
     return true;
 }
 
+bool VulkanRhiNativeCommandPayload::adoptOriginalStreamJournal(
+    core::UniquePtr<core::MutationJournal>& journal, core::pmr::String& diagnostic)
+{
+    if (!impl_ || !impl_->recordingStorage || !impl_->recordingStorage->originalProgram
+        || impl_->recordingStorage->originalQueries || !journal || !journal->empty()
+        || impl_->retainedResourceStates || impl_->ordinaryJournalAliased) {
+        diagnostic = "RHI-VULKAN-ORIGINAL-STREAM-JOURNAL";
+        return false;
+    }
+    if (const auto* id = impl_->recordingStorage->diagnostic()) {
+        diagnostic = id;
+        return false;
+    }
+    if (!prepareOriginalSubmissionFence(diagnostic))
+        return false;
+    impl_->retainedResourceStates = std::move(journal);
+    impl_->ordinaryJournalAliased = true;
+    return true;
+}
+
+bool VulkanRhiNativeCommandPayload::adoptOriginalQueryJournal(
+    core::UniquePtr<core::MutationJournal>& journal,
+    std::uint64_t identity,
+    const rhi::semantics::NativeCommandLoweringDecision& approved,
+    core::pmr::String& diagnostic)
+{
+    if (!impl_ || !impl_->recordingStorage || !impl_->recordingStorage->originalQueries || !identity
+        || !journal || !journal->empty() || impl_->retainedResourceStates
+        || impl_->originalQueryRecordingIdentity) {
+        diagnostic = "RHI-VULKAN-ORIGINAL-QUERY-JOURNAL";
+        return false;
+    }
+    const auto& query = *impl_->recordingStorage->originalQueries;
+    const auto use = rhi::semantics::validateNativeCommandLoweringUse(approved,
+        rhi::semantics::NativeCommandSemantic::VulkanTimestampQuery,
+        rhi::FallbackMode::Native,
+        "original query journal");
+    if (!use.success) {
+        diagnostic = use.diagnostics;
+        return false;
+    }
+    const auto lowering = rhi::semantics::QueryLowering::originalRecording(
+        rhi::Backend::Vulkan, query.recordingContractVersion, query.recordingOptIn);
+    if (!lowering.privateRecordingAvailable || lowering.diagnostic) {
+        diagnostic = lowering.diagnostic;
+        return false;
+    }
+    const char* id = nullptr;
+    auto meter = rhi::CommandRecordingMeter::prepare(query.commandBudget, id);
+    if (!meter) {
+        diagnostic = id;
+        return false;
+    }
+    if (const auto* error = originalQuerySlotDiagnostic()) {
+        diagnostic = error;
+        return false;
+    }
+    if (!prepareOriginalSubmissionFence(diagnostic))
+        return false;
+    impl_->originalQueryMeter = std::move(meter);
+    impl_->retainedResourceStates = std::move(journal);
+    impl_->ordinaryJournalAliased = true;
+    impl_->originalQueryRecordingIdentity = identity;
+    impl_->originalQueryFallback = approved.fallbackMode;
+    return true;
+}
+
+const char* VulkanRhiNativeCommandPayload::recordOriginalTimestamp(const rhi::QueryPool& pool,
+    std::uint32_t index,
+    std::uint32_t ordinal,
+    std::uint64_t identity) noexcept
+{
+    if (impl_ && !impl_->originalQueryRecordingIdentity && recordingStorageBound())
+        return "RHI-VULKAN-COLD-QUERY-STORAGE-UNAVAILABLE";
+    if (!impl_ || !impl_->recording || !identity
+        || identity != impl_->originalQueryRecordingIdentity || !impl_->retainedResourceStates
+        || !impl_->recordingRetention || !impl_->originalQueryMeter
+        || impl_->originalQueryFallback != rhi::FallbackMode::Native)
+        return "RHI-VULKAN-ORIGINAL-QUERY-JOURNAL";
+    if (const auto* id = recordingStorageDiagnostic())
+        return id;
+    if (ordinal == UINT32_MAX)
+        return "RHI-VULKAN-ORIGINAL-QUERY-ORDINAL";
+    const auto& config = *impl_->recordingStorage->originalQueries;
+    if (const auto* id = rhi::OriginalCommandInputs::validateOriginal(config.inputs))
+        return id;
+    if (impl_->recordingRetention->quota()->limitBytes() != config.budget.maxCpuMetadataBytes)
+        return "RHI-COMMAND-RETENTION-CPU-QUOTA-MISMATCH";
+    const auto* descriptor = config.inputs->descriptorAt(ordinal);
+    const auto* binding =
+        descriptor ? std::get_if<rhi::OriginalCommandQueryBinding>(descriptor) : nullptr;
+    if (!binding || binding->kind() != rhi::CommandUsageKind::Timestamp
+        || binding->original.scalar().get<rhi::CommandScalarArguments::Query>()->index != index)
+        return "RHI-VULKAN-ORIGINAL-QUERY-ORDINAL";
+    const auto& sources =
+        config.inputs->originalScalars()->originalUsage()->originalSources()->sources();
+    const auto& source = std::get<std::shared_ptr<const rhi::OriginalCommandQueryPoolSource>>(
+        sources[binding->sourceIndex]);
+    const auto* nativePool = asVulkanRhiQueryPool(pool);
+    if (source->originalObject() != &pool || !nativePool || !nativePool->payload()
+        || !nativePool->payload()->belongsTo(impl_->device))
+        return "RHI-VULKAN-ORIGINAL-QUERY-POOL";
+    if (const auto* id = nativePool->validateOriginalInput(binding->original))
+        return id;
+    auto* prepared = static_cast<Impl::RecordedTimestampQuery*>(nullptr);
+    for (auto& query : impl_->recordedTimestampQueries)
+        if (query.commandOrdinal == ordinal) {
+            prepared = &query;
+            break;
+        }
+    if (!prepared || prepared->recorded || !prepared->originalSlot
+        || prepared->pool != nativePool->payload() || prepared->queryIndex != index)
+        return "RHI-VULKAN-ORIGINAL-QUERY-RECORD";
+    rhi::CommandRecordingUsage increment;
+    increment.append(rhi::CommandUsageKind::Timestamp);
+    increment.resourceReferences = 1u;
+    if (const auto* id = impl_->originalQueryMeter->preflight(increment))
+        return id;
+    const rhi::common::CommandRetainedQueryRecord record{prepared->pool, index};
+    if (const auto* id = impl_->recordingRetention->preflightTimestamp(record))
+        return id;
+    bool retained = false;
+    for (const auto& owner : impl_->retainedTimingPools)
+        retained = retained || owner == prepared->pool;
+    if (!retained && impl_->retainedTimingPools.size() == impl_->retainedTimingPools.capacity())
+        return "RHI-VULKAN-COLD-QUERY-POOL-CAPACITY";
+    if (const auto* id = impl_->device.timestampQueryDiagnostic())
+        return id;
+    const auto write = functionFrom<PFN_vkCmdWriteTimestamp>(
+        impl_->device.getDeviceProcAddr("vkCmdWriteTimestamp"));
+    if (!write)
+        return "RHI-VULKAN-TIMESTAMP-ENTRYPOINTS";
+    // The slot rechecks its original epoch under its lock before the first
+    // mutation. The common/native arrays are private to this serialized owner;
+    // their successfully preflighted commits cannot allocate or change mapping.
+    if (const auto* id = prepared->pool->declareRecorded(
+            *prepared->originalSlot, *impl_->retainedResourceStates))
+        return id;
+    (void)impl_->recordingRetention->admitTimestamp(record);
+    (void)impl_->originalQueryMeter->consume(increment);
+    if (!retained)
+        impl_->retainedTimingPools.push_back(prepared->pool);
+    prepared->recorded = true;
+    write(impl_->commandBuffer,
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        nativePool->nativeHandle(),
+        index);
+    if (impl_->stats)
+        ++impl_->stats->nativeCommandBufferRecordCount;
+    return nullptr;
+}
+
+const char* VulkanRhiNativeCommandPayload::sealOriginalQueries(std::uint32_t commandCount) noexcept
+{
+    if (!impl_ || !impl_->originalQueryRecordingIdentity)
+        return nullptr;
+    const auto& inputs = *impl_->recordingStorage->originalQueries->inputs;
+    if (commandCount == UINT32_MAX
+        || inputs.originalScalars()->originalUsage()->commands().size() != commandCount + 1u)
+        return "RHI-VULKAN-ORIGINAL-QUERY-FINISH-ORDINAL";
+    for (const auto& query : impl_->recordedTimestampQueries)
+        if (!query.recorded)
+            return "RHI-VULKAN-ORIGINAL-QUERY-INCOMPLETE";
+    return impl_->recordingRetention->sealForSubmission()
+        ? nullptr
+        : "RHI-COMMAND-RETENTION-RECORDING-CLOSED";
+}
+
 bool VulkanRhiNativeCommandPayload::recordTimestamp(
     const rhi::QueryPool& queryPool, const std::uint32_t queryIndex, std::pmr::string& diagnostics)
 {
+    if (recordingStorageBound()) {
+        rejectRecordingStorage("RHI-VULKAN-COLD-QUERY-STORAGE-UNAVAILABLE");
+        diagnostics = recordingStorageDiagnostic();
+        return false;
+    }
     if (impl_ && impl_->conformanceClear)
         return impl_->conformanceClear->reject(diagnostics);
     if (!impl_ || !impl_->recording) {
@@ -2501,8 +3217,14 @@ bool VulkanRhiNativeCommandPayload::recordTimestamp(
         return false;
     }
     const auto* nativePool = asVulkanRhiQueryPool(queryPool);
-    if (!nativePool || queryIndex >= nativePool->count()) {
+    if (!nativePool || queryIndex >= nativePool->count() || !nativePool->payload()
+        || !nativePool->payload()->belongsTo(impl_->device)
+        || nativePool->nativeHandle() == VK_NULL_HANDLE) {
         diagnostics = "Vulkan timestamp write received an incompatible query pool or index";
+        return false;
+    }
+    if (const auto* id = impl_->device.timestampQueryDiagnostic()) {
+        diagnostics = id;
         return false;
     }
     const auto write = functionFrom<PFN_vkCmdWriteTimestamp>(
@@ -2511,24 +3233,60 @@ bool VulkanRhiNativeCommandPayload::recordTimestamp(
         diagnostics = "Vulkan timestamp write entrypoint is unavailable";
         return false;
     }
-    if (!nativePool->payload() || !nativePool->payload()->markRecorded(queryIndex, diagnostics)) {
+    // Ordinary metadata is still unbounded. Reserve before changing query
+    // state; a failed allocation must not leave a Recorded slot without work.
+    try {
+        impl_->retainedTimingPools.reserve(impl_->retainedTimingPools.size() + 1u);
+        impl_->recordedTimestampQueries.reserve(impl_->recordedTimestampQueries.size() + 1u);
+    } catch (const std::bad_alloc&) {
+        diagnostics = "RHI-VULKAN-TIMESTAMP-RECORD-ALLOCATION-FAILED";
+        return false;
+    } catch (const std::length_error&) {
+        diagnostics = "RHI-VULKAN-TIMESTAMP-RECORD-LENGTH-INVALID";
+        return false;
+    }
+    if (!nativePool->payload()->markRecorded(queryIndex, diagnostics)) {
         return false;
     }
     const auto nativeHandle = nativePool->nativeHandle();
     retainTimingQueryPool(nativePool->payload());
-    impl_->recordedTimestampQueries.push_back({nativePool->payload(), queryIndex});
+    impl_->recordedTimestampQueries.push_back({nativePool->payload(), queryIndex, {}, true});
     write(impl_->commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, nativeHandle, queryIndex);
     return true;
 }
 
 bool VulkanRhiNativeCommandPayload::end(std::pmr::string& diagnostics)
 {
+    const auto refuseProfiling = [&](const char* id) {
+        if (impl_ && impl_->internalProfiling) {
+            impl_->internalTimingFailure = id;
+            rejectRecordingStorage(id);
+        } else {
+            diagnostics = id;
+        }
+        return false;
+    };
+    if (const auto* id = recordingStorageDiagnostic()) {
+        diagnostics = id;
+        return false;
+    }
     if (!impl_) {
         diagnostics = "Vulkan RHI native command buffer payload is missing";
         return false;
     }
     if (impl_->ended) {
         return true;
+    }
+    if (hasOrdinaryAttachments() && !impl_->ordinaryAttachmentSealed) {
+        rejectRecordingStorage("RHI-ORDINARY-ATTACHMENT-RECORDING-INCOMPLETE");
+        return false;
+    }
+    for (const auto& upload : impl_->ordinaryTextureUploads) {
+        if (!upload.pending) {
+            rejectRecordingStorage("RHI-ORDINARY-TEXTURE-UPLOAD-INCOMPLETE");
+            diagnostics.clear();
+            return false;
+        }
     }
     if (!impl_->leasedBindlessFaultLatches.empty()) {
         diagnostics = "RHI-VULKAN-BINDLESS-FAULT-LEASE-READBACK-MISSING";
@@ -2545,20 +3303,29 @@ bool VulkanRhiNativeCommandPayload::end(std::pmr::string& diagnostics)
         }
         return true;
     }
+    auto* endCommandBuffer =
+        functionFrom<PFN_vkEndCommandBuffer>(impl_->device.getDeviceProcAddr("vkEndCommandBuffer"));
+    if (!endCommandBuffer) {
+        if (impl_->internalProfiling)
+            return refuseProfiling("RHI-VULKAN-COMMAND-END-ENTRYPOINT");
+        diagnostics = "Vulkan RHI native command buffer missing vkEndCommandBuffer";
+        return false;
+    }
     if (impl_->timestampQueryPool) {
+        if (impl_->internalProfiling) {
+            if (const auto* id = impl_->device.timestampQueryDiagnostic()) {
+                return refuseProfiling(id);
+            }
+        }
         if (auto* writeTimestamp = functionFrom<PFN_vkCmdWriteTimestamp>(
                 impl_->device.getDeviceProcAddr("vkCmdWriteTimestamp"))) {
             writeTimestamp(impl_->commandBuffer,
                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                 impl_->timestampQueryPool,
                 1u);
+        } else if (impl_->internalProfiling) {
+            return refuseProfiling("RHI-VULKAN-TIMESTAMP-ENTRYPOINTS");
         }
-    }
-    auto* endCommandBuffer =
-        functionFrom<PFN_vkEndCommandBuffer>(impl_->device.getDeviceProcAddr("vkEndCommandBuffer"));
-    if (!endCommandBuffer) {
-        diagnostics = "Vulkan RHI native command buffer missing vkEndCommandBuffer";
-        return false;
     }
     if (impl_->bindlessFaultPreamble) {
         const auto preambleEnded = endCommandBuffer(impl_->bindlessFaultPreamble);
@@ -2571,6 +3338,12 @@ bool VulkanRhiNativeCommandPayload::end(std::pmr::string& diagnostics)
     }
     const auto ended = endCommandBuffer(impl_->commandBuffer);
     if (ended != VK_SUCCESS) {
+        if (impl_->internalProfiling) {
+            impl_->device.captureOriginalDeviceLoss(ended);
+            return refuseProfiling(ended == VK_ERROR_DEVICE_LOST
+                    ? "RHI-COMMAND-PROFILING-END-DEVICE-LOST"
+                    : "RHI-COMMAND-PROFILING-END-FAILED");
+        }
         diagnostics = vkFailure("vkEndCommandBuffer", ended);
         return false;
     }
@@ -2631,6 +3404,10 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
         diagnostics = "Vulkan RHI native command buffer was already submitted";
         return false;
     }
+    if (impl_->internalProfiling && !impl_->frameSerial) {
+        diagnostics = "RHI-COMMAND-PROFILING-FRAME-SERIAL";
+        return false;
+    }
     if (impl_->recordingRetention) {
         const auto& storage = *impl_->recordingRetention;
         if (storage.quota()->limitBytes() != storage.budget().maxCpuMetadataBytes) {
@@ -2643,6 +3420,27 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
         }
         if (!impl_->retainedResourceStates || !impl_->retainedResourceStates->canInvalidate()) {
             diagnostics = "RHI-VULKAN-RETENTION-STATE-INVALIDATION-MISSING";
+            return false;
+        }
+    }
+    if (impl_->ordinaryJournalAliased
+        && (!impl_->retainedResourceStates || !impl_->retainedResourceStates->canInvalidate())) {
+        diagnostics = "RHI-VULKAN-RETENTION-STATE-INVALIDATION-MISSING";
+        return false;
+    }
+    if (const auto* id = validateOrdinaryAttachmentsPending()) {
+        diagnostics = id;
+        return false;
+    }
+    for (const auto& upload : impl_->ordinaryTextureUploads) {
+        const auto& object =
+            *upload.packing->originalSource()->originalDestinationLease()->originalObject();
+        const auto* id = upload.pending
+            ? rhi::OriginalCommandStateTransaction::validateOrdinaryWholeUploadPending(
+                  object, *impl_->retainedResourceStates, *upload.pending)
+            : "RHI-ORDINARY-TEXTURE-UPLOAD-CONTENT-PENDING";
+        if (id) {
+            diagnostics = id;
             return false;
         }
     }
@@ -2666,7 +3464,12 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
     }
     if (impl_->device.syntheticRuntime()) {
         for (const auto& query : impl_->recordedTimestampQueries) {
-            if (!query.pool || !query.pool->markSubmitted(query.queryIndex, diagnostics)) {
+            if (!query.recorded)
+                continue;
+            if (!query.pool
+                || !query.pool->markSubmitted(query.queryIndex,
+                    diagnostics,
+                    query.originalSlot ? impl_->retainedResourceStates.get() : nullptr)) {
                 return false;
             }
         }
@@ -2755,32 +3558,51 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
         submitInfo.pNext = &timelineInfo;
     }
     std::size_t submittedQueryCount = 0u;
+    const auto cancelUninvokedQueries = [&]() {
+        std::size_t remaining = submittedQueryCount;
+        for (const auto& query : impl_->recordedTimestampQueries) {
+            if (!query.recorded)
+                continue;
+            if (!remaining)
+                break;
+            --remaining;
+            if (query.pool)
+                (void)query.pool->rollbackSubmitted(query.queryIndex,
+                    diagnostics,
+                    query.originalSlot ? impl_->retainedResourceStates.get() : nullptr);
+        }
+    };
     for (const auto& query : impl_->recordedTimestampQueries) {
-        if (!query.pool || !query.pool->markSubmitted(query.queryIndex, diagnostics)) {
-            for (std::size_t index = 0; index < submittedQueryCount; ++index) {
-                const auto& submittedQuery = impl_->recordedTimestampQueries[index];
-                if (submittedQuery.pool) {
-                    submittedQuery.pool->rollbackSubmitted(submittedQuery.queryIndex, diagnostics);
-                }
-            }
+        if (!query.recorded)
+            continue;
+        if (!query.pool
+            || !query.pool->markSubmitted(query.queryIndex,
+                diagnostics,
+                query.originalSlot ? impl_->retainedResourceStates.get() : nullptr)) {
+            cancelUninvokedQueries();
             return false;
         }
         ++submittedQueryCount;
     }
     if (impl_->originalBindlessCustody
-        && !impl_->originalBindlessCustody->beforeSubmit(*this, diagnostics))
+        && !impl_->originalBindlessCustody->beforeSubmit(*this, diagnostics)) {
+        cancelUninvokedQueries();
         return false;
-    // Reserve native retirement BEFORE queue invocation for canonical custody.
-    // Queue failure is not proof of non-execution and must never roll back.
+    }
+    // Reserve native retirement BEFORE queue invocation for canonical custody
+    // and authored timestamp queries. An invoked error is unproven execution.
     const bool retainBeforeInvocation = impl_->originalBindlessCustody || impl_->recordingRetention
-        || hasTimelineWait || hasTimelineSignal;
+        || impl_->ordinaryJournalAliased || impl_->internalProfiling || hasTimelineWait
+        || hasTimelineSignal || impl_->hasRecordedTimestampQueries();
     if (retainBeforeInvocation
         && !retainSubmittedCommandForAsyncRetirement(shared_from_this(), diagnostics)) {
+        cancelUninvokedQueries();
         return false;
     }
     if (impl_->originalBindlessCustody) {
         if (const auto* id = impl_->originalBindlessCustody->maySubmit()) {
             diagnostics = id;
+            cancelUninvokedQueries();
             return false;
         }
     }
@@ -2791,19 +3613,25 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
         queueSubmit(impl_->device.graphicsQueue(), 1, &submitInfo, impl_->submitFence);
     impl_->device.captureOriginalDeviceLoss(submitted);
     if (submitted != VK_SUCCESS) {
-        if (impl_->retainedResourceStates)
-            (void)impl_->retainedResourceStates->invalidate();
         if (retainBeforeInvocation) {
             impl_->submitted = true;
             impl_->originalSubmissionUnproven = true;
             if (impl_->originalBindlessCustody)
                 impl_->originalBindlessCustody->submissionUnproven(*this);
         }
+        if (impl_->internalProfiling)
+            impl_->internalTimingFailure = "RHI-COMMAND-PROFILING-SUBMISSION-UNPROVEN";
         for (const auto& query : impl_->recordedTimestampQueries) {
-            if (query.pool) {
-                query.pool->rollbackSubmitted(query.queryIndex, diagnostics);
+            if (query.recorded && query.pool) {
+                if (query.originalSlot)
+                    (void)query.pool->markSubmissionUnproven(
+                        query.queryIndex, impl_->retainedResourceStates.get());
+                else
+                    (void)query.pool->markSubmissionUnproven(query.queryIndex);
             }
         }
+        if (impl_->retainedResourceStates)
+            (void)impl_->retainedResourceStates->invalidate();
         if (impl_->originalBindlessCustody)
             diagnostics = submitted == VK_ERROR_DEVICE_LOST
                 ? "RHI-VULKAN-ROOT-FENCE-SUBMIT-DEVICE-LOST"
@@ -2812,16 +3640,24 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
             diagnostics = submitted == VK_ERROR_DEVICE_LOST
                 ? "RHI-VULKAN-RETENTION-SUBMIT-DEVICE-LOST"
                 : "RHI-VULKAN-RETENTION-SUBMIT-UNPROVEN";
+        else if (impl_->recordingStorage && impl_->recordingStorage->originalProgram)
+            diagnostics = submitted == VK_ERROR_DEVICE_LOST
+                ? "RHI-VULKAN-ORIGINAL-STREAM-SUBMIT-DEVICE-LOST"
+                : "RHI-VULKAN-ORIGINAL-STREAM-SUBMIT-UNPROVEN";
         else if (hasTimelineWait || hasTimelineSignal)
             diagnostics = submitted == VK_ERROR_DEVICE_LOST
                 ? "RHI-VULKAN-TIMELINE-SUBMIT-DEVICE-LOST"
                 : "RHI-VULKAN-TIMELINE-SUBMIT-UNPROVEN";
+        else if (impl_->hasRecordedTimestampQueries())
+            diagnostics = submitted == VK_ERROR_DEVICE_LOST ? "RHI-VULKAN-QUERY-SUBMIT-DEVICE-LOST"
+                                                            : "RHI-VULKAN-QUERY-SUBMIT-UNPROVEN";
         else
             diagnostics = vkFailure("vkQueueSubmit", submitted);
         return false;
     }
     impl_->submitted = true;
-    if (impl_->retainedResourceStates)
+    if (impl_->retainedResourceStates && impl_->ordinaryTextureUploads.empty()
+        && !hasOrdinaryAttachments())
         impl_->retainedResourceStates->commit();
     if (acceptedThisAttempt)
         *acceptedThisAttempt = true;
@@ -2916,6 +3752,60 @@ VulkanRhiRetainedCommand::retentionStorage() const noexcept
     return command_->impl_->recordingRetention.get();
 }
 
+bool VulkanRhiRetainedCommand::enableRecordingBudget(
+    const rhi::CommandRecordingBudget& budget, core::pmr::String& diagnostic)
+{
+    if (!validateRecording(diagnostic))
+        return false;
+    if (recordingMeter_ || retentionStorage()->resourceOwnerCount()
+        || preparedPassTarget_.isValid()) {
+        diagnostic = "RHI-COMMAND-RECORDING-BUDGET-PREPARATION-STATE";
+        return false;
+    }
+    const auto decision =
+        rhi::CommandRecordingBudgetContract::lowering(rhi::Backend::Vulkan, budget);
+    if (!decision.privateRecordingAvailable) {
+        diagnostic = decision.diagnostic;
+        return false;
+    }
+    const char* id = nullptr;
+    recordingMeter_ = rhi::CommandRecordingMeter::prepare(budget, id);
+    if (!recordingMeter_) {
+        diagnostic = id;
+        return false;
+    }
+    diagnostic.clear();
+    return true;
+}
+
+const rhi::CommandRecordingUsage* VulkanRhiRetainedCommand::recordingUsage() const noexcept
+{
+    return recordingMeter_ ? &recordingMeter_->used() : nullptr;
+}
+
+bool VulkanRhiRetainedCommand::preflightRecordingCharge(
+    const rhi::CommandRecordingUsage& usage, core::pmr::String& diagnostic) const
+{
+    if (recordingMeter_)
+        if (const auto* id = recordingMeter_->preflight(usage)) {
+            diagnostic = id;
+            return false;
+        }
+    return true;
+}
+
+bool VulkanRhiRetainedCommand::commitRecordingCharge(
+    const rhi::CommandRecordingUsage& usage, core::pmr::String& diagnostic)
+{
+    if (recordingMeter_)
+        if (const auto* id = recordingMeter_->consume(usage)) {
+            failed_ = true;
+            diagnostic = id;
+            return false;
+        }
+    return true;
+}
+
 bool VulkanRhiRetainedCommand::validateRecording(core::pmr::String& diagnostic) const
 {
     const auto* storage = retentionStorage();
@@ -2995,7 +3885,14 @@ bool VulkanRhiRetainedCommand::copy(const rhi::GpuBuffer& source,
         diagnostic = "RHI-VULKAN-RETENTION-COPY-ENTRYPOINT";
         return false;
     }
+    rhi::CommandRecordingUsage charge;
+    charge.append(rhi::CommandUsageKind::BufferCopy);
+    charge.resourceReferences = 2u;
+    if (!preflightRecordingCharge(charge, diagnostic))
+        return false;
     (void)storage.retainResources(owners, 2u);
+    if (!commitRecordingCharge(charge, diagnostic))
+        return false;
     if (!command_->recordBufferCopy(*src, *dst, desc, diagnostic)) {
         failed_ = true;
         return false;
@@ -3065,7 +3962,14 @@ bool VulkanRhiRetainedCommand::dependency(const rhi::GpuBuffer& buffer,
         diagnostic = "RHI-VULKAN-RETENTION-BARRIER-ENTRYPOINT";
         return false;
     }
+    rhi::CommandRecordingUsage charge;
+    charge.append(rhi::CommandUsageKind::BufferMemoryBarrier);
+    charge.resourceReferences = 1u;
+    if (!preflightRecordingCharge(charge, diagnostic))
+        return false;
     (void)storage.retainResources(owners, 1u);
+    if (!commitRecordingCharge(charge, diagnostic))
+        return false;
     if (!command_->recordResourceMemoryBarrier(desc, diagnostic)
         || !command_->flushPendingBarriers(diagnostic)) {
         failed_ = true;
@@ -3079,11 +3983,17 @@ bool VulkanRhiRetainedCommand::finish(core::pmr::String& diagnostic)
 {
     if (!validateRecording(diagnostic))
         return false;
+    rhi::CommandRecordingUsage charge;
+    charge.append(rhi::CommandUsageKind::Finish);
+    if (!preflightRecordingCharge(charge, diagnostic) || !commitRecordingCharge(charge, diagnostic))
+        return false;
     if (!command_->end(diagnostic)) {
         failed_ = true;
         return false;
     }
     (void)command_->impl_->recordingRetention->sealForSubmission();
+    if (recordingMeter_)
+        recordingMeter_->seal();
     diagnostic.clear();
     return true;
 }
@@ -3109,11 +4019,70 @@ bool VulkanRhiRetainedCommand::waitUntil(
     return command_->waitSubmittedFenceUntil(deadline, diagnostic);
 }
 
+bool VulkanRhiNativeCommandPayload::prepareInternalProfiling(core::pmr::String& diagnostic)
+{
+    if (!impl_ || !impl_->recordingStorage || !impl_->recordingStorage->originalQueries
+        || !impl_->recordingStorage->originalQueries->internalProfilingRequested)
+        return true;
+    const auto& budget = *impl_->recordingStorage->originalQueries->profilingBudget;
+    const auto facts = impl_->device.originalQueryCreationFacts();
+    const auto decision = rhi::CommandProfilingContract::lower(
+        rhi::Backend::Vulkan, budget, facts.vulkanTimestamp, facts.vulkanRuntimeDiagnostic);
+    if (!decision.executable()) {
+        diagnostic = decision.diagnostic;
+        return false;
+    }
+    impl_->internalProfiling = decision;
+    // Initialize the shared publication cache during cold preparation, before
+    // completion can run with exhausted allocation domains.
+    (void)completedGpuTiming();
+    const auto create =
+        functionFrom<PFN_vkCreateQueryPool>(impl_->device.getDeviceProcAddr("vkCreateQueryPool"));
+    if (!create) {
+        diagnostic = "RHI-VULKAN-TIMESTAMP-ENTRYPOINTS";
+        return false;
+    }
+    VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    info.queryCount = rhi::CommandProfilingContract::timestampWrites;
+    const auto result =
+        create(impl_->device.logicalDevice(), &info, nullptr, &impl_->timestampQueryPool);
+    impl_->device.captureOriginalDeviceLoss(result);
+    if (result != VK_SUCCESS || !impl_->timestampQueryPool) {
+        diagnostic = result == VK_ERROR_DEVICE_LOST ? "RHI-COMMAND-PROFILING-CREATE-DEVICE-LOST"
+                                                    : "RHI-COMMAND-PROFILING-CREATE-FAILED";
+        return false;
+    }
+    if (const auto* id = impl_->device.timestampQueryDiagnostic()) {
+        diagnostic = id;
+        return false;
+    }
+    const auto reset =
+        functionFrom<PFN_vkResetQueryPool>(impl_->device.getDeviceProcAddr("vkResetQueryPool"));
+    if (!reset) {
+        diagnostic = "RHI-VULKAN-TIMESTAMP-ENTRYPOINTS";
+        return false;
+    }
+    reset(impl_->device.logicalDevice(),
+        impl_->timestampQueryPool,
+        0u,
+        rhi::CommandProfilingContract::timestampWrites);
+    impl_->timestampPeriodNs = static_cast<float>(decision.timestampPeriodNanoseconds);
+    return true;
+}
+
 std::shared_ptr<VulkanRhiNativeCommandPayload> createVulkanRhiNativeCommandPayload(
     const VulkanRhiNativeResourceAllocator& nativeResources,
     std::pmr::string& diagnostics,
-    const rhi::CommandEncoderDesc& retention)
+    const rhi::CommandEncoderDesc& retention,
+    const VulkanRhiRecordingStorageLimits* storage)
 {
+    if (storage) {
+        if (const auto* id = storage->diagnostic()) {
+            diagnostics = id;
+            return {};
+        }
+    }
     if (retention.retentionBudget) {
         const auto decision = rhi::semantics::CommandRetentionBudgetLowering::plan(
             *retention.retentionBudget, rhi::CommandRetentionCapabilities{});
@@ -3128,19 +4097,100 @@ std::shared_ptr<VulkanRhiNativeCommandPayload> createVulkanRhiNativeCommandPaylo
     }
     auto runtime = nativeResources.runtime();
     const auto& device = *runtime;
+    if (storage && device.syntheticRuntime()) {
+        diagnostics = "RHI-VULKAN-COLD-RECORDING-SYNTHETIC-RUNTIME";
+        return {};
+    }
     // Reserve indexed ownership before creating any Vulkan object. Allocation
     // failure cannot leak a pool and can never trigger a recording-time growth.
     std::shared_ptr<VulkanRhiNativeCommandPayload> payload;
+    std::optional<core::CpuMemoryQuotaScope> queryScope;
     try {
+        core::UniquePtr<rhi::common::CommandRetentionStorage> queryRetention;
+        if (storage && storage->originalQueries) {
+            const auto lowering =
+                rhi::OriginalQueryRecordingStorageContract::lowering(rhi::Backend::Vulkan);
+            if (!lowering.nativeStorageImplemented) {
+                diagnostics = lowering.diagnostic;
+                return {};
+            }
+            const auto& query = *storage->originalQueries;
+            // Revalidate genuine native owners before the first reservation or
+            // command-pool creation. A Source cannot substitute an equal pool.
+            const auto& sources =
+                query.inputs->originalScalars()->originalUsage()->originalSources()->sources();
+            for (const auto& source : sources) {
+                const auto* original =
+                    std::get_if<std::shared_ptr<const rhi::OriginalCommandQueryPoolSource>>(
+                        &source);
+                if (!original)
+                    continue;
+                const auto pool = std::dynamic_pointer_cast<const VulkanRhiQueryPool>(
+                    (*original)->originalPool());
+                if (const auto* id = VulkanRhiQueryPool::validateOriginal(pool, device)) {
+                    diagnostics = id;
+                    return {};
+                }
+            }
+            queryScope.emplace(query.recordingQuota);
+            const char* id = nullptr;
+            queryRetention = rhi::common::CommandRetentionStorage::prepare(
+                query.budget, query.recordingQuota, id);
+            if (!queryRetention) {
+                diagnostics = id;
+                return {};
+            }
+        }
         payload = core::makeShared<VulkanRhiNativeCommandPayload>(
             core::makeUnique<VulkanRhiNativeCommandPayload::Impl>(runtime,
                 nativeResources.allocator(),
                 nativeResources.sharedStats(),
                 VK_NULL_HANDLE,
                 VK_NULL_HANDLE,
-                retention));
+                retention,
+                storage));
+        payload->impl_->recordingRetention = std::move(queryRetention);
+        if (storage && storage->originalQueries) {
+            const auto& inputs = *storage->originalQueries->inputs;
+            const auto& sources =
+                inputs.originalScalars()->originalUsage()->originalSources()->sources();
+            for (const auto& descriptor : inputs.descriptors()) {
+                const auto* binding =
+                    std::get_if<rhi::OriginalCommandQueryBinding>(&descriptor.arguments);
+                if (!binding)
+                    continue;
+                const auto& source =
+                    std::get<std::shared_ptr<const rhi::OriginalCommandQueryPoolSource>>(
+                        sources[binding->sourceIndex]);
+                const auto* pool = asVulkanRhiQueryPool(*source->originalPool());
+                const auto index =
+                    binding->original.scalar().get<rhi::CommandScalarArguments::Query>()->index;
+                const auto observation = pool->payload()->observeSlot(index);
+                if (!observation) {
+                    diagnostics = "RHI-VULKAN-QUERY-SLOT-OBSERVATION";
+                    return {};
+                }
+                if (const auto* id = pool->payload()->preflightRecord(*observation)) {
+                    diagnostics = id;
+                    return {};
+                }
+                // Existing cold-reserved record storage; no second owner graph
+                // or command stream. This observation has recorded no GPU work.
+                payload->impl_->recordedTimestampQueries.push_back(
+                    {pool->payload(), index, *observation, false, descriptor.commandIndex});
+            }
+            if (const auto* id = payload->originalQuerySlotDiagnostic()) {
+                diagnostics = id;
+                return {};
+            }
+        }
     } catch (const std::bad_alloc&) {
-        diagnostics = "RHI-VULKAN-BINDLESS-RETENTION-ALLOCATION-FAILED";
+        diagnostics = storage ? "RHI-VULKAN-COLD-RECORDING-STORAGE-ALLOCATION"
+                              : "RHI-VULKAN-BINDLESS-RETENTION-ALLOCATION-FAILED";
+        return {};
+    } catch (const std::length_error&) {
+        diagnostics = storage ? "RHI-VULKAN-COLD-RECORDING-STORAGE-ALLOCATION"
+                              : "RHI-VULKAN-BINDLESS-RETENTION-ALLOCATION-FAILED";
         return {};
     }
     auto* impl = payload->impl_.get();
@@ -3153,6 +4203,8 @@ std::shared_ptr<VulkanRhiNativeCommandPayload> createVulkanRhiNativeCommandPaylo
         impl->recording = true;
         return payload;
     }
+    if (!payload->prepareInternalProfiling(diagnostics))
+        return {};
     auto* createCommandPool =
         functionFrom<PFN_vkCreateCommandPool>(device.getDeviceProcAddr("vkCreateCommandPool"));
     auto* destroyCommandPool =
@@ -3224,13 +4276,29 @@ std::shared_ptr<VulkanRhiNativeCommandPayload> createVulkanRhiNativeCommandPaylo
     impl->commandPool = commandPool;
     impl->commandBuffer = commandBuffer;
     impl->recording = true;
+    if (impl->internalProfiling) {
+        if (const auto* id = device.timestampQueryDiagnostic()) {
+            diagnostics = id;
+            return {};
+        }
+        const auto write =
+            functionFrom<PFN_vkCmdWriteTimestamp>(device.getDeviceProcAddr("vkCmdWriteTimestamp"));
+        if (!write) {
+            diagnostics = "RHI-VULKAN-TIMESTAMP-ENTRYPOINTS";
+            return {};
+        }
+        write(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, impl->timestampQueryPool, 0u);
+    }
     auto* createQueryPool =
         functionFrom<PFN_vkCreateQueryPool>(device.getDeviceProcAddr("vkCreateQueryPool"));
     auto* resetQueryPool =
         functionFrom<PFN_vkCmdResetQueryPool>(device.getDeviceProcAddr("vkCmdResetQueryPool"));
     auto* writeTimestamp =
         functionFrom<PFN_vkCmdWriteTimestamp>(device.getDeviceProcAddr("vkCmdWriteTimestamp"));
-    if (createQueryPool && resetQueryPool && writeTimestamp) {
+    // Explicit recording-storage admission never inherits legacy profiling.
+    // prepareInternalProfiling is its sole budgeted creation path; original
+    // Program storage must not add an unbudgeted two-timestamp interval.
+    if (!storage && createQueryPool && resetQueryPool && writeTimestamp) {
         VkQueryPoolCreateInfo queryInfo{};
         queryInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
         queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -3262,32 +4330,28 @@ bool recordVulkanRhiNativeCommand(
 rhi::GpuTimingSample latestVulkanRhiGpuTimingSample()
 {
     rhi::GpuTimingSample result;
-    const auto serial = completedGpuTiming().frameSerial.load(std::memory_order_relaxed);
-    if (serial == 0u) {
-        result.availability = rhi::GpuTimingAvailability::Pending;
-        result.diagnostic = "Vulkan timestamp result is pending a completed frame fence";
-        return result;
+    auto& timing = completedGpuTiming();
+    const auto sequence = timing.sequence.load(std::memory_order_acquire);
+    if (!(sequence & 1u)) {
+        result.completedFrameSerial = timing.frameSerial.load(std::memory_order_relaxed);
+        result.availability = timing.availability.load(std::memory_order_relaxed);
+        result.diagnostic = timing.diagnostic.load(std::memory_order_relaxed);
+        result.scopeCount = timing.scopeCount.load(std::memory_order_relaxed);
+        if (result.scopeCount <= rhi::GpuTimingSample::kMaxScopes) {
+            for (std::uint32_t i = 0u; i < result.scopeCount; ++i) {
+                result.scopes[i].scopeId = timing.scopeIds[i].load(std::memory_order_relaxed);
+                result.scopes[i].elapsedMs =
+                    timing.scopeMilliseconds[i].load(std::memory_order_relaxed);
+            }
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (sequence == timing.sequence.load(std::memory_order_relaxed)
+                && result.completedFrameSerial)
+                return result;
+        }
     }
-    result.availability = rhi::GpuTimingAvailability::Available;
-    result.completedFrameSerial = serial;
-    const auto scopeCount = completedGpuTiming().scopeCount.load(std::memory_order_relaxed);
-    result.scopeCount = scopeCount;
-    for (std::uint32_t i = 0; i < scopeCount; ++i) {
-        result.scopes[i].scopeId = completedGpuTiming().scopeIds[i].load(std::memory_order_relaxed);
-        result.scopes[i].elapsedMs =
-            static_cast<float>(
-                completedGpuTiming().scopeNanoseconds[i].load(std::memory_order_relaxed))
-            / 1000000.0f;
-    }
-    if (result.scopeCount == 0u) {
-        result.scopeCount = 1u;
-        result.scopes[0].scopeId = 0u;
-        result.scopes[0].elapsedMs =
-            static_cast<float>(
-                completedGpuTiming().elapsedNanoseconds.load(std::memory_order_relaxed))
-            / 1000000.0f;
-    }
-    result.diagnostic = "Vulkan timestamp query";
+    result = {};
+    result.availability = rhi::GpuTimingAvailability::Pending;
+    result.diagnostic = "RHI-VULKAN-TIMING-PUBLICATION-PENDING";
     return result;
 }
 

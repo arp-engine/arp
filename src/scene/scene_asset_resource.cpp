@@ -62,6 +62,14 @@ bool validate(const Node& root,
 }
 } // namespace
 
+bool SceneDocumentResource::validateDocument(const Node& root,
+    const core::pmr::String& type,
+    const core::pmr::String& id,
+    std::uint32_t maxObjects)
+{
+    return validate(root, type, id, maxObjects);
+}
+
 GameObjectId SceneObjectBindings::object(std::uint64_t local) const
 {
     for (const auto& b : bindings_)
@@ -101,7 +109,9 @@ resource::ResourceLoadResult SceneDocumentResource::load(
     auto fail = [&](const char* d) {
         return resource::resourceLoadFailure(*this, d);
     };
-    auto source = resource::readResourceSource(path_, context, maxBytes_);
+    const auto byteBudget =
+        context.maxDecodedBytes ? std::min(maxBytes_, context.maxDecodedBytes) : maxBytes_;
+    auto source = resource::readResourceSource(path_, context, byteBudget);
     if (!source.success)
         return fail(source.diagnostics.c_str());
     try {

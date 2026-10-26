@@ -105,6 +105,8 @@ public:
                         return inspectBuffer(value->originalDestinationLease()->layout(), result);
                     } else if constexpr (std::is_same_v<T, OriginalCommandSamplerLease>) {
                         ++result.samplerSources;
+                    } else if constexpr (T::domain == CommandReferenceDomain::Query) {
+                        return "RHI-ORIGINAL-WORKLOAD-QUERY-JOIN-UNAVAILABLE";
                     } else if constexpr (T::domain == CommandReferenceDomain::BindlessRoot) {
                         for (const auto& element : value->elements())
                             if (const auto* error = inspectBinding(element.declaration.write.type,
@@ -173,6 +175,7 @@ private:
                             || T::domain == CommandReferenceDomain::Descriptor
                             || T::domain == CommandReferenceDomain::DescriptorTable
                             || T::domain == CommandReferenceDomain::Pipeline
+                            || T::domain == CommandReferenceDomain::Query
                             || std::is_same_v<T, OriginalCommandSamplerLease>,
                         "Every new canonical source needs explicit retained resource accounting");
                     return 0u;

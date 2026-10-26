@@ -55,6 +55,8 @@ public:
         assert(Compute::validateBudget(b));
         b.registrationGeneration = 1u;
         b.contractVersion = 2u;
+        assert(!Compute::validateBudget(b));
+        b.contractVersion = 3u;
         assert(Compute::validateBudget(b));
         b.contractVersion = 1u;
         b.prototypeOptIn = false;

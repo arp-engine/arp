@@ -221,14 +221,20 @@ int main()
     if (!yamlResult.success)
         std::cerr << yamlResult.diagnostics << "\n";
     assert(yamlResult.success);
-    assertContains(yamlResult.yaml, "type: YamlPlayer");
-    assertContains(yamlResult.yaml, "fields:");
-    assertContains(yamlResult.yaml, "health: 77");
-    assertContains(yamlResult.yaml, "active: true");
-    assertContains(yamlResult.yaml, "speed:");
-    assertContains(yamlResult.yaml, "name: mika");
-    assertContains(yamlResult.yaml, "tags:");
-    assertContains(yamlResult.yaml, "- scout");
+    // Check typed YAML content rather than a particular scalar quote style.
+    using Yaml = arp::core::YamlContract;
+    const auto document = Yaml::parseSingleDocument(yamlResult.yaml);
+    Yaml::onlyKeys(document, {"type", "fields"});
+    assert(Yaml::text(document, "type") == "YamlPlayer");
+    const auto& fields = Yaml::required(document, "fields");
+    Yaml::onlyKeys(fields, {"health", "active", "speed", "name", "tags"});
+    assert(Yaml::uint64(Yaml::required(fields, "health")) == 77);
+    assert(Yaml::boolean(fields, "active"));
+    assert(Yaml::number(fields, "speed") == 3.5);
+    assert(Yaml::text(fields, "name") == "mika");
+    const auto& tags = Yaml::required(fields, "tags");
+    assert(tags.is_sequence() && tags.size() == 2);
+    assert(Yaml::text(tags[0]) == "scout" && Yaml::uint64(tags[1]) == 12);
 
     auto objectResult = legacyRead(yamlResult.yaml);
     if (!objectResult.success) {
@@ -276,20 +282,24 @@ int main()
     auto nestedYamlResult = serialize_to_yaml(
         object(std::move(nestedSource)), {SerializationProfile::LegacyAllPropertiesV1});
     assert(nestedYamlResult.success);
-    assertContains(nestedYamlResult.yaml, "type: YamlNestedPlayer");
-    assertContains(nestedYamlResult.yaml, "stats:");
-    assertContains(nestedYamlResult.yaml, "type: YamlStats");
-    assertContains(nestedYamlResult.yaml, "level: 9");
-    assertContains(nestedYamlResult.yaml, "title: captain");
-    assertContains(nestedYamlResult.yaml, "statsPtr:");
-    assertContains(nestedYamlResult.yaml, "level: 12");
-    assertContains(nestedYamlResult.yaml, "title: pointer");
-    assertContains(nestedYamlResult.yaml, "sharedStats:");
-    assertContains(nestedYamlResult.yaml, "level: 14");
-    assertContains(nestedYamlResult.yaml, "title: shared");
-    assertContains(nestedYamlResult.yaml, "uniqueStats:");
-    assertContains(nestedYamlResult.yaml, "level: 16");
-    assertContains(nestedYamlResult.yaml, "title: unique");
+    const auto nestedDocument = Yaml::parseSingleDocument(nestedYamlResult.yaml);
+    Yaml::onlyKeys(nestedDocument, {"type", "fields"});
+    assert(Yaml::text(nestedDocument, "type") == "YamlNestedPlayer");
+    const auto& nestedFields = Yaml::required(nestedDocument, "fields");
+    Yaml::onlyKeys(nestedFields, {"stats", "statsPtr", "sharedStats", "uniqueStats"});
+    const auto checkStats = [&](const char* key, unsigned level, const char* title) {
+        const auto& item = Yaml::required(nestedFields, key);
+        Yaml::onlyKeys(item, {"type", "fields"});
+        assert(Yaml::text(item, "type") == "YamlStats");
+        const auto& values = Yaml::required(item, "fields");
+        Yaml::onlyKeys(values, {"level", "title"});
+        assert(Yaml::uint64(Yaml::required(values, "level")) == level);
+        assert(Yaml::text(values, "title") == title);
+    };
+    checkStats("stats", 9, "captain");
+    checkStats("statsPtr", 12, "pointer");
+    checkStats("sharedStats", 14, "shared");
+    checkStats("uniqueStats", 16, "unique");
 
     auto nestedObjectResult = legacyRead(nestedYamlResult.yaml);
     assert(nestedObjectResult.success);

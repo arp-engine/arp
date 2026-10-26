@@ -12,7 +12,7 @@ reflectionHeaders:
   - src/core/math/math.h
   - src/scriptvm/bindings/script_math.h
   - src/core/math/seeded_random.h
-  - src/scene/time/game_clock.h
+  - src/core/time/game_clock.h
   - src/physics/2d/physics_world_2d.h
   - src/2d/physics_components.h
   - src/scene/runtime_components.h

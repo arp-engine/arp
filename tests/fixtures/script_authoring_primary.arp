@@ -1,0 +1,43 @@
+from arp_scene import GameObject, Component
+
+var probes: int = 0
+
+
+def read_probes() -> int:
+    return probes
+
+
+def field_probe() -> int:
+    probes += 1
+    return 77
+
+
+# Explicit authoring fields are read without evaluating initialization or hooks.
+class Mover(ScriptComponent):
+    amount: int
+    speed: float
+    labels: [string]
+    target: GameObject
+    native: Component
+    optional: GameObject?
+
+    def __init__(self):
+        self.amount = field_probe()
+        probes += 100
+
+    def on_update(self, dt: float):
+        probes += 10
+
+
+# A unique class keeps its existing unqualified registration as well.
+class OnlyPrimary(ScriptComponent):
+    enabled_value: bool
+
+
+class PlainValue:
+    value: int
+
+
+# Ordinary user classes have no implicit component/reference serialization.
+class UnsupportedFields(ScriptComponent):
+    value: PlainValue

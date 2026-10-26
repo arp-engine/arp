@@ -4,12 +4,17 @@
 #include "rhi/frontend/resource_state_validation.h"
 #include "rhi/gpu_common.h"
 
+namespace arp::rhi {
+class OriginalSubmittedBufferReadPins;
+}
+
 namespace arp::rhi::common {
 
 // Stable original L2 scalar state; retaining its containing original resource
 // is mandatory. This control grants no native barrier or command authority.
 class RecordedResourceStateControl final {
     friend class rhi::GpuDevice;
+    friend class rhi::OriginalSubmittedBufferReadPins;
     using Value = core::VersionedMutationValue<ResourceState>;
 
 public:
@@ -30,18 +35,20 @@ public:
 
     bool canPrepare(const core::MutationJournal& journal) const noexcept
     {
-        return active() && semantics::isKnownResourceState(state()) && value_.canPrepare(journal);
+        return !submittedReaders_ && active() && semantics::isKnownResourceState(state())
+            && value_.canPrepare(journal);
     }
 
     bool canWriteBatch(const core::MutationJournal& journal, std::uint64_t writes) const noexcept
     {
-        return active() && semantics::isKnownResourceState(state())
+        return !submittedReaders_ && active() && semantics::isKnownResourceState(state())
             && value_.canWriteBatch(journal, writes);
     }
 
     bool prepare(core::MutationJournal& journal) noexcept
     {
-        return active() && semantics::isKnownResourceState(state()) && value_.prepare(journal);
+        return !submittedReaders_ && active() && semantics::isKnownResourceState(state())
+            && value_.prepare(journal);
     }
 
     auto observe() const noexcept
@@ -86,6 +93,8 @@ public:
             return id;
         if (!semantics::isKnownResourceState(after))
             return "RHI-RESOURCE-STATE-INVALID";
+        if (submittedReaders_)
+            return "RHI-SUBMISSION-READ-PINNED";
         switch (value_.tryWrite(after, journal)) {
         case Value::WriteResult::Written:
             return nullptr;
@@ -102,5 +111,9 @@ public:
 private:
     OriginalRecordedStateDomain domain_;
     Value value_;
+    // RHI policy only. Original writer journal publication/invalidation remains
+    // independent of this serialized read blocker; core scalar ownership stays one-journal.
+    const rhi::OriginalSubmittedBufferReadPins* readIssuer_ = nullptr;
+    std::uint64_t submittedReaders_ = 0u;
 };
 } // namespace arp::rhi::common

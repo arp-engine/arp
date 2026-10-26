@@ -5,15 +5,6 @@
 #include <system_error>
 
 namespace arp::editor {
-namespace {
-
-bool acceptResourceReference(void*, std::string_view, std::string_view)
-{
-    return true;
-}
-
-} // namespace
-
 EditorScenePersistence::EditorScenePersistence()
     : files_(4u, EditorSceneAuthoringCodec::maxDocumentBytes), store_(files_)
 {}
@@ -29,13 +20,7 @@ bool EditorScenePersistence::SceneSchema::validate(
         diagnostic = "EDITOR-SCENE-YAML-SERIALIZE";
         return false;
     }
-    EditorSceneDocument candidate(false);
-    return EditorSceneAuthoringCodec::decode(std::string_view(yaml.data(), yaml.size()),
-        candidate,
-        &acceptResourceReference,
-        nullptr,
-        diagnostic,
-        true);
+    return EditorSceneAuthoringCodec::validateStructure(yaml, diagnostic);
 }
 
 bool EditorScenePersistence::resolvePath(const std::filesystem::path& projectRoot,
@@ -91,19 +76,25 @@ bool EditorScenePersistence::resolvePath(const std::filesystem::path& projectRoo
 }
 
 EditorScenePersistence::RequestHandle EditorScenePersistence::load(
-    const std::filesystem::path& projectRoot, std::string_view relativePath)
+    const std::filesystem::path& projectRoot,
+    std::string_view relativePath,
+    std::filesystem::path* resolvedTarget)
 {
     diagnostic_ = nullptr;
     std::filesystem::path resolved;
     if (!resolvePath(projectRoot, relativePath, true, resolved, diagnostic_))
         return {};
-    return store_.load(core::FilePath::utf8(resolved));
+    const auto request = store_.load(core::FilePath::utf8(resolved));
+    if (request && resolvedTarget)
+        *resolvedTarget = std::move(resolved);
+    return request;
 }
 
 EditorScenePersistence::RequestHandle EditorScenePersistence::save(
     const std::filesystem::path& projectRoot,
     std::string_view relativePath,
-    const core::pmr::String& yaml)
+    const core::pmr::String& yaml,
+    bool overwriteExisting)
 {
     diagnostic_ = nullptr;
     if (yaml.empty() || yaml.size() > EditorSceneAuthoringCodec::maxDocumentBytes) {
@@ -113,7 +104,35 @@ EditorScenePersistence::RequestHandle EditorScenePersistence::save(
     std::filesystem::path resolved;
     if (!resolvePath(projectRoot, relativePath, false, resolved, diagnostic_))
         return {};
-    return store_.save(core::FilePath::utf8(resolved), yaml);
+    std::error_code error;
+    const bool exists = std::filesystem::exists(resolved, error);
+    if (error) {
+        diagnostic_ = "EDITOR-SCENE-TARGET-STAT";
+        return {};
+    }
+    if (exists && !overwriteExisting) {
+        diagnostic_ = "EDITOR-SCENE-OVERWRITE-REQUIRED";
+        return {};
+    }
+    return saveResolved(resolved, yaml);
+}
+
+EditorScenePersistence::RequestHandle EditorScenePersistence::readResolved(
+    const std::filesystem::path& target)
+{
+    diagnostic_ = nullptr;
+    return files_.read(core::FilePath::utf8(target));
+}
+
+EditorScenePersistence::RequestHandle EditorScenePersistence::saveResolved(
+    const std::filesystem::path& target, const core::pmr::String& yaml)
+{
+    diagnostic_ = nullptr;
+    if (yaml.empty() || yaml.size() > EditorSceneAuthoringCodec::maxDocumentBytes) {
+        diagnostic_ = "EDITOR-SCENE-DOCUMENT-LIMIT";
+        return {};
+    }
+    return store_.save(core::FilePath::utf8(target), yaml);
 }
 
 bool EditorScenePersistence::take(RequestHandle handle, core::io::AtomicFileResult& result)

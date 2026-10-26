@@ -4,14 +4,20 @@
 #include "rhi/backends/metal/metal_allocator.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_bindless_validation.h"
+#include "rhi/backends/metal/metal_dispatch_validation_session.h"
 #include "rhi/backends/metal/metal_native_features.h"
 #include "rhi/backends/metal/metal_native_queries.h"
 #include "rhi/backends/metal/metal_native_runtime.h"
 #include "rhi/backends/metal/metal_native_secondary.h"
 #include "rhi/backends/metal/metal_native_sync.h"
 #include "rhi/backends/metal/metal_original_bindless_command.h"
+#include "rhi/backends/metal/metal_original_compute_acceptance.h"
+#include "rhi/backends/metal/metal_original_compute_creation.h"
 #include "rhi/backends/metal/metal_original_device_native_loss.h"
 #include "rhi/backends/metal/metal_original_geometry_content.h"
+#include "rhi/backends/metal/metal_original_graphics_acceptance.h"
+#include "rhi/backends/metal/metal_original_graphics_creation.h"
+#include "rhi/backends/metal/metal_original_submission_domain.h"
 #include "rhi/backends/metal/metal_staging_upload_pool.h"
 #include "rhi/backends/metal/metal_texture_readback.h"
 #include "rhi/backends/null/dummy_sync.h"
@@ -930,8 +936,49 @@ private:
     rhi::BindlessCapabilities caps_;
 };
 
+} // namespace
+
 class MetalRhiDevice final : public rhi::GpuDevice {
 public:
+    ~MetalRhiDevice() override
+    {
+        // Revoke before derived state disappears. Every accepted native
+        // callback retains this exact domain until its own result is delivered.
+        if (submissionDomain_ && submissionOwnerDiagnostic())
+            std::terminate();
+        closeOriginalDeviceLifetimeForShutdown();
+        if (submissionDomain_ && submissionDomain_->retire())
+            std::terminate();
+    }
+
+    const char* prepareSubmissionCompletion(
+        const rhi::semantics::OriginalSubmissionCompletionBudget& budget,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota)
+    {
+        if (const auto* id = submissionOwnerDiagnostic())
+            return id;
+        if (submissionDomain_)
+            return "RHI-SUBMISSION-COMPLETION-ALREADY-PREPARED";
+        if (hostDiagnostic_
+            || !describeMetalRhiNativeRuntimeBoundary().runtimeAvailableOnThisPlatform)
+            return "RHI-SUBMISSION-COMPLETION-NATIVE-UNAVAILABLE";
+        const char* diagnostic = nullptr;
+        submissionDomain_ =
+            MetalOriginalSubmissionDomain::prepare(*this, budget, quota, diagnostic);
+        return diagnostic;
+    }
+
+    const std::shared_ptr<MetalOriginalSubmissionDomain>& submissionDomain() const noexcept
+    {
+        return submissionDomain_;
+    }
+
+    const char* submissionOwnerDiagnostic() const noexcept
+    {
+        return submissionOwner_ == std::this_thread::get_id() ? nullptr
+                                                              : "RHI-SUBMISSION-COMPLETION-THREAD";
+    }
+
     void* queryInterface(std::string_view id) noexcept override
     {
         if (id == rhi::kExtensionBindlessCross) {
@@ -1369,12 +1416,18 @@ public:
 
     void waitIdle() override
     {
+        if (submissionDomain_)
+            if (const auto* id = submissionOwnerDiagnostic())
+                throw std::logic_error(id);
         const auto runtime = describeMetalRhiNativeRuntimeBoundary();
         if (!runtime.runtimeAvailableOnThisPlatform) {
             return;
         }
         std::pmr::string diagnostics;
         if (waitMetalRhiNativeQueueIdle(diagnostics)) {
+            if (submissionDomain_)
+                if (const auto* id = submissionDomain_->poll())
+                    throw std::logic_error(id);
             if (const auto stats = queue_.nativeStats()) {
                 stats->blockingWaitUsed = true;
             }
@@ -1394,6 +1447,13 @@ public:
 
         rhi::semantics::ShutdownDrainReport report;
         report.backend = backend();
+        if (submissionDomain_)
+            if (const auto* id = submissionOwnerDiagnostic()) {
+                report.diagnosticId = id;
+                rhi::semantics::finalizeShutdownDrainTiming(
+                    report, started, request, std::chrono::steady_clock::now());
+                return report;
+            }
         const auto runtime = describeMetalRhiNativeRuntimeBoundary();
         if (!runtime.runtimeAvailableOnThisPlatform) {
             report.diagnosticId = "ARP-RHI-METAL-SHUTDOWN-DRAIN-NATIVE-RUNTIME-UNAVAILABLE";
@@ -1402,8 +1462,25 @@ public:
             return report;
         }
 
+        if (submissionDomain_) {
+            closeOriginalDeviceLifetimeForShutdown();
+            if (const auto* id = submissionDomain_->retire()) {
+                report.diagnosticId = id;
+                rhi::semantics::finalizeShutdownDrainTiming(
+                    report, started, request, std::chrono::steady_clock::now());
+                return report;
+            }
+        }
         std::pmr::string diagnostics;
-        const auto state = drainMetalRhiNativeQueueForShutdown(request, diagnostics);
+        auto state = drainMetalRhiNativeQueueForShutdown(request, diagnostics);
+        if (submissionDomain_ && state == MetalRhiNativeQueueDrainState::Completed)
+            if (const auto* id = submissionDomain_->drain(request)) {
+                diagnostics = id;
+                state =
+                    std::string_view(id) == rhi::semantics::kShutdownDrainDeadlineExpiredDiagnostic
+                    ? MetalRhiNativeQueueDrainState::DeadlineExpired
+                    : MetalRhiNativeQueueDrainState::DiagnosticFailure;
+            }
         const auto finished = std::chrono::steady_clock::now();
         switch (state) {
         case MetalRhiNativeQueueDrainState::Completed:
@@ -1499,10 +1576,29 @@ public:
             return {false, "Metal RHI buffer write desc is invalid", 0};
         }
         const auto nativeBuffer = metalRhiNativePayloadFor(buffer);
+        const auto registered = registry_ ? registry_->find(buffer.id()) : std::nullopt;
+        if (!registered || !nativeBuffer
+            || !core::SharedOwnerProjection::sameOwner(registered->buffer, nativeBuffer))
+            return {false, "RHI-METAL-BUFFER-WRITE-ORIGINAL-OWNER", 0};
         std::pmr::string diagnostics;
         if (!writeMetalRhiNativeBuffer(
                 nativeBuffer, data, sizeBytes, offsetBytes, buffer.desc().sizeBytes, diagnostics)) {
+            if (nativeBuffer) {
+                nativeBuffer->originalHostInitializedObject_ = nullptr;
+                nativeBuffer->originalHostInitialization_.reset();
+                nativeBuffer->originalHostInitializedBytes_ = 0u;
+                nativeBuffer->originalFrozenHostInitialization_.store(
+                    false, std::memory_order_release);
+            }
             return {false, diagnostics, 0};
+        }
+        if (!offsetBytes && sizeBytes == buffer.desc().sizeBytes) {
+            nativeBuffer->originalHostInitializedObject_ = &buffer;
+            nativeBuffer->originalHostInitialization_.reset();
+            if (const auto initial = buffer.observeOriginalCommittedState())
+                nativeBuffer->originalHostInitialization_.emplace(*initial);
+            nativeBuffer->originalHostInitializedBytes_ = sizeBytes;
+            nativeBuffer->originalFrozenHostInitialization_.store(false, std::memory_order_release);
         }
         return {true, "", 1};
     }
@@ -1846,6 +1942,140 @@ public:
         return pipeline;
     }
 
+    std::shared_ptr<const rhi::OriginalComputePipelineCreation>
+    createOriginalSynchronousComputeCreation(
+        const std::shared_ptr<const rhi::OriginalSingleEntryPipelineInput>& input,
+        const std::shared_ptr<rhi::PipelineLayout>& layout,
+        const rhi::ComputePipelineDesc& authored,
+        const rhi::OriginalSynchronousComputeCreationContract::Budget& budget,
+        const std::shared_ptr<core::CpuMemoryQuota>& ownerQuota,
+        const std::shared_ptr<core::CpuMemoryQuota>& nativeQuota,
+        const char*& diagnostic) override
+    {
+        diagnostic = rhi::OriginalSynchronousComputeCreationContract::validateBudget(budget);
+        if (diagnostic)
+            return {};
+        if (!nativeQuota || nativeQuota->limitBytes() != budget.maxCpuNativeBytes) {
+            diagnostic = "RHI-SYNC-COMPUTE-CREATION-QUOTA";
+            return {};
+        }
+        if (!creationRuntimeAdmitted()) {
+            diagnostic = "RHI-SYNC-COMPUTE-CREATION-DEVICE";
+            return {};
+        }
+        try {
+            core::CpuMemoryQuotaScope scope(nativeQuota);
+            const auto lowering =
+                rhi::semantics::lowerComputePipelineState(desc_.capabilityContract, authored);
+            if (!lowering.success) {
+                diagnostic = "RHI-SYNC-COMPUTE-CREATION-STATE-LOWERING";
+                return {};
+            }
+            auto reservation = directObjectBudget_->reserve(
+                rhi::semantics::DirectObjectBudgetKind::ComputePipeline);
+            if (!reservation.success) {
+                diagnostic = "RHI-SYNC-COMPUTE-CREATION-DIRECT-BUDGET";
+                return {};
+            }
+            return MetalOriginalArtifactComputeCreation::create(*this,
+                desc_.capabilityContract,
+                input,
+                layout,
+                authored,
+                budget,
+                ownerQuota,
+                nativeQuota,
+                std::move(reservation.lease),
+                diagnostic);
+        } catch (const std::bad_alloc&) {
+            diagnostic = "RHI-SYNC-COMPUTE-CREATION-ALLOCATION";
+            return {};
+        }
+    }
+
+    std::shared_ptr<const rhi::OriginalGraphicsPipelineCreation>
+    createOriginalSynchronousGraphicsCreation(
+        const std::shared_ptr<const rhi::OriginalGraphicsPipelineInput>& input,
+        const std::shared_ptr<rhi::PipelineLayout>& layout,
+        const rhi::RenderPipelineDesc& authored,
+        const rhi::OriginalSynchronousGraphicsCreationContract::Budget& budget,
+        const std::shared_ptr<core::CpuMemoryQuota>& ownerQuota,
+        const std::shared_ptr<core::CpuMemoryQuota>& nativeQuota,
+        const char*& diagnostic) override
+    {
+        diagnostic = rhi::OriginalSynchronousGraphicsCreationContract::validateBudget(budget);
+        if (diagnostic)
+            return {};
+        if (!nativeQuota || nativeQuota->limitBytes() != budget.maxCpuNativeBytes) {
+            diagnostic = "RHI-SYNC-GRAPHICS-CREATION-QUOTA";
+            return {};
+        }
+        if (!creationRuntimeAdmitted()) {
+            diagnostic = "RHI-SYNC-GRAPHICS-CREATION-DEVICE";
+            return {};
+        }
+        try {
+            core::CpuMemoryQuotaScope scope(nativeQuota);
+            const auto lowering =
+                rhi::semantics::lowerRenderPipelineState(desc_.capabilityContract, authored);
+            if (!lowering.success) {
+                diagnostic = "RHI-SYNC-GRAPHICS-CREATION-STATE-LOWERING";
+                return {};
+            }
+            auto reservation = directObjectBudget_->reserve(
+                rhi::semantics::DirectObjectBudgetKind::RenderPipeline);
+            if (!reservation.success) {
+                diagnostic = "RHI-SYNC-GRAPHICS-CREATION-DIRECT-BUDGET";
+                return {};
+            }
+            return MetalOriginalArtifactGraphicsCreation::create(*this,
+                desc_.capabilityContract,
+                input,
+                layout,
+                authored,
+                budget,
+                ownerQuota,
+                nativeQuota,
+                std::move(reservation.lease),
+                diagnostic);
+        } catch (const std::bad_alloc&) {
+            diagnostic = "RHI-SYNC-GRAPHICS-CREATION-ALLOCATION";
+            return {};
+        }
+    }
+
+    core::UniquePtr<rhi::RenderPipeline> createAcceptedOriginalGraphicsPipeline(
+        const rhi::RenderPipelineDesc& definition,
+        const std::shared_ptr<const rhi::OriginalGraphicsPipelineCreation>& creation,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota,
+        const char*& diagnostic) override
+    {
+        return MetalAcceptedOriginalGraphicsPipelineFactory::create(
+            *this, desc_.capabilityContract, definition, creation, quota, diagnostic);
+    }
+
+    const char* validateOriginalNativeLossPipeline(
+        const rhi::RenderPipeline& pipeline) const noexcept override
+    {
+        return MetalAcceptedOriginalGraphicsPipelineFactory::validate(*this, pipeline);
+    }
+
+    core::UniquePtr<rhi::ComputePipeline> createAcceptedOriginalComputePipeline(
+        const rhi::ComputePipelineDesc& definition,
+        const std::shared_ptr<const rhi::OriginalComputePipelineCreation>& creation,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota,
+        const char*& diagnostic) override
+    {
+        return MetalAcceptedOriginalComputePipelineFactory::create(
+            *this, desc_.capabilityContract, definition, creation, quota, diagnostic);
+    }
+
+    const char* validateOriginalNativeLossPipeline(
+        const rhi::ComputePipeline& pipeline) const noexcept override
+    {
+        return MetalAcceptedOriginalComputePipelineFactory::validate(*this, pipeline);
+    }
+
     arp::core::UniquePtr<rhi::ComputePipeline> createComputePipeline(
         const rhi::ComputePipelineDesc& pipelineDesc) override
     {
@@ -2076,6 +2306,17 @@ private:
             : "RHI-METAL-RESULT-LOSS-SET-SOURCE";
     }
 
+    std::shared_ptr<rhi::OriginalComputeDispatchValidation>
+    prepareOriginalComputeDispatchValidationPayload(
+        const rhi::ComputeDispatchValidationRequest& request,
+        const rhi::ComputeDispatchValidationSessionBudget& budget,
+        rhi::ComputeDispatchValidationSessionQuotas quotas,
+        const char*& diagnostic) override
+    {
+        return MetalDispatchValidationSession::prepareL2(
+            *this, request, budget, std::move(quotas), diagnostic);
+    }
+
     std::shared_ptr<rhi::OriginalDeviceNativeLossBinding> bindOriginalDeviceNativeResultLoss(
         const rhi::OriginalDeviceLifetime::NativeLossReceiver& receiver,
         const rhi::OriginalDeviceNativeResultLossBudget& budget,
@@ -2103,6 +2344,8 @@ private:
     }
 
     MetalRhiDeviceDesc desc_;
+    const std::thread::id submissionOwner_ = std::this_thread::get_id();
+    std::shared_ptr<MetalOriginalSubmissionDomain> submissionDomain_;
     const bool hostDiagnostic_;
     std::pmr::string lastMemoryHeapCreationDiagnostic_;
     MetalRhiAllocator allocator_;
@@ -2130,13 +2373,35 @@ public:
     }
 };
 
-} // namespace
-
 std::shared_ptr<MetalRhiResourceRegistry> metalRhiIssuingResourceRegistry(
     const rhi::GpuDevice& device) noexcept
 {
     const auto* concrete = dynamic_cast<const MetalRhiDevice*>(&device);
     return concrete ? concrete->resourceRegistry() : nullptr;
+}
+
+const char* prepareMetalOriginalSubmissionCompletion(rhi::GpuDevice& device,
+    const rhi::semantics::OriginalSubmissionCompletionBudget& budget,
+    const std::shared_ptr<core::CpuMemoryQuota>& quota)
+{
+    auto* concrete = dynamic_cast<MetalRhiDevice*>(&device);
+    return concrete ? concrete->prepareSubmissionCompletion(budget, quota)
+                    : "RHI-SUBMISSION-COMPLETION-FOREIGN-DEVICE";
+}
+
+std::shared_ptr<MetalOriginalSubmissionDomain> metalRhiOriginalSubmissionDomain(
+    const rhi::GpuDevice& device) noexcept
+{
+    const auto* concrete = dynamic_cast<const MetalRhiDevice*>(&device);
+    return concrete && !concrete->submissionOwnerDiagnostic() ? concrete->submissionDomain()
+                                                              : nullptr;
+}
+
+const char* metalRhiOriginalSubmissionOwnerDiagnostic(const rhi::GpuDevice& device) noexcept
+{
+    const auto* concrete = dynamic_cast<const MetalRhiDevice*>(&device);
+    return concrete ? concrete->submissionOwnerDiagnostic()
+                    : "RHI-SUBMISSION-COMPLETION-FOREIGN-DEVICE";
 }
 
 MetalRhiDeviceReport describeMetalRhiDevice(const MetalRhiDeviceDesc& desc)

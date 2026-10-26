@@ -1,7 +1,9 @@
 #include "rhi/backends/vulkan/vulkan_original_bindless_graphics_pass.h"
 
 #include "core/ownership/shared_identity_projection.h"
+#include "rhi/backends/vulkan/vulkan_attachment_operations.h"
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
+#include "rhi/frontend/command_render_pass_preparation.h"
 
 namespace arp::rhi_vulkan {
 using namespace rhi;
@@ -165,6 +167,34 @@ bool VulkanRhiNativeClearStorePassFactory::create(const VulkanRhiRuntime& runtim
     rhi::Extent3D extent,
     VulkanRhiNativeRenderPassResources& native) noexcept
 {
+    return createImpl(runtime, attachments, colorCount, hasDepth, extent, nullptr, native);
+}
+
+bool VulkanRhiNativeClearStorePassFactory::create(const VulkanRhiRuntime& runtime,
+    const Attachment* attachments,
+    const rhi::RenderPassDesc& descriptor,
+    rhi::Extent3D extent,
+    VulkanRhiNativeRenderPassResources& native) noexcept
+{
+    if (rhi::OriginalRenderPassPreparationContract::inspectDescriptor(descriptor))
+        return false;
+    return createImpl(runtime,
+        attachments,
+        static_cast<std::uint32_t>(descriptor.colorAttachments.size()),
+        descriptor.hasDepthStencilAttachment,
+        extent,
+        &descriptor,
+        native);
+}
+
+bool VulkanRhiNativeClearStorePassFactory::createImpl(const VulkanRhiRuntime& runtime,
+    const Attachment* attachments,
+    std::uint32_t colorCount,
+    bool hasDepth,
+    rhi::Extent3D extent,
+    const rhi::RenderPassDesc* descriptor,
+    VulkanRhiNativeRenderPassResources& native) noexcept
+{
     const auto attachmentCount = colorCount + (hasDepth ? 1u : 0u);
     if (!attachments || !attachmentCount || attachmentCount > native.kMaxImageViews
         || colorCount > OriginalBindlessGraphicsPassContract::maxColorAttachments || !extent.width
@@ -191,8 +221,14 @@ bool VulkanRhiNativeClearStorePassFactory::create(const VulkanRhiRuntime& runtim
         auto& d = descriptions[i];
         d.format = attachments[i].format;
         d.samples = VK_SAMPLE_COUNT_1_BIT;
-        d.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        d.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        d.loadOp = descriptor
+            ? vulkanRhiAttachmentLoadOp(isDepth ? descriptor->depthStencilAttachment.depthLoadOp
+                                                : descriptor->colorAttachments[i].loadOp)
+            : VK_ATTACHMENT_LOAD_OP_CLEAR;
+        d.storeOp = descriptor
+            ? vulkanRhiAttachmentStoreOp(isDepth ? descriptor->depthStencilAttachment.depthStoreOp
+                                                 : descriptor->colorAttachments[i].storeOp)
+            : VK_ATTACHMENT_STORE_OP_STORE;
         d.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         d.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         d.initialLayout = d.finalLayout = layout;

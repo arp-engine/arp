@@ -17,11 +17,14 @@ public:
 
 private:
     friend class FrameGraph;
+    friend class OriginalFrameGraphExecution;
     void executeImpl(const CompiledFrameGraph& compiled,
         core::UniquePtr<rhi::CommandEncoder> encoder,
         rhi::OriginalOrderedGraphicsExecution* ordered,
         OrderedGraphicsMeasurements* measurements = nullptr,
-        rhi::OriginalConformanceClearExecution* conformance = nullptr);
+        rhi::OriginalConformanceClearExecution* conformance = nullptr,
+        std::shared_ptr<rhi::GpuFence> preparedCompletion = {},
+        bool preparedTrace = false);
     FrameGraph& graph_;
 };
 

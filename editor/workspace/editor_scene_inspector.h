@@ -2,7 +2,9 @@
 #include "core/math/math.h"
 #include "core/memory/cpu_allocator.h"
 
+#include <array>
 #include <cstdint>
+#include <string_view>
 
 namespace arp::resource {
 class ResourceManager;
@@ -10,7 +12,9 @@ class ResourceManager;
 
 namespace arp::scene {
 class GameObjectId;
-}
+class Scene;
+class GameObject;
+} // namespace arp::scene
 
 namespace arp::editor {
 inline constexpr std::size_t kMaxSceneInspectorVector2ListElements = 256u;
@@ -72,6 +76,9 @@ struct SceneInspectorProperty {
     core::Vec4 color4Value{};
 };
 
+bool sceneInspectorMetadataEqual(const SceneInspectorProperty&, const SceneInspectorProperty&);
+bool sceneInspectorValuesEqual(const SceneInspectorProperty&, const SceneInspectorProperty&);
+
 struct EditorSceneInspectorSnapshot {
     std::uint64_t objectId = 0;
     core::pmr::String objectName{&core::defaultCpuMemoryResource()};
@@ -79,6 +86,28 @@ struct EditorSceneInspectorSnapshot {
 };
 
 class EditorSceneDocument;
+
+// Prepares a new presentation value; the original property and Scene stay intact
+// on allocation failure. Object IDs always come from explicit reference metadata.
+class EditorSceneObjectReferenceChoices final {
+public:
+    enum class TargetStatus { Valid, None, Unassigned, Missing, WrongType, InvalidMetadata };
+    static bool matchesTarget(const scene::GameObject&, std::string_view type) noexcept;
+    static TargetStatus targetStatus(const scene::Scene&, const SceneInspectorProperty&) noexcept;
+    static SceneInspectorProperty build(const scene::Scene&, const SceneInspectorProperty&);
+};
+
+// Authoring IDs remain independent of resource handles/generations. Choices use
+// the existing exact-type, bounded snapshot; failures never select a substitute.
+class EditorSceneResourceReferenceChoices final {
+public:
+    static constexpr std::size_t maxEntries = 32u;
+    static SceneInspectorProperty build(
+        const resource::ResourceManager*, const SceneInspectorProperty&);
+    // UUID groups 1..3 and 4..5 form two explicit single-line UI labels.
+    // Views refer to the supplied ID; non-UUID input is diagnosed, never sliced.
+    static std::array<std::string_view, 2> identifierLines(std::string_view id) noexcept;
+};
 
 core::pmr::String scenePropertyControlSource(const SceneInspectorProperty& property);
 core::pmr::String sceneInspectorDisplayValue(const SceneInspectorProperty& property);

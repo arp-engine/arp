@@ -1,44 +1,63 @@
 #include "renderer/volumetric_cloud/volumetric_cloud_feature.h"
 
-#include "core/math/matrix_validation.h"
 #include "renderer/raster_viewport.h"
+#include "renderer/render_graph/original_frame_graph_execution.h"
 #include "renderer/renderer_common.h"
 #include "renderer/shader_package_reflection.h"
-#include "renderer/temporal/jitter.h"
-#include "rhi/semantics/render_target_coordinates.h"
+#include "renderer/volumetric_cloud/cloud_prepared_feature.h"
 
-#include <cmath>
 #include <cstring>
-#include <limits>
 #include <stdexcept>
+#include <tuple>
 
 namespace arp::renderer::cloud {
+
+struct VolumetricCloudFeature::PreparedState {
+    std::shared_ptr<core::CpuMemoryQuota> quota;
+    CloudPreparedPipelines pipelines;
+    // Destruction drains history before dropping its pipelines.
+    CloudPreparedResources resources;
+    std::uint64_t contributedGeneration = 0u;
+};
+
 namespace {
+
+bool sameSelection(
+    const CloudPreparedPipelineSelection& a, const CloudPreparedPipelineSelection& b) noexcept
+{
+    return a.contractVersion == b.contractVersion && a.resolve == b.resolve
+        && a.reconstruction.contractVersion == b.reconstruction.contractVersion
+        && a.reconstruction.maxRadianceRange == b.reconstruction.maxRadianceRange
+        && a.reconstruction.maxTransmittanceRange == b.reconstruction.maxTransmittanceRange;
+}
+
+auto configFields(const CloudRenderConfig& c) noexcept
+{
+    return std::tie(c.resolutionDivisor,
+        c.viewSteps,
+        c.lightSteps,
+        c.framesInFlight,
+        c.gpuBudgetBytes,
+        c.maxDensityEvaluations,
+        c.maxDistance,
+        c.historyWeight,
+        c.historyDepthTolerance,
+        c.temporal);
+}
+
+bool sameResources(
+    const CloudPreparedResourceRequest& a, const CloudPreparedResourceRequest& b) noexcept
+{
+    return configFields(a.config) == configFields(b.config) && a.extent.width == b.extent.width
+        && a.extent.height == b.extent.height && a.assetBytes == b.assetBytes
+        && a.maxDescriptorSets == b.maxDescriptorSets
+        && a.maxDescriptorElements == b.maxDescriptorElements;
+}
 
 template <class Result> void require(const Result& result)
 {
     if (!result.success)
         throw std::runtime_error(core::toStdString(result.diagnostics));
-}
-
-bool finite(core::Vec3 value) noexcept
-{
-    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
-}
-
-bool radiance(core::Vec3 value) noexcept
-{
-    return finite(value) && value.x >= 0 && value.y >= 0 && value.z >= 0;
-}
-
-bool validInverse(const core::Mat4& matrix, const core::Mat4& inverse) noexcept
-{
-    return core::isApproximateInverse(matrix, inverse, 0.002f);
-}
-
-bool same(core::Vec4 a, core::Vec4 b) noexcept
-{
-    return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w;
 }
 
 void bindBuffer(rhi::DescriptorSet& set,
@@ -51,8 +70,238 @@ void bindBuffer(rhi::DescriptorSet& set,
 
 } // namespace
 
+VolumetricCloudFeature::VolumetricCloudFeature() = default;
+
+VolumetricCloudFeature::~VolumetricCloudFeature()
+{
+    release();
+}
+
+CloudResult VolumetricCloudFeature::create(
+    const CloudPreparedFeatureCreateContext& c, core::pmr::String& diagnostic)
+{
+    diagnostic.clear();
+    if (created())
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-ALREADY-CREATED");
+    if (c.contractVersion != 1u || !c.prototypeOptIn)
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-OPT-IN");
+    if (&c.pipelines.device != &c.resources.device
+        || !sameSelection(c.pipelines.selection, c.resources.selection)
+        || !sameResources(c.pipelines.resources, c.resources.resources)
+        || ((c.pipelines.dispatchDomain || c.resources.dispatchDomain)
+            && !core::SharedOwnerProjection::sameOwner(
+                c.pipelines.dispatchDomain, c.resources.dispatchDomain)))
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-CREATE-MISMATCH");
+    if (!c.maxCpuStateBytes || !c.stateQuota || c.stateQuota->limitBytes() != c.maxCpuStateBytes)
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-STATE-QUOTA");
+    try {
+        core::CpuMemoryQuotaScope state(c.stateQuota);
+        const auto capabilities = c.resources.device.capabilities();
+        CloudPreparedResourcePlan planned;
+        if (const auto result =
+                CloudPreparedResources::validateCreate(c.resources, capabilities, planned);
+            !result.success)
+            return result;
+        auto next = core::makeUnique<PreparedState>();
+        next->quota = c.stateQuota;
+        if (const auto result = next->resources.create(c.resources); !result.success)
+            return result;
+        if (const auto result = next->pipelines.create(c.pipelines, diagnostic); !result.success)
+            return result;
+        if (const auto result = preparedSubmission_.attach(*next->resources.history());
+            !result.success)
+            return result;
+        // Publish only after both complete owners exist. Failed prefixes never
+        // change this feature and retain their original quota provenance.
+        plan_ = planned.raw;
+        config_ = c.resources.resources.config;
+        assetDesc_ = c.resources.asset.source;
+        assetBytes_ = c.resources.resources.assetBytes;
+        cameraId_ = c.resources.cameraId;
+        device_ = &c.resources.device;
+        prepared_ = std::move(next);
+        return {};
+    } catch (const std::bad_alloc&) {
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-ALLOCATION");
+    }
+}
+
+const CloudPreparedResources* VolumetricCloudFeature::preparedResources() const noexcept
+{
+    return prepared_ ? &prepared_->resources : nullptr;
+}
+
+const CloudPreparedPipelines* VolumetricCloudFeature::preparedPipelines() const noexcept
+{
+    return prepared_ ? &prepared_->pipelines : nullptr;
+}
+
+CloudPreparedHistory* VolumetricCloudFeature::preparedHistory() noexcept
+{
+    return prepared_ ? prepared_->resources.history() : nullptr;
+}
+
+render_graph::PassSubmissionToken VolumetricCloudFeature::preparedToken() const noexcept
+{
+    return preparedSubmission_.token();
+}
+
+CloudResult VolumetricCloudFeature::prepareFrame(
+    const CloudGraphContext& c, CloudPreparedFrameBuffers& output)
+{
+    output = {};
+    if (!prepared_)
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-NOT-CREATED");
+    if (preparedSubmission_.token().ownerId)
+        return CloudResult::failure("CLOUD-GRAPH-PENDING");
+    if (const auto result = prepared_->resources.prepareFrame(c); !result.success)
+        return result;
+    if (const auto result = preparedSubmission_.beginFrame(); !result.success)
+        return result;
+    prepared_->contributedGeneration = 0u;
+    return prepared_->resources.pendingBuffers(output);
+}
+
+CloudResult VolumetricCloudFeature::contributeGraph(
+    const CloudPreparedFeatureGraphContext& c, CloudOutputs& output)
+{
+    output = {};
+    if (!prepared_)
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-NOT-CREATED");
+    if (c.contractVersion != 1u || !c.prototypeOptIn)
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-GRAPH-OPT-IN");
+    CloudPreparedFrameBuffers buffers;
+    if (const auto result = prepared_->resources.pendingBuffers(buffers); !result.success)
+        return result;
+    const auto token = preparedSubmission_.token();
+    if (!token.ownerId || c.frameToken.ownerId != token.ownerId
+        || c.frameToken.generation != token.generation)
+        return CloudResult::failure("CLOUD-PREPARED-HISTORY-STALE-GENERATION");
+    if (prepared_->contributedGeneration == buffers.historyGeneration)
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-GRAPH-ALREADY-CONTRIBUTED");
+    const auto& sources = c.execution.sources();
+    const std::array<const void*, kCloudPipelineCount> expected{
+        prepared_->pipelines.raymarch().get(),
+        prepared_->pipelines.resolve().get(),
+        prepared_->pipelines.composite().get()};
+    for (std::size_t pass = 0u; pass < kCloudPipelineCount; ++pass) {
+        if (c.pipelines[pass] >= sources.sources().size())
+            return CloudResult::failure("CLOUD-PREPARED-FEATURE-PIPELINE-POSITION");
+        const auto& source = sources.sources()[c.pipelines[pass]];
+        const void* actual = nullptr;
+        if (pass == 2u) {
+            const auto* p =
+                std::get_if<std::shared_ptr<const rhi::OriginalCommandGraphicsPipelineSource>>(
+                    &source);
+            if (p && *p)
+                actual = (*p)->originalObject();
+        } else {
+            const auto* p =
+                std::get_if<std::shared_ptr<const rhi::OriginalCommandComputePipelineSource>>(
+                    &source);
+            if (p && *p)
+                actual = (*p)->originalObject();
+        }
+        if (actual != expected[pass])
+            return CloudResult::failure("CLOUD-PREPARED-FEATURE-PIPELINE-OWNER");
+    }
+    auto& graph = c.execution.graph();
+    const auto import = [&](const auto& lease) {
+        // The alias retains the full original lease and its budget custody.
+        // GPU mutability is authorized only by the ordinary graph access set.
+        return graph.importBufferRef({lease, const_cast<rhi::GpuBuffer*>(lease->originalObject())});
+    };
+    const bool spatial =
+        prepared_->pipelines.selection().resolve == CloudPreparedResolve::Reconstruction1;
+    CloudPreparedGraphContext next{spatial ? 3u : 2u,
+        true,
+        c.execution,
+        plan_,
+        c.color,
+        c.depth,
+        c.output,
+        import(buffers.constants),
+        import(buffers.density),
+        import(buffers.raw),
+        import(buffers.previous),
+        import(buffers.resolved),
+        c.pipelines,
+        c.descriptors};
+    next.history = prepared_->resources.history();
+    next.historyGeneration = buffers.historyGeneration;
+    if (spatial) {
+        next.reconstruction = &next.history->reconstructionPlan();
+        next.reconstructionConstants = import(buffers.reconstructionConstants);
+    }
+    if (const auto result = contributePreparedGraph(next, output, &preparedSubmission_, token);
+        !result.success)
+        return result;
+    if (const auto result = preparedSubmission_.markContributed(token); !result.success)
+        return result;
+    prepared_->contributedGeneration = buffers.historyGeneration;
+    return {};
+}
+
+CloudResult VolumetricCloudFeature::resize(const CloudPreparedResourceCreateContext& c)
+try {
+    if (!prepared_)
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-NOT-CREATED");
+    if (&c.device != device_ || c.cameraId != cameraId_
+        || !sameSelection(c.selection, prepared_->pipelines.selection()))
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-RESIZE-MISMATCH");
+    core::CpuMemoryQuotaScope state(prepared_->quota);
+    const auto capabilities = c.device.capabilities();
+    CloudPreparedResourcePlan planned;
+    if (const auto result = CloudPreparedResources::validateCreate(c, capabilities, planned);
+        !result.success)
+        return result;
+    if (!prepared_->resources.history()->idle())
+        return CloudResult::failure("CLOUD-RESIZE-IN-FLIGHT");
+    preparedSubmission_.detach();
+    if (const auto result = prepared_->resources.releaseIdle(); !result.success) {
+        preparedSubmission_.attach(*prepared_->resources.history());
+        return result;
+    }
+    // Only idle replacement: release the old allowance before new allocation.
+    // Surviving original graph leases still charge their authored budgets.
+    if (const auto result = prepared_->resources.create(c); !result.success) {
+        release();
+        return result;
+    }
+    if (const auto result = preparedSubmission_.attach(*prepared_->resources.history());
+        !result.success) {
+        release();
+        return result;
+    }
+    plan_ = planned.raw;
+    config_ = c.resources.config;
+    assetDesc_ = c.asset.source;
+    assetBytes_ = c.resources.assetBytes;
+    prepared_->contributedGeneration = 0u;
+    return {};
+} catch (const std::bad_alloc&) {
+    return CloudResult::failure("CLOUD-PREPARED-FEATURE-ALLOCATION");
+}
+
+CloudResult VolumetricCloudFeature::resetHistory() noexcept
+{
+    if (prepared_) {
+        const auto result = prepared_->resources.history()->resetHistory();
+        if (result.success)
+            preparedSubmission_.invalidateFrame();
+        return result;
+    }
+    if (pending_)
+        return CloudResult::failure("CLOUD-RESET-PENDING-FRAME");
+    historyValid_ = false;
+    samplingFrame_ = 0u;
+    return {};
+}
+
 CloudResult VolumetricCloudFeature::create(const CloudCreateContext& context)
 {
+    if (prepared_)
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-ALREADY-CREATED");
     if (created() && !idle())
         return CloudResult::failure("CLOUD-CREATE-IN-FLIGHT");
     release();
@@ -125,17 +374,17 @@ CloudResult VolumetricCloudFeature::createPipelines()
             return CloudResult::failure("CLOUD-PIPELINE-LAYOUT");
         const auto path = shaderDirectory_ + "/" + names[i] + ".slang";
         if (i == 2u)
-            p.package = detail::makeGraphicsShaderPackage(names[i], path, 0u);
+            p.package = renderer::detail::makeGraphicsShaderPackage(names[i], path, 0u);
         else {
             p.package.label = names[i];
             p.package.slangModulePath = path;
             p.package.entrypoints.push_back(
                 {path, "computeMain", stage, rhi::ShaderSourceLanguage::Slang});
-            p.package.artifacts.spirvPath = detail::replaceShaderExtension(path, ".spv");
-            p.package.artifacts.mslPath = detail::replaceShaderExtension(path, ".metal");
-            p.package.artifacts.wgslPath = detail::replaceShaderExtension(path, ".wgsl");
+            p.package.artifacts.spirvPath = renderer::detail::replaceShaderExtension(path, ".spv");
+            p.package.artifacts.mslPath = renderer::detail::replaceShaderExtension(path, ".metal");
+            p.package.artifacts.wgslPath = renderer::detail::replaceShaderExtension(path, ".wgsl");
             p.package.artifacts.reflectionPath =
-                detail::replaceShaderExtension(path, ".reflection.yaml");
+                renderer::detail::replaceShaderExtension(path, ".reflection.yaml");
         }
         if (!hydrateShaderPackageReflectionFromArtifact(p.package))
             return CloudResult::failure("CLOUD-SHADER-REFLECTION");
@@ -145,7 +394,7 @@ CloudResult VolumetricCloudFeature::createPipelines()
         if (!rhi::validateShaderPackage(p.package).success)
             return CloudResult::failure("CLOUD-SHADER-BINDING");
         if (i == 2u) {
-            auto d = detail::makeRenderPipelineDesc(
+            auto d = renderer::detail::makeRenderPipelineDesc(
                 names[i], *p.layout, p.package, rhi::TextureFormat::Rgba16Float, plan_.extent);
             useDynamicRasterViewport(d);
             d.colorTargets = {{rhi::TextureFormat::Rgba16Float}};
@@ -218,6 +467,8 @@ CloudResult VolumetricCloudFeature::createSlots()
 
 bool VolumetricCloudFeature::frameReady() const noexcept
 {
+    if (prepared_)
+        return prepared_->resources.history()->frameReady();
     if (!created() || pending_)
         return false;
     for (std::size_t i = 0; i < slots_.size(); ++i)
@@ -228,6 +479,8 @@ bool VolumetricCloudFeature::frameReady() const noexcept
 
 bool VolumetricCloudFeature::idle() const noexcept
 {
+    if (prepared_)
+        return prepared_->resources.history()->idle();
     if (pending_)
         return false;
     for (const auto& slot : slots_)
@@ -238,6 +491,8 @@ bool VolumetricCloudFeature::idle() const noexcept
 
 CloudResult VolumetricCloudFeature::resize(rhi::Extent2D extent)
 {
+    if (prepared_)
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-RESIZE-CONTEXT");
     if (!created())
         return CloudResult::failure("CLOUD-NOT-CREATED");
     if (!idle())
@@ -262,6 +517,12 @@ CloudResult VolumetricCloudFeature::resize(rhi::Extent2D extent)
 
 CloudResult VolumetricCloudFeature::cancelPendingFrame() noexcept
 {
+    if (prepared_) {
+        const auto result = prepared_->resources.history()->cancelPendingFrame();
+        if (result.success)
+            preparedSubmission_.invalidateFrame();
+        return result;
+    }
     if (executionValidated_)
         return CloudResult::failure("CLOUD-CANCEL-AFTER-EXECUTION-VALIDATION");
     pending_ = false;
@@ -271,6 +532,13 @@ CloudResult VolumetricCloudFeature::cancelPendingFrame() noexcept
 
 void VolumetricCloudFeature::release() noexcept
 {
+    if (prepared_) {
+        preparedSubmission_.detach();
+        prepared_.reset();
+        device_ = nullptr;
+        plan_ = {};
+        return;
+    }
     // Explicit teardown only. Admission/resize/frame recording never waits.
     if (device_ && !idle())
         device_->waitIdle();
@@ -289,6 +557,8 @@ void VolumetricCloudFeature::release() noexcept
 const char* VolumetricCloudFeature::validateSubmission(
     render_graph::PassSubmissionToken token) const noexcept
 {
+    if (prepared_)
+        return preparedSubmission_.validateSubmission(token);
     if (!pending_ || token.ownerId != cameraId_ || token.generation != generation_)
         return "CLOUD-STALE-SUBMISSION";
     // FrameGraph validates before recording and again before queue acceptance.
@@ -301,12 +571,16 @@ const char* VolumetricCloudFeature::validateSubmission(
 void VolumetricCloudFeature::onSubmitted(render_graph::PassSubmissionToken token,
     const std::shared_ptr<const rhi::GpuFence>& completion) noexcept
 {
+    if (prepared_) {
+        preparedSubmission_.onSubmitted(token, completion);
+        return;
+    }
     if (validateSubmission(token) || !completion) {
         historyValid_ = false;
         return;
     }
     slots_[pendingSlot_].completion = completion;
-    if (slots_[pendingSlot_].parameters.previousCamera.w > 0)
+    if (slots_[pendingSlot_].frame.parameters.previousCamera.w > 0)
         slots_[pendingPrevious_].completion = completion;
     previousSlot_ = pendingSlot_;
     pending_ = false;
@@ -360,21 +634,14 @@ CloudResult VolumetricCloudFeature::contributeGraph(
     const CloudGraphContext& c, CloudOutputs& output)
 {
     output = {};
+    if (prepared_)
+        return CloudResult::failure("CLOUD-PREPARED-FEATURE-GRAPH-CONTEXT");
     if (!created())
         return CloudResult::failure("CLOUD-NOT-CREATED");
     if (pending_)
         return CloudResult::failure("CLOUD-GRAPH-PENDING");
     if (c.cameraId != cameraId_)
         return CloudResult::failure("CLOUD-CAMERA-IDENTITY");
-    const auto layerValid = CloudContract::validate(c.layer);
-    if (!layerValid.success)
-        return layerValid;
-    if (!finite(c.cameraPosition) || !finite(c.sunDirection) || !radiance(c.sunRadiance)
-        || !radiance(c.ambientRadiance) || !std::isfinite(c.time)
-        || std::fabs(core::length(c.sunDirection) - 1.0f) > 0.0001f)
-        return CloudResult::failure("CLOUD-FRAME-INPUT");
-    if (!std::isfinite(c.projectionJitter.x) || !std::isfinite(c.projectionJitter.y))
-        return CloudResult::failure("CLOUD-CAMERA-JITTER");
     if (!c.color.id || !c.depth.id)
         return CloudResult::failure("CLOUD-ATTACHMENT-CONTRACT");
     const auto& color = c.graph.textureDesc(c.color);
@@ -384,24 +651,17 @@ CloudResult VolumetricCloudFeature::contributeGraph(
         || color.extent.width != plan_.extent.width || color.extent.height != plan_.extent.height
         || color.extent.depth != 1u || color.sampleCount != 1u || depth.sampleCount != 1u)
         return CloudResult::failure("CLOUD-ATTACHMENT-CONTRACT");
-    auto vp = core::multiply(c.projection, c.view);
-    rhi::semantics::applyRenderTargetSamplingYConvention(vp.m.data(), device_->backend());
-    const auto inv = core::inverse(vp);
-    if (!validInverse(vp, inv))
-        return CloudResult::failure("CLOUD-CAMERA-MATRIX");
-    auto canonical = c.projection;
-    canonical.m[2] -= c.projectionJitter.x;
-    canonical.m[6] -= c.projectionJitter.y;
-    const auto& d = c.layer;
-    const double rx = double(c.cameraPosition.x) - d.planetCenter.x;
-    const double ry = double(c.cameraPosition.y) - d.planetCenter.y;
-    const double rz = double(c.cameraPosition.z) - d.planetCenter.z;
-    const double groundC = rx * rx + ry * ry + rz * rz - double(d.planetRadius) * d.planetRadius;
-    if (!std::isfinite(groundC) || groundC < 0 || groundC > std::numeric_limits<float>::max()
-        || !std::isfinite(d.planetRadius * d.planetRadius)
-        || !std::isfinite((d.baseAltitude + d.thickness)
-            * (2.0f * d.planetRadius + d.baseAltitude + d.thickness)))
-        return CloudResult::failure("CLOUD-CAMERA-SHELL-RANGE");
+    CloudFrameState nextFrame;
+    const auto built = CloudFrameParameters::build(c,
+        device_->backend(),
+        config_,
+        plan_,
+        assetDesc_,
+        samplingFrame_,
+        historyValid_ ? &slots_[previousSlot_].frame : nullptr,
+        nextFrame);
+    if (!built.success)
+        return built;
     std::uint32_t index = static_cast<std::uint32_t>(slots_.size());
     for (std::uint32_t i = 0; i < slots_.size(); ++i)
         if (i != previousSlot_ && (!slots_[i].completion || slots_[i].completion->isSignaled())) {
@@ -411,64 +671,10 @@ CloudResult VolumetricCloudFeature::contributeGraph(
     if (index == slots_.size())
         return CloudResult::failure("CLOUD-FRAMES-IN-FLIGHT");
     auto& slot = slots_[index];
-    auto& p = slot.parameters;
-    p = {};
-    p.inverseViewProjection = inv;
-    p.cameraTime = {c.cameraPosition.x, c.cameraPosition.y, c.cameraPosition.z, c.time};
-    p.cameraRadial = {float(rx), float(ry), float(rz), float(groundC)};
-    p.shell = {d.baseAltitude, d.thickness, d.planetRadius, d.extinction};
-    p.albedoAnisotropy = {
-        d.scatteringAlbedo.x, d.scatteringAlbedo.y, d.scatteringAlbedo.z, d.anisotropy};
-    p.periodsCoverage = {d.weatherPeriod, d.shapePeriod, d.detailPeriod, d.coverage};
-    p.windErosion = {d.windVelocity.x, d.windVelocity.y, d.windVelocity.z, d.erosion};
-    p.sunDirection = {c.sunDirection.x, c.sunDirection.y, c.sunDirection.z, 0};
-    p.sunRadiance = {c.sunRadiance.x, c.sunRadiance.y, c.sunRadiance.z, 0};
-    p.ambientRadiance = {c.ambientRadiance.x, c.ambientRadiance.y, c.ambientRadiance.z, 0};
-    p.dimensions = {plan_.sampleExtent.width,
-        plan_.sampleExtent.height,
-        plan_.extent.width,
-        plan_.extent.height};
-    p.sampling = {config_.viewSteps,
-        config_.lightSteps,
-        assetDesc_.weatherDimension,
-        assetDesc_.shapeDimension};
-    const auto shapeOffset = assets::cloud::kCloudHeightProfileCount
-        + assetDesc_.weatherDimension * assetDesc_.weatherDimension;
-    p.assetLayout = {assetDesc_.detailDimension,
-        0u,
-        shapeOffset,
-        shapeOffset
-            + assetDesc_.shapeDimension * assetDesc_.shapeDimension * assetDesc_.shapeDimension};
-    // CloudTemporalSampling/1: sixteen Halton base-5 stratified phases along
-    // each primary ray. Fixed XY centres preserve the opaque depth samples.
-    // Only successful submission advances this sequence; reference is midpoint.
-    constexpr std::uint32_t samplingPeriod = 16u;
-    const auto sampleZ =
-        config_.temporal ? core::halton235(samplingFrame_ % samplingPeriod + 1u).z : 0.5f;
-    p.jitter = {0.5f, 0.5f, sampleZ, c.orthographic ? 1.0f : 0.0f};
+    slot.frame = nextFrame;
+    auto& p = slot.frame.parameters;
+    const bool history = slot.frame.historyUsed;
     const auto& old = slots_[previousSlot_];
-    const auto& o = old.parameters;
-    const bool history = historyValid_ && config_.temporal && !c.cameraCut
-        && c.sceneRevision == old.sceneRevision && c.time >= o.cameraTime.w
-        && canonical.m == old.canonicalProjection.m && p.jitter.w == o.jitter.w
-        && old.planetCenter.x == d.planetCenter.x && old.planetCenter.y == d.planetCenter.y
-        && old.planetCenter.z == d.planetCenter.z && same(p.shell, o.shell)
-        && same(p.albedoAnisotropy, o.albedoAnisotropy)
-        && same(p.periodsCoverage, o.periodsCoverage) && same(p.windErosion, o.windErosion)
-        && same(p.sunDirection, o.sunDirection) && same(p.sunRadiance, o.sunRadiance)
-        && same(p.ambientRadiance, o.ambientRadiance);
-    p.previousViewProjection = history ? old.viewProjection : vp;
-    p.previousCamera = history
-        ? core::Vec4{o.cameraTime.x, o.cameraTime.y, o.cameraTime.z, 1.0f}
-        : core::Vec4{c.cameraPosition.x, c.cameraPosition.y, c.cameraPosition.z, 0.0f};
-    p.temporal = {config_.historyWeight,
-        config_.historyDepthTolerance,
-        config_.maxDistance,
-        history ? o.cameraTime.w : c.time};
-    slot.viewProjection = vp;
-    slot.canonicalProjection = canonical;
-    slot.sceneRevision = c.sceneRevision;
-    slot.planetCenter = d.planetCenter;
     if (!device_->writeBuffer(*slot.constants, &p, sizeof(p)).success)
         return CloudResult::failure("CLOUD-CONSTANT-UPLOAD");
     using D = rhi::DescriptorType;

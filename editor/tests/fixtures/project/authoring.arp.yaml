@@ -1,0 +1,11 @@
+type: arp.project
+contractVersion: 1
+id: a75b3294-d283-4b12-92d8-7d522b14eae2
+name: Explicit empty authoring project
+engineContract: arp-project-contract-fixture/1
+entryScene: null
+editorMetadata: null
+physics2d: null
+execution: Interpreter
+assetPackages: []
+scriptModules: []

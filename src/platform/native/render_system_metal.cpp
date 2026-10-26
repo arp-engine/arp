@@ -52,19 +52,20 @@ arp::core::UniquePtr<rhi::GpuDevice> createRhiMetalDevice(const std::pmr::string
     const auto& uploadStagingBudget = uploadStagingBudgetOverride != nullptr
         ? *uploadStagingBudgetOverride
         : kWoccUploadStagingBudget;
-    // A scoped test may reduce in-flight capacity, but cannot raise the
-    // production request/page contract or alter its alignment semantics.
-    if (uploadStagingBudget.maxRequestBytes != kWoccUploadStagingBudget.maxRequestBytes
-        || uploadStagingBudget.pageSizeBytes != kWoccUploadStagingBudget.pageSizeBytes
-        || uploadStagingBudget.alignmentBytes != kWoccUploadStagingBudget.alignmentBytes
-        || uploadStagingBudget.maxPageCount > kWoccUploadStagingBudget.maxPageCount) {
-        diagnostics = "RHI-UPLOAD-STAGING-BUDGET-OVERRIDE-OUT-OF-SCOPE";
-        return nullptr;
-    }
     const auto budgetValidation = rhi::semantics::validateUploadStagingBudget(uploadStagingBudget);
     if (!budgetValidation.success) {
         diagnostics = "Metal RHI upload staging budget contract failed: ";
         diagnostics += budgetValidation.diagnostics;
+        return nullptr;
+    }
+    // This backend represents maxRequest by its page size and uses a fixed
+    // alignment floor. Accept only exact representations that reduce the
+    // authored production ceiling; no field is silently ignored or clamped.
+    const auto reduction = rhi::semantics::validateUploadStagingBudgetReduction(
+        uploadStagingBudget, kWoccUploadStagingBudget);
+    if (!reduction.success
+        || uploadStagingBudget.maxRequestBytes != uploadStagingBudget.pageSizeBytes) {
+        diagnostics = "RHI-UPLOAD-STAGING-BUDGET-OVERRIDE-OUT-OF-SCOPE";
         return nullptr;
     }
     deviceDesc.uploadStagingPageSizeBytes = uploadStagingBudget.pageSizeBytes;

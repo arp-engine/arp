@@ -8,6 +8,10 @@
 #include "rhi/backends/metal/metal_indirect_preparation.h"
 #include "rhi/backends/metal/metal_native_features.h"
 #include "rhi/backends/metal/metal_native_runtime.h"
+#include "rhi/backends/metal/metal_original_compute_acceptance.h"
+#include "rhi/backends/metal/metal_original_compute_creation.h"
+#include "rhi/backends/metal/metal_original_graphics_acceptance.h"
+#include "rhi/backends/metal/metal_original_graphics_creation.h"
 #include "rhi/backends/metal/metal_original_pipeline.h"
 #include "rhi/backends/metal/metal_zero_base_indirect_consumer_pipeline.h"
 #include "rhi/backends/metal/metal_zero_base_indirect_pipeline.h"
@@ -18,6 +22,7 @@
 #include "rhi/frontend/pipeline_state_copy.h"
 #include "rhi/gpu_bindless.h"
 #include "rhi/gpu_common.h"
+#include "rhi/gpu_device.h"
 #include "rhi/gpu_pipeline.h"
 #include "rhi/semantics/bindless_original_preparation_lowering.h"
 #include "rhi/semantics/bindless_pipeline_interface.h"
@@ -1463,29 +1468,13 @@ core::UniquePtr<rhi::RenderPipeline> MetalOriginalPipeline::create(
         auto state = rhi::RenderPipelineStateCopy::copy(desc);
         state.layout = layout.get();
         state.shaderPackage = interface.get();
-        const auto mappings =
-            loadMetalBindingSpace(*interface, &input->artifact()->module().reflection);
-        const auto streams = lowerVertexStreams(state, mappings);
-        if (!layout || !mappings.success || !streams.success) {
-            id = "RHI-ORIGINAL-SYNC-PIPELINE-LOWERING";
+        auto native = createValidatedGraphicsPayload(state, input, report, quota, id);
+        if (!native)
             return {};
-        }
-        const std::string_view msl(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-        auto native = createMetalRhiNativeRenderPipelinePayload(state, report, streams, msl, msl);
-        if (!originalPipelineNative(native, true)) {
-            id = "RHI-ORIGINAL-SYNC-PIPELINE-NATIVE-PAYLOAD";
-            return {};
-        }
-        native->originalGraphicsInput_ = input;
-        native->originalCreationQuota_ = quota;
-        native->originalCreationQuotaBytes_ = budget.maxCpuMetadataBytes;
         if (std::chrono::steady_clock::now() >= deadline) {
             id = "RHI-ORIGINAL-SYNC-PIPELINE-COLD-DEADLINE";
             return {};
         }
-        native->metalBindingSpace = mappings.slots;
-        native->metalArgumentBuffer = mappings.argumentBuffers;
-        native->metalFramebufferFetch = mappings.framebufferFetch;
         auto result = core::makeUnique<MetalRhiRenderPipeline>(std::move(state),
             std::move(report),
             std::move(native),
@@ -1506,6 +1495,79 @@ core::UniquePtr<rhi::RenderPipeline> MetalOriginalPipeline::create(
         id = "RHI-ORIGINAL-SYNC-PIPELINE-CPU-ALLOCATION";
         return {};
     }
+}
+
+std::shared_ptr<MetalRhiNativePipelinePayload>
+MetalOriginalPipeline::createValidatedGraphicsPayload(const rhi::RenderPipelineDesc& desc,
+    const std::shared_ptr<const rhi::OriginalGraphicsPipelineInput>& input,
+    const rhi::PipelineValidationReport& report,
+    const std::shared_ptr<core::CpuMemoryQuota>& quota,
+    const char*& id)
+{
+    const auto target =
+        rhi::OriginalGraphicsPipelineInput::selectTarget(input, rhi::Backend::Metal);
+    id = target.diagnostic;
+    if (id || target.sourceCount != 1u || !target.combinedModule || !target.sources[0] || !quota
+        || !report.success) {
+        if (!id)
+            id = "RHI-ORIGINAL-SYNC-PIPELINE-TARGET";
+        return {};
+    }
+    const auto mappings =
+        loadMetalBindingSpace(*desc.shaderPackage, &input->artifact()->module().reflection);
+    const auto streams = lowerVertexStreams(desc, mappings);
+    if (!mappings.success || !streams.success) {
+        id = "RHI-ORIGINAL-SYNC-PIPELINE-LOWERING";
+        return {};
+    }
+    auto native =
+        createMetalRhiNativeRenderPipelinePayload(desc, report, streams, input->artifact());
+    if (!originalPipelineNative(native, true)) {
+        id = "RHI-ORIGINAL-SYNC-PIPELINE-NATIVE-PAYLOAD";
+        return {};
+    }
+    native->originalGraphicsInput_ = input;
+    native->originalCreationQuota_ = quota;
+    native->originalCreationQuotaBytes_ = quota->limitBytes();
+    native->metalBindingSpace = mappings.slots;
+    native->metalArgumentBuffer = mappings.argumentBuffers;
+    native->metalFramebufferFetch = mappings.framebufferFetch;
+    return native;
+}
+
+std::shared_ptr<MetalRhiNativePipelinePayload> MetalOriginalPipeline::createValidatedComputePayload(
+    const rhi::ComputePipelineDesc& desc,
+    const std::shared_ptr<const rhi::OriginalSingleEntryPipelineInput>& input,
+    const rhi::PipelineValidationReport& report,
+    const std::shared_ptr<core::CpuMemoryQuota>& quota,
+    const char*& id)
+{
+    const auto target =
+        rhi::OriginalSingleEntryPipelineInput::selectTarget(input, rhi::Backend::Metal);
+    id = target.diagnostic;
+    if (id || !target.bytes || !quota || !report.success) {
+        if (!id)
+            id = "RHI-ORIGINAL-SYNC-PIPELINE-TARGET";
+        return {};
+    }
+    const auto mappings =
+        loadMetalBindingSpace(*desc.shaderPackage, &input->artifact()->module().reflection);
+    if (!mappings.success) {
+        id = "RHI-ORIGINAL-SYNC-PIPELINE-LOWERING";
+        return {};
+    }
+    auto native = createMetalRhiNativeComputePipelinePayload(desc, report, input->artifact());
+    if (!originalPipelineNative(native, false)) {
+        id = "RHI-ORIGINAL-SYNC-PIPELINE-NATIVE-PAYLOAD";
+        return {};
+    }
+    native->originalComputeInput_ = input;
+    native->originalCreationQuota_ = quota;
+    native->originalCreationQuotaBytes_ = quota->limitBytes();
+    native->metalBindingSpace = mappings.slots;
+    native->metalArgumentBuffer = mappings.argumentBuffers;
+    native->metalFramebufferFetch = mappings.framebufferFetch;
+    return native;
 }
 
 core::UniquePtr<rhi::ComputePipeline> MetalOriginalPipeline::create(
@@ -1553,28 +1615,13 @@ core::UniquePtr<rhi::ComputePipeline> MetalOriginalPipeline::create(
         auto state = rhi::ComputePipelineStateCopy::copy(desc);
         state.layout = layout.get();
         state.shaderPackage = interface.get();
-        const auto mappings =
-            loadMetalBindingSpace(*interface, &input->artifact()->module().reflection);
-        if (!layout || !mappings.success) {
-            id = "RHI-ORIGINAL-SYNC-PIPELINE-LOWERING";
+        auto native = createValidatedComputePayload(state, input, report, quota, id);
+        if (!native)
             return {};
-        }
-        const std::string_view msl(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-        auto native = createMetalRhiNativeComputePipelinePayload(state, report, msl);
-        if (!originalPipelineNative(native, false)) {
-            id = "RHI-ORIGINAL-SYNC-PIPELINE-NATIVE-PAYLOAD";
-            return {};
-        }
-        native->originalComputeInput_ = input;
-        native->originalCreationQuota_ = quota;
-        native->originalCreationQuotaBytes_ = budget.maxCpuMetadataBytes;
         if (std::chrono::steady_clock::now() >= deadline) {
             id = "RHI-ORIGINAL-SYNC-PIPELINE-COLD-DEADLINE";
             return {};
         }
-        native->metalBindingSpace = mappings.slots;
-        native->metalArgumentBuffer = mappings.argumentBuffers;
-        native->metalFramebufferFetch = mappings.framebufferFetch;
         auto result = core::makeUnique<MetalRhiComputePipeline>(std::move(state),
             std::move(report),
             std::move(native),
@@ -1593,6 +1640,477 @@ core::UniquePtr<rhi::ComputePipeline> MetalOriginalPipeline::create(
         id = "RHI-ORIGINAL-SYNC-PIPELINE-CPU-ALLOCATION";
         return {};
     }
+}
+
+MetalOriginalArtifactGraphicsCreation::MetalOriginalArtifactGraphicsCreation(ConstructionKey,
+    std::shared_ptr<const rhi::OriginalGraphicsPipelineInput> input,
+    std::shared_ptr<rhi::PipelineLayout> layout,
+    const rhi::RenderPipelineDesc& desc,
+    Budget budget,
+    std::shared_ptr<core::CpuMemoryQuota> nativeQuota,
+    rhi::OriginalDeviceLifetime::Ticket lifetime,
+    rhi::OriginalDeviceNativeLossObservation loss,
+    rhi::semantics::DirectObjectBudgetLease reservation)
+    : input_(std::move(input)), layout_(std::move(layout)), budget_(budget),
+      nativeQuota_(std::move(nativeQuota)), lifetime_(std::move(lifetime)), loss_(std::move(loss)),
+      definition_(rhi::RenderPipelineStateCopy::copy(desc)), reservation_(std::move(reservation))
+{}
+
+std::shared_ptr<const MetalOriginalArtifactGraphicsCreation>
+MetalOriginalArtifactGraphicsCreation::create(const rhi::GpuDevice& device,
+    const rhi::semantics::NativeBackendCapabilityContract& caps,
+    const std::shared_ptr<const rhi::OriginalGraphicsPipelineInput>& input,
+    const std::shared_ptr<rhi::PipelineLayout>& layout,
+    const rhi::RenderPipelineDesc& desc,
+    Budget budget,
+    const std::shared_ptr<core::CpuMemoryQuota>& ownerQuota,
+    const std::shared_ptr<core::CpuMemoryQuota>& nativeQuota,
+    rhi::semantics::DirectObjectBudgetLease reservation,
+    const char*& id)
+{
+    using Contract = rhi::OriginalSynchronousGraphicsCreationContract;
+    id = Contract::validateBudget(budget);
+    if (id || (id = rhi::OriginalGraphicsPipelineInput::validateOriginal(input)))
+        return {};
+    if (!layout || !layout->sharedOwnerMatches(layout) || desc.layout != layout.get()
+        || desc.shaderPackage != &input->package()) {
+        id = "RHI-SYNC-GRAPHICS-CREATION-INPUT";
+        return {};
+    }
+    if ((id = device.validateOriginalResourceRegistration(*layout))
+        || (id = Contract::validateProfile(desc)))
+        return {};
+    if (desc.label.size() > budget.maxLabelBytes) {
+        id = "RHI-SYNC-GRAPHICS-CREATION-LABEL-CAPACITY";
+        return {};
+    }
+    if (!ownerQuota || ownerQuota->limitBytes() != budget.maxCpuOwnerBytes || !nativeQuota
+        || nativeQuota->limitBytes() != budget.maxCpuNativeBytes) {
+        id = "RHI-SYNC-GRAPHICS-CREATION-QUOTA";
+        return {};
+    }
+    const std::array domains{ownerQuota, nativeQuota, input->quota(), input->artifact()->quota()};
+    if (!core::SharedOwnerProjection::hasIndependentOwners(domains.size(),
+            [&](std::size_t i) -> const auto& {
+                return domains[i];
+            })
+        || device.overlapsOriginalDeviceCpuOwner(ownerQuota)
+        || device.overlapsOriginalDeviceCpuOwner(nativeQuota)
+        || layout->originalResourceRegistration().independentCpuQuotaDiagnostic(ownerQuota)
+        || layout->originalResourceRegistration().independentCpuQuotaDiagnostic(nativeQuota)) {
+        id = "RHI-SYNC-GRAPHICS-CREATION-QUOTA-DOMAIN";
+        return {};
+    }
+    const auto target =
+        rhi::OriginalGraphicsPipelineInput::selectTarget(input, rhi::Backend::Metal);
+    if ((id = target.diagnostic))
+        return {};
+    if (target.sourceCount != 1u || !target.combinedModule || !target.sources[0]
+        || target.sources[0]->size() > budget.maxTargetBytes) {
+        id = "RHI-SYNC-GRAPHICS-CREATION-TARGET-CAPACITY";
+        return {};
+    }
+    auto lifetime = device.originalDeviceLifetimeTicket();
+    if ((id = device.validateOriginalDeviceLifetime(lifetime)))
+        return {};
+    auto loss = device.observeOriginalDeviceNativeLoss(id);
+    if (!loss)
+        return {};
+    const auto decision = Contract::lowering(device.backend(),
+        budget,
+        {caps.queriedFromNativeDevice && bool(metalRhiNativeDeviceIdentity()),
+            describeMetalRhiNativeRuntimeBoundary().runtimeAvailableOnThisPlatform});
+    if ((id = decision.diagnostic) || !decision.creationEligible)
+        return {};
+    try {
+        core::CpuMemoryQuotaScope ownerScope(ownerQuota);
+        auto receipt = core::makeUnique<MetalOriginalArtifactGraphicsCreation>(ConstructionKey{},
+            input,
+            layout,
+            desc,
+            budget,
+            nativeQuota,
+            lifetime,
+            *loss,
+            std::move(reservation));
+        {
+            core::CpuMemoryQuotaScope nativeScope(nativeQuota);
+            const auto report = MetalOriginalPipeline::validate(receipt->definition_, input, caps);
+            if (!report.success) {
+                id = "RHI-SYNC-GRAPHICS-CREATION-DEFINITION";
+                return {};
+            }
+            receipt->payload_ = MetalOriginalPipeline::createValidatedGraphicsPayload(
+                receipt->definition_, input, report, nativeQuota, id);
+            if (!receipt->payload_)
+                return {};
+        }
+        if ((id = receipt->validate()))
+            return {};
+        return shareOriginal(std::move(receipt));
+    } catch (const std::bad_alloc&) {
+        id = "RHI-SYNC-GRAPHICS-CREATION-ALLOCATION";
+        return {};
+    }
+}
+
+const char* MetalOriginalArtifactGraphicsCreation::validate() const noexcept
+{
+    if (failure_)
+        return failure_;
+    const auto* id = lifetime_.diagnostic();
+    if (!id)
+        id = loss_.diagnostic();
+    if (!id
+        && (!originalMetadataQuota()
+            || originalMetadataQuota()->limitBytes() != budget_.maxCpuOwnerBytes || !nativeQuota_
+            || nativeQuota_->limitBytes() != budget_.maxCpuNativeBytes))
+        id = "RHI-SYNC-GRAPHICS-CREATION-QUOTA-LIMIT";
+    if (!id)
+        id = rhi::OriginalGraphicsPipelineInput::validateOriginal(input_);
+    if (!id && (!layout_ || !layout_->sharedOwnerMatches(layout_)))
+        id = "RHI-SYNC-GRAPHICS-CREATION-LAYOUT-OWNER";
+    if (!id)
+        id = layout_->originalResourceRegistration().diagnostic();
+    if (!id && (!payload_ || !originalPipelineNative(payload_, true)))
+        id = "RHI-SYNC-GRAPHICS-CREATION-NATIVE-IDENTITY";
+    if (!id)
+        id = MetalOriginalPipeline::diagnostic(*payload_);
+    if (!id
+        && (definition_.layout != layout_.get() || definition_.shaderPackage != &input_->package()
+            || input_->package().entrypoints.size() != 2u
+            || !rhi::PipelineDefinitionIdentity::matches(
+                definition_.vertexShader, input_->package().entrypoints[0])
+            || !rhi::PipelineDefinitionIdentity::matches(
+                definition_.fragmentShader, input_->package().entrypoints[1])))
+        id = "RHI-SYNC-GRAPHICS-CREATION-DEFINITION-IDENTITY";
+    if (id)
+        failure_ = id;
+    return id;
+}
+
+bool MetalOriginalArtifactGraphicsCreation::usesCpuQuotaDomain(
+    const std::shared_ptr<core::CpuMemoryQuota>& quota) const noexcept
+{
+    for (const auto& domain : std::array{
+             originalMetadataQuota(), nativeQuota_, input_->quota(), input_->artifact()->quota()})
+        if (core::SharedOwnerProjection::overlapsOwner(quota, domain))
+            return true;
+    return false;
+}
+
+MetalOriginalArtifactComputeCreation::MetalOriginalArtifactComputeCreation(ConstructionKey,
+    std::shared_ptr<const rhi::OriginalSingleEntryPipelineInput> input,
+    std::shared_ptr<rhi::PipelineLayout> layout,
+    const rhi::ComputePipelineDesc& desc,
+    Budget budget,
+    std::shared_ptr<core::CpuMemoryQuota> nativeQuota,
+    rhi::OriginalDeviceLifetime::Ticket lifetime,
+    rhi::OriginalDeviceNativeLossObservation loss,
+    rhi::semantics::DirectObjectBudgetLease reservation)
+    : input_(std::move(input)), layout_(std::move(layout)), budget_(budget),
+      nativeQuota_(std::move(nativeQuota)), lifetime_(std::move(lifetime)), loss_(std::move(loss)),
+      definition_(rhi::ComputePipelineStateCopy::copy(desc)), reservation_(std::move(reservation))
+{}
+
+std::shared_ptr<const MetalOriginalArtifactComputeCreation>
+MetalOriginalArtifactComputeCreation::create(const rhi::GpuDevice& device,
+    const rhi::semantics::NativeBackendCapabilityContract& caps,
+    const std::shared_ptr<const rhi::OriginalSingleEntryPipelineInput>& input,
+    const std::shared_ptr<rhi::PipelineLayout>& layout,
+    const rhi::ComputePipelineDesc& desc,
+    Budget budget,
+    const std::shared_ptr<core::CpuMemoryQuota>& ownerQuota,
+    const std::shared_ptr<core::CpuMemoryQuota>& nativeQuota,
+    rhi::semantics::DirectObjectBudgetLease reservation,
+    const char*& id)
+{
+    using Contract = rhi::OriginalSynchronousComputeCreationContract;
+    id = Contract::validateBudget(budget);
+    if (id || (id = rhi::OriginalSingleEntryPipelineInput::validateOriginal(input)))
+        return {};
+    if (!layout || !layout->sharedOwnerMatches(layout) || desc.layout != layout.get()
+        || desc.shaderPackage != &input->package()) {
+        id = "RHI-SYNC-COMPUTE-CREATION-INPUT";
+        return {};
+    }
+    if ((id = device.validateOriginalResourceRegistration(*layout))
+        || (id = Contract::validateProfile(desc)))
+        return {};
+    if (desc.label.size() > budget.maxLabelBytes) {
+        id = "RHI-SYNC-COMPUTE-CREATION-LABEL-CAPACITY";
+        return {};
+    }
+    if (!ownerQuota || ownerQuota->limitBytes() != budget.maxCpuOwnerBytes || !nativeQuota
+        || nativeQuota->limitBytes() != budget.maxCpuNativeBytes) {
+        id = "RHI-SYNC-COMPUTE-CREATION-QUOTA";
+        return {};
+    }
+    const std::array domains{ownerQuota, nativeQuota, input->quota(), input->artifact()->quota()};
+    if (!core::SharedOwnerProjection::hasIndependentOwners(domains.size(),
+            [&](std::size_t i) -> const auto& {
+                return domains[i];
+            })
+        || device.overlapsOriginalDeviceCpuOwner(ownerQuota)
+        || device.overlapsOriginalDeviceCpuOwner(nativeQuota)
+        || layout->originalResourceRegistration().independentCpuQuotaDiagnostic(ownerQuota)
+        || layout->originalResourceRegistration().independentCpuQuotaDiagnostic(nativeQuota)) {
+        id = "RHI-SYNC-COMPUTE-CREATION-QUOTA-DOMAIN";
+        return {};
+    }
+    const auto target =
+        rhi::OriginalSingleEntryPipelineInput::selectTarget(input, rhi::Backend::Metal);
+    if ((id = target.diagnostic))
+        return {};
+    if (!target.bytes || target.bytes->size() > budget.maxTargetBytes) {
+        id = "RHI-SYNC-COMPUTE-CREATION-TARGET-CAPACITY";
+        return {};
+    }
+    auto lifetime = device.originalDeviceLifetimeTicket();
+    if ((id = device.validateOriginalDeviceLifetime(lifetime)))
+        return {};
+    auto loss = device.observeOriginalDeviceNativeLoss(id);
+    if (!loss)
+        return {};
+    const auto decision = Contract::lowering(device.backend(),
+        budget,
+        {caps.queriedFromNativeDevice && bool(metalRhiNativeDeviceIdentity()),
+            describeMetalRhiNativeRuntimeBoundary().runtimeAvailableOnThisPlatform});
+    if ((id = decision.diagnostic) || !decision.creationEligible)
+        return {};
+    try {
+        core::CpuMemoryQuotaScope ownerScope(ownerQuota);
+        auto receipt = core::makeUnique<MetalOriginalArtifactComputeCreation>(ConstructionKey{},
+            input,
+            layout,
+            desc,
+            budget,
+            nativeQuota,
+            lifetime,
+            *loss,
+            std::move(reservation));
+        {
+            core::CpuMemoryQuotaScope nativeScope(nativeQuota);
+            const auto report = MetalOriginalPipeline::validate(receipt->definition_, input, caps);
+            if (!report.success) {
+                id = "RHI-SYNC-COMPUTE-CREATION-DEFINITION";
+                return {};
+            }
+            receipt->payload_ = MetalOriginalPipeline::createValidatedComputePayload(
+                receipt->definition_, input, report, nativeQuota, id);
+            if (!receipt->payload_)
+                return {};
+        }
+        if ((id = receipt->validate()))
+            return {};
+        return shareOriginal(std::move(receipt));
+    } catch (const std::bad_alloc&) {
+        id = "RHI-SYNC-COMPUTE-CREATION-ALLOCATION";
+        return {};
+    }
+}
+
+const char* MetalOriginalArtifactComputeCreation::validate() const noexcept
+{
+    if (failure_)
+        return failure_;
+    const auto* id = lifetime_.diagnostic();
+    if (!id)
+        id = loss_.diagnostic();
+    if (!id
+        && (!originalMetadataQuota()
+            || originalMetadataQuota()->limitBytes() != budget_.maxCpuOwnerBytes || !nativeQuota_
+            || nativeQuota_->limitBytes() != budget_.maxCpuNativeBytes))
+        id = "RHI-SYNC-COMPUTE-CREATION-QUOTA-LIMIT";
+    if (!id)
+        id = rhi::OriginalSingleEntryPipelineInput::validateOriginal(input_);
+    if (!id && (!layout_ || !layout_->sharedOwnerMatches(layout_)))
+        id = "RHI-SYNC-COMPUTE-CREATION-LAYOUT-OWNER";
+    if (!id)
+        id = layout_->originalResourceRegistration().diagnostic();
+    if (!id && (!payload_ || !originalPipelineNative(payload_, false)))
+        id = "RHI-SYNC-COMPUTE-CREATION-NATIVE-IDENTITY";
+    if (!id)
+        id = MetalOriginalPipeline::diagnostic(*payload_);
+    if (!id
+        && (definition_.layout != layout_.get() || definition_.shaderPackage != &input_->package()
+            || payload_->computeWorkgroupSizeX != definition_.computeShader.computeWorkgroupSizeX
+            || payload_->computeWorkgroupSizeY != definition_.computeShader.computeWorkgroupSizeY
+            || payload_->computeWorkgroupSizeZ != definition_.computeShader.computeWorkgroupSizeZ))
+        id = "RHI-SYNC-COMPUTE-CREATION-DEFINITION-IDENTITY";
+    if (id)
+        failure_ = id;
+    return id;
+}
+
+bool MetalOriginalArtifactComputeCreation::usesCpuQuotaDomain(
+    const std::shared_ptr<core::CpuMemoryQuota>& quota) const noexcept
+{
+    for (const auto& domain : std::array{
+             originalMetadataQuota(), nativeQuota_, input_->quota(), input_->artifact()->quota()})
+        if (core::SharedOwnerProjection::overlapsOwner(quota, domain))
+            return true;
+    return false;
+}
+
+core::UniquePtr<rhi::ComputePipeline> MetalAcceptedOriginalComputePipelineFactory::create(
+    const rhi::GpuDevice& device,
+    const rhi::semantics::NativeBackendCapabilityContract& caps,
+    const rhi::ComputePipelineDesc& desc,
+    const std::shared_ptr<const rhi::OriginalComputePipelineCreation>& creation,
+    const std::shared_ptr<core::CpuMemoryQuota>& quota,
+    const char*& id)
+{
+    id = rhi::OriginalComputePipelineCreation::validateOriginal(creation);
+    if (id)
+        return {};
+    const auto* receipt = dynamic_cast<const MetalOriginalArtifactComputeCreation*>(creation.get());
+    if (!receipt) {
+        id = "RHI-ACCEPTED-COMPUTE-FACTORY-NATIVE-DEVICE";
+        return {};
+    }
+    if ((id = device.validateOriginalDeviceLifetime(receipt->lifetime_))
+        || (id = device.validateOriginalDeviceNativeLoss(receipt->loss_))
+        || (id = device.validateOriginalTypedNativeLossJoin(receipt->loss_, {3u, true})))
+        return {};
+    if (!rhi::PipelineDefinitionIdentity::matches(desc, receipt->definition())) {
+        id = "RHI-ACCEPTED-COMPUTE-FACTORY-DEFINITION";
+        return {};
+    }
+    if (!quota || receipt->usesCpuQuotaDomain(quota)
+        || device.overlapsOriginalDeviceCpuOwner(quota)) {
+        id = "RHI-ACCEPTED-COMPUTE-FACTORY-QUOTA-DOMAIN";
+        return {};
+    }
+    core::CpuMemoryQuotaScope scope(quota);
+    auto report = MetalOriginalPipeline::validate(desc, receipt->originalInput(), caps);
+    if (!report.success) {
+        id = "RHI-ACCEPTED-COMPUTE-FACTORY-INTERFACE";
+        return {};
+    }
+    rhi::OriginalDescriptorBufferBindingContract::Limits limits;
+    if ((id = MetalOriginalComputeBufferLimits::inspect(desc.shaderPackage->reflection,
+             *receipt->payload_,
+             device.capabilities().computeResources,
+             limits)))
+        return {};
+    auto wrapper =
+        core::makeUnique<MetalRhiComputePipeline>(rhi::ComputePipelineStateCopy::copy(desc),
+            std::move(report),
+            receipt->payload_,
+            rhi::semantics::DirectObjectTelemetryLease{},
+            rhi::semantics::DirectObjectBudgetLease{},
+            std::shared_ptr<const rhi::BindlessAuthorization>{},
+            core::UniquePtr<rhi::PipelineLayout>{},
+            core::UniquePtr<rhi::ShaderPackageDesc>{},
+            receipt->originalInput());
+    wrapper->originalDescriptorBufferLimits_ = limits;
+    wrapper->acceptedComputeWrapperCreation_ = creation;
+    if ((id = validate(device, *wrapper)))
+        return {};
+    return wrapper;
+}
+
+const char* MetalAcceptedOriginalComputePipelineFactory::validate(
+    const rhi::GpuDevice& device, const rhi::ComputePipeline& pipeline) noexcept
+{
+    const auto creation = pipeline.acceptedComputeWrapperCreation_.lock();
+    if (const auto* id = rhi::OriginalComputePipelineCreation::validateOriginal(creation))
+        return id;
+    const auto* receipt = dynamic_cast<const MetalOriginalArtifactComputeCreation*>(creation.get());
+    const auto* wrapper = dynamic_cast<const MetalRhiComputePipeline*>(&pipeline);
+    if (!receipt || !wrapper
+        || !core::SharedOwnerProjection::sameOwner(wrapper->nativePayload(), receipt->payload_))
+        return "RHI-ACCEPTED-COMPUTE-FACTORY-NATIVE-DEVICE";
+    if (const auto* id = device.validateOriginalDeviceLifetime(receipt->lifetime_))
+        return id;
+    if (const auto* id = device.validateOriginalDeviceNativeLoss(receipt->loss_))
+        return id;
+    if (const auto* id = device.validateOriginalTypedNativeLossJoin(receipt->loss_, {3u, true}))
+        return id;
+    return pipeline.acceptedWrapperSealDiagnostic(creation);
+}
+
+core::UniquePtr<rhi::RenderPipeline> MetalAcceptedOriginalGraphicsPipelineFactory::create(
+    const rhi::GpuDevice& device,
+    const rhi::semantics::NativeBackendCapabilityContract& caps,
+    const rhi::RenderPipelineDesc& desc,
+    const std::shared_ptr<const rhi::OriginalGraphicsPipelineCreation>& creation,
+    const std::shared_ptr<core::CpuMemoryQuota>& quota,
+    const char*& id)
+{
+    id = rhi::OriginalGraphicsPipelineCreation::validateOriginal(creation);
+    if (id)
+        return {};
+    const auto* receipt =
+        dynamic_cast<const MetalOriginalArtifactGraphicsCreation*>(creation.get());
+    if (!receipt) {
+        id = "RHI-ACCEPTED-GRAPHICS-FACTORY-NATIVE-DEVICE";
+        return {};
+    }
+    if ((id = device.validateOriginalDeviceLifetime(receipt->lifetime_))
+        || (id = device.validateOriginalDeviceNativeLoss(receipt->loss_))
+        || (id = device.validateOriginalTypedNativeLossJoin(receipt->loss_, {3u, true})))
+        return {};
+    if (!rhi::PipelineDefinitionIdentity::matches(desc, receipt->definition())) {
+        id = "RHI-ACCEPTED-GRAPHICS-FACTORY-DEFINITION";
+        return {};
+    }
+    if (!quota || receipt->usesCpuQuotaDomain(quota)
+        || device.overlapsOriginalDeviceCpuOwner(quota)) {
+        id = "RHI-ACCEPTED-GRAPHICS-FACTORY-QUOTA-DOMAIN";
+        return {};
+    }
+    core::CpuMemoryQuotaScope scope(quota);
+    auto report = MetalOriginalPipeline::validate(desc, receipt->originalInput(), caps);
+    if (!report.success) {
+        id = "RHI-ACCEPTED-GRAPHICS-FACTORY-INTERFACE";
+        return {};
+    }
+    rhi::OriginalDescriptorBufferBindingContract::Limits limits;
+    if ((id = MetalOriginalGraphicsBufferLimits::inspect(desc.shaderPackage->reflection,
+             *receipt->payload_,
+             device.capabilities().computeResources,
+             limits)))
+        return {};
+    auto wrapper =
+        core::makeUnique<MetalRhiRenderPipeline>(rhi::RenderPipelineStateCopy::copy(desc),
+            std::move(report),
+            receipt->payload_,
+            rhi::semantics::DirectObjectTelemetryLease{},
+            rhi::semantics::DirectObjectBudgetLease{},
+            core::UniquePtr<rhi::PipelineLayout>{},
+            core::UniquePtr<rhi::ShaderPackageDesc>{},
+            std::shared_ptr<const rhi::BindlessShaderPackage>{},
+            std::shared_ptr<const rhi::BindlessAuthorization>{},
+            rhi::BindlessGraphicsPipelineEntries{},
+            receipt->originalInput());
+    wrapper->originalDescriptorBufferLimits_ = limits;
+    wrapper->acceptedGraphicsWrapperCreation_ = creation;
+    if ((id = validate(device, *wrapper)))
+        return {};
+    return wrapper;
+}
+
+const char* MetalAcceptedOriginalGraphicsPipelineFactory::validate(
+    const rhi::GpuDevice& device, const rhi::RenderPipeline& pipeline) noexcept
+{
+    const auto creation = pipeline.acceptedGraphicsWrapperCreation_.lock();
+    if (const auto* id = rhi::OriginalGraphicsPipelineCreation::validateOriginal(creation))
+        return id;
+    const auto* receipt =
+        dynamic_cast<const MetalOriginalArtifactGraphicsCreation*>(creation.get());
+    const auto* wrapper = dynamic_cast<const MetalRhiRenderPipeline*>(&pipeline);
+    if (!receipt || !wrapper
+        || !core::SharedOwnerProjection::sameOwner(wrapper->nativePayload(), receipt->payload_))
+        return "RHI-ACCEPTED-GRAPHICS-FACTORY-NATIVE-DEVICE";
+    if (const auto* id = device.validateOriginalDeviceLifetime(receipt->lifetime_))
+        return id;
+    if (const auto* id = device.validateOriginalDeviceNativeLoss(receipt->loss_))
+        return id;
+    if (const auto* id = device.validateOriginalTypedNativeLossJoin(receipt->loss_, {3u, true}))
+        return id;
+    return pipeline.acceptedWrapperSealDiagnostic(creation);
 }
 
 const char* MetalOriginalPipeline::diagnostic(const MetalRhiNativePipelinePayload& native) noexcept

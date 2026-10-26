@@ -27,6 +27,7 @@ using ComponentFactory = core::UniquePtr<scene::Component> (*)(EditorSceneCompon
 struct EditorSceneComponentDescriptor {
     SceneComponentCatalogEntry catalogEntry;
     ComponentFactory factory = nullptr;
+    bool identityRestorable = false;
 };
 
 core::UniquePtr<scene::Component> createMesh(EditorSceneComponentFactoryContext&)
@@ -111,8 +112,9 @@ core::UniquePtr<scene::Component> createTileMapResource(EditorSceneComponentFact
     if (!context.physicsWorld2D || !context.physicsWorld2D->valid()
         || !context.resourceManagerProvider || !context.physicsWorld2DProvider)
         return nullptr;
-    return core::makeUnique<scene2d::TileMapResourceComponent>(
-        context.resourceManagerProvider, context.physicsWorld2DProvider);
+    return core::makeUnique<scene2d::TileMapResourceComponent>(context.resourceManagerProvider,
+        context.physicsWorld2DProvider,
+        physics2d::ComponentUsage::Authoring);
 }
 
 core::UniquePtr<scene::Component> createResourceRequest(EditorSceneComponentFactoryContext&)
@@ -174,12 +176,14 @@ core::UniquePtr<scene::Component> createParticleEmitter(EditorSceneComponentFact
 core::UniquePtr<scene::Component> createRigidBody2D(EditorSceneComponentFactoryContext& context)
 {
     if (context.schemaOnly)
-        return core::makeUnique<physics2d::RigidBody2DComponent>(context.physicsWorld2D);
-    if (!context.physicsWorld2D || !context.physicsWorld2D->valid()
-        || context.owner.getComponent<physics2d::RigidBody2DComponent>())
+        return core::makeUnique<physics2d::RigidBody2DComponent>(
+            context.physicsWorld2D, physics2d::ComponentUsage::Authoring);
+    if (!context.physicsWorld2D || !context.physicsWorld2D->valid())
         return nullptr;
-    auto component = core::makeUnique<physics2d::RigidBody2DComponent>(context.physicsWorld2D);
-    if (!component->initializeForOwner(context.owner.world_transform(), context.owner.id()))
+    auto component = core::makeUnique<physics2d::RigidBody2DComponent>(
+        context.physicsWorld2D, physics2d::ComponentUsage::Authoring);
+    if (!context.schemaOnly
+        && !component->initializeForOwner(context.owner.world_transform(), context.owner.id()))
         return nullptr;
     return component;
 }
@@ -188,25 +192,26 @@ core::UniquePtr<scene::Component> createCollider2D(EditorSceneComponentFactoryCo
 {
     physics2d::ShapeDesc desc;
     desc.radius = 0.5f;
-    if (context.schemaOnly)
-        return core::makeUnique<physics2d::Collider2DComponent>(
-            context.physicsWorld2D, physics2d::BodyHandle{}, std::move(desc));
     auto* body = context.owner.getComponent<physics2d::RigidBody2DComponent>();
-    if (!context.physicsWorld2D || !context.physicsWorld2D->valid() || !body || !body->handle()
-        || body->world() != context.physicsWorld2D.get())
+    if (!context.schemaOnly
+        && (!body || body->usage() != physics2d::ComponentUsage::Authoring
+            || body->world() != context.physicsWorld2D.get()))
         return nullptr;
-    auto component = core::makeUnique<physics2d::Collider2DComponent>(
-        context.physicsWorld2D, body->handle(), std::move(desc));
-    return component->handle() ? std::move(component) : nullptr;
+    return core::makeUnique<physics2d::Collider2DComponent>(context.physicsWorld2D,
+        physics2d::BodyHandle{},
+        std::move(desc),
+        physics2d::ComponentUsage::Authoring);
 }
 
 core::UniquePtr<scene::Component> createJoint2D(EditorSceneComponentFactoryContext& context)
 {
     if (context.schemaOnly)
-        return core::makeUnique<physics2d::Joint2DComponent>(context.physicsWorld2D);
+        return core::makeUnique<physics2d::Joint2DComponent>(
+            context.physicsWorld2D, physics2d::ComponentUsage::Authoring);
     if (!context.physicsWorld2D || !context.physicsWorld2D->valid())
         return nullptr;
-    return core::makeUnique<physics2d::Joint2DComponent>(context.physicsWorld2D);
+    return core::makeUnique<physics2d::Joint2DComponent>(
+        context.physicsWorld2D, physics2d::ComponentUsage::Authoring);
 }
 
 core::UniquePtr<scene::Component> createObjectLinks(EditorSceneComponentFactoryContext&)
@@ -215,35 +220,35 @@ core::UniquePtr<scene::Component> createObjectLinks(EditorSceneComponentFactoryC
 }
 
 constexpr std::array<EditorSceneComponentDescriptor, kEditorSceneComponentCount> kDescriptors{{
-    {{"AnimatorComponent", "Animation"}, &createAnimator},
-    {{"MeshComponent", "Mesh"}, &createMesh},
-    {{"TerrainComponent", "Terrain"}, &createTerrain},
-    {{"CameraComponent", "Camera"}, &createCamera},
-    {{"LightComponent", "Light"}, &createLight},
-    {{"TerrainAuthoringComponent", "Terrain Authoring"}, &createTerrainAuthoring},
-    {{"WaterSurfaceComponent", "Water Surface"}, &createWaterSurface},
-    {{"RoadNetworkComponent", "Road Network"}, &createRoadNetwork},
-    {{"CritterFieldComponent", "Critter Field"}, &createCritterField},
-    {{"SkyComponent", "Sky"}, &createSky},
-    {{"CampfireComponent", "Campfire"}, &createCampfire},
-    {{"ColliderComponent", "Collider"}, &createCollider},
-    {{"SpriteRendererComponent", "Sprite 2D"}, &createSpriteRenderer},
-    {{"SpriteTextComponent", "Sprite Text 2D"}, &createSpriteText},
-    {{"TileMapComponent", "TileMap"}, &createTileMap},
-    {{"TileMapResourceComponent", "TileMap Resource"}, &createTileMapResource},
-    {{"ResourceRequestComponent", "Resource Requests"}, &createResourceRequest},
-    {{"AudioSourceComponent", "Audio Source"}, &createAudioSource},
-    {{"AudioListenerComponent", "Audio Listener"}, &createAudioListener},
-    {{"DocumentComponent", "UI Document"}, &createDocument},
-    {{"TimerComponent", "Timer"}, &createTimer},
-    {{"TweenComponent", "Tween"}, &createTween},
-    {{"ScreenCanvas2DComponent", "Canvas 2D"}, &createScreenCanvas},
-    {{"SpriteAnimationComponent", "Sprite Animation 2D"}, &createSpriteAnimation},
-    {{"ParticleEmitter2DComponent", "Particle Emitter 2D"}, &createParticleEmitter},
-    {{"RigidBody2DComponent", "Rigid Body 2D"}, &createRigidBody2D},
-    {{"Collider2DComponent", "Collider 2D"}, &createCollider2D},
-    {{"Joint2DComponent", "Joint 2D"}, &createJoint2D},
-    {{"ObjectLinksComponent", "Object Links"}, &createObjectLinks},
+    {{"AnimatorComponent", "Animation"}, &createAnimator, true},
+    {{"MeshComponent", "Mesh"}, &createMesh, true},
+    {{"TerrainComponent", "Terrain"}, &createTerrain, true},
+    {{"CameraComponent", "Camera"}, &createCamera, true},
+    {{"LightComponent", "Light"}, &createLight, true},
+    {{"TerrainAuthoringComponent", "Terrain Authoring"}, &createTerrainAuthoring, true},
+    {{"WaterSurfaceComponent", "Water Surface"}, &createWaterSurface, true},
+    {{"RoadNetworkComponent", "Road Network"}, &createRoadNetwork, true},
+    {{"CritterFieldComponent", "Critter Field"}, &createCritterField, true},
+    {{"SkyComponent", "Sky"}, &createSky, true},
+    {{"CampfireComponent", "Campfire"}, &createCampfire, true},
+    {{"ColliderComponent", "Collider"}, &createCollider, true},
+    {{"SpriteRendererComponent", "Sprite 2D"}, &createSpriteRenderer, true},
+    {{"SpriteTextComponent", "Sprite Text 2D"}, &createSpriteText, true},
+    {{"TileMapComponent", "TileMap"}, &createTileMap, true},
+    {{"TileMapResourceComponent", "TileMap Resource"}, &createTileMapResource, true},
+    {{"ResourceRequestComponent", "Resource Requests"}, &createResourceRequest, true},
+    {{"AudioSourceComponent", "Audio Source"}, &createAudioSource, true},
+    {{"AudioListenerComponent", "Audio Listener"}, &createAudioListener, true},
+    {{"DocumentComponent", "UI Document"}, &createDocument, true},
+    {{"TimerComponent", "Timer"}, &createTimer, true},
+    {{"TweenComponent", "Tween"}, &createTween, true},
+    {{"ScreenCanvas2DComponent", "Canvas 2D"}, &createScreenCanvas, true},
+    {{"SpriteAnimationComponent", "Sprite Animation 2D"}, &createSpriteAnimation, true},
+    {{"ParticleEmitter2DComponent", "Particle Emitter 2D"}, &createParticleEmitter, true},
+    {{"RigidBody2DComponent", "Rigid Body 2D"}, &createRigidBody2D, true},
+    {{"Collider2DComponent", "Collider 2D"}, &createCollider2D, true},
+    {{"Joint2DComponent", "Joint 2D"}, &createJoint2D, true},
+    {{"ObjectLinksComponent", "Object Links"}, &createObjectLinks, true},
 }};
 } // namespace
 
@@ -257,6 +262,14 @@ editorSceneComponentCatalog() noexcept
         return result;
     }();
     return catalog;
+}
+
+bool editorSceneComponentIdentityRestorable(std::string_view typeName) noexcept
+{
+    for (const auto& descriptor : kDescriptors)
+        if (typeName == descriptor.catalogEntry.typeName)
+            return descriptor.identityRestorable;
+    return false;
 }
 
 core::UniquePtr<scene::Component> createEditorSceneComponent(

@@ -8,13 +8,16 @@
 #include "rhi/backends/vulkan/vulkan_heap_placement.h"
 #include "rhi/backends/vulkan/vulkan_native_commands.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
+#include "rhi/backends/vulkan/vulkan_original_compute_pipeline.h"
 #include "rhi/backends/vulkan/vulkan_original_device_native_loss.h"
+#include "rhi/backends/vulkan/vulkan_original_graphics_pipeline.h"
 #include "rhi/backends/vulkan/vulkan_query_pool.h"
 #include "rhi/backends/vulkan/vulkan_retained_command.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 #include "rhi/backends/vulkan/vulkan_staging_upload_pool.h"
 #include "rhi/backends/vulkan/vulkan_swapchain_retirement.h"
 #include "rhi/frontend/device_validation.h"
+#include "rhi/frontend/original_prepared_command_device.h"
 #include "rhi/frontend/transfer_readback_borrowed_retirement.h"
 #include "rhi/gpu_bindless.h"
 #include "rhi/gpu_descriptors.h"
@@ -294,7 +297,8 @@ bool makeVulkanTimelineSubmitInfo(rhi::GpuTimelineSemaphore* waitSemaphore,
 
 } // namespace
 
-class VulkanRhiDevice final : public rhi::GpuDevice {
+class VulkanRhiDevice final : public rhi::GpuDevice,
+                              public rhi::OriginalPreparedCommandDeviceExtension {
 public:
     core::UniquePtr<VulkanRhiRetainedCommand> prepareRetainedCommand(
         core::UniquePtr<rhi::common::CommandRetentionStorage> storage,
@@ -346,6 +350,8 @@ public:
 
     void* queryInterface(std::string_view extensionId) noexcept override
     {
+        if (extensionId == rhi::OriginalPreparedCommandDeviceExtension::id)
+            return static_cast<rhi::OriginalPreparedCommandDeviceExtension*>(this);
         if (extensionId == rhi::kExtensionBindlessCross) {
             return static_cast<rhi::BindlessCrossExtension*>(&bindless_);
         }
@@ -353,6 +359,40 @@ public:
             return &textureReadbackExtension_;
         }
         return nullptr;
+    }
+
+    const rhi::GpuDevice& originalDevice() const noexcept override { return *this; }
+
+    std::shared_ptr<const rhi::OriginalGraphicsPipelineCreation> createGraphics(
+        const std::shared_ptr<const rhi::OriginalGraphicsPipelineInput>& input,
+        const std::shared_ptr<rhi::PipelineLayout>& layout,
+        const rhi::RenderPipelineDesc& authored,
+        rhi::OriginalSynchronousGraphicsCreationContract::Budget budget,
+        const std::shared_ptr<core::CpuMemoryQuota>& ownerQuota,
+        const std::shared_ptr<core::CpuMemoryQuota>& nativeQuota,
+        const char*& diagnostic) override
+    {
+        return createOriginalGraphicsCreation(
+            input, layout, authored, budget, ownerQuota, nativeQuota, diagnostic);
+    }
+
+    core::UniquePtr<rhi::CommandEncoder> prepare(
+        std::shared_ptr<const rhi::OriginalCommandStreamProgram> program,
+        const rhi::OriginalRenderPassPreparationRequest& request,
+        core::pmr::String& diagnostic) override
+    {
+        if (const auto* id = validateRequest(request)) {
+            diagnostic = id;
+            return {};
+        }
+        return createVulkanRhiCommandEncoderWithColdRenderPasses(nativeResources_,
+            resourceRegistry_,
+            &stagingUploadPool_,
+            desc_.capabilityContract,
+            std::move(program),
+            *this,
+            request,
+            diagnostic);
     }
 
     rhi::DeviceCapabilities capabilities() const override
@@ -454,8 +494,7 @@ public:
             compute.mode =
                 complete ? rhi::CapabilityMode::Native : rhi::CapabilityMode::DiagnosticFailure;
         }
-        caps.features.timestampQueries = desc_.runtime && !desc_.runtime->syntheticRuntime()
-            && desc_.runtime->logicalDevice() != VK_NULL_HANDLE;
+        caps.features.timestampQueries = desc_.runtime && desc_.runtime->timestampQueriesEnabled();
         // The whole RHI BC capability is optional in Vulkan. Publish it only
         // after querying every BC format exposed by this RHI (BC1, BC3, and
         // both BC7 color spaces) for sampled + transfer-destination usage.
@@ -748,13 +787,17 @@ public:
     {
         if (buffer.hostWritesSealed())
             return {false, "RHI-BUFFER-HOST-WRITES-SEALED", 0};
-        if (!data || sizeBytes == 0u || offsetBytes + sizeBytes > buffer.desc().sizeBytes) {
+        if (!data || sizeBytes == 0u || offsetBytes > buffer.desc().sizeBytes
+            || sizeBytes > buffer.desc().sizeBytes - offsetBytes) {
             return {false, "Vulkan RHI buffer write desc is invalid", 0};
         }
         if (auto runtime = nativeResources_.runtime(); runtime && runtime->syntheticRuntime()) {
             return {true, "", 1};
         }
         const auto payload = resourceRegistry_->payload(buffer.id());
+        if (!payload
+            || !core::SharedOwnerProjection::sameOwner(payload, vulkanRhiNativePayload(buffer)))
+            return {false, "RHI-VULKAN-BUFFER-WRITE-ORIGINAL-OWNER", 0};
         auto* mapped = payload ? payload->backendMappedData() : nullptr;
         if (!mapped) {
             return {false, "Vulkan RHI buffer write requires mapped native upload memory", 0};
@@ -762,7 +805,19 @@ public:
         std::memcpy(static_cast<unsigned char*>(mapped) + offsetBytes, data, sizeBytes);
         std::pmr::string flushDiagnostics;
         if (!payload->backendFlushMappedWrite(offsetBytes, sizeBytes, flushDiagnostics)) {
+            payload->originalHostInitializedObject_ = nullptr;
+            payload->originalFrozenHostInitialization_.store(false, std::memory_order_release);
+            payload->originalHostInitialization_.reset();
+            payload->originalHostInitializedBytes_ = 0u;
             return {false, flushDiagnostics, 0};
+        }
+        if (!offsetBytes && sizeBytes == buffer.desc().sizeBytes) {
+            payload->originalHostInitializedObject_ = &buffer;
+            payload->originalFrozenHostInitialization_.store(false, std::memory_order_release);
+            payload->originalHostInitialization_.reset();
+            if (const auto initial = buffer.observeOriginalCommittedState())
+                payload->originalHostInitialization_.emplace(*initial);
+            payload->originalHostInitializedBytes_ = sizeBytes;
         }
         if (std::getenv("ARP_FORWARD_PLUS_BUFFER_TRACE") != nullptr && offsetBytes == 0u
             && sizeBytes >= 16u) {
@@ -1067,6 +1122,133 @@ public:
         return createVulkanRhiRenderPipeline(desc, nativePipeline.payload);
     }
 
+    std::shared_ptr<const VulkanOriginalArtifactGraphicsCreation> createOriginalGraphicsCreation(
+        const std::shared_ptr<const rhi::OriginalGraphicsPipelineInput>& input,
+        const std::shared_ptr<rhi::PipelineLayout>& layout,
+        const rhi::RenderPipelineDesc& authored,
+        VulkanOriginalArtifactGraphicsCreation::Budget budget,
+        const std::shared_ptr<core::CpuMemoryQuota>& ownerQuota,
+        const std::shared_ptr<core::CpuMemoryQuota>& nativeQuota,
+        const char*& diagnostic)
+    {
+        diagnostic = rhi::OriginalSynchronousGraphicsCreationContract::validateBudget(budget);
+        if (diagnostic)
+            return {};
+        if (!nativeQuota || nativeQuota->limitBytes() != budget.maxCpuNativeBytes) {
+            diagnostic = "RHI-SYNC-GRAPHICS-CREATION-QUOTA";
+            return {};
+        }
+        try {
+            core::CpuMemoryQuotaScope scope(nativeQuota);
+            const auto lowering =
+                rhi::semantics::lowerRenderPipelineState(desc_.capabilityContract, authored);
+            if (!lowering.success) {
+                diagnostic = "RHI-SYNC-GRAPHICS-CREATION-STATE-LOWERING";
+                return {};
+            }
+            auto reservation =
+                reserveDirectPipeline(rhi::semantics::DirectObjectBudgetKind::RenderPipeline);
+            if (!reservation.success) {
+                diagnostic = "RHI-SYNC-GRAPHICS-CREATION-DIRECT-BUDGET";
+                return {};
+            }
+            return VulkanOriginalArtifactGraphicsCreation::create(*this,
+                nativeResources_,
+                input,
+                layout,
+                authored,
+                budget,
+                ownerQuota,
+                nativeQuota,
+                std::move(reservation.lease),
+                diagnostic);
+        } catch (const std::bad_alloc&) {
+            diagnostic = "RHI-SYNC-GRAPHICS-CREATION-ALLOCATION";
+            return {};
+        }
+    }
+
+    std::shared_ptr<const rhi::OriginalGraphicsPipelineCreation>
+    createOriginalSynchronousGraphicsCreation(
+        const std::shared_ptr<const rhi::OriginalGraphicsPipelineInput>& input,
+        const std::shared_ptr<rhi::PipelineLayout>& layout,
+        const rhi::RenderPipelineDesc& authored,
+        const rhi::OriginalSynchronousGraphicsCreationContract::Budget& budget,
+        const std::shared_ptr<core::CpuMemoryQuota>& ownerQuota,
+        const std::shared_ptr<core::CpuMemoryQuota>& nativeQuota,
+        const char*& diagnostic) override
+    {
+        return createOriginalGraphicsCreation(
+            input, layout, authored, budget, ownerQuota, nativeQuota, diagnostic);
+    }
+
+    std::shared_ptr<const rhi::OriginalComputePipelineCreation>
+    createOriginalSynchronousComputeCreation(
+        const std::shared_ptr<const rhi::OriginalSingleEntryPipelineInput>& input,
+        const std::shared_ptr<rhi::PipelineLayout>& layout,
+        const rhi::ComputePipelineDesc& authored,
+        const rhi::OriginalSynchronousComputeCreationContract::Budget& budget,
+        const std::shared_ptr<core::CpuMemoryQuota>& ownerQuota,
+        const std::shared_ptr<core::CpuMemoryQuota>& nativeQuota,
+        const char*& diagnostic) override
+    {
+        diagnostic = rhi::OriginalSynchronousComputeCreationContract::validateBudget(budget);
+        if (diagnostic)
+            return {};
+        if (!nativeQuota || nativeQuota->limitBytes() != budget.maxCpuNativeBytes) {
+            diagnostic = "RHI-SYNC-COMPUTE-CREATION-QUOTA";
+            return {};
+        }
+        try {
+            core::CpuMemoryQuotaScope scope(nativeQuota);
+            const auto lowering =
+                rhi::semantics::lowerComputePipelineState(desc_.capabilityContract, authored);
+            if (!lowering.success) {
+                diagnostic = "RHI-SYNC-COMPUTE-CREATION-STATE-LOWERING";
+                return {};
+            }
+            auto reservation =
+                reserveDirectPipeline(rhi::semantics::DirectObjectBudgetKind::ComputePipeline);
+            if (!reservation.success) {
+                diagnostic = "RHI-SYNC-COMPUTE-CREATION-DIRECT-BUDGET";
+                return {};
+            }
+            return VulkanOriginalArtifactComputeCreation::create(*this,
+                nativeResources_,
+                input,
+                layout,
+                authored,
+                budget,
+                ownerQuota,
+                nativeQuota,
+                std::move(reservation.lease),
+                diagnostic);
+        } catch (const std::bad_alloc&) {
+            diagnostic = "RHI-SYNC-COMPUTE-CREATION-ALLOCATION";
+            return {};
+        }
+    }
+
+    core::UniquePtr<rhi::ComputePipeline> createAcceptedOriginalComputePipeline(
+        const rhi::ComputePipelineDesc& definition,
+        const std::shared_ptr<const rhi::OriginalComputePipelineCreation>& creation,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota,
+        const char*& diagnostic) override
+    {
+        return VulkanAcceptedOriginalComputePipelineFactory::create(
+            definition, creation, quota, desc_.runtime.get(), diagnostic);
+    }
+
+    core::UniquePtr<rhi::RenderPipeline> createAcceptedOriginalGraphicsPipeline(
+        const rhi::RenderPipelineDesc& definition,
+        const std::shared_ptr<const rhi::OriginalGraphicsPipelineCreation>& creation,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota,
+        const char*& diagnostic) override
+    {
+        return VulkanAcceptedOriginalGraphicsPipelineFactory::create(
+            definition, creation, quota, desc_.runtime.get(), diagnostic);
+    }
+
     arp::core::UniquePtr<rhi::ComputePipeline> createComputePipeline(
         const rhi::ComputePipelineDesc& desc) override
     {
@@ -1291,6 +1473,25 @@ public:
         return createVulkanRhiQueryPool(desc_.runtime, desc);
     }
 
+    std::shared_ptr<rhi::QueryPool> createOriginalQueryPoolCandidate(
+        std::shared_ptr<const rhi::QueryPoolInputSnapshot> input,
+        const rhi::OriginalQueryPoolCreationBudget& budget,
+        std::shared_ptr<core::CpuMemoryQuota> quota,
+        const char*& diagnostic) override
+    {
+        return VulkanRhiQueryPool::prepareOriginal(
+            desc_.runtime, std::move(input), budget, std::move(quota), diagnostic);
+    }
+
+    const char* validateOriginalQueryPoolCandidate(
+        const std::shared_ptr<const rhi::QueryPool>& object) const noexcept override
+    {
+        if (!desc_.runtime)
+            return "RHI-VULKAN-ORIGINAL-QUERY-RUNTIME";
+        return VulkanRhiQueryPool::validateOriginal(
+            std::dynamic_pointer_cast<const VulkanRhiQueryPool>(object), *desc_.runtime);
+    }
+
     rhi::PipelineCache& pipelineCache() override
     {
         if (!pipelineCache_) {
@@ -1342,6 +1543,37 @@ private:
                     payload, resourceRegistry_->payload(buffer.id()))
             ? nullptr
             : "RHI-VULKAN-RESULT-LOSS-RESOURCE-SOURCE";
+    }
+
+    const char* validateOriginalNativeLossPipeline(
+        const rhi::ComputePipeline& pipeline) const noexcept override
+    {
+        const auto runtime = nativeResources_.runtime();
+        const auto payload = vulkanRhiNativePayload(pipeline);
+        return runtime && runtime->valid() && !runtime->syntheticRuntime()
+                && !runtime->coreQueueCapabilityDiagnostic()
+                && runtime->coreQueueCapabilities().compute && payload
+                && payload->backendVulkanDeviceHandle() == runtime->logicalDevice()
+                && payload->backendVulkanComputePipelineHandle()
+                && payload->backendVulkanComputePipelineLayoutHandle()
+            ? nullptr
+            : "RHI-VULKAN-RESULT-LOSS-COMPUTE-PIPELINE-SOURCE";
+    }
+
+    const char* validateOriginalNativeLossPipeline(
+        const rhi::RenderPipeline& pipeline) const noexcept override
+    {
+        // The common factory has authenticated the accepted wrapper seal;
+        // registration and creation ownership are published after this check.
+        const auto runtime = nativeResources_.runtime();
+        const auto payload = vulkanRhiNativePayload(pipeline);
+        return runtime && runtime->valid() && !runtime->syntheticRuntime()
+                && !runtime->coreQueueCapabilityDiagnostic() && payload
+                && payload->backendVulkanDeviceHandle() == runtime->logicalDevice()
+                && payload->backendVulkanRenderPipelineHandle()
+                && payload->backendVulkanRenderPipelineLayoutHandle()
+            ? nullptr
+            : "RHI-VULKAN-RESULT-LOSS-GRAPHICS-PIPELINE-SOURCE";
     }
 
     const char* validateOriginalNativeLossDescriptor(
@@ -1541,6 +1773,25 @@ arp::core::UniquePtr<rhi::GpuDevice> createVulkanRhiDevice(const VulkanRhiDevice
     deviceDesc.pushConstantLoweringPlan = rhi::semantics::buildPushConstantLoweringPlan(
         rhi::Backend::Vulkan, desc.capabilityContract);
     return arp::core::makeUnique<VulkanRhiDevice>(std::move(deviceDesc));
+}
+
+std::shared_ptr<const VulkanOriginalArtifactGraphicsCreation> createVulkanOriginalGraphicsCreation(
+    rhi::GpuDevice& device,
+    const std::shared_ptr<const rhi::OriginalGraphicsPipelineInput>& input,
+    const std::shared_ptr<rhi::PipelineLayout>& layout,
+    const rhi::RenderPipelineDesc& authored,
+    VulkanOriginalArtifactGraphicsCreation::Budget budget,
+    const std::shared_ptr<core::CpuMemoryQuota>& ownerQuota,
+    const std::shared_ptr<core::CpuMemoryQuota>& nativeQuota,
+    const char*& diagnostic)
+{
+    auto* native = dynamic_cast<VulkanRhiDevice*>(&device);
+    if (!native) {
+        diagnostic = "RHI-SYNC-GRAPHICS-CREATION-DEVICE";
+        return {};
+    }
+    return native->createOriginalGraphicsCreation(
+        input, layout, authored, budget, ownerQuota, nativeQuota, diagnostic);
 }
 
 core::UniquePtr<VulkanRhiRetainedCommand> prepareVulkanRhiRetainedCommand(rhi::GpuDevice& device,

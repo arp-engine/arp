@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <fkYAML/Node.hpp>
+#include <limits>
 #include <utility>
 
 namespace arp::ui {
@@ -111,6 +112,7 @@ UiDocumentDesc toLegacyDocumentDesc(const DocumentDesc& desc)
             appendUint(legacyNode.sourceId, static_cast<std::uint32_t>(node.nodeId.value()));
         }
         legacyNode.controlType = node.controlType;
+        legacyNode.maxTextBytes = node.maxTextBytes;
         legacyNode.layout = node.layout;
         legacyNode.layoutMode = node.layoutMode;
         legacyNode.stackLayout = node.stackLayout;
@@ -398,6 +400,24 @@ bool parseArpuiYamlLayout(
     return true;
 }
 
+bool parseTextInputBudget(
+    const YamlNode& yaml, UiDocumentNodeDesc& node, arp::core::pmr::String& diagnostic)
+{
+    const auto* value = findMappingValue(yaml, "maxTextBytes");
+    if (!value)
+        return true;
+    std::uint64_t budget = 0;
+    if (node.controlType != UiControlType::TextInput
+        || !requireYamlU64(yaml, "maxTextBytes", budget, diagnostic) || !budget
+        || budget > std::numeric_limits<std::uint32_t>::max()) {
+        diagnostic = diagnosticText(
+            "UI-TEXT-BUDGET-INVALID: positive uint32 maxTextBytes requires TextInput");
+        return false;
+    }
+    node.maxTextBytes = static_cast<std::uint32_t>(budget);
+    return true;
+}
+
 bool parseArpuiYamlNode(
     const YamlNode& nodeYaml, UiDocumentNodeDesc& node, arp::core::pmr::String& diagnostics)
 {
@@ -424,6 +444,8 @@ bool parseArpuiYamlNode(
     node.sourceId = arp::core::pmr::String("node_", &arp::core::defaultCpuMemoryResource());
     appendUint(node.sourceId, static_cast<std::uint32_t>(id));
     node.controlType = parseControlType(controlType);
+    if (!parseTextInputBudget(nodeYaml, node, diagnostics))
+        return false;
     optionalYamlString(nodeYaml, "text", node.text);
     optionalYamlString(nodeYaml, "fontToken", node.fontToken);
 
@@ -508,6 +530,8 @@ bool parseUiDocumentV1Node(const YamlNode& nodeYaml,
     }
 
     node.controlType = parseControlType(controlType);
+    if (!parseTextInputBudget(nodeYaml, node, diagnostics))
+        return false;
     optionalYamlString(nodeYaml, "text", node.text);
     optionalYamlString(nodeYaml, "fontToken", node.fontToken);
 
@@ -645,6 +669,12 @@ void appendUiDocumentV1NodeYaml(arp::core::pmr::String& out,
     appendYamlLine(out, fieldIndent.c_str(), "style", node.styleId);
     appendYamlLine(out, fieldIndent.c_str(), "state", node.stateId);
     appendYamlLine(out, fieldIndent.c_str(), "event", node.eventRole);
+    if (node.controlType == UiControlType::TextInput) {
+        out += fieldIndent;
+        out += "maxTextBytes: ";
+        appendUint(out, node.maxTextBytes);
+        out += '\n';
+    }
     if (!node.text.empty()) {
         appendYamlLine(out, fieldIndent.c_str(), "text", node.text);
     }
@@ -783,6 +813,7 @@ UiArpuiRuntimeLoadResult createRuntimeFromDocument(UiDocument document,
         }
 
         UiControlDesc controlDesc;
+        controlDesc.maxTextBytes = node.maxTextBytes;
         controlDesc.type = node.controlType;
         controlDesc.widget.name = node.text.empty()
             ? arp::core::pmr::String(
@@ -1138,6 +1169,7 @@ std::uint64_t UiDocument::stableHash() const
         hash.appendU64(static_cast<std::uint64_t>(node.layoutParticipation));
         hash.appendString(node.styleId);
         hash.appendString(node.text);
+        hash.appendU64(node.maxTextBytes);
         hash.appendString(node.stateId);
         hash.appendString(node.eventRole);
         hash.appendString(node.psdLayerBinding.sourceLayerId);
@@ -1222,6 +1254,17 @@ UiDocumentValidationResult UiDocumentValidator::validate(const UiDocument& docum
             return UiDocumentValidationResult::failure(
                 UiDocumentDiagnosticCode::UnsupportedControlType,
                 diagnosticText("UI document control type is unsupported"));
+        }
+        if (node.controlType == UiControlType::TextInput) {
+            const auto checked = TextInputContract::validate(node.text, node.maxTextBytes);
+            if (!checked.ok())
+                return UiDocumentValidationResult::failure(
+                    UiDocumentDiagnosticCode::InvalidTextInputContract,
+                    checked.diagnostic().message);
+        } else if (node.maxTextBytes != TextInputContract::defaultMaxTextBytes) {
+            return UiDocumentValidationResult::failure(
+                UiDocumentDiagnosticCode::InvalidTextInputContract,
+                diagnosticText("UI-TEXT-BUDGET-TYPE: only TextInput accepts maxTextBytes"));
         }
         if (node.controlType == UiControlType::Image) {
             bool hasRequiredResource = false;

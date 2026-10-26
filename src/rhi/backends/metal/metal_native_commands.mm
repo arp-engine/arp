@@ -2,6 +2,7 @@
 
 #include "core/algorithm/preflight_replay.h"
 #include "core/memory/cpu_allocator.h"
+#include "core/ownership/monotonic_id_sequence.h"
 #include "core/ownership/shared_owner_projection.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
 #include "rhi/backends/metal/metal_binding_validation.h"
@@ -22,6 +23,7 @@
 #include "rhi/backends/metal/metal_original_bindless_command.h"
 #include "rhi/backends/metal/metal_original_bindless_graphics_pass.h"
 #include "rhi/backends/metal/metal_original_device_native_loss.h"
+#include "rhi/backends/metal/metal_original_ordinary_command.h"
 #include "rhi/backends/metal/metal_original_texture_upload.h"
 #include "rhi/backends/metal/metal_staging_upload_pool.h"
 #include "rhi/frontend/bindless_graphics_binding.h"
@@ -35,6 +37,7 @@
 #include "rhi/semantics/bindless_push_consumption_lowering.h"
 #include "rhi/semantics/metal_direct_binding_validation.h"
 #include "rhi/semantics/native_pipeline_state_lowering.h"
+#include "rhi/semantics/original_submission_read.h"
 #include "rhi/semantics/push_constant_validation.h"
 
 #include <Metal/Metal.h>
@@ -529,6 +532,7 @@ MTLIndexType nativeIndexType(rhi::IndexFormat format)
 
 class MetalRhiNativeCommandPayload::SubmissionRetention final {
 public:
+    MetalOriginalQueueAcceptance queueAcceptance;
     core::UniquePtr<rhi::RecordedStagingUploadJournal> stagingUploads;
     std::shared_ptr<MetalOriginalCommandCustody> originalCommandCustody;
     MetalRhiSubmittedResourceRetention resources;
@@ -543,6 +547,34 @@ public:
     std::shared_ptr<const MetalRhiCanonicalProducerRecordingPreparation> canonicalProducer;
     rhi::BindlessFaultSubmissionLease canonicalFaultLease;
     std::shared_ptr<const MetalRhiClosedConsumerNativePreparation> closedConsumer;
+    std::shared_ptr<core::AtomicCapacityLease> commandCapacity;
+    std::shared_ptr<std::atomic<std::uint64_t>> stagingEpoch;
+
+    static bool resolveOrdinary(void* opaque, bool success) noexcept
+    {
+        auto& retained = *static_cast<SubmissionRetention*>(opaque);
+        const bool valid = retained.originalCommandCustody
+            && retained.originalCommandCustody->nativeCompleted(success);
+        retained.originalCommandCustody.reset();
+        const bool hadStaging = retained.stagingUploads && !retained.stagingUploads->empty();
+        if (retained.stagingUploads) {
+            (void)retained.stagingUploads->retireCompleted();
+            retained.stagingUploads.reset();
+        }
+        if (hadStaging && retained.stagingEpoch)
+            retained.stagingEpoch->fetch_add(1u, std::memory_order_release);
+        retained.resources.releaseAfterCompletion();
+        if (retained.commandRetention) {
+            retained.commandRetention->retireAfterCompletion(true);
+            retained.commandRetention.reset();
+        }
+        if (retained.commandCapacity)
+            retained.commandCapacity->release();
+        retained.commandCapacity.reset();
+        retained.stagingEpoch.reset();
+        retained.defaultCompletion.complete(success && valid);
+        return success && valid;
+    }
 };
 
 std::shared_ptr<MetalRhiCompletionState>
@@ -551,6 +583,30 @@ MetalRhiNativeCommandPayload::preparedCompletionState() const
     return submissionRetention_ ? std::shared_ptr<MetalRhiCompletionState>(submissionRetention_,
                                       &submissionRetention_->defaultCompletion)
                                 : nullptr;
+}
+
+std::shared_ptr<const MetalOriginalQueueAcceptance>
+MetalRhiNativeCommandPayload::originalQueueAcceptance() const noexcept
+{
+    if (!submissionRetention_ || !submissionRetention_->queueAcceptance.ordinal())
+        return {};
+    return {submissionRetention_, &submissionRetention_->queueAcceptance};
+}
+
+bool MetalRhiNativeCommandPayload::publishOriginalQueueAcceptance() const noexcept
+{
+    if (!submissionRetention_)
+        return false;
+    auto& receipt = submissionRetention_->queueAcceptance;
+    if (!receipt.nativeAccepted_ || !receipt.ordinal_ || receipt.device_.diagnostic()
+        || !receipt.completion_
+        || receipt.completion_->outcome_.load(std::memory_order_acquire)
+            == MetalRhiCompletionState::Outcome::Failed)
+        return false;
+    // Ownership acknowledgement must not recursively poll/commit the journal.
+    // Owner completion observation starts only after this acceptance is issued.
+    receipt.published_.store(true, std::memory_order_release);
+    return true;
 }
 
 std::shared_ptr<void> sharedMetalRhiNativeCommandQueue()
@@ -566,6 +622,20 @@ std::shared_ptr<void> sharedMetalRhiNativeCommandQueue()
     }();
     return queue;
 }
+
+namespace {
+struct OriginalQueueCommitOrder {
+    std::mutex mutex;
+    core::MonotonicIdSequence ordinals;
+};
+
+OriginalQueueCommitOrder& originalQueueCommitOrder()
+{
+    // Exactly the one native queue above, no map, guessed limit or hot allocation.
+    static OriginalQueueCommitOrder order;
+    return order;
+}
+} // namespace
 
 std::shared_ptr<core::AtomicCapacityBudget> sharedMetalRhiCommandCapacityBudget()
 {
@@ -3445,6 +3515,199 @@ bool MetalOriginalBindlessGraphicsPass::createNativeObjects(core::pmr::String& d
             });
 }
 
+std::shared_ptr<MetalOriginalOrdinaryCommand> MetalOriginalOrdinaryCommand::prepare(
+    const std::shared_ptr<const Program>& program,
+    const rhi::GpuDevice& device,
+    const rhi::OriginalRenderPassPreparationRequest& request,
+    MetalRhiNativeCommandPayload& command,
+    core::pmr::String& diagnostic)
+{
+    const auto reject = [&](const char* id) -> std::shared_ptr<MetalOriginalOrdinaryCommand> {
+        diagnostic = id;
+        return {};
+    };
+    if (const auto* id = inspect(program, device, request))
+        return reject(id);
+    if (!core::SharedOwnerProjection::sameOwner(
+            command.resourceRegistry_, metalRhiIssuingResourceRegistry(device))
+        || !command.nativeDevice_ || !command.nativeCommandBuffer_
+        || !command.stats_->nativeRuntimeBacked)
+        return reject("RHI-METAL-ORDINARY-NATIVE-ISSUER");
+    const char* id = nullptr;
+    auto meter = rhi::CommandRecordingMeter::prepare(*program->recordingBudget(), id);
+    if (!meter)
+        return reject(id);
+    auto owner = shareOriginal(
+        core::makeUnique<MetalOriginalOrdinaryCommand>(ConstructionKey{}, program, *meter));
+    if (!owner)
+        return reject("RHI-METAL-ORDINARY-OWNER-ALLOCATION");
+    owner->command_ = &command;
+    owner->registry_ = command.resourceRegistry_;
+    owner->nativeDevice_ = command.nativeDevice_;
+    owner->passes_.reserve(program->counts().renderPasses);
+    owner->attachments_.reserve(program->counts().attachmentReferences);
+    owner->dispatches_.reserve(
+        program->recordingBudget()->limits.commands[static_cast<std::size_t>(K::Dispatch)]);
+    owner->encoderSlot_ = core::makeShared<core::ExternalObjectSlot>([](void* object) noexcept {
+        [reinterpret_cast<::id>(object) release];
+    });
+    const auto& sources =
+        program->originalInputs()->originalScalars()->originalUsage()->originalSources()->sources();
+    std::size_t pipelineIndex = SIZE_MAX;
+    for (const auto& operation : program->operations()) {
+        if (operation.kind == K::BeginRenderPass)
+            owner->passes_.emplace_back(operation.commandIndex);
+        if (operation.kind == K::BindComputePipeline)
+            pipelineIndex = std::get<rhi::OriginalCommandPipelineBinding>(
+                *program->originalInputs()->descriptorAt(operation.commandIndex))
+                                .sourceIndex;
+        if (operation.kind == K::Dispatch) {
+            const auto& source =
+                std::get<std::shared_ptr<const rhi::OriginalCommandComputePipelineSource>>(
+                    sources[pipelineIndex]);
+            const auto& groups = *program->originalInputs()
+                                      ->originalScalars()
+                                      ->originalArguments()
+                                      ->records()[operation.commandIndex]
+                                      .scalar.get<rhi::CommandScalarArguments::Dispatch>();
+            auto frozen = rhi::OriginalComputeDispatchRecordingAdmission::freeze(
+                {device, request.dispatchDomain}, source, {groups.x, groups.y, groups.z}, id);
+            if (!frozen)
+                return reject(id);
+            owner->dispatches_.push_back(
+                {operation.commandIndex, pipelineIndex, std::move(*frozen)});
+        }
+    }
+    const auto content = rhi::OriginalRenderPassContentContract::visit(program,
+        request.storage,
+        *request.content,
+        [&](std::size_t at,
+            std::size_t operand,
+            const auto& initial,
+            const auto& state,
+            bool stored) noexcept -> const char* {
+            const auto& operation = program->operations()[at];
+            const auto& usage = *program->originalInputs()->originalScalars()->originalUsage();
+            const auto& source =
+                std::get<std::shared_ptr<const rhi::OriginalCommandTextureViewSource>>(
+                    sources[usage.references()[operation.firstReference + operand].sourceIndex]);
+            bool first = true;
+            for (const auto& previous : owner->attachments_)
+                if (owner->attachmentSource(previous).originalParentLease()->originalObject()
+                    == source->originalParentLease()->originalObject())
+                    first = false;
+            owner->attachments_.push_back(
+                {at, operand, initial, state, stored, first, {}, std::nullopt});
+            return nullptr;
+        });
+    if (content.diagnostic)
+        return reject(content.diagnostic);
+    for (auto& pass : owner->passes_) {
+        const auto& args = std::get<std::shared_ptr<const rhi::RenderPassArguments>>(
+            *program->originalInputs()->descriptorAt(pass.command));
+        if (!prepareAuthorizedNativeRenderPass(args->desc(),
+                command.resourceRegistry_,
+                command.nativeDevice_,
+                pass.native,
+                diagnostic,
+                [&] {
+                    return inspect(program, device, request);
+                }))
+            return {};
+    }
+    const auto& budget = *program->recordingBudget();
+    std::uint64_t retainers = budget.limits.resourceReferences;
+    for (const auto extra : {budget.limits.descriptorElements, program->counts().pipelineBinds}) {
+        if (!core::canAddUnsigned(retainers, extra))
+            return reject("RHI-METAL-ORDINARY-RETENTION-CAPACITY");
+        retainers += extra;
+    }
+    if (retainers > SIZE_MAX)
+        return reject("RHI-METAL-ORDINARY-RETENTION-CAPACITY");
+    command.retainedResourcePayloads_.reserve(static_cast<std::size_t>(retainers));
+    command.retainedResourcePayloadIdentities_.reserve(static_cast<std::size_t>(retainers));
+    if (const auto* error = owner->validate())
+        return reject(error);
+    return owner;
+}
+
+bool MetalRhiNativeCommandPayload::prepareOriginalOrdinary(
+    std::shared_ptr<const rhi::OriginalCommandStreamProgram> program,
+    const rhi::GpuDevice& device,
+    const rhi::OriginalRenderPassPreparationRequest& request,
+    core::UniquePtr<core::MutationJournal>& journal,
+    core::pmr::String& diagnostic)
+{
+    if (!journal || !journal->empty() || originalCommandCustody_ || originalOrdinary_
+        || usesRecordingRetention_ || nativeRenderEncoder_ || nativeComputeEncoder_
+        || nativeBlitEncoder_ || stats_->nativeCommandBufferFinished || abandoned_
+        || recordingPoisoned_ || readbackWasSubmitted()) {
+        diagnostic = "RHI-METAL-ORDINARY-JOURNAL-ADOPTION";
+        return false;
+    }
+    if (const auto* id = MetalOriginalOrdinaryCommand::inspect(program, device, request)) {
+        diagnostic = id;
+        return false;
+    }
+    const auto acceptanceMapping =
+        rhi::semantics::OriginalQueueAcceptanceContract::lowering(device.backend(), 1u);
+    if (!acceptanceMapping.backendPrivateMappingImplemented || acceptanceMapping.diagnostic) {
+        diagnostic = acceptanceMapping.diagnostic;
+        return false;
+    }
+    try {
+        core::CpuMemoryQuotaScope scope(program->originalMetadataQuota());
+        auto owner =
+            MetalOriginalOrdinaryCommand::prepare(program, device, request, *this, diagnostic);
+        if (!owner)
+            return false;
+        auto& acceptance = submissionRetention_->queueAcceptance;
+        acceptance.self_ =
+            std::shared_ptr<const MetalOriginalQueueAcceptance>(submissionRetention_, &acceptance);
+        acceptance.device_ = device.originalDeviceLifetimeTicket();
+        acceptance.queue_ = nativeQueue_;
+        acceptance.registry_ = resourceRegistry_;
+        acceptance.program_ = program;
+        acceptance.completion_ = &submissionRetention_->defaultCompletion;
+        const auto domain = metalRhiOriginalSubmissionDomain(device);
+        if (domain) {
+            if (core::SharedOwnerProjection::overlapsOwner(
+                    program->originalMetadataQuota(), domain->storage_->originalMetadataQuota())) {
+                diagnostic = "RHI-SUBMISSION-COMPLETION-QUOTA-DOMAIN";
+                return false;
+            }
+            const char* id = domain->poll();
+            if (id) {
+                diagnostic = id;
+                return false;
+            }
+            const auto ticket = domain->storage_->prepareValidatorCommand(
+                submissionRetention_,
+                &SubmissionRetention::resolveOrdinary,
+                [](void*) noexcept {},
+                nullptr,
+                0u,
+                id);
+            if (id) {
+                diagnostic = id;
+                return false;
+            }
+            submissionDomain_ = domain;
+            submissionTicket_ = ticket;
+            submissionRetention_->defaultCompletion.domain_ = domain;
+        }
+        owner->journal_ = std::move(journal);
+        originalOrdinary_ = owner;
+        originalCommandCustody_ = std::move(owner);
+        diagnostic.clear();
+        return true;
+    } catch (const std::bad_alloc&) {
+        core::CpuMemoryQuotaScope diagnosticScope(nullptr);
+        diagnostic = "RHI-METAL-ORDINARY-COLD-ALLOCATION";
+        return false;
+    }
+}
+
 namespace {
 bool prepareNativeRenderPass(const rhi::RenderPassDesc& desc,
     const std::shared_ptr<MetalRhiResourceRegistry>& registry,
@@ -5520,19 +5783,48 @@ bool MetalRhiNativeCommandPayload::recordDescriptorSetBind(std::uint32_t set,
     std::uint32_t dynamicOffsetCount,
     std::pmr::string& diagnostics)
 {
+    return recordDescriptorSetBindContents(
+        set, descriptorSet, stages, dynamicOffsets, dynamicOffsetCount, diagnostics, false);
+}
+
+bool MetalRhiNativeCommandPayload::recordDescriptorSetBindContents(std::uint32_t set,
+    const std::shared_ptr<const MetalRhiNativeDescriptorGroupPayload>& descriptorSet,
+    rhi::ShaderStage stages,
+    const std::uint32_t* dynamicOffsets,
+    std::uint32_t dynamicOffsetCount,
+    core::pmr::String& diagnostics,
+    bool originalSynchronous)
+{
     if (!retentionRecordingAllows(false, diagnostics))
         return false;
-    if (descriptorSet && !descriptorSet->originalTextureCellSources.empty()) {
+    if (!originalSynchronous && descriptorSet
+        && !descriptorSet->originalTextureCellSources.empty()) {
         diagnostics = "RHI-METAL-STORAGE-CELL-PREPARATION-NOT-EXECUTABLE";
         return false;
     }
-    if (descriptorSet && !descriptorSet->originalCompletedTextureSources.empty()) {
+    if (!originalSynchronous && descriptorSet
+        && !descriptorSet->originalCompletedTextureSources.empty()) {
         diagnostics = "RHI-METAL-COMPLETED-TEXTURE-ORIGINAL-ROOT-REQUIRED";
         return false;
     }
     if (activeGraphicsBinding_) {
         diagnostics = "RHI-METAL-GRAPHICS-SCOPE-BINDING-MISMATCH";
         return false;
+    }
+    if (originalSynchronous) {
+        if (!originalOrdinary_ || !originalOrdinaryEncoding_ || dynamicOffsets || dynamicOffsetCount
+            || !descriptorSet || !descriptorSet->originalCompletedDepthSources.empty()) {
+            diagnostics = "RHI-METAL-ORDINARY-DESCRIPTOR-PROFILE";
+            return false;
+        }
+        for (const auto& binding : descriptorSet->bindings)
+            if (binding.arrayCount != 1u || binding.arrayElement
+                || binding.dynamicOffsetIndex != UINT32_MAX
+                || binding.type == rhi::DescriptorType::Sampler
+                || binding.type == rhi::DescriptorType::InputAttachment) {
+                diagnostics = "RHI-METAL-ORDINARY-DESCRIPTOR-PROFILE";
+                return false;
+            }
     }
     auto* renderEncoder = reinterpret_cast<id<MTLRenderCommandEncoder>>(nativeRenderEncoder_.get());
     auto* computeEncoder =
@@ -5805,6 +6097,14 @@ bool MetalRhiNativeCommandPayload::recordDescriptorSetBind(std::uint32_t set,
             if (buffer == nil) {
                 return fail("RHI-METAL-DESCRIPTOR-BUFFER-PAYLOAD-MISSING");
             }
+            if (originalSynchronous
+                && (!binding.bufferRequiredBytes || !binding.bufferOffsetAlignment
+                    || binding.bufferOffsetBytes % binding.bufferOffsetAlignment
+                    || !fitsNSUInteger(binding.bufferOffsetBytes)
+                    || binding.bufferOffsetBytes > buffer.length
+                    || binding.bufferRequiredBytes > buffer.length - binding.bufferOffsetBytes)) {
+                return fail("RHI-METAL-ORDINARY-DESCRIPTOR-BUFFER-RANGE");
+            }
             if (binding.dynamicOffsetIndex != UINT32_MAX) {
                 if (!dynamicOffsets || binding.dynamicOffsetIndex >= dynamicOffsetCount) {
                     return fail("RHI-METAL-DESCRIPTOR-DYNAMIC-OFFSET-MISSING");
@@ -5974,7 +6274,8 @@ bool MetalRhiNativeCommandPayload::recordDescriptorSetBind(std::uint32_t set,
         switch (binding.argumentKind) {
         case MetalRhiArgumentKind::Buffer: {
             id<MTLBuffer> buffer = nativeBuffer(binding.buffer);
-            const auto offset = binding.dynamicOffsetIndex == UINT32_MAX
+            const auto offset = originalSynchronous ? binding.bufferOffsetBytes
+                : binding.dynamicOffsetIndex == UINT32_MAX
                 ? 0u
                 : dynamicOffsets[binding.dynamicOffsetIndex];
             const auto visibleStages =
@@ -9315,6 +9616,12 @@ bool MetalRhiNativeCommandPayload::recordBlitTextureToBuffer(
         diagnostics = id;
         return false;
     }
+    return recordBlitTextureToBufferContents(desc, diagnostics);
+}
+
+bool MetalRhiNativeCommandPayload::recordBlitTextureToBufferContents(
+    const rhi::TextureToBufferCopyDesc& desc, core::pmr::String& diagnostics)
+{
     if (!retentionRecordingAllows(true, diagnostics))
         return false;
     auto encoder = reinterpret_cast<id<MTLBlitCommandEncoder>>(nativeBlitEncoder_.get());
@@ -9802,15 +10109,33 @@ void MetalRhiNativeCommandPayload::cancelIndirectExecution(bool failure) noexcep
     indirectExecution_.reset();
 }
 
+void MetalRhiNativeCommandPayload::closeUnsubmittedNativeScopes() noexcept
+{
+    if (nativeRenderEncoder_)
+        [reinterpret_cast<id<MTLRenderCommandEncoder>>(nativeRenderEncoder_.get()) endEncoding];
+    if (nativeComputeEncoder_)
+        [reinterpret_cast<id<MTLComputeCommandEncoder>>(nativeComputeEncoder_.get()) endEncoding];
+    if (nativeBlitEncoder_)
+        [reinterpret_cast<id<MTLBlitCommandEncoder>>(nativeBlitEncoder_.get()) endEncoding];
+    nativeRenderEncoder_.reset();
+    nativeComputeEncoder_.reset();
+    nativeBlitEncoder_.reset();
+    nativeCommandBuffer_.reset();
+    nativeSubmitWaitCommandBuffer_.reset();
+}
+
 void MetalRhiNativeCommandPayload::abandonUnsubmitted()
 {
     if (readbackWasSubmitted() || abandoned_) {
         return;
     }
+    abandoned_ = true;
+    closeUnsubmittedNativeScopes();
+    if (submissionDomain_)
+        (void)submissionDomain_->storage_->cancelValidator(submissionTicket_);
     if (originalCommandCustody_)
         originalCommandCustody_->abandonUnsubmitted();
     originalCommandCustody_.reset();
-    abandoned_ = true;
     stagingUploads_.reset();
     cancelIndirectExecution(false);
     cancelCanonicalProducer(false);
@@ -9821,19 +10146,7 @@ void MetalRhiNativeCommandPayload::abandonUnsubmitted()
             MetalRhiOrdinaryPreparedWriteReadback::Status::Abandoned, std::memory_order_release);
     if (recordingRetention_)
         recordingRetention_->abandonUnsubmitted();
-    // Pass objects may already have been destroyed without end(). Native
-    // encoder ownership still lives in the payload, so close it before the
-    // local autorelease boundary makes release observable to API Validation.
-    if (nativeRenderEncoder_) {
-        [reinterpret_cast<id<MTLRenderCommandEncoder>>(nativeRenderEncoder_.get()) endEncoding];
-    }
-    if (nativeComputeEncoder_) {
-        [reinterpret_cast<id<MTLComputeCommandEncoder>>(nativeComputeEncoder_.get()) endEncoding];
-    }
-    if (nativeBlitEncoder_) {
-        [reinterpret_cast<id<MTLBlitCommandEncoder>>(nativeBlitEncoder_.get()) endEncoding];
-    }
-    nativeRenderEncoder_.reset();
+    // Native scopes are already closed; release their prepared storage next.
     if (preparedRenderEncoderSlot_)
         preparedRenderEncoderSlot_->reset();
     ordinaryGraphicsPass_.reset();
@@ -9890,10 +10203,16 @@ void MetalRhiNativeCommandPayload::abandonUnsubmitted()
 
 void MetalRhiNativeCommandPayload::poisonRecording(std::string_view)
 {
-    if (recordingPoisoned_) {
+    if (readbackWasSubmitted() || recordingPoisoned_) {
         return;
     }
     recordingPoisoned_ = true;
+    closeUnsubmittedNativeScopes();
+    if (submissionDomain_)
+        (void)submissionDomain_->storage_->cancelValidator(submissionTicket_);
+    if (originalCommandCustody_)
+        originalCommandCustody_->abandonUnsubmitted();
+    originalCommandCustody_.reset();
     cancelIndirectExecution(true);
     cancelCanonicalProducer(true);
     if (ordinaryWriteStates_)
@@ -9903,19 +10222,7 @@ void MetalRhiNativeCommandPayload::poisonRecording(std::string_view)
             MetalRhiOrdinaryPreparedWriteReadback::Status::Failed, std::memory_order_release);
     if (recordingRetention_)
         recordingRetention_->abandonUnsubmitted();
-    // A poisoned recording is terminal. End and release any currently open
-    // encoder before dropping the command-buffer ownership so later record
-    // calls cannot mutate a partially encoded Metal command stream.
-    if (nativeRenderEncoder_) {
-        [reinterpret_cast<id<MTLRenderCommandEncoder>>(nativeRenderEncoder_.get()) endEncoding];
-    }
-    if (nativeComputeEncoder_) {
-        [reinterpret_cast<id<MTLComputeCommandEncoder>>(nativeComputeEncoder_.get()) endEncoding];
-    }
-    if (nativeBlitEncoder_) {
-        [reinterpret_cast<id<MTLBlitCommandEncoder>>(nativeBlitEncoder_.get()) endEncoding];
-    }
-    nativeRenderEncoder_.reset();
+    // Native scopes and command-buffer ownership were removed before rollback.
     if (preparedRenderEncoderSlot_)
         preparedRenderEncoderSlot_->reset();
     ordinaryGraphicsPass_.reset();
@@ -10026,6 +10333,11 @@ bool MetalRhiNativeCommandPayload::submit(MetalRhiNativeQueueStats& queueStats,
     std::uint64_t signalValue,
     std::pmr::string& diagnostics)
 {
+    if (submissionDomain_)
+        if (const auto* id = submissionDomain_->storage_->diagnostic()) {
+            diagnostics = id;
+            return false;
+        }
     if (submitted_.load(std::memory_order_acquire)) {
         diagnostics = "RHI-METAL-COMMAND-BUFFER-ALREADY-SUBMITTED";
         return false;
@@ -10034,8 +10346,6 @@ bool MetalRhiNativeCommandPayload::submit(MetalRhiNativeQueueStats& queueStats,
     // discards it. Never leave a failed submit holding the generation lease.
     const auto rejectBeforeCommit = [&]() {
         if (originalCommandCustody_) {
-            originalCommandCustody_->abandonUnsubmitted();
-            originalCommandCustody_.reset();
             poisonRecording(diagnostics);
             if (completion)
                 completion->complete(false);
@@ -10140,6 +10450,11 @@ bool MetalRhiNativeCommandPayload::submit(MetalRhiNativeQueueStats& queueStats,
         diagnostics = "RHI-METAL-COMPLETION-PAYLOAD-MISSING";
         return rejectBeforeCommit();
     }
+    if (originalOrdinary_
+        && !core::SharedOwnerProjection::sameOwner(completion, preparedCompletionState())) {
+        diagnostics = "RHI-QUEUE-ACCEPTANCE-COMPLETION-OWNER";
+        return rejectBeforeCommit();
+    }
     if ((waitEvent && !commandDeviceMatches(nativeDevice_, waitEvent->nativeDevice))
         || (signalEvent && !commandDeviceMatches(nativeDevice_, signalEvent->nativeDevice))) {
         diagnostics = "RHI-METAL-SHARED-EVENT-DEVICE-MISMATCH";
@@ -10151,6 +10466,12 @@ bool MetalRhiNativeCommandPayload::submit(MetalRhiNativeQueueStats& queueStats,
     }
     id<MTLCommandBuffer> commandBuffer =
         reinterpret_cast<id<MTLCommandBuffer>>(nativeCommandBuffer_.get());
+    if (originalOrdinary_
+        && commandBuffer.commandQueue
+            != reinterpret_cast<id<MTLCommandQueue>>(nativeQueue_.get())) {
+        diagnostics = "RHI-QUEUE-ACCEPTANCE-NATIVE-QUEUE";
+        return rejectBeforeCommit();
+    }
     if (commandBuffer == nil || commandBuffer.commandQueue == nil) {
         diagnostics = "RHI-METAL-COMMAND-BUFFER-NATIVE-OBJECT-MISSING";
         return rejectBeforeCommit();
@@ -10195,8 +10516,27 @@ bool MetalRhiNativeCommandPayload::submit(MetalRhiNativeQueueStats& queueStats,
         diagnostics = "RHI-COMMAND-RETENTION-CPU-QUOTA-MISMATCH";
         return rejectBeforeCommit();
     }
+    if (submissionDomain_
+        && (!retainedQueryPools_.empty() || !recordedTimestampQueries_.empty()
+            || !recordedPipelineStatisticsQueries_.empty()
+            || !pendingBindlessFaultReadbacks_.empty() || ordinaryWriteReadback_
+            || indirectExecution_ || canonicalProducer_ || closedConsumerNative_)) {
+        diagnostics = "RHI-SUBMISSION-COMPLETION-ORDINARY-PROFILE";
+        return rejectBeforeCommit();
+    }
     if (originalCommandCustody_ && !originalCommandCustody_->beforeSubmit(*this, diagnostics))
         return rejectBeforeCommit();
+    auto& queueOrder = originalQueueCommitOrder();
+    std::unique_lock queueCommitLock(queueOrder.mutex, std::try_to_lock);
+    if (!queueCommitLock.owns_lock()) {
+        diagnostics = "RHI-QUEUE-ACCEPTANCE-BUSY";
+        return false;
+    }
+    const auto queueOrdinal = queueOrder.ordinals.tryAcquire();
+    if (!queueOrdinal) {
+        diagnostics = "RHI-QUEUE-ACCEPTANCE-ORDINAL-EXHAUSTED";
+        return rejectBeforeCommit();
+    }
     bool expectedSubmitted = false;
     if (!submitted_.compare_exchange_strong(
             expectedSubmitted, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
@@ -10209,6 +10549,9 @@ bool MetalRhiNativeCommandPayload::submit(MetalRhiNativeQueueStats& queueStats,
     // failure state instead of leaving a fence permanently pending.
     completion->reset();
     const auto failBeforeCommit = [&]() {
+        closeUnsubmittedNativeScopes();
+        if (submissionDomain_)
+            (void)submissionDomain_->storage_->cancelValidator(submissionTicket_);
         stagingUploads_.reset();
         if (originalCommandCustody_)
             originalCommandCustody_->abandonUnsubmitted();
@@ -10350,6 +10693,11 @@ bool MetalRhiNativeCommandPayload::submit(MetalRhiNativeQueueStats& queueStats,
             diagnostics = id;
             return failBeforeCommit();
         }
+    if (submissionDomain_)
+        if (const auto* id = submissionDomain_->storage_->acceptValidator(submissionTicket_)) {
+            diagnostics = id;
+            return failBeforeCommit();
+        }
     submissionRetention_->originalCommandCustody = std::move(originalCommandCustody_);
     const auto submittedOriginal = std::shared_ptr<std::shared_ptr<MetalOriginalCommandCustody>>(
         submissionRetention_, &submissionRetention_->originalCommandCustody);
@@ -10435,6 +10783,12 @@ bool MetalRhiNativeCommandPayload::submit(MetalRhiNativeQueueStats& queueStats,
         std::shared_ptr<std::shared_ptr<MetalRhiOrdinaryPreparedWriteReadback>>(
             submissionRetention_, &submissionRetention_->ordinaryWriteReadback);
     const auto originalResultSource = sharedMetalRhiOriginalResultLossSource();
+    const auto originalDomain = submissionDomain_;
+    const auto originalTicket = submissionTicket_;
+    if (originalDomain) {
+        submissionRetention_->commandCapacity = commandCapacity_;
+        submissionRetention_->stagingEpoch = stagingCompletedEpoch_;
+    }
     [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completedCommandBuffer) {
         // Keep the moved payloads alive through completion-side query
         // resolution, then explicitly release them. A completed Metal
@@ -10454,6 +10808,15 @@ bool MetalRhiNativeCommandPayload::submit(MetalRhiNativeQueueStats& queueStats,
         const bool commandBufferSucceeded =
             completedCommandBuffer.status == MTLCommandBufferStatusCompleted
             && (!waitCommand || waitCommand.status == MTLCommandBufferStatusCompleted);
+        if (originalDomain) {
+            // Actual original callback publishes only its once-delivered atom.
+            // The device/owner fence joins and retires the existing journal.
+            if (rhi::OriginalSubmissionCompletionDomain::deliverValidatorResult(
+                    originalTicket, commandBufferSucceeded))
+                std::terminate();
+            completionState->notifyNativeResult();
+            return;
+        }
         const bool originalLifetimeValid =
             !*submittedOriginal || (*submittedOriginal)->nativeCompleted(commandBufferSucceeded);
         submittedOriginal->reset();
@@ -10578,6 +10941,11 @@ bool MetalRhiNativeCommandPayload::submit(MetalRhiNativeQueueStats& queueStats,
         [reinterpret_cast<id<MTLCommandBuffer>>(nativeSubmitWaitCommandBuffer_.get()) commit];
     }
     [commandBuffer commit];
+    if (originalOrdinary_) {
+        submissionRetention_->queueAcceptance.ordinal_ = queueOrdinal;
+        submissionRetention_->queueAcceptance.nativeAccepted_ = true;
+    }
+    queueCommitLock.unlock();
     // Keep both actual wrappers alive on this owner thread until commit has
     // detached their snapshots; a fast completion cannot race their destruction
     // against journal mutation. All original GPU owners still belong to the

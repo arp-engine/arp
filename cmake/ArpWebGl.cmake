@@ -478,6 +478,7 @@ function(arp_add_webgl_shader_program_tests)
             --glsl-es-100 --spirv-cross-library "${ARP_SPIRV_CROSS_LIBRARY}" --out-dir "${extension_dir}"
         DEPENDS scripts/compile_shaders.py scripts/webgl_shader_artifact.py scripts/spirv_cross_api.py
             scripts/spirv_layout.py scripts/shader_bindings_codegen.py tests/fixtures/webgl1_extensions.slang
+            "${SLANGC_EXECUTABLE}" "${webgl1_spirv_reflect_tool}" "${ARP_SPIRV_CROSS_LIBRARY}"
         VERBATIM)
     set(sprite_program "${program_dir}/scene_2d_vertices.webgl-program.yaml")
     add_custom_command(OUTPUT "${sprite_program}"
@@ -557,7 +558,8 @@ function(arp_add_webgl_shader_program_tests)
     add_test(NAME arp_webgl_shader_program_negative_tests
         COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/webgl_shader_program_contract_tests.py"
             --exe "$<TARGET_FILE:arp_webgl_shader_program_tests>" --directory "${program_dir}"
-            --library "${ARP_SPIRV_CROSS_LIBRARY}" --slangc "${SLANGC_EXECUTABLE}")
+            --library "${ARP_SPIRV_CROSS_LIBRARY}" --slangc "${SLANGC_EXECUTABLE}"
+            --reflect "${webgl1_spirv_reflect_tool}")
     find_program(ARP_WEBGL_PROGRAM_BROWSER NAMES chrome.exe msedge.exe
         HINTS "C:/Program Files/Google/Chrome/Application" "C:/Program Files (x86)/Microsoft/Edge/Application")
     if(ARP_WEBGL_PROGRAM_BROWSER)

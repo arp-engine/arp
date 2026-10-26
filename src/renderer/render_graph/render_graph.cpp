@@ -2366,7 +2366,9 @@ void FrameGraphExecutor::executeImpl(const CompiledFrameGraph& compiled,
     core::UniquePtr<rhi::CommandEncoder> commandEncoder,
     rhi::OriginalOrderedGraphicsExecution* ordered,
     OrderedGraphicsMeasurements* measurements,
-    rhi::OriginalConformanceClearExecution* conformance)
+    rhi::OriginalConformanceClearExecution* conformance,
+    std::shared_ptr<rhi::GpuFence> preparedCompletion,
+    bool preparedTrace)
 {
     core::CpuWorkMeasurementScope recordMeasurement(measurements ? &measurements->record : nullptr);
     if (const auto* id = graph_.compiledRetirementExecutionDiagnostic(compiled))
@@ -2399,8 +2401,10 @@ void FrameGraphExecutor::executeImpl(const CompiledFrameGraph& compiled,
             }
         }
     }
-    const auto timingPlan = rhi::semantics::lowerGpuTimingScopes(
-        graph_.device_.backend(), graph_.timestampQueriesSupported_, timingRequests);
+    const auto timingPlan = preparedTrace
+        ? rhi::semantics::GpuTimingLoweringPlan{}
+        : rhi::semantics::lowerGpuTimingScopes(
+              graph_.device_.backend(), graph_.timestampQueriesSupported_, timingRequests);
     if (std::getenv("ARP_FRAME_GRAPH_GPU_TIMING_DIAG") != nullptr) {
         std::cerr << "[frame-graph-gpu-timing] requested=" << graph_.gpuTimingPassScopes_.size()
                   << " matched=" << timingRequests.size()
@@ -2439,8 +2443,8 @@ void FrameGraphExecutor::executeImpl(const CompiledFrameGraph& compiled,
     };
     RenderContext context(graph_.device_, commands);
     context.graph_ = &graph_;
-    const bool firstCompiledExecution =
-        !graph_.hasExecutedCompiledGraph_ || graph_.executedCompiledGraph_ != &compiled;
+    const bool firstCompiledExecution = !preparedTrace
+        && (!graph_.hasExecutedCompiledGraph_ || graph_.executedCompiledGraph_ != &compiled);
     graph_.reuseCompiledTrace_ = !firstCompiledExecution;
     graph_.resourceTraceCursor_ = 0u;
     graph_.attachmentTraceCursor_ = 0u;
@@ -2522,9 +2526,12 @@ void FrameGraphExecutor::executeImpl(const CompiledFrameGraph& compiled,
         context.passUses_ =
             passRecord.subpassGroup ? nullptr : &compiled.passResourceUses()[compiledPassIndex];
         const auto* timingSlot = timingSlotFor(passRecord.name);
-        graph_.executionTrace_.push_back(passRecord.name);
-        graph_.replayPassBarriers(
-            commands, compiled, static_cast<std::uint32_t>(compiledPass.originalPassIndex));
+        if (!preparedTrace)
+            graph_.executionTrace_.push_back(passRecord.name);
+        graph_.replayPassBarriers(commands,
+            compiled,
+            static_cast<std::uint32_t>(compiledPass.originalPassIndex),
+            preparedTrace);
         graph_.recordAttachmentTrace(passRecord);
         if (passRecord.subpassGroup) {
             // --- Multi-subpass execution (native path) ---
@@ -2576,10 +2583,13 @@ void FrameGraphExecutor::executeImpl(const CompiledFrameGraph& compiled,
                     + ended.diagnostics));
             }
         } else if (passRecord.renderPassCallback) {
-            auto renderPassDescFor = [this](const FrameGraph::PassRecord& passRecord) {
-                return graph_.renderPassDescFor(passRecord);
-            };
-            auto renderPass = commands.beginRenderPass(renderPassDescFor(passRecord));
+            const auto dynamicDesc = preparedTrace && passRecord.originalRenderPass
+                ? std::optional<rhi::RenderPassDesc>{}
+                : std::optional<rhi::RenderPassDesc>{graph_.renderPassDescFor(passRecord)};
+            const auto& desc = preparedTrace && passRecord.originalRenderPass
+                ? *passRecord.originalRenderPass
+                : *dynamicDesc;
+            auto renderPass = commands.beginRenderPass(desc);
             if (!renderPass) {
                 throw std::runtime_error(arp::core::toStdString(
                     std::pmr::string("frame graph render pass begin failed [") + passRecord.name
@@ -2632,7 +2642,7 @@ void FrameGraphExecutor::executeImpl(const CompiledFrameGraph& compiled,
         activeSubgraph = nullptr;
     }
 
-    graph_.replayPassBarriers(commands, compiled, UINT32_MAX);
+    graph_.replayPassBarriers(commands, compiled, UINT32_MAX, preparedTrace);
     auto commandBuffer = commands.finish();
     if (!commandBuffer) {
         throw std::runtime_error(arp::core::toStdString(
@@ -2663,6 +2673,8 @@ void FrameGraphExecutor::executeImpl(const CompiledFrameGraph& compiled,
         }
     }
     auto submissionFence = commandBuffer->ownedSubmissionFence();
+    if (!submissionFence && preparedCompletion)
+        submissionFence = std::move(preparedCompletion);
     const bool requiresFence = !ordered && !issuerOwnedColdCompletion && !submissionFence;
     auto ownedSubmissionFence =
         requiresFence ? graph_.device_.createFence() : core::UniquePtr<rhi::GpuFence>{};
@@ -3409,14 +3421,18 @@ rhi::RenderPassDesc FrameGraph::renderPassDescFor(const PassRecord& passRecord) 
             desc.hasDepthStencilAttachment = true;
             desc.depthStencilAttachment = rhi::RenderPassDepthStencilAttachmentDesc{
                 texture.desc().label,
-                texture.id(),
+                record.originalAttachmentView
+                    ? record.originalAttachmentView->originalObject()->id()
+                    : texture.id(),
                 texture.desc().format,
                 attachment.loadOp,
                 attachment.storeOp,
-                texture.desc().format == rhi::TextureFormat::Depth24Stencil8 ? attachment.loadOp
-                                                                             : rhi::LoadOp::Load,
-                texture.desc().format == rhi::TextureFormat::Depth24Stencil8 ? attachment.storeOp
-                                                                             : rhi::StoreOp::Store,
+                texture.desc().format == rhi::TextureFormat::Depth24Stencil8
+                    ? attachment.loadOp
+                    : rhi::LoadOp::DontCare,
+                texture.desc().format == rhi::TextureFormat::Depth24Stencil8
+                    ? attachment.storeOp
+                    : rhi::StoreOp::DontCare,
             };
             continue;
         }
@@ -3426,7 +3442,8 @@ rhi::RenderPassDesc FrameGraph::renderPassDescFor(const PassRecord& passRecord) 
         }
         desc.colorAttachments.push_back({
             texture.desc().label,
-            texture.id(),
+            record.originalAttachmentView ? record.originalAttachmentView->originalObject()->id()
+                                          : texture.id(),
             texture.desc().format,
             attachment.loadOp,
             attachment.storeOp,
@@ -3480,7 +3497,8 @@ void FrameGraph::buildAliasTrace(const CompiledFrameGraph& compiled)
 
 void FrameGraph::replayPassBarriers(rhi::CommandEncoder& commands,
     const CompiledFrameGraph& compiled,
-    std::uint32_t passOriginalIndex)
+    std::uint32_t passOriginalIndex,
+    bool transitionDependencies)
 {
     for (const auto& handoff : compiled.aliasHandoffs()) {
         if (handoff.consumerPass != passOriginalIndex) {
@@ -3534,50 +3552,56 @@ void FrameGraph::replayPassBarriers(rhi::CommandEncoder& commands,
                     });
                     ++resourceTraceCursor_;
                 }
-                auto runtimeBarrier = barrier;
+                auto runtimeBefore = barrier.before;
+                auto runtimeSourceStages = barrier.srcStage;
+                auto runtimeSourceAccess = barrier.srcAccess;
                 if (hasExecutedCompiledGraph_) {
-                    runtimeBarrier.before = target.state();
-                    runtimeBarrier.srcStage = runtimeBarrier.srcStage | barrier.replaySourceStages;
-                    runtimeBarrier.srcAccess =
-                        runtimeBarrier.srcAccess | barrier.replaySourceAccess;
+                    runtimeBefore = target.state();
+                    runtimeSourceStages = runtimeSourceStages | barrier.replaySourceStages;
+                    runtimeSourceAccess = runtimeSourceAccess | barrier.replaySourceAccess;
                 }
-                runtimeBarrier.memoryOnly = runtimeBarrier.before == barrier.after;
+                const bool runtimeMemoryOnly = runtimeBefore == barrier.after;
                 if (reuseCompiledTrace_ && barrierTraceCursor_ < barrierTrace_.size()) {
                     auto& trace = barrierTrace_[barrierTraceCursor_++];
-                    trace.before = runtimeBarrier.before;
-                    trace.memoryOnly = runtimeBarrier.memoryOnly;
-                    trace.srcStage = runtimeBarrier.srcStage;
-                    trace.srcAccess = runtimeBarrier.srcAccess;
+                    trace.before = runtimeBefore;
+                    trace.memoryOnly = runtimeMemoryOnly;
+                    trace.srcStage = runtimeSourceStages;
+                    trace.srcAccess = runtimeSourceAccess;
                 } else {
-                    barrierTrace_.push_back(runtimeBarrier);
+                    barrierTrace_.push_back(barrier);
+                    auto& trace = barrierTrace_.back();
+                    trace.before = runtimeBefore;
+                    trace.memoryOnly = runtimeMemoryOnly;
+                    trace.srcStage = runtimeSourceStages;
+                    trace.srcAccess = runtimeSourceAccess;
                     ++barrierTraceCursor_;
                 }
-                const bool memoryOnly = runtimeBarrier.before == barrier.after;
+                const bool memoryOnly = runtimeBefore == barrier.after;
                 // An unused external release can already be in its final
                 // state on replay. No earlier graph access needs ordering.
-                if (memoryOnly && runtimeBarrier.srcAccess == rhi::ResourceAccess::None)
+                if (memoryOnly && runtimeSourceAccess == rhi::ResourceAccess::None)
                     continue;
-                const auto transitioned = memoryOnly
+                const auto transitioned = memoryOnly && !transitionDependencies
                     ? commands.memoryBarrier(target,
                           rhi::ResourceMemoryBarrierDesc{target.id(),
-                              runtimeBarrier.srcStage,
+                              runtimeSourceStages,
                               barrier.dstStage,
-                              runtimeBarrier.srcAccess,
+                              runtimeSourceAccess,
                               barrier.dstAccess})
                     : commands.transition(target,
                           rhi::ResourceBarrierDesc{target.id(),
                               rhi::defaultTextureSubresourceRange(target.desc()),
-                              runtimeBarrier.before,
+                              runtimeBefore,
                               barrier.after,
-                              runtimeBarrier.srcStage,
+                              runtimeSourceStages,
                               barrier.dstStage,
-                              runtimeBarrier.srcAccess,
+                              runtimeSourceAccess,
                               barrier.dstAccess});
                 if (!transitioned.success) {
                     throw std::runtime_error(arp::core::toStdString(
                         std::pmr::string("RG-BARRIER-TRANSITION-FAILED: ")
                         + transitioned.diagnostics + " resource=" + target.desc().label + " pass="
-                        + barrier.passName + " expected=" + resourceStateName(runtimeBarrier.before)
+                        + barrier.passName + " expected=" + resourceStateName(runtimeBefore)
                         + " actual=" + resourceStateName(target.state())
                         + " requested=" + resourceStateName(barrier.after)));
                 }
@@ -3598,50 +3622,56 @@ void FrameGraph::replayPassBarriers(rhi::CommandEncoder& commands,
                     });
                     ++resourceTraceCursor_;
                 }
-                auto runtimeBarrier = barrier;
+                auto runtimeBefore = barrier.before;
+                auto runtimeSourceStages = barrier.srcStage;
+                auto runtimeSourceAccess = barrier.srcAccess;
                 if (hasExecutedCompiledGraph_) {
-                    runtimeBarrier.before = target.state();
-                    runtimeBarrier.srcStage = runtimeBarrier.srcStage | barrier.replaySourceStages;
-                    runtimeBarrier.srcAccess =
-                        runtimeBarrier.srcAccess | barrier.replaySourceAccess;
+                    runtimeBefore = target.state();
+                    runtimeSourceStages = runtimeSourceStages | barrier.replaySourceStages;
+                    runtimeSourceAccess = runtimeSourceAccess | barrier.replaySourceAccess;
                 }
-                runtimeBarrier.memoryOnly = runtimeBarrier.before == barrier.after;
+                const bool runtimeMemoryOnly = runtimeBefore == barrier.after;
                 if (reuseCompiledTrace_ && barrierTraceCursor_ < barrierTrace_.size()) {
                     auto& trace = barrierTrace_[barrierTraceCursor_++];
-                    trace.before = runtimeBarrier.before;
-                    trace.memoryOnly = runtimeBarrier.memoryOnly;
-                    trace.srcStage = runtimeBarrier.srcStage;
-                    trace.srcAccess = runtimeBarrier.srcAccess;
+                    trace.before = runtimeBefore;
+                    trace.memoryOnly = runtimeMemoryOnly;
+                    trace.srcStage = runtimeSourceStages;
+                    trace.srcAccess = runtimeSourceAccess;
                 } else {
-                    barrierTrace_.push_back(runtimeBarrier);
+                    barrierTrace_.push_back(barrier);
+                    auto& trace = barrierTrace_.back();
+                    trace.before = runtimeBefore;
+                    trace.memoryOnly = runtimeMemoryOnly;
+                    trace.srcStage = runtimeSourceStages;
+                    trace.srcAccess = runtimeSourceAccess;
                     ++barrierTraceCursor_;
                 }
-                const bool memoryOnly = runtimeBarrier.before == barrier.after;
+                const bool memoryOnly = runtimeBefore == barrier.after;
                 // An unused external release can already be in its final
                 // state on replay. No earlier graph access needs ordering.
-                if (memoryOnly && runtimeBarrier.srcAccess == rhi::ResourceAccess::None)
+                if (memoryOnly && runtimeSourceAccess == rhi::ResourceAccess::None)
                     continue;
-                const auto transitioned = memoryOnly
+                const auto transitioned = memoryOnly && !transitionDependencies
                     ? commands.memoryBarrier(target,
                           rhi::ResourceMemoryBarrierDesc{target.id(),
-                              runtimeBarrier.srcStage,
+                              runtimeSourceStages,
                               barrier.dstStage,
-                              runtimeBarrier.srcAccess,
+                              runtimeSourceAccess,
                               barrier.dstAccess})
                     : commands.transition(target,
                           rhi::ResourceBarrierDesc{target.id(),
                               rhi::TextureSubresourceRange{},
-                              runtimeBarrier.before,
+                              runtimeBefore,
                               barrier.after,
-                              runtimeBarrier.srcStage,
+                              runtimeSourceStages,
                               barrier.dstStage,
-                              runtimeBarrier.srcAccess,
+                              runtimeSourceAccess,
                               barrier.dstAccess});
                 if (!transitioned.success) {
                     throw std::runtime_error(arp::core::toStdString(
                         std::pmr::string("RG-BARRIER-TRANSITION-FAILED: ")
                         + transitioned.diagnostics + " resource=" + target.desc().label + " pass="
-                        + barrier.passName + " expected=" + resourceStateName(runtimeBarrier.before)
+                        + barrier.passName + " expected=" + resourceStateName(runtimeBefore)
                         + " actual=" + resourceStateName(target.state())
                         + " requested=" + resourceStateName(barrier.after)));
                 }
@@ -3852,6 +3882,8 @@ PassBuilder& PassBuilder::addRhiTransferCommand(const RhiTransferCommand& comman
 void PassBuilder::execute(FrameGraph::ExecuteCallback callback)
 {
     auto& passRecord = graph_.pass(passId_);
+    passRecord.originalIntent.reset();
+    passRecord.originalRenderPass.reset();
     passRecord.callback = std::move(callback);
     passRecord.renderPassCallback = {};
 }
@@ -3859,6 +3891,8 @@ void PassBuilder::execute(FrameGraph::ExecuteCallback callback)
 void PassBuilder::executeRenderPass(RenderPassExecuteCallback callback)
 {
     auto& passRecord = graph_.pass(passId_);
+    passRecord.originalIntent.reset();
+    passRecord.originalRenderPass.reset();
     passRecord.callback = {};
     passRecord.renderPassCallback = std::move(callback);
 }

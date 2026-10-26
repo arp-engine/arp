@@ -1023,8 +1023,10 @@ public:
                 is(p.map.validateRetainedBinding(target->buffer, 764u),
                     "RHI-WEBGPU-NATIVE-MAP-RECEIPT-BINDING");
                 Receipt invalid;
-                is(invalid.prepareCold(target->buffer, 767u, &p, &MapProbe::mapped),
+                is(invalid.prepareCold(nullptr, 768u, &p, &MapProbe::mapped),
                     "RHI-WEBGPU-NATIVE-MAP-RECEIPT-BINDING");
+                is(invalid.prepareCold(target->buffer, 767u, &p, &MapProbe::mapped),
+                    "RHI-BUFFER-READBACK-MAP-RANGE-ALIGNMENT");
                 is(invalid.prepareCold(target->buffer, 764u, &p, &MapProbe::mapped),
                     "RHI-WEBGPU-NATIVE-MAP-RECEIPT-LAYOUT");
                 is(p.map.prepareCold(target->buffer, 768u, &p, &MapProbe::mapped),

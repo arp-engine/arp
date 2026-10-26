@@ -2,6 +2,54 @@
 from arp_scene import GameObject, Component
 var ticks: int = 0
 var constructors: int = 0
+var passive_hooks: int = 0
+
+
+def passive_hook_count() -> int:
+    return passive_hooks
+
+
+def reset_passive_probes():
+    constructors = 0
+    passive_hooks = 0
+
+
+# Every callback mutates a module-level sentinel, independently of field defaults.
+class PassiveProbe(ScriptComponent):
+    value: int
+
+    def __init__(self):
+        constructors += 1
+        self.value = 123
+
+    def on_enable(self):
+        passive_hooks += 1
+
+    def on_start(self):
+        passive_hooks += 1
+
+    def on_update(self, dt: float):
+        passive_hooks += 1
+
+    def on_fixed_update(self, dt: float):
+        passive_hooks += 1
+
+    def on_late_update(self, dt: float):
+        passive_hooks += 1
+
+    def on_disable(self):
+        passive_hooks += 1
+
+    def on_destroy(self):
+        passive_hooks += 1
+
+    def on_event(self, name: string, payload: any):
+        passive_hooks += 1
+
+    def on_collision_enter(self, other: GameObject):
+        passive_hooks += 1
+
+
 def constructor_count() -> int:
     return constructors
 class Counter(ScriptComponent):

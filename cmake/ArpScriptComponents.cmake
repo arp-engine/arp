@@ -31,6 +31,16 @@ add_test(NAME arp_script_component_tests COMMAND arp_script_component_tests)
 add_test(NAME arp_script_component_aot_tests COMMAND arp_script_component_tests --aot)
 add_test(NAME arp_script_component_null_smoke COMMAND arp_script_component_tests --smoke)
 
+add_executable(arp_script_component_authoring_tests tests/contract/script_component_authoring_tests.cpp)
+target_include_directories(arp_script_component_authoring_tests PRIVATE .)
+target_compile_definitions(arp_script_component_authoring_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_options(arp_script_component_authoring_tests PRIVATE -UNDEBUG)
+target_link_libraries(arp_script_component_authoring_tests PRIVATE arp_script_components arp_scene_script_reflection)
+arp_add_mingw_static_runtime(arp_script_component_authoring_tests)
+add_test(NAME arp_script_component_authoring_tests COMMAND arp_script_component_authoring_tests)
+add_test(NAME arp_script_component_authoring_smoke COMMAND arp_script_component_authoring_tests --smoke)
+add_test(NAME arp_script_component_identity_admission_tests COMMAND arp_script_component_authoring_tests --identity-gates)
+
 arp_add_script_plugin(
     MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/modules/arp.scene2d_module.arpplugin"
     TARGET arp_script_plugin_scene2d

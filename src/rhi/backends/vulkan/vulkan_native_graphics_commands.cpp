@@ -1,4 +1,5 @@
 #include "core/memory/cpu_allocator.h"
+#include "rhi/backends/vulkan/vulkan_attachment_operations.h"
 #include "rhi/backends/vulkan/vulkan_conformance_clear.h"
 #include "rhi/backends/vulkan/vulkan_native_commands_impl.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
@@ -30,30 +31,6 @@ std::pmr::string vkFailure(const char* operation, VkResult result)
     std::ostringstream message;
     message << operation << " failed: " << static_cast<int>(result);
     return arp::core::toPmrString(message.str());
-}
-
-VkAttachmentLoadOp loadOpFor(rhi::LoadOp op)
-{
-    switch (op) {
-    case rhi::LoadOp::Load:
-        return VK_ATTACHMENT_LOAD_OP_LOAD;
-    case rhi::LoadOp::Clear:
-        return VK_ATTACHMENT_LOAD_OP_CLEAR;
-    case rhi::LoadOp::DontCare:
-        return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    }
-    return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-}
-
-VkAttachmentStoreOp storeOpFor(rhi::StoreOp op)
-{
-    switch (op) {
-    case rhi::StoreOp::Store:
-        return VK_ATTACHMENT_STORE_OP_STORE;
-    case rhi::StoreOp::DontCare:
-        return VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    }
-    return VK_ATTACHMENT_STORE_OP_DONT_CARE;
 }
 
 VkShaderStageFlags shaderStagesFor(rhi::ShaderStage stages)
@@ -351,8 +328,8 @@ bool VulkanRhiNativeCommandPayload::recordRenderPassBegin(const rhi::RenderPassD
             }
             attachments[i].format = targetFormat;
             attachments[i].samples = VK_SAMPLE_COUNT_1_BIT;
-            attachments[i].loadOp = loadOpFor(desc.colorAttachments[i].loadOp);
-            attachments[i].storeOp = storeOpFor(desc.colorAttachments[i].storeOp);
+            attachments[i].loadOp = vulkanRhiAttachmentLoadOp(desc.colorAttachments[i].loadOp);
+            attachments[i].storeOp = vulkanRhiAttachmentStoreOp(desc.colorAttachments[i].storeOp);
             attachments[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
             attachments[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
             // Render-pass attachment layouts lower the L2 ColorAttachment
@@ -367,13 +344,13 @@ bool VulkanRhiNativeCommandPayload::recordRenderPassBegin(const rhi::RenderPassD
             attachments[depthAttachmentIndex].format = depthFormat;
             attachments[depthAttachmentIndex].samples = VK_SAMPLE_COUNT_1_BIT;
             attachments[depthAttachmentIndex].loadOp =
-                loadOpFor(desc.depthStencilAttachment.depthLoadOp);
+                vulkanRhiAttachmentLoadOp(desc.depthStencilAttachment.depthLoadOp);
             attachments[depthAttachmentIndex].storeOp =
-                storeOpFor(desc.depthStencilAttachment.depthStoreOp);
+                vulkanRhiAttachmentStoreOp(desc.depthStencilAttachment.depthStoreOp);
             attachments[depthAttachmentIndex].stencilLoadOp =
-                loadOpFor(desc.depthStencilAttachment.stencilLoadOp);
+                vulkanRhiAttachmentLoadOp(desc.depthStencilAttachment.stencilLoadOp);
             attachments[depthAttachmentIndex].stencilStoreOp =
-                storeOpFor(desc.depthStencilAttachment.stencilStoreOp);
+                vulkanRhiAttachmentStoreOp(desc.depthStencilAttachment.stencilStoreOp);
             attachments[depthAttachmentIndex].initialLayout =
                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             attachments[depthAttachmentIndex].finalLayout =
@@ -596,8 +573,9 @@ bool VulkanRhiNativeCommandPayload::recordRenderPassBegin(const rhi::RenderPassD
         const auto& target = colorTargets[index];
         attachments[index].format = target->backendVulkanImageFormat();
         attachments[index].samples = VK_SAMPLE_COUNT_1_BIT;
-        attachments[index].loadOp = loadOpFor(desc.colorAttachments[index].loadOp);
-        attachments[index].storeOp = storeOpFor(desc.colorAttachments[index].storeOp);
+        attachments[index].loadOp = vulkanRhiAttachmentLoadOp(desc.colorAttachments[index].loadOp);
+        attachments[index].storeOp =
+            vulkanRhiAttachmentStoreOp(desc.colorAttachments[index].storeOp);
         attachments[index].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         attachments[index].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         // Keep render-pass lowering at ColorAttachment. The graph's explicit
@@ -614,11 +592,14 @@ bool VulkanRhiNativeCommandPayload::recordRenderPassBegin(const rhi::RenderPassD
         const auto& depthAttachment = desc.depthStencilAttachment;
         attachments[depthAttachmentIndex].format = depthFormat;
         attachments[depthAttachmentIndex].samples = VK_SAMPLE_COUNT_1_BIT;
-        attachments[depthAttachmentIndex].loadOp = loadOpFor(depthAttachment.depthLoadOp);
-        attachments[depthAttachmentIndex].storeOp = storeOpFor(depthAttachment.depthStoreOp);
-        attachments[depthAttachmentIndex].stencilLoadOp = loadOpFor(depthAttachment.stencilLoadOp);
+        attachments[depthAttachmentIndex].loadOp =
+            vulkanRhiAttachmentLoadOp(depthAttachment.depthLoadOp);
+        attachments[depthAttachmentIndex].storeOp =
+            vulkanRhiAttachmentStoreOp(depthAttachment.depthStoreOp);
+        attachments[depthAttachmentIndex].stencilLoadOp =
+            vulkanRhiAttachmentLoadOp(depthAttachment.stencilLoadOp);
         attachments[depthAttachmentIndex].stencilStoreOp =
-            storeOpFor(depthAttachment.stencilStoreOp);
+            vulkanRhiAttachmentStoreOp(depthAttachment.stencilStoreOp);
         attachments[depthAttachmentIndex].initialLayout =
             VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         attachments[depthAttachmentIndex].finalLayout =
@@ -1169,7 +1150,8 @@ bool VulkanRhiNativeCommandPayload::recordRenderPassEnd(std::pmr::string& diagno
         diagnostics = "Vulkan RHI native render pass end requires an active render pass";
         return false;
     }
-    if (impl_->retainedRenderPassCount >= impl_->retainedRenderPasses.size()) {
+    if (!impl_->originalRenderPassBorrowed
+        && impl_->retainedRenderPassCount >= impl_->retainedRenderPasses.size()) {
         diagnostics = "Vulkan RHI native command buffer exceeded retained render-pass capacity";
         return false;
     }
@@ -1188,9 +1170,11 @@ bool VulkanRhiNativeCommandPayload::recordRenderPassEnd(std::pmr::string& diagno
         return false;
     }
     cmdEndRenderPass(impl_->commandBuffer);
-    impl_->retainedRenderPasses[impl_->retainedRenderPassCount++] =
-        std::move(impl_->activeRenderPass);
+    if (!impl_->originalRenderPassBorrowed)
+        impl_->retainedRenderPasses[impl_->retainedRenderPassCount++] =
+            std::move(impl_->activeRenderPass);
     impl_->activeRenderPass = {};
+    impl_->originalRenderPassBorrowed = false;
     if (impl_->stats) {
         ++impl_->stats->nativeCommandBufferRecordCount;
         ++impl_->stats->nativeRenderPassEndRecordCount;

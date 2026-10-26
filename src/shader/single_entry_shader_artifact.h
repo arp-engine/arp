@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/ownership/quota_bound_shared_identity.h"
+#include "shader/native_buffer_memory_declarations.h"
 #include "shader/runtime_array_length_operations.h"
 #include "shader/shader_artifact_files.h"
 #include "shader/shader_reflection_cache.h"
@@ -19,6 +20,7 @@ struct SingleEntryShaderLoadBudget {
     std::uint32_t maxBindings = 0u;
     const TargetBufferMemoryLoadRequest* targetMemory = nullptr;
     const RuntimeLengthOperationLoadRequest* runtimeLength = nullptr;
+    const NativeBufferMemoryLoadRequest* nativeMemory = nullptr;
 };
 
 // Startup-only immutable identity; no pipeline/execution authorization.
@@ -136,6 +138,36 @@ public:
 
     bool bufferDeclarationLayoutsAvailable() const noexcept { return bufferDeclarationsAvailable_; }
 
+    static const char* originalReadOnlyStorageDiagnostic(
+        const std::shared_ptr<const SingleEntryShaderArtifact>& self,
+        std::uint32_t set,
+        std::uint32_t binding) noexcept
+    {
+        SpirvBufferDeclarationLayout facts;
+        if (const auto* id = originalBufferDeclarationLayout(self, set, binding, facts))
+            return id;
+        const auto& binary = self->bytes(ShaderArtifactRole::Spirv);
+        return SpirvBufferDeclarationLayoutVerifier::inspectReadOnlyStorage(
+            binary.data(), binary.size(), facts);
+    }
+
+    // The artifact owns the frozen binary graph and authored native relation.
+    // This lookup grants no native creation, descriptor or execution authority.
+    static const char* originalNativeBufferMemory(
+        const std::shared_ptr<const SingleEntryShaderArtifact>& self,
+        const NativeBufferMemoryDeclarations*& output) noexcept
+    {
+        output = nullptr;
+        if (const auto* id = validateOriginal(self))
+            return id;
+        if (!self->nativeMemory_.version())
+            return "SHADER-ENTRY-NATIVE-MEMORY-NOT-REQUESTED";
+        output = &self->nativeMemory_;
+        return nullptr;
+    }
+
+    bool nativeBufferMemoryRequested() const noexcept { return nativeMemory_.version() != 0u; }
+
     static const char* originalTargetBufferMemory(
         const std::shared_ptr<const SingleEntryShaderArtifact>& self,
         std::uint32_t set,
@@ -198,6 +230,7 @@ private:
         &core::defaultCpuMemoryResource()};
     bool bufferDeclarationsAvailable_ = false;
     TargetBufferMemoryDeclarations targetMemory_;
+    NativeBufferMemoryDeclarations nativeMemory_;
     core::pmr::Vector<RuntimeArrayLengthOperations::Facts> runtimeLength_{
         &core::defaultCpuMemoryResource()};
     const char* runtimeLengthDiagnostic_ = "SHADER-ENTRY-RUNTIME-LENGTH-NOT-REQUESTED";

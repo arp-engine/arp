@@ -1,6 +1,6 @@
 #include "2d/runtime_contract.h"
 #include "core/math/seeded_random.h"
-#include "scene/time/game_clock.h"
+#include "core/time/game_clock.h"
 
 #include <cassert>
 #include <cstdio>

@@ -39,6 +39,11 @@ struct SpirvPushConstantDeclarationLayout {
 // lookup. Unknown declaration types fail; this is not a full SPIR-V validator.
 class ARP_API SpirvBufferDeclarationLayoutVerifier final {
 public:
+    // Access declaration only, independent of member layout and target pointer
+    // permission. The caller authenticates the original selected binary facts.
+    static const char* inspectReadOnlyStorage(
+        const void*, std::size_t, const SpirvBufferDeclarationLayout&) noexcept;
+
     static const char* verify(const void*,
         std::size_t,
         std::uint32_t maxBindings,

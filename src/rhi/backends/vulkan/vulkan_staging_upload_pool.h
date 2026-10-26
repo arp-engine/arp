@@ -11,10 +11,22 @@
 #include <string>
 #include <vector>
 
+namespace arp::rhi::semantics {
+struct UploadStagingColdStorageBudget;
+}
+
+namespace arp::rhi {
+class GpuDevice;
+class OriginalCommandInputs;
+class OriginalCommandTextureUploadPackingSource;
+struct OriginalCommandStreamBudget;
+struct OriginalTexturePoolInitializationBudget;
+} // namespace arp::rhi
+
 namespace arp::rhi_vulkan {
 
 struct VulkanRhiStagingUploadPoolDesc {
-    std::pmr::string label;
+    core::pmr::String label{&core::defaultCpuMemoryResource()};
     std::uint64_t pageSizeBytes = 1024u * 1024u;
     std::uint32_t maxPageCount = 4;
     std::uint64_t alignmentBytes = 256;
@@ -23,7 +35,7 @@ struct VulkanRhiStagingUploadPoolDesc {
 };
 
 struct VulkanRhiStagingUploadRequest {
-    std::pmr::string label;
+    core::pmr::String label{&core::defaultCpuMemoryResource()};
     std::uint64_t sizeBytes = 0;
     std::uint64_t alignmentBytes = 256;
     std::uint64_t frameSerial = 0;
@@ -31,8 +43,8 @@ struct VulkanRhiStagingUploadRequest {
 
 struct VulkanRhiStagingUploadSlice {
     bool success = false;
-    std::pmr::string diagnostics;
-    std::pmr::string diagnosticId;
+    core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
+    core::pmr::String diagnosticId{&core::defaultCpuMemoryResource()};
     VkBuffer buffer = VK_NULL_HANDLE;
     void* mappedData = nullptr;
     std::uint64_t offsetBytes = 0;
@@ -42,6 +54,8 @@ struct VulkanRhiStagingUploadSlice {
     bool nativeHandleExposedToUpperLayer = false;
     std::shared_ptr<void> payload;
     std::shared_ptr<VulkanRhiMappedBufferWriteFlusher> writeFlusher;
+    // Bounded refusal owns no diagnostic string and performs no hot allocation.
+    const char* storageDiagnostic = nullptr;
 };
 
 struct VulkanRhiStagingUploadPoolStats {
@@ -67,7 +81,25 @@ public:
         std::pmr::memory_resource* memoryResource = &core::defaultCpuMemoryResource());
     ~VulkanRhiStagingUploadPool();
 
+    static core::UniquePtr<VulkanRhiStagingUploadPool> prepareCold(
+        const VulkanRhiStagingUploadPoolDesc& desc,
+        VulkanRhiAllocator& allocator,
+        const rhi::semantics::UploadStagingColdStorageBudget& budget,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota,
+        const char*& diagnostic) noexcept;
+
+    bool coldStoragePrepared() const noexcept;
+
     VulkanRhiStagingUploadSlice allocate(const VulkanRhiStagingUploadRequest& request);
+    VulkanRhiStagingUploadSlice initializeOriginalTexture(
+        const std::shared_ptr<const rhi::OriginalCommandInputs>& inputs,
+        const rhi::OriginalCommandStreamBudget& stream,
+        std::size_t commandIndex,
+        const std::shared_ptr<const rhi::OriginalCommandTextureUploadPackingSource>& packing,
+        const rhi::OriginalTexturePoolInitializationBudget& budget,
+        rhi::RecordedStagingUploadJournal& journal,
+        std::uint64_t frameSerial,
+        rhi::GpuDevice* originalDevice = nullptr) noexcept;
     bool cancel(const VulkanRhiStagingUploadSlice& slice);
     bool cancel(const rhi::RecordedStagingUploadSlice& slice);
     bool enlist(
@@ -92,6 +124,7 @@ private:
     std::shared_ptr<Ledger> ledger_;
     core::pmr::Vector<Page> pages_;
     std::uint32_t policyRejections_ = 0;
+    bool coldStorage_ = false;
 };
 
 } // namespace arp::rhi_vulkan

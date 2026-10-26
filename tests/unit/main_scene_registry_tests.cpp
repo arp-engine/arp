@@ -126,14 +126,15 @@ void invalid_requests_and_candidate_rollback_are_deterministic()
 
 void only_the_committed_scene_is_updated()
 {
+    // Captured state must outlive both scenes' Runtime teardown hooks.
+    std::vector<std::string> firstHooks;
+    std::vector<std::string> secondHooks;
     Scene first;
     Scene second;
     MainSceneRegistry registry;
     assert(registry.registerScene(first));
     assert(registry.registerScene(second));
 
-    std::vector<std::string> firstHooks;
-    std::vector<std::string> secondHooks;
     auto& firstObject = first.createObject("first-script");
     auto& secondObject = second.createObject("second-script");
     firstObject.addComponent<arp::scene::ScriptBehaviorComponent>(

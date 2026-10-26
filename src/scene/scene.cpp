@@ -81,6 +81,7 @@ std::uint64_t Scene::main_scene_generation() const
 
 Component* Scene::createComponentByName(GameObject& object, const arp::core::pmr::String& type)
 {
+    requireIdentityIdle();
     if (&object != this && findObject(object.id()) != &object)
         return nullptr;
     if (shuttingDown_ || object.pendingDestroy())
@@ -99,11 +100,17 @@ Component* Scene::createComponentByName(GameObject& object, const arp::core::pmr
     return &attached;
 }
 
+bool Scene::hasRegisteredScriptComponentType(const core::pmr::String& type) const noexcept
+{
+    return scriptFactories_.find(type) != scriptFactories_.end();
+}
+
 bool Scene::registerScriptComponentTypes(const core::pmr::String& module,
     const core::pmr::Vector<core::pmr::String>& types,
     ScriptComponentFactory factory,
     const void* executionIdentity)
 {
+    requireIdentityIdle();
     if (shuttingDown_ || module.empty() || types.empty() || !factory)
         return false;
     for (const auto& type : types) {
@@ -120,8 +127,15 @@ bool Scene::registerScriptComponentTypes(const core::pmr::String& module,
 }
 
 Scene::Scene(arp::core::pmr::String name, SceneId sceneId)
-    : GameObject(GameObjectId::fromValue(1), std::move(name), this), sceneId_(sceneId)
+    : Scene(std::move(name), sceneId, SceneExecutionMode::Runtime)
+{}
+
+Scene::Scene(arp::core::pmr::String name, SceneId sceneId, SceneExecutionMode mode)
+    : GameObject(GameObjectId::fromValue(1), std::move(name), this), sceneId_(sceneId),
+      executionMode_(mode)
 {
+    if (mode != SceneExecutionMode::Runtime && mode != SceneExecutionMode::Passive)
+        throw std::invalid_argument("ARP-SCENE-EXECUTION-MODE-INVALID");
     bindScene(this);
     bindReflectionObject(arp::reflection::object::native_reference(this));
     objectLookup_[id().value()] = this;
@@ -139,20 +153,19 @@ Scene::~Scene()
     while (!components_.empty()) {
         auto owned = std::move(components_.back());
         components_.pop_back();
-        if (owned->activeInScene()) {
-            owned->setActiveInScene(false);
-            owned->onDisable(context);
-        }
-        owned->onDestroy(context);
+        dispatchComponentDestruction(*owned, context);
     }
 }
 
 GameObject& Scene::createObject(arp::core::pmr::String name)
 {
+    requireIdentityIdle();
     if (shuttingDown_)
         throw std::logic_error("ARP-SCENE-SHUTTING-DOWN");
     if (objects_.size() >= maxObjects_)
         throw std::length_error("ARP-SCENE-OBJECT-CAPACITY");
+    if (nextObjectId_ == UINT64_MAX)
+        throw std::overflow_error("ARP-SCENE-OBJECT-ID-EXHAUSTED");
     const auto objectId = GameObjectId::fromValue(nextObjectId_++);
     auto object = arp::core::makeUnique<GameObject>(objectId, std::move(name), this);
     object->initializeMandatoryTransform(allocateComponentId());
@@ -203,6 +216,7 @@ const GameObject* Scene::findObjectByName(const arp::core::pmr::String& name) co
 
 SceneResult Scene::reparent(GameObjectId childId, GameObjectId parentId)
 {
+    requireIdentityIdle();
     const auto* child = findObject(childId);
     const auto* parent = findObject(parentId);
     if (child && child->parentId() == parentId)
@@ -215,6 +229,7 @@ SceneResult Scene::reparent(GameObjectId childId, GameObjectId parentId)
 
 SceneResult Scene::reparent(GameObjectId childId, GameObjectId parentId, std::size_t childIndex)
 {
+    requireIdentityIdle();
     if (childId == rootId()) {
         return SceneResult::failure(
             SceneDiagnosticCode::CannotReparentSceneRoot, "Scene root cannot be reparented.");
@@ -239,6 +254,13 @@ SceneResult Scene::reparent(GameObjectId childId, GameObjectId parentId, std::si
 
     const auto oldParentId = child->parentId();
     const auto oldParent = oldParentId.valid() ? findObject(oldParentId) : nullptr;
+    if (oldParentId.valid() && !oldParent)
+        return SceneResult::failure(SceneDiagnosticCode::InvalidParentId,
+            "Child's current parent is missing from the scene.");
+    if (oldParent
+        && std::count(oldParent->childIds().begin(), oldParent->childIds().end(), childId) != 1)
+        return SceneResult::failure(SceneDiagnosticCode::InvalidObjectId,
+            "Child is missing or duplicated in its parent's sibling list.");
     const auto targetChildren = parent->childIds().size();
     const auto maximumIndex =
         oldParentId == parentId && oldParent ? targetChildren - 1u : targetChildren;
@@ -246,28 +268,28 @@ SceneResult Scene::reparent(GameObjectId childId, GameObjectId parentId, std::si
         return SceneResult::failure(SceneDiagnosticCode::InvalidChildIndex,
             "Child insertion index is outside the target sibling list.");
 
+    auto success = SceneResult::success();
     if (oldParentId == parentId && oldParent) {
         if (!oldParent->reorderChild(childId, childIndex))
             return SceneResult::failure(SceneDiagnosticCode::InvalidObjectId,
                 "Child is missing from its parent's sibling list.");
-        return SceneResult::success();
+        return success;
     }
 
+    // No hierarchy write may precede the target's potentially allocating prepare.
+    if (!parent->prepareChildInsertion(childId, childIndex))
+        return SceneResult::failure(SceneDiagnosticCode::InvalidChildIndex,
+            "Child insertion index is outside the target sibling list.");
     if (oldParentId.valid() && oldParent)
         oldParent->removeChild(childId);
     child->setParentId(parentId);
-    if (!parent->insertChildAt(childId, childIndex)) {
-        child->setParentId(oldParentId);
-        if (oldParent)
-            oldParent->appendChild(childId);
-        return SceneResult::failure(SceneDiagnosticCode::InvalidChildIndex,
-            "Child insertion index is outside the target sibling list.");
-    }
-    return SceneResult::success();
+    parent->insertPreparedChildAt(childId, childIndex);
+    return success;
 }
 
 SceneResult Scene::destroyObject(GameObjectId objectId)
 {
+    requireIdentityIdle();
     if (objectId == rootId() || !objectId.valid()) {
         return SceneResult::failure(SceneDiagnosticCode::InvalidObjectId,
             "Cannot destroy the scene root or an invalid GameObject id.");
@@ -317,6 +339,9 @@ SceneUpdateResult Scene::fixedUpdate(const SceneUpdateOptions& options)
 
 SceneUpdateResult Scene::dispatch(const SceneUpdateOptions& options, bool fixed)
 {
+    if (executionMode_ == SceneExecutionMode::Passive)
+        return SceneUpdateResult::failure(
+            SceneDiagnosticCode::PassiveExecutionRejected, "ARP-SCENE-PASSIVE-EXECUTION");
     if (dispatching_)
         return SceneUpdateResult::failure(
             SceneDiagnosticCode::ScriptExecutionFailed, "ARP-SCENE-REENTRANT-DISPATCH");
@@ -405,6 +430,9 @@ SceneUpdateResult Scene::dispatch(const SceneUpdateOptions& options, bool fixed)
 
 bool Scene::queueEvent(SceneEvent event)
 {
+    requireIdentityIdle();
+    if (executionMode_ == SceneExecutionMode::Passive)
+        return false;
     const auto* target = findObject(event.target);
     if (!target || target->pendingDestroy() || event.name.empty() || events_.size() >= maxEvents_)
         return false;
@@ -414,6 +442,9 @@ bool Scene::queueEvent(SceneEvent event)
 
 SceneUpdateResult Scene::dispatchEvents(const SceneUpdateOptions& options)
 {
+    if (executionMode_ == SceneExecutionMode::Passive)
+        return SceneUpdateResult::failure(
+            SceneDiagnosticCode::PassiveExecutionRejected, "ARP-SCENE-PASSIVE-EXECUTION");
     if (dispatching_)
         return SceneUpdateResult::failure(
             SceneDiagnosticCode::ScriptExecutionFailed, "ARP-SCENE-REENTRANT-DISPATCH");
@@ -461,6 +492,9 @@ SceneUpdateResult Scene::dispatchEvents(const SceneUpdateOptions& options)
 SceneUpdateResult Scene::dispatchPhysicsEvents(
     const arp::core::pmr::Vector<ScriptPhysicsEvent>& events, const SceneUpdateOptions& options)
 {
+    if (executionMode_ == SceneExecutionMode::Passive)
+        return SceneUpdateResult::failure(
+            SceneDiagnosticCode::PassiveExecutionRejected, "ARP-SCENE-PASSIVE-EXECUTION");
     if (dispatching_)
         return SceneUpdateResult::failure(
             SceneDiagnosticCode::ScriptExecutionFailed, "ARP-SCENE-PHYSICS-EVENT-CONTRACT");
@@ -523,14 +557,21 @@ void Scene::markDestroyed(GameObject& object)
             markDestroyed(*value);
 }
 
+void Scene::dispatchComponentDestruction(Component& component, const SceneUpdateContext& context)
+{
+    const bool active = component.activeInScene();
+    component.setActiveInScene(false);
+    if (executionMode_ == SceneExecutionMode::Passive)
+        return;
+    if (active)
+        component.onDisable(context);
+    component.onDestroy(context);
+}
+
 void Scene::flushDestroyed(const SceneUpdateContext& context)
 {
     const auto destroyComponent = [&](core::UniquePtr<Component> owned) {
-        if (owned->activeInScene()) {
-            owned->setActiveInScene(false);
-            owned->onDisable(context);
-        }
-        owned->onDestroy(context);
+        dispatchComponentDestruction(*owned, context);
     };
     // Restart after every hook: callbacks may mark an earlier object for
     // deletion. Children finish before parents, independent of creation order.
@@ -603,8 +644,17 @@ SceneTraversalSnapshot Scene::extractTraversalSnapshot(const SceneTraversalOptio
     return SceneTraversalSnapshot::success(std::move(nodes));
 }
 
+void Scene::requireIdentityIdle() const
+{
+    if (restoringIdentity_)
+        throw std::logic_error("ARP-SCENE-IDENTITY-BUSY");
+}
+
 ComponentId Scene::allocateComponentId()
 {
+    requireIdentityIdle();
+    if (nextComponentId_ == UINT64_MAX)
+        throw std::overflow_error("ARP-SCENE-COMPONENT-ID-EXHAUSTED");
     return ComponentId::fromValue(nextComponentId_++);
 }
 
@@ -700,12 +750,14 @@ Scene::RestorationTransaction::RestorationTransaction(Scene& scene)
     : scene_(scene), factories_(scene.scriptFactories_), objects_(scene.objects_.size()),
       objectId_(scene.nextObjectId_), componentId_(scene.nextComponentId_)
 {
-    if (scene.dispatching_ || scene.shuttingDown_)
+    if (scene.dispatching_ || scene.shuttingDown_ || scene.restoringIdentity_)
         throw std::logic_error("ARP-SCENE-RESTORATION-DURING-DISPATCH");
+    ++scene.restorationDepth_;
 }
 
 Scene::RestorationTransaction::~RestorationTransaction()
 {
+    --scene_.restorationDepth_;
     if (committed_)
         return;
     while (scene_.objects_.size() > objects_)

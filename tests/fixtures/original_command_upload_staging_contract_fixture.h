@@ -17,6 +17,36 @@ class OriginalCommandUploadStagingContractFixture final {
     }
 
 public:
+    static void verifyJournalEntries(
+        const std::shared_ptr<const rhi::OriginalCommandInputs>& inputs,
+        const rhi::OriginalCommandStreamBudget& stream)
+    {
+        std::uint64_t expected = 0u;
+        for (const auto& command : inputs->originalScalars()->originalUsage()->commands())
+            expected += command.kind == rhi::CommandUsageKind::BufferUpload
+                || command.kind == rhi::CommandUsageKind::TextureUpload;
+        const auto allocations = core::defaultCpuAllocator().stats().allocationCount;
+        std::uint64_t entries = UINT64_MAX;
+        assert(!Contract::inspectJournalEntries(inputs, stream, expected, entries)
+            && entries == expected);
+        if (expected) {
+            is(Contract::inspectJournalEntries(inputs, stream, expected - 1u, entries),
+                "RHI-ORIGINAL-UPLOAD-STAGING-JOURNAL-CAPACITY");
+            assert(!entries);
+            is(Contract::inspectJournalEntries(inputs, stream, 0u, entries),
+                "RHI-ORIGINAL-UPLOAD-STAGING-JOURNAL-CAPACITY");
+            assert(!entries);
+        }
+        auto bad = stream;
+        bad.prototypeOptIn = false;
+        assert(Contract::inspectJournalEntries(inputs, bad, UINT64_MAX, entries) && !entries);
+        bad = stream;
+        --bad.maxCommands;
+        assert(Contract::inspectJournalEntries(inputs, bad, UINT64_MAX, entries) && !entries);
+        assert(Contract::inspectJournalEntries({}, stream, UINT64_MAX, entries) && !entries);
+        assert(core::defaultCpuAllocator().stats().allocationCount == allocations);
+    }
+
     static void verify(const std::shared_ptr<const rhi::OriginalCommandInputs>& inputs,
         const rhi::OriginalCommandStreamBudget& stream,
         const Contract::Requirements& expected,

@@ -157,6 +157,8 @@ public:
         return found;
     }
 
+    enum class DecorationStatus { Missing, Valid, Invalid };
+
     // Core OpDecorate grammar. Marker/value arity is explicit; duplicates and
     // malformed matches reject even if the first decoration was plausible.
     bool decoration(std::uint32_t id,
@@ -164,25 +166,32 @@ public:
         std::uint32_t& value,
         bool marker = false) const noexcept
     {
+        return decorationStatus(id, kind, value, marker) == DecorationStatus::Valid;
+    }
+
+    DecorationStatus decorationStatus(std::uint32_t id,
+        std::uint32_t kind,
+        std::uint32_t& value,
+        bool marker = false) const noexcept
+    {
         value = 0u;
         if (diagnostic_ || !id || id >= bound_)
-            return false;
+            return DecorationStatus::Invalid;
         bool found = false;
         for (auto offset = headerWords; offset < sizeWords();) {
             Instruction i;
             if (!read(offset, i))
-                return false;
+                return DecorationStatus::Invalid;
             offset = i.next();
             if (i.opcode() != 71u || i.operand(0) != id || i.operand(1) != kind)
                 continue;
             if (found || i.operands() != (marker ? 2u : 3u))
-                return false;
+                return DecorationStatus::Invalid;
             found = true;
             value = marker ? 0u : i.operand(2);
         }
-        return found;
+        return found ? DecorationStatus::Valid : DecorationStatus::Missing;
     }
-    enum class DecorationStatus { Missing, Valid, Invalid };
 
     DecorationStatus memberDecoration(std::uint32_t id,
         std::uint32_t member,

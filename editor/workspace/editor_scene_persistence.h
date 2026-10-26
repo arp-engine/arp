@@ -12,13 +12,26 @@ public:
     using RequestHandle = core::PoolHandle;
 
     EditorScenePersistence();
-    RequestHandle load(const std::filesystem::path& projectRoot, std::string_view relativePath);
+    RequestHandle load(const std::filesystem::path& projectRoot,
+        std::string_view relativePath,
+        std::filesystem::path* resolvedTarget = nullptr);
     RequestHandle save(const std::filesystem::path& projectRoot,
         std::string_view relativePath,
-        const core::pmr::String& yaml);
+        const core::pmr::String& yaml,
+        bool overwriteExisting = true);
     bool take(RequestHandle handle, core::io::AtomicFileResult& result);
 
     const char* diagnostic() const noexcept { return diagnostic_; }
+
+    // Resolved targets retain the exact path admitted at submission. Content IO
+    // stays on the existing worker, including the raw-byte save preflight.
+    RequestHandle readResolved(const std::filesystem::path& target);
+    RequestHandle saveResolved(const std::filesystem::path& target, const core::pmr::String& yaml);
+    static bool resolvePath(const std::filesystem::path& projectRoot,
+        std::string_view relativePath,
+        bool requireExistingFile,
+        std::filesystem::path& resolved,
+        const char*& diagnostic);
 
 private:
     struct SceneSchema {
@@ -31,12 +44,6 @@ private:
 
         static bool validate(const core::YamlContract::Node& root, core::pmr::String& diagnostic);
     };
-
-    static bool resolvePath(const std::filesystem::path& projectRoot,
-        std::string_view relativePath,
-        bool requireExistingFile,
-        std::filesystem::path& resolved,
-        const char*& diagnostic);
 
     core::io::AtomicFileService files_;
     core::io::VersionedYamlStore<SceneSchema> store_;

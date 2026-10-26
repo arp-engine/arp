@@ -4,9 +4,12 @@
 #include "rhi/frontend/resource_device_validation.h"
 
 #include <atomic>
+#include <thread>
 
 namespace arp::rhi {
 class GpuDevice;
+class ComputeDispatchValidationReservation;
+class OriginalSubmittedBufferReadPins;
 
 // Only an original L2 device can construct or invalidate this domain. Tickets
 // observe it weakly and cannot retain the device or issue resource authority.
@@ -15,6 +18,8 @@ class GpuDevice;
 // never mutates the externally serialized epoch or retains the device facade.
 class OriginalDeviceLifetime final {
     friend class GpuDevice;
+    friend class ComputeDispatchValidationReservation;
+    friend class OriginalSubmittedBufferReadPins;
 
     class ConstructionKey {
         friend class GpuDevice;
@@ -58,6 +63,7 @@ public:
 
     class Ticket final {
         friend class GpuDevice;
+        friend class OriginalSubmittedBufferReadPins;
 
     public:
         Ticket() = default;
@@ -74,13 +80,25 @@ public:
 
         bool nativeExecutionProven() const noexcept { return false; }
 
+        // Irreversible host-admission revocation only. No epoch/quota reads and
+        // no GPU-completion claim; a default or temporarily refused ticket is
+        // never retirement authority. An issued expired lifetime cannot revive.
+        bool terminallyRevoked() const noexcept
+        {
+            if (!issued_)
+                return false;
+            const auto domain = domain_.lock();
+            return !domain || domain->terminal_.load(std::memory_order_acquire) != Terminal::None;
+        }
+
     private:
         Ticket(const std::shared_ptr<OriginalDeviceLifetime>& domain) noexcept
-            : domain_(domain), epoch_(domain->epoch_.ticket())
+            : domain_(domain), epoch_(domain->epoch_.ticket()), issued_(true)
         {}
 
         std::weak_ptr<OriginalDeviceLifetime> domain_;
         core::LifetimeEpoch::Ticket epoch_;
+        bool issued_ = false;
     };
 
     OriginalDeviceLifetime(ConstructionKey,
@@ -132,5 +150,10 @@ private:
     const std::shared_ptr<core::CpuMemoryQuota> quota_;
     core::LifetimeEpoch epoch_;
     std::atomic<Terminal> terminal_{Terminal::None};
+    std::atomic<bool> computeDispatchValidationPending_{false};
+    // Sole validator pin issuer for this original device lifetime. Failed cold
+    // allocation never consumes the one-shot binding; an issued domain cannot be replaced.
+    const std::thread::id owner_ = std::this_thread::get_id();
+    bool submittedReadIssuerIssued_ = false;
 };
 } // namespace arp::rhi

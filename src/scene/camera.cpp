@@ -166,7 +166,7 @@ CameraResolverResult CameraResolver::resolve(
     return CameraResolverResult::success(std::move(cameras));
 }
 
-CameraResolverResult CameraResolver::validate(const CameraComponentDesc& desc) const
+CameraResolverResult CameraResolver::validate(const CameraComponentDesc& desc)
 {
     if (desc.viewHandedness != CameraViewHandedness::LeftHanded
         && desc.viewHandedness != CameraViewHandedness::RightHanded) {

@@ -28,6 +28,20 @@ class WebGpuAcceptedOriginalComputePipelineFactory;
 class WebGpuAcceptedOriginalGraphicsPipelineFactory;
 } // namespace arp::rhi_webgpu
 
+namespace arp::rhi_vulkan {
+class VulkanOriginalArtifactComputeCreation;
+class VulkanAcceptedOriginalComputePipelineFactory;
+class VulkanOriginalArtifactGraphicsCreation;
+class VulkanAcceptedOriginalGraphicsPipelineFactory;
+} // namespace arp::rhi_vulkan
+
+namespace arp::rhi_metal {
+class MetalOriginalArtifactGraphicsCreation;
+class MetalOriginalArtifactComputeCreation;
+class MetalAcceptedOriginalComputePipelineFactory;
+class MetalAcceptedOriginalGraphicsPipelineFactory;
+} // namespace arp::rhi_metal
+
 namespace arp::rhi {
 
 class BindlessAuthorization;
@@ -459,7 +473,9 @@ struct ComputePipelineDesc {
 // L2 creation evidence only. Approved actors alone may construct this original
 // owner; callers see immutable intent and live diagnostics, never GPU payloads.
 class OriginalComputePipelineCreation : public core::QuotaBoundSharedObjectIdentity {
+    friend class rhi_metal::MetalOriginalArtifactComputeCreation;
     friend class rhi_webgpu::WebGpuOriginalArtifactComputeCreation;
+    friend class rhi_vulkan::VulkanOriginalArtifactComputeCreation;
     OriginalComputePipelineCreation() = default;
 
 public:
@@ -482,7 +498,9 @@ public:
 };
 
 class OriginalGraphicsPipelineCreation : public core::QuotaBoundSharedObjectIdentity {
+    friend class rhi_metal::MetalOriginalArtifactGraphicsCreation;
     friend class rhi_webgpu::WebGpuOriginalArtifactGraphicsCreation;
+    friend class rhi_vulkan::VulkanOriginalArtifactGraphicsCreation;
     OriginalGraphicsPipelineCreation() = default;
 
 public:
@@ -547,9 +565,13 @@ struct PipelineValidationReport {
 // Private factory custody of exact original layout and copied package metadata.
 // Paths/hydration are metadata only, never immutable native artifact evidence.
 class OriginalRegisteredPipeline : public OriginalRegisteredObject {
+    friend class rhi_metal::MetalAcceptedOriginalComputePipelineFactory;
+    friend class rhi_metal::MetalAcceptedOriginalGraphicsPipelineFactory;
     friend class GpuDevice;
     friend class rhi_webgpu::WebGpuAcceptedOriginalComputePipelineFactory;
     friend class rhi_webgpu::WebGpuAcceptedOriginalGraphicsPipelineFactory;
+    friend class rhi_vulkan::VulkanAcceptedOriginalGraphicsPipelineFactory;
+    friend class rhi_vulkan::VulkanAcceptedOriginalComputePipelineFactory;
 
 public:
     // The accepted factory records allocation provenance. Shared publication

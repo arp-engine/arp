@@ -30,10 +30,40 @@ public:
     RecordedStagingUploadJournal(const RecordedStagingUploadJournal&) = delete;
     RecordedStagingUploadJournal& operator=(const RecordedStagingUploadJournal&) = delete;
 
-    template <typename Pool> void enlist(Pool& pool, const RecordedStagingUploadSlice& slice)
+    // Metadata only: the caller must separately admit pool/page storage and
+    // initialized byte provenance before allocating a slice. Failed preparation
+    // is sticky; a second preparation cannot reopen this journal.
+    const char* prepareBounded(std::size_t maxEntries) noexcept
     {
-        if (slice.sizeBytes == 0u)
-            return;
+        if (bounded_ || recordingStarted_)
+            return "RHI-STAGING-JOURNAL-PREPARATION-STATE";
+        bounded_ = true;
+        if (maxEntries > entries_.max_size()) {
+            preparationFailure_ = "RHI-STAGING-JOURNAL-ENTRY-RANGE";
+            return preparationFailure_;
+        }
+        try {
+            entries_.reserve(maxEntries);
+        } catch (const std::bad_alloc&) {
+            preparationFailure_ = "RHI-STAGING-JOURNAL-COLD-ALLOCATION";
+            return preparationFailure_;
+        }
+        maxEntries_ = maxEntries;
+        return nullptr;
+    }
+
+    const char* preflightEnlist() const noexcept
+    {
+        if (preparationFailure_)
+            return preparationFailure_;
+        return bounded_ && entries_.size() >= maxEntries_ ? "RHI-STAGING-JOURNAL-ENTRY-CAPACITY"
+                                                          : nullptr;
+    }
+
+    template <typename Pool> bool enlist(Pool& pool, const RecordedStagingUploadSlice& slice)
+    {
+        if (slice.sizeBytes == 0u || preflightEnlist())
+            return false;
         Entry entry;
         entry.pool = &pool;
         entry.pageIndex = slice.pageIndex;
@@ -49,6 +79,8 @@ public:
             });
         };
         entries_.push_back(entry);
+        recordingStarted_ = true;
+        return true;
     }
 
     // A completion-owned journal keeps the allocator ledger alive independently
@@ -60,7 +92,8 @@ public:
     {
         if (!pool || slice.sizeBytes == 0u)
             return false;
-        enlist(*pool, slice);
+        if (!enlist(*pool, slice))
+            return false;
         auto& entry = entries_.back();
         entry.owner = std::move(pool);
         entry.resourceOwner = std::move(resourceOwner);
@@ -111,6 +144,8 @@ public:
 
     std::size_t size() const noexcept { return entries_.size(); }
 
+    bool bounded() const noexcept { return bounded_; }
+
 private:
     struct Entry {
         std::shared_ptr<void> owner;
@@ -125,6 +160,9 @@ private:
     };
 
     core::pmr::Vector<Entry> entries_{&core::defaultCpuMemoryResource()};
+    std::size_t maxEntries_ = 0u;
+    const char* preparationFailure_ = nullptr;
+    bool bounded_ = false, recordingStarted_ = false;
 };
 
 } // namespace arp::rhi

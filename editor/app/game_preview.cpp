@@ -55,25 +55,12 @@ struct GamePreviewHost::Impl final {
 public:
     ~Impl() { close(); }
 
-    bool start(const std::filesystem::path& projectRoot, arp::core::pmr::String& error)
+    bool start(const std::filesystem::path& projectRoot,
+        const std::filesystem::path& executable,
+        arp::core::pmr::String& error)
     {
         if (process_) {
             error = "A game process is already active.";
-            return false;
-        }
-        const std::filesystem::path candidates[] = {
-            projectRoot / "build/win-auto-release/arp_world_of_claudecraft.exe",
-            projectRoot / "build/win-auto-debug/arp_world_of_claudecraft.exe",
-            projectRoot / "build/arp_world_of_claudecraft.exe"};
-        std::filesystem::path executable;
-        for (const auto& candidate : candidates)
-            if (std::filesystem::is_regular_file(candidate)) {
-                executable = candidate;
-                break;
-            }
-        if (executable.empty()) {
-            error =
-                "Cannot find build/win-auto-release/arp_world_of_claudecraft.exe under the project root.";
             return false;
         }
         arp::core::pmr::Vector<wchar_t> command{&arp::core::defaultCpuMemoryResource()};
@@ -133,8 +120,9 @@ public:
         const auto editorWindow = editorWindow_;
         if (!process_)
             return Update::Idle;
-        DWORD exitCode = STILL_ACTIVE;
-        if (!GetExitCodeProcess(process_, &exitCode) || exitCode != STILL_ACTIVE) {
+        // The exit code can become visible before Windows has finished process
+        // teardown. Only the signalled process handle proves normal exit.
+        if (WaitForSingleObject(process_, 0) == WAIT_OBJECT_0) {
             releaseHandles();
             return Update::Exited;
         }
@@ -269,28 +257,12 @@ struct GamePreviewHost::Impl final {
 public:
     ~Impl() { close(); }
 
-    bool start(const std::filesystem::path& projectRoot, arp::core::pmr::String& error)
+    bool start(const std::filesystem::path& projectRoot,
+        const std::filesystem::path& executable,
+        arp::core::pmr::String& error)
     {
         if (process_ > 0) {
             error = "A game process is already active.";
-            return false;
-        }
-        const std::filesystem::path candidates[] = {projectRoot / "build/arp_world_of_claudecraft",
-            projectRoot / "build/linux-auto-release/arp_world_of_claudecraft",
-            projectRoot / "build/linux-auto-debug/arp_world_of_claudecraft",
-            projectRoot
-                / "build/mac-auto-release/arp_world_of_claudecraft.app/Contents/MacOS/arp_world_of_claudecraft",
-            projectRoot
-                / "build/mac-auto-debug/arp_world_of_claudecraft.app/Contents/MacOS/arp_world_of_claudecraft"};
-        std::filesystem::path executable;
-        for (const auto& candidate : candidates)
-            if (std::filesystem::is_regular_file(candidate)) {
-                executable = candidate;
-                break;
-            }
-        if (executable.empty()) {
-            error =
-                "Cannot find a native arp_world_of_claudecraft executable under the project root.";
             return false;
         }
         auto executableString = arp::core::toPmrString(executable.string());
@@ -389,7 +361,8 @@ private:
 #else
 struct GamePreviewHost::Impl final {
 public:
-    bool start(const std::filesystem::path&, arp::core::pmr::String& error)
+    bool start(
+        const std::filesystem::path&, const std::filesystem::path&, arp::core::pmr::String& error)
     {
         error = "Launching a native game process is unavailable in the browser build.";
         return false;
@@ -405,7 +378,8 @@ public:
 };
 #endif
 
-GamePreviewHost::GamePreviewHost() : impl_(core::makeUnique<Impl>())
+GamePreviewHost::GamePreviewHost(std::filesystem::path legacyWoccExecutable)
+    : impl_(core::makeUnique<Impl>()), legacyWoccExecutable_(std::move(legacyWoccExecutable))
 {}
 
 GamePreviewHost::~GamePreviewHost() = default;
@@ -417,7 +391,35 @@ bool GamePreviewHost::hasEditorWindow() const
 
 bool GamePreviewHost::start(const std::filesystem::path& root, core::pmr::String& diagnostic)
 {
-    return impl_->start(root, diagnostic);
+    if (legacyWoccExecutable_.empty()) {
+        diagnostic = "EDITOR-PLAYER-NOT-IMPLEMENTED: project Player is not available yet.";
+        return false;
+    }
+    std::error_code error;
+    if (!legacyWoccExecutable_.is_absolute()
+        || !std::filesystem::is_regular_file(legacyWoccExecutable_, error) || error) {
+        diagnostic =
+            "EDITOR-LEGACY-PREVIEW-EXECUTABLE: supply an existing absolute executable path.";
+        return false;
+    }
+    if (!root.is_absolute() || !std::filesystem::is_directory(root, error) || error) {
+        diagnostic = "EDITOR-LEGACY-PREVIEW-ROOT: supply an existing absolute resource root.";
+        return false;
+    }
+    // Canonical paths keep a trailing directory separator from escaping the
+    // closing Windows command-line quote. No executable candidates are probed.
+    const auto executable = std::filesystem::canonical(legacyWoccExecutable_, error);
+    if (error) {
+        diagnostic = "EDITOR-LEGACY-PREVIEW-EXECUTABLE: cannot resolve the explicit executable.";
+        return false;
+    }
+    const auto resourceRoot = std::filesystem::canonical(root, error);
+    if (error) {
+        diagnostic = "EDITOR-LEGACY-PREVIEW-ROOT: cannot resolve the explicit resource root.";
+        return false;
+    }
+    diagnostic.clear();
+    return impl_->start(resourceRoot, executable, diagnostic);
 }
 
 bool GamePreviewHost::requestStop()
@@ -438,17 +440,23 @@ bool GamePreviewHost::synchronize(
     const auto command = shell.consumeGamePreviewCommand();
     if (command == GamePreviewModel::Request::Start) {
         core::pmr::String diagnostic{&core::defaultCpuMemoryResource()};
-        if (start(shell.projectRoot(), diagnostic)) {
+        if (!legacyWoccExecutable_.empty() && shell.projectManifest()) {
+            shell.setGamePreviewState(false,
+                false,
+                "EDITOR-LEGACY-PREVIEW-PROJECT-CONFLICT: Legacy WOCC cannot run an Editor project.");
+        } else if (start(shell.projectRoot(), diagnostic)) {
 #if defined(_WIN32)
-            shell.setGamePreviewState(false, true, "Waiting for the project game window...");
+            shell.setGamePreviewState(
+                false, true, "Legacy WOCC: waiting for the external game window...");
 #else
-            shell.setGamePreviewState(false, true, "Game launched in a separate native window.");
+            shell.setGamePreviewState(
+                false, true, "Legacy WOCC: launched in a separate native window.");
 #endif
         } else
             shell.setGamePreviewState(false, false, diagnostic.c_str());
         dirty = true;
     } else if (command == GamePreviewModel::Request::Stop && !requestStop()) {
-        shell.setGamePreviewState(false, false, "Game preview stopped.");
+        shell.setGamePreviewState(false, false, "Legacy WOCC preview stopped.");
         dirty = true;
     }
     // An idle host has no window geometry to update. Avoid resolving the full
@@ -466,12 +474,14 @@ bool GamePreviewHost::synchronize(
         viewport ? &rect : nullptr, width, height, shell.workspace() == "Game" && !minimized);
 #if defined(_WIN32)
     if (state == Update::Running && !shell.gamePreviewRunning()) {
-        shell.setGamePreviewState(true, false, "Game running in the editor viewport.");
+        shell.setGamePreviewState(
+            true, false, "Legacy WOCC: external game window embedded; no Player handshake.");
         dirty = true;
     }
 #endif
     if (state == Update::Exited) {
-        shell.setGamePreviewState(false, false, "Game stopped.");
+        shell.setGamePreviewState(
+            false, false, "Legacy WOCC process exited; no Player shutdown handshake.");
         dirty = true;
     }
     return dirty;

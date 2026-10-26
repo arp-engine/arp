@@ -8,6 +8,7 @@
 #include "editor/workspace/editor_layout.h"
 #include "editor/workspace/editor_scene_authoring_codec.h"
 #include "editor/workspace/editor_shell.h"
+#include "editor/workspace/editor_shell_internal.h"
 #include "resource/mesh_asset_resources.h"
 #include "ui/scrollbar_geometry.h"
 
@@ -20,6 +21,32 @@
 #include <limits>
 
 namespace arp::editor {
+// Native glyph layout is single-line. Keep complete diagnostics while projecting
+// line breaks to spaces only at the Editor presentation boundary.
+core::pmr::String detail::singleLine(std::string_view text)
+{
+    core::pmr::String result(text);
+    std::replace_if(
+        result.begin(),
+        result.end(),
+        [](char c) {
+            return c == '\r' || c == '\n';
+        },
+        ' ');
+    return result;
+}
+
+core::pmr::String detail::sceneFileFailureMessage(std::string_view diagnostic)
+{
+    if (diagnostic == "EDITOR-SCENE-FILE-EXTERNAL-CHANGE")
+        return "File changed on disk. Local edits kept. Reload or Save As to another path.";
+    if (diagnostic == "EDITOR-SCENE-FILE-MISSING")
+        return "File was removed from disk. Local edits kept. Save As to another path.";
+    if (diagnostic.find("EDITOR-SCENE-FILE-READ-FAILED") == 0)
+        return "Cannot read the disk file. Local edits kept. Restore access and retry.";
+    return "Scene operation failed: " + singleLine(diagnostic);
+}
+
 using namespace layout;
 
 namespace {
@@ -62,6 +89,7 @@ constexpr Palette palette[] = {{"root", 0x181818, 1},
     {"code-gutter", 0x252526, 1},
     {"code-current", 0x282828, 1},
     {"viewport_overlay", 0x262626, 0.88f},
+    {"project_modal_shade", 0x080808, 0.72f},
     {"transparent", 0x282828, 0},
     {"x", 0xa65b62, 1},
     {"y", 0x82a351, 1},
@@ -308,6 +336,14 @@ std::size_t EditorShell::utf8OffsetAtAdvance(
 renderer::ui::UiDrawPlanLowerResult EditorShell::drawCommands(
     const std::string_view viewportTextureResourceId)
 {
+    sceneTransformGizmoViewValid_ = false;
+    sceneTransformGizmoDiagnostic_ = nullptr;
+    if (presentationState_.workspace() == "3D" && sceneTransformTool_ != SceneTransformTool::Select
+        && sceneSelectionGizmoVisible()) {
+        sceneTransformGizmoDiagnostic_ =
+            sceneTransformSelectionView(sceneTransformGizmoOrigin_, sceneTransformGizmoFrame_);
+        sceneTransformGizmoViewValid_ = !sceneTransformGizmoDiagnostic_;
+    }
     auto layout = runtime().canvas().resolveLayout();
     auto extracted = ui::RenderExtractor().extract(runtime().canvas(), layout);
     if (!extracted.ok())
@@ -403,7 +439,9 @@ renderer::ui::UiDrawPlanLowerResult EditorShell::drawCommands(
             roundedSelected = name.substr(6) == presentationState_.scene();
         }
         if (widget->desc().controlType == ui::UiControlType::Button && !textCommand
-            && runtime().hoveredControl() == c.widgetId && !selectedFileRow) {
+            && runtime().hoveredControl() == c.widgetId && !selectedFileRow
+            && name != "project_ui_modal" && name != "scene_ui_modal" && name != "script_ui_modal"
+            && name != "exit_ui_modal" && name != "transform_ui_modal") {
             color(c, core::startsWith(name, "node_") ? 0x454545 : 0x3b3b3b);
             roundedSelected = true;
         }
@@ -482,7 +520,7 @@ renderer::ui::UiDrawPlanLowerResult EditorShell::drawCommands(
         kFileSlotCount,
         fileScrollOffset_,
         24.0f);
-    if (fileThumb.visible) {
+    if (fileThumb.visible && !filesPresentationFailed_) {
         renderer::ui::UiDrawCommand track;
         track.kind = renderer::ui::UiDrawCommandKind::Box;
         track.widgetId = id("files_view");
@@ -500,6 +538,35 @@ renderer::ui::UiDrawPlanLowerResult EditorShell::drawCommands(
         color(thumb, 0x686868);
         commands.push_back(std::move(thumb));
     }
+    core::pmr::Vector<renderer::ui::UiDrawCommand> workspaceOverlay;
+    // Workspace rendering is appended below. Preserve the authored overlay
+    // order, including Output feedback, above both scene and script content.
+    const std::array overlayRoots{id("output_panel"),
+        id("project_ui_menu"),
+        id("project_ui_modal"),
+        id("scene_ui_modal"),
+        id("script_ui_reload"),
+        id("script_ui_modal"),
+        id("exit_ui_modal"),
+        id("transform_ui_modal"),
+        id("menu_popup")};
+    commands.erase(std::remove_if(commands.begin(),
+                       commands.end(),
+                       [&](auto& command) {
+                           // Synthetic decorations (for example checkbox ticks)
+                           // have no widget/source binding.
+                           auto* widget = runtime().canvas().findWidget(command.widgetId);
+                           while (widget) {
+                               if (std::find(overlayRoots.begin(), overlayRoots.end(), widget->id())
+                                   != overlayRoots.end()) {
+                                   workspaceOverlay.push_back(std::move(command));
+                                   return true;
+                               }
+                               widget = runtime().canvas().findWidget(widget->parentId());
+                           }
+                           return false;
+                       }),
+        commands.end());
     core::pmr::Vector<renderer::ui::UiDrawCommand> terrainBrowserOverlay;
     commands.erase(std::remove_if(commands.begin(),
                        commands.end(),
@@ -519,21 +586,27 @@ renderer::ui::UiDrawPlanLowerResult EditorShell::drawCommands(
     }
     for (auto& command : terrainBrowserOverlay)
         commands.push_back(std::move(command));
+    for (auto& command : workspaceOverlay)
+        commands.push_back(std::move(command));
+    appendSceneReferenceDrag(layout, commands);
     return renderer::ui::UiDrawPlanLowerResult::success(std::move(commands));
 }
 
 void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
     core::pmr::Vector<renderer::ui::UiDrawCommand>& commands,
-    const std::string_view viewportTextureResourceId) const
+    const std::string_view viewportTextureResourceId)
 {
     const auto* viewport = layout.findWidget(id("viewport"));
     if (!viewport)
         return;
     const auto viewportId = id("viewport");
-    const auto hierarchyClip = ui::LayoutRect::fromOriginSize(layout::kSceneHierarchyLeft,
-        layout::kSceneHierarchyTop,
-        layout::kSceneHierarchyWidth,
-        layout::kSceneHierarchyVisibleHeight);
+    const auto hierarchyClip = layout::sceneHierarchyClip(layout, id("left_scene"));
+    const auto visibilityRect = layout::sceneHierarchyActionRect(
+        hierarchyClip, 0, layout::SceneHierarchyAction::Visibility);
+    const auto hierarchyContentClip = ui::LayoutRect::fromOriginSize(hierarchyClip.x,
+        hierarchyClip.y,
+        std::max(0.f, visibilityRect.x - hierarchyClip.x),
+        hierarchyClip.height);
     commands.erase(std::remove_if(commands.begin(),
                        commands.end(),
                        [&](const auto& command) {
@@ -559,7 +632,7 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
     commands.push_back(std::move(hierarchyPanel));
     const float hierarchyTextY = layout::kSceneHierarchyTop + 3.0f;
     const auto addHierarchyIcon =
-        [&](std::string_view resource, ui::LayoutRect rect, unsigned tint) {
+        [&](std::string_view resource, ui::LayoutRect rect, unsigned tint, bool action = false) {
             ui::LayoutRect sourceRect;
             if (!iconSourceRect(resource, sourceRect))
                 return;
@@ -567,7 +640,7 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
             icon.kind = renderer::ui::UiDrawCommandKind::Image;
             icon.widgetId = viewportId;
             icon.rect = rect;
-            icon.clipRect = hierarchyClip;
+            icon.clipRect = action ? hierarchyClip : hierarchyContentClip;
             icon.textureResourceId.assign(resource.data(), resource.size());
             icon.textureSourceRect = ui::LayoutRect::fromOriginSize(
                 sourceRect.x / static_cast<float>(editor_atlas::kWidth),
@@ -589,7 +662,7 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
             layout::kSceneHierarchyTop + static_cast<float>(row) * layout::kSceneHierarchyRowHeight;
         const auto rowRect = ui::LayoutRect::fromOriginSize(layout::kSceneHierarchyLeft,
             rowY,
-            layout::kSceneHierarchyWidth,
+            hierarchyClip.width,
             layout::kSceneHierarchyRowHeight);
         renderer::ui::UiDrawCommand rowBackground;
         rowBackground.kind = renderer::ui::UiDrawCommandKind::Box;
@@ -640,20 +713,42 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
                 break;
             }
         }
-        addHierarchyIcon(rowIcon,
-            ui::LayoutRect::fromOriginSize(textX + 3.0f, rowY + 4.0f, 16.0f, 16.0f),
-            0xbfc6cc);
-        const float eyeX = layout::kSceneHierarchyLeft + layout::kSceneHierarchyWidth - 25.0f;
-        addHierarchyIcon(
-            "icon-eye", ui::LayoutRect::fromOriginSize(eyeX, rowY + 4.0f, 16.0f, 16.0f), 0x969da3);
+        addHierarchyIcon(rowIcon, layout::sceneHierarchyIconRect(row, entry.depth), 0xbfc6cc);
+        const auto view = sceneObjectView(entry.objectId);
+        for (const auto action :
+            {layout::SceneHierarchyAction::Visibility, layout::SceneHierarchyAction::Lock}) {
+            const auto cell = layout::sceneHierarchyActionRect(hierarchyClip, row, action);
+            const bool visibility = action == layout::SceneHierarchyAction::Visibility;
+            const bool local = visibility ? view.local.hidden : view.local.locked;
+            const bool inherited =
+                !local && (visibility ? view.effective.hidden : view.effective.locked);
+            addHierarchyIcon(visibility ? "icon-eye" : "icon-tool-lock",
+                ui::LayoutRect::fromOriginSize(cell.x + 4.f, cell.y + 4.f, 16.f, 16.f),
+                local           ? (visibility ? 0xe78989 : 0xf0c878)
+                    : inherited ? 0xd9ad64
+                                : 0x727a82,
+                true);
+            if (inherited) {
+                renderer::ui::UiDrawCommand mark;
+                mark.kind = renderer::ui::UiDrawCommandKind::Box;
+                mark.widgetId = id("left_scene");
+                mark.rect = ui::LayoutRect::fromOriginSize(cell.x + 4.f, cell.y + 21.f, 16.f, 2.f);
+                mark.clipRect = hierarchyClip;
+                color(mark, 0xd9ad64);
+                commands.push_back(std::move(mark));
+            }
+        }
         renderer::ui::UiDrawCommand rowLabel;
         rowLabel.kind = renderer::ui::UiDrawCommandKind::Text;
         const float labelX = textX + 22.0f;
         rowLabel.rect = ui::LayoutRect::fromOriginSize(labelX,
             hierarchyTextY + static_cast<float>(row) * layout::kSceneHierarchyRowHeight,
-            eyeX - labelX - 8.0f,
+            std::max(0.f, visibilityRect.x - labelX - 4.0f),
             layout::kSceneHierarchyRowHeight);
-        rowLabel.clipRect = hierarchyClip;
+        rowLabel.clipRect = ui::LayoutRect::fromOriginSize(labelX,
+            rowY,
+            std::max(0.f, visibilityRect.x - labelX - 4.0f),
+            layout::kSceneHierarchyRowHeight);
         rowLabel.text.assign(object->name().data(), object->name().size());
         rowLabel.fontToken = "font.editor";
         rowLabel.styleId = "text";
@@ -667,7 +762,7 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
         firstVisibleRow,
         layout::kSceneHierarchyRowHeight);
     if (hierarchyThumb.visible) {
-        const float scrollbarX = layout::kSceneHierarchyLeft + layout::kSceneHierarchyWidth
+        const float scrollbarX = layout::kSceneHierarchyLeft + hierarchyClip.width
             - layout::kSceneHierarchyScrollbarWidth;
         renderer::ui::UiDrawCommand track;
         track.kind = renderer::ui::UiDrawCommandKind::Box;
@@ -698,7 +793,7 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
         status.widgetId = viewportId;
         status.rect = ui::LayoutRect::fromOriginSize(layout::kSceneHierarchyLeft + 16.0f,
             layout::kSceneHierarchyTop + 12.0f,
-            layout::kSceneHierarchyWidth - 32.0f,
+            hierarchyClip.width - 32.0f,
             layout::kSceneHierarchyRowHeight);
         status.clipRect = hierarchyClip;
         status.text =
@@ -758,6 +853,8 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
         image.textureSource = renderer::ui::UiTextureSource::External;
         commands.push_back(std::move(image));
     }
+    if (sceneTransformGizmoDiagnostic_)
+        label(sceneTransformGizmoDiagnostic_, rect.x + 12, rect.y + 22, 0xe5b36d);
     auto project = [&](float x, float y, float z) {
         float screenX = 0.0f, screenY = 0.0f, depth = 0.0f;
         sceneViewportCamera_.project(
@@ -801,9 +898,18 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
                 alpha);
         }
     };
+    const auto sourceSnapshot = sceneDocument_.scene().extractTraversalSnapshot(
+        scene::SceneTraversalOptions{EditorSceneViewState::maxEntries});
+    const char* viewDiagnostic = nullptr;
+    const auto visibleSnapshot = visibleSceneSnapshot(sourceSnapshot, viewDiagnostic);
+    if (!visibleSnapshot) {
+        label(viewDiagnostic, rect.x + 14.0f, rect.y + 32.0f, 0xe58f70);
+        return;
+    }
     const auto physicsOverlay = buildEditorScenePhysicsOverlay(sceneDocument_.scene(),
         kEditorScenePhysicsOverlaySegmentBudget,
-        kEditorScenePhysicsOverlayCircleSegments);
+        kEditorScenePhysicsOverlayCircleSegments,
+        &*visibleSnapshot);
     if (physicsOverlay.valid) {
         for (const auto& segment : physicsOverlay.segments) {
             const auto first = project(segment.from.x, segment.from.y, 0.0f);
@@ -821,7 +927,8 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
     const auto componentGizmos = buildEditorSceneComponentGizmos(sceneDocument_.scene(),
         projectResources_.manager(),
         rect.height > 0.0f ? rect.width / rect.height : 0.0f,
-        kEditorSceneComponentGizmoSegmentBudget);
+        kEditorSceneComponentGizmoSegmentBudget,
+        &*visibleSnapshot);
     if (componentGizmos.valid) {
         for (const auto& segment : componentGizmos.segments) {
             const auto first = project(segment.from.x, segment.from.y, segment.from.z);
@@ -856,6 +963,9 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
     };
     for (const auto& owned : objects) {
         const auto& object = *owned;
+        const auto* visibleNode = visibleSnapshot->findNode(object.id());
+        if (!visibleNode || !visibleNode->activeInHierarchy)
+            continue;
         const auto position = objectPoint(object);
         if (position.first < rect.x || position.first > rect.x + rect.width
             || position.second < rect.y || position.second > rect.y + rect.height)
@@ -927,15 +1037,15 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
                 }
             }
         }
-        if (selected) {
-            const auto origin = position;
+        const auto& gizmoFrame = sceneTransformGizmoFrame_;
+        if (selected && object.id() == sceneDocument_.selectedObject()
+            && sceneTransformGizmoViewValid_) {
+            const auto origin = project(sceneTransformGizmoOrigin_.x,
+                sceneTransformGizmoOrigin_.y,
+                sceneTransformGizmoOrigin_.z);
             if (sceneTransformTool_ == SceneTransformTool::Rotate) {
-                constexpr core::Vec3 planeU[] = {
-                    {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f}};
-                constexpr core::Vec3 planeV[] = {
-                    {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
-                constexpr float radius = 1.25f;
-                constexpr unsigned segments = 48u;
+                constexpr float radius = EditorSceneTransformFrame::ringRadius;
+                constexpr unsigned segments = EditorSceneTransformFrame::ringSegments;
                 for (std::size_t axisIndex = 0; axisIndex < 3u; ++axisIndex) {
                     const unsigned colorValue =
                         sceneGizmoAxis_ == static_cast<SceneGizmoAxis>(axisIndex + 1u)
@@ -948,51 +1058,32 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
                             / static_cast<float>(segments);
                         const float angle1 = 6.283185307179586f * static_cast<float>(segment + 1u)
                             / static_cast<float>(segments);
-                        const auto point0 = worldTransform.translation
-                            + core::scale(planeU[axisIndex], radius * std::cos(angle0))
-                            + core::scale(planeV[axisIndex], radius * std::sin(angle0));
-                        const auto point1 = worldTransform.translation
-                            + core::scale(planeU[axisIndex], radius * std::cos(angle1))
-                            + core::scale(planeV[axisIndex], radius * std::sin(angle1));
+                        const auto point0 = sceneTransformGizmoOrigin_
+                            + core::scale(gizmoFrame.planeU(axisIndex), radius * std::cos(angle0))
+                            + core::scale(gizmoFrame.planeV(axisIndex), radius * std::sin(angle0));
+                        const auto point1 = sceneTransformGizmoOrigin_
+                            + core::scale(gizmoFrame.planeU(axisIndex), radius * std::cos(angle1))
+                            + core::scale(gizmoFrame.planeV(axisIndex), radius * std::sin(angle1));
                         const auto first = project(point0.x, point0.y, point0.z);
                         const auto second = project(point1.x, point1.y, point1.z);
                         line(first.first, first.second, second.first, second.second, colorValue);
                     }
                 }
             } else {
-                const auto axisX = project(worldTransform.translation.x + 1.0f,
-                    worldTransform.translation.y,
-                    worldTransform.translation.z);
-                const auto axisY = project(worldTransform.translation.x,
-                    worldTransform.translation.y + 1.0f,
-                    worldTransform.translation.z);
-                const auto axisZ = project(worldTransform.translation.x,
-                    worldTransform.translation.y,
-                    worldTransform.translation.z + 1.0f);
-                line(origin.first,
-                    origin.second,
-                    axisX.first,
-                    axisX.second,
-                    sceneTransformTool_ == SceneTransformTool::Move
-                            && sceneGizmoAxis_ == SceneGizmoAxis::X
-                        ? 0xffffff
-                        : 0xe36565);
-                line(origin.first,
-                    origin.second,
-                    axisY.first,
-                    axisY.second,
-                    sceneTransformTool_ == SceneTransformTool::Move
-                            && sceneGizmoAxis_ == SceneGizmoAxis::Y
-                        ? 0xffffff
-                        : 0x83c77b);
-                line(origin.first,
-                    origin.second,
-                    axisZ.first,
-                    axisZ.second,
-                    sceneTransformTool_ == SceneTransformTool::Move
-                            && sceneGizmoAxis_ == SceneGizmoAxis::Z
-                        ? 0xffffff
-                        : 0x6f9fe0);
+                constexpr unsigned colors[] = {0xe36565, 0x83c77b, 0x6f9fe0};
+                for (unsigned axisIndex = 0; axisIndex != 3; ++axisIndex) {
+                    const auto endpoint = sceneTransformGizmoOrigin_
+                        + core::scale(
+                            gizmoFrame.axes[axisIndex], EditorSceneTransformFrame::axisLength);
+                    const auto projected = project(endpoint.x, endpoint.y, endpoint.z);
+                    line(origin.first,
+                        origin.second,
+                        projected.first,
+                        projected.second,
+                        sceneGizmoAxis_ == static_cast<SceneGizmoAxis>(axisIndex + 1)
+                            ? 0xffffff
+                            : colors[axisIndex]);
+                }
             }
         }
     }
@@ -1022,6 +1113,9 @@ void EditorShell::rebuildSceneCommands(const ui::CanvasLayoutResult& layout,
     for (unsigned pass = 0u; pass < 2u && labelCellCount > 0u; ++pass) {
         for (const auto& owned : objects) {
             const auto& object = *owned;
+            const auto* visibleNode = visibleSnapshot->findNode(object.id());
+            if (!visibleNode || !visibleNode->activeInHierarchy)
+                continue;
             const bool selectedObject = sceneViewportObjectSelected(object.id());
             if (selectedObject != (pass == 0u))
                 continue;
@@ -1162,36 +1256,42 @@ void EditorShell::rebuildScriptCommands(const ui::CanvasLayoutResult& layout,
         color(command, rgb);
         commands.push_back(std::move(command));
     };
-    auto addText =
-        [&](const core::pmr::String& value, float x, float y, const char* style, unsigned rgb) {
-            for (std::size_t start = 0; start < value.size();) {
-                const bool cjk = isWideCodepoint(core::Utf8Cursor::at(value, start).value);
-                std::size_t end = start + core::Utf8Cursor::at(value, start).byteLength;
-                while (end < value.size()
-                    && isWideCodepoint(core::Utf8Cursor::at(value, end).value) == cjk)
-                    end += core::Utf8Cursor::at(value, end).byteLength;
-                const float runX = x
-                    + utf8AdvancePixels(std::string_view(value.data(), value.size()),
-                        start,
-                        codeColumnWidth_,
-                        codeCjkColumnWidth_);
-                const float available = rect.width - (runX - rect.x) - 8.0f;
-                if (available > 1.0f) {
-                    renderer::ui::UiDrawCommand command;
-                    command.kind = renderer::ui::UiDrawCommandKind::Text;
-                    command.widgetId = widget;
-                    command.rect = ui::LayoutRect::fromOriginSize(
-                        runX, y + (cjk ? kCodeCjkOpticalVerticalOffset : 0.0f), available, 20.0f);
-                    command.clipRect = viewportClip;
-                    command.text.assign(value.data() + start, end - start);
-                    command.styleId = style;
-                    command.fontToken = cjk ? "font.code.cjk" : "font.code";
-                    color(command, rgb);
-                    commands.push_back(std::move(command));
-                }
-                start = end;
+    auto addText = [&](const core::pmr::String& value,
+                       float x,
+                       float y,
+                       const char* style,
+                       unsigned rgb,
+                       float maximumWidth = 0.0f) {
+        for (std::size_t start = 0; start < value.size();) {
+            const bool cjk = isWideCodepoint(core::Utf8Cursor::at(value, start).value);
+            std::size_t end = start + core::Utf8Cursor::at(value, start).byteLength;
+            while (end < value.size()
+                && isWideCodepoint(core::Utf8Cursor::at(value, end).value) == cjk)
+                end += core::Utf8Cursor::at(value, end).byteLength;
+            const float runX = x
+                + utf8AdvancePixels(std::string_view(value.data(), value.size()),
+                    start,
+                    codeColumnWidth_,
+                    codeCjkColumnWidth_);
+            const float available = maximumWidth > 0.0f
+                ? std::min(rect.width - (runX - rect.x) - 8.0f, maximumWidth - (runX - x))
+                : rect.width - (runX - rect.x) - 8.0f;
+            if (available > 1.0f) {
+                renderer::ui::UiDrawCommand command;
+                command.kind = renderer::ui::UiDrawCommandKind::Text;
+                command.widgetId = widget;
+                command.rect = ui::LayoutRect::fromOriginSize(
+                    runX, y + (cjk ? kCodeCjkOpticalVerticalOffset : 0.0f), available, 20.0f);
+                command.clipRect = viewportClip;
+                command.text.assign(value.data() + start, end - start);
+                command.styleId = style;
+                command.fontToken = cjk ? "font.code.cjk" : "font.code";
+                color(command, rgb);
+                commands.push_back(std::move(command));
             }
-        };
+            start = end;
+        }
+    };
     addBox(rect, 0x1e1e1e);
     addBox(ui::LayoutRect::fromOriginSize(rect.x, rect.y, rect.width, 30.0f), 0x252526);
     const auto filename = scriptPath().empty()
@@ -1202,7 +1302,8 @@ void EditorShell::rebuildScriptCommands(const ui::CanvasLayoutResult& layout,
         rect.x + 14.0f,
         rect.y + 5.0f,
         "code-default",
-        0xd4d4d4);
+        0xd4d4d4,
+        rect.width - 198.0f);
     const float codeTop = rect.y + 34.0f;
     const float gutterWidth = 54.0f;
     addBox(ui::LayoutRect::fromOriginSize(

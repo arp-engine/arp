@@ -92,15 +92,25 @@ def wait_for_browser_result(ready, browser, profile, timeout_seconds, *, crash_o
 
 
 def cleanup_browser_profile(profile, timeout_seconds=10, *, deadline=None):
-    """Release an owned profile, retrying only delayed Windows sharing handles."""
+    """Release an owned profile within the unchanged Windows teardown budget."""
     if deadline is None:
         deadline = time.monotonic() + timeout_seconds
     while True:
         try:
             profile.cleanup()
             return
-        except PermissionError as error:
-            if sys.platform != 'win32' or getattr(error, 'winerror', None) != 32:
+        except OSError as error:
+            # Windows may report access denied while browser database handles
+            # finish closing. Python 3.9 TemporaryDirectory can wrap that same
+            # file's unlink failure in NotADirectoryError during its fallback.
+            # A genuine directory/type error or another file is not retryable.
+            denied = error
+            if isinstance(error, NotADirectoryError) and getattr(error, 'winerror', None) == 267:
+                denied = error.__context__
+                if not error.filename or getattr(denied, 'filename', None) != error.filename:
+                    raise
+            if (sys.platform != 'win32' or not isinstance(denied, PermissionError)
+                    or getattr(denied, 'winerror', None) not in (5, 32)):
                 raise
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -112,8 +122,8 @@ def retire_browser_process(browser, profile, timeout_seconds=10):
     """Retire a browser tree and its profile within one existing teardown budget.
 
     Chrome may release its cache file handles after the parent exits. Retry only
-    Windows sharing violations after wait confirms parent retirement; preserve
-    every other error and fail if the same teardown deadline expires. This does
+    Windows sharing/access-denied errors after wait confirms parent retirement;
+    preserve every other error and fail at the same teardown deadline. This does
     not retry a workload or change its GPU completion/report deadline.
     """
     deadline=time.monotonic()+timeout_seconds

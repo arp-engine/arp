@@ -8,6 +8,23 @@ std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeRenderPipelin
     const rhi::RenderPipelineDesc&,
     const rhi::PipelineValidationReport&,
     const rhi::semantics::MetalVertexStreamMapping&,
+    const std::shared_ptr<const shader::GraphicsShaderModuleArtifact>&)
+{
+    return {};
+}
+
+std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeComputePipelinePayload(
+    const rhi::ComputePipelineDesc&,
+    const rhi::PipelineValidationReport&,
+    const std::shared_ptr<const shader::SingleEntryShaderArtifact>&)
+{
+    return {};
+}
+
+std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeRenderPipelinePayload(
+    const rhi::RenderPipelineDesc&,
+    const rhi::PipelineValidationReport&,
+    const rhi::semantics::MetalVertexStreamMapping&,
     const std::shared_ptr<const rhi::BindlessShaderPackage>&)
 {
     return {};

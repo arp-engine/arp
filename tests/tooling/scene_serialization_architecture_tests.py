@@ -26,6 +26,16 @@ class ArchitectureTests(unittest.TestCase):
             text = (ROOT / name).read_text(encoding='utf-8-sig')
             self.assertNotRegex(text, r'YamlContract|fkyaml::|Node::|\["fields"\]', name)
 
+    def test_resource_package_extension_has_no_scene_dependency(self):
+        for name in ('asset_package_payload.h', 'asset_package_payload.cpp',
+                     'internal_asset_package.h', 'internal_asset_package.cpp',
+                     'asset_package_closure.h', 'asset_package_closure.cpp'):
+            text = (ROOT / 'src/resource' / name).read_text(encoding='utf-8-sig')
+            self.assertNotRegex(text, r'#include\s+["<](scene|2d|3d|editor)/', name)
+        text = (ROOT / 'src/scene/scene_asset_package.cpp').read_text(encoding='utf-8-sig')
+        self.assertIn('SerializationArchive', text)
+        self.assertNotRegex(text, r'->construct\(|->prepare\(|ScriptVM|Interpreter')
+
     def test_scene_scheduler_has_no_physics_phases(self):
         text = (ROOT / 'src/scene/scene_reflection_persistence.cpp').read_text(encoding='utf-8-sig')
         self.assertNotRegex(text, r'RigidBody2D|Collider2D|Joint2D|physics2d|InitializationPhase')

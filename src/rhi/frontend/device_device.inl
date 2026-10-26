@@ -1,8 +1,75 @@
 #pragma once
 
 // Inline/template definitions for the public GpuDevice abstraction.
+#include "rhi/frontend/query_creation.h"
 
 namespace arp::rhi {
+
+inline std::shared_ptr<QueryPool> GpuDevice::createOriginalQueryPool(
+    std::shared_ptr<const QueryPoolInputSnapshot> input,
+    const OriginalQueryPoolCreationBudget& budget,
+    std::shared_ptr<core::CpuMemoryQuota> ownerQuota,
+    const char*& diagnostic)
+{
+    const auto reject = [&](const char* id) -> std::shared_ptr<QueryPool> {
+        diagnostic = id;
+        lastOriginalRegistrationDiagnostic_ = id;
+        return {};
+    };
+    if (!originalRegistry_)
+        return reject("RHI-ORIGINAL-QUERY-REGISTRATION-REQUIRED");
+    if (const auto* id = originalRegistry_->validate())
+        return reject(id);
+    if (const auto* id = OriginalResourceRegistrationContract::queryLowering(
+            backend(), originalRegistry_->budget_.queries)
+            .diagnostic)
+        return reject(id);
+    if (originalLossBinding_
+        || OriginalResourceRegistrationContract::observesNativeLoss(
+            originalRegistry_->budget_.contractVersion))
+        return reject("RHI-ORIGINAL-QUERY-NATIVE-LOSS-JOIN-UNAVAILABLE");
+    if (const auto* id = budget.diagnostic())
+        return reject(id);
+    if (!input || !input->hasQuotaBoundSharedOwner(input))
+        return reject("RHI-QUERY-CREATION-INPUT");
+    if (const auto validation = input->validateDescriptor(); !validation.success)
+        return reject(validation.diagnostics);
+    if (!ownerQuota || ownerQuota->limitBytes() != budget.maxCpuOwnerBytes)
+        return reject("RHI-VULKAN-ORIGINAL-QUERY-QUOTA");
+    if (originalRegistry_->overlapsCpuQuota(ownerQuota)
+        || originalRegistry_->overlapsCpuQuota(input->originalMetadataQuota())
+        || core::SharedOwnerProjection::overlapsOwner(ownerQuota, input->originalMetadataQuota()))
+        return reject("RHI-ORIGINAL-QUERY-REGISTRATION-QUOTA-DOMAIN");
+    try {
+        auto record = reserveOriginalRegistrationRecord(
+            OriginalRegisteredResourceKind::QueryPool, {}, nullptr, 0u);
+        if (!record)
+            return reject(lastOriginalRegistrationDiagnostic_);
+        auto candidate = createOriginalQueryPoolCandidate(input, budget, ownerQuota, diagnostic);
+        if (!candidate)
+            return reject(diagnostic ? diagnostic : "RHI-ORIGINAL-REGISTRATION-CANDIDATE-MISSING");
+        if (candidate->originalRegistration_.record_ || !candidate->originalFactoryOwner_.expired()
+            || !core::SharedOwnerProjection::sameOwner(candidate->originalInput(), input)
+            || candidate->count() != input->scalarFields().count()
+            || candidate->type() != input->scalarFields().type())
+            return reject("RHI-ORIGINAL-QUERY-REGISTRATION-CANDIDATE");
+        if (const auto* id = validateOriginalQueryPoolCandidate(candidate))
+            return reject(id);
+        // The original shared control block already exists. These assignments
+        // allocate nothing and do not transfer an arbitrary borrowed wrapper.
+        record->object_ = static_cast<const QueryPool*>(candidate.get());
+        if (const auto* id = record->validate())
+            return reject(id);
+        candidate->originalRegistration_.record_ = std::move(record);
+        candidate->originalOwnerQuota_ = std::move(ownerQuota);
+        candidate->originalFactoryOwner_ = candidate;
+        diagnostic = nullptr;
+        lastOriginalRegistrationDiagnostic_ = nullptr;
+        return candidate;
+    } catch (const std::bad_alloc&) {
+        return reject("RHI-ORIGINAL-REGISTRATION-ALLOCATION");
+    }
+}
 
 inline const char* GpuDevice::originalMemoryHeapCreationDiagnostic() const noexcept
 {
@@ -187,6 +254,162 @@ inline const char* GpuDevice::validateOriginalDeviceLifetime(
     return ticket.diagnostic();
 }
 
+inline std::shared_ptr<OriginalComputeDispatchValidation>
+GpuDevice::prepareOriginalComputeDispatchValidation(const ComputeDispatchValidationRequest& request,
+    const ComputeDispatchValidationSessionBudget& budget,
+    ComputeDispatchValidationSessionQuotas quotas,
+    const char*& diagnostic)
+{
+    diagnostic = ComputeDispatchValidationSessionContract::inspect(request, budget);
+    if (diagnostic
+        || (diagnostic =
+                ComputeDispatchValidationSessionContract::reservationDiagnostic(backend())))
+        return {};
+    if ((diagnostic = originalDeviceNativeLossDiagnostic())
+        || (diagnostic = ComputeDispatchValidationSessionContract::inspectQuotas(budget, quotas)))
+        return {};
+    for (const auto& quota : {quotas.session, quotas.artifact, quotas.input, quotas.pipeline})
+        if (overlapsOriginalDeviceCpuOwner(quota)) {
+            diagnostic = "RHI-DISPATCH-SESSION-DEVICE-QUOTA-OVERLAP";
+            return {};
+        }
+    auto prepared =
+        prepareOriginalComputeDispatchValidationPayload(request, budget, quotas, diagnostic);
+    if (!prepared) {
+        if (!diagnostic)
+            diagnostic = "RHI-DISPATCH-PREPARATION-PAYLOAD";
+        return {};
+    }
+    if (diagnostic || !prepared->sharedOwnerMatches(prepared)
+        || !core::SharedOwnerProjection::sameOwner(prepared->quota_, quotas.session)
+        || (diagnostic = validateOriginalDeviceLifetime(prepared->lifetime_))) {
+        // Rejecting a borrowed/foreign facade cannot mutate its original work.
+        // The original callback retains any submitted native owners regardless.
+        if (!diagnostic)
+            diagnostic = "RHI-DISPATCH-PREPARATION-OWNER";
+        return {};
+    }
+    return prepared;
+}
+
+inline std::shared_ptr<const ComputeDispatchValidationDomain>
+GpuDevice::issueOriginalComputeDispatchDomain(
+    const std::shared_ptr<OriginalComputeDispatchValidation>& prepared,
+    const ComputeDispatchValidationDomainBudget& budget,
+    std::shared_ptr<core::CpuMemoryQuota> quota,
+    const char*& diagnostic)
+{
+    diagnostic = nullptr;
+    if (!prepared || !prepared->sharedOwnerMatches(prepared)) {
+        diagnostic = "RHI-DISPATCH-PREPARATION-OWNER";
+        return {};
+    }
+    if ((diagnostic = validateOriginalDeviceLifetime(prepared->lifetime_)))
+        return {};
+    return prepared->operations_.issue(
+        prepared->session_.get(), *this, budget, std::move(quota), diagnostic);
+}
+
+inline std::shared_ptr<const ComputeDispatchValidationReservation>
+GpuDevice::reserveOriginalComputeDispatchValidation(const ComputeDispatchValidationRequest& request,
+    const ComputeDispatchValidationSessionBudget& budget,
+    std::shared_ptr<core::CpuMemoryQuota> quota,
+    const char*& diagnostic)
+{
+    diagnostic = ComputeDispatchValidationSessionContract::inspect(request, budget);
+    if (diagnostic
+        || (diagnostic =
+                ComputeDispatchValidationSessionContract::reservationDiagnostic(backend())))
+        return {};
+    if ((diagnostic = originalDeviceNativeLossDiagnostic()))
+        return {};
+    if (!quota || quota->limitBytes() != budget.maxCpuMetadataBytes
+        || overlapsOriginalDeviceCpuOwner(quota)) {
+        diagnostic = "RHI-DISPATCH-SESSION-QUOTA-LIMIT";
+        return {};
+    }
+    bool expected = false;
+    if (!originalLifetime_->computeDispatchValidationPending_.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
+        diagnostic = "RHI-DISPATCH-SESSION-DEVICE-BUSY";
+        return {};
+    }
+    try {
+        core::CpuMemoryQuotaScope scope(std::move(quota));
+        return core::makeShared<ComputeDispatchValidationReservation>(
+            ComputeDispatchValidationReservation::ConstructionKey{}, originalLifetime_);
+    } catch (const std::bad_alloc&) {
+        originalLifetime_->computeDispatchValidationPending_.store(
+            false, std::memory_order_release);
+        diagnostic = "RHI-DISPATCH-SESSION-CPU-ALLOCATION";
+        return {};
+    }
+}
+
+inline std::shared_ptr<const ComputeDispatchValidationDomain>
+GpuDevice::issueOriginalComputeDispatchDomain(const ComputeDispatchValidationRequest& request,
+    const OriginalDeviceLifetime::Ticket& lifetime,
+    const OriginalDeviceNativeLossObservation& loss,
+    const ComputeDispatchValidationDomainBudget& budget,
+    std::shared_ptr<core::CpuMemoryQuota> quota,
+    std::shared_ptr<const void> proof,
+    ComputeDispatchValidationDomain::ProofDiagnostic validateProof,
+    const char*& diagnostic)
+{
+    diagnostic =
+        ComputeDispatchValidationDomainContract::inspect(budget, quota ? quota->limitBytes() : 0u);
+    if (diagnostic
+        || (diagnostic = ComputeDispatchValidationDomainContract::issuanceDiagnostic(backend())))
+        return {};
+    if ((diagnostic = validateOriginalDeviceLifetime(lifetime))
+        || (diagnostic = validateOriginalDeviceNativeLoss(loss)))
+        return {};
+    if (!proof || !validateProof) {
+        diagnostic = "RHI-DISPATCH-DOMAIN-PROOF";
+        return {};
+    }
+    if ((diagnostic = validateProof(proof.get())))
+        return {};
+    if (overlapsOriginalDeviceCpuOwner(quota)) {
+        diagnostic = "RHI-DISPATCH-DOMAIN-QUOTA-OVERLAP";
+        return {};
+    }
+    ComputeDispatchValidationPlan checked;
+    if ((diagnostic = ComputeDispatchValidationContract::inspect(request, checked)))
+        return {};
+    try {
+        core::CpuMemoryQuotaScope scope(quota);
+        return core::makeShared<ComputeDispatchValidationDomain>(
+            ComputeDispatchValidationDomain::ConstructionKey{},
+            request,
+            lifetime,
+            loss,
+            budget,
+            std::move(quota),
+            std::move(proof),
+            validateProof);
+    } catch (const std::bad_alloc&) {
+        diagnostic = "RHI-DISPATCH-DOMAIN-CPU-ALLOCATION";
+        return {};
+    }
+}
+
+inline const char* GpuDevice::validateOriginalComputeDispatchDomain(
+    const std::shared_ptr<const ComputeDispatchValidationDomain>& domain,
+    Extent3D workgroup,
+    Extent3D groups) const noexcept
+{
+    if (!domain || !domain->sharedOwnerMatches(domain))
+        return "RHI-DISPATCH-DOMAIN-OWNER";
+    if (const auto* id = validateOriginalDeviceLifetime(domain->lifetime_))
+        return id;
+    if (const auto* id = validateOriginalDeviceNativeLoss(domain->loss_))
+        return id;
+    if (const auto* id = domain->diagnostic())
+        return id;
+    return ComputeDispatchValidationContract::contains(domain->request_, workgroup, groups);
+}
+
 inline void GpuDevice::retireOriginalDeviceLifetime() noexcept
 {
     if (originalLifetime_)
@@ -327,7 +550,8 @@ inline const char* GpuDevice::validateOriginalTypedNativeLossJoin(
 {
     if (const auto* id = validateOriginalDeviceNativeLoss(observation))
         return id;
-    if (request.contractVersion != 1u && request.contractVersion != 2u)
+    if (request.contractVersion != 1u && request.contractVersion != 2u
+        && request.contractVersion != 3u && request.contractVersion != 4u)
         return "RHI-ORIGINAL-TYPED-LOSS-JOIN-VERSION";
     if (!request.prototypeOptIn)
         return "RHI-ORIGINAL-TYPED-LOSS-JOIN-OPT-IN";
@@ -335,13 +559,20 @@ inline const char* GpuDevice::validateOriginalTypedNativeLossJoin(
         || originalRegistry_->budget_.contractVersion
             != (request.contractVersion == 1u
                     ? OriginalTypedNativeLossJoinContract::registrationVersion
-                    : OriginalTypedNativeLossJoinContract::tableRegistrationVersion))
+                    : request.contractVersion == 2u
+                    ? OriginalTypedNativeLossJoinContract::tableRegistrationVersion
+                    : OriginalTypedNativeLossJoinContract::synchronousRegistrationVersion))
         return request.contractVersion == 1u
             ? "RHI-ORIGINAL-NATIVE-CLOSURE-TYPED-LOSS-WEBGPU-JOIN-MISSING"
             : "RHI-ORIGINAL-NATIVE-CLOSURE-TABLE-LOSS-WEBGPU-JOIN-MISSING";
     if (const auto* id =
             OriginalTypedNativeLossJoinContract::validate(request, originalRegistry_->budget_))
         return id;
+    if (request.contractVersion == 4u) {
+        const auto decision = OriginalTypedNativeLossJoinContract::lowering(backend(), 4u);
+        if (!decision.scopedGroupJoinAvailable)
+            return decision.diagnostic;
+    }
     if (const auto* id = originalRegistry_->validate())
         return id;
     const auto subscription = originalRegistry_->loss_.lock();
@@ -430,6 +661,14 @@ inline const char* GpuDevice::prepareOriginalResourceRegistrationImpl(
     std::shared_ptr<core::CpuMemoryQuota> quota,
     std::weak_ptr<const OriginalDeviceNativeLossBinding> loss)
 {
+    if (budget.queries.requested()) {
+        if (const auto* id =
+                OriginalResourceRegistrationContract::queryLowering(backend(), budget.queries)
+                    .diagnostic)
+            return id;
+        if (originalLossBinding_ || !loss.expired())
+            return "RHI-ORIGINAL-QUERY-NATIVE-LOSS-JOIN-UNAVAILABLE";
+    }
     if (budget.heaps.requested()) {
         if (const auto* id =
                 OriginalResourceRegistrationContract::heapLowering(backend(), budget.heaps)
@@ -470,8 +709,56 @@ template <class Pipeline>
 inline const char* GpuDevice::validateOriginalTypedNativeLossGroupInputs(
     const DescriptorSet& object,
     const std::shared_ptr<Pipeline>& pipeline,
-    const std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u>& quotas) const noexcept
+    const std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u>& quotas,
+    const OriginalTypedNativeLossJoinRequest* synchronousJoin) const noexcept
 {
+    if (synchronousJoin) {
+        if (!originalRegistry_)
+            return "RHI-ORIGINAL-REGISTRATION-UNPREPARED";
+        if (synchronousJoin->contractVersion != 4u)
+            return "RHI-ORIGINAL-TYPED-LOSS-SYNC-GROUP-VERSION";
+        if (const auto* id = OriginalTypedNativeLossJoinContract::validate(
+                *synchronousJoin, originalRegistry_->budget_))
+            return id;
+        const char* id = nullptr;
+        const auto loss = observeOriginalDeviceNativeLoss(id);
+        if (!loss)
+            return id;
+        if (const auto* failure = validateOriginalTypedNativeLossJoin(*loss, *synchronousJoin))
+            return failure;
+        if (const auto* failure = validateOriginalResourceRegistration(object))
+            return failure;
+        if (!pipeline || !pipeline->sharedOwnerMatches(pipeline)
+            || !pipeline->originalAcceptedSharedQuotaBound())
+            return "RHI-ORIGINAL-FINITE-WRITE-PIPELINE";
+        if (const auto* failure = validateOriginalResourceRegistration(*pipeline))
+            return failure;
+        const auto& arena = object.originalArenaOwner_;
+        if (!arena || !arena->sharedOwnerMatches(arena))
+            return "RHI-ORIGINAL-GENERAL-WRITE-ARENA";
+        if (const auto* failure = validateOriginalResourceRegistration(*arena))
+            return failure;
+        if (!object.originalResourceRegistration().matchesParent(
+                arena->originalResourceRegistration()))
+            return "RHI-ORIGINAL-GENERAL-WRITE-ARENA-PARENT";
+        for (std::size_t i = 0u; i < quotas.size(); ++i) {
+            const auto& quota = quotas[i];
+            if (!quota || loss->overlapsMetadataOwner(quota))
+                return "RHI-ORIGINAL-TYPED-LOSS-SYNC-GROUP-QUOTA";
+            if (const auto* failure =
+                    object.originalResourceRegistration().independentCpuQuotaDiagnostic(quota))
+                return failure;
+            if (const auto* failure =
+                    arena->originalResourceRegistration().independentCpuQuotaDiagnostic(quota))
+                return failure;
+            if (const auto* failure = pipeline->independentAcceptedCpuQuotaDiagnostic(quota))
+                return failure;
+            for (std::size_t j = 0u; j < i; ++j)
+                if (core::SharedOwnerProjection::overlapsOwner(quota, quotas[j]))
+                    return "RHI-ORIGINAL-TYPED-LOSS-SYNC-GROUP-QUOTA";
+        }
+        return nullptr;
+    }
     if (originalRegistry_->budget_.contractVersion == 8u)
         return "RHI-ORIGINAL-TABLE-GROUP-PUBLICATION-MISSING";
     if (originalRegistry_->budget_.contractVersion
@@ -505,6 +792,21 @@ inline const char* GpuDevice::validateOriginalResourceRegistration(const T& reso
 {
     if constexpr (std::is_base_of_v<GpuMemoryHeap, T>) {
         return validateOriginalResourceRegistration(static_cast<const GpuMemoryHeap&>(resource));
+    } else if constexpr (std::is_base_of_v<QueryPool, T>) {
+        const auto& object = static_cast<const QueryPool&>(resource);
+        const auto ticket = object.originalResourceRegistration();
+        if (const auto* id = validateOriginalResourceRegistration(ticket))
+            return id;
+        if (!ticket.matchesObjectIdentity(&object, OriginalRegisteredResourceKind::QueryPool))
+            return "RHI-ORIGINAL-REGISTRATION-RESOURCE-MISMATCH";
+        const auto owner = object.originalFactoryOwner_.lock();
+        if (!object.matchesOriginalFactoryOwner(owner) || !object.originalOwnerQuota_)
+            return "RHI-ORIGINAL-QUERY-REGISTRATION-SHARED-OWNER";
+        if (const auto* id = OriginalResourceRegistrationContract::queryLowering(
+                backend(), originalRegistry_->budget_.queries)
+                .diagnostic)
+            return id;
+        return validateOriginalQueryPoolCandidate(owner);
     } else if constexpr (std::is_base_of_v<OriginalRegisteredObject, T>) {
         const auto& object = [&]() -> const auto& {
             if constexpr (std::is_base_of_v<DescriptorObject, T>
@@ -878,18 +1180,53 @@ inline const char* GpuDevice::beginOriginalGeneralDescriptorWrite(DescriptorSet&
         std::is_same_v<Pipeline, ComputePipeline> || std::is_same_v<Pipeline, RenderPipeline>);
     if (const auto* id = OriginalGeneralDescriptorWriteContract::validate(request))
         return id;
-    if (backend() != Backend::WebGPU)
+    // An explicitly requested /4 join authenticates the original closure even
+    // while a backend's complete-group publication payload remains unavailable.
+    // Defaults keep their existing lowering and refusal order.
+    const bool synchronousLossJoin = request.lossGroupJoinVersion || request.lossGroupJoinOptIn;
+    if (backend() == Backend::Metal && request.contractVersion >= 3u && !synchronousLossJoin)
+        return "RHI-ORIGINAL-TYPED-LOSS-SYNC-GROUP-OPT-IN";
+    if (synchronousLossJoin) {
+        if ((request.contractVersion == 3u && !std::is_same_v<Pipeline, RenderPipeline>)
+            || (request.contractVersion == 4u && !std::is_same_v<Pipeline, ComputePipeline>))
+            return "RHI-ORIGINAL-TYPED-LOSS-SYNC-GROUP-PIPELINE-PROFILE";
+        for (std::size_t i = 0u; i < quotas.size(); ++i)
+            if (!quotas[i] || quotas[i]->limitBytes() != request.maxCpuBytes[i])
+                return "RHI-ORIGINAL-GENERAL-WRITE-LOSS-QUOTA-LIMIT";
+        const OriginalTypedNativeLossJoinRequest join{
+            request.lossGroupJoinVersion, request.lossGroupJoinOptIn};
+        if (const auto* id =
+                validateOriginalTypedNativeLossGroupInputs(object, pipeline, quotas, &join))
+            return id;
+    }
+    if (request.contractVersion == 3u) {
+        if constexpr (!std::is_same_v<Pipeline, RenderPipeline>)
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-PIPELINE-PROFILE";
+        const auto decision =
+            OriginalGeneralDescriptorWriteContract::synchronousGraphicsLowering(backend());
+        if (!decision.preparationAvailable)
+            return decision.diagnostic;
+    } else if (request.contractVersion == 4u) {
+        if constexpr (!std::is_same_v<Pipeline, ComputePipeline>)
+            return "RHI-SYNCHRONOUS-COMPUTE-WRITE-PIPELINE-PROFILE";
+        const auto decision =
+            OriginalGeneralDescriptorWriteContract::synchronousComputeLowering(backend());
+        if (!decision.preparationAvailable)
+            return decision.diagnostic;
+    } else if (backend() != Backend::WebGPU)
         return OriginalGeneralDescriptorWriteContract::decide(backend()).diagnostic;
     if (!count || count > request.maxBindings || !elements || !sources)
         return "RHI-ORIGINAL-GENERAL-WRITE-BINDING-COUNT";
     if (const auto* id = validateOriginalResourceRegistration(object))
         return id;
-    if (originalRegistry_->budget_.contractVersion
+    if (!synchronousLossJoin
+        && originalRegistry_->budget_.contractVersion
             == OriginalTypedNativeLossJoinContract::registrationVersion
         && !OriginalTypedNativeLossJoinContract::lowering(backend()).scopedGroupJoinAvailable)
         return OriginalTypedNativeLossJoinContract::groupDiagnostic();
-    if (const auto* id = validateOriginalTypedNativeLossGroupInputs(object, pipeline, quotas))
-        return id;
+    if (!synchronousLossJoin)
+        if (const auto* id = validateOriginalTypedNativeLossGroupInputs(object, pipeline, quotas))
+            return id;
     const auto& arena = object.originalArenaOwner_;
     if (!arena)
         return "RHI-ORIGINAL-GENERAL-WRITE-ARENA";
@@ -1387,6 +1724,16 @@ inline void GpuDevice::closeOriginalDeviceLifetimeForShutdown() noexcept
         originalLossBinding_->shutdown();
 }
 
+inline std::shared_ptr<OriginalComputeDispatchValidation>
+GpuDevice::prepareOriginalComputeDispatchValidationPayload(const ComputeDispatchValidationRequest&,
+    const ComputeDispatchValidationSessionBudget&,
+    ComputeDispatchValidationSessionQuotas,
+    const char*& diagnostic)
+{
+    diagnostic = "RHI-DISPATCH-PREPARATION-NATIVE-UNAVAILABLE";
+    return {};
+}
+
 inline std::shared_ptr<OriginalDeviceNativeLossBinding> GpuDevice::bindOriginalDeviceNativeLoss(
     const OriginalDeviceLifetime::NativeLossReceiver&,
     const OriginalDeviceNativeLossBudget&,
@@ -1581,8 +1928,10 @@ inline std::shared_ptr<OriginalResourceRegistration> GpuDevice::reserveOriginalP
     if (OriginalResourceRegistrationContract::observesNativeLoss(
             originalRegistry_->budget_.contractVersion)
         && Contract::isPipeline(kind)
-        && !OriginalTypedNativeLossJoinContract::lowering(
-            backend(), originalRegistry_->budget_.contractVersion == 8u ? 2u : 1u)
+        && !OriginalTypedNativeLossJoinContract::lowering(backend(),
+            originalRegistry_->budget_.contractVersion == 10u      ? 3u
+                : originalRegistry_->budget_.contractVersion == 8u ? 2u
+                                                                   : 1u)
             .acceptedPipelineJoinAvailable) {
         lastOriginalRegistrationDiagnostic_ =
             OriginalTypedNativeLossJoinContract::pipelineDiagnostic();
@@ -1700,7 +2049,9 @@ inline core::UniquePtr<T> GpuDevice::publishOriginalDescriptorCandidate(
         return {};
     }
     if (record->registry_->budget_.contractVersion
-        == OriginalDescriptorNativeLossRegistrationContract::registrationVersion) {
+            == OriginalDescriptorNativeLossRegistrationContract::registrationVersion
+        || record->registry_->budget_.contractVersion
+            == OriginalTypedNativeLossJoinContract::synchronousRegistrationVersion) {
         if constexpr (std::is_same_v<T, DescriptorArena> || std::is_same_v<T, DescriptorSet>) {
             if ((lastOriginalRegistrationDiagnostic_ =
                         validateOriginalNativeLossDescriptor(*candidate)))
@@ -1775,7 +2126,13 @@ inline core::UniquePtr<Pipeline> GpuDevice::createOriginalAcceptedArtifactPipeli
         lastOriginalRegistrationDiagnostic_ = "RHI-ORIGINAL-TABLE-FACTORY-PROFILE";
         return {};
     }
-    const auto decision = Contract::lowering(backend(), true);
+    const auto decision = [&] {
+        if constexpr (std::is_same_v<Contract, OriginalAcceptedGraphicsPipelineFactoryContract>
+            || std::is_same_v<Contract, OriginalAcceptedComputePipelineFactoryContract>)
+            return Contract::lowering(backend(), true, budget.contractVersion);
+        else
+            return Contract::lowering(backend(), true);
+    }();
     if (!decision.factoryEligible) {
         lastOriginalRegistrationDiagnostic_ = decision.diagnostic;
         return {};

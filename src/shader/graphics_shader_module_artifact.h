@@ -32,6 +32,9 @@ struct GraphicsShaderModuleLoadBudget {
                   maxReferenceDepth = 0u;
     const GraphicsTargetMemoryLoadRequest* targetMemory = nullptr;
     const GraphicsRuntimeLengthOperationLoadRequest* runtimeLength = nullptr;
+    // Independently authored selected VS/FS declarations; null preserves the
+    // existing creation profile without native member-memory proof.
+    std::array<const NativeBufferMemoryLoadRequest*, 2u> nativeMemory{};
 };
 
 // Startup-only original combined bytes and selected-entry provenance. This

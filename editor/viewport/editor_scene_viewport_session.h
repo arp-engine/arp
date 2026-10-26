@@ -72,6 +72,10 @@ public:
     renderer::GuiExternalTextureSetBinding guiBinding() noexcept { return composite_.guiBinding(); }
 
 private:
+    // Declared before consumers so it dies last, including on early returns.
+    // Sprite renderer destruction unregisters from this exact manager.
+    core::SharedPtr<resource::ResourceManager> renderedResourceOwner_;
+
     struct MaterialDescriptorOwner {
         core::UniquePtr<rhi::DescriptorArena> arena;
         core::UniquePtr<rhi::DescriptorSet> set;
@@ -101,7 +105,6 @@ private:
     std::uint64_t renderedStateVersion_ = 0u;
     bool hasRendered_ = false;
     std::size_t lastSceneDrawCount_ = 0;
-    const resource::ResourceManager* renderedResourceOwner_ = nullptr;
 };
 
 } // namespace arp::editor

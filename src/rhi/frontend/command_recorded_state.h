@@ -25,11 +25,20 @@ public:
         if (states_)
             states_->commit();
         else if (sharedStates_)
-            sharedStates_->commit();
+            return acceptBackendOwnedRecordedOwnership();
         else
             return false;
         if (stagingUploads_)
             stagingUploads_->commit();
+        return true;
+    }
+
+protected:
+    // Native-owned aliases override this hook: queue acceptance must not
+    // implicitly commit a native owner's pending completion/content claims.
+    virtual bool acceptBackendOwnedRecordedOwnership() const noexcept
+    {
+        sharedStates_->commit();
         return true;
     }
 

@@ -1,5 +1,6 @@
 #pragma once
 #include "cpu_quota_factory_fixture.h"
+#include "original_command_recording_budget_fixture.h"
 #include "original_descriptor_buffer_binding_fixture.h"
 #include "rhi/frontend/command_recording.h"
 
@@ -257,6 +258,34 @@ public:
         }
         r.program = make();
         assert(r.program && !r.program->validate() && r.program->counts().matches(expected));
+        // Use the independently authored descriptor layouts as the oracle.
+        // The finite fixture binds one two-buffer set; the slots fixture binds
+        // two single-buffer sets. Count every bind, including repeated owners.
+        const auto& usage = *inputs->originalScalars()->originalUsage();
+        std::uint64_t descriptorElements = 0u;
+        for (const auto& command : usage.commands()) {
+            if (command.kind != K::BindComputeDescriptor && command.kind != K::BindRenderDescriptor)
+                continue;
+            assert(command.referenceCount == 1u);
+            const auto sourceIndex = usage.references()[command.firstReference].sourceIndex;
+            const auto& set =
+                std::get<std::shared_ptr<const rhi::OriginalCommandDescriptorSetSource>>(
+                    sources->sources()[sourceIndex]);
+            std::uint64_t authoredElements = 0u;
+            for (const auto& binding : set->originalObject()->layout().bindings) {
+                assert(core::canAddUnsigned(authoredElements, std::uint64_t{binding.arrayCount}));
+                authoredElements += binding.arrayCount;
+            }
+            assert(authoredElements == set->frozenElements().size()
+                && core::canAddUnsigned(descriptorElements, authoredElements));
+            descriptorElements += authoredElements;
+        }
+        r.program = OriginalCommandRecordingBudgetFixture::verify(r.program,
+            descriptorElements,
+            [&](const rhi::CommandRecordingBudget& recording, const char*& diagnostic) {
+                return Program::prepareRecordingBoundOriginalTyped(
+                    graph, b, recording, r.quota, diagnostic);
+            });
         assert(r.program->retainedOwnerCount() == b.maxRetainedOwners
             && r.program->streamContractVersion() == 2u);
         assert(

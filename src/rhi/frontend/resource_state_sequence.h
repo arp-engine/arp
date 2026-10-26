@@ -11,6 +11,20 @@ namespace arp::rhi::semantics {
 // state and cannot create a native barrier or completion proof.
 class RecordedResourceAccessDependencies final {
 public:
+    // A validated Undefined discard has no prior accesses to make visible.
+    // It still declares the exact destination scope for the first real use.
+    const char* discardTo(const ResourceAccessScope& destination) noexcept
+    {
+        if (pendingAccess_ != ResourceAccess::None || destinationDeclared_)
+            return "RHI-RECORDED-RESOURCE-DEPENDENCY-DISCARD-AFTER-USE";
+        if (const auto* id = validateResourceAccessScope(destination))
+            return id;
+        destinationDeclared_ = true;
+        destinationStages_ = destination.stages;
+        destinationAccess_ = destination.access;
+        return nullptr;
+    }
+
     const char* consume(const ResourceAccessScope& scope) noexcept
     {
         if (const auto* id = validateResourceAccessScope(scope))

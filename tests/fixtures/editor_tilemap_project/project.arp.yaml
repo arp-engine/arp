@@ -1,5 +1,12 @@
-format: ArpEditorProject
-version: 1
+type: arp.project
+contractVersion: 1
+id: e2a35978-e185-41c6-aadf-9729d9228344
+name: TileMap viewport fixture
+engineContract: editor-tilemap-fixture/1
+entryScene: null
+editorMetadata: null
+execution: Interpreter
+scriptModules: []
 assetPackages: []
 physics2d:
   gravity: {x: 0, y: -9.8}

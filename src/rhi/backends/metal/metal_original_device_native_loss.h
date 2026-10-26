@@ -12,12 +12,14 @@ class MetalNativeResultLossFixture;
 namespace arp::rhi_metal {
 class MetalOriginalDeviceNativeResultLoss;
 class MetalRhiNativeCommandPayload;
+class MetalDispatchValidationSession;
 
 // One source for the backend's actual shared native device. Source subscription is
 // weak; a completed command never owns or queues a loss callback/receiver.
 class MetalOriginalDeviceNativeResultLossSource final : public core::SharedObjectIdentity {
     friend class MetalOriginalDeviceNativeResultLoss;
     friend class MetalRhiNativeCommandPayload;
+    friend class MetalDispatchValidationSession;
     friend class arp::test::MetalNativeResultLossFixture;
     friend std::shared_ptr<MetalOriginalDeviceNativeResultLossSource>
     sharedMetalRhiOriginalResultLossSource();

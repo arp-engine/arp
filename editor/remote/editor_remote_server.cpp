@@ -84,7 +84,7 @@ bool EditorRemoteServer::start(
 void EditorRemoteServer::pump()
 {
     context_.dispatch();
-    if (!server_.running() || requestPending_ || !shell_)
+    if (!server_.running() || requestPending_ || !shell_ || shell_->exitRequested())
         return;
     requestPending_ = true;
     server_.async_next_request([this](const network::http::SessionStatus& status,
@@ -93,7 +93,10 @@ void EditorRemoteServer::pump()
         if (!status.success() || !incoming || !incoming->active() || !shell_)
             return;
         const auto response = protocol_->handle(incoming->request(), *shell_);
-        incoming->async_respond(response, [](const network::http::SessionStatus&) {});
+        ++pendingResponses_;
+        incoming->async_respond(response, [this](const network::http::SessionStatus&) {
+            --pendingResponses_;
+        });
     });
 }
 

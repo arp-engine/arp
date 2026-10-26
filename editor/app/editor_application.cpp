@@ -5,7 +5,12 @@
 #include "3d/authoring_components.h"
 #include "3d/components.h"
 #include "editor/app/game_preview.h"
+#include "editor/ingress/editor_platform_input_router.h"
+#include "editor/ingress/platform_input_adapter.h"
 #include "editor/remote/editor_remote_server.h"
+#include "editor/validation/editor_inspector_safety_smoke.h"
+#include "editor/validation/editor_object_view_smoke.h"
+#include "editor/validation/editor_transform_gesture_smoke.h"
 #include "editor/workspace/editor_terrain_preview.h"
 #ifdef DeviceCapabilities
 #undef DeviceCapabilities
@@ -196,14 +201,28 @@ int EditorApplication::run(bool hidden,
     bool viewportRuntimeSmoke,
     bool terrainResourceSmoke,
     std::string_view openTerrain,
-    bool terrainAssets)
+    bool terrainAssets,
+    const std::filesystem::path& legacyWoccExecutable,
+    std::string_view transformGestureSmoke,
+    std::string_view inspectorSafetySmoke)
 {
     using namespace arp;
+    const bool objectViewSmoke = inspectorSafetySmoke.substr(0, 5) == "view_";
+    // View scenarios exercise the ordinary viewport fixture and execution gates.
+    viewportRuntimeSmoke = viewportRuntimeSmoke || objectViewSmoke;
     editor::EditorShell shell;
     ScopedTemporaryDirectory terrainGizmoFixtureDirectory;
     const auto root = std::filesystem::path(ARP_SOURCE_DIR) / "editor/resources";
     ScopedTemporaryDirectory terrainResourceDirectory;
     auto effectiveProjectRoot = projectRoot;
+    // Script smoke fixtures are explicitly created under the source build/ root.
+    // Keep ordinary res:// admission intact by mounting that declared test root.
+    if (inspectorSafetySmoke.substr(0, 7) == "script_"
+        || inspectorSafetySmoke.substr(0, 9) == "modifier_")
+        effectiveProjectRoot = std::filesystem::path(ARP_SOURCE_DIR);
+    if (objectViewSmoke)
+        effectiveProjectRoot =
+            std::filesystem::path(ARP_SOURCE_DIR) / "tests/fixtures/editor_tilemap_project";
     if (terrainResourceSmoke) {
         terrainResourceDirectory.path = std::filesystem::temp_directory_path()
             / ("arp-editor-terrain-resource-"
@@ -216,6 +235,9 @@ int EditorApplication::run(bool hidden,
             effectiveProjectRoot / "editor-hill.terrain.yaml");
         std::filesystem::copy_file(
             fixtures / "editor-hill.r32", effectiveProjectRoot / "editor-hill.r32");
+        std::filesystem::copy_file(std::filesystem::path(ARP_SOURCE_DIR)
+                / "editor/tests/fixtures/project/authoring.arp.yaml",
+            effectiveProjectRoot / "project.arp.yaml");
     }
     auto loaded = shell.load(root / "editor.arpui", effectiveProjectRoot);
     if (!loaded.ok())
@@ -510,15 +532,28 @@ int EditorApplication::run(bool hidden,
         const auto choiceName = resourceControlName + "_option_1";
         bool hasReadyMeshChoice = false;
         ui::WidgetId readyMeshChoiceId;
+        ui::WidgetId resourcePopup;
         for (const auto widgetId : shell.runtime().canvas().traversal()) {
             const auto* widget = shell.runtime().canvas().findWidget(widgetId);
-            if (!widget || widget->name() != choiceName
-                || widget->parentId() != shell.runtime().canvas().rootId())
+            if (widget && widget->name() == resourceControlName + "_popup")
+                resourcePopup = widgetId;
+        }
+        if (!resourcePopup.valid())
+            return fail("RESOURCE-PICKER-SMOKE", "typed Mesh picker has no bounded popup");
+        for (const auto widgetId : shell.runtime().canvas().traversal()) {
+            const auto* widget = shell.runtime().canvas().findWidget(widgetId);
+            if (!widget || widget->name() != choiceName || widget->parentId() != resourcePopup)
                 continue;
-            hasReadyMeshChoice =
-                std::string_view(widget->desc().text.data(), widget->desc().text.size())
-                    .find(pickerMeshId)
-                != std::string_view::npos;
+            // Display lines reconstruct the authored ID without changing its command value.
+            core::pmr::String identity;
+            for (const auto child : widget->childIds()) {
+                const auto* label = shell.runtime().canvas().findWidget(child);
+                if (label
+                    && (label->name() == choiceName + "_identity_1"
+                        || label->name() == choiceName + "_identity_2"))
+                    identity += label->desc().text;
+            }
+            hasReadyMeshChoice = identity == pickerMeshId;
             if (hasReadyMeshChoice)
                 readyMeshChoiceId = widgetId;
             break;
@@ -861,6 +896,10 @@ int EditorApplication::run(bool hidden,
                 break;
             }
         }
+        // The property rows can grow; scroll to the actual control before
+        // asserting its full visibility, as a user must do in the Inspector.
+        if (const auto* color = shell.runtime().canvas().findWidget(colorWidgetId))
+            shell.inspectorScrollChanged(color->desc().localRect.y);
         const auto colorLayout = shell.runtime().canvas().resolveLayout();
         const auto* colorWidgetLayout = colorLayout.ok() && colorWidgetId.valid()
             ? colorLayout.findWidget(colorWidgetId)
@@ -989,8 +1028,10 @@ int EditorApplication::run(bool hidden,
                 != EditorResponseStatus::Completed)
             return fail("RIGIDBODY-INSPECTOR-SMOKE", "cannot add RigidBody2D Inspector fixture");
         const auto* rigidBody = meshObject->getComponent<physics2d::RigidBody2DComponent>();
-        if (!rigidBody || !rigidBody->handle())
-            return fail("RIGIDBODY-INSPECTOR-SMOKE", "live rigid body fixture is absent");
+        if (!rigidBody || rigidBody->usage() != physics2d::ComponentUsage::Authoring
+            || rigidBody->handle())
+            return fail(
+                "RIGIDBODY-INSPECTOR-SMOKE", "authoring rigid body fixture is absent or simulated");
         if (!shell.runtime()
                 .interact(ui::UiControlInteraction::scrollBy(shell.id("properties"), 0.0f, 5000.0f))
                 .ok())
@@ -1038,7 +1079,8 @@ int EditorApplication::run(bool hidden,
             != EditorResponseStatus::Completed)
             return fail("COLLIDER2D-INSPECTOR-SMOKE", "cannot add Collider2D Inspector fixture");
         const auto* collider = meshObject->getComponent<physics2d::Collider2DComponent>();
-        if (!collider || !collider->handle())
+        if (!collider || collider->usage() != physics2d::ComponentUsage::Authoring
+            || collider->handle())
             return fail("COLLIDER2D-INSPECTOR-SMOKE", "live Collider2D fixture is absent");
         SetSceneComponentPropertyCommand colliderPoints("points");
         colliderPoints.objectId = meshObject->id().value();
@@ -1209,9 +1251,10 @@ int EditorApplication::run(bool hidden,
         jointBodyB.sceneObjectReferenceValue = jointTargetId.value();
         if (shell.submitCommand(std::move(jointBodyA)).status != EditorResponseStatus::Completed
             || shell.submitCommand(std::move(jointBodyB)).status != EditorResponseStatus::Completed
-            || !joint->handle() || joint->bodyAObjectId() != meshObject->id().value()
+            || joint->usage() != physics2d::ComponentUsage::Authoring || joint->handle()
+            || joint->bodyAObjectId() != meshObject->id().value()
             || joint->bodyBObjectId() != jointTargetId.value())
-            return fail("JOINT2D-INSPECTOR-SMOKE", "cannot bind live joint endpoints");
+            return fail("JOINT2D-INSPECTOR-SMOKE", "cannot bind authoring joint endpoints");
         if (shell.submitCommand(SelectSceneObjectCommand{jointTargetId.value()}).status
                 != EditorResponseStatus::Completed
             || shell.submitCommand(SelectSceneObjectCommand{jointInspectorObjectId.value()}).status
@@ -1540,13 +1583,6 @@ int EditorApplication::run(bool hidden,
         std::printf(
             "PASS: resolved TerrainAsset, authoring extent and CritterField bounds reach the viewport gizmo overlay\n");
     }
-    auto authored = shell.drawCommands();
-    if (!authored.ok())
-        return fail("DRAW", authored.diagnostics());
-    auto assets = EditorUiAssets::build(shell, root, authored.commands());
-    if (!assets.ok())
-        return fail(assets.stage(), assets.diagnostic());
-    auto& atlas = assets.atlas();
     platform::WindowSystem platform;
     auto initialized = platform.initialize();
     if (!initialized.success)
@@ -1554,11 +1590,132 @@ int EditorApplication::run(bool hidden,
     auto window = platform.createWindow({"ARP Editor", 1440, 810, hidden, true});
     if (!window.valid())
         return fail("WINDOW", "creation failed");
+    if (!transformGestureSmoke.empty()) {
+        core::pmr::String diagnostic;
+        if (!EditorTransformGestureSmoke::run(
+                shell, transformGestureSmoke, diagnostic, window.width(), window.height()))
+            return fail("TRANSFORM-GESTURE-SMOKE", diagnostic);
+    }
+    if (!inspectorSafetySmoke.empty() && !objectViewSmoke) {
+        core::pmr::String diagnostic;
+        if (!EditorInspectorSafetySmoke::run(shell, inspectorSafetySmoke, diagnostic))
+            return fail("INSPECTOR-SAFETY-SMOKE", diagnostic);
+    }
+    auto authored = shell.drawCommands();
+    if (!authored.ok())
+        return fail("DRAW", authored.diagnostics());
+    auto assets = EditorUiAssets::build(shell, root, authored.commands());
+    if (!assets.ok())
+        return fail(assets.stage(), assets.diagnostic());
+    auto& atlas = assets.atlas();
     if (hidden) {
         ScopedTemporaryDirectory directory{std::filesystem::temp_directory_path()
             / ("arp-editor-reflection-smoke-"
                 + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
         std::filesystem::create_directories(directory.path);
+        {
+            // Exercise workspace transactions with a real native window present,
+            // without changing the scene used for viewport/RenderDoc fixtures.
+            EditorShell workspace;
+            if (!workspace.load(root / "editor.arpui", directory.path).ok())
+                return fail("PROJECT-SMOKE", "isolated shell load failed");
+            ProjectManifest manifest;
+            manifest.id = "43b3ce18-045d-4908-9a63-8c8adf01a2bf";
+            manifest.name = "Workspace smoke";
+            manifest.engineContract = "editor-workflow-smoke/1";
+            // Exercise the actual project modal before the transaction smoke.
+            workspace.activate("menu_Project");
+            workspace.activate("project_ui_new");
+            const auto modalDraws = workspace.drawCommands();
+            if (!workspace.runtime()
+                    .canvas()
+                    .findWidget(workspace.id("project_ui_modal"))
+                    ->visible()
+                || !modalDraws.ok() || modalDraws.commands().empty()
+                || modalDraws.commands().back().widgetId != workspace.id("project_ui_cancel"))
+                return fail("PROJECT-UI-SMOKE", "project modal must composite above the viewport");
+            workspace.activate("project_ui_cancel");
+            if (workspace.runtime().canvas().findWidget(workspace.id("project_ui_modal"))->visible()
+                || !workspace.runtime()
+                    .canvas()
+                    .findWidget(workspace.id("menu_Project"))
+                    ->enabled())
+                return fail("PROJECT-UI-SMOKE", "cancel must restore background input");
+            std::fprintf(stdout, "[PROJECT-UI-SMOKE] new/cancel/overlay passed\n");
+            workspace.activate("save_scene_as");
+            const auto sceneModalDraws = workspace.drawCommands();
+            if (!workspace.runtime().canvas().findWidget(workspace.id("scene_ui_modal"))->visible()
+                || !sceneModalDraws.ok() || sceneModalDraws.commands().empty()
+                || sceneModalDraws.commands().back().widgetId != workspace.id("scene_ui_cancel"))
+                return fail("SCENE-UI-SMOKE", "scene modal must composite above the viewport");
+            workspace.activate("scene_ui_cancel");
+            if (workspace.runtime().canvas().findWidget(workspace.id("scene_ui_modal"))->visible()
+                || !workspace.runtime().canvas().findWidget(workspace.id("menu_Scene"))->enabled())
+                return fail("SCENE-UI-SMOKE", "cancel must restore background input");
+            std::fprintf(stdout, "[SCENE-UI-SMOKE] save-as/cancel/overlay passed\n");
+            const auto projectPath = core::FilePath::utf8(directory.path / "workspace");
+            if (workspace.submitCommand(CreateProjectCommand{projectPath, manifest}).status
+                    != EditorResponseStatus::Completed
+                || workspace.submitCommand(CreateSceneObjectCommand("unsaved")).status
+                    != EditorResponseStatus::Completed
+                || workspace.submitCommand(CloseProjectCommand{}).diagnostic
+                    != EditorDiagnosticCode::UnsavedChanges
+                || workspace.submitCommand(CloseProjectCommand{true}).status
+                    != EditorResponseStatus::Completed
+                || workspace.submitCommand(OpenProjectCommand{projectPath}).status
+                    != EditorResponseStatus::Completed
+                || workspace.submitCommand(RenameProjectCommand{core::pmr::String("Saved smoke")})
+                        .status
+                    != EditorResponseStatus::Completed
+                || workspace.submitCommand(SaveProjectCommand{}).status
+                    != EditorResponseStatus::Completed)
+                return fail("PROJECT-SMOKE", "project transaction contract failed");
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            bool saved = false;
+            while (std::chrono::steady_clock::now() < deadline) {
+                workspace.pollTasks();
+                auto state = workspace.submitCommand(GetEditorStateQuery{});
+                if (state.hasSnapshot && !state.snapshot.projectSavePending) {
+                    saved = state.snapshot.hasProject && !state.snapshot.projectDirty
+                        && state.snapshot.projectDiagnostic.empty();
+                    break;
+                }
+                std::this_thread::yield();
+            }
+            if (!saved
+                || workspace.submitCommand(CloseProjectCommand{}).status
+                    != EditorResponseStatus::Completed
+                || workspace.submitCommand(OpenProjectCommand{projectPath}).status
+                    != EditorResponseStatus::Completed
+                || !workspace.projectManifest()
+                || workspace.projectManifest()->name != "Saved smoke")
+                return fail("PROJECT-SMOKE", "saved project failed to reopen");
+            std::fprintf(
+                stdout, "[PROJECT-SMOKE] create/protect/discard/open/save/reopen passed\n");
+            for (const auto kind : {ProjectTemplateKind::Game2D, ProjectTemplateKind::Game3D}) {
+                const bool twoD = kind == ProjectTemplateKind::Game2D;
+                manifest.entryScene = twoD ? "00000000-0000-4000-8000-000000000094"
+                                           : "00000000-0000-4000-8000-000000000095";
+                const auto path =
+                    core::FilePath::utf8(directory.path / (twoD ? "game2d" : "game3d"));
+                if (workspace.submitCommand(CreateProjectCommand{path, manifest, false, kind})
+                            .status
+                        != EditorResponseStatus::Completed
+                    || !workspace.projectResources()
+                        .find<scene::SceneAssetResource>(manifest.entryScene)
+                        .ready()
+                    || !workspace.sceneDocument().scene().findObjectByName(
+                        twoD ? "Camera2D" : "Camera3D")
+                    || workspace.sceneDocument().scene().executionMode()
+                        != scene::SceneExecutionMode::Passive
+                    || workspace.sceneDirty()
+                    || workspace.submitCommand(CloseProjectCommand{}).status
+                        != EditorResponseStatus::Completed)
+                    return fail(
+                        "SCENE-PACKAGE-SMOKE", "template create/Ready/Passive contract failed");
+            }
+            std::fprintf(stdout, "[SCENE-PACKAGE-SMOKE] 2D/3D create/Ready/Passive passed\n");
+        }
         EditorSceneDocument source(false), reopened(false);
         source.setResourceManagerProvider([&shell] {
             return &shell.projectResources();
@@ -1614,7 +1771,7 @@ int EditorApplication::run(bool hidden,
         std::puts(
             "PASS: editor hidden-window reflection save/reopen, empty reference and double precision");
     }
-    GamePreviewHost gamePreview;
+    GamePreviewHost gamePreview(legacyWoccExecutable);
     if (!hidden && !gamePreview.hasEditorWindow())
         return fail("GAME-PREVIEW", "cannot locate the editor native window");
     if (hover) {
@@ -1902,6 +2059,11 @@ int EditorApplication::run(bool hidden,
                 return fail("VIEWPORT-TILEMAP", "TileMap runtime fixture is unavailable");
         }
 
+        if (objectViewSmoke) {
+            core::pmr::String diagnostic;
+            if (!EditorObjectViewSmoke::run(shell, inspectorSafetySmoke, diagnostic))
+                return fail("OBJECT-VIEW-SMOKE", diagnostic);
+        }
         if (viewportPipelineSmoke) {
             const auto targetExtent = resolveViewportExtent();
             if (targetExtent.width == 0u || targetExtent.height == 0u)
@@ -2009,15 +2171,19 @@ int EditorApplication::run(bool hidden,
     core::pmr::String viewportRuntimeDiagnostic(&core::defaultCpuMemoryResource());
     while (!quit) {
         const auto remoteStateVersion = shell.stateVersion();
+        const auto feedbackVersion = shell.feedbackVersion();
         remoteServer.pump();
         shell.pollTasks();
-        if (shell.stateVersion() != remoteStateVersion)
+        if (shell.stateVersion() != remoteStateVersion
+            || shell.feedbackVersion() != feedbackVersion)
             dirty = true;
         platform::WindowEventBatch batch;
         platform.pumpEvents(batch);
         for (auto event : batch.windowEvents) {
-            if (event.type == platform::WindowEventType::CloseRequested)
-                quit = true;
+            if (event.type == platform::WindowEventType::CloseRequested) {
+                shell.activate("exit_ui_request");
+                dirty = true;
+            }
             if (event.type == platform::WindowEventType::Minimized)
                 minimized = true;
             if (event.type == platform::WindowEventType::Restored) {
@@ -2037,36 +2203,36 @@ int EditorApplication::run(bool hidden,
                 dirty = true;
             }
         }
+        const auto& canvasDesc = shell.runtime().canvas().desc();
+        const EditorCanvasInputMapping inputMapping(
+            window.width(), window.height(), canvasDesc.viewport.width, canvasDesc.viewport.height);
         for (auto& event : batch.inputEvents)
-            if (event.hasPosition || event.kind == platform::WindowInputEvent::Kind::PointerMoved) {
-                event.x *= 1920.f / window.width();
-                event.y *= 1080.f / window.height();
-            }
+            if (const auto* diagnostic = inputMapping.apply(event))
+                return fail("INPUT-CANVAS", diagnostic);
         if (!batch.inputEvents.empty()) {
-            platform::WindowEventBatch uiBatch;
-            for (const auto& event : batch.windowEvents)
-                uiBatch.windowEvents.push_back(event);
             for (const auto& event : batch.inputEvents) {
-                shell.handlePlatformInput(event);
-                const bool keyboard = event.kind == platform::WindowInputEvent::Kind::KeyDown
-                    || event.kind == platform::WindowInputEvent::Kind::KeyUp
-                    || event.kind == platform::WindowInputEvent::Kind::TextInput;
-                if (!(keyboard && shell.scriptEditorCapturesKeyboard()))
-                    uiBatch.inputEvents.push_back(event);
-            }
-            input::InputFrame frame;
-            platform::applyWindowInputToInputFrame(uiBatch, frame);
-            if (!frame.events().empty()) {
-                auto routed = shell.runtime().dispatchFrame(frame, {window.id(), 512});
+                auto routed =
+                    EditorPlatformInputRouter::dispatch(shell, event, inputSystem, window.id());
                 if (!routed.ok())
                     return fail("INPUT", routed.diagnostic.message);
-                auto begun = inputSystem.beginFrame(frame, routed.eventConsumption);
-                if (!begun.ok())
-                    return fail("INPUT-SYSTEM", begun.diagnostic().message);
                 if (shell.diagnostic().code != ui::UiDiagnosticCode::None)
                     return fail("CONTROL", shell.diagnostic().message);
             }
             dirty = true;
+        }
+        if (shell.exitRequested()) {
+            // pump() keeps dispatching response completion but admits no new commands.
+            // The HTTP service already supplies the bounded response timeout.
+            if (!remoteServer.hasPendingResponses())
+                quit = true;
+            else {
+#if defined(__EMSCRIPTEN__)
+                emscripten_sleep(1);
+#else
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#endif
+                continue;
+            }
         }
         if (quit)
             break;
@@ -2240,6 +2406,54 @@ int EditorApplication::run(bool hidden,
                 shell.runtime().controlCount(),
                 commands.size(),
                 shell.selection().c_str());
+            if (viewportRuntimeSmoke) {
+                if (objectViewSmoke) {
+                    const bool hidden = inspectorSafetySmoke == "view_hidden"
+                        || inspectorSafetySmoke == "view_ui_hidden";
+                    const auto expected = hidden ? 0u : 2u;
+                    if (viewportSession.lastSceneDrawCount() != expected)
+                        return fail("OBJECT-VIEW-DRAWS", "unexpected visible Mesh draw count");
+                    std::printf("PASS native object view Mesh draws=%zu expected=%u\n",
+                        viewportSession.lastSceneDrawCount(),
+                        expected);
+                }
+                std::weak_ptr<resource::ResourceManager> oldOwner =
+                    shell.retainProjectResourceManager();
+                const auto targetExtent = viewportSession.extent();
+                if (shell.submitCommand(CloseProjectCommand{true}).status
+                        != EditorResponseStatus::Completed
+                    || oldOwner.expired())
+                    return fail(
+                        "VIEWPORT-RESOURCE-OWNER", "old owner was not retained until cache detach");
+                core::pmr::String diagnostics;
+#if defined(ARP_RENDERDOC_APP_AVAILABLE)
+                if (capture)
+                    capture->StartFrameCapture(nullptr, nullptr);
+#endif
+                const bool rebound =
+                    viewportSession.renderIfDirty(shell, targetExtent, diagnostics);
+#if defined(ARP_RENDERDOC_APP_AVAILABLE)
+                if (capture)
+                    capture->EndFrameCapture(nullptr, nullptr);
+#endif
+                // Closing the project deliberately leaves no runtime Camera.
+                // The environment preview succeeds with its explicit diagnostic.
+                if (!rebound
+                    || diagnostics
+                        != editorSceneViewportDiagnosticCode(
+                            EditorSceneViewportDiagnostic::MissingCamera)
+                    || !oldOwner.expired()) {
+                    std::fprintf(stderr,
+                        "viewport owner rebound=%d retained=%ld diagnostic=%s\n",
+                        int(rebound),
+                        oldOwner.use_count(),
+                        diagnostics.c_str());
+                    return fail("VIEWPORT-RESOURCE-OWNER",
+                        "cache detach did not release the exact old owner");
+                }
+                std::puts(
+                    "PASS: viewport mesh/texture/Sprite cache owner retained through project close, then released after detach");
+            }
             quit = true;
         }
     }

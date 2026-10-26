@@ -8,6 +8,19 @@ TileMapRuntime::TileMapRuntime(resource::ResourceManager& resources,
     resource::ResourceHandle<TileMapResource> map,
     physics2d::PhysicsWorld2D& world,
     TileMapRuntimeDesc desc)
+    : TileMapRuntime(resources, map, &world, desc)
+{}
+
+TileMapRuntime::TileMapRuntime(resource::ResourceManager& resources,
+    resource::ResourceHandle<TileMapResource> map,
+    TileMapRuntimeDesc desc)
+    : TileMapRuntime(resources, map, nullptr, desc)
+{}
+
+TileMapRuntime::TileMapRuntime(resource::ResourceManager& resources,
+    resource::ResourceHandle<TileMapResource> map,
+    physics2d::PhysicsWorld2D* world,
+    TileMapRuntimeDesc desc)
     : resources_(resources), map_(map), world_(world), desc_(desc)
 {
     resident_.reserve(desc.maxResidentChunks);
@@ -22,14 +35,14 @@ TileMapRuntime::~TileMapRuntime()
 {
     for (const auto& r : resident_)
         if (r.body)
-            world_.destroyBody(r.body);
+            world_->destroyBody(r.body);
 }
 
 bool TileMapRuntime::admitted()
 {
     if (!map_.ready() || !set_.ready())
         return fail("ARP-2D-TILEMAP-RESOURCE-STALE");
-    if (!world_.valid() || !desc_.maxResidentChunks || !desc_.maxVisibleCells
+    if ((world_ && !world_->valid()) || !desc_.maxResidentChunks || !desc_.maxVisibleCells
         || !desc_.firstObjectId)
         return fail("ARP-2D-TILEMAP-RUNTIME-CONFIG");
     return true;
@@ -85,11 +98,11 @@ bool TileMapRuntime::updateResidency(core::Rect2<float> visible)
         for (const auto& layer : chunk.layers)
             for (const auto& cell : layer.cells) {
                 const auto* tile = set_.get()->tile(cell.tileId);
-                if (!tile->solid)
+                if (!world_ || !tile->solid)
                     continue;
                 if (!addition.body) {
                     physics2d::BodyDesc body;
-                    addition.body = world_.createBody(body);
+                    addition.body = world_->createBody(body);
                 }
                 bool success = bool(addition.body);
                 if (success) {
@@ -107,14 +120,14 @@ bool TileMapRuntime::updateResidency(core::Rect2<float> visible)
                     for (std::uint32_t turn = 0; turn < cell.quarterTurns; ++turn)
                         offset = {-offset.y, offset.x};
                     shape.center = {position.x + offset.x, position.y + offset.y};
-                    success = bool(world_.createCollider(addition.body, shape));
+                    success = bool(world_->createCollider(addition.body, shape));
                 }
                 if (!success) {
                     if (addition.body)
-                        world_.destroyBody(addition.body);
+                        world_->destroyBody(addition.body);
                     for (const auto& r : pending_)
                         if (r.body)
-                            world_.destroyBody(r.body);
+                            world_->destroyBody(r.body);
                     pending_.clear();
                     return fail("ARP-2D-TILEMAP-COLLISION-ADMISSION");
                 }
@@ -123,7 +136,7 @@ bool TileMapRuntime::updateResidency(core::Rect2<float> visible)
     }
     for (const auto& r : resident_)
         if (std::find(wanted_.begin(), wanted_.end(), r.index) == wanted_.end() && r.body)
-            world_.destroyBody(r.body);
+            world_->destroyBody(r.body);
     resident_.erase(std::remove_if(resident_.begin(),
                         resident_.end(),
                         [&](const auto& r) {

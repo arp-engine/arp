@@ -69,7 +69,7 @@ bool EditorSceneViewportSession::renderIfDirty(
         diagnostics = "ARP-EDITOR-VIEWPORT-SESSION-EXTENT-INVALID";
         return false;
     }
-    if (renderedResourceOwner_ && renderedResourceOwner_ != &shell.projectResources()) {
+    if (renderedResourceOwner_ && renderedResourceOwner_.get() != &shell.projectResources()) {
         device_->waitIdle();
         materialDescriptors_.clear();
         spriteRenderer_.reset();
@@ -77,7 +77,8 @@ bool EditorSceneViewportSession::renderIfDirty(
         textureCache_.clearAfterDeviceIdle();
         hasRendered_ = false;
     }
-    renderedResourceOwner_ = &shell.projectResources();
+    // Release the old CPU owner only after all borrowed consumers detached.
+    renderedResourceOwner_ = shell.retainProjectResourceManager();
     if (hasRendered_ && renderedStateVersion_ == shell.stateVersion()
         && composite_.extent().width == extent.width
         && composite_.extent().height == extent.height) {
@@ -104,6 +105,12 @@ bool EditorSceneViewportSession::render(
 
     const auto snapshot = shell.sceneDocument().scene().extractTraversalSnapshot(
         scene::SceneTraversalOptions{config_.maxSnapshotObjects});
+    const char* viewDiagnostic = nullptr;
+    const auto visible = shell.visibleSceneSnapshot(snapshot, viewDiagnostic);
+    if (!visible) {
+        diagnostics = viewDiagnostic;
+        return false;
+    }
     const auto frame = buildEditorSceneViewportFrame(shell.sceneDocument().scene(),
         snapshot,
         shell.stateVersion(),
@@ -111,7 +118,8 @@ bool EditorSceneViewportSession::render(
         extent.height,
         {0u, 0u, extent.width, extent.height},
         &shell.projectResources(),
-        config_.maxDrawCalls);
+        config_.maxDrawCalls,
+        &*visible);
     if (!renderEnvironment(shell, false, frame.frame.sky, diagnostics))
         return false;
     if (!frame.valid()) {
@@ -123,7 +131,7 @@ bool EditorSceneViewportSession::render(
 
     scene2d::SceneSpriteExtractor spriteExtractor(
         shell.projectResources(), config_.maxDrawCalls, true);
-    if (!spriteExtractor.extract(shell.sceneDocument().scene(), snapshot)) {
+    if (!spriteExtractor.extract(shell.sceneDocument().scene(), *visible)) {
         diagnostics = spriteExtractor.diagnostic();
         return false;
     }
@@ -138,7 +146,7 @@ bool EditorSceneViewportSession::render(
         extent.width,
         extent.height,
         0.0f);
-    for (const auto& node : snapshot.nodes()) {
+    for (const auto& node : visible->nodes()) {
         if (!node.activeInHierarchy)
             continue;
         const auto* object = shell.sceneDocument().scene().findObject(node.objectId);

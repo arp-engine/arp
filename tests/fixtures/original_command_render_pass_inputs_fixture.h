@@ -1,5 +1,7 @@
 #pragma once
 #include "cpu_quota_factory_fixture.h"
+#include "rhi/backends/vulkan/vulkan_render_pass_storage.h"
+#include "rhi/frontend/command_render_pass_storage.h"
 #include "rhi/frontend/command_usage.h"
 #include "rhi/gpu_device.h"
 
@@ -76,6 +78,7 @@ public:
             3u;
         budget.maxCpuBytes[static_cast<std::size_t>(B::CpuDomain::Source)] = metadataBytes;
         budget.maxCpuBytes[static_cast<std::size_t>(B::CpuDomain::Graph)] = metadataBytes;
+        budget.maxCpuBytes[static_cast<std::size_t>(B::CpuDomain::Recording)] = metadataBytes;
         const std::array<rhi::CommandUsage, 6> commands{{{K::InsertDebugMarker, 0u, 0u},
             {K::BeginRenderPass, 0u, 3u},
             {K::EndRenderPass, 3u, 0u},
@@ -294,6 +297,7 @@ public:
         };
         auto frozen = factory();
         assert(frozen && !Inputs::validateOriginal(frozen) && frozen->retainedOwnerCount() == 21u);
+        verifyStorageProjection(frozen, sourceQuota, graphQuota);
         verifyFields(frozen, incoming, pass);
         auto& physicalView = const_cast<rhi::TextureViewDesc&>(views[0]->desc());
         physicalView.format = rhi::TextureFormat::Unknown;
@@ -344,6 +348,185 @@ public:
     }
 
 private:
+    static void verifyStorageProjection(
+        const std::shared_ptr<const rhi::OriginalCommandInputs>& inputs,
+        const std::shared_ptr<core::CpuMemoryQuota>& sourceQuota,
+        const std::shared_ptr<core::CpuMemoryQuota>& graphQuota)
+    {
+        using Contract = rhi::OriginalRenderPassStorageContract;
+        using Program = rhi::OriginalCommandStreamProgram;
+        rhi::CommandRecordingBudget recording{1u, true, 6u};
+        for (const auto& command : inputs->originalScalars()->originalUsage()->commands())
+            recording.limits.append(command.kind);
+        recording.limits.resourceReferences = 6u;
+        recording.limits.textBytes = 6u;
+        rhi::OriginalCommandStreamBudget stream;
+        stream.contractVersion = 1u;
+        stream.prototypeOptIn = true;
+        stream.maxCommands = 6u;
+        stream.maxDescriptors = 2u;
+        stream.maxReferences = 6u;
+        stream.maxRenderPasses = 2u;
+        stream.maxAttachmentReferences = 6u;
+        stream.maxRetainedOwners = inputs->retainedOwnerCount() + 1u;
+        stream.maxCpuMetadataBytes = metadataBytes;
+        auto quota = core::makeShared<core::CpuMemoryQuota>(metadataBytes);
+        const char* id = nullptr;
+        auto program = Program::prepareRecordingBoundOriginal(inputs, stream, recording, quota, id);
+        if (id)
+            std::fprintf(stderr, "render-pass storage original Program: %s\n", id);
+        assert(program && !id);
+        const Contract::Budget budget{
+            1u, true, 2u, 2u, 6u, {1u, true, 2u, 4u, 6u, 2u, 40u, metadataBytes}};
+        const Contract::Counts expected{2u, 2u, 6u, 2u, 4u, 6u, 2u, 40u};
+        const auto baseline = Contract::inspect(program, budget);
+        assert(!baseline.diagnostic && baseline.counts.matches(expected));
+        using Native = rhi_vulkan::VulkanRhiRenderPassStorageProjection;
+        const auto native = Native::inspect(program, budget, 10u);
+        assert(!native.diagnostic && native.inputs.matches(expected) && native.renderPasses == 2u
+            && native.framebuffers == 2u && native.imageViews == 6u && native.nativeObjects == 10u);
+        const auto shortNative = Native::inspect(program, budget, 9u);
+        assert(shortNative.diagnostic && !shortNative.nativeObjects && !shortNative.renderPasses
+            && !shortNative.framebuffers && !shortNative.imageViews
+            && shortNative.inputs.matches({}));
+        std::uint64_t unchanged = 77u;
+        assert(Native::nativeObjectCount(UINT64_MAX, 0u, unchanged) && unchanged == 77u);
+        assert(Native::nativeObjectCount(1u, UINT64_MAX, unchanged) && unchanged == 77u);
+        std::size_t visits = 0u;
+        const auto consume =
+            [&](const Program::Operation& operation,
+                const std::shared_ptr<const rhi::RenderPassArguments>& pass) noexcept
+            -> const char* {
+            assert(operation.commandIndex == (visits ? 3u : 1u));
+            assert(pass
+                && pass.get()
+                    == std::get<std::shared_ptr<const rhi::RenderPassArguments>>(
+                        inputs->descriptors().front().arguments)
+                        .get());
+            ++visits;
+            return nullptr;
+        };
+        const auto accepted = Contract::visit(program, budget, consume);
+        assert(!accepted.diagnostic && visits == 2u && accepted.counts.matches(expected));
+        using Role = rhi::RenderPassReferenceSequenceContract::Role;
+        std::size_t attachments = 0u;
+        const auto consumeAttachment =
+            [&](const Program::Operation& operation,
+                const rhi::RenderPassArguments& pass,
+                std::size_t operand,
+                Role role,
+                std::size_t colorIndex,
+                const std::shared_ptr<const rhi::OriginalCommandTextureViewSource>& source) noexcept
+            -> const char* {
+            const auto slot = attachments % 3u;
+            assert(operation.commandIndex == (attachments < 3u ? 1u : 3u));
+            assert(operand == slot
+                && role
+                    == (slot == 0u       ? Role::Color
+                            : slot == 1u ? Role::Resolve
+                                         : Role::DepthStencil));
+            assert(colorIndex == (slot == 2u ? SIZE_MAX : 0u));
+            const auto& usage = *inputs->originalScalars()->originalUsage();
+            assert(source.get()
+                == std::get<std::shared_ptr<const rhi::OriginalCommandTextureViewSource>>(
+                    usage.originalSources()->sources()[slot + 3u])
+                    .get());
+            assert(
+                source->originalObject()->textureId() == source->originalParentLease()->resource());
+            assert(&pass
+                == std::get<std::shared_ptr<const rhi::RenderPassArguments>>(
+                    inputs->descriptors().front().arguments)
+                    .get());
+            ++attachments;
+            return nullptr;
+        };
+        const auto projected = Contract::visitAttachments(program, budget, consumeAttachment);
+        assert(!projected.diagnostic && projected.counts.matches(expected) && attachments == 6u);
+        for (const auto backend : {rhi::Backend::Null,
+                 rhi::Backend::Vulkan,
+                 rhi::Backend::Metal,
+                 rhi::Backend::WebGPU,
+                 rhi::Backend::WebGL,
+                 static_cast<rhi::Backend>(255u)}) {
+            const auto decision = Contract::lowering(backend, budget);
+            assert(decision.validatorOnly == (backend == rhi::Backend::Null)
+                && !decision.nativeRecordingAvailable && decision.diagnostic);
+        }
+        const auto reject = [&](const Contract::Budget& bad, const char* expectedId) {
+            visits = 0u;
+            const auto result = Contract::visit(program, bad, consume);
+            assert(result.diagnostic && std::string_view(result.diagnostic) == expectedId
+                && result.counts.matches({}) && !visits);
+            attachments = 0u;
+            const auto attachmentResult =
+                Contract::visitAttachments(program, bad, consumeAttachment);
+            assert(attachmentResult.diagnostic
+                && std::string_view(attachmentResult.diagnostic) == expectedId
+                && attachmentResult.counts.matches({}) && !attachments);
+        };
+        for (unsigned field = 0u; field < 8u; ++field) {
+            auto bad = budget;
+            const char* expectedId = "RHI-RENDER-PASS-ARGUMENTS-COUNT";
+            if (field == 0u) {
+                --bad.maxPasses;
+                expectedId = "RHI-RENDER-PASS-STORAGE-PASS-CAPACITY";
+            }
+            if (field == 1u) {
+                --bad.maxDepthAttachments;
+                expectedId = "RHI-RENDER-PASS-STORAGE-DEPTH-CAPACITY";
+            }
+            if (field == 2u) {
+                --bad.maxAttachmentReferences;
+                expectedId = "RHI-RENDER-PASS-STORAGE-REFERENCE-CAPACITY";
+            }
+            if (field == 3u)
+                --bad.arguments.maxColorAttachments;
+            if (field == 4u)
+                --bad.arguments.maxSubpasses;
+            if (field == 5u)
+                --bad.arguments.maxSubpassAttachmentIndices;
+            if (field == 6u)
+                --bad.arguments.maxDependencies;
+            if (field == 7u) {
+                --bad.arguments.maxTextBytes;
+                expectedId = "RHI-RENDER-PASS-ARGUMENTS-TEXT";
+            }
+            reject(bad, expectedId);
+        }
+        auto bad = budget;
+        bad.contractVersion = 0u;
+        reject(bad, "RHI-RENDER-PASS-STORAGE-VERSION");
+        bad = budget;
+        bad.prototypeOptIn = false;
+        reject(bad, "RHI-RENDER-PASS-STORAGE-OPT-IN");
+        bad = budget;
+        --bad.arguments.maxCpuMetadataBytes;
+        reject(bad, "RHI-RENDER-PASS-STORAGE-RECORDING-QUOTA");
+        auto forged = std::shared_ptr<const Program>(sourceQuota, program.get());
+        assert(Contract::inspect(forged, budget).diagnostic);
+        forged.reset();
+        assert(!CpuQuotaFactoryFixture::verifyHotNoAllocation(
+            std::array{sourceQuota, graphQuota, quota}, [&]() noexcept -> const char* {
+                visits = 0u;
+                const auto result = Contract::visit(program, budget, consume);
+                assert(!result.diagnostic && result.counts.matches(expected) && visits == 2u);
+                assert(!Native::inspect(program, budget, 10u).diagnostic
+                    && Native::inspect(program, budget, 9u).diagnostic);
+                attachments = 0u;
+                assert(!Contract::visitAttachments(program, budget, consumeAttachment).diagnostic
+                    && attachments == 6u);
+                auto shortBudget = budget;
+                --shortBudget.arguments.maxTextBytes;
+                visits = 0u;
+                assert(Contract::visit(program, shortBudget, consume).diagnostic && !visits);
+                return nullptr;
+            }));
+        program.reset();
+        assert(!quota->liveBytes());
+        std::puts(
+            "ORIGINAL_RENDER_PASS_STORAGE_OK repeated-snapshot2 canonical-view-resolve-depth refs6 subpasses4 indices6 dependencies2 text40 exact-short atomic-callback allocation0 gates4-closed");
+    }
+
     static void verifyCapacityConsumption(const rhi::RenderPassDesc& pass)
     {
         rhi::RenderPassArgumentsBudget remaining{1u, true, 1u, 2u, 3u, 1u, 20u, metadataBytes};

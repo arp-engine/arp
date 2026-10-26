@@ -187,7 +187,8 @@ private:
     void initializeMandatoryTransform(ComponentId componentId);
     Component& attachComponent(arp::core::UniquePtr<Component> component);
     void appendChild(GameObjectId childId);
-    bool insertChildAt(GameObjectId childId, std::size_t index);
+    bool prepareChildInsertion(GameObjectId childId, std::size_t index);
+    void insertPreparedChildAt(GameObjectId childId, std::size_t index) noexcept;
     bool reorderChild(GameObjectId childId, std::size_t index);
     void removeChild(GameObjectId childId);
 

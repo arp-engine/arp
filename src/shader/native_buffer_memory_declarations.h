@@ -4,7 +4,7 @@
 
 namespace arp::shader {
 // Cold compiler/lowering intent, never a driver or execution receipt. Every
-// pointer is borrowed only during the original package's synchronous load.
+// pointer is borrowed only during the original package/artifact's synchronous load.
 struct NativeBufferMemoryLoadRequest {
     using Graph = BufferDeclarationTypeLayouts;
     using Lowering = SpirvMslBufferMemoryLowering;
@@ -30,8 +30,8 @@ struct NativeBufferMemoryLoadRequest {
     std::size_t bindingCount = 0u;
 };
 
-// Metadata inside the existing package module. Source types and all rule bytes
-// are frozen here; only that package can authenticate a borrowed lookup.
+// Metadata inside the existing package module or ordinary artifact. Source types
+// and all rule bytes are frozen here; that owner authenticates borrowed lookup.
 class NativeBufferMemoryDeclarations final {
 public:
     using Request = NativeBufferMemoryLoadRequest;

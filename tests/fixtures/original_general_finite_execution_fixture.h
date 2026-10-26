@@ -1,4 +1,5 @@
 #pragma once
+#include "core/math/half_float.h"
 #include "original_general_finite_native_recording_fixture.h"
 #include "original_general_output_readback_inputs_fixture.h"
 
@@ -55,8 +56,8 @@ public:
                 std::memcpy(&value, selected, sizeof(value));
             }
             expected[channel] =
-                core::ibl::floatToHalf(value + float(reference.channels[channel].meanValue));
-            assert(std::isfinite(core::ibl::halfToFloat(expected[channel])));
+                core::floatToHalf(value + float(reference.channels[channel].meanValue));
+            assert(std::isfinite(core::halfToFloat(expected[channel])));
         }
         return expected;
     }
@@ -163,10 +164,10 @@ public:
             if (Readback::mapCompletes(mapTerminal))
                 std::printf(
                     "BINDLESS_RHI_GENERAL_FINITE_NUMERICAL2_OK original-copy1 map1 unmap-drain committed-published rgba %.8f %.8f %.8f %.8f Output2 selected-bytes-oracle public-closed\n",
-                    double(core::ibl::halfToFloat(expected[0])),
-                    double(core::ibl::halfToFloat(expected[1])),
-                    double(core::ibl::halfToFloat(expected[2])),
-                    double(core::ibl::halfToFloat(expected[3])));
+                    double(core::halfToFloat(expected[0])),
+                    double(core::halfToFloat(expected[1])),
+                    double(core::halfToFloat(expected[2])),
+                    double(core::halfToFloat(expected[3])));
             if (mapTerminal != Readback::MapTerminal::None)
                 std::printf(
                     "BINDLESS_RHI_GENERAL_FINITE_MAP4_OUTPUT_OK %s Snapshot2 Output2 original-upstream-completed original-copy-map-drained %s %s snapshot-reuse-refused public-closed\n",

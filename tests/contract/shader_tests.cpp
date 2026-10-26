@@ -752,8 +752,12 @@ targets:
         assert(source.find("column_major float4x4") == source.npos);
         for (const auto* field : {"inverseViewProjection", "previousViewProjection"}) {
             assert(source.find(std::pmr::string("    float4x4 ") + field + ";") != source.npos);
-            for (const auto* name :
-                {"cloud_raymarch", "cloud_temporal", "cloud_composite", "cloud_density_slice"}) {
+            for (const auto* name : {"cloud_raymarch",
+                     "cloud_temporal",
+                     "cloud_composite",
+                     "cloud_density_slice",
+                     "cloud_spatial_resolve",
+                     "cloud_spatial_composite"}) {
                 const auto path = std::pmr::string(ARP_CLOUD_SHADER_DIR) + "/" + name;
                 const auto bytes = readBinaryFile((path + ".spv").c_str());
                 assert(spirvMemberHasDecoration(

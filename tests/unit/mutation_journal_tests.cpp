@@ -91,6 +91,33 @@ int main()
     accepted.rollback();
     assert(accepted.empty() && !one.record.pending() && !two.record.pending() && !next);
     assert(defaultCpuAllocator().stats().allocationCount == beforeDiscard);
+    // Selective terminal discard preserves unrelated rollback participants and
+    // refuses a foreign journal without callbacks, identity or allocation changes.
+    {
+        VersionedMutationValue<unsigned> retained(1u), reverted(2u), invalidated(3u);
+        MutationJournal owner, foreign;
+        const auto allocations = defaultCpuAllocator().stats().allocationCount;
+        assert(retained.tryWrite(11u, &owner)
+            == VersionedMutationValue<unsigned>::WriteResult::Written);
+        assert(reverted.tryWrite(22u, &owner)
+            == VersionedMutationValue<unsigned>::WriteResult::Written);
+        const auto pending = retained.observePending(owner);
+        assert(pending && !retained.discardPending(foreign)
+            && retained.matchesPending(*pending, owner) && foreign.empty());
+        assert(retained.discardPending(owner) && !retained.discardPending(owner)
+            && !retained.matchesPending(*pending, owner) && retained.value() == 11u);
+        owner.rollback();
+        assert(retained.value() == 11u && reverted.value() == 2u);
+        assert(retained.tryWrite(33u, &owner)
+            == VersionedMutationValue<unsigned>::WriteResult::Written);
+        assert(invalidated.tryWrite(44u, &owner)
+            == VersionedMutationValue<unsigned>::WriteResult::Written);
+        assert(retained.discardPending(owner) && owner.invalidate());
+        assert(retained.active() && retained.value() == 33u && !invalidated.active());
+        owner.rollback();
+        assert(retained.value() == 33u
+            && defaultCpuAllocator().stats().allocationCount == allocations);
+    }
     {
         VersionedMutationValue<unsigned> scalar(3u);
         VersionedMutationArray<unsigned> array(2u, 5u);

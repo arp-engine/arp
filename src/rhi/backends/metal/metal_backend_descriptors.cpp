@@ -3,10 +3,14 @@
 #include "core/ownership/mutation_journal.h"
 #include "core/ownership/shared_owner_projection.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
+#include "rhi/backends/metal/metal_original_buffer_binding.h"
+#include "rhi/backends/metal/metal_original_texture_binding.h"
 #include "rhi/frontend/bindless_root_callback.h"
 #include "rhi/frontend/completed_depth_texture_source.h"
 #include "rhi/frontend/descriptor_completed_texture.h"
+#include "rhi/frontend/descriptor_general_write_validation.h"
 #include "rhi/frontend/descriptor_resource_validation.h"
+#include "rhi/frontend/descriptor_set_validation.h"
 #include "rhi/frontend/descriptor_state_copy.h"
 #include "rhi/frontend/resource_leases.h"
 #include "rhi/semantics/bindless_ordinary_color_domain.h"
@@ -183,6 +187,30 @@ rhi::ValidationResult validateRegisteredResource(const MetalRhiRegisteredResourc
 }
 
 class MetalRhiDescriptorSet final : public rhi::DescriptorSet {
+    struct OriginalSynchronousPublication {
+        struct Binding {
+            rhi::OriginalCommandDescriptorSetElement element;
+            rhi::OriginalCommandDescriptorDependencies::Owner owner;
+            std::variant<MetalOriginalBufferBindingInspection::Observation,
+                MetalOriginalTextureBindingInspection::Observation>
+                native;
+        };
+
+        rhi::OriginalCommandDescriptorDependencies::PipelineOwner pipeline;
+        std::shared_ptr<const rhi::DescriptorArena> arena;
+        std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u> quotas;
+        std::array<std::uint64_t, 3u> quotaLimits{};
+        core::pmr::Vector<Binding> bindings{&core::defaultCpuMemoryResource()};
+        core::pmr::Vector<rhi::DescriptorBindingWrite> writes{&core::defaultCpuMemoryResource()};
+        std::shared_ptr<MetalRhiNativeDescriptorGroupPayload> group;
+        std::shared_ptr<MetalRhiNativePipelinePayload> nativePipeline;
+        MetalRhiNativeResourceObservation nativePipelineIdentity;
+        std::array<std::shared_ptr<void>, 3u> nativeShaderObjects;
+        std::uint64_t revision = 0u;
+        std::uint32_t set = 0u, contractVersion = 0u;
+        bool committed = false;
+    };
+
 public:
     MetalRhiDescriptorSet(rhi::DescriptorSetAllocation allocation,
         rhi::DescriptorLayoutDesc layout,
@@ -195,6 +223,251 @@ public:
     const rhi::DescriptorSetAllocation& allocation() const override { return allocation_; }
 
     const rhi::DescriptorLayoutDesc& layout() const override { return layout_; }
+
+    bool hasOriginalGeneralContent() const noexcept override
+    {
+        return originalSynchronous_ && originalSynchronous_->committed;
+    }
+
+    std::uint32_t originalGeneralContentContractVersion() const noexcept override
+    {
+        return hasOriginalGeneralContent() ? originalSynchronous_->contractVersion : 0u;
+    }
+
+    const char* originalScopedContentDiagnostic() const noexcept override
+    {
+        if (!originalSynchronous_)
+            return nullptr;
+        return originalSynchronous_->committed ? originalSynchronousDiagnostic()
+                                               : "RHI-SYNCHRONOUS-GRAPHICS-WRITE-UNCOMMITTED";
+    }
+
+    template <class Pipeline>
+    const char* beginSynchronousWrite(const rhi::GpuDevice& device,
+        const std::shared_ptr<const rhi::DescriptorArena>& arena,
+        const std::shared_ptr<Pipeline>& pipeline,
+        const std::shared_ptr<const rhi::OriginalCommandResourceSources>& sources,
+        std::uint32_t set,
+        const rhi::OriginalCommandDescriptorSetElement* elements,
+        std::size_t count,
+        const rhi::OriginalGeneralDescriptorWriteRequest& request,
+        const std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u>& quotas)
+    {
+        constexpr bool compute = std::is_same_v<Pipeline, rhi::ComputePipeline>;
+        using Source = rhi::OriginalGraphicsBindingInspectionContract::PipelineSource<compute>;
+        using Dependencies = rhi::OriginalCommandDescriptorDependencies;
+        if (request.contractVersion != (compute ? 4u : 3u) || request.lossGroupJoinVersion != 4u
+            || !request.lossGroupJoinOptIn || originalSynchronous_ || !pipeline || !arena || !count
+            || count != layout_.bindings.size() || count > request.maxBindings || !elements
+            || !writes_.empty() || !completedTextures_.empty())
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-FRESH-COMPLETE-GROUP";
+        if (const auto* id = rhi::OriginalGeneralDescriptorWriteContract::validate(request))
+            return id;
+        if (const auto* id =
+                rhi::OriginalCommandResourceSources::validateRegisteredLifetime(sources, device))
+            return id;
+        const auto* slot = rhi::findDescriptorSetSlot(pipeline->originalLayoutOwner()->desc(), set);
+        const auto* expected = slot ? rhi::findDescriptorSetLayout(
+                                          pipeline->originalLayoutOwner()->desc(), slot->layoutName)
+                                    : nullptr;
+        if (!expected || !rhi::descriptorLayoutDefinitionMatches(layout_, *expected))
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-LAYOUT";
+        for (std::size_t i = 0u; i < quotas.size(); ++i) {
+            if (!quotas[i] || quotas[i]->limitBytes() != request.maxCpuBytes[i])
+                return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-QUOTA";
+            if (core::SharedOwnerProjection::overlapsOwner(
+                    quotas[i], sources->originalMetadataQuota()))
+                return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-QUOTA-DOMAIN";
+        }
+        std::size_t pipelineIndex = SIZE_MAX;
+        for (std::size_t i = 0u; i < sources->sources().size(); ++i)
+            if (const auto* source =
+                    std::get_if<std::shared_ptr<const Source>>(&sources->sources()[i]);
+                source && *source
+                && core::SharedOwnerProjection::sameOwner((*source)->originalPipeline(), pipeline))
+                pipelineIndex = i;
+        if (pipelineIndex == SIZE_MAX)
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-PIPELINE-SOURCE";
+        // Authenticate every binding and the complete physical bound before the
+        // first candidate allocation. No new inventory is constructed or retained.
+        std::uint64_t retained = 0u;
+        for (std::size_t i = 0u; i < count; ++i) {
+            for (std::size_t j = 0u; j < i; ++j)
+                if (elements[i].write.binding == elements[j].write.binding)
+                    return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-DUPLICATE";
+            std::uint64_t bytes = 0u;
+            if (elements[i].write.resourceKind == rhi::DescriptorResourceKind::Buffer) {
+                MetalOriginalBufferBindingInspection::Observation observed;
+                if (const auto* id =
+                        MetalOriginalBufferBindingInspection::inspect({compute ? 2u : 1u, true},
+                            device,
+                            sources,
+                            pipelineIndex,
+                            set,
+                            elements[i],
+                            observed))
+                    return id;
+                bytes = observed.allocationBytes;
+            } else {
+                MetalOriginalTextureBindingInspection::Observation observed;
+                if (const auto* id =
+                        MetalOriginalTextureBindingInspection::inspect({compute ? 2u : 1u, true},
+                            device,
+                            sources,
+                            pipelineIndex,
+                            set,
+                            elements[i],
+                            observed))
+                    return id;
+                bytes = observed.allocationBytes;
+            }
+            // Conservative repeated-binding sum; queried bytes, never texel formulas.
+            if (!bytes || bytes > request.maxRetainedAllocationBytes - retained)
+                return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-ALLOCATION-BUDGET";
+            retained += bytes;
+        }
+        try {
+            core::CpuMemoryQuotaScope ownerScope(quotas[0]);
+            auto candidate = core::makeShared<OriginalSynchronousPublication>();
+            candidate->pipeline =
+                std::get<std::shared_ptr<const Source>>(sources->sources()[pipelineIndex]);
+            candidate->arena = arena;
+            candidate->quotas = quotas;
+            candidate->quotaLimits = request.maxCpuBytes;
+            candidate->revision = contentRevision();
+            candidate->set = set;
+            candidate->contractVersion = request.contractVersion;
+            candidate->nativePipeline = metalRhiNativePayloadFor(*pipeline);
+            candidate->nativePipelineIdentity = MetalRhiNativeResourceObservation(
+                candidate->nativePipeline->nativeDevice, candidate->nativePipeline->pipelineState);
+            candidate->nativeShaderObjects = {candidate->nativePipeline->shaderLibrary,
+                compute ? candidate->nativePipeline->computeFunction
+                        : candidate->nativePipeline->vertexFunction,
+                compute ? std::shared_ptr<void>{} : candidate->nativePipeline->fragmentFunction};
+            {
+                core::CpuMemoryQuotaScope bindingScope(quotas[1]);
+                candidate->bindings.reserve(count);
+            }
+            {
+                core::CpuMemoryQuotaScope groupScope(quotas[2]);
+                candidate->writes.reserve(count);
+                core::pmr::Vector<MetalRhiNativeDescriptorBindingInput> nativeInputs;
+                nativeInputs.reserve(count);
+                for (std::size_t i = 0u; i < count; ++i) {
+                    const auto owner = Dependencies::capture(*sources, elements[i].sourceIndex);
+                    if (!owner)
+                        return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-RESOURCE-SOURCE";
+                    candidate->bindings.push_back({elements[i], *owner, {}});
+                    auto& binding = candidate->bindings.back();
+                    MetalRhiNativeDescriptorBindingInput nativeInput;
+                    nativeInput.binding = *findBinding(elements[i].write.binding);
+                    nativeInput.write = elements[i].write;
+                    if (elements[i].write.resourceKind == rhi::DescriptorResourceKind::Buffer) {
+                        MetalOriginalBufferBindingInspection::Observation observed;
+                        if (const auto* id = MetalOriginalBufferBindingInspection::inspect(
+                                {compute ? 2u : 1u, true},
+                                device,
+                                sources,
+                                pipelineIndex,
+                                set,
+                                elements[i],
+                                observed))
+                            return id;
+                        nativeInput.buffer = observed.buffer;
+                        binding.native = std::move(observed);
+                    } else {
+                        MetalOriginalTextureBindingInspection::Observation observed;
+                        if (const auto* id = MetalOriginalTextureBindingInspection::inspect(
+                                {compute ? 2u : 1u, true},
+                                device,
+                                sources,
+                                pipelineIndex,
+                                set,
+                                elements[i],
+                                observed))
+                            return id;
+                        nativeInput.textureView = observed.view;
+                        binding.native = std::move(observed);
+                    }
+                    nativeInputs.push_back(std::move(nativeInput));
+                    candidate->writes.push_back(elements[i].write);
+                }
+                candidate->group =
+                    createMetalRhiNativeDescriptorGroupPayload(layout_, nativeInputs);
+                if (!candidate->group || !candidate->group->nativeRuntimeBacked
+                    || candidate->group->nativeRuntimeDiagnosticOnly
+                    || candidate->group->nativeHandleExposedToUpperLayer
+                    || candidate->group->bindings.size() != count
+                    || !core::SharedOwnerProjection::sameOwner(
+                        candidate->group->nativeDevice, candidate->nativePipeline->nativeDevice))
+                    return "RHI-METAL-SYNCHRONOUS-WRITE-NATIVE-GROUP";
+                for (std::size_t i = 0u; i < count; ++i)
+                    if (const auto* buffer =
+                            std::get_if<MetalOriginalBufferBindingInspection::Observation>(
+                                &candidate->bindings[i].native)) {
+                        auto& native = candidate->group->bindings[i];
+                        native.bufferOffsetBytes = buffer->offsetBytes;
+                        native.bufferOffsetAlignment = buffer->alignmentBytes;
+                        native.bufferRequiredBytes = buffer->requiredBytes;
+                        native.graphicsBufferRanges = buffer->graphicsRanges;
+                    }
+                if (const auto* id =
+                        MetalRhiPreparedDescriptorIdentityValidator::capture(*candidate->group))
+                    return id;
+            }
+            originalSynchronous_ = std::move(candidate);
+            return nullptr;
+        } catch (const std::bad_alloc&) {
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-CPU-BUDGET";
+        }
+    }
+
+    const char* beginOriginalGeneralWriteImpl(const rhi::GpuDevice& device,
+        const std::shared_ptr<const rhi::DescriptorArena>& arena,
+        const std::shared_ptr<rhi::ComputePipeline>& pipeline,
+        const std::shared_ptr<const rhi::OriginalCommandResourceSources>& sources,
+        std::uint32_t set,
+        const rhi::OriginalCommandDescriptorSetElement* elements,
+        std::size_t count,
+        const rhi::OriginalGeneralDescriptorWriteRequest& request,
+        const std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u>& quotas) override
+    {
+        return beginSynchronousWrite(
+            device, arena, pipeline, sources, set, elements, count, request, quotas);
+    }
+
+    const char* beginOriginalGeneralWriteImpl(const rhi::GpuDevice& device,
+        const std::shared_ptr<const rhi::DescriptorArena>& arena,
+        const std::shared_ptr<rhi::RenderPipeline>& pipeline,
+        const std::shared_ptr<const rhi::OriginalCommandResourceSources>& sources,
+        std::uint32_t set,
+        const rhi::OriginalCommandDescriptorSetElement* elements,
+        std::size_t count,
+        const rhi::OriginalGeneralDescriptorWriteRequest& request,
+        const std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u>& quotas) override
+    {
+        return beginSynchronousWrite(
+            device, arena, pipeline, sources, set, elements, count, request, quotas);
+    }
+
+    const char* finishOriginalGeneralWriteImpl() noexcept override
+    {
+        if (!originalSynchronous_ || originalSynchronous_->committed)
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-NO-CANDIDATE";
+        if (const auto* id = originalSynchronousDiagnostic())
+            return id;
+        writes_.swap(originalSynchronous_->writes);
+        originalSynchronous_->committed = true;
+        return nullptr;
+    }
+
+    const char* cancelOriginalGeneralWriteImpl() noexcept override
+    {
+        if (!originalSynchronous_ || originalSynchronous_->committed)
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-NO-CANDIDATE";
+        originalSynchronous_.reset();
+        return nullptr;
+    }
 
     std::shared_ptr<const rhi::OriginalCompletedDepthTextureSource>
     originalCompletedDepthPublication(
@@ -211,6 +484,8 @@ public:
 
     rhi::ValidationResult writeImpl(const rhi::DescriptorBindingWrite& write) override
     {
+        if (originalSynchronous_)
+            return {false, "RHI-SYNCHRONOUS-GRAPHICS-WRITE-IMMUTABLE"};
         if (completedPublication(write.binding, write.arrayElement))
             return {false, "RHI-METAL-COMPLETED-TEXTURE-ORIGINAL-PUBLICATION-REQUIRED"};
         if (!isCurrentAllocation()) {
@@ -267,6 +542,8 @@ public:
         const std::shared_ptr<const rhi::OriginalCommandTextureViewSource>& source,
         const rhi::GpuTexture::ContentExpectation& content) override
     {
+        if (originalSynchronous_)
+            return {false, "RHI-SYNCHRONOUS-GRAPHICS-WRITE-IMMUTABLE"};
         return writeOriginalCompletedTextureImpl(write,
             source,
             content,
@@ -279,6 +556,8 @@ public:
         const rhi::GpuTexture::ContentExpectation& content,
         const rhi::OriginalCompletedTextureDescriptorRequest& request) override
     {
+        if (originalSynchronous_)
+            return {false, "RHI-SYNCHRONOUS-GRAPHICS-WRITE-IMMUTABLE"};
         const auto* binding = findBinding(write.binding);
         if (!binding || binding->type != rhi::DescriptorType::SampledTexture || binding->tableBacked
             || write.arrayElement >= binding->arrayCount || !source)
@@ -301,6 +580,8 @@ public:
         const rhi::DescriptorBindingWrite& write,
         const std::shared_ptr<const rhi::OriginalCompletedDepthTextureSource>& depth) override
     {
+        if (originalSynchronous_)
+            return {false, "RHI-SYNCHRONOUS-GRAPHICS-WRITE-IMMUTABLE"};
         const auto& source = depth->originalViewSource();
         const auto parent =
             metalRhiNativePayloadFor(*source->originalParentLease()->originalObject());
@@ -321,6 +602,8 @@ public:
         const rhi::GpuTexture::ContentRangeExpectation& identity,
         const rhi::OriginalTextureCellDescriptorRequest& request) override
     {
+        if (originalSynchronous_)
+            return {false, "RHI-SYNCHRONOUS-GRAPHICS-WRITE-IMMUTABLE"};
         const auto parent =
             metalRhiNativePayloadFor(*source->originalParentLease()->originalObject());
         const auto view = metalRhiNativePayloadFor(*source->originalObject());
@@ -447,6 +730,16 @@ public:
     rhi::ValidationResult validateBindingElement(
         std::uint32_t binding, std::uint32_t arrayElement) const override
     {
+        if (originalSynchronous_) {
+            if (!hasOriginalGeneralContent())
+                return {false, "RHI-SYNCHRONOUS-GRAPHICS-WRITE-UNCOMMITTED"};
+            if (const auto* id = originalSynchronousDiagnostic())
+                return {false, id};
+            return hasWrittenBindingElement(binding, arrayElement)
+                ? rhi::ValidationResult{true, ""}
+                : rhi::ValidationResult{false, "RHI-SYNCHRONOUS-GRAPHICS-WRITE-BINDING"};
+        }
+
         if (!isCurrentAllocation()) {
             return {false,
                 "RHI-DESCRIPTOR-ALLOCATION-STALE: Metal RHI descriptor set validation rejected "
@@ -482,6 +775,8 @@ public:
 
     std::shared_ptr<MetalRhiNativeDescriptorGroupPayload> nativePayload() const
     {
+        if (originalSynchronous_)
+            return {};
         if (!isCurrentAllocation() || !allBindingsWritten(writes_.size())) {
             return nullptr;
         }
@@ -500,6 +795,8 @@ public:
     std::shared_ptr<MetalRhiNativeDescriptorGroupPayload> originalOrdinaryGraphicsPayload(
         const rhi::OriginalCommandDescriptorSetSource& source, bool ordinaryDepth) const
     {
+        if (originalSynchronous_)
+            return {};
         using Domain = rhi::semantics::OriginalBindlessOrdinaryColorDomain;
         if (source.originalObject() != this || !isCurrentAllocation()
             || !allBindingsWritten(writes_.size()) || completedTextures_.empty())
@@ -562,6 +859,8 @@ public:
     std::shared_ptr<MetalRhiNativeDescriptorGroupPayload> originalCompletedImagePayload(
         const rhi::BindlessSnapshot& snapshot, rhi::OriginalBindlessCompletedImageScope scope) const
     {
+        if (originalSynchronous_)
+            return {};
         if (snapshot.descriptorSet() != this
             || !rhi::OriginalBindlessCompletedImageDomain::acceptsPlan(snapshot.plan(), scope)
             || !rhi::semantics::OriginalBindlessCompletedImageLowering::lowering(
@@ -596,6 +895,8 @@ public:
     std::shared_ptr<MetalRhiNativeDescriptorGroupPayload> completedDepthPayload(
         const rhi::BindlessSnapshot& snapshot) const
     {
+        if (originalSynchronous_)
+            return {};
         const auto& plan = snapshot.plan();
         if (snapshot.descriptorSet() != this
             || (!rhi::semantics::OriginalBindlessPreparationLowering::hasPlan(plan, 6u)
@@ -637,6 +938,8 @@ public:
     std::shared_ptr<MetalRhiNativeDescriptorGroupPayload> imageCellPayload(
         const rhi::BindlessSnapshot& snapshot) const
     {
+        if (originalSynchronous_)
+            return {};
         if (snapshot.descriptorSet() != this
             || !rhi::semantics::OriginalBindlessPreparationLowering::hasImageCellBindingPlan(
                 snapshot.plan())
@@ -697,6 +1000,231 @@ public:
                                       : std::nullopt;
     }
 
+    const char* originalSynchronousDiagnostic() const noexcept
+    {
+        if (!originalSynchronous_ || !isCurrentAllocation())
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-RETIRED";
+        const auto& publication = *originalSynchronous_;
+        if (contentRevision() != publication.revision + std::uint64_t(publication.committed))
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-REVISION";
+        if (const auto* id = originalResourceRegistration().diagnostic())
+            return id;
+        if (const auto* id = publication.arena->originalResourceRegistration().diagnostic())
+            return id;
+        for (std::size_t i = 0u; i < publication.quotas.size(); ++i)
+            if (publication.quotas[i]->limitBytes() != publication.quotaLimits[i])
+                return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-QUOTA";
+        if (!publication.group || !publication.group->nativeRuntimeBacked
+            || publication.group->nativeRuntimeDiagnosticOnly
+            || publication.group->nativeHandleExposedToUpperLayer
+            || publication.group->bindings.size() != publication.bindings.size()
+            || !publication.group->originalCompletedTextureSources.empty()
+            || !publication.group->originalCompletedDepthSources.empty()
+            || !publication.group->originalTextureCellSources.empty())
+            return "RHI-METAL-SYNCHRONOUS-WRITE-NATIVE-GROUP";
+        if (const auto* id =
+                MetalRhiPreparedDescriptorIdentityValidator::validate(*publication.group))
+            return id;
+        return std::visit(
+            [&](const auto& source) -> const char* {
+                using T = std::decay_t<decltype(source)>;
+                if constexpr (std::is_same_v<T, std::monostate>)
+                    return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-PIPELINE-SOURCE";
+                else {
+                    constexpr bool compute = std::is_same_v<T,
+                        std::shared_ptr<const rhi::OriginalCommandComputePipelineSource>>;
+                    if (const auto* id =
+                            std::remove_const_t<typename T::element_type>::validateOriginal(source))
+                        return id;
+                    const auto native = metalRhiNativePayloadFor(*source->originalPipeline());
+                    if (!core::SharedOwnerProjection::sameOwner(native, publication.nativePipeline)
+                        || !core::SharedOwnerProjection::sameOwner(
+                            native->nativeDevice, publication.group->nativeDevice))
+                        return "RHI-METAL-SYNCHRONOUS-WRITE-NATIVE-PIPELINE";
+                    if (!publication.nativePipelineIdentity.matches(
+                            native->nativeDevice, native->pipelineState))
+                        return "RHI-METAL-SYNCHRONOUS-WRITE-NATIVE-PIPELINE";
+                    const std::array<std::shared_ptr<void>, 3u> shaderObjects{native->shaderLibrary,
+                        compute ? native->computeFunction : native->vertexFunction,
+                        compute ? std::shared_ptr<void>{} : native->fragmentFunction};
+                    for (std::size_t i = 0u; i < shaderObjects.size(); ++i)
+                        if (!core::SharedOwnerProjection::sameOwner(
+                                shaderObjects[i], publication.nativeShaderObjects[i]))
+                            return "RHI-METAL-SYNCHRONOUS-WRITE-NATIVE-PIPELINE";
+                    for (std::size_t i = 0u; i < publication.bindings.size(); ++i) {
+                        const auto& binding = publication.bindings[i];
+                        const auto& n = publication.group->bindings[i];
+                        const auto* desc = findBinding(binding.element.write.binding);
+                        if (!desc || n.binding != desc->binding || n.type != desc->type
+                            || n.stages != desc->stages || n.depthTexture != desc->depthTexture
+                            || n.arrayCount != 1u || n.arrayElement
+                            || n.dynamicOffsetIndex != UINT32_MAX
+                            || n.resourceId != binding.element.write.resource
+                            || n.resourceKind != binding.element.write.resourceKind || n.sampler)
+                            return "RHI-METAL-SYNCHRONOUS-WRITE-NATIVE-BINDING";
+                        if (const auto* saved =
+                                std::get_if<MetalOriginalBufferBindingInspection::Observation>(
+                                    &binding.native)) {
+                            MetalOriginalBufferBindingInspection::Observation current;
+                            if (const auto* id =
+                                    MetalOriginalBufferBindingInspection::inspectRetained<compute>(
+                                        source,
+                                        publication.set,
+                                        binding.element,
+                                        binding.owner,
+                                        current))
+                                return id;
+                            const auto resource = registry_
+                                ? registry_->find(binding.element.write.resource)
+                                : std::nullopt;
+                            if (!resource
+                                || !core::SharedOwnerProjection::sameOwner(
+                                    resource->buffer, current.buffer)
+                                || !core::SharedOwnerProjection::sameOwner(n.buffer, saved->buffer)
+                                || n.textureView || n.argumentKind != MetalRhiArgumentKind::Buffer
+                                || !saved->nativeIdentity.matches(current.buffer->resource)
+                                || current.physicalSlot != saved->physicalSlot
+                                || current.stages != saved->stages
+                                || current.allocationBytes != saved->allocationBytes
+                                || current.offsetBytes != n.bufferOffsetBytes
+                                || current.requiredBytes != n.bufferRequiredBytes
+                                || current.alignmentBytes != n.bufferOffsetAlignment)
+                                return "RHI-METAL-SYNCHRONOUS-WRITE-BUFFER-IDENTITY";
+                            if constexpr (compute) {
+                                if (!current.computeFact.matches(saved->computeFact))
+                                    return "RHI-METAL-SYNCHRONOUS-WRITE-BUFFER-FACTS";
+                            } else {
+                                for (std::size_t j = 0u; j < current.graphicsRanges.size(); ++j) {
+                                    const auto& a = current.graphicsRanges[j];
+                                    const auto& b = saved->graphicsRanges[j];
+                                    const auto& c = n.graphicsBufferRanges[j];
+                                    if (a.stage != b.stage || a.stage != c.stage
+                                        || a.offset != b.offset || a.offset != c.offset
+                                        || !a.fact.matches(b.fact) || !a.fact.matches(c.fact))
+                                        return "RHI-METAL-SYNCHRONOUS-WRITE-BUFFER-FACTS";
+                                }
+                            }
+                        } else {
+                            const auto& savedTexture =
+                                std::get<MetalOriginalTextureBindingInspection::Observation>(
+                                    binding.native);
+                            MetalOriginalTextureBindingInspection::Observation current;
+                            if (const auto* id =
+                                    MetalOriginalTextureBindingInspection::inspectRetained<compute>(
+                                        source,
+                                        publication.set,
+                                        binding.element,
+                                        binding.owner,
+                                        current))
+                                return id;
+                            const auto resource = registry_
+                                ? registry_->find(binding.element.write.resource)
+                                : std::nullopt;
+                            if (!resource
+                                || !core::SharedOwnerProjection::sameOwner(
+                                    resource->textureView, current.view)
+                                || !core::SharedOwnerProjection::sameOwner(
+                                    n.textureView, savedTexture.view)
+                                || n.buffer || n.argumentKind != MetalRhiArgumentKind::Texture
+                                || !savedTexture.parentIdentity.matches(current.parent->resource)
+                                || !savedTexture.viewIdentity.matches(current.view->resource)
+                                || current.physicalSlot != savedTexture.physicalSlot
+                                || current.stages != savedTexture.stages
+                                || current.allocationBytes != savedTexture.allocationBytes)
+                                return "RHI-METAL-SYNCHRONOUS-WRITE-TEXTURE-IDENTITY";
+                            for (std::size_t j = 0u; j < current.facts.size(); ++j)
+                                if (!current.facts[j].matches(savedTexture.facts[j]))
+                                    return "RHI-METAL-SYNCHRONOUS-WRITE-TEXTURE-FACTS";
+                        }
+                    }
+                    return nullptr;
+                }
+            },
+            publication.pipeline);
+    }
+
+    template <class Pipeline>
+    const char* diagnoseSynchronousSource(const std::shared_ptr<const Pipeline>& pipeline,
+        const std::shared_ptr<const rhi::OriginalCommandResourceSources>& sources,
+        std::uint32_t set,
+        const rhi::OriginalCommandDescriptorSetFrozenElement* elements,
+        std::size_t count,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota) const noexcept
+    {
+        if (!hasOriginalGeneralContent())
+            return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-UNCOMMITTED";
+        if (const auto* id = originalSynchronousDiagnostic())
+            return id;
+        const auto& publication = *originalSynchronous_;
+        const bool matches = std::visit(
+            [&](const auto& source) {
+                using T = std::decay_t<decltype(source)>;
+                if constexpr (std::is_same_v<T, std::monostate>)
+                    return false;
+                else
+                    return source
+                        && core::SharedOwnerProjection::sameOwner(
+                            pipeline, source->originalPipeline());
+            },
+            publication.pipeline);
+        if (!matches || set != publication.set || !elements || count != publication.bindings.size())
+            return "RHI-SYNCHRONOUS-GRAPHICS-SOURCE-PIPELINE-GROUP";
+        if (const auto* id =
+                rhi::OriginalCommandDescriptorDependencies::validateInventoryOwner(sources, quota))
+            return id;
+        for (const auto& owner : publication.quotas)
+            if (core::SharedOwnerProjection::overlapsOwner(owner, quota))
+                return "RHI-SYNCHRONOUS-GRAPHICS-SOURCE-QUOTA";
+        for (std::size_t i = 0u; i < count; ++i) {
+            const auto& original = publication.bindings[i];
+            const auto& frozen = elements[i];
+            const auto& a = frozen.declaration;
+            const auto& b = original.element;
+            if (!frozen.observation.matchesObject(*this)
+                || !rhi::descriptorBindingWriteMatches(a.write, b.write)
+                || a.sourceIndex != b.sourceIndex
+                || a.registrationGeneration != b.registrationGeneration
+                || a.bufferAccessOffset != b.bufferAccessOffset
+                || a.bufferAccessBytes != b.bufferAccessBytes || a.stages != b.stages
+                || a.access != b.access || a.dynamicOffset != b.dynamicOffset
+                || !rhi::OriginalCommandDescriptorDependencies::matches(
+                    *sources, a.sourceIndex, original.owner))
+                return "RHI-SYNCHRONOUS-GRAPHICS-SOURCE-BINDING";
+        }
+        return nullptr;
+    }
+
+    const char* diagnoseOriginalGeneralSourceImpl(
+        const std::shared_ptr<const rhi::ComputePipeline>& pipeline,
+        const std::shared_ptr<const rhi::OriginalCommandResourceSources>& sources,
+        std::uint32_t set,
+        const rhi::OriginalCommandDescriptorSetFrozenElement* elements,
+        std::size_t count,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota) const noexcept override
+    {
+        return diagnoseSynchronousSource(pipeline, sources, set, elements, count, quota);
+    }
+
+    const char* diagnoseOriginalGeneralSourceImpl(
+        const std::shared_ptr<const rhi::RenderPipeline>& pipeline,
+        const std::shared_ptr<const rhi::OriginalCommandResourceSources>& sources,
+        std::uint32_t set,
+        const rhi::OriginalCommandDescriptorSetFrozenElement* elements,
+        std::size_t count,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota) const noexcept override
+    {
+        return diagnoseSynchronousSource(pipeline, sources, set, elements, count, quota);
+    }
+
+    std::shared_ptr<const MetalRhiNativeDescriptorGroupPayload> originalSynchronousPayload(
+        const rhi::OriginalCommandDescriptorSetSource& source) const noexcept
+    {
+        return source.originalObject() == this && hasOriginalGeneralContent()
+                && !originalSynchronousDiagnostic()
+            ? originalSynchronous_->group
+            : nullptr;
+    }
+
 private:
     const CompletedTexturePublication* completedPublication(
         std::uint32_t binding, std::uint32_t element) const noexcept
@@ -754,6 +1282,7 @@ private:
         return bindings;
     }
 
+    std::shared_ptr<OriginalSynchronousPublication> originalSynchronous_;
     rhi::DescriptorSetAllocation allocation_;
     rhi::DescriptorLayoutDesc layout_;
     std::shared_ptr<MetalRhiResourceRegistry> registry_;
@@ -1072,6 +1601,15 @@ arp::core::UniquePtr<rhi::DescriptorArena> createMetalRhiDescriptorArena(
                               desc.maxDescriptors)
                         : rhi::semantics::DirectObjectTelemetryLease{},
               std::move(budgetLease));
+}
+
+std::shared_ptr<const MetalRhiNativeDescriptorGroupPayload> metalRhiOriginalSynchronousPayloadFor(
+    const std::shared_ptr<const rhi::OriginalCommandDescriptorSetSource>& source) noexcept
+{
+    if (rhi::OriginalCommandDescriptorSetSource::validateOriginal(source))
+        return {};
+    const auto* concrete = dynamic_cast<const MetalRhiDescriptorSet*>(source->originalObject());
+    return concrete ? concrete->originalSynchronousPayload(*source) : nullptr;
 }
 
 std::shared_ptr<MetalRhiNativeDescriptorGroupPayload> metalRhiNativePayloadFor(

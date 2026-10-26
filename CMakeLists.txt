@@ -866,6 +866,7 @@ add_library(arp_scene
     src/scene/main_scene_registry.cpp
     src/scene/render_extract.cpp
     src/scene/scene.cpp
+    src/scene/scene_identity_restoration.cpp
     src/scene/scene_traversal_snapshot.cpp
     src/scene/script_behavior_component.cpp
     src/scene/transform.cpp
@@ -882,6 +883,22 @@ else()
     target_compile_options(arp_scene_camera_contract_tests PRIVATE -UNDEBUG)
 endif()
 
+add_executable(arp_scene_identity_restoration_tests tests/contract/scene_identity_restoration_tests.cpp)
+target_link_libraries(arp_scene_identity_restoration_tests PRIVATE arp_scene)
+if(MSVC)
+    target_compile_options(arp_scene_identity_restoration_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_scene_identity_restoration_tests PRIVATE -UNDEBUG)
+endif()
+
+add_executable(arp_scene_reparent_safety_tests tests/contract/scene_reparent_safety_tests.cpp)
+target_link_libraries(arp_scene_reparent_safety_tests PRIVATE arp_scene)
+if(MSVC)
+    target_compile_options(arp_scene_reparent_safety_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_scene_reparent_safety_tests PRIVATE -UNDEBUG)
+endif()
+
 add_executable(arp_reflection_native_object_tests
     tests/unit/reflection_native_object_tests.cpp)
 target_include_directories(arp_reflection_native_object_tests PRIVATE . src)
@@ -895,6 +912,18 @@ add_executable(arp_reflection_registry_tests
     tests/unit/reflection_registry_tests.cpp)
 target_include_directories(arp_reflection_registry_tests PRIVATE . src)
 target_link_libraries(arp_reflection_registry_tests PRIVATE arp_reflection)
+
+if(NOT EMSCRIPTEN)
+    find_package(Threads REQUIRED)
+    add_executable(arp_reflection_value_lifetime_tests tests/unit/reflection_value_lifetime_tests.cpp)
+    target_include_directories(arp_reflection_value_lifetime_tests PRIVATE . src)
+    target_link_libraries(arp_reflection_value_lifetime_tests PRIVATE arp_reflection Threads::Threads)
+    if(MSVC)
+        target_compile_options(arp_reflection_value_lifetime_tests PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(arp_reflection_value_lifetime_tests PRIVATE -UNDEBUG)
+    endif()
+endif()
 
 add_executable(arp_reflection_native_scene_lifetime_smoke
     tests/smoke/reflection_native_scene_lifetime_smoke.cpp)
@@ -1022,6 +1051,7 @@ add_library(arp_render_graph_rhi_plan
 target_link_libraries(arp_render_graph_rhi_plan PUBLIC arp_core)
 
 add_library(arp_render_graph
+    src/renderer/render_graph/original_frame_graph_execution.cpp
     src/renderer/render_graph/frame_graph_ordered_execution.cpp
     src/renderer/render_graph/conformance_sampled_recorder.cpp
     src/renderer/render_graph/conformance_storage_mrt_recorder.cpp
@@ -1105,6 +1135,7 @@ add_library(arp_rhi
     src/rhi/frontend/telemetry_debug_telemetry.cpp
     src/rhi/frontend/descriptor_descriptors.cpp
     src/rhi/frontend/bindless_command_source.cpp
+    src/rhi/frontend/command_source_assembly.cpp
     src/rhi/semantics/bindless_lowering.cpp
     src/rhi/frontend/bindless_snapshot.cpp
     src/rhi/frontend/descriptor_completed_texture.cpp
@@ -1786,6 +1817,24 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     target_compile_definitions(arp_resource_manager_contract_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
+# Material identity uses the same resource domain/runtime as existing reload contracts.
+foreach(resource_contract material_resource_fingerprint resource_reload_contract)
+    add_executable(arp_${resource_contract}_tests tests/contract/${resource_contract}_tests.cpp)
+    target_include_directories(arp_${resource_contract}_tests PRIVATE . src)
+    if(EMSCRIPTEN OR APPLE)
+        target_link_libraries(arp_${resource_contract}_tests PRIVATE
+            arp_resource arp_scriptvm_host_plugin_runtime arp_3d)
+    else()
+        target_link_libraries(arp_${resource_contract}_tests PRIVATE
+            "$<LINK_GROUP:RESCAN,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d>")
+    endif()
+    if(MSVC)
+        target_compile_options(arp_${resource_contract}_tests PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(arp_${resource_contract}_tests PRIVATE -UNDEBUG)
+    endif()
+endforeach()
+
 add_executable(arp_internal_asset_package_contract_tests
     tests/contract/internal_asset_package_contract_tests.cpp
 )
@@ -2338,8 +2387,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" AND Python3_EXECUTABLE AND SLANGC_EXE
             tests/integration/webgpu_post_suppression_command_preparation.cpp)
         target_compile_definitions(arp_rhi_webgpu_bindless_pipeline_browser_smoke PRIVATE
             ARP_RHI_WEBGPU_POST_SUPPRESSION_CONTRACT_PROBES=1)
-        target_include_directories(arp_rhi_webgpu_bindless_pipeline_browser_smoke PRIVATE .)
     endif()
+    target_include_directories(arp_rhi_webgpu_bindless_pipeline_browser_smoke PRIVATE .)
     target_link_libraries(arp_rhi_webgpu_bindless_pipeline_browser_smoke PRIVATE
         arp_rhi_webgpu arp_rhi)
     target_compile_options(arp_rhi_webgpu_bindless_pipeline_browser_smoke PRIVATE
@@ -2347,12 +2396,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" AND Python3_EXECUTABLE AND SLANGC_EXE
     set_property(TARGET arp_rhi_webgpu_bindless_pipeline_browser_smoke APPEND PROPERTY LINK_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/webgpu_storage_format_probe.js"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/webgpu_device_bootstrap_pre.js")
+    # The full typed recording fixture saves 16508 bytes at a genuine Debug
+    # callback wait (Asyncify data header). Author the next power-of-two bound
+    # for this test target only; production/resource quotas remain unchanged.
+    set(ARP_BINDLESS_WEBGPU_PIPELINE_ASYNCIFY_STACK_SIZE 32768)
     target_link_options(arp_rhi_webgpu_bindless_pipeline_browser_smoke PRIVATE
         "--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/webgpu_storage_format_probe.js"
         "--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/webgpu_device_bootstrap_pre.js"
         "--preload-file=${ARP_BINDLESS_WEBGPU_RHI_FIXTURE_DIR}@/bindless-rhi-fixture"
         "--preload-file=${ARP_ORDINARY_WEBGPU_PIPELINE_FIXTURE_DIR}@/ordinary-pipeline-fixture"
-        -sASYNCIFY "-sASYNCIFY_STACK_SIZE=${ARP_BINDLESS_WEBGPU_RHI_ASYNCIFY_STACK_SIZE}"
+        -sASYNCIFY "-sASYNCIFY_STACK_SIZE=${ARP_BINDLESS_WEBGPU_PIPELINE_ASYNCIFY_STACK_SIZE}"
         # Authored fixed smoke-harness ceiling, including persistent device-loss
         # owners and failed native graphs retained until the actual loss case.
         # Never use unbounded growth to conceal a production quota failure.
@@ -5927,6 +5980,8 @@ add_executable(arp_rhi_upload_staging_budget_tests
 target_include_directories(arp_rhi_upload_staging_budget_tests PRIVATE . src)
 target_link_libraries(arp_rhi_upload_staging_budget_tests PRIVATE arp_rhi_semantics)
 
+include(cmake/ArpOriginalSubmissionContracts.cmake)
+
 add_executable(arp_rhi_physical_budget_ledger_tests
     tests/unit/rhi_physical_budget_ledger_tests.cpp
 )
@@ -6131,6 +6186,9 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     target_link_libraries(arp_rhi_metal_original_pipeline_tests PRIVATE arp_rhi_metal arp_rhi)
     target_compile_options(arp_rhi_metal_original_pipeline_tests PRIVATE -UNDEBUG)
     arp_add_mingw_static_runtime(arp_rhi_metal_original_pipeline_tests)
+    add_test(NAME arp_rhi_metal_compute_workgroup_limits
+        COMMAND arp_rhi_metal_original_pipeline_tests --workgroup-limits)
+    set_tests_properties(arp_rhi_metal_compute_workgroup_limits PROPERTIES TIMEOUT 30)
     if(APPLE)
         set(ARP_METAL_ORIGINAL_SAMPLED_MODULE "" CACHE FILEPATH "Original shared sampled graphics publication")
         set(ARP_METAL_ORIGINAL_STORAGE_MODULE "" CACHE FILEPATH "Original shared storage graphics publication")
@@ -7915,6 +7973,10 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     add_test(NAME arp_collider_component_contract_tests COMMAND arp_collider_component_contract_tests)
     add_test(NAME arp_core_math_tests COMMAND arp_core_math_tests)
     add_test(NAME arp_scene_camera_contract_tests COMMAND arp_scene_camera_contract_tests)
+    add_test(NAME arp_scene_identity_restoration_tests COMMAND arp_scene_identity_restoration_tests)
+    add_test(NAME arp_scene_identity_restoration_smoke COMMAND arp_scene_identity_restoration_tests --smoke)
+    add_test(NAME arp_scene_reparent_safety_tests COMMAND arp_scene_reparent_safety_tests)
+    add_test(NAME arp_scene_reparent_safety_smoke COMMAND arp_scene_reparent_safety_tests --smoke)
     add_test(NAME arp_ibl_bake_contract_tests COMMAND arp_ibl_bake_contract_tests)
     add_test(NAME arp_scriptvm_domain_plugin_tests COMMAND arp_scriptvm_domain_plugin_tests)
     add_test(NAME arp_scriptvm_resource_network_plugin_parity_tests
@@ -7990,6 +8052,10 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     add_test(NAME arp_render_system_contract_tests COMMAND arp_render_system_contract_tests)
     if(TARGET arp_macos_platform_contract_tests)
         add_test(NAME arp_macos_platform_contract_tests COMMAND arp_macos_platform_contract_tests)
+        add_test(NAME arp_macos_upload_staging_reduction
+            COMMAND arp_macos_platform_contract_tests --staging-policy)
+        set_tests_properties(arp_macos_upload_staging_reduction PROPERTIES
+            TIMEOUT 60 RUN_SERIAL TRUE SKIP_RETURN_CODE 77 LABELS "platform-native;backend-native;metal;apple")
     endif()
     if(TARGET arp_macos_metal_surface_smoke)
         add_test(NAME arp_macos_metal_surface_smoke COMMAND arp_macos_metal_surface_smoke)
@@ -8029,6 +8095,10 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     add_test(NAME arp_main_scene_registry_tests COMMAND arp_main_scene_registry_tests)
     add_test(NAME arp_reflection_native_object_tests COMMAND arp_reflection_native_object_tests)
     add_test(NAME arp_reflection_registry_tests COMMAND arp_reflection_registry_tests)
+    if(TARGET arp_reflection_value_lifetime_tests)
+        add_test(NAME arp_reflection_value_lifetime_tests COMMAND arp_reflection_value_lifetime_tests)
+        set_tests_properties(arp_reflection_value_lifetime_tests PROPERTIES TIMEOUT 30)
+    endif()
     add_test(NAME arp_reflection_native_scene_lifetime_smoke
         COMMAND arp_reflection_native_scene_lifetime_smoke)
     add_test(NAME arp_reflection_codegen_inheritance_contract_tests
@@ -8160,6 +8230,11 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     add_test(NAME arp_terrain_asset_resource_contract_tests COMMAND arp_terrain_asset_resource_contract_tests)
     add_test(NAME arp_prefab_asset_resource_contract_tests COMMAND arp_prefab_asset_resource_contract_tests)
     add_test(NAME arp_resource_manager_contract_tests COMMAND arp_resource_manager_contract_tests)
+    add_test(NAME arp_material_resource_fingerprint_tests COMMAND arp_material_resource_fingerprint_tests)
+    add_test(NAME arp_material_resource_fingerprint_smoke COMMAND arp_material_resource_fingerprint_tests --smoke)
+    set_tests_properties(arp_material_resource_fingerprint_tests arp_material_resource_fingerprint_smoke
+        PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
+    add_test(NAME arp_resource_reload_contract_tests COMMAND arp_resource_reload_contract_tests)
     add_test(NAME arp_internal_asset_package_contract_tests COMMAND arp_internal_asset_package_contract_tests)
     add_test(NAME arp_terrain_asset_baker_tests COMMAND arp_terrain_asset_baker_tests)
     add_test(NAME arp_terrain_scene_binding_tests COMMAND arp_terrain_scene_binding_tests)
@@ -8182,6 +8257,21 @@ else()
 endif()
 
 # UI Control Events/1: assertion-enabled fast contract and headless smoke.
+add_executable(arp_ui_mutation_safety_tests tests/contract/ui_mutation_safety_tests.cpp)
+target_include_directories(arp_ui_mutation_safety_tests PRIVATE . src)
+target_link_libraries(arp_ui_mutation_safety_tests PRIVATE arp_ui_runtime)
+target_compile_options(arp_ui_mutation_safety_tests PRIVATE -UNDEBUG)
+add_test(NAME arp_ui_mutation_safety_tests COMMAND arp_ui_mutation_safety_tests)
+add_test(NAME arp_ui_mutation_safety_smoke COMMAND arp_ui_mutation_safety_tests --smoke)
+set_tests_properties(arp_ui_mutation_safety_tests arp_ui_mutation_safety_smoke PROPERTIES TIMEOUT 60)
+
+add_executable(arp_ui_text_input_budget_tests tests/contract/ui_text_input_budget_tests.cpp)
+target_include_directories(arp_ui_text_input_budget_tests PRIVATE . src)
+target_link_libraries(arp_ui_text_input_budget_tests PRIVATE arp_ui_runtime arp_resource arp_scriptvm_host_plugin_runtime)
+target_compile_options(arp_ui_text_input_budget_tests PRIVATE -UNDEBUG)
+add_test(NAME arp_ui_text_input_budget_tests COMMAND arp_ui_text_input_budget_tests)
+add_test(NAME arp_ui_text_input_budget_smoke COMMAND arp_ui_text_input_budget_tests --smoke)
+
 foreach(ui_event_test IN ITEMS ui_control_object_contract_tests ui_control_object_smoke)
     add_executable(arp_${ui_event_test} tests/contract/${ui_event_test}.cpp)
     target_include_directories(arp_${ui_event_test} PRIVATE src)
@@ -8342,3 +8432,4 @@ add_test(NAME arp_core_package_boundary_tests
 set_tests_properties(arp_core_package_boundary_tests PROPERTIES LABELS "architecture;core")
 
 include(cmake/CorePackageValidation.cmake)
+include(cmake/ArpMetalDispatchProbe.cmake)

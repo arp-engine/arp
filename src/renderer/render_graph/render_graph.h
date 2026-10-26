@@ -5,6 +5,7 @@
 
 #include "core/api.h"
 #include "core/memory/cpu_allocator.h"
+#include "core/ownership/lifetime_epoch.h"
 #include "renderer/render_graph/frame_graph_resource_pool.h"
 #include "renderer/render_graph/render_graph_types.h"
 #include "rhi/frontend/ordered_graphics_execution.h"
@@ -22,12 +23,18 @@
 #include <unordered_map>
 #include <vector>
 
+namespace arp::rhi {
+class OriginalCommandTextureViewSource;
+}
+
 namespace arp::render_graph {
 
 using SubpassInputDescriptorRoute = rhi::semantics::SubpassInputDescriptorRoute;
 
 class FrameGraph;
 class FrameGraphExecutor;
+class OriginalFrameGraphExecution;
+class OriginalFrameGraphPass;
 struct OrderedGraphicsMeasurements;
 struct CompiledResourceUse;
 
@@ -372,6 +379,9 @@ private:
     friend class FrameGraphCompiler;
     friend class FrameGraphExecutor;
 
+    friend class OriginalFrameGraphExecution;
+    mutable std::optional<core::LifetimeEpoch> originalIntentEpoch_;
+
     struct TextureRecord {
         TextureHandle handle;
         rhi::TextureDesc desc;
@@ -404,6 +414,7 @@ private:
         // Separate from imported references: it never changes hazard/reset intent.
         std::shared_ptr<rhi::GpuTexture> bundleTexture;
         bool orderedSwapchainImage = false;
+        std::shared_ptr<const rhi::OriginalCommandTextureViewSource> originalAttachmentView;
 
         /// Resolve the underlying GpuTexture (owned or borrowed).
         rhi::GpuTexture* resolveTexture() const noexcept
@@ -526,6 +537,8 @@ private:
         std::pmr::vector<RhiDrawIndexedCommand> rhiDrawCommands;
         std::pmr::vector<RhiDispatchCommand> rhiDispatchCommands;
         std::pmr::vector<RhiTransferCommand> rhiTransferCommands;
+        std::shared_ptr<const OriginalFrameGraphPass> originalIntent;
+        std::optional<rhi::RenderPassDesc> originalRenderPass;
     };
 
     PassRecord& pass(uint32_t id);
@@ -543,7 +556,8 @@ private:
     void buildAliasTrace(const CompiledFrameGraph& compiled);
     void replayPassBarriers(rhi::CommandEncoder& commands,
         const CompiledFrameGraph& compiled,
-        std::uint32_t passOriginalIndex);
+        std::uint32_t passOriginalIndex,
+        bool transitionDependencies = false);
     void recordAttachmentTrace(const PassRecord& pass);
     void allocateTransientTextures(const CompiledFrameGraph& compiled);
     void prepareSubpassInputViews();

@@ -16,6 +16,9 @@ inline constexpr std::uint32_t kMainSceneServiceVersion = 1u;
 inline constexpr const char* kMainSceneRegistryService = "arp.scene.main-scene-registry";
 inline constexpr std::uint32_t kMainSceneRegistryServiceVersion = 1u;
 
+// Construction-time policy. Authoring snapshots never become live worlds in place.
+enum class SceneExecutionMode { Runtime, Passive };
+
 struct SceneUpdateOptions {
     float deltaSeconds = 0.0f;
     uint64_t frameIndex = 0;
@@ -47,23 +50,32 @@ ACLASS(Name = "Scene", Export = "main_scene", Ownership = Engine, Lifecycle = Ex
 class Scene final : public GameObject {
 public:
     class RestorationTransaction;
+    class IdentityRestoration;
     using ComponentFactory = arp::core::SharedCallback<arp::core::UniquePtr<Component>(
         GameObject& owner, const arp::core::pmr::String& type)>;
 
     explicit Scene(arp::core::pmr::String name = "scene", SceneId sceneId = SceneId::fromValue(1));
+    Scene(arp::core::pmr::String name, SceneId sceneId, SceneExecutionMode mode);
     ~Scene() override;
+
+    SceneExecutionMode executionMode() const noexcept { return executionMode_; }
 
     // Domain plugins install an allow-listed native component factory during
     // runtime setup. Script calls still invoke GameObject directly; this is
     // not a script service/facade dispatch path.
     void configureObjectCapacity(std::size_t maximum)
     {
+        requireIdentityIdle();
         maxObjects_ = maximum;
         objects_.reserve(maximum);
         objectLookup_.reserve(maximum + 1);
     }
 
-    void setComponentFactory(ComponentFactory factory) { componentFactory_ = factory; }
+    void setComponentFactory(ComponentFactory factory)
+    {
+        requireIdentityIdle();
+        componentFactory_ = std::move(factory);
+    }
 
     using ScriptComponentFactory = arp::core::SharedCallback<arp::core::UniquePtr<Component>(
         GameObject&, const arp::core::pmr::String&)>;
@@ -71,6 +83,8 @@ public:
         const arp::core::pmr::Vector<arp::core::pmr::String>& types,
         ScriptComponentFactory factory,
         const void* executionIdentity = nullptr);
+    // Read-only admission for composed registries; never materializes a type.
+    bool hasRegisteredScriptComponentType(const core::pmr::String& type) const noexcept;
 
     SceneId sceneId() const { return sceneId_; }
 
@@ -169,6 +183,7 @@ public:
 
     void configureEventCapacity(std::size_t maximum)
     {
+        requireIdentityIdle();
         maxEvents_ = maximum;
         events_.reserve(maximum);
         dispatchEvents_.reserve(maximum);
@@ -184,6 +199,7 @@ public:
 private:
     friend class GameObject;
 
+    void requireIdentityIdle() const;
     ComponentId allocateComponentId();
 
     GameObject* requireMutableObject(GameObjectId objectId);
@@ -200,8 +216,10 @@ private:
     SceneUpdateResult dispatch(const SceneUpdateOptions& options, bool fixed);
     void flushDestroyed(const SceneUpdateContext& context);
     void markDestroyed(GameObject& object);
+    void dispatchComponentDestruction(Component& component, const SceneUpdateContext& context);
 
     SceneId sceneId_;
+    const SceneExecutionMode executionMode_;
     MainSceneRegistry* mainSceneRegistry_ = nullptr;
     std::size_t maxObjects_ = SIZE_MAX;
     uint64_t nextObjectId_ = 2;
@@ -218,6 +236,8 @@ private:
 
     arp::core::pmr::Map<arp::core::pmr::String, ScriptFactory> scriptFactories_;
     bool dispatching_ = false, shuttingDown_ = false;
+    bool restoringIdentity_ = false;
+    std::size_t restorationDepth_ = 0;
     arp::core::pmr::Vector<GameObject*> updateObjects_;
     arp::core::pmr::Vector<Component*> updateComponents_;
     std::size_t maxEvents_ = 0;
@@ -242,6 +262,69 @@ private:
     std::size_t objects_;
     std::uint64_t objectId_, componentId_;
     bool committed_ = false;
+};
+
+// Explicit Passive-only candidate transaction. The caller supplies an allow-listed
+// factory whose constructors/destructors have isolated, rollback-safe ownership.
+// Ordinary scene lookup never exposes candidates; only this object resolves them.
+class Scene::IdentityRestoration final {
+public:
+    struct Limits {
+        std::size_t objects;
+        std::size_t components; // Includes mandatory transforms.
+    };
+
+    IdentityRestoration(Scene&, Limits, ComponentFactory isolatedFactory = {});
+    ~IdentityRestoration();
+    IdentityRestoration(const IdentityRestoration&) = delete;
+    IdentityRestoration& operator=(const IdentityRestoration&) = delete;
+
+    GameObject& restoreObject(GameObjectId,
+        ComponentId transformId,
+        core::pmr::String name,
+        GameObjectId parent,
+        std::size_t childIndex);
+    Component& restoreComponent(
+        GameObjectId owner, ComponentId, const core::pmr::String& type, std::size_t componentIndex);
+    GameObject* findCandidate(GameObjectId) const noexcept;
+    // Allocates registry nodes, validates all identities and reserves live vectors.
+    // Calling commit after prepare performs no allocation.
+    GameObject& createObject(core::pmr::String name, GameObjectId parent, std::size_t childIndex);
+    Component& createComponent(
+        GameObjectId owner, const core::pmr::String& type, std::size_t componentIndex);
+    GameObject* resolveObject(GameObjectId) const noexcept;
+    // Same TRS composition as Scene, including unpublished candidate parents.
+    bool worldTransform(GameObjectId, Transform&) const noexcept;
+    void prepare();
+    void commit();
+
+    bool committed() const noexcept { return committed_; }
+
+private:
+    struct ComponentCandidate {
+        GameObject* owner;
+        std::size_t index;
+        core::UniquePtr<Component> component;
+    };
+
+    struct ChildrenCandidate {
+        GameObject* owner;
+        core::pmr::Vector<GameObjectId> ids;
+    };
+
+    void requirePreparing() const;
+    bool componentIdUsed(ComponentId) const noexcept;
+    void validateComponentId(ComponentId) const;
+    Scene& scene_;
+    Limits limits_;
+    ComponentFactory factory_;
+    core::pmr::Vector<core::UniquePtr<GameObject>> candidates_;
+    core::pmr::Vector<ComponentCandidate> components_;
+    core::pmr::Vector<ChildrenCandidate> children_;
+    core::pmr::UnorderedMap<std::uint64_t, GameObject*> lookup_;
+    std::uint64_t nextObject_, nextComponent_;
+    std::size_t componentCount_ = 0;
+    bool prepared_ = false, committed_ = false, failed_ = false;
 };
 
 } // namespace arp::scene

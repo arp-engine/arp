@@ -1,10 +1,12 @@
 #pragma once
 
+#include "core/math/unsigned_range.h"
 #include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <new>
 #include <utility>
 
 namespace arp::core {
@@ -81,10 +83,53 @@ public:
     {}
 
     template <typename PageFactory>
+    const char* prepareCold(std::uint32_t maxLiveSlicesPerPage, PageFactory&& pageFactory) noexcept
+    {
+        if (coldPreparationAttempted_ || !pages_.empty() || stats_.successfulAllocationCount)
+            return "RHI-STAGING-COLD-PREPARATION-STATE";
+        coldPreparationAttempted_ = true;
+        const auto failed = [&](const char* id) noexcept {
+            pages_.clear();
+            stats_ = {};
+            coldFailure_ = id;
+            return id;
+        };
+        if (!desc_.pageSizeBytes || !desc_.maxPageCount || !maxLiveSlicesPerPage
+            || maxLiveSlicesPerPage > std::numeric_limits<std::uint32_t>::max() / desc_.maxPageCount
+            || !canMultiplyUnsigned(desc_.pageSizeBytes, std::uint64_t{desc_.maxPageCount}))
+            return failed("RHI-STAGING-COLD-STORAGE-SLICE-CAPACITY");
+        try {
+            pages_.reserve(desc_.maxPageCount);
+            for (std::uint32_t index = 0u; index < desc_.maxPageCount; ++index) {
+                Page page;
+                page.index = index;
+                page.capacityBytes = desc_.pageSizeBytes;
+                page.liveSlices.reserve(maxLiveSlicesPerPage);
+                if (!pageFactory(index, desc_.pageSizeBytes))
+                    return failed(kFrameRetiredPageSliceDiagnosticPageCreate);
+                pages_.push_back(std::move(page));
+            }
+        } catch (const std::bad_alloc&) {
+            return failed("RHI-STAGING-COLD-STORAGE-CPU-ALLOCATION");
+        } catch (...) {
+            return failed("RHI-STAGING-COLD-PAGE-CREATE-EXCEPTION");
+        }
+        maxLiveSlicesPerPage_ = maxLiveSlicesPerPage;
+        coldReady_ = true;
+        stats_.allocatedPageCount = desc_.maxPageCount;
+        stats_.allocatedBytes = desc_.pageSizeBytes * desc_.maxPageCount;
+        return nullptr;
+    }
+
+    bool coldStoragePrepared() const noexcept { return coldReady_; }
+
+    template <typename PageFactory>
     FrameRetiredPageSliceAllocation allocate(
         const FrameRetiredPageSliceRequest& request, PageFactory&& pageFactory)
     {
         beginRequestTelemetry(request);
+        if (coldPreparationAttempted_ && !coldReady_)
+            return fail(coldFailure_, coldFailure_);
         if (request.sizeBytes == 0) {
             return fail("page slice allocation size must be greater than zero",
                 kFrameRetiredPageSliceDiagnosticSizeZero);
@@ -109,6 +154,12 @@ public:
 
         auto* page = findPage(request.sizeBytes, request.alignmentBytes);
         if (!page) {
+            if (coldReady_) {
+                const auto* id = findPage(request.sizeBytes, request.alignmentBytes, true)
+                    ? "RHI-STAGING-COLD-SLICE-CAPACITY"
+                    : kFrameRetiredPageSliceDiagnosticPageCount;
+                return fail(id, id);
+            }
             if (pages_.size() >= desc_.maxPageCount) {
                 return fail("page slice allocation exceeds bounded page capacity",
                     kFrameRetiredPageSliceDiagnosticPageCount);
@@ -139,8 +190,12 @@ public:
                 kFrameRetiredPageSliceDiagnosticPageCapacity);
         }
 
-        page->cursorBytes = offset.value + request.sizeBytes;
+        if (coldReady_
+            && stats_.successfulAllocationCount == std::numeric_limits<std::uint32_t>::max())
+            return fail("RHI-STAGING-COLD-ALLOCATION-COUNTER-EXHAUSTED",
+                "RHI-STAGING-COLD-ALLOCATION-COUNTER-EXHAUSTED");
         page->liveSlices.push_back(Slice{offset.value, request.sizeBytes, request.frameSerial});
+        page->cursorBytes = offset.value + request.sizeBytes;
         ++stats_.successfulAllocationCount;
         ++stats_.liveSliceCount;
         stats_.liveBytes += request.sizeBytes;
@@ -279,7 +334,7 @@ private:
         std::uint32_t index = 0;
         std::uint64_t capacityBytes = 0;
         std::uint64_t cursorBytes = 0;
-        pmr::Vector<Slice> liveSlices;
+        pmr::Vector<Slice> liveSlices{&defaultCpuMemoryResource()};
     };
 
     struct OffsetResult {
@@ -319,9 +374,12 @@ private:
         };
     }
 
-    Page* findPage(std::uint64_t sizeBytes, std::uint64_t alignmentBytes)
+    Page* findPage(
+        std::uint64_t sizeBytes, std::uint64_t alignmentBytes, bool ignoreSliceLimit = false)
     {
         for (auto& page : pages_) {
+            if (coldReady_ && !ignoreSliceLimit && page.liveSlices.size() >= maxLiveSlicesPerPage_)
+                continue;
             const auto offset = alignedOffset(page, alignmentBytes);
             if (offset.success && offset.value <= page.capacityBytes
                 && sizeBytes <= page.capacityBytes - offset.value) {
@@ -347,8 +405,11 @@ private:
     }
 
     FrameRetiredPageSliceAllocatorDesc desc_;
-    pmr::Vector<Page> pages_;
+    pmr::Vector<Page> pages_{&defaultCpuMemoryResource()};
     FrameRetiredPageSliceAllocatorStats stats_;
+    std::uint32_t maxLiveSlicesPerPage_ = 0u;
+    const char* coldFailure_ = nullptr;
+    bool coldPreparationAttempted_ = false, coldReady_ = false;
 };
 
 } // namespace arp::core

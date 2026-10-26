@@ -97,6 +97,8 @@ enum class UiDiagnosticCode {
     MissingPointerPosition,
     InvalidFactoryBinding,
     InvalidUtf8Input,
+    InvalidTextInputBudget,
+    InvalidTextInputContent,
 };
 
 enum class UiControlType {
@@ -533,6 +535,10 @@ public:
     bool requiresCameraForScreenSpaceLayout() const { return false; }
 
 private:
+    friend class UiControlRuntime;
+    // Internal creation rollback only: no traversal scratch or input callbacks.
+    void discardUnpublishedLeaf(WidgetId widgetId) noexcept;
+    void reserveChildSlots(WidgetId parentId, std::size_t count);
     Widget* requireMutableWidget(WidgetId widgetId);
     bool parentChainContains(WidgetId startParentId, WidgetId childId) const;
     void collectTraversal(const Widget& widget, arp::core::pmr::Vector<WidgetId>& order) const;
@@ -966,10 +972,18 @@ struct UiControlValue {
     static UiControlValue fromColor(float r, float g, float b, float a);
 };
 
+// A single-line UTF-8 input contract shared by descriptors, documents and edits.
+class ARP_API TextInputContract final {
+public:
+    static constexpr std::uint32_t defaultMaxTextBytes = 64;
+    static UiResult validate(std::string_view text, std::uint32_t maxTextBytes);
+};
+
 struct UiControlDesc {
     UiControlType type = UiControlType::Unknown;
     WidgetDesc widget;
     UiControlValue initialValue;
+    std::uint32_t maxTextBytes = TextInputContract::defaultMaxTextBytes;
     arp::core::pmr::Vector<arp::core::pmr::String> optionLabels{
         &arp::core::defaultCpuMemoryResource()};
 };
@@ -1153,11 +1167,9 @@ public:
 
     UiResult editText(UiControlValue& value, arp::core::pmr::String text) const
     {
-        if (text.size() > 64u) {
-            return UiResult::failure(UiDiagnosticCode::TextEditOverflow,
-                arp::core::pmr::String("UI text input edit exceeds the explicit text input limit.",
-                    &arp::core::defaultCpuMemoryResource()));
-        }
+        const auto checked = TextInputContract::validate(text, desc().maxTextBytes);
+        if (!checked.ok())
+            return checked;
         value = UiControlValue::fromText(std::move(text));
         return UiResult::success();
     }
@@ -1439,6 +1451,7 @@ private:
 
     arp::core::BoundedSequence<Mutation> mutations_;
     arp::core::BoundedSequence<WidgetId> pendingRemoval_;
+    std::size_t nextMutation_ = 0;
     bool dispatching_ = false;
     bool clicked_ = false;
     bool unloading_ = false;
@@ -1455,10 +1468,13 @@ private:
     bool inputHeldButtons_[3] = {};
     bool inputUiButtons_[3] = {};
     void syncValue(Control& control);
+    void prepareParentAttachment(WidgetId parent);
+    void discardUnpublishedControl(WidgetId widgetId) noexcept;
     UiResult directEvent(WidgetId id, UiInputEventKind kind);
     UiResult cancelSubtree(WidgetId id);
     UiResult finishMutations();
     bool pendingRemoval(WidgetId id) const;
+    bool pendingCreation(WidgetId id) const;
     WidgetId nextFocus(bool backwards) const;
     WidgetId focusedControl_;
     WidgetId capturedControl_;

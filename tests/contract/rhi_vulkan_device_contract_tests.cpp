@@ -130,7 +130,9 @@ void assertVulkanIndirectDispatchLoweringIsNativeAndFailClosed()
     assert(commandSource.find("sizeof(std::uint32_t) * 3u") != std::pmr::string::npos);
     assert(commandSource.find("resourceRegistry_->payload(indirectBuffer.id())")
         != std::pmr::string::npos);
-    assert(commandSource.find("nativePayload_->retainResource(nativeBuffer)")
+    assert(
+        commandSource.find("pass_.retainResources(&nativeBuffer, 1u)") != std::pmr::string::npos);
+    assert(commandSource.find("nativePayload_->retainResources(resources, count)")
         != std::pmr::string::npos);
     assert(commandSource.find("pushState_.onConsume()") != std::pmr::string::npos);
     assert(commandSource.find("indirect dispatch not implemented") == std::pmr::string::npos);

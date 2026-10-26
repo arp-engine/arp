@@ -13,6 +13,10 @@
 #include <vulkan/vulkan.h>
 
 // region Vulkan runtime
+namespace arp::rhi::semantics {
+struct OriginalQueryCreationFacts;
+}
+
 namespace arp::rhi_vulkan {
 
 // Backend-private capture of the feature bits actually passed to vkCreateDevice.
@@ -100,8 +104,12 @@ struct VulkanRhiRuntimeDesc {
     VulkanDescriptorIndexingFeatures descriptorIndexingEnabled;
     bool indirectFirstInstanceEnablementReported = false;
     bool indirectFirstInstanceEnabled = false;
+    bool shaderDrawParametersEnablementReported = false;
+    bool shaderDrawParametersEnabled = false;
     bool timelineSemaphoreEnablementReported = false;
     bool timelineSemaphoreEnabled = false;
+    bool hostQueryResetEnablementReported = false;
+    bool hostQueryResetEnabled = false;
     bool swapchainMaintenance1Enabled = false;
 };
 
@@ -162,7 +170,10 @@ public:
     float maxSamplerAnisotropy() const;
     const VulkanDescriptorIndexingInspection& descriptorIndexing() const;
     bool indirectFirstInstanceEnabled() const noexcept;
+    bool shaderDrawParametersEnabled() const noexcept;
     bool timelineSemaphoreEnabled() const noexcept;
+    bool timestampQueriesEnabled() const noexcept;
+    const char* timestampQueryDiagnostic() const noexcept;
     const VkSurfaceCapabilitiesKHR& surfaceCapabilities() const;
     const std::pmr::vector<VkSurfaceFormatKHR>& surfaceFormats() const;
     const std::pmr::vector<VkPresentModeKHR>& presentModes() const;
@@ -173,6 +184,9 @@ private:
     friend class VulkanRhiAllocator;
     friend class VulkanRhiNativeResourceAllocator;
     friend class VulkanRhiTimelineSemaphorePayload;
+    friend class VulkanRhiQueryPoolPayload;
+    friend class VulkanRhiQueryPool;
+    rhi::semantics::OriginalQueryCreationFacts originalQueryCreationFacts() const noexcept;
     friend class VulkanRhiHeapPlacement;
     friend const char* waitIdleAndRetireVulkanRhiSubmittedCommands(
         const std::shared_ptr<VulkanRhiRuntime>&);

@@ -2,8 +2,10 @@
 #include "core/io/file_io.h"
 #include "platform/render_system.h"
 #include "platform/renderdoc_capture_scope.h"
+#include "prepared_offscreen.h"
 #include "renderer/raster_viewport.h"
 #include "renderer/renderer_common.h"
+#include "renderer/volumetric_cloud/cloud_quality.h"
 #include "renderer/volumetric_cloud/volumetric_cloud_feature.h"
 #include "resource/cloud_asset_cooked.h"
 #include "rhi/backends/null/null_backend.h"
@@ -32,16 +34,18 @@ void requireCloud(const cloud::CloudResult& result)
 }
 
 struct Options {
-    core::pmr::String asset, capture, backend = "native", camera = "below";
+    core::pmr::String asset, capture, quality, backend = "native", camera = "below";
     unsigned frames = 40u, captureFrame = 20u, divisor = 1u;
     unsigned width = 640u, height = 360u, warmup = 8u;
     float coverage = 1.0f, extinction = .004f;
     bool hidden = false, temporal = false, timings = false;
+    bool preparedOffscreen = false, reconstruction = false;
 };
 
 Options parse(int argc, char** argv)
 {
     Options o;
+    bool samplingOverride = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view key = argv[i];
         const auto value = [&]() -> std::string_view {
@@ -73,13 +77,16 @@ Options parse(int argc, char** argv)
             o.backend = value();
         else if (key == "--camera")
             o.camera = value();
+        else if (key == "--quality")
+            o.quality = value();
         else if (key == "--frames")
             o.frames = integer();
         else if (key == "--capture-frame")
             o.captureFrame = integer();
-        else if (key == "--divisor")
+        else if (key == "--divisor") {
             o.divisor = integer();
-        else if (key == "--width")
+            samplingOverride = true;
+        } else if (key == "--width")
             o.width = integer();
         else if (key == "--height")
             o.height = integer();
@@ -91,13 +98,27 @@ Options parse(int argc, char** argv)
             o.extinction = scalar();
         else if (key == "--hidden")
             o.hidden = true;
-        else if (key == "--temporal")
+        else if (key == "--prepared-offscreen")
+            o.preparedOffscreen = true;
+        else if (key == "--reconstruction")
+            o.reconstruction = true;
+        else if (key == "--temporal") {
             o.temporal = true;
-        else if (key == "--timings")
+            samplingOverride = true;
+        } else if (key == "--timings")
             o.timings = true;
         else
             throw std::runtime_error("unknown cloud example option");
     }
+    if (!o.quality.empty() && samplingOverride)
+        throw std::runtime_error("CLOUD-DEMO-QUALITY-SAMPLING-CONFLICT");
+    if (o.reconstruction && !o.preparedOffscreen)
+        throw std::runtime_error("CLOUD-DEMO-RECONSTRUCTION-REQUIRES-PREPARED");
+    if (o.preparedOffscreen && (!o.hidden || o.timings))
+        throw std::runtime_error("CLOUD-DEMO-PREPARED-OFFSCREEN-PROFILE");
+    if (!o.quality.empty() && o.quality != "reference" && o.quality != "high"
+        && o.quality != "medium")
+        throw std::runtime_error("CLOUD-DEMO-QUALITY-TIER");
     if (o.asset.empty() || !o.frames || !o.divisor || !o.width || !o.height
         || (o.camera != "below" && o.camera != "inside" && o.camera != "above"))
         throw std::runtime_error(
@@ -160,13 +181,14 @@ int run(const Options& o)
     rhi::Swapchain* swapchain = nullptr;
     rhi::Extent2D extent{o.width, o.height};
     constexpr std::uint32_t frameSlots = 3u;
-    // Three cloud layout/pipeline pairs plus one present pair. Every frame
-    // slot has twelve cloud descriptors and one present sampled input.
+    // The prepared offscreen caller keeps one graph/arena in flight. The
+    // legacy present caller retains one descriptor set per frame slot.
     const rhi::semantics::DirectObjectBudget directBudget{
         rhi::semantics::kDirectObjectBudgetContractVersion,
-        "Cloud.DemoDirectObjects/1",
-        cloud::kCloudDirectPipelineEntries + 2u,
-        frameSlots * (cloud::kCloudDescriptorElementsPerSlot + 1u)};
+        o.preparedOffscreen ? "Cloud.DemoPreparedDirectObjects/1" : "Cloud.DemoDirectObjects/1",
+        cloud::kCloudDirectPipelineEntries + (o.preparedOffscreen ? 0u : 2u),
+        o.preparedOffscreen ? (o.reconstruction ? 15u : 12u)
+                            : frameSlots * (cloud::kCloudDescriptorElementsPerSlot + 1u)};
     // Explicit demo allowance: at most one maximum-size cooked payload per
     // frame slot. This workload currently uses mapped uploads, so actual
     // staging usage may be zero; the ceiling remains authored and observable.
@@ -223,8 +245,15 @@ int run(const Options& o)
     config.historyWeight = .9f;
     config.historyDepthTolerance = 50;
     config.temporal = o.temporal;
-    cloud::VolumetricCloudFeature feature;
-    requireCloud(feature.create({*device, extent, config, asset, ARP_CLOUD_SHADER_DIR}));
+    if (!o.quality.empty()) {
+        const auto tier = o.quality == "reference" ? cloud::CloudQualityTier::Reference
+            : o.quality == "high"                  ? cloud::CloudQualityTier::High
+                                                   : cloud::CloudQualityTier::Medium;
+        requireCloud(cloud::CloudQuality::apply(1u, tier, config));
+        std::cout << "CloudQuality/1 candidate=" << o.quality
+                  << " divisor=" << config.resolutionDivisor << " viewSteps=" << config.viewSteps
+                  << " lightSteps=" << config.lightSteps << " temporal=" << config.temporal << '\n';
+    }
     scene3d::CloudLayerDesc layer;
     layer.planetCenter = {0, -6371000, 0};
     layer.planetRadius = 6371000;
@@ -239,6 +268,19 @@ int run(const Options& o)
     layer.detailPeriod = 900;
     layer.coverage = o.coverage;
     layer.erosion = .12f;
+    if (o.preparedOffscreen)
+        return cloud_demo::runPreparedOffscreen({*device,
+            asset,
+            config,
+            extent,
+            layer,
+            o.camera,
+            o.capture,
+            o.frames,
+            o.captureFrame,
+            o.reconstruction});
+    cloud::VolumetricCloudFeature feature;
+    requireCloud(feature.create({*device, extent, config, asset, ARP_CLOUD_SHADER_DIR}));
     rhi::DescriptorLayoutDesc bindings;
     bindings.name = "Cloud.DemoPresent";
     bindings.bindings = {{0u, rhi::DescriptorType::SampledTexture, rhi::ShaderStage::Fragment}};
@@ -431,7 +473,7 @@ int run(const Options& o)
             throw std::runtime_error("CLOUD-DEMO-TIMING-NO-COMPLETED-SAMPLES");
         const auto memory = device->memoryStats();
         std::cout << "Cloud native timestamps extent=" << extent.width << 'x' << extent.height
-                  << " divisor=" << o.divisor << " viewSteps=" << config.viewSteps
+                  << " divisor=" << config.resolutionDivisor << " viewSteps=" << config.viewSteps
                   << " lightSteps=" << config.lightSteps << " observations=" << gpuTimes.count()
                   << " warmupFrames=" << o.warmup << " medianMs=" << median << " p95Ms=" << p95
                   << " devicePeakBytes=" << memory.peakAllocatedBytes << '\n';

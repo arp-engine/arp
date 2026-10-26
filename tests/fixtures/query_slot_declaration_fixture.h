@@ -82,6 +82,65 @@ public:
             assert(control.phase() == Phase::Recorded && control.observe()
                 && !control.observePending(journal));
         }
+        // Cancel transitions must advance identity even when the value returns.
+        {
+            Control cancel;
+            const auto before = cancel.observe();
+            assert(before && !cancel.preflight(Event::Record));
+            assert(cancel.matches(*before));
+            assert(!cancel.declare(Event::Record));
+            const auto recorded = cancel.observe();
+            assert(recorded && !cancel.declare(Event::Submit));
+            assert(!cancel.declare(Event::CancelSubmit) && cancel.phase() == Phase::Recorded
+                && !cancel.matches(*recorded));
+            assert(!cancel.declare(Event::CancelRecord) && cancel.phase() == Phase::NotRecorded
+                && !cancel.matches(*before));
+            assert(cancel.declare(Event::CancelRecord) && cancel.declare(Event::CancelSubmit));
+            core::MutationJournal own, other;
+            assert(!cancel.declare(Event::Record, &own));
+            const auto first = cancel.observePending(own);
+            assert(first && !cancel.preflight(Event::CancelRecord, &own));
+            assert(cancel.matchesPending(*first, own));
+            assert(cancel.preflight(Event::CancelRecord, &other) && other.empty());
+            assert(!cancel.declare(Event::CancelRecord, &own)
+                && !cancel.declare(Event::Record, &own) && !cancel.matchesPending(*first, own));
+            own.rollback();
+            assert(cancel.phase() == Phase::NotRecorded);
+        }
+        // A dry preflight cannot consume revisions, enlist, or invalidate.
+        {
+            for (const bool failed : {false, true}) {
+                Control lifecycle(Phase::NotRecorded, UINT64_MAX - 4u);
+                assert(!lifecycle.preflight(Event::Record, nullptr, 4u)
+                    && !lifecycle.declare(Event::Record)
+                    && !lifecycle.preflight(Event::Submit, nullptr, 3u)
+                    && !lifecycle.declare(Event::Submit));
+                assert(!lifecycle.declare(failed ? Event::Fail : Event::Complete));
+                assert(!lifecycle.declare(failed ? Event::RetireFailure : Event::DeclareSnapshot));
+                assert(lifecycle.active() && lifecycle.preflight(Event::Reset));
+            }
+            Control lifecycleShort(Phase::NotRecorded, UINT64_MAX - 3u);
+            const auto lifecycleBefore = lifecycleShort.observe();
+            assert(lifecycleBefore && lifecycleShort.preflight(Event::Record, nullptr, 4u)
+                && lifecycleShort.matches(*lifecycleBefore));
+            Control exact(Phase::Submitted, UINT64_MAX - 2u);
+            const auto before = exact.observe();
+            assert(
+                before && !exact.preflight(Event::Complete, nullptr, 2u) && exact.matches(*before));
+            assert(!exact.declare(Event::Complete) && !exact.declare(Event::DeclareSnapshot));
+            const auto last = exact.observe();
+            assert(last && exact.preflight(Event::Reset) && exact.matches(*last));
+            Control shortByOne(Phase::Submitted, UINT64_MAX - 1u);
+            const auto shortBefore = shortByOne.observe();
+            assert(shortBefore && shortByOne.preflight(Event::Complete, nullptr, 2u)
+                && shortByOne.matches(*shortBefore));
+            Control journalShort(Phase::NotRecorded, UINT64_MAX - 1u);
+            core::MutationJournal journal;
+            const auto initial = journalShort.observe();
+            assert(initial && journalShort.preflight(Event::Record, &journal) && journal.empty()
+                && journalShort.matches(*initial));
+            assert(journalShort.preflight(Event::Record, nullptr, 0u));
+        }
         Control terminal;
         core::MutationJournal journal;
         assert(!terminal.declare(Event::Record, &journal));
@@ -106,7 +165,7 @@ public:
         assert(core::defaultCpuAllocator().stats().allocationCount == allocations);
         std::pmr::set_default_resource(old);
         std::puts(
-            "BINDLESS_RHI_QUERY_SLOT_DECLARATION_OK phases7 events7 quarantine reset journal-ABA exhaustion backends4 native-proof-closed allocation0");
+            "BINDLESS_RHI_QUERY_SLOT_DECLARATION_OK phases7 events9 quarantine reset journal-ABA exhaustion backends4 native-proof-closed allocation0");
     }
 };
 } // namespace arp::test

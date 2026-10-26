@@ -200,6 +200,7 @@ private:
     friend class GpuDevice;
     friend class OriginalCommandStateTransaction;
     OriginalResourceRegistrationBinding originalRegistration_;
+    friend class OriginalSubmittedBufferReadPins;
     OriginalAllocationLifetime* originalAllocationLifetime_ = nullptr;
     bool originalAllocationLifetimeBound_ = false;
     common::RecordedResourceStateControl* originalStateControl_ = nullptr;

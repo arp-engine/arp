@@ -193,4 +193,51 @@ class BrowserProcessRetirementTest(unittest.TestCase):
             runner.cleanup_browser_profile(profile, deadline=7.)
         self.assertEqual(profile.cleanup.call_count, 1)
 
+    def access_denied(self, filename='owned-profile/database'):
+        error = PermissionError(13, 'fixture-only delayed database handle', filename)
+        error.winerror = 5
+        return error
+
+    def wrapped_access_denied(self, filename='owned-profile/database'):
+        error = NotADirectoryError(20, 'fixture-only Python 3.9 cleanup fallback', filename)
+        error.winerror = 267
+        error.__context__ = self.access_denied()
+        return error
+
+    def test_windows_database_handle_direct_and_python39_wrapped_errors_retry_same_budget(self):
+        for error in (self.access_denied(), self.wrapped_access_denied()):
+            with self.subTest(error=type(error).__name__):
+                profile = mock.Mock()
+                profile.cleanup.side_effect = [error, None]
+                with mock.patch.object(runner.sys, 'platform', 'win32'), \
+                        mock.patch.object(runner.time, 'monotonic', return_value=3.), \
+                        mock.patch.object(runner.time, 'sleep') as sleep:
+                    runner.cleanup_browser_profile(profile, deadline=4.)
+                self.assertEqual(profile.cleanup.call_count, 2)
+                sleep.assert_called_once_with(0.05)
+
+    def test_permanent_database_access_denied_still_fails_at_original_deadline(self):
+        for error in (self.access_denied(), self.wrapped_access_denied()):
+            profile = mock.Mock()
+            profile.cleanup.side_effect = error
+            with mock.patch.object(runner.sys, 'platform', 'win32'), \
+                    mock.patch.object(runner.time, 'monotonic', return_value=7.), \
+                    mock.patch.object(runner.time, 'sleep') as sleep, \
+                    self.assertRaisesRegex(TimeoutError, 'RETIRE-DEADLINE'):
+                runner.cleanup_browser_profile(profile, deadline=7.)
+            self.assertEqual(profile.cleanup.call_count, 1)
+            sleep.assert_not_called()
+
+    def test_unrelated_directory_errors_and_nonwindows_access_denied_do_not_retry(self):
+        for platform, error in [('win32', NotADirectoryError('genuine type failure')),
+                ('win32', self.wrapped_access_denied('another-file')),
+                ('linux', self.access_denied()), ('linux', self.wrapped_access_denied())]:
+            profile = mock.Mock()
+            profile.cleanup.side_effect = error
+            with mock.patch.object(runner.sys, 'platform', platform), \
+                    mock.patch.object(runner.time, 'sleep') as sleep, self.assertRaises(type(error)):
+                runner.cleanup_browser_profile(profile, deadline=7.)
+            self.assertEqual(profile.cleanup.call_count, 1)
+            sleep.assert_not_called()
+
 if __name__=='__main__':unittest.main()

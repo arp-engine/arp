@@ -40,12 +40,14 @@ struct MetalRhiBufferBindingFact {
     std::uint64_t requiredBytes = 0u;
     std::uint32_t access = UINT32_MAX;
     std::uint32_t elementType = UINT32_MAX;
+    // Actual MTLArgument.isActive query: 0/1; UINT32_MAX is unobserved.
+    std::uint32_t active = UINT32_MAX;
 
     bool matches(const MetalRhiBufferBindingFact& other) const noexcept
     {
         return slot == other.slot && alignment == other.alignment
             && requiredBytes == other.requiredBytes && access == other.access
-            && elementType == other.elementType;
+            && elementType == other.elementType && active == other.active;
     }
 };
 
@@ -232,7 +234,7 @@ public:
             || captured.fact.requiredBytes != current.fact.requiredBytes
             || captured.fact.access != current.fact.access
             || captured.fact.elementType != current.fact.elementType
-            || captured.offset != current.offset)
+            || captured.fact.active != current.fact.active || captured.offset != current.offset)
             return "RHI-METAL-ORDINARY-OFFSET-CAPTURE-MISMATCH";
         return nullptr;
     }
@@ -320,19 +322,34 @@ public:
 
 // region Metal texture binding facts
 
-// Backend-private values copied from actual MTLRenderPipelineReflection.
+// Backend-private values copied from actual render/compute pipeline reflection.
 // UINT32_MAX argumentIndex denotes a direct texture slot, not an array member.
 struct MetalRhiTextureBindingFact {
     rhi::ShaderStage stage = rhi::ShaderStage::None;
     std::uint32_t slot = UINT32_MAX, argumentIndex = UINT32_MAX;
     std::uint32_t textureType = UINT32_MAX, scalarDataType = UINT32_MAX;
     bool depth = false;
+    std::uint32_t access = UINT32_MAX, active = UINT32_MAX;
 
     bool matches(const MetalRhiTextureBindingFact& other) const noexcept
     {
         return stage == other.stage && slot == other.slot && argumentIndex == other.argumentIndex
             && textureType == other.textureType && scalarDataType == other.scalarDataType
-            && depth == other.depth;
+            && depth == other.depth && access == other.access && active == other.active;
+    }
+};
+
+// MetalOriginalSampledTexture2DFloatABI/1. Numeric values are specified Metal
+// ABI and independently checked against SDK enums by actual native tests.
+// This checks declaration ABI only, never original resource/view identity.
+class MetalRhiOriginalSampledTexture2DFloatAbi final {
+public:
+    static const char* inspect(const MetalRhiTextureBindingFact& fact, bool depth) noexcept
+    {
+        if (fact.argumentIndex != UINT32_MAX || fact.textureType != 2u || fact.scalarDataType != 3u
+            || fact.access != 0u || fact.active > 1u)
+            return "RHI-METAL-ORIGINAL-SAMPLED-TEXTURE-ABI";
+        return fact.depth == depth ? nullptr : "RHI-METAL-ORIGINAL-SAMPLED-TEXTURE-DEPTH-ABI";
     }
 };
 

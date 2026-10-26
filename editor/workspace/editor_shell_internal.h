@@ -4,9 +4,15 @@
 
 #include <string_view>
 
+namespace arp::editor {
+enum class ScenePropertyValueKind : std::uint8_t;
+bool sceneInspectorKindForValueKind(ScenePropertyValueKind, SceneInspectorPropertyKind&);
+} // namespace arp::editor
+
 namespace arp::editor::detail {
 
-bool sceneResourceReady(void* context, std::string_view type, std::string_view id);
 resource::ResourceManager* sceneResourceManager(const EditorSceneDocument& document);
+core::pmr::String singleLine(std::string_view text);
+core::pmr::String sceneFileFailureMessage(std::string_view diagnostic);
 
 } // namespace arp::editor::detail

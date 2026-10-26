@@ -17,6 +17,22 @@ inline constexpr bool validAttachmentStoreOp(StoreOp op) noexcept
     return op == StoreOp::Store || op == StoreOp::DontCare;
 }
 
+class AttachmentContentActionContract final {
+public:
+    static std::optional<OriginalTextureContentCellSequence::Action> action(
+        bool begin, LoadOp load, StoreOp store) noexcept
+    {
+        if (!validAttachmentLoadOp(load) || !validAttachmentStoreOp(store))
+            return {};
+        using Action = OriginalTextureContentCellSequence::Action;
+        return begin                  ? load == LoadOp::Clear ? Action::Clear
+                                 : load == LoadOp::Load       ? Action::Load
+                                                              : Action::DontCare
+            : store == StoreOp::Store ? Action::Store
+                                      : Action::Discard;
+    }
+};
+
 class DepthStencilAttachmentInputContract final {
 public:
     static constexpr std::uint32_t version = 1u;

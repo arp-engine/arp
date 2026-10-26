@@ -7,6 +7,7 @@
 #include "rhi/frontend/command_texture_ranges.h"
 #include "rhi/frontend/command_usage.h"
 #include "rhi/frontend/finite_graphics_content_validation.h"
+#include "rhi/frontend/original_submitted_buffer_read_pins.h"
 #include "rhi/frontend/resource_access_usage.h"
 #include "rhi/frontend/resource_state_sequence.h"
 #include "rhi/frontend/transfer_readback_layout_validation.h"
@@ -16,6 +17,15 @@
 #include "rhi/semantics/command_state_lowering.h"
 
 #include <cmath>
+
+namespace arp::rhi_vulkan {
+class VulkanRhiNativeCommandPayload;
+}
+
+namespace arp::rhi_metal {
+class MetalOriginalOrdinaryCommand;
+class MetalRhiNativeCommandPayload;
+} // namespace arp::rhi_metal
 
 // region Command resource states
 // region original_command_buffer_states
@@ -242,9 +252,68 @@ class OriginalCommandResourceStates final : public core::QuotaBoundSharedObjectI
     using TypedDecision = arp::rhi::semantics::OriginalCommandStateAdmissionLowering::TypedDecision;
 
 public:
+    using ReadPins = OriginalSubmittedBufferReadPins;
+
+    struct SubmittedReadAdmission {
+        std::uint32_t contractVersion = 0u;
+        bool prototypeOptIn = false;
+        OriginalCommandStateSequenceBudget sequence;
+        OriginalRenderDescriptorUsageBudget allBindings;
+    };
+
+    // Immutable scalar queries preserve the distinct issued observation arm.
+    class BufferObservation final {
+    public:
+        BufferObservation(const GpuBuffer::CommittedStateObservation& value) : value_(value) {}
+
+        BufferObservation(const ReadPins::Observation& value) : value_(value) {}
+
+        ResourceState state() const noexcept
+        {
+            return std::visit(
+                [](const auto& value) {
+                    return value.state();
+                },
+                value_);
+        }
+
+        std::uint64_t revision() const noexcept
+        {
+            return std::visit(
+                [](const auto& value) {
+                    return value.revision();
+                },
+                value_);
+        }
+
+        std::uint64_t resourceGeneration() const noexcept
+        {
+            return std::visit(
+                [](const auto& value) {
+                    return value.resourceGeneration();
+                },
+                value_);
+        }
+
+        const auto* committed() const noexcept
+        {
+            return std::get_if<GpuBuffer::CommittedStateObservation>(&value_);
+        }
+
+        const auto* submitted() const noexcept
+        {
+            return std::get_if<ReadPins::Observation>(&value_);
+        }
+
+        bool nativeExecutionProven() const noexcept { return false; }
+
+    private:
+        std::variant<GpuBuffer::CommittedStateObservation, ReadPins::Observation> value_;
+    };
+
     struct BufferEntry {
         std::size_t sourceIndex;
-        GpuBuffer::CommittedStateObservation observation;
+        BufferObservation observation;
     };
 
     struct TextureEntry {
@@ -270,6 +339,85 @@ public:
         const OriginalCommandStateAdmissionBudget& budget,
         std::shared_ptr<core::CpuMemoryQuota> quota,
         const char*& diagnostic)
+    {
+        return prepareOriginalImpl(
+            std::move(inputs), device, budget, std::move(quota), diagnostic, nullptr, nullptr);
+    }
+
+    static std::shared_ptr<const OriginalCommandResourceStates>
+    prepareOriginalSubmittedReadValidator(std::shared_ptr<const OriginalCommandInputs> inputs,
+        const GpuDevice& device,
+        const OriginalCommandStateAdmissionBudget& budget,
+        std::shared_ptr<core::CpuMemoryQuota> quota,
+        const ReadPins::Reservation& reservation,
+        const SubmittedReadAdmission& admission,
+        const char*& diagnostic)
+    {
+        diagnostic = semantics::OriginalSubmissionReadContract::canonicalStateLowering(
+            device.backend(), admission.contractVersion);
+        if (!diagnostic && !admission.prototypeOptIn)
+            diagnostic = "RHI-SUBMISSION-READ-OPT-IN";
+        if (!diagnostic)
+            diagnostic = inspectReadReservation(reservation, inputs);
+        if (!diagnostic)
+            diagnostic = reservation.batch_->issuer->diagnostic();
+        if (!diagnostic)
+            diagnostic = device.validateOriginalDeviceLifetime(reservation.batch_->issuer->device_);
+        if (diagnostic)
+            return {};
+        return prepareOriginalImpl(std::move(inputs),
+            device,
+            budget,
+            std::move(quota),
+            diagnostic,
+            &reservation,
+            &admission);
+    }
+
+private:
+    static const char* inspectReadReservation(const ReadPins::Reservation& reservation,
+        const std::shared_ptr<const OriginalCommandInputs>& inputs) noexcept
+    {
+        const auto& batch = reservation.batch_;
+        if (!batch)
+            return "RHI-SUBMISSION-READ-RESERVATION";
+        if (const auto* id = batch->issuer->inspectReservation(reservation, true))
+            return id;
+        return batch->inputs == inputs
+                && core::SharedOwnerProjection::sameOwner(batch->inputs, inputs)
+            ? nullptr
+            : "RHI-SUBMISSION-READ-INPUTS";
+    }
+
+    static std::optional<ReadPins::Observation> readObservation(
+        const ReadPins::Reservation* reservation,
+        const OriginalCommandInputs& inputs,
+        std::size_t sourceIndex) noexcept
+    {
+        if (!reservation)
+            return {};
+        const auto& selected =
+            inputs.originalScalars()->originalUsage()->originalSources()->sources()[sourceIndex];
+        const auto* lease =
+            std::get_if<std::shared_ptr<const OriginalCommandBufferLease>>(&selected);
+        if (!lease)
+            return {};
+        const auto& batch = reservation->batch_;
+        for (std::size_t index = 0u; index < batch->entries.size(); ++index)
+            if (batch->entries[index].source == *lease
+                && core::SharedOwnerProjection::sameOwner(batch->entries[index].source, *lease))
+                return ReadPins::Observation{batch, index};
+        return {};
+    }
+
+    static std::shared_ptr<const OriginalCommandResourceStates> prepareOriginalImpl(
+        std::shared_ptr<const OriginalCommandInputs> inputs,
+        const GpuDevice& device,
+        const OriginalCommandStateAdmissionBudget& budget,
+        std::shared_ptr<core::CpuMemoryQuota> quota,
+        const char*& diagnostic,
+        const ReadPins::Reservation* reads,
+        const SubmittedReadAdmission* admission)
     {
         std::uint32_t buffers = 0u, ranges = 0u, owners = 0u;
         if (!budget.bindlessRoots.empty()) {
@@ -324,7 +472,8 @@ public:
                         .diagnostic))
                 return {};
         }
-        diagnostic = preflight(inputs, budget, quota, buffers, ranges, owners, true, decision);
+        diagnostic = preflight(
+            inputs, budget, quota, buffers, ranges, owners, true, decision, reads, admission);
         if (diagnostic)
             return {};
         const auto& sources = inputs->originalScalars()->originalUsage()->originalSources();
@@ -351,10 +500,18 @@ public:
                 ranges,
                 owners,
                 decision);
+            if (reads) {
+                result->reads_.emplace(ReadPins::Reservation{reads->batch_});
+                result->readAdmission_ = *admission;
+            }
             for (std::size_t i = 0u; i < sources->sources().size(); ++i)
                 if (const auto* lease =
                         std::get_if<std::shared_ptr<const OriginalCommandBufferLease>>(
                             &sources->sources()[i])) {
+                    if (auto issued = readObservation(reads, *inputs, i)) {
+                        result->buffers_.append({i, *issued});
+                        continue;
+                    }
                     const auto observation =
                         (*lease)->originalObject()->observeOriginalCommittedState();
                     if (!observation) {
@@ -373,6 +530,8 @@ public:
                 });
             if (diagnostic)
                 return {};
+            if (reads && (diagnostic = result->validateSubmittedReadAccesses()))
+                return {};
             return shareOriginal(std::move(result));
         } catch (const std::bad_alloc&) {
             diagnostic = "RHI-ORIGINAL-RESOURCE-STATES-ALLOCATION";
@@ -383,6 +542,7 @@ public:
         }
     }
 
+public:
     static const char* validateOriginal(
         const std::shared_ptr<const OriginalCommandResourceStates>& self) noexcept
     {
@@ -406,7 +566,9 @@ private:
                 ranges,
                 owners,
                 committed,
-                consumptionDecision_))
+                consumptionDecision_,
+                reads_ ? &*reads_ : nullptr,
+                readAdmission_ ? &*readAdmission_ : nullptr))
             return id;
         if (buffers != buffers_.values().size() || ranges != textures_.values().size()
             || owners != ownerCount_)
@@ -420,13 +582,20 @@ private:
                 const auto& entry = buffers_.values()[bufferIndex++];
                 if (entry.sourceIndex != i)
                     return "RHI-ORIGINAL-RESOURCE-STATES-COVERAGE";
-                if (committed)
+                if (const auto* issued = entry.observation.submitted()) {
+                    const auto expected = readObservation(reads_ ? &*reads_ : nullptr, *inputs_, i);
+                    if (!expected || issued->batch_.lock() != reads_->batch_
+                        || issued->index_ != expected->index_)
+                        return "RHI-SUBMISSION-READ-SOURCE-INDEX";
+                    if (const auto* id = issued->diagnostic())
+                        return id;
+                } else if (committed)
                     if (const auto* id = (*lease)->originalObject()->validateOriginalCommittedState(
-                            entry.observation))
+                            *entry.observation.committed()))
                         return id;
             }
         std::size_t rangeIndex = 0u;
-        return visitTextureObservations(
+        const auto* textureDiagnostic = visitTextureObservations(
             inputs_, budget_, [&](const auto& point, const GpuTexture& texture) -> const char* {
                 const auto& entry = textures_.values()[rangeIndex++];
                 if (!entry.point.matches(point) || entry.observation.range() != point.range)
@@ -434,6 +603,9 @@ private:
                 return committed ? texture.validateOriginalCommittedState(entry.observation)
                                  : nullptr;
             });
+        return textureDiagnostic ? textureDiagnostic
+            : reads_             ? validateSubmittedReadAccesses()
+                                 : nullptr;
     }
 
 public:
@@ -463,6 +635,9 @@ public:
     {
         if (const auto* id = validate())
             return id;
+        if (reads_)
+            return semantics::OriginalSubmissionReadContract::canonicalStateLowering(
+                backend, readAdmission_->contractVersion);
         return arp::rhi::semantics::OriginalCommandStateAdmissionLowering::lowering(backend)
             .diagnostic;
     }
@@ -471,6 +646,51 @@ private:
     // One projection is shared by cold count admission, genuine capture and
     // hot revalidation. Footprint walkers retain their original table/pipeline
     // joins; no additional retained access graph or native queries are needed.
+    const char* validateSubmittedReadAccesses() const noexcept;
+
+    std::uint64_t retainedStateRootCount() const noexcept
+    {
+        return reads_ ? 3u + reads_->batch_->links : 1u;
+    }
+
+    static bool overlapsSubmittedReadQuota(const ReadPins::Reservation* reads,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota) noexcept
+    {
+        if (!reads)
+            return false;
+        const auto& issuer = reads->batch_->issuer;
+        const auto completion = issuer->completion_.lock();
+        return core::SharedOwnerProjection::overlapsOwner(quota, issuer->originalMetadataQuota())
+            || (completion
+                && core::SharedOwnerProjection::overlapsOwner(
+                    quota, completion->originalMetadataQuota()));
+    }
+
+    bool overlapsSubmittedReadQuota(
+        const std::shared_ptr<core::CpuMemoryQuota>& quota) const noexcept
+    {
+        return overlapsSubmittedReadQuota(reads_ ? &*reads_ : nullptr, quota);
+    }
+
+    const ReadPins::Observation* submittedReadAt(std::size_t sourceIndex) const noexcept
+    {
+        for (const auto& entry : buffers_.values())
+            if (entry.sourceIndex == sourceIndex)
+                return entry.observation.submitted();
+        return nullptr;
+    }
+
+    const char* validateSubmittedShaderAccess(const Consumption::Access& access) const noexcept
+    {
+        if (access.kind != Consumption::Access::Kind::Buffer)
+            return nullptr;
+        const auto* issued = submittedReadAt(access.bufferSourceIndex);
+        if (!issued)
+            return nullptr;
+        return issued->validateReadScope(
+            {access.state, access.stages, access.access}, access.offsetBytes, access.sizeBytes);
+    }
+
     template <class Visitor>
     static const char* visitTextureObservations(
         const std::shared_ptr<const OriginalCommandInputs>& inputs,
@@ -650,13 +870,32 @@ private:
         std::uint32_t& ranges,
         std::uint32_t& owners,
         bool committed = true,
-        TypedDecision decision = {}) noexcept
+        TypedDecision decision = {},
+        const ReadPins::Reservation* reads = nullptr,
+        const SubmittedReadAdmission* admission = nullptr) noexcept
     {
         if (const auto* id = OriginalCommandStateAdmissionContract::validateIntent(budget))
             return id;
         if (const auto* id = OriginalCommandInputs::validateOriginal(inputs))
             return id;
         const auto& sources = inputs->originalScalars()->originalUsage()->originalSources();
+        if (reads) {
+            if (const auto* id = inspectReadReservation(*reads, inputs))
+                return id;
+            if (!admission || !budget.bindlessRoots.empty())
+                return "RHI-SUBMISSION-READ-CANONICAL-PROFILE";
+            if (overlapsSubmittedReadQuota(reads, quota))
+                return "RHI-SUBMISSION-READ-QUOTA";
+            if (const auto* id =
+                    OriginalCommandStateSequenceContract::validateIntent(admission->sequence))
+                return id;
+            if (admission->sequence.contractVersion != budget.contractVersion)
+                return "RHI-SUBMISSION-READ-SEQUENCE-PROFILE";
+            if (budget.contractVersion >= 2u)
+                if (const auto* id = OriginalRenderDescriptorUsageContract::validateBudget(
+                        admission->allBindings))
+                    return id;
+        }
         if (budget.contractVersion == 1u && sources->containsTypedSources()
             && budget.bindlessRoots.empty())
             return sources->typedStateJoinDiagnostic();
@@ -790,10 +1029,13 @@ private:
                 budget.maxStateObservations, sources->originalBudget().maxStateObservations);
             return buffers > limit || ranges >= limit - buffers;
         };
-        for (const auto& source : sources->sources())
-            if (const auto* lease =
-                    std::get_if<std::shared_ptr<const OriginalCommandBufferLease>>(&source)) {
-                if (committed)
+        for (std::size_t sourceIndex = 0u; sourceIndex < sources->sources().size(); ++sourceIndex)
+            if (const auto* lease = std::get_if<std::shared_ptr<const OriginalCommandBufferLease>>(
+                    &sources->sources()[sourceIndex])) {
+                if (const auto issued = readObservation(reads, *inputs, sourceIndex)) {
+                    if (const auto* id = issued->diagnostic())
+                        return id;
+                } else if (committed)
                     if (const auto* id =
                             (*lease)->originalObject()->originalCommittedStateDiagnostic())
                         return id;
@@ -818,11 +1060,12 @@ private:
             return id;
         if (!buffers && !ranges)
             return "RHI-ORIGINAL-RESOURCE-STATES-SOURCE-UNSUPPORTED";
-        if (inputs->retainedOwnerCount() == UINT32_MAX)
+        const std::uint64_t roots = reads ? 3u + reads->batch_->links : 1u;
+        if (roots > UINT32_MAX || inputs->retainedOwnerCount() > UINT32_MAX - roots)
             return "RHI-ORIGINAL-STATE-OWNER-CAPACITY";
         std::uint32_t registrations = 0u;
         return OriginalCommandResourceSources::registeredOwnerUnion(sources,
-            inputs->retainedOwnerCount() + 1u,
+            static_cast<std::uint32_t>(inputs->retainedOwnerCount() + roots),
             budget.maxRetainedOwners,
             budget.maxResourceRegistrations,
             owners,
@@ -834,6 +1077,8 @@ private:
     const OriginalCommandStateAdmissionBudget budget_;
     core::BoundedSequence<BufferEntry> buffers_;
     core::BoundedSequence<TextureEntry> textures_;
+    std::optional<ReadPins::Reservation> reads_;
+    std::optional<SubmittedReadAdmission> readAdmission_;
     const std::uint32_t ownerCount_;
     const TypedDecision consumptionDecision_;
 };
@@ -849,6 +1094,7 @@ namespace arp::rhi::common {
 // canonical mip/layer/aspect cell before reusing the scalar sequence resolver.
 // This class retains no owner/control/journal and cannot publish mutations.
 class OriginalCommandStateSequence final {
+    friend class arp::rhi::OriginalCommandResourceStates;
     friend class OriginalTypedUsageProjection;
     friend class arp::rhi::OriginalCommandStateTransaction;
     using Graph = OriginalCommandResourceStates;
@@ -871,6 +1117,19 @@ public:
             return result;
         if ((result.diagnostic = Graph::validateOriginal(graph)))
             return result;
+        return inspectValidatedGraph(*graph, budget);
+    }
+
+private:
+    // Only the original Graph enters after source/observation admission; no
+    // external callback or persistent bypass can obtain this traversal.
+    static Result inspectValidatedGraph(
+        const Graph& original, const OriginalCommandStateSequenceBudget& budget) noexcept
+    {
+        Result result;
+        if ((result.diagnostic = OriginalCommandStateSequenceContract::validateIntent(budget)))
+            return result;
+        const auto* graph = &original;
         if (graph->stateContractVersion() != budget.contractVersion) {
             result.diagnostic = "RHI-ORIGINAL-SEQUENCE-STATE-PROFILE";
             return result;
@@ -985,8 +1244,8 @@ public:
                 return nullptr;
             };
             const auto implicit =
-                graph->visitDescriptorAccesses([](const auto&) noexcept -> const char* {
-                    return nullptr;
+                graph->visitDescriptorAccesses([&](const auto& access) noexcept -> const char* {
+                    return graph->validateSubmittedShaderAccess(access);
                 });
             if ((result.diagnostic = charge(implicit))) {
                 result.commandIndex = implicit.commandIndex;
@@ -1071,6 +1330,7 @@ public:
         return result;
     }
 
+public:
     static const char* resolveOriginalBuffer(const std::shared_ptr<const Graph>& graph,
         GpuResourceId resource,
         std::size_t beforeCommand,
@@ -1365,6 +1625,8 @@ private:
         const auto& item = usage(graph).commands()[command];
         const auto sourceIndex =
             usage(graph).references()[item.firstReference + operand].sourceIndex;
+        if (graph.submittedReadAt(sourceIndex))
+            return "RHI-SUBMISSION-READ-EXPLICIT-ACCESS";
         const auto* lease = std::get_if<std::shared_ptr<const OriginalCommandBufferLease>>(
             &sources(graph)[sourceIndex]);
         if (!lease)
@@ -1687,6 +1949,13 @@ private:
             if (!source)
                 return "RHI-ORIGINAL-SEQUENCE-READBACK-SOURCE";
             const auto& destination = (*source)->originalDestinationLease();
+            for (const auto& entry : graph.bufferEntries())
+                if (entry.observation.submitted()
+                    && std::get<std::shared_ptr<const OriginalCommandBufferLease>>(
+                           sources(graph)[entry.sourceIndex])
+                            ->originalObject()
+                        == destination->originalObject())
+                    return "RHI-SUBMISSION-READ-EXPLICIT-ACCESS";
             ResourceState state;
             if (const auto* id = bufferBefore(graph, destination->resource(), command, state))
                 return id;
@@ -1710,6 +1979,8 @@ private:
     static const char* validateGeometryBufferAccess(
         const Graph& graph, const OriginalCommandGeometryBindingContract::Access& access) noexcept
     {
+        if (graph.submittedReadAt(access.binding.sourceIndex))
+            return "RHI-SUBMISSION-READ-EXPLICIT-ACCESS";
         ResourceState state;
         if (const auto* id = bufferBefore(graph, access.resource, access.commandIndex, state))
             return id;
@@ -1729,6 +2000,8 @@ private:
         if (access.kind == OriginalCommandDescriptorConsumption::Access::Kind::TextureView
             || access.kind == OriginalCommandDescriptorConsumption::Access::Kind::Sampler)
             return nullptr; // Texture ranges and immutable sampler custody were validated above.
+        if (const auto* id = graph.validateSubmittedShaderAccess(access))
+            return id;
         const auto& lease = std::get<std::shared_ptr<const OriginalCommandBufferLease>>(
             sources(graph)[access.bufferSourceIndex]);
         ResourceState state;
@@ -2172,12 +2445,32 @@ namespace arp::rhi {
 // never grants native recording, submission admission or completion.
 class OriginalCommandStreamProgram;
 
+inline const char* OriginalCommandResourceStates::validateSubmittedReadAccesses() const noexcept
+{
+    if (!reads_)
+        return nullptr;
+    if (budget_.contractVersion >= 2u) {
+        const auto bindings = Consumption::renderBindingsOriginal<false, true>(
+            inputs_, readAdmission_->allBindings, [&](const auto& access) noexcept -> const char* {
+                return validateSubmittedShaderAccess(access);
+            });
+        if (bindings.diagnostic)
+            return bindings.diagnostic;
+    }
+    return common::OriginalCommandStateSequence::inspectValidatedGraph(
+        *this, readAdmission_->sequence)
+        .diagnostic;
+}
+
 namespace common {
 class OriginalTypedUsageProjection;
 class OriginalTypedDependencyProjection;
 } // namespace common
 
 class OriginalCommandStateTransaction final : public core::QuotaBoundSharedObjectIdentity {
+    friend class rhi_vulkan::VulkanRhiNativeCommandPayload;
+    friend class rhi_metal::MetalOriginalOrdinaryCommand;
+    friend class rhi_metal::MetalRhiNativeCommandPayload;
     friend class OriginalCommandRecordingSeal;
     friend class OriginalGeneralOutputSnapshotContract;
     using Graph = OriginalCommandResourceStates;
@@ -2185,6 +2478,229 @@ class OriginalCommandStateTransaction final : public core::QuotaBoundSharedObjec
     using Texture = common::RecordedTextureStateControl;
     using Projection = common::OriginalCommandTextureRanges;
     using Content = common::OriginalTextureContentControl;
+
+    static const char* preflightOrdinaryInitializedBuffer(
+        const GpuBuffer& object, core::MutationJournal& journal) noexcept
+    {
+        const auto* control = object.originalStateControl_;
+        return object.hostWritesSealed() && control && control->active()
+                && control->canPrepare(journal)
+            ? nullptr
+            : "RHI-ORDINARY-MIXED-INITIALIZED-BUFFER-STATE";
+    }
+
+    static const char* claimOrdinaryInitializedBuffer(
+        const GpuBuffer& object, core::MutationJournal& journal) noexcept
+    {
+        if (const auto* id = preflightOrdinaryInitializedBuffer(object, journal))
+            return id;
+        return object.originalStateControl_->prepare(journal)
+            ? nullptr
+            : "RHI-ORDINARY-MIXED-INITIALIZED-BUFFER-CLAIM";
+    }
+
+    static bool ordinaryInitializedBufferPending(
+        const GpuBuffer& object, const core::MutationJournal& journal) noexcept
+    {
+        const auto* control = object.originalStateControl_;
+        return control && bool(control->observePending(journal));
+    }
+
+    static bool ordinaryBufferState(
+        const GpuBuffer& object, ResourceState state, const core::MutationJournal& journal) noexcept
+    {
+        const auto* control = object.originalStateControl_;
+        const auto pending = control ? control->observePending(journal) : std::nullopt;
+        return pending && pending->value() == state;
+    }
+
+    static const char* preflightOrdinaryImmutableBuffer(
+        const GpuBuffer& object, core::MutationJournal& journal) noexcept
+    {
+        const auto* control = object.originalStateControl_;
+        if (!object.hostWritesSealed() || !object.gpuWritesSealed()
+            || !object.gpuTransferWritesSealed() || !control || !control->active()
+            || control->state() != ResourceState::ShaderRead || !control->canPrepare(journal))
+            return "RHI-ORDINARY-GRAPHICS-IMMUTABLE-BUFFER-STATE";
+        return nullptr;
+    }
+
+    static const char* claimOrdinaryImmutableBuffer(
+        const GpuBuffer& object, core::MutationJournal& journal) noexcept
+    {
+        if (const auto* id = preflightOrdinaryImmutableBuffer(object, journal))
+            return id;
+        return object.originalStateControl_->prepare(journal)
+            ? nullptr
+            : "RHI-ORDINARY-GRAPHICS-IMMUTABLE-BUFFER-CLAIM";
+    }
+
+    static bool ordinaryImmutableBufferPending(
+        const GpuBuffer& object, const core::MutationJournal& journal) noexcept
+    {
+        const auto* control = object.originalStateControl_;
+        const auto pending = control ? control->observePending(journal) : std::nullopt;
+        return pending && pending->value() == ResourceState::ShaderRead;
+    }
+
+    static const char* preflightOrdinaryAttachment(const GpuTexture& object,
+        const GpuTexture::ContentRangeExpectation& initial,
+        core::MutationJournal& journal) noexcept
+    {
+        if (const auto* id = object.validateOriginalContent(initial))
+            return id;
+        auto& control = *object.originalContent_;
+        if (!OriginalOrdinaryAttachmentContentContract::matchesControl(initial.controlVersion())
+            || !control.geometry_ || control.geometry_->rangeCellCount(initial.range()) != 1u)
+            return "RHI-ORDINARY-ATTACHMENT-CONTENT-CONTROL";
+        return control.canProposeCells(
+            journal, 1u, OriginalOrdinaryAttachmentContentContract::mutationVersion);
+    }
+
+    static const char* proposeOrdinaryAttachment(const GpuTexture& object,
+        const GpuTexture::ContentRangeExpectation& initial,
+        bool stored,
+        core::MutationJournal& journal,
+        Content::Value& proposed,
+        std::optional<Content::Cells::PendingObservation>& pending) noexcept
+    {
+        if (const auto* id = preflightOrdinaryAttachment(object, initial, journal))
+            return id;
+        auto& control = *object.originalContent_;
+        std::uint64_t cell = 0u;
+        if (!control.geometry_->cellIndex(initial.range(), 0u, cell))
+            return "RHI-ORDINARY-ATTACHMENT-CONTENT-CELL";
+        if (const auto* id = control.proposeCell(journal,
+                cell,
+                stored,
+                proposed,
+                OriginalOrdinaryAttachmentContentContract::mutationVersion))
+            return id;
+        pending = control.cells_->observePending(journal);
+        return pending ? nullptr : "RHI-ORDINARY-ATTACHMENT-CONTENT-PENDING";
+    }
+
+    static const char* validateOrdinaryAttachmentPending(const GpuTexture& object,
+        const GpuTexture::ContentRangeExpectation& initial,
+        core::MutationJournal& journal,
+        const Content::Value& proposed,
+        const Content::Cells::PendingObservation& pending) noexcept
+    {
+        if (const auto* id = object.validateOriginalContentIdentity(initial))
+            return id;
+        const auto& control = *object.originalContent_;
+        const auto current = control.uniformRange(initial.range());
+        if (!OriginalOrdinaryAttachmentContentContract::matchesControl(control.contractVersion())
+            || !control.cells_ || !control.cells_->matchesPending(pending, journal)
+            || !proposed.generation || !current || !(*current == proposed))
+            return "RHI-ORDINARY-ATTACHMENT-CONTENT-PENDING";
+        return nullptr;
+    }
+
+    static const char* completeOrdinaryAttachment(const GpuTexture& object,
+        const GpuTexture::ContentRangeExpectation& initial,
+        core::MutationJournal& journal,
+        const Content::Value& proposed,
+        const Content::Cells::PendingObservation& pending) noexcept
+    {
+        if (const auto* id =
+                validateOrdinaryAttachmentPending(object, initial, journal, proposed, pending))
+            return id;
+        auto& control = *object.originalContent_;
+        std::uint64_t cell = 0u;
+        Content::Value completed;
+        if (!control.geometry_->cellIndex(initial.range(), 0u, cell))
+            return "RHI-ORDINARY-ATTACHMENT-CONTENT-CELL";
+        return control.completeCell(journal,
+            cell,
+            proposed,
+            completed,
+            OriginalOrdinaryAttachmentContentContract::mutationVersion);
+    }
+
+    static bool ordinaryAttachmentState(const GpuTexture& object,
+        const TextureSubresourceRange& range,
+        ResourceState state,
+        const core::MutationJournal& journal) noexcept
+    {
+        const auto* control = object.originalNormalizedState_;
+        if (!control || !control->active() || control->geometry().validate(range))
+            return false;
+        if (control->pending()) {
+            const auto pending = control->observePending(range, journal);
+            return pending && pending->state() == state;
+        }
+        const auto initial = control->observe(range);
+        return initial && initial->state == state;
+    }
+
+    static const char* transitionOrdinaryAttachment(const GpuTexture& object,
+        const ResourceBarrierDesc& barrier,
+        core::MutationJournal& journal) noexcept
+    {
+        if (barrier.resource != object.id()
+            || !ordinaryAttachmentState(
+                object, barrier.textureSubresources, barrier.before, journal))
+            return "RHI-ORDINARY-ATTACHMENT-BARRIER-STATE";
+        return object.originalNormalizedState_->write(
+            barrier.textureSubresources, barrier.before, barrier.after, &journal);
+    }
+
+    // The approved ordinary issuer uses these existing controls with its one
+    // external journal. No root, plan, second journal or receipt is constructed.
+    static const char* preflightOrdinaryWholeUpload(const GpuTexture& object,
+        const GpuTexture::ContentExpectation& initial,
+        core::MutationJournal& journal) noexcept
+    {
+        if (const auto* id = object.validateOriginalContent(initial))
+            return id;
+        if (const auto* id = OriginalUndefinedTextureUploadPlanContract::validateInitial(
+                initial.controlVersion(),
+                initial.state() == Content::State::Uninitialized,
+                initial.contentGeneration(),
+                ResourceState::Undefined))
+            return id;
+        return object.originalContent_->canUpload(journal, 1u, 7u);
+    }
+
+    static const char* proposeOrdinaryWholeUpload(const GpuTexture& object,
+        const GpuTexture::ContentExpectation& initial,
+        core::MutationJournal& journal,
+        std::optional<Content::PendingObservation>& pending) noexcept
+    {
+        if (const auto* id = preflightOrdinaryWholeUpload(object, initial, journal))
+            return id;
+        std::uint64_t generation = 0u;
+        if (const auto* id = object.originalContent_->propose(journal, generation, 7u))
+            return id;
+        pending = object.originalContent_->value_.observePending(journal);
+        return pending && pending->value().generation == generation
+            ? nullptr
+            : "RHI-ORDINARY-TEXTURE-UPLOAD-CONTENT-PENDING";
+    }
+
+    static const char* validateOrdinaryWholeUploadPending(const GpuTexture& object,
+        core::MutationJournal& journal,
+        const Content::PendingObservation& pending) noexcept
+    {
+        if (!object.originalContent_ || object.originalContent_->contractVersion() != 3u)
+            return "RHI-ORDINARY-TEXTURE-UPLOAD-CONTENT-CONTROL";
+        if (const auto* id = object.originalContent_->identityDiagnostic())
+            return id;
+        return pending.value().state == Content::State::Proposed && pending.value().generation
+                && object.originalContent_->value_.matchesPending(pending, journal)
+            ? nullptr
+            : "RHI-ORDINARY-TEXTURE-UPLOAD-CONTENT-PENDING";
+    }
+
+    static const char* completeOrdinaryWholeUpload(const GpuTexture& object,
+        core::MutationJournal& journal,
+        const Content::PendingObservation& pending) noexcept
+    {
+        if (const auto* id = validateOrdinaryWholeUploadPending(object, journal, pending))
+            return id;
+        return object.originalContent_->complete(journal, 7u);
+    }
 
     class ConstructionKey {
         friend class OriginalCommandStateTransaction;
@@ -2198,6 +2714,7 @@ class OriginalCommandStateTransaction final : public core::QuotaBoundSharedObjec
         const GpuBuffer* object;
         Scalar* control;
         std::optional<Scalar::PendingObservation> pending;
+        std::optional<OriginalSubmittedBufferReadPins::Observation> borrowed;
     };
 
     struct TextureEntry {
@@ -2220,6 +2737,7 @@ class OriginalCommandStateTransaction final : public core::QuotaBoundSharedObjec
         std::optional<Texture::PendingObservation> texturePending;
         std::optional<Scalar::Observation> scalarCommitted;
         std::optional<Texture::Observation> textureCommitted;
+        std::optional<OriginalSubmittedBufferReadPins::Observation> borrowed;
     };
 
     struct AccessStep {
@@ -2857,7 +3375,12 @@ private:
                 const auto& lease = std::get<std::shared_ptr<const OriginalCommandBufferLease>>(
                     inventory[entry.sourceIndex]);
                 const auto* object = lease->originalObject();
-                result->buffers_.append({object, object->originalStateControl_, {}});
+                const auto* issued = entry.observation.submitted();
+                result->buffers_.append({object,
+                    object->originalStateControl_,
+                    {},
+                    issued ? std::optional<OriginalSubmittedBufferReadPins::Observation>{*issued}
+                           : std::nullopt});
             }
             for (const auto& entry : graph->textureEntries()) {
                 const auto* object =
@@ -2904,6 +3427,18 @@ public:
             const auto& original = graph_->bufferEntries()[i];
             const auto& lease = std::get<std::shared_ptr<const OriginalCommandBufferLease>>(
                 inventory[original.sourceIndex]);
+            if (entry.borrowed) {
+                if (entry.object != lease->originalObject()
+                    || entry.control != entry.object->originalStateControl_ || entry.pending
+                    || !original.observation.submitted()
+                    || entry.borrowed->revision() != original.observation.revision()
+                    || entry.borrowed->resourceGeneration()
+                        != original.observation.resourceGeneration())
+                    return "RHI-SUBMISSION-READ-TRANSACTION-CLAIM";
+                if (const auto* id = entry.borrowed->diagnostic())
+                    return id;
+                continue;
+            }
             if (entry.object != lease->originalObject()
                 || entry.control != entry.object->originalStateControl_ || !entry.pending
                 || entry.pending->value() != original.observation.state()
@@ -3202,14 +3737,14 @@ public:
         if (const auto* id = validate())
             return id;
         for (const auto& entry : buffers_.values())
-            if (!entry.control->canPrepare(journal_))
+            if (!entry.borrowed && !entry.control->canPrepare(journal_))
                 return "RHI-ORIGINAL-TRANSACTION-JOURNAL-ADMISSION";
         for (const auto& entry : textures_.values())
             if (entry.normalized ? !entry.normalized->canPrepare(journal_)
                                  : !entry.uniform->canPrepare(journal_))
                 return "RHI-ORIGINAL-TRANSACTION-JOURNAL-ADMISSION";
         for (const auto& entry : buffers_.values())
-            if (!entry.control->prepare(journal_))
+            if (!entry.borrowed && !entry.control->prepare(journal_))
                 return failedEnlistment();
         for (const auto& entry : textures_.values())
             if (entry.normalized ? !entry.normalized->prepare(journal_)
@@ -3218,7 +3753,8 @@ public:
         // Storage was reserved at cold publication. Updating embedded optional
         // observations changes neither capacities nor retained owners.
         buffers_.visitMutable([&](auto& entry) noexcept {
-            entry.pending = entry.control->observePending(journal_);
+            if (!entry.borrowed)
+                entry.pending = entry.control->observePending(journal_);
         });
         textures_.visitMutable([&](auto& entry) noexcept {
             if (entry.normalized)
@@ -3503,8 +4039,9 @@ private:
         for (const auto& entry : graph_->bufferEntries()) {
             const auto& lease = std::get<std::shared_ptr<const OriginalCommandBufferLease>>(
                 inventory[entry.sourceIndex]);
-            if (lease->originalObject() == &object
-                && entry.observation.control_ == captured.control_
+            const auto* initial = entry.observation.committed();
+            if (lease->originalObject() == &object && initial
+                && initial->control_ == captured.control_
                 && entry.observation.resourceGeneration() == captured.resourceGeneration()
                 && entry.observation.state() == captured.state()
                 && entry.observation.revision() == captured.revision())
@@ -4038,11 +4575,8 @@ private:
                 if (!found || !semantics::validAttachmentLoadOp(load)
                     || !semantics::validAttachmentStoreOp(store))
                     return "RHI-ORIGINAL-CONTENT-PLAN-ATTACHMENT-PLANE";
-                const auto action = kind == K::BeginRenderPass ? load == LoadOp::Clear ? A::Clear
-                        : load == LoadOp::Load                                         ? A::Load
-                                                                                       : A::DontCare
-                    : store == StoreOp::Store                  ? A::Store
-                                                               : A::Discard;
+                const auto action = *semantics::AttachmentContentActionContract::action(
+                    kind == K::BeginRenderPass, load, store);
                 if (const auto* id =
                         emit(Sequence::Step{object.id(), generation, p.range, action, begin}))
                     return id;
@@ -5738,7 +6272,7 @@ private:
                     journal_, content.mutations, plan_->contentBudget.contractVersion))
                 return id;
         for (const auto& entry : buffers_.values())
-            if (!entry.control->prepare(journal_))
+            if (!entry.borrowed && !entry.control->prepare(journal_))
                 return failedEnlistment();
         for (const auto& entry : textures_.values())
             if (entry.normalized ? !entry.normalized->prepare(journal_)
@@ -5786,6 +6320,8 @@ private:
                 content.pending = content.control->cells_->observePending(journal_);
         });
         plan_->cells.visitMutable([&](auto& cell) noexcept {
+            if (cell.borrowed)
+                return;
             if (cell.normalized)
                 cell.texturePending = cell.normalized->observePending(cell.range, journal_);
             else
@@ -5942,6 +6478,8 @@ private:
             return id;
         if (plan_)
             plan_->cells.visitMutable([&](auto& cell) noexcept {
+                if (cell.borrowed)
+                    return;
                 if (cell.normalized)
                     cell.textureCommitted = Texture::Observation{
                         cell.range, cell.texturePending->state(), cell.texturePending->revision()};
@@ -5976,7 +6514,8 @@ private:
         if (status_ == Status::Invalidated)
             return;
         for (const auto& entry : buffers_.values())
-            entry.control->invalidate();
+            if (!entry.borrowed)
+                entry.control->invalidate();
         // Read-only completed inputs were never enlisted for content mutation.
         // Uncertain work invalidates writable content and conservative resource
         // states; original lifetime/loss still invalidates every resource stamp.
@@ -6032,9 +6571,15 @@ private:
 
     const char* preflightPlanWrites() const noexcept
     {
-        for (const auto& entry : buffers_.values())
-            if (!entry.control->canWriteBatch(journal_, writesTo(entry.object->id())))
+        for (const auto& entry : buffers_.values()) {
+            if (entry.borrowed) {
+                if (writesTo(entry.object->id()))
+                    return "RHI-SUBMISSION-READ-EXPLICIT-ACCESS";
+                if (const auto* id = entry.borrowed->diagnostic())
+                    return id;
+            } else if (!entry.control->canWriteBatch(journal_, writesTo(entry.object->id())))
                 return "RHI-ORIGINAL-PLAN-REVISION-ADMISSION";
+        }
         for (const auto& entry : textures_.values()) {
             if (entry.uniform) {
                 if (entry.object->desc().format == TextureFormat::Depth24Stencil8)
@@ -6077,6 +6622,7 @@ private:
             FinalCell cell;
             cell.buffer = e.object;
             cell.scalar = e.control;
+            cell.borrowed = e.borrowed;
             cell.initial = graph_->bufferEntries()[i].observation.state();
             if (const auto* id =
                     Timeline::bufferBefore(*graph_, e.object->id(), commands().size(), cell.final))
@@ -6299,6 +6845,13 @@ private:
 
     const char* validatePlannedFinalCell(const FinalCell& cell) const noexcept
     {
+        if (cell.borrowed) {
+            if (!cell.buffer || cell.buffer->originalStateControl_ != cell.scalar || cell.normalized
+                || cell.scalarPending || cell.scalarCommitted
+                || cell.initial != ResourceState::ShaderRead || cell.final != cell.initial)
+                return "RHI-SUBMISSION-READ-PLAN-CLAIM";
+            return cell.borrowed->diagnostic();
+        }
         if (cell.normalized) {
             if (cell.texture->originalNormalizedState_ != cell.normalized
                 || cell.texture->originalUniformState_)
@@ -6604,6 +7157,8 @@ private:
             return "RHI-ORIGINAL-TRANSACTION-RECORDING-BUDGET";
         if (!quota || budget.maxCpuMetadataBytes != bytes || quota->limitBytes() != bytes)
             return "RHI-ORIGINAL-TRANSACTION-QUOTA";
+        if (graph->overlapsSubmittedReadQuota(quota))
+            return "RHI-SUBMISSION-READ-QUOTA";
         for (const auto& other : {source.originalMetadataQuota(),
                  graph->originalInputs()->originalMetadataQuota(),
                  graph->originalMetadataQuota()})
@@ -6625,13 +7180,14 @@ private:
             return "RHI-ORIGINAL-TRANSACTION-CONTROL-IDENTITY";
         controls = static_cast<std::uint32_t>(identity.identities);
         const auto cpu = graph->originalInputs()->retainedOwnerCount();
-        constexpr std::uint32_t roots = 2u; // Original committed graph plus this root.
-        if (cpu > UINT32_MAX - roots)
+        const std::uint64_t roots = graph->retainedStateRootCount() + 1u;
+        // Original graph plus this root, and the explicitly retained read custody.
+        if (roots > UINT32_MAX || cpu > UINT32_MAX - roots)
             return "RHI-ORIGINAL-STATE-OWNER-CAPACITY";
         std::uint32_t registrations = 0u;
         return OriginalCommandResourceSources::registeredOwnerUnion(
             graph->originalInputs()->originalScalars()->originalUsage()->originalSources(),
-            cpu + roots,
+            static_cast<std::uint32_t>(cpu + roots),
             budget.maxRetainedOwners,
             budget.maxResourceRegistrations,
             owners,

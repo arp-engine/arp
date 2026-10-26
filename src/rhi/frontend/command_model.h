@@ -537,7 +537,7 @@ public:
             || validateGeneralResources(footprintVersion, generalVersion, generalOptIn))
             return false;
         if (footprintVersion == 4u)
-            return inputsVersion == 6u;
+            return inputsVersion == 6u || inputsVersion == 10u;
         if (!generalVersion)
             return inputsVersion == footprintVersion + 2u;
         return (footprintVersion == 2u && (inputsVersion == 3u || inputsVersion == 4u))

@@ -97,22 +97,37 @@ class OriginalTypedNativeLossJoinContract final {
 public:
     static constexpr std::uint32_t registrationVersion = 7u;
     static constexpr std::uint32_t tableRegistrationVersion = 8u;
+    // /3 joins accepted synchronous pipelines and ordinary finite descriptors
+    // to the same native-result loss subscription. It grants no scoped-group,
+    // table, sampler, command or execution authority. /4 separately opts into
+    // the same registry10's synchronous GeneralWrite3/4 complete-group join.
+    static constexpr std::uint32_t synchronousRegistrationVersion = 10u;
 
     static constexpr const char* validate(const OriginalTypedNativeLossJoinRequest& request,
         const OriginalResourceRegistrationBudget& budget) noexcept
     {
-        if (request.contractVersion != 1u && request.contractVersion != 2u)
+        if (request.contractVersion != 1u && request.contractVersion != 2u
+            && request.contractVersion != 3u && request.contractVersion != 4u)
             return "RHI-ORIGINAL-TYPED-LOSS-JOIN-VERSION";
         if (!request.prototypeOptIn)
             return "RHI-ORIGINAL-TYPED-LOSS-JOIN-OPT-IN";
         if (budget.contractVersion
-            != (request.contractVersion == 1u ? registrationVersion : tableRegistrationVersion))
+            != (request.contractVersion == 1u       ? registrationVersion
+                    : request.contractVersion == 2u ? tableRegistrationVersion
+                                                    : synchronousRegistrationVersion))
             return "RHI-ORIGINAL-TYPED-LOSS-REGISTRATION-VERSION";
         if (const auto* id = OriginalResourceRegistrationContract::validateIntent(budget))
             return id;
         if (!budget.maxPipelineLayouts
             || (!budget.maxComputePipelines && !budget.maxGraphicsPipelines))
             return "RHI-ORIGINAL-TYPED-LOSS-PIPELINE-BUDGET";
+        if (request.contractVersion >= 3u
+            && (budget.maxDescriptorTables || budget.samplers.requested()
+                || budget.heaps.requested() || budget.queries.requested()))
+            return "RHI-ORIGINAL-TYPED-LOSS-SYNC-PROFILE";
+        if (request.contractVersion == 4u
+            && (!budget.maxDescriptorArenas || !budget.maxDescriptorSets))
+            return "RHI-ORIGINAL-TYPED-LOSS-SYNC-GROUP-BUDGET";
         if (request.contractVersion == 1u && budget.maxDescriptorTables)
             return "RHI-ORIGINAL-TYPED-LOSS-DESCRIPTOR-TABLE-CLOSED";
         if (request.contractVersion == 2u

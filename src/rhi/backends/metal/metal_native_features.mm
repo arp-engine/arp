@@ -1,5 +1,6 @@
 #include "rhi/backends/metal/metal_native_features.h"
 
+#include "rhi/backends/metal/metal_compute_workgroup_limits.h"
 #include "rhi/backends/metal/metal_native_descriptors.h"
 #include "rhi/backends/metal/metal_native_queries.h"
 #include "rhi/backends/metal/metal_native_resources.h"
@@ -336,8 +337,12 @@ MetalRhiNativeFeatureProbe probeMetalRhiNativeFeatures()
         depthDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
         probe.sampledDepthTexture = [device newTextureWithDescriptor:depthDesc] != nil;
         const MTLSize workgroupSize = device.maxThreadsPerThreadgroup;
-        probe.maxComputeWorkgroupInvocations = static_cast<std::uint32_t>(
-            workgroupSize.width * workgroupSize.height * workgroupSize.depth);
+        // The query describes independent one-dimensional extents for a
+        // trivial shader, not their simultaneous product. Actual pipelines
+        // additionally enforce their own maxTotalThreadsPerThreadgroup.
+        probe.maxComputeWorkgroupInvocations =
+            MetalRhiComputeWorkgroupLimits::deviceInvocationEnvelope(
+                workgroupSize.width, workgroupSize.height, workgroupSize.depth);
         probe.maxComputeWorkgroupSizeX = static_cast<std::uint32_t>(workgroupSize.width);
         probe.maxComputeWorkgroupSizeY = static_cast<std::uint32_t>(workgroupSize.height);
         probe.maxComputeWorkgroupSizeZ = static_cast<std::uint32_t>(workgroupSize.depth);

@@ -39,6 +39,7 @@ struct EditorSceneComponentGizmos {
 ARP_API EditorSceneComponentGizmos buildEditorSceneComponentGizmos(const scene::Scene& scene,
     const resource::ResourceManager& resources,
     float viewportAspect,
-    std::size_t maxSegments);
+    std::size_t maxSegments,
+    const scene::SceneTraversalSnapshot* visibleSnapshot = nullptr);
 
 } // namespace arp::editor

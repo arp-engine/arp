@@ -6,12 +6,15 @@
 #include "core/ownership/mutation_journal.h"
 #include "rhi/backends/metal/metal_native_queries.h"
 #include "rhi/backends/metal/metal_original_command_custody.h"
+#include "rhi/backends/metal/metal_original_queue_acceptance.h"
+#include "rhi/backends/metal/metal_original_submission_domain.h"
 #include "rhi/frontend/bindless_binding_preparation.h"
 #include "rhi/frontend/bindless_recording_validation.h"
 #include "rhi/frontend/bindless_snapshot.h"
 #include "rhi/frontend/command_gpu_indirect_output_sequence.h"
 #include "rhi/frontend/command_graphics_storage_write_sequence.h"
 #include "rhi/frontend/command_indirect_recording_budget.h"
+#include "rhi/frontend/command_render_pass_preparation.h"
 #include "rhi/frontend/command_retention_storage.h"
 #include "rhi/frontend/descriptor_bound_descriptor_slots.h"
 #include "rhi/frontend/memory_shutdown_drain.h"
@@ -29,7 +32,12 @@
 #include <string>
 #include <string_view>
 
+namespace arp::test {
+class MetalCommandCancellationFixture;
+}
+
 namespace arp::rhi_metal {
+class MetalOriginalOrdinaryCommand;
 class MetalOriginalBindlessCommand;
 struct MetalRhiNativeRenderPassPreparation;
 struct MetalRhiNativePreparedComputeBindings;
@@ -105,6 +113,9 @@ struct MetalRhiNativeSharedEventPayload;
 struct MetalRhiNativeSecondaryCommandPayload;
 
 class MetalRhiCompletionState final {
+    friend class MetalRhiNativeCommandPayload;
+    friend class arp::test::MetalCommandCancellationFixture;
+
 public:
     enum class Outcome { Pending, Completed, Failed };
 
@@ -120,10 +131,28 @@ public:
 
     bool isComplete() const { return outcome() != Outcome::Pending; }
 
-    Outcome outcome() const noexcept { return outcome_.load(std::memory_order_acquire); }
+    Outcome outcome() const noexcept
+    {
+        if (const auto domain = domain_.lock())
+            (void)domain->poll();
+        return outcome_.load(std::memory_order_acquire);
+    }
 
     void wait()
     {
+        if (const auto domain = domain_.lock()) {
+            if (const auto* id = domain->poll())
+                throw std::logic_error(id);
+            std::unique_lock lock(mutex_);
+            condition_.wait(lock, [this] {
+                return nativeResultReady_
+                    || outcome_.load(std::memory_order_acquire) != Outcome::Pending;
+            });
+            lock.unlock();
+            if (const auto* id = domain->poll())
+                throw std::logic_error(id);
+            return;
+        }
         std::unique_lock lock(mutex_);
         condition_.wait(lock, [this] {
             return isComplete();
@@ -137,6 +166,17 @@ public:
     }
 
 private:
+    void notifyNativeResult() noexcept
+    {
+        {
+            std::scoped_lock lock(mutex_);
+            nativeResultReady_ = true;
+        }
+        condition_.notify_all();
+    }
+
+    std::weak_ptr<MetalOriginalSubmissionDomain> domain_;
+    bool nativeResultReady_ = false;
     std::atomic<Outcome> outcome_{Outcome::Pending};
     std::mutex mutex_;
     std::condition_variable condition_;
@@ -201,6 +241,8 @@ struct MetalRhiNativeQueueStats {
 };
 
 class MetalRhiNativeCommandPayload : public core::SharedObjectIdentity {
+    friend class MetalOriginalOrdinaryCommand;
+    friend class arp::test::MetalCommandCancellationFixture;
     friend class MetalOriginalBindlessCommand;
     friend class MetalOriginalTextureUploadCommand;
     friend class MetalOriginalBindlessExecutionView;
@@ -214,6 +256,41 @@ class MetalRhiNativeCommandPayload : public core::SharedObjectIdentity {
 
 public:
     std::uint64_t recordingIdentity() const noexcept { return recordingIdentity_; }
+
+    bool prepareOriginalOrdinary(std::shared_ptr<const rhi::OriginalCommandStreamProgram>,
+        const rhi::GpuDevice&,
+        const rhi::OriginalRenderPassPreparationRequest&,
+        core::UniquePtr<core::MutationJournal>&,
+        core::pmr::String&);
+
+    bool hasOriginalOrdinary() const noexcept { return bool(originalOrdinary_); }
+
+    core::MutationJournal* originalOrdinaryJournal() const noexcept;
+    bool acceptOriginalOrdinaryOwnership() const noexcept;
+    std::shared_ptr<const MetalOriginalQueueAcceptance> originalQueueAcceptance() const noexcept;
+    bool recordOriginalOrdinaryScope(rhi::CommandUsageKind,
+        std::uint32_t,
+        const rhi::RenderPassDesc*,
+        core::pmr::String&,
+        std::string_view label = {});
+    bool recordOriginalOrdinaryPipeline(
+        std::uint32_t, const rhi::ComputePipeline&, core::pmr::String&);
+    bool recordOriginalOrdinaryPipeline(
+        std::uint32_t, const rhi::RenderPipeline&, core::pmr::String&);
+    bool recordOriginalOrdinaryDescriptor(std::uint32_t,
+        std::uint32_t,
+        const rhi::DescriptorSet&,
+        const std::uint32_t*,
+        std::uint32_t,
+        core::pmr::String&);
+    bool recordOriginalOrdinaryScalar(
+        std::uint32_t, const rhi::CommandScalarArguments&, core::pmr::String&);
+    bool recordOriginalOrdinaryTransition(
+        std::uint32_t, rhi::GpuBuffer&, const rhi::ResourceBarrierDesc&, core::pmr::String&);
+    bool recordOriginalOrdinaryTransition(
+        std::uint32_t, rhi::GpuTexture&, const rhi::ResourceBarrierDesc&, core::pmr::String&);
+    bool recordOriginalOrdinaryCopy(
+        std::uint32_t, const rhi::TextureToBufferCopyDesc&, core::pmr::String&);
 
     ~MetalRhiNativeCommandPayload()
     {
@@ -485,6 +562,33 @@ public:
     }
 
 private:
+    template <class Action> bool encodeOriginalOrdinary(Action&& action)
+    {
+        const auto previous = originalOrdinaryEncoding_;
+        originalOrdinaryEncoding_ = true;
+        try {
+            const bool result = action();
+            originalOrdinaryEncoding_ = previous;
+            return result;
+        } catch (...) {
+            originalOrdinaryEncoding_ = previous;
+            throw;
+        }
+    }
+
+    bool rejectOriginalOrdinary(std::string_view, core::pmr::String&);
+    bool recordBlitTextureToBufferContents(const rhi::TextureToBufferCopyDesc&, core::pmr::String&);
+    bool recordDescriptorSetBindContents(std::uint32_t,
+        const std::shared_ptr<const MetalRhiNativeDescriptorGroupPayload>&,
+        rhi::ShaderStage,
+        const std::uint32_t*,
+        std::uint32_t,
+        core::pmr::String&,
+        bool originalSynchronous);
+    // Terminal pre-submit cleanup: close native scopes and remove the command
+    // buffer before any custody hook can restore the original journal.
+    void closeUnsubmittedNativeScopes() noexcept;
+
     struct VertexStreamBinding {
         std::shared_ptr<MetalRhiNativeBufferPayload> buffer;
         std::uint64_t offsetBytes = 0u;
@@ -492,7 +596,7 @@ private:
 
     struct CachedArgumentBuffer {
         std::shared_ptr<MetalRhiNativePipelinePayload> pipeline;
-        std::shared_ptr<void> descriptorSnapshot;
+        std::shared_ptr<const void> descriptorSnapshot;
         std::shared_ptr<void> argumentBuffer;
         std::uint32_t set = 0u;
         std::uint32_t binding = 0u;
@@ -517,6 +621,7 @@ private:
     std::shared_ptr<MetalRhiNativeCommandStats> stats_;
     std::shared_ptr<void> nativeDevice_;
     std::shared_ptr<void> nativeQueue_;
+    bool publishOriginalQueueAcceptance() const noexcept;
     // Declared before native buffers: discard destroys native ownership first.
     std::shared_ptr<core::AtomicCapacityLease> commandCapacity_;
     std::shared_ptr<void> nativeCommandBuffer_;
@@ -595,6 +700,8 @@ private:
     core::BoundedRetainer<void> retainedPreparedBindings_;
     class SubmissionRetention;
     std::shared_ptr<SubmissionRetention> submissionRetention_;
+    std::shared_ptr<MetalOriginalSubmissionDomain> submissionDomain_;
+    rhi::OriginalSubmissionCompletionDomain::Ticket submissionTicket_;
     core::UniquePtr<rhi::common::CommandRetentionStorage> recordingRetention_;
     bool usesRecordingRetention_ = false;
     std::optional<rhi::IndirectRecordingBudgetState> ordinaryIndirectRecording_;
@@ -644,6 +751,10 @@ private:
     bool retentionRecordingAllows(
         bool implemented, core::pmr::String& diagnostic, bool indirectAllowed = false) const
     {
+        if (originalOrdinary_ && !originalOrdinaryEncoding_) {
+            diagnostic = "RHI-METAL-ORDINARY-ORIGINAL-COMMAND-REQUIRED";
+            return false;
+        }
         if (originalRecordingClosed_) {
             diagnostic = "RHI-METAL-ROOT-COMMAND-RECORDING-CLOSED";
             return false;
@@ -795,6 +906,8 @@ private:
     bool renderPassLayered_ = false;
     bool preflightOnly_ = false;
     std::shared_ptr<MetalOriginalCommandCustody> originalCommandCustody_;
+    std::shared_ptr<MetalOriginalOrdinaryCommand> originalOrdinary_;
+    bool originalOrdinaryEncoding_ = false;
     bool originalRecordingClosed_ = false;
     // Issued only by the native factory, never by the public constructor.
     std::uint64_t recordingIdentity_ = 0u;

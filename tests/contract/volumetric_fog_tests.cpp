@@ -205,6 +205,16 @@ void smoke(bool spatialAmbient = false)
     assert(device->writeBuffer(*probeConstants, zero.data(), sizeof(zero)).success);
     for (int frame = 0; frame < 20; ++frame) {
         render_graph::FrameGraph graph(*device);
+        // Exercise the same public timing requests as the application, both
+        // with and without instrumentation. Null remains a validator, not
+        // native timing evidence; the Vulkan smoke verifies actual samples.
+        if (frame % 2 == 0) {
+            graph.setGpuTimingPassScopes({{"Fog.Inject", 1u, true},
+                {"Fog.Scatter", 2u, true},
+                {"Fog.Temporal", 3u, true},
+                {"Fog.Integrate", 4u, true},
+                {"Fog.Composite", 5u, false}});
+        }
         auto color = graph.createTransientTexture({"SceneColor",
             {64, 48, 1},
             rhi::TextureFormat::Rgba16Float,

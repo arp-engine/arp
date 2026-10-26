@@ -485,11 +485,15 @@ public:
             diagnostic));
         is(diagnostic, "RHI-CANONICAL-TEXTURE-SOURCE-TARGET-BYTE-CAPACITY");
         for (const auto domain : {3u, 5u, 9u, 10u, 11u, 12u, 13u}) {
+            // Reach the owner-domain check with an exact quota/limit binding;
+            // the packed-payload domain has its own authored byte ceiling.
+            auto overlapping = budget();
+            overlapping.maxCpuMetadataBytes = context.quotas[domain]->limitBytes();
             assert(!Source::prepareOriginal(*context.device,
                 context.binding,
                 context.buffer,
                 *context.loss,
-                budget(),
+                overlapping,
                 context.quotas[domain],
                 diagnostic));
             is(diagnostic, "RHI-CANONICAL-TEXTURE-SOURCE-QUOTA-DOMAIN");
@@ -704,6 +708,7 @@ private:
         for (std::size_t i = 0u; i < data.size(); ++i)
             data[i] = static_cast<std::uint8_t>(i + 1u);
         auto bufferBudget = CanonicalInitializedBufferStagingContractFixture::budget();
+        bufferBudget.maxCpuPayloadBytes = context.quotas[10]->limitBytes();
         auto copySource = Buffer::prepareOriginal(*context.device,
             candidate,
             *context.loss,
@@ -717,6 +722,8 @@ private:
                 context.quotas[5],
                 context.quotas[13]},
             diagnostic);
+        if (!copySource)
+            std::fprintf(stderr, "texture interleaved copy source: %s\n", diagnostic);
         assert(copySource);
         assert(!Buffer::initialize(copySource));
         assert(WebGpuAsyncWaitFixture::until([&] {
@@ -968,8 +975,10 @@ private:
             && source->destinationContentExpectation().contentGeneration() == 0u
             && source->destinationContentExpectation().revision() == expected->revision());
         for (const auto& domain : context.quotas) {
+            auto overlapping = local;
+            overlapping.maxCpuMetadataBytes = domain->limitBytes();
             assert(!Content::prepareOriginal(
-                *context.device, staging, *expected, local, domain, diagnostic));
+                *context.device, staging, *expected, overlapping, domain, diagnostic));
             is(diagnostic, "RHI-CANONICAL-CONTENT-STAGING-QUOTA-DOMAIN");
         }
         assert(!Content::prepareOriginal(

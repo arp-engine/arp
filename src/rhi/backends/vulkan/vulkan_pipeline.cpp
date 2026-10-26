@@ -1,8 +1,11 @@
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
+#include "rhi/backends/vulkan/vulkan_original_compute_pipeline.h"
+#include "rhi/backends/vulkan/vulkan_original_graphics_pipeline.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "rhi/frontend/bindless_snapshot.h"
 #include "rhi/frontend/pipeline_push_constant_abi_identity.h"
+#include "rhi/frontend/pipeline_shader_interface_validation.h"
 #include "rhi/frontend/pipeline_state_copy.h"
 #include "rhi/frontend/pipeline_validation_report_builder.h"
 #include "rhi/gpu_bindless.h"
@@ -198,7 +201,9 @@ private:
 
 rhi::PipelineValidationReport basePipelineReport(const rhi::PipelineLayout* layout,
     const rhi::ShaderPackageDesc* shaderPackage,
-    bool authorizedBindless = false)
+    bool authorizedBindless = false,
+    const std::shared_ptr<const rhi::OriginalGraphicsPipelineInput>& original = {},
+    const std::shared_ptr<const rhi::OriginalSingleEntryPipelineInput>& computeOriginal = {})
 {
     rhi::PipelineValidationReport report;
     report.backend = rhi::Backend::Vulkan;
@@ -221,6 +226,20 @@ rhi::PipelineValidationReport basePipelineReport(const rhi::PipelineLayout* layo
     report.entrypointCount = static_cast<std::uint32_t>(shaderPackage->entrypoints.size());
     report.descriptorBindingCount = descriptorBindingCount(layout->desc());
 
+    if (original) {
+        if (const auto* id =
+                rhi::OriginalGraphicsPipelineInput::packageDiagnostic(original, *shaderPackage)) {
+            report.diagnostics = id;
+            return report;
+        }
+    }
+    if (computeOriginal) {
+        if (const auto* id = rhi::OriginalSingleEntryPipelineInput::packageDiagnostic(
+                computeOriginal, *shaderPackage)) {
+            report.diagnostics = id;
+            return report;
+        }
+    }
     const auto shaderValidation = authorizedBindless
         ? rhi::validateAuthorizedBindlessShaderPackage(*shaderPackage)
         : rhi::validateShaderPackage(*shaderPackage);
@@ -230,7 +249,7 @@ rhi::PipelineValidationReport basePipelineReport(const rhi::PipelineLayout* layo
     }
     report.shaderPackageValidated = true;
 
-    if (!authorizedBindless) {
+    if (!authorizedBindless && !original && !computeOriginal) {
         const auto artifactValidation = validateVulkanReflectionArtifact(*shaderPackage);
         if (!artifactValidation.success) {
             report.diagnostics = artifactValidation.diagnostics;
@@ -457,6 +476,196 @@ rhi::PipelineValidationReport validateVulkanRhiRenderPipeline(const rhi::RenderP
     }
     report.success = true;
     return report;
+}
+
+rhi::PipelineValidationReport validateVulkanOriginalGraphicsDefinition(
+    const std::shared_ptr<const rhi::OriginalGraphicsPipelineInput>& input,
+    const rhi::RenderPipelineDesc& desc)
+{
+    rhi::PipelineValidationReport failed;
+    failed.backend = rhi::Backend::Vulkan;
+    if (const auto* id = rhi::OriginalGraphicsPipelineInput::validateOriginal(input)) {
+        failed.diagnostics = id;
+        return failed;
+    }
+    if (const auto* id = rhi::OriginalSynchronousGraphicsCreationContract::validateProfile(desc)) {
+        failed.diagnostics = id;
+        return failed;
+    }
+    using Declaration = rhi::PipelineShaderDeclarationContract;
+    if (const auto* id = Declaration::validateOriginal(input,
+            desc.layout->desc(),
+            *desc.shaderPackage,
+            2u,
+            Declaration::Kind::GraphicsPipeline,
+            [&](std::size_t index) -> const rhi::ShaderEntrypoint& {
+                return index ? desc.fragmentShader : desc.vertexShader;
+            })) {
+        failed.diagnostics = id;
+        return failed;
+    }
+    auto report = basePipelineReport(desc.layout, desc.shaderPackage, false, input);
+    const auto state = rhi::validateRenderPipelineState(desc);
+    rhi::PipelineValidationReportBuilder::validatedGraphicsState(report, state);
+    if (!report.diagnostics.empty())
+        return report;
+    if (!state.success) {
+        report.diagnostics = state.diagnostics;
+        return report;
+    }
+    report.success = true;
+    return report;
+}
+
+core::UniquePtr<rhi::RenderPipeline> VulkanAcceptedOriginalGraphicsPipelineFactory::create(
+    const rhi::RenderPipelineDesc& desc,
+    const std::shared_ptr<const rhi::OriginalGraphicsPipelineCreation>& creation,
+    const std::shared_ptr<core::CpuMemoryQuota>& wrapperQuota,
+    const VulkanRhiRuntime* runtime,
+    const char*& diagnostic)
+{
+    diagnostic = rhi::OriginalGraphicsPipelineCreation::validateOriginal(creation);
+    if (diagnostic)
+        return {};
+    const auto* receipt =
+        dynamic_cast<const VulkanOriginalArtifactGraphicsCreation*>(creation.get());
+    if (!receipt || !runtime || receipt->runtime_.get() != runtime) {
+        diagnostic = "RHI-ACCEPTED-GRAPHICS-FACTORY-NATIVE-DEVICE";
+        return {};
+    }
+    if (!rhi::PipelineDefinitionIdentity::matches(desc, receipt->definition())) {
+        diagnostic = "RHI-ACCEPTED-GRAPHICS-FACTORY-DEFINITION";
+        return {};
+    }
+    if (!wrapperQuota || receipt->usesCpuQuotaDomain(wrapperQuota)) {
+        diagnostic = "RHI-ACCEPTED-GRAPHICS-FACTORY-QUOTA-DOMAIN";
+        return {};
+    }
+    core::CpuMemoryQuotaScope scope(wrapperQuota);
+    auto report = validateVulkanOriginalGraphicsDefinition(receipt->originalInput(), desc);
+    if (!report.success) {
+        diagnostic = "RHI-ACCEPTED-GRAPHICS-FACTORY-INTERFACE";
+        return {};
+    }
+    auto wrapper = core::makeUnique<VulkanRhiRenderPipeline>(desc.layout,
+        rhi::ShaderReflectionStateCopy::copy(desc.shaderPackage->reflection),
+        std::move(report),
+        receipt->payload_,
+        nullptr,
+        nullptr,
+        rhi::ShaderStage::None,
+        desc.topology,
+        rhi::OriginalBindlessGraphicsPassContract::capturePipeline(desc),
+        desc,
+        rhi::BindlessGraphicsPipelineEntries{});
+    const auto& limits = runtime->nativeLimits();
+    if (limits.minUniformBufferOffsetAlignment > UINT32_MAX
+        || limits.minStorageBufferOffsetAlignment > UINT32_MAX) {
+        diagnostic = "RHI-ACCEPTED-GRAPHICS-FACTORY-DESCRIPTOR-LIMITS";
+        return {};
+    }
+    wrapper->originalDescriptorBufferLimits_ = {1u,
+        static_cast<std::uint32_t>(limits.minUniformBufferOffsetAlignment),
+        static_cast<std::uint32_t>(limits.minStorageBufferOffsetAlignment),
+        limits.maxUniformBufferRange,
+        limits.maxStorageBufferRange};
+    if ((diagnostic = rhi::OriginalDescriptorBufferBindingContract::validateLimits(
+             wrapper->originalDescriptorBufferLimits_)))
+        return {};
+    wrapper->acceptedGraphicsWrapperCreation_ = creation;
+    return wrapper;
+}
+
+rhi::PipelineValidationReport validateVulkanOriginalComputeDefinition(
+    const std::shared_ptr<const rhi::OriginalSingleEntryPipelineInput>& input,
+    const rhi::ComputePipelineDesc& desc)
+{
+    rhi::PipelineValidationReport failed;
+    failed.backend = rhi::Backend::Vulkan;
+    if (const auto* id = rhi::OriginalSingleEntryPipelineInput::validateOriginal(input)) {
+        failed.diagnostics = id;
+        return failed;
+    }
+    if (const auto* id = rhi::OriginalSynchronousComputeCreationContract::validateProfile(desc)) {
+        failed.diagnostics = id;
+        return failed;
+    }
+    using Declaration = rhi::PipelineShaderDeclarationContract;
+    if (const auto* id = Declaration::validateOriginal(input,
+            desc.layout->desc(),
+            *desc.shaderPackage,
+            1u,
+            Declaration::Kind::ComputePipeline,
+            [&](std::size_t) -> const rhi::ShaderEntrypoint& {
+                return desc.computeShader;
+            })) {
+        failed.diagnostics = id;
+        return failed;
+    }
+    auto report = basePipelineReport(desc.layout, desc.shaderPackage, false, {}, input);
+    if (!report.diagnostics.empty())
+        return report;
+    report.pipelineCacheKey = rhi::stableShaderPackageHash(*desc.shaderPackage);
+    report.pipelineCacheKeyStable = report.pipelineCacheKey != 0u;
+    report.selectedComputeWorkgroupSizeX = desc.computeShader.computeWorkgroupSizeX;
+    report.selectedComputeWorkgroupSizeY = desc.computeShader.computeWorkgroupSizeY;
+    report.selectedComputeWorkgroupSizeZ = desc.computeShader.computeWorkgroupSizeZ;
+    report.success = true;
+    return report;
+}
+
+core::UniquePtr<rhi::ComputePipeline> VulkanAcceptedOriginalComputePipelineFactory::create(
+    const rhi::ComputePipelineDesc& desc,
+    const std::shared_ptr<const rhi::OriginalComputePipelineCreation>& creation,
+    const std::shared_ptr<core::CpuMemoryQuota>& wrapperQuota,
+    const VulkanRhiRuntime* runtime,
+    const char*& diagnostic)
+{
+    diagnostic = rhi::OriginalComputePipelineCreation::validateOriginal(creation);
+    if (diagnostic)
+        return {};
+    const auto* receipt =
+        dynamic_cast<const VulkanOriginalArtifactComputeCreation*>(creation.get());
+    if (!receipt || !runtime || receipt->runtime_.get() != runtime) {
+        diagnostic = "RHI-ACCEPTED-COMPUTE-FACTORY-NATIVE-DEVICE";
+        return {};
+    }
+    if (!rhi::PipelineDefinitionIdentity::matches(desc, receipt->definition())) {
+        diagnostic = "RHI-ACCEPTED-COMPUTE-FACTORY-DEFINITION";
+        return {};
+    }
+    if (!wrapperQuota || receipt->usesCpuQuotaDomain(wrapperQuota)) {
+        diagnostic = "RHI-ACCEPTED-COMPUTE-FACTORY-QUOTA-DOMAIN";
+        return {};
+    }
+    core::CpuMemoryQuotaScope scope(wrapperQuota);
+    auto report = validateVulkanOriginalComputeDefinition(receipt->originalInput(), desc);
+    if (!report.success) {
+        diagnostic = "RHI-ACCEPTED-COMPUTE-FACTORY-INTERFACE";
+        return {};
+    }
+    auto wrapper = core::makeUnique<VulkanRhiComputePipeline>(desc.layout,
+        rhi::ShaderReflectionStateCopy::copy(desc.shaderPackage->reflection),
+        std::move(report),
+        receipt->payload_,
+        nullptr,
+        nullptr);
+    const auto& limits = runtime->nativeLimits();
+    if (limits.minUniformBufferOffsetAlignment > UINT32_MAX
+        || limits.minStorageBufferOffsetAlignment > UINT32_MAX) {
+        diagnostic = "RHI-ACCEPTED-COMPUTE-FACTORY-DESCRIPTOR-LIMITS";
+        return {};
+    }
+    wrapper->originalDescriptorBufferLimits_ = {1u,
+        static_cast<std::uint32_t>(limits.minUniformBufferOffsetAlignment),
+        static_cast<std::uint32_t>(limits.minStorageBufferOffsetAlignment),
+        limits.maxUniformBufferRange,
+        limits.maxStorageBufferRange};
+    if ((diagnostic = rhi::OriginalDescriptorBufferBindingContract::validateLimits(
+             wrapper->originalDescriptorBufferLimits_)))
+        return {};
+    wrapper->acceptedComputeWrapperCreation_ = creation;
+    return wrapper;
 }
 
 rhi::PipelineValidationReport validateVulkanRhiComputePipeline(const rhi::ComputePipelineDesc& desc)

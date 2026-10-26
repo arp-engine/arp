@@ -33,10 +33,21 @@ struct alignas(16) CloudGpuSample {
     core::Vec4 metadata;
 };
 
+// CloudReconstruction/1 uses a separate binding. CloudGpuConstants/1 remains
+// 368 bytes for existing raymarch, temporal and composite artifacts.
+struct alignas(16) CloudReconstructionGpuConstants {
+    std::uint32_t contractVersion = 0u;
+    float maxRadianceRange = 0.f, maxTransmittanceRange = 0.f;
+    std::uint32_t reserved = 0u;
+};
+
 static_assert(sizeof(CloudGpuConstants) == 368u);
 static_assert(offsetof(CloudGpuConstants, cameraTime) == 128u);
 static_assert(offsetof(CloudGpuConstants, dimensions) == 272u);
 static_assert(offsetof(CloudGpuConstants, jitter) == 352u);
 static_assert(sizeof(CloudGpuSample) == 32u);
+static_assert(sizeof(CloudReconstructionGpuConstants) == 16u);
+static_assert(offsetof(CloudReconstructionGpuConstants, maxRadianceRange) == 4u);
+static_assert(offsetof(CloudReconstructionGpuConstants, maxTransmittanceRange) == 8u);
 
 } // namespace arp::renderer::cloud

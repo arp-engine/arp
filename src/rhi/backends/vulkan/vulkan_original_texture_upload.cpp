@@ -9,6 +9,30 @@ namespace arp::rhi_vulkan {
 using namespace rhi;
 using Contract = OriginalTextureUploadStagingContract;
 
+const char* VulkanOriginalTextureUploadStaging::inspectDestination(
+    const std::shared_ptr<const OriginalCommandTextureUploadPackingSource>& packing,
+    GpuDevice& device,
+    const VulkanRhiRuntime& runtime) noexcept
+{
+    if (const auto* id = OriginalCommandTextureUploadPackingSource::validateOriginal(packing))
+        return id;
+    const auto* texture = packing->originalDestinationLease()->originalObject();
+    if (const auto* id = device.validateOriginalResourceRegistration(*texture))
+        return id;
+    auto* extension = dynamic_cast<VulkanBindlessCrossExtension*>(
+        static_cast<BindlessCrossExtension*>(device.queryInterface(kExtensionBindlessCross)));
+    if (device.backend() != Backend::Vulkan || !extension || !extension->nativeResources_
+        || extension->runtime_ != &runtime
+        || extension->nativeResources_->runtime().get() != &runtime || !runtime.valid()
+        || runtime.syntheticRuntime())
+        return "RHI-VULKAN-TEXTURE-STAGING-DEVICE";
+    const auto image = vulkanRhiNativePayload(*texture);
+    return image && image->backendVulkanImageHandle()
+            && image->backendVulkanDeviceHandle() == runtime.logicalDevice()
+        ? nullptr
+        : "RHI-VULKAN-TEXTURE-STAGING-DEVICE";
+}
+
 VulkanOriginalTextureUploadStaging::VulkanOriginalTextureUploadStaging(ConstructionKey,
     std::shared_ptr<const OriginalCommandTextureUploadPackingSource> packing,
     std::shared_ptr<const OriginalCommandBufferLease> staging,
@@ -89,11 +113,11 @@ VulkanOriginalTextureUploadStaging::prepareOriginal(
     if (!extension || !extension->runtime_ || !extension->nativeResources_)
         return reject("RHI-VULKAN-TEXTURE-STAGING-DEVICE");
     auto runtime = extension->nativeResources_->runtime();
-    auto image = vulkanRhiNativePayload(*texture);
-    if (!runtime || runtime.get() != extension->runtime_ || !runtime->valid()
-        || runtime->syntheticRuntime() || !image || !image->backendVulkanImageHandle()
-        || image->backendVulkanDeviceHandle() != runtime->logicalDevice())
+    if (!runtime)
         return reject("RHI-VULKAN-TEXTURE-STAGING-DEVICE");
+    if (const auto* id = inspectDestination(packing, device, *runtime))
+        return reject(id);
+    auto image = vulkanRhiNativePayload(*texture);
     try {
         core::UniquePtr<GpuBuffer> object;
         {

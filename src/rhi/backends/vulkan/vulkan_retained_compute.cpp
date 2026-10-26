@@ -81,7 +81,26 @@ bool VulkanRhiRetainedCommand::dispatch(
         || (request.pushConstantBytes && !runtime->getDeviceProcAddr("vkCmdPushConstants")))
         return reject("RHI-VULKAN-RETENTION-COMPUTE-ENTRYPOINT");
 
-    if (!retainBindings(bindings, nativePipeline, diagnostic))
+    rhi::CommandRecordingUsage charge;
+    charge.append(rhi::CommandUsageKind::BindComputePipeline);
+    charge.append(rhi::CommandUsageKind::BindComputeDescriptor, request.sets.size());
+    charge.append(rhi::CommandUsageKind::Dispatch);
+    if (request.pushConstantBytes) {
+        const auto scalar =
+            rhi::CommandScalarArguments::capture(rhi::CommandUsageKind::PushConstants,
+                rhi::CommandScalarArguments::Push{
+                    rhi::ShaderStage::Compute, 0u, request.pushConstantBytes});
+        if (!scalar)
+            return reject("RHI-COMMAND-RECORDING-BUDGET-SCALAR");
+        if (const auto* id = charge.appendArguments(
+                {*scalar, {}, nullptr, 0u, request.pushConstants, request.pushConstantBytes}))
+            return reject(id);
+    }
+    if (!chargeBindings(charge, bindings, diagnostic)
+        || !preflightRecordingCharge(charge, diagnostic))
+        return false;
+    if (!retainBindings(bindings, nativePipeline, diagnostic)
+        || !commitRecordingCharge(charge, diagnostic))
         return false;
     if (!command_->recordComputePipelineBind(*nativePipeline, diagnostic)) {
         failed_ = true;

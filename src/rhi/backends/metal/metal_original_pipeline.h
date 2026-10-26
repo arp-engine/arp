@@ -13,6 +13,20 @@ struct MetalRhiNativePipelinePayload;
 class MetalOriginalPipeline final {
 public:
     using Budget = rhi::OriginalSynchronousPipelineCreationContract::Budget;
+    // Shared backend construction after immutable definition validation. This
+    // returns native ownership only, never an accepted L2 creation receipt.
+    static std::shared_ptr<MetalRhiNativePipelinePayload> createValidatedComputePayload(
+        const rhi::ComputePipelineDesc&,
+        const std::shared_ptr<const rhi::OriginalSingleEntryPipelineInput>&,
+        const rhi::PipelineValidationReport&,
+        const std::shared_ptr<core::CpuMemoryQuota>&,
+        const char*&);
+    static std::shared_ptr<MetalRhiNativePipelinePayload> createValidatedGraphicsPayload(
+        const rhi::RenderPipelineDesc&,
+        const std::shared_ptr<const rhi::OriginalGraphicsPipelineInput>&,
+        const rhi::PipelineValidationReport&,
+        const std::shared_ptr<core::CpuMemoryQuota>&,
+        const char*&);
     static rhi::PipelineValidationReport validate(const rhi::RenderPipelineDesc&,
         const std::shared_ptr<const rhi::OriginalGraphicsPipelineInput>&,
         const rhi::semantics::NativeBackendCapabilityContract&);

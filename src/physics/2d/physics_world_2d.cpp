@@ -14,6 +14,7 @@
 namespace arp::physics2d {
 namespace {
 std::atomic<std::uint64_t> bytes{0}, peak{0};
+std::atomic<std::uint64_t> allocations{0};
 
 void* allocateBox(unsigned size, int alignment)
 {
@@ -26,6 +27,7 @@ void* allocateBox(unsigned size, int alignment)
         std::abort();
     }
     auto live = bytes.fetch_add(size) + size;
+    allocations.fetch_add(1);
     auto high = peak.load();
     while (high < live && !peak.compare_exchange_weak(high, live)) {
     }
@@ -82,6 +84,88 @@ bool nativeBodyType(BodyType type, b2BodyType& result)
     return false;
 }
 } // namespace
+
+ComponentUsage requireComponentUsage(ComponentUsage usage)
+{
+    if (usage != ComponentUsage::Simulation && usage != ComponentUsage::Authoring)
+        throw std::invalid_argument("ARP-PHYSICS2D-COMPONENT-USAGE");
+    return usage;
+}
+
+const char* validateBodyDesc(const BodyDesc& d) noexcept
+{
+    if (!finite(d.position) || !finite(d.velocity) || !std::isfinite(d.angle)
+        || !std::isfinite(d.angularVelocity) || !std::isfinite(d.gravityScale)
+        || !std::isfinite(d.linearDamping) || d.linearDamping < 0
+        || !std::isfinite(d.angularDamping) || d.angularDamping < 0)
+        return "ARP-PHYSICS2D-BODY-CONFIG";
+    b2BodyType type{};
+    return nativeBodyType(d.type, type) ? nullptr : "ARP-PHYSICS2D-BODY-TYPE";
+}
+
+const char* validateShapeDesc(const ShapeDesc& d, std::uint32_t maxChainPoints, bool query) noexcept
+{
+    const char* diagnostic = nullptr;
+    const auto fail = [&](const char* value) {
+        diagnostic = value;
+        return false;
+    };
+    const auto check = [&]() -> bool {
+        if (!finite(d.center) || !finite(d.halfSize) || !finite(d.pointA) || !finite(d.pointB)
+            || !std::isfinite(d.radius) || d.radius < 0 || !std::isfinite(d.density)
+            || d.density < 0 || !std::isfinite(d.friction) || d.friction < 0
+            || !std::isfinite(d.restitution) || d.restitution < 0 || d.restitution > 1)
+            return fail("ARP-PHYSICS2D-SHAPE-NONFINITE");
+        switch (d.type) {
+        case ShapeType::Circle:
+            return d.radius > 0 || fail("ARP-PHYSICS2D-CIRCLE-RADIUS");
+        case ShapeType::Capsule:
+            return (d.radius > 0 && core::dot(d.pointA - d.pointB, d.pointA - d.pointB) > 0)
+                || fail("ARP-PHYSICS2D-CAPSULE");
+        case ShapeType::Box:
+            return (d.halfSize.x > 0 && d.halfSize.y > 0) || fail("ARP-PHYSICS2D-BOX-EXTENT");
+        case ShapeType::Convex:
+            if (d.points.size() < 3 || d.points.size() > B2_MAX_POLYGON_VERTICES)
+                return fail("ARP-PHYSICS2D-CONVEX-COUNT");
+            return core::strictlyConvexCcw(d.points) || fail("ARP-PHYSICS2D-CONVEX-WINDING");
+        case ShapeType::StaticChain:
+            if (query || d.sensor || d.points.size() < 4 || d.points.size() > maxChainPoints)
+                return fail("ARP-PHYSICS2D-CHAIN-CONTRACT");
+            // 3.1.1 chain spacing requirement: > B2_LINEAR_SLOP (0.005 metres).
+            return core::simplePolyline(d.points, d.loop, .005f)
+                || fail("ARP-PHYSICS2D-CHAIN-GEOMETRY");
+        }
+        return fail("ARP-PHYSICS2D-SHAPE-TYPE");
+    };
+    if (!check())
+        return diagnostic;
+    if (d.type == ShapeType::Convex) {
+        std::array<b2Vec2, B2_MAX_POLYGON_VERTICES> points{};
+        for (std::size_t i = 0; i < d.points.size(); ++i)
+            points[i] = native(d.points[i]);
+        const auto hull = b2ComputeHull(points.data(), int(d.points.size()));
+        if (hull.count != int(d.points.size()))
+            return "ARP-PHYSICS2D-CONVEX-HULL-CHANGED";
+    }
+    return nullptr;
+}
+
+const char* validateJointDesc(const JointDesc& d) noexcept
+{
+    if (d.type != JointType::Distance && d.type != JointType::Revolute
+        && d.type != JointType::Prismatic)
+        return "ARP-PHYSICS2D-JOINT-TYPE";
+    if (!finite(d.localAnchorA) || !finite(d.localAnchorB) || !finite(d.localAxisA)
+        || !std::isfinite(d.length) || d.length <= 0 || !std::isfinite(d.referenceAngle)
+        || !std::isfinite(d.lowerLimit) || !std::isfinite(d.upperLimit)
+        || d.lowerLimit > d.upperLimit || !std::isfinite(d.motorSpeed)
+        || !std::isfinite(d.maxMotorForce) || d.maxMotorForce < 0)
+        return "ARP-PHYSICS2D-JOINT-CONFIG";
+    if (d.type == JointType::Prismatic
+        && std::abs(core::dot(d.localAxisA, d.localAxisA) - 1) > 1e-5f)
+        return "ARP-PHYSICS2D-JOINT-AXIS";
+    return nullptr;
+}
 
 struct PhysicsWorld2D::Impl {
     struct Body {
@@ -197,31 +281,8 @@ struct PhysicsWorld2D::Impl {
 
     bool shapeValid(const ShapeDesc& d, bool query = false)
     {
-        if (!finite(d.center) || !finite(d.halfSize) || !finite(d.pointA) || !finite(d.pointB)
-            || !std::isfinite(d.radius) || d.radius < 0 || !std::isfinite(d.density)
-            || d.density < 0 || !std::isfinite(d.friction) || d.friction < 0
-            || !std::isfinite(d.restitution) || d.restitution < 0 || d.restitution > 1)
-            return fail("ARP-PHYSICS2D-SHAPE-NONFINITE");
-        switch (d.type) {
-        case ShapeType::Circle:
-            return d.radius > 0 || fail("ARP-PHYSICS2D-CIRCLE-RADIUS");
-        case ShapeType::Capsule:
-            return (d.radius > 0 && core::dot(d.pointA - d.pointB, d.pointA - d.pointB) > 0)
-                || fail("ARP-PHYSICS2D-CAPSULE");
-        case ShapeType::Box:
-            return (d.halfSize.x > 0 && d.halfSize.y > 0) || fail("ARP-PHYSICS2D-BOX-EXTENT");
-        case ShapeType::Convex:
-            if (d.points.size() < 3 || d.points.size() > B2_MAX_POLYGON_VERTICES)
-                return fail("ARP-PHYSICS2D-CONVEX-COUNT");
-            return core::strictlyConvexCcw(d.points) || fail("ARP-PHYSICS2D-CONVEX-WINDING");
-        case ShapeType::StaticChain:
-            if (query || d.sensor || d.points.size() < 4 || d.points.size() > config.maxChainPoints)
-                return fail("ARP-PHYSICS2D-CHAIN-CONTRACT");
-            // 3.1.1 chain spacing requirement: > B2_LINEAR_SLOP (0.005 metres).
-            return core::simplePolyline(d.points, d.loop, .005f)
-                || fail("ARP-PHYSICS2D-CHAIN-GEOMETRY");
-        }
-        return fail("ARP-PHYSICS2D-SHAPE-TYPE");
+        const auto* diagnostic = validateShapeDesc(d, config.maxChainPoints, query);
+        return !diagnostic || fail(diagnostic);
     }
 
     b2ShapeProxy proxy(const ShapeDesc& d, core::Vec2 position, float angle)
@@ -362,23 +423,23 @@ const char* PhysicsWorld2D::diagnostic() const
     return impl_->diagnostic;
 }
 
+std::uint32_t PhysicsWorld2D::chainPointCapacity() const
+{
+    return impl_->config.maxChainPoints;
+}
+
 BodyHandle PhysicsWorld2D::createBody(const BodyDesc& d)
 {
     auto& p = *impl_;
     if (!p.ready())
         return {};
-    if (!finite(d.position) || !finite(d.velocity) || !std::isfinite(d.angle)
-        || !std::isfinite(d.angularVelocity) || !std::isfinite(d.gravityScale)
-        || !std::isfinite(d.linearDamping) || d.linearDamping < 0
-        || !std::isfinite(d.angularDamping) || d.angularDamping < 0) {
-        p.fail("ARP-PHYSICS2D-BODY-CONFIG");
+    if (const auto* diagnostic = validateBodyDesc(d)) {
+        p.fail(diagnostic);
         return {};
     }
     b2BodyType type{};
-    if (!nativeBodyType(d.type, type)) {
-        p.fail("ARP-PHYSICS2D-BODY-TYPE");
+    if (!nativeBodyType(d.type, type))
         return {};
-    }
     auto h = p.bodies.emplace(Impl::Body{{}, d.type, d.objectId});
     if (!h) {
         p.fail("ARP-PHYSICS2D-BODY-CAPACITY");
@@ -528,17 +589,12 @@ JointHandle PhysicsWorld2D::createJoint(const JointDesc& d)
         return {};
     auto* a = p.bodies.get(d.bodyA);
     auto* b = p.bodies.get(d.bodyB);
-    if (!a || !b || d.bodyA == d.bodyB || !finite(d.localAnchorA) || !finite(d.localAnchorB)
-        || !finite(d.localAxisA) || !std::isfinite(d.length) || d.length <= 0
-        || !std::isfinite(d.referenceAngle) || !std::isfinite(d.lowerLimit)
-        || !std::isfinite(d.upperLimit) || d.lowerLimit > d.upperLimit
-        || !std::isfinite(d.motorSpeed) || !std::isfinite(d.maxMotorForce) || d.maxMotorForce < 0) {
+    if (!a || !b || d.bodyA == d.bodyB) {
         p.fail("ARP-PHYSICS2D-JOINT-CONFIG");
         return {};
     }
-    if (d.type == JointType::Prismatic
-        && std::abs(core::dot(d.localAxisA, d.localAxisA) - 1) > 1e-5f) {
-        p.fail("ARP-PHYSICS2D-JOINT-AXIS");
+    if (const auto* diagnostic = validateJointDesc(d)) {
+        p.fail(diagnostic);
         return {};
     }
     auto h = p.joints.emplace(Impl::Joint{{}, d.bodyA, d.bodyB});
@@ -671,10 +727,10 @@ bool PhysicsWorld2D::updateBodyProperties(BodyHandle handle, const BodyDesc& des
         return false;
     auto* body = p.bodies.get(handle);
     b2BodyType type{};
-    if (!body || !finite(desc.velocity) || !std::isfinite(desc.angularVelocity)
-        || !std::isfinite(desc.gravityScale) || !std::isfinite(desc.linearDamping)
-        || desc.linearDamping < 0 || !std::isfinite(desc.angularDamping) || desc.angularDamping < 0
-        || !nativeBodyType(desc.type, type))
+    auto properties = desc;
+    properties.position = {};
+    properties.angle = 0;
+    if (!body || validateBodyDesc(properties) || !nativeBodyType(desc.type, type))
         return p.fail("ARP-PHYSICS2D-BODY-PROPERTIES");
 
     // All fallible validation happens before the first native mutation. These
@@ -856,6 +912,7 @@ PhysicsTelemetry PhysicsWorld2D::telemetry() const
         impl_->joints.liveCount(),
         impl_->ticks,
         bytes.load(),
-        peak.load()};
+        peak.load(),
+        allocations.load()};
 }
 } // namespace arp::physics2d

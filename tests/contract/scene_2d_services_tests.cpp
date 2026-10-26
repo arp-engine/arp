@@ -1,7 +1,7 @@
 #include "2d/sprite_animator.h"
 #include "core/diagnostics/frame_time_statistics.h"
-#include "scene/time/game_clock.h"
-#include "scene/time/tween.h"
+#include "core/time/game_clock.h"
+#include "core/time/tween.h"
 #include "tests/fixtures/scene_2d_fixture.h"
 
 int main()

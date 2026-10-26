@@ -7,6 +7,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <string>
 #include <thread>
 
@@ -201,15 +202,17 @@ arp::resource::ResourceGraphRequest validGraphRequest()
 
 void registerResourceTypes()
 {
+    // Legacy envelopes still require an explicit serialized schema.
+    constexpr auto serialized = static_cast<std::uint8_t>(PropertyHint::Serialize);
     registration::class_<TestTextureResource>("TestTextureResource")
         .construct<>()
-        .property("path", &TestTextureResource::path);
+        .property("path", &TestTextureResource::path, {}, serialized);
 
     registration::class_<TestMaterialResource>("TestMaterialResource")
         .construct<>()
-        .property("name", &TestMaterialResource::name)
-        .property("baseColorTexture", &TestMaterialResource::baseColorTexture)
-        .property("roughness", &TestMaterialResource::roughness);
+        .property("name", &TestMaterialResource::name, {}, serialized)
+        .property("baseColorTexture", &TestMaterialResource::baseColorTexture, {}, serialized)
+        .property("roughness", &TestMaterialResource::roughness, {}, serialized);
 }
 
 void assertContains(const arp::core::pmr::String& haystack, const char* needle)
@@ -474,6 +477,8 @@ int main()
 
         auto load =
             arp::resource::compatibility::loadFromEnvelope(manager, validMaterialEnvelope());
+        if (!load.success)
+            std::fprintf(stderr, "legacy material fixture: %s\n", load.diagnostics.c_str());
         assert(load.success);
         assert(load.state == arp::resource::ResourceState::Ready);
         assert(load.resourceId == text(kMaterialId));

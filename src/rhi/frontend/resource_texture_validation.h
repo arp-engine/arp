@@ -12,6 +12,16 @@
 
 // region original_texture_content_creation
 namespace arp::rhi {
+// Independent ordinary attachment issuer. This identifier is not a bindless
+// content-plan version and grants no authority without the ordinary recording
+// contract, exact original Program and its native owner's sole journal.
+class OriginalOrdinaryAttachmentContentContract final {
+public:
+    static constexpr std::uint32_t mutationVersion = 20u;
+
+    static constexpr bool matchesControl(std::uint32_t control) noexcept { return control == 4u; }
+};
+
 // ContentCreation1 is whole-texture upload; ContentCreation2 is a fixed-cell
 // attachment domain. ContentCreation3 is native whole-texture creation from
 // Undefined, with a separate physical allocation ceiling. Creation never grants
@@ -62,7 +72,9 @@ public:
         return (control == 2u && (plan == 2u || plan == 3u || plan == 6u))
             || (isBindlessCellCreation(control) && plan == 9u) || (control == 4u && plan == 18u)
             || (control == 5u && plan == 19u) || (control == 6u && (plan == 13u || plan == 15u))
-            || (control == 7u && (plan == 14u || plan == 16u));
+            || (control == 7u && (plan == 14u || plan == 16u))
+            || (OriginalOrdinaryAttachmentContentContract::matchesControl(control)
+                && plan == OriginalOrdinaryAttachmentContentContract::mutationVersion);
     }
     enum class Disposition { ValidatorOnly, Prototype, DiagnosticFailure };
 

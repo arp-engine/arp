@@ -434,4 +434,59 @@ const char* SpirvBufferDeclarationLayoutVerifier::verifyWithPushConstants(const 
         return "SHADER-BUFFER-TYPE-ALLOCATION";
     }
 }
+
+const char* SpirvBufferDeclarationLayoutVerifier::inspectReadOnlyStorage(
+    const void* bytes, std::size_t count, const SpirvBufferDeclarationLayout& facts) noexcept
+{
+    const SpirvInstructionView view(bytes, count);
+    if (const auto* id = view.diagnostic())
+        return id;
+    constexpr auto failure = "SHADER-SPIRV-BUFFER-READ-ONLY-DECLARATION";
+    using S = SpirvInstructionView::DecorationStatus;
+    SpirvInstructionView::Instruction variable, pointer, block;
+    if (facts.storageClass != 12u || facts.descriptorCount != 1u
+        || !view.definition(
+            facts.spirvId,
+            [](const auto& i) {
+                return i.opcode() == 59u ? 1 : -1;
+            },
+            variable)
+        || variable.operands() != 3u || variable.operand(2) != facts.storageClass
+        || !view.definition(
+            variable.operand(0),
+            [](const auto& i) {
+                return i.opcode() == 32u ? 0 : -1;
+            },
+            pointer)
+        || pointer.operands() != 3u || pointer.operand(1) != facts.storageClass
+        || pointer.operand(2) != facts.blockTypeId
+        || !view.definition(
+            facts.blockTypeId,
+            [](const auto& i) {
+                return i.opcode() == 30u ? 0 : -1;
+            },
+            block)
+        || block.operands() < 2u)
+        return failure;
+    std::uint32_t value = 0u;
+    if (!view.decoration(facts.spirvId, 33u, value) || value != facts.binding
+        || !view.decoration(facts.spirvId, 34u, value) || value != facts.set)
+        return failure;
+    bool whole = false, allMembers = true;
+    for (const auto id : {facts.spirvId, facts.blockTypeId}) {
+        const auto writable = view.decorationStatus(id, 24u, value, true);
+        const auto readable = view.decorationStatus(id, 25u, value, true);
+        if (writable == S::Invalid || readable != S::Missing)
+            return failure;
+        whole |= writable == S::Valid;
+    }
+    for (std::uint32_t member = 0u; member + 1u < block.operands(); ++member) {
+        const auto writable = view.memberDecoration(facts.blockTypeId, member, 24u, value, true);
+        const auto readable = view.memberDecoration(facts.blockTypeId, member, 25u, value, true);
+        if (writable == S::Invalid || readable != S::Missing)
+            return failure;
+        allMembers &= writable == S::Valid;
+    }
+    return whole || allMembers ? nullptr : failure;
+}
 } // namespace arp::shader

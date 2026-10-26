@@ -20,6 +20,7 @@ ARP_API EditorSceneViewportFrameBuildResult buildEditorSceneViewportFrame(const 
     std::uint32_t targetHeight,
     EditorSceneViewportRect physicalViewport,
     const resource::ResourceManager* resources = nullptr,
-    std::size_t maxDrawItems = 0u);
+    std::size_t maxDrawItems = 0u,
+    const scene::SceneTraversalSnapshot* visibleSnapshot = nullptr);
 
 } // namespace arp::editor

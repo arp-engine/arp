@@ -111,6 +111,10 @@ std::shared_ptr<const SingleEntryShaderArtifact> SingleEntryShaderArtifact::load
         require(!budget.runtimeLength
                 || (budget.runtimeLength->contractVersion == 1u && budget.targetMemory),
             "SHADER-ENTRY-RUNTIME-LENGTH-REQUEST");
+        if (budget.nativeMemory)
+            if (const auto* id = NativeBufferMemoryDeclarations::validateRequest(
+                    *budget.nativeMemory, budget.maxBindings))
+                throw Rejection{id};
         core::CpuMemoryQuotaScope scope(quota);
         auto result = core::makeUnique<SingleEntryShaderArtifact>(ConstructionKey{}, budget);
         ShaderArtifactInput input(budget.maxFileBytes, budget.maxTotalBytes);
@@ -251,6 +255,33 @@ std::shared_ptr<const SingleEntryShaderArtifact> SingleEntryShaderArtifact::load
             result->bufferDeclarationsAvailable_ = true;
         } else
             require(!root.contains("bufferDeclarationLayout"), "SHADER-ENTRY-BUFFER-LAYOUT-LEGACY");
+        if (budget.nativeMemory) {
+            require(version >= 3u, "SHADER-ENTRY-NATIVE-MEMORY-LEGACY");
+            BufferDeclarationTypeLayouts source;
+            core::pmr::Vector<SpirvBufferDeclarationLayout> declarations{
+                &core::defaultCpuMemoryResource()};
+            const auto& binary = result->bytes(ShaderArtifactRole::Spirv);
+            if (const auto* id =
+                    SpirvBufferDeclarationLayoutVerifier::verifyWithTypes(binary.data(),
+                        binary.size(),
+                        budget.maxBindings,
+                        budget.nativeMemory->sourceTypes,
+                        declarations,
+                        source))
+                throw Rejection{id};
+            require(declarations.size() == result->bufferDeclarations_.size()
+                    && declarations.size() == budget.nativeMemory->bindingCount,
+                "SHADER-ENTRY-NATIVE-MEMORY-COVERAGE");
+            for (std::size_t i = 0u; i < declarations.size(); ++i)
+                require(declarations[i].matches(result->bufferDeclarations_[i]),
+                    "SHADER-ENTRY-NATIVE-MEMORY-BINARY");
+            if (const auto* id = result->nativeMemory_.build(
+                    std::move(source), *budget.nativeMemory, budget.maxBindings))
+                throw Rejection{id};
+            for (const auto& declaration : declarations)
+                require(result->nativeMemory_.lookup(declaration.set, declaration.binding),
+                    "SHADER-ENTRY-NATIVE-MEMORY-COVERAGE");
+        }
         if (budget.targetMemory) {
             if (version < 3u)
                 result->targetMemory_.unavailable("SHADER-ENTRY-TARGET-MEMORY-LEGACY");

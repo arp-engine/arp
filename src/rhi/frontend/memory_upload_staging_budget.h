@@ -1,5 +1,7 @@
 #pragma once
 
+#include "rhi/gpu_common.h"
+
 #include <cstdint>
 #include <limits>
 
@@ -18,6 +20,8 @@ inline constexpr const char* kUploadStagingBudgetDiagnosticAlignment =
     "ARP-RHI-STAGING-BUDGET-ALIGNMENT";
 inline constexpr const char* kUploadStagingBudgetDiagnosticCapacity =
     "ARP-RHI-STAGING-BUDGET-CAPACITY";
+inline constexpr const char* kUploadStagingBudgetDiagnosticReduction =
+    "ARP-RHI-STAGING-BUDGET-REDUCTION";
 
 /// Versioned L2 declaration for backend-owned upload staging.
 ///
@@ -102,5 +106,99 @@ inline constexpr UploadStagingBudgetValidation validateUploadStagingBudget(
     }
     return {true, nullptr, nullptr};
 }
+
+// Admission for a workload that only reduces an already authored ceiling.
+// Validate both complete descriptions first; never normalize or clamp an
+// invalid request. Alignment is an exact representation constraint here.
+// This numeric relation grants no backend recording or execution authority.
+inline constexpr UploadStagingBudgetValidation validateUploadStagingBudgetReduction(
+    const UploadStagingBudgetV1& budget, const UploadStagingBudgetV1& ceiling)
+{
+    if (const auto result = validateUploadStagingBudget(budget); !result.success)
+        return result;
+    if (const auto result = validateUploadStagingBudget(ceiling); !result.success)
+        return result;
+    if (budget.maxRequestBytes > ceiling.maxRequestBytes
+        || budget.pageSizeBytes > ceiling.pageSizeBytes
+        || budget.maxPageCount > ceiling.maxPageCount
+        || budget.totalCapacityBytes > ceiling.totalCapacityBytes
+        || budget.alignmentBytes != ceiling.alignmentBytes)
+        return {false,
+            "upload staging policy exceeds its declared ceiling or changes alignment",
+            kUploadStagingBudgetDiagnosticReduction};
+    return {true, nullptr, nullptr};
+}
+
+// Cold metadata/page preparation only; this grants no original upload
+// initialization, command recording or execution authority.
+struct UploadStagingColdStorageBudget {
+    std::uint32_t contractVersion = 0u;
+    bool prototypeOptIn = false;
+    UploadStagingBudgetV1 capacity;
+    std::uint32_t maxLiveSlicesPerPage = 0u;
+    std::uint64_t maxCpuMetadataBytes = 0u;
+};
+
+class UploadStagingColdStorageContract final {
+public:
+    static constexpr const char* validate(const UploadStagingColdStorageBudget& budget) noexcept
+    {
+        if (budget.contractVersion != 1u)
+            return "RHI-STAGING-COLD-STORAGE-VERSION";
+        if (!budget.prototypeOptIn)
+            return "RHI-STAGING-COLD-STORAGE-OPT-IN";
+        if (const auto validation = validateUploadStagingBudget(budget.capacity);
+            !validation.success)
+            return validation.diagnosticId;
+        if (!budget.maxLiveSlicesPerPage
+            || budget.maxLiveSlicesPerPage
+                > std::numeric_limits<std::uint32_t>::max() / budget.capacity.maxPageCount)
+            return "RHI-STAGING-COLD-STORAGE-SLICE-CAPACITY";
+        if (!budget.maxCpuMetadataBytes)
+            return "RHI-STAGING-COLD-STORAGE-CPU-CAPACITY";
+        return nullptr;
+    }
+
+    enum class Disposition { ValidatorOnly, Prototype, DiagnosticFailure };
+
+    struct Decision {
+        Disposition disposition = Disposition::DiagnosticFailure;
+        bool coldPreparationImplemented = false;
+        bool originalExecutionAvailable = false;
+        const char* diagnostic = "RHI-STAGING-COLD-STORAGE-BACKEND";
+    };
+
+    static constexpr Decision lowering(
+        Backend backend, const UploadStagingColdStorageBudget& budget) noexcept
+    {
+        if (const auto* id = validate(budget))
+            return {Disposition::DiagnosticFailure, false, false, id};
+        switch (backend) {
+        case Backend::Null:
+            return {Disposition::ValidatorOnly,
+                false,
+                false,
+                "RHI-STAGING-COLD-STORAGE-NULL-VALIDATOR"};
+        case Backend::Vulkan:
+            return {Disposition::Prototype, true, false, nullptr};
+        case Backend::Metal:
+            return {Disposition::DiagnosticFailure,
+                false,
+                false,
+                "RHI-STAGING-COLD-STORAGE-METAL-PAYLOAD-MISSING"};
+        case Backend::WebGPU:
+            return {Disposition::DiagnosticFailure,
+                false,
+                false,
+                "RHI-STAGING-COLD-STORAGE-WEBGPU-PAYLOAD-MISSING"};
+        case Backend::WebGL:
+            return {Disposition::DiagnosticFailure,
+                false,
+                false,
+                "RHI-STAGING-COLD-STORAGE-WEBGL-UNSUPPORTED"};
+        }
+        return {};
+    }
+};
 
 } // namespace arp::rhi::semantics

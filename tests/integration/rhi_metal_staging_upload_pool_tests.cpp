@@ -3,9 +3,12 @@
 #include "rhi/backends/metal/metal_device.h"
 #include "rhi/backends/metal/metal_native_runtime.h"
 #include "rhi/backends/metal/metal_staging_upload_pool.h"
+#include "rhi/frontend/memory_upload_staging_budget.h"
 #include "rhi/semantics/native_backend_capabilities.h"
 
+#include <array>
 #include <cassert>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -120,6 +123,56 @@ void assertMetalPoolSuballocatesAndRetiresExactCommand()
     assert(oversized.diagnostics.find("pageSizeBytes=4096") != std::pmr::string::npos);
     assert(oversized.diagnostics.find("allocatedBytes=4096") != std::pmr::string::npos);
     assert(oversized.diagnostics.find("frameSerial=") != std::pmr::string::npos);
+}
+
+void assertReducedWorkloadPoolCapacity()
+{
+    using namespace arp::rhi_metal;
+    using namespace arp::rhi::semantics;
+    constexpr UploadStagingBudgetV1 ceiling{
+        1u, 16u * 1024u * 1024u, 16u * 1024u * 1024u, 16u, 256u * 1024u * 1024u, 256u};
+    constexpr UploadStagingBudgetV1 workload{
+        1u, 1024u * 1024u, 1024u * 1024u, 3u, 3u * 1024u * 1024u, 256u};
+    static_assert(validateUploadStagingBudgetReduction(workload, ceiling).success);
+    MetalRhiStagingUploadPool pool({"MetalReducedWorkload",
+        workload.pageSizeBytes,
+        workload.maxPageCount,
+        workload.alignmentBytes,
+        true});
+    assert(!pool.stats().allocatedBytes);
+    const auto oversized = pool.allocate(
+        {"one byte over request", workload.maxRequestBytes + 1u, workload.alignmentBytes, 1u});
+    assert(!oversized.success && !pool.stats().allocatedBytes);
+    assert(oversized.diagnosticId == arp::core::kFrameRetiredPageSliceDiagnosticRequestExceedsPage);
+    std::array<MetalRhiStagingUploadSlice, workload.maxPageCount> slices;
+    for (std::size_t i = 0; i < slices.size(); ++i) {
+        slices[i] = pool.allocate(
+            {"exact request", workload.maxRequestBytes, workload.alignmentBytes, i + 1u});
+        assert(slices[i].success && slices[i].mappedData);
+        if (describeMetalRhiNativeRuntimeBoundary().runtimeAvailableOnThisPlatform) {
+            const auto native = inspectMetalRhiNativeStagingBuffer(slices[i].payload);
+            assert(native.nativeRuntimeBacked && native.sizeBytes == workload.pageSizeBytes);
+        }
+        std::memset(slices[i].mappedData, int(i + 1u), slices[i].sizeBytes);
+    }
+    const auto occupied = pool.stats();
+    assert(occupied.allocatedPageCount == workload.maxPageCount
+        && occupied.allocatedBytes == workload.totalCapacityBytes
+        && occupied.liveSliceCount == workload.maxPageCount);
+    assert(!pool.allocate({"capacity exhausted", 1u, workload.alignmentBytes, 4u}).success);
+    // Only unaccepted staging is cancelled here; this is native page/mapping
+    // evidence on Apple, not GPU execution or a replacement completion receipt.
+    assert(pool.cancel(slices[1]));
+    auto replacement = pool.allocate(
+        {"retry cancelled page", workload.maxRequestBytes, workload.alignmentBytes, 5u});
+    assert(replacement.success && replacement.pageIndex == slices[1].pageIndex);
+    for (const auto i : {0u, 2u}) {
+        const auto* data = static_cast<const unsigned char*>(slices[i].mappedData);
+        assert(data[0] == i + 1u && data[slices[i].sizeBytes - 1u] == i + 1u);
+        assert(pool.cancel(slices[i]));
+    }
+    assert(pool.cancel(replacement) && !pool.stats().liveSliceCount);
+    assert(pool.stats().allocatedBytes == workload.totalCapacityBytes);
 }
 
 void assertMetalPoolCancelsExactUnacceptedSlice()
@@ -375,6 +428,7 @@ int main()
     assertUnprovenCompletionCannotRetireEarlierRecording();
     assertMetalUploadPoolIsBackendPrivate();
     assertMetalPoolSuballocatesAndRetiresExactCommand();
+    assertReducedWorkloadPoolCapacity();
     assertMetalPoolCancelsExactUnacceptedSlice();
     assertMetalUploadRetirementPolicyIsExplicit();
     assertMetalDeviceReportsUploadStaging();

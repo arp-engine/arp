@@ -43,6 +43,35 @@ public:
         Requirements required;
     };
 
+    // One journal entry owns a contiguous staging reservation per original
+    // upload opcode, independently of mip/native-copy counts and byte budgets.
+    // The original stream's version/opt-in and typed binding validation apply.
+    // Metadata projection never initializes bytes or authorizes native upload.
+    static const char* inspectJournalEntries(
+        const std::shared_ptr<const OriginalCommandInputs>& inputs,
+        const OriginalCommandStreamBudget& stream,
+        std::uint64_t maxEntries,
+        std::uint64_t& entries) noexcept
+    {
+        entries = 0u;
+        std::uint64_t pending = 0u;
+        const auto* diagnostic = OriginalCommandStreamProgram::visitOriginal(inputs,
+            stream,
+            [&](const OriginalCommandStreamProgram::Operation& operation) noexcept -> const char* {
+                using Family = OriginalCommandStreamProgram::Family;
+                if (operation.family != Family::BufferUpload
+                    && operation.family != Family::TextureUpload)
+                    return nullptr;
+                if (pending == maxEntries)
+                    return "RHI-ORIGINAL-UPLOAD-STAGING-JOURNAL-CAPACITY";
+                ++pending;
+                return nullptr;
+            });
+        if (!diagnostic)
+            entries = pending;
+        return diagnostic;
+    }
+
     static constexpr const char* validateIntent(const Budget& b) noexcept
     {
         if (b.contractVersion != 1u)

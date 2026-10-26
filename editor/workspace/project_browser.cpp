@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <new>
 #include <system_error>
 
 namespace arp::editor {
@@ -41,7 +42,7 @@ const char* fileIconResource(const std::filesystem::path& path, bool directory)
 
 } // namespace
 
-void EditorShell::updateFilePathText()
+bool EditorShell::updateFilePathText()
 {
     const auto relative =
         projectBrowser_.currentDirectory().lexically_relative(projectBrowser_.root());
@@ -60,10 +61,12 @@ void EditorShell::updateFilePathText()
         id("files_path"), ui::UiControlValue::fromText(value), ui::UiNotifyPolicy::Silent);
     if (!result.ok())
         diagnostic_ = result.diagnostic();
+    return result.ok();
 }
 
 void EditorShell::refreshFileSystem()
 {
+    setResourceNavigationRejected(false);
     if (!projectBrowser_.refresh()) {
         feedback("Filesystem error: cannot read "
             + core::FilePath::utf8(projectBrowser_.currentDirectory()));
@@ -71,12 +74,89 @@ void EditorShell::refreshFileSystem()
         updateFileSlots();
         return;
     }
-    updateFilePathText();
-    updateFileSlots();
+    (void)retryFileBrowserPresentation();
+}
+
+bool EditorShell::initializeFileBrowserPresentation()
+{
+    filePresentationWidgetCount_ = 0;
+    const auto retain = [&](const core::pmr::String& name) {
+        const auto widget = id(name);
+        if (runtime().canvas().findWidget(widget))
+            filePresentationWidgets_[filePresentationWidgetCount_++] = widget;
+    };
+    retain("files_path");
+    retain("file_search");
+    retain("file_search_hint");
+    for (std::size_t index = 0; index < kFileSlotCount; ++index) {
+        retain(kFileSlots[index]);
+        if (index < 7) {
+            retain(core::pmr::String("folder_icon_") + kFolderSlotNames[index]);
+            retain(core::pmr::String("folder_arrow_") + kFolderSlotNames[index]);
+        } else {
+            char name[32];
+            std::snprintf(name, sizeof(name), "asset_icon_%zu", index - 7);
+            retain(name);
+        }
+    }
+    resourceNavigationNotice_ = {
+        id("file_definition_unavailable"), id("file_definition_retry_hint")};
+    for (const auto widget : resourceNavigationNotice_)
+        if (!runtime().canvas().findWidget(widget))
+            return false;
+    setResourceNavigationRejected(false);
+    filePresentationFailure_ = id("file_navigation_failed");
+    filePresentationRetry_ = id("file_navigation_retry");
+    return runtime().canvas().findWidget(filePresentationFailure_)
+        && runtime().canvas().findWidget(filePresentationRetry_);
+}
+
+void EditorShell::setResourceNavigationRejected(bool rejected) noexcept
+{
+    for (const auto id : resourceNavigationNotice_)
+        if (auto* widget = runtime().canvas().findWidget(id))
+            widget->setVisible(rejected);
+}
+
+void EditorShell::setFileBrowserPresentationFailed(bool failed) noexcept
+{
+    if (failed)
+        setResourceNavigationRejected(false);
+    filesPresentationFailed_ = failed;
+    if (failed)
+        fileDraggingScrollbar_ = false;
+    for (std::size_t index = 0; index < filePresentationWidgetCount_; ++index)
+        if (auto* widget = runtime().canvas().findWidget(filePresentationWidgets_[index]))
+            widget->setVisible(!failed);
+    if (auto* widget = runtime().canvas().findWidget(filePresentationFailure_))
+        widget->setVisible(failed);
+    if (auto* widget = runtime().canvas().findWidget(filePresentationRetry_))
+        widget->setVisible(failed);
+}
+
+bool EditorShell::retryFileBrowserPresentation() noexcept
+{
+    try {
+        const auto search = runtime().setValue(id("file_search"),
+            ui::UiControlValue::fromText(projectBrowser_.search()),
+            ui::UiNotifyPolicy::Silent);
+        if (search.ok() && updateFilePathText()) {
+            setFileBrowserPresentationFailed(false);
+            visible("file_search_hint", projectBrowser_.search().empty());
+            updateFileSlots();
+            return true;
+        }
+    } catch (const std::bad_alloc&) {
+        // Cached integer Widget identities make isolation allocation-free.
+    }
+    setFileBrowserPresentationFailed(true);
+    return false;
 }
 
 void EditorShell::updateFileSlots()
 {
+    if (filesPresentationFailed_)
+        return;
     const auto& entries = projectBrowser_.entries();
     const auto& visibleEntries = projectBrowser_.visibleEntryIndices();
     const std::size_t maxOffset =

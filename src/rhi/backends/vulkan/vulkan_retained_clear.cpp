@@ -198,8 +198,18 @@ void VulkanRhiRetainedCommand::endPreparedPass() noexcept
 bool VulkanRhiRetainedCommand::clearPreparedPass(
     const rhi::GpuTexture& target, core::pmr::String& diagnostic)
 {
-    if (!beginPreparedPass(target, diagnostic))
+    if (!validatePreparedPass(target, diagnostic))
         return false;
+    rhi::CommandRecordingUsage charge;
+    charge.append(rhi::CommandUsageKind::BeginRenderPass);
+    charge.append(rhi::CommandUsageKind::EndRenderPass);
+    charge.resourceReferences = 1u;
+    if (!preflightRecordingCharge(charge, diagnostic) || !commitRecordingCharge(charge, diagnostic))
+        return false;
+    if (!beginPreparedPass(target, diagnostic)) {
+        failed_ = true;
+        return false;
+    }
     endPreparedPass();
     diagnostic.clear();
     return true;

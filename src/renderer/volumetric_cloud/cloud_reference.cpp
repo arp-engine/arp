@@ -72,24 +72,32 @@ CloudResult CloudReference::integrate(const CloudRay& ray,
     core::Vec3 sunRadiance,
     core::Vec3 ambient,
     float time,
-    volume::MediumIntegral& output) const noexcept
+    volume::MediumIntegral& output,
+    float samplePhase,
+    float* extinctionDistance) const noexcept
 {
     output = {};
-    if (!asset_ || !viewSteps || !lightSteps || !std::isfinite(time)
-        || !std::isfinite(core::length(sun)) || std::fabs(core::length(sun) - 1.0f) > .0001f
-        || !positive(sunRadiance) || !positive(ambient))
+    if (extinctionDistance)
+        *extinctionDistance = static_cast<float>(ray.maxDistance);
+    if (!asset_ || !viewSteps || !lightSteps || !std::isfinite(time) || !std::isfinite(samplePhase)
+        || samplePhase < 0.f || samplePhase >= 1.f || !std::isfinite(core::length(sun))
+        || std::fabs(core::length(sun) - 1.0f) > .0001f || !positive(sunRadiance)
+        || !positive(ambient))
         return CloudResult::failure("CLOUD-REFERENCE-INPUT");
     CloudRayIntervals intervals;
     const auto hit = CloudContract::intersect(layer_, ray, intervals);
     if (!hit.success)
         return hit;
     const auto phase = volume::henyeyGreenstein(core::dot(ray.direction, sun), layer_.anisotropy);
+    double moment = 0.0;
+    double momentWeight = 0.0;
+    double momentTransmittance = 1.0;
     for (std::uint32_t segment = 0; segment < intervals.count; ++segment) {
         const auto span = intervals.intervals[segment];
         const auto step = (span.end - span.begin) / viewSteps;
         for (std::uint32_t i = 0; i < viewSteps; ++i) {
-            const auto position =
-                ray.origin + core::scale(ray.direction, float(span.begin + (i + .5) * step));
+            const auto distance = span.begin + (i + samplePhase) * step;
+            const auto position = ray.origin + core::scale(ray.direction, float(distance));
             const auto sigma = layer_.extinction * density(position, time);
             if (sigma <= 0)
                 continue;
@@ -129,9 +137,17 @@ CloudResult CloudReference::integrate(const CloudRay& ray,
             const core::Vec3 source{sigma * layer_.scatteringAlbedo.x * incident.x,
                 sigma * layer_.scatteringAlbedo.y * incident.y,
                 sigma * layer_.scatteringAlbedo.z * incident.z};
-            output = volume::compose(output, volume::homogeneous(sigma, source, float(step)));
+            const auto integrated = volume::homogeneous(sigma, source, float(step));
+            const double segmentAbsorption = -std::expm1(-double(sigma) * step);
+            const double absorbed = momentTransmittance * segmentAbsorption;
+            moment += absorbed * distance;
+            momentWeight += absorbed;
+            momentTransmittance *= std::exp(-double(sigma) * step);
+            output = volume::compose(output, integrated);
         }
     }
+    if (extinctionDistance && output.transmittance < 1.f && momentWeight > 0.0)
+        *extinctionDistance = static_cast<float>(moment / momentWeight);
     return {};
 }
 

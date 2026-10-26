@@ -45,6 +45,30 @@ public:
     }
 
 private:
+    static rhi::CommandRecordingBudget recordingBudget()
+    {
+        using K = rhi::CommandUsageKind;
+        rhi::CommandRecordingBudget b{1u, true, 18u};
+        for (const auto kind : {K::BindComputePipeline,
+                 K::BindComputeDescriptor,
+                 K::Dispatch,
+                 K::BeginRenderPass,
+                 K::BindGraphicsPipeline,
+                 K::SetViewport,
+                 K::SetScissor,
+                 K::BindRenderDescriptor,
+                 K::Draw,
+                 K::EndRenderPass,
+                 K::TextureToBufferCopy,
+                 K::Finish})
+            b.limits.append(kind);
+        b.limits.append(K::BufferBarrier, 3u);
+        b.limits.append(K::TextureBarrier, 3u);
+        b.limits.resourceReferences = 24u;
+        b.limits.descriptorElements = 8u;
+        return b;
+    }
+
     explicit GraphicsProbe(ComputeProbe& raw) : raw_(raw), device_(raw.device_)
     {
         using namespace rhi;
@@ -232,13 +256,19 @@ private:
         auto quota = core::makeShared<core::CpuMemoryQuota>(metadataBytes);
         core::pmr::String diagnostic;
         diagnostic.reserve(512u);
-        const auto prepare = [&](std::uint32_t owners) {
+        const auto fullRecordingBudget = recordingBudget();
+        const auto prepare = [&](std::uint32_t owners,
+                                 const CommandRecordingBudget* requestedBudget = nullptr) {
             const char* error = nullptr;
             auto storage = common::CommandRetentionStorage::prepare(
                 {1u, true, owners, 0u, 0u, 0u, metadataBytes}, quota, error);
             assert(storage && !error);
             auto command = prepareVulkanRhiRetainedCommand(device_, std::move(storage), diagnostic);
             assert(command);
+            assert(command->enableRecordingBudget(
+                requestedBudget ? *requestedBudget : fullRecordingBudget, diagnostic));
+            assert(!command->enableRecordingBudget(fullRecordingBudget, diagnostic)
+                && diagnostic == "RHI-COMMAND-RECORDING-BUDGET-PREPARATION-STATE");
             RenderPassDesc pass;
             pass.colorAttachments.push_back({"Cloud composite",
                 target_->id(),
@@ -299,6 +329,61 @@ private:
                 && c.copy(*target_, *staging_, copy, diagnostic)
                 && attachment(c, ResourceState::ColorAttachment, diagnostic);
         };
+        // The full multi-op draw must reject before any partial bind/pass/draw,
+        // state, owner or budget mutation. These commands are never submitted.
+        for (unsigned variant = 0u; variant < 4u; ++variant) {
+            auto shortBudget = fullRecordingBudget;
+            const char* expectedDiagnostic = nullptr;
+            switch (variant) {
+            case 0u:
+                shortBudget.maxCommands = 11u; // Five before draw, seven in draw.
+                expectedDiagnostic = "RHI-COMMAND-RECORDING-BUDGET-COMMAND-CAPACITY";
+                break;
+            case 1u:
+                shortBudget.limits.commands[static_cast<std::size_t>(CommandUsageKind::Draw)] = 0u;
+                expectedDiagnostic = "RHI-COMMAND-RECORDING-BUDGET-OPCODE-CAPACITY";
+                break;
+            case 2u:
+                shortBudget.limits.resourceReferences = 17u; // Nine before and nine in draw.
+                expectedDiagnostic = "RHI-COMMAND-RECORDING-BUDGET-REFERENCE-CAPACITY";
+                break;
+            case 3u:
+                --shortBudget.limits.descriptorElements;
+                expectedDiagnostic = "RHI-COMMAND-RECORDING-BUDGET-DESCRIPTOR-CAPACITY";
+                break;
+            }
+            auto c = prepare(ownerCeiling, &shortBudget);
+            assert(beforeDraw(*c));
+            const auto before = inspectVulkanRhiNativeResourceStats(device_);
+            const auto used = *c->recordingUsage();
+            const auto owners = c->retentionStorage()->resourceOwnerCount();
+            const auto charged = quota->liveBytes();
+            assert(!c->drawPreparedPass(*target_, draw, diagnostic)
+                && diagnostic == expectedDiagnostic);
+            assert(c->recordingUsage()->matches(used)
+                && c->retentionStorage()->resourceOwnerCount() == owners
+                && quota->liveBytes() == charged
+                && inspectVulkanRhiNativeResourceStats(device_).nativeCommandBufferRecordCount
+                    == before.nativeCommandBufferRecordCount
+                && raw_.output_->state() == ResourceState::ShaderRead
+                && target_->state() == ResourceState::ColorAttachment);
+        }
+        {
+            auto shortBudget = fullRecordingBudget;
+            shortBudget.limits
+                .commands[static_cast<std::size_t>(CommandUsageKind::TextureBarrier)] = 1u;
+            auto c = prepare(ownerCeiling, &shortBudget);
+            assert(beforeDraw(*c));
+            const auto before = inspectVulkanRhiNativeResourceStats(device_);
+            const auto used = *c->recordingUsage();
+            const auto owners = c->retentionStorage()->resourceOwnerCount();
+            assert(!attachment(*c, ResourceState::ColorAttachment, diagnostic)
+                && diagnostic == "RHI-COMMAND-RECORDING-BUDGET-OPCODE-CAPACITY"
+                && c->recordingUsage()->matches(used)
+                && c->retentionStorage()->resourceOwnerCount() == owners
+                && inspectVulkanRhiNativeResourceStats(device_).nativeCommandBufferRecordCount
+                    == before.nativeCommandBufferRecordCount);
+        }
         // Projected owners are admitted atomically, including deduplication of
         // uniforms/output/depth already retained by the same Compute command.
         {
@@ -337,8 +422,10 @@ private:
             const auto invalid = [&](const VulkanRhiRetainedGraphicsDraw& request) {
                 const auto before = inspectVulkanRhiNativeResourceStats(device_);
                 const auto owners = c->retentionStorage()->resourceOwnerCount();
+                const auto used = *c->recordingUsage();
                 assert(!c->drawPreparedPass(*target_, request, diagnostic));
                 assert(owners == c->retentionStorage()->resourceOwnerCount()
+                    && c->recordingUsage()->matches(used)
                     && before.nativeCommandBufferRecordCount
                         == inspectVulkanRhiNativeResourceStats(device_)
                             .nativeCommandBufferRecordCount);
@@ -437,6 +524,7 @@ private:
         assert(readback(*command)
             && command->retentionStorage()->resourceOwnerCount() == ownerCeiling);
         assert(command->finish(diagnostic));
+        assert(command->recordingUsage()->matches(fullRecordingBudget.limits));
         assert(core::defaultCpuAllocator().stats().allocationCount == allocations);
         const auto after = inspectVulkanRhiNativeResourceStats(device_);
         assert(after.nativeRenderPassCreateCount == before.nativeRenderPassCreateCount

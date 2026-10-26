@@ -1,6 +1,8 @@
 #include "core/math/matrix_validation.h"
 #include "renderer/volumetric_cloud/cloud_contract.h"
 #include "renderer/volumetric_cloud/cloud_execution_plan.h"
+#include "renderer/volumetric_cloud/cloud_prepared_pipelines.h"
+#include "renderer/volumetric_cloud/cloud_quality.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/backends/null/null_hidden_frame_smoke.h"
 
@@ -8,6 +10,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <string_view>
 
 using namespace arp;
 using namespace renderer::cloud;
@@ -264,6 +267,103 @@ void executionTests()
     assert(plan.sampleExtent.width == 640 && plan.sampleExtent.height == 360);
 }
 
+void qualityTests()
+{
+    CloudRenderConfig config;
+    config.framesInFlight = 3u;
+    config.gpuBudgetBytes = 128u * 1024u * 1024u;
+    config.maxDensityEvaluations = 2000000000u;
+    config.maxDistance = 60000;
+    config.historyWeight = .9f;
+    config.historyDepthTolerance = 50;
+    const auto authored = config;
+    assert(!CloudQuality::apply(0u, CloudQualityTier::Medium, config).success);
+    assert(config.viewSteps == 0u && config.gpuBudgetBytes == authored.gpuBudgetBytes);
+    assert(!CloudQuality::apply(1u, static_cast<CloudQualityTier>(99), config).success);
+    assert(config.viewSteps == 0u);
+    for (const auto tier :
+        {CloudQualityTier::Reference, CloudQualityTier::High, CloudQualityTier::Medium}) {
+        assert(CloudQuality::apply(1u, tier, config).success);
+        assert(config.framesInFlight == authored.framesInFlight
+            && config.gpuBudgetBytes == authored.gpuBudgetBytes
+            && config.maxDensityEvaluations == authored.maxDensityEvaluations
+            && config.maxDistance == authored.maxDistance
+            && config.historyWeight == authored.historyWeight
+            && config.historyDepthTolerance == authored.historyDepthTolerance);
+        assert(config.resolutionDivisor == (tier == CloudQualityTier::Medium ? 2u : 1u));
+        assert(config.viewSteps
+            == (tier == CloudQualityTier::Medium     ? 64u
+                    : tier == CloudQualityTier::High ? 128u
+                                                     : 256u));
+        assert(config.lightSteps
+            == (tier == CloudQualityTier::Medium     ? 8u
+                    : tier == CloudQualityTier::High ? 16u
+                                                     : 32u));
+        assert(config.temporal == (tier != CloudQualityTier::Reference));
+        CloudExecutionPlan plan;
+        assert(CloudExecutionPlanner::describeResources(config, {64u, 48u}, 65536u, 368u, plan)
+                .success);
+        const auto target =
+            CloudExecutionPlanner::describeResources(config, {1280u, 720u}, 65536u, 368u, plan);
+        assert(target.success == (tier == CloudQualityTier::Medium));
+        if (!target.success) {
+            assert(std::string_view(target.diagnostic) == "CLOUD-WORK-BUDGET");
+            auto boundedWork = config;
+            boundedWork.maxDensityEvaluations =
+                1280ull * 720u * 2u * config.viewSteps * (2u * config.lightSteps + 1u);
+            const auto memory = CloudExecutionPlanner::describeResources(
+                boundedWork, {1280u, 720u}, 65536u, 368u, plan);
+            assert(!memory.success && std::string_view(memory.diagnostic) == "CLOUD-MEMORY-BUDGET");
+        }
+    }
+    CloudRenderConfig unauthored;
+    assert(CloudQuality::apply(1u, CloudQualityTier::Medium, unauthored).success);
+    CloudExecutionPlan plan;
+    assert(!CloudExecutionPlanner::describeResources(unauthored, {64u, 48u}, 65536u, 368u, plan)
+            .success);
+}
+
+void dispatchAdmissionTests()
+{
+    auto device = rhi::createNullDevice();
+    const auto limits = device->capabilities().computeResources;
+    CloudRenderConfig config;
+    config.resolutionDivisor = 2u;
+    config.viewSteps = 24u;
+    config.lightSteps = 4u;
+    config.framesInFlight = 3u;
+    config.gpuBudgetBytes = 128u * 1024u * 1024u;
+    config.maxDensityEvaluations = 1000000000u;
+    config.maxDistance = 10000.f;
+    config.historyWeight = .9f;
+    config.historyDepthTolerance = 10.f;
+    const CloudOriginalDispatchAdmission unissued{*device, {}};
+    const CloudPreparedPipelineSelection temporal{1u, CloudPreparedResolve::Temporal1, {}};
+    const CloudPreparedPipelineSelection spatial{
+        1u, CloudPreparedResolve::Reconstruction1, {1u, .025f, .025f}};
+    const CloudPreparedResourceRequest request{config, {48u, 32u}, 65536u, 9u, 45u};
+    CloudPreparedResourcePlan plan;
+    for (const auto& selection : {temporal, spatial}) {
+        assert(CloudPreparedPipelines::planResources(selection, request, limits, plan).success);
+        const auto before = core::defaultCpuAllocator().stats().allocationCount;
+        const auto result =
+            CloudPreparedPipelines::planResources(selection, request, limits, unissued, plan);
+        assert(
+            !result.success && std::string_view(result.diagnostic) == "RHI-DISPATCH-DOMAIN-OWNER");
+        assert(!plan.raw.sampleCount && !plan.reconstruction.resolvedCount && !plan.descriptorSets
+            && !plan.descriptorElements);
+        assert(before == core::defaultCpuAllocator().stats().allocationCount);
+        auto missing = limits;
+        missing.maxComputeWorkgroupCountX = 0u;
+        const auto numeric =
+            CloudPreparedPipelines::planResources(selection, request, missing, plan);
+        assert(!numeric.success && std::string_view(numeric.diagnostic) == "CLOUD-DISPATCH-LIMIT");
+        assert(!plan.raw.sampleCount && !plan.descriptorSets);
+    }
+    std::cout
+        << "CLOUD_DISPATCH_ADMISSION_CONTRACT_PASS explicit unissued domain refuses without numeric fallback; allocations=0\n";
+}
+
 int main(int argc, char**)
 {
     const auto nonsymmetric = core::multiply(
@@ -278,6 +378,8 @@ int main(int argc, char**)
     shellTests();
     mediumTests();
     executionTests();
+    qualityTests();
+    dispatchAdmissionTests();
     if (argc > 1) {
         // P0 validates the reference geometry/integral and baseline hidden-frame
         // lifecycle. Cloud GPU execution is introduced and tested in P3.

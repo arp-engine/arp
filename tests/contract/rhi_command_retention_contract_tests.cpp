@@ -27,6 +27,7 @@
 #include "../fixtures/original_device_native_loss_observer_contract_fixture.h"
 #include "../fixtures/original_geometry_readback_composition_fixture.h"
 #include "../fixtures/original_observed_native_loss_binding_fixture.h"
+#include "../fixtures/original_query_registration_fixture.h"
 #include "../fixtures/original_resource_registration_fixture.h"
 #include "../fixtures/original_texture_state_fixture.h"
 #include "../fixtures/original_typed_attachment_dependency_probe_fixture.h"
@@ -488,6 +489,10 @@ int main()
     arp::test::OriginalResourceRegistrationFixture::verify([]() {
         return createNullDevice();
     });
+    {
+        auto queryDevice = createNullDevice();
+        arp::test::OriginalQueryRegistrationFixture::verifyRejected(*queryDevice);
+    }
     arp::test::OriginalCommandSamplerCustodyFixture::verify([]() {
         return createNullDevice();
     });

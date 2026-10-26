@@ -140,6 +140,8 @@ const char* FrameGraph::prepareCompiledRetirementSource(
 
 void FrameGraph::invalidateCompiledRetirementSource() const noexcept
 {
+    if (originalIntentEpoch_)
+        originalIntentEpoch_->advance();
     if (retirementSourceState_)
         retirementSourceState_->epoch.advance();
 }

@@ -259,13 +259,20 @@ public:
             "RHI-ORIGINAL-ROOT-COLD-COMMAND-PROGRAM-PROFILE");
         programCommand.contractVersion = 2u;
         assert(!RootCommand::validateIntent(programCommand));
-        // Program3/4/5 are independent sampled/depth, storage and mixed
+        // Program3/4/5/6 are independent sampled/depth, storage, mixed and general
         // profiles. Cold command validation admits their intent, not execution.
-        for (const auto version : {1u, 2u, 3u, 4u, 5u}) {
+        for (const auto version : {1u, 2u, 3u, 4u, 5u, 6u}) {
             programCommand.program.contractVersion = version;
             assert(!RootCommand::validateIntent(programCommand));
         }
-        for (const auto version : {0u, 6u, UINT32_MAX}) {
+        programCommand.program.contractVersion = 7u;
+        is(RootCommand::validateIntent(programCommand),
+            "RHI-BINDLESS-PRODUCED-GEOMETRY-PROGRAM-FETCH-REQUIRED");
+        programCommand.program.initializedGeometryContractVersion = 2u;
+        programCommand.program.initializedGeometryOptIn = true;
+        assert(!RootCommand::validateIntent(programCommand));
+        programCommand.program = program;
+        for (const auto version : {0u, 8u, UINT32_MAX}) {
             programCommand.program.contractVersion = version;
             is(RootCommand::validateIntent(programCommand), "RHI-ORIGINAL-ROOT-PROGRAM-VERSION");
         }
@@ -315,14 +322,22 @@ public:
                 rhi::semantics::OriginalBindlessRootProgramLowering::lowering(backend, 2u);
             assert(graphicsProgram.preparationAvailable == (backend == rhi::Backend::WebGPU)
                 && !graphicsProgram.executionAvailable && !graphicsProgram.completionAvailable);
-            for (const auto version : {3u, 4u, 5u}) {
+            for (const auto version : {3u, 4u, 5u, 6u}) {
                 const auto independentProgram =
                     rhi::semantics::OriginalBindlessRootProgramLowering::lowering(backend, version);
                 assert(independentProgram.preparationAvailable == (backend == rhi::Backend::WebGPU)
                     && !independentProgram.executionAvailable
                     && !independentProgram.completionAvailable);
             }
-            for (const auto version : {0u, 6u, UINT32_MAX}) {
+            const auto producedProgram =
+                rhi::semantics::OriginalBindlessRootProgramLowering::lowering(backend, 7u);
+            assert(!producedProgram.preparationAvailable && !producedProgram.executionAvailable
+                && !producedProgram.completionAvailable);
+            is(producedProgram.diagnostic,
+                backend == rhi::Backend::Null
+                    ? "RHI-BINDLESS-PRODUCED-GEOMETRY-PROGRAM-NULL-VALIDATOR"
+                    : "RHI-BINDLESS-PRODUCED-GEOMETRY-NATIVE-ADMISSION-REQUIRED");
+            for (const auto version : {0u, 8u, UINT32_MAX}) {
                 const auto invalidProgram =
                     rhi::semantics::OriginalBindlessRootProgramLowering::lowering(backend, version);
                 assert(!invalidProgram.preparationAvailable && !invalidProgram.executionAvailable

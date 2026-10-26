@@ -6,6 +6,40 @@ namespace arp::rhi::semantics {
 class DescriptorLowering final {
 public:
     template <class Decision>
+    static constexpr Decision OriginalGraphicsBindingInspection_lowering(Backend backend) noexcept
+    {
+        switch (backend) {
+        case Backend::Null:
+            return {CapabilityMode::DiagnosticFailure,
+                true,
+                false,
+                false,
+                "RHI-GRAPHICS-BINDING-INSPECTION-NULL-VALIDATOR"};
+        case Backend::Vulkan:
+            return {CapabilityMode::Native, false, true, false, nullptr};
+        case Backend::Metal:
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                "RHI-GRAPHICS-BINDING-INSPECTION-METAL-ADAPTER-MISSING"};
+        case Backend::WebGPU:
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                "RHI-GRAPHICS-BINDING-INSPECTION-WEBGPU-PROFILE-MISSING"};
+        case Backend::WebGL:
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                "RHI-GRAPHICS-BINDING-INSPECTION-WEBGL-UNSUPPORTED"};
+        }
+        return {};
+    }
+
+    template <class Decision>
     static constexpr Decision OriginalTextureCellDescriptor_lowering(
         Backend backend, std::uint32_t version) noexcept
     {
@@ -110,6 +144,36 @@ public:
                 false,
                 false,
                 "RHI-WEBGL1-ORIGINAL-GENERAL-BINDING-UNAVAILABLE"};
+        }
+        return {};
+    }
+
+    template <class Decision>
+    static constexpr Decision OriginalSynchronousComputeWrite_lowering(Backend backend) noexcept
+    {
+        switch (backend) {
+        case Backend::Vulkan:
+            return {CapabilityMode::Native, false, true, false, nullptr};
+        case Backend::Null:
+            return {CapabilityMode::DiagnosticFailure,
+                true,
+                false,
+                false,
+                "RHI-SYNCHRONOUS-COMPUTE-WRITE-NULL-VALIDATOR"};
+        case Backend::Metal:
+            return {CapabilityMode::Native, false, true, false, nullptr};
+        case Backend::WebGPU:
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                "RHI-SYNCHRONOUS-COMPUTE-WRITE-WEBGPU-ASYNC-REQUIRED"};
+        case Backend::WebGL:
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                "RHI-SYNCHRONOUS-COMPUTE-WRITE-WEBGL-UNSUPPORTED"};
         }
         return {};
     }
@@ -450,6 +514,8 @@ public:
                 false,
                 "RHI-ORIGINAL-RENDER-USAGE-NULL-VALIDATOR-ONLY"};
         case Backend::Vulkan:
+            if (version == 4u)
+                return {CapabilityMode::Equivalent, false, true, false, false, nullptr};
             return {CapabilityMode::DiagnosticFailure,
                 false,
                 false,
@@ -457,6 +523,10 @@ public:
                 false,
                 "RHI-ORIGINAL-RENDER-USAGE-VULKAN-ACTOR-MISSING"};
         case Backend::Metal:
+            // Exact general-resource CPU projection only. This grants neither
+            // native recording nor execution; Preparation6 remains independent.
+            if (version == 4u)
+                return {CapabilityMode::Equivalent, false, true, false, false, nullptr};
             return {CapabilityMode::DiagnosticFailure,
                 false,
                 false,
@@ -479,6 +549,36 @@ public:
             false,
             false,
             "RHI-ORIGINAL-RENDER-USAGE-BACKEND-INVALID"};
+    }
+
+    template <class Decision>
+    static constexpr Decision OriginalSynchronousGraphicsWrite_lowering(Backend backend) noexcept
+    {
+        switch (backend) {
+        case Backend::Vulkan:
+            return {CapabilityMode::Native, false, true, false, nullptr};
+        case Backend::Null:
+            return {CapabilityMode::DiagnosticFailure,
+                true,
+                false,
+                false,
+                "RHI-SYNCHRONOUS-GRAPHICS-WRITE-NULL-VALIDATOR"};
+        case Backend::Metal:
+            return {CapabilityMode::Native, false, true, false, nullptr};
+        case Backend::WebGPU:
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                "RHI-SYNCHRONOUS-GRAPHICS-WRITE-WEBGPU-ASYNC-REQUIRED"};
+        case Backend::WebGL:
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                "RHI-SYNCHRONOUS-GRAPHICS-WRITE-WEBGL-UNSUPPORTED"};
+        }
+        return {};
     }
 
     template <class Decision, class Facts>

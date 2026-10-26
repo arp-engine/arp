@@ -748,9 +748,10 @@ template <typename Fn> Fn functionFrom(PFN_vkVoidFunction value)
 
 std::pmr::string vkFailure(const char* operation, VkResult result)
 {
-    std::ostringstream message;
-    message << operation << " failed: " << static_cast<int>(result);
-    return arp::core::toPmrString(message.str());
+    core::pmr::String message(operation, &core::defaultCpuMemoryResource());
+    message += " failed: ";
+    core::appendUnsigned(message, static_cast<int>(result));
+    return message;
 }
 
 std::pmr::vector<std::uint32_t> readSpirvWords(const std::pmr::string& path)
@@ -1056,9 +1057,10 @@ public:
     }
 
     bool success = false;
-    std::pmr::string diagnostics;
+    core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
     VkPipelineLayout layout = VK_NULL_HANDLE;
-    std::pmr::vector<VkDescriptorSetLayout> descriptorSetLayouts;
+    core::pmr::Vector<VkDescriptorSetLayout> descriptorSetLayouts{
+        &core::defaultCpuMemoryResource()};
 
 private:
     void reset()
@@ -1085,9 +1087,15 @@ private:
     const VulkanRhiRuntime* device_ = nullptr;
 };
 
+struct NativePipelineResultUnobserved {
+    void operator()(VkResult) const noexcept {}
+};
+
+template <class Observe = NativePipelineResultUnobserved>
 NativePipelineLayoutBuild createPipelineLayout(const VulkanRhiRuntime& device,
     const rhi::PipelineLayoutDesc& desc,
-    VulkanRhiNativeResourceStats& stats)
+    VulkanRhiNativeResourceStats& stats,
+    Observe observe = {})
 {
     NativePipelineLayoutBuild result(device);
     auto* createDescriptorSetLayout = functionFrom<PFN_vkCreateDescriptorSetLayout>(
@@ -1107,6 +1115,7 @@ NativePipelineLayoutBuild createPipelineLayout(const VulkanRhiRuntime& device,
     }
     const auto descriptorSetLayoutCount =
         desc.descriptorSets.empty() ? 0u : maxDescriptorSetIndex + 1u;
+    result.descriptorSetLayouts.reserve(descriptorSetLayoutCount);
     for (std::uint32_t setIndex = 0; setIndex < descriptorSetLayoutCount; ++setIndex) {
         const auto foundSetSlot = std::find_if(desc.descriptorSets.begin(),
             desc.descriptorSets.end(),
@@ -1121,7 +1130,7 @@ NativePipelineLayoutBuild createPipelineLayout(const VulkanRhiRuntime& device,
                 "Vulkan RHI native pipeline layout references missing descriptor layout";
             return result;
         }
-        std::pmr::vector<VkDescriptorSetLayoutBinding> bindings;
+        core::pmr::Vector<VkDescriptorSetLayoutBinding> bindings{&core::defaultCpuMemoryResource()};
         if (layout) {
             bindings.reserve(layout->bindings.size());
             for (const auto& binding : layout->bindings) {
@@ -1149,6 +1158,7 @@ NativePipelineLayoutBuild createPipelineLayout(const VulkanRhiRuntime& device,
         VkDescriptorSetLayout nativeLayout = VK_NULL_HANDLE;
         const auto created =
             createDescriptorSetLayout(device.logicalDevice(), &layoutInfo, nullptr, &nativeLayout);
+        observe(created);
         if (created != VK_SUCCESS) {
             result.diagnostics = vkFailure("vkCreateDescriptorSetLayout", created);
             return result;
@@ -1157,7 +1167,7 @@ NativePipelineLayoutBuild createPipelineLayout(const VulkanRhiRuntime& device,
         result.descriptorSetLayouts.push_back(nativeLayout);
     }
 
-    std::pmr::vector<VkPushConstantRange> pushRanges;
+    core::pmr::Vector<VkPushConstantRange> pushRanges{&core::defaultCpuMemoryResource()};
     pushRanges.reserve(desc.pushConstantRanges.size());
     for (const auto& range : desc.pushConstantRanges) {
         pushRanges.push_back(VkPushConstantRange{
@@ -1176,6 +1186,7 @@ NativePipelineLayoutBuild createPipelineLayout(const VulkanRhiRuntime& device,
 
     const auto created =
         createPipelineLayout(device.logicalDevice(), &layoutInfo, nullptr, &result.layout);
+    observe(created);
     if (created != VK_SUCCESS) {
         result.diagnostics = vkFailure("vkCreatePipelineLayout", created);
         return result;
@@ -1195,11 +1206,13 @@ NativePipelineLayoutBuild createPipelineLayout(const VulkanRhiRuntime& device,
     return result;
 }
 
+template <class Observe = NativePipelineResultUnobserved>
 VkShaderModule createShaderModule(const VulkanRhiRuntime& device,
     const std::uint32_t* words,
     std::size_t wordCount,
     VulkanRhiNativeResourceStats& stats,
-    std::pmr::string& diagnostics)
+    std::pmr::string& diagnostics,
+    Observe observe = {})
 {
     if (!words || wordCount < 5 || words[0] != 0x07230203u) {
         diagnostics = "Vulkan RHI native pipeline requires readable SPIR-V artifact";
@@ -1217,6 +1230,7 @@ VkShaderModule createShaderModule(const VulkanRhiRuntime& device,
     moduleInfo.pCode = words;
     VkShaderModule module = VK_NULL_HANDLE;
     const auto created = createShaderModule(device.logicalDevice(), &moduleInfo, nullptr, &module);
+    observe(created);
     if (created != VK_SUCCESS) {
         diagnostics = vkFailure("vkCreateShaderModule", created);
         return VK_NULL_HANDLE;
@@ -1297,12 +1311,50 @@ void destroyShaderModule(const VulkanRhiRuntime& device, VkShaderModule module)
     }
 }
 
+// Stack custody throughout pipeline lowering, including exceptions from CPU
+// containers and final shared payload allocation. Native creation remains the
+// existing builder; this owner adds no alternate native construction path.
+class NativePipelineObjects final {
+public:
+    explicit NativePipelineObjects(const VulkanRhiRuntime& runtime) noexcept : runtime_(runtime) {}
+
+    ~NativePipelineObjects()
+    {
+        destroyShaderModule(runtime_, vertex);
+        destroyShaderModule(runtime_, fragment);
+        destroyShaderModule(runtime_, compute);
+        if (pipeline)
+            if (auto fn = functionFrom<PFN_vkDestroyPipeline>(
+                    runtime_.getDeviceProcAddr("vkDestroyPipeline")))
+                fn(runtime_.logicalDevice(), pipeline, nullptr);
+        if (renderPass)
+            if (auto fn = functionFrom<PFN_vkDestroyRenderPass>(
+                    runtime_.getDeviceProcAddr("vkDestroyRenderPass")))
+                fn(runtime_.logicalDevice(), renderPass, nullptr);
+    }
+
+    void releasePipeline() noexcept
+    {
+        pipeline = VK_NULL_HANDLE;
+        renderPass = VK_NULL_HANDLE;
+    }
+
+    VkShaderModule vertex = VK_NULL_HANDLE, fragment = VK_NULL_HANDLE, compute = VK_NULL_HANDLE;
+    VkRenderPass renderPass = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+
+private:
+    const VulkanRhiRuntime& runtime_;
+};
+
+template <class Observe>
 VulkanRhiNativeResourceResult createComputePayload(const std::shared_ptr<VulkanRhiRuntime>& runtime,
     const rhi::PipelineLayoutDesc& layout,
     const core::pmr::String& entry,
     const std::uint32_t* words,
     std::size_t wordCount,
-    VulkanRhiNativeResourceStats& stats)
+    VulkanRhiNativeResourceStats& stats,
+    Observe observe)
 {
     VulkanRhiNativeResourceResult result;
     auto* createComputePipelines = functionFrom<PFN_vkCreateComputePipelines>(
@@ -1312,14 +1364,16 @@ VulkanRhiNativeResourceResult createComputePayload(const std::shared_ptr<VulkanR
         return result;
     }
 
-    auto layoutBuild = createPipelineLayout(*runtime, layout, stats);
+    auto layoutBuild = createPipelineLayout(*runtime, layout, stats, observe);
     if (!layoutBuild.success) {
         result.diagnostics = layoutBuild.diagnostics;
         return result;
     }
 
-    std::pmr::string diagnostics;
-    auto computeModule = createShaderModule(*runtime, words, wordCount, stats, diagnostics);
+    core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
+    NativePipelineObjects objects(*runtime);
+    auto& computeModule = objects.compute;
+    computeModule = createShaderModule(*runtime, words, wordCount, stats, diagnostics, observe);
     if (!computeModule) {
         result.diagnostics = diagnostics;
         return result;
@@ -1336,27 +1390,28 @@ VulkanRhiNativeResourceResult createComputePayload(const std::shared_ptr<VulkanR
     pipelineInfo.stage = stage;
     pipelineInfo.layout = layoutBuild.layout;
 
-    VkPipeline pipeline = VK_NULL_HANDLE;
+    auto& pipeline = objects.pipeline;
     const auto pipelineCreated = createComputePipelines(
         runtime->logicalDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
-    destroyShaderModule(*runtime, computeModule);
+    observe(pipelineCreated);
     if (pipelineCreated != VK_SUCCESS) {
         result.diagnostics = vkFailure("vkCreateComputePipelines", pipelineCreated);
         return result;
     }
 
     ++stats.nativeComputePipelineCreateCount;
-    const auto nativeLayout = layoutBuild.releaseLayout();
-    auto nativeDescriptorSetLayouts = layoutBuild.releaseDescriptorSetLayouts();
     const auto pushConstantStages = layout.pushConstantRanges.empty()
         ? 0u
         : shaderStagesFor(layout.pushConstantRanges.front().stages);
     result.payload = arp::core::makeShared<NativePipelinePayload>(runtime,
         pipeline,
-        nativeLayout,
+        layoutBuild.layout,
         VK_NULL_HANDLE,
         pushConstantStages,
-        std::move(nativeDescriptorSetLayouts));
+        std::move(layoutBuild.descriptorSetLayouts));
+    layoutBuild.releaseLayout();
+    layoutBuild.descriptorSetLayouts.clear();
+    objects.releasePipeline();
     result.success = true;
     return result;
 }
@@ -1598,8 +1653,11 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createBindlessCo
     const auto layout = rhi::bindlessPipelineLayout(package.artifact());
     // Copy into aligned words during preparation, never during recording.
     const auto words = moduleWords(package, *selected);
+    const auto observe = [this](VkResult result) noexcept {
+        runtime_->captureOriginalDeviceLoss(result);
+    };
     return createComputePayload(
-        runtime_, layout, selected->entry, words.data(), words.size(), *stats_);
+        runtime_, layout, selected->entry, words.data(), words.size(), *stats_, observe);
 }
 
 VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createBindlessRenderPayload(
@@ -1752,7 +1810,8 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
     const std::uint32_t* fragmentWords,
     std::size_t fragmentCount)
 {
-    VulkanRhiNativeResourceResult result;
+    VulkanRhiNativeResourceResult result{
+        false, core::pmr::String{&core::defaultCpuMemoryResource()}};
     if (!connected()) {
         result.diagnostics = "Vulkan RHI native render pipeline requires a native device";
         return result;
@@ -1806,21 +1865,29 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
         return result;
     }
 
-    auto layoutBuild = createPipelineLayout(*runtime_, desc.layout->desc(), *stats_);
+    const auto observe = [this](VkResult result) noexcept {
+        runtime_->captureOriginalDeviceLoss(result);
+    };
+    auto layoutBuild = createPipelineLayout(*runtime_, desc.layout->desc(), *stats_, observe);
     if (!layoutBuild.success) {
         result.diagnostics = layoutBuild.diagnostics;
         return result;
     }
 
-    std::pmr::string diagnostics;
-    auto vertexModule =
-        createShaderModule(*runtime_, vertexWords, vertexCount, *stats_, diagnostics);
-    auto fragmentModule = hasFragment
-        ? createShaderModule(*runtime_, fragmentWords, fragmentCount, *stats_, diagnostics)
+    core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
+    NativePipelineObjects objects(*runtime_);
+    auto& vertexModule = objects.vertex;
+    vertexModule =
+        createShaderModule(*runtime_, vertexWords, vertexCount, *stats_, diagnostics, observe);
+    if (!vertexModule) {
+        result.diagnostics = diagnostics;
+        return result;
+    }
+    auto& fragmentModule = objects.fragment;
+    fragmentModule = hasFragment
+        ? createShaderModule(*runtime_, fragmentWords, fragmentCount, *stats_, diagnostics, observe)
         : VK_NULL_HANDLE;
-    if (!vertexModule || (hasFragment && !fragmentModule)) {
-        destroyShaderModule(*runtime_, vertexModule);
-        destroyShaderModule(*runtime_, fragmentModule);
+    if (hasFragment && !fragmentModule) {
         result.diagnostics = diagnostics;
         return result;
     }
@@ -1833,13 +1900,13 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
     const auto renderPassColorCount = hasCompatibility
         ? static_cast<std::uint32_t>(compatibility.colorAttachmentFormats.size())
         : colorTargetCount;
-    std::pmr::vector<VkAttachmentDescription> attachments;
+    core::pmr::Vector<VkAttachmentDescription> attachments{&core::defaultCpuMemoryResource()};
     attachments.resize(renderPassColorCount
         + (rhi::isDepthStencilFormat(hasCompatibility ? compatibility.depthStencilFormat
                                                       : rhi::effectiveDepthStencilFormat(desc))
                 ? 1u
                 : 0u));
-    std::pmr::vector<VkAttachmentReference> colorAttachmentRefs;
+    core::pmr::Vector<VkAttachmentReference> colorAttachmentRefs{&core::defaultCpuMemoryResource()};
     const auto depthFormat = hasCompatibility ? compatibility.depthStencilFormat
                                               : rhi::effectiveDepthStencilFormat(desc);
     const bool hasDepthStencilAttachment = rhi::isDepthStencilFormat(depthFormat);
@@ -1850,8 +1917,7 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
         auto& attachment = attachments[index];
         attachment.format = formatFor(format);
         if (attachment.format == VK_FORMAT_UNDEFINED) {
-            destroyShaderModule(*runtime_, vertexModule);
-            destroyShaderModule(*runtime_, fragmentModule);
+
             result.diagnostics =
                 "Vulkan RHI pipeline color attachment format has no native lowering";
             return result;
@@ -1870,8 +1936,7 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
         const auto depthAttachmentIndex = attachmentCount;
         attachments[depthAttachmentIndex].format = formatFor(depthFormat);
         if (attachments[depthAttachmentIndex].format == VK_FORMAT_UNDEFINED) {
-            destroyShaderModule(*runtime_, vertexModule);
-            destroyShaderModule(*runtime_, fragmentModule);
+
             result.diagnostics = "Vulkan RHI pipeline depth target format has no native lowering";
             return result;
         }
@@ -1889,12 +1954,12 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
     }
 
     std::pmr::vector<VkSubpassDescription> subpasses{&core::defaultCpuMemoryResource()};
-    std::array<std::pmr::vector<VkAttachmentReference>,
-        rhi::RenderPassCompatibilityDesc::kMaxSubpasses>
-        subpassColorRefs{};
-    std::array<std::pmr::vector<VkAttachmentReference>,
-        rhi::RenderPassCompatibilityDesc::kMaxSubpasses>
-        subpassInputRefs{};
+    core::pmr::Vector<core::pmr::Vector<VkAttachmentReference>> subpassColorRefs{
+        &core::defaultCpuMemoryResource()};
+    subpassColorRefs.resize(rhi::RenderPassCompatibilityDesc::kMaxSubpasses);
+    core::pmr::Vector<core::pmr::Vector<VkAttachmentReference>> subpassInputRefs{
+        &core::defaultCpuMemoryResource()};
+    subpassInputRefs.resize(rhi::RenderPassCompatibilityDesc::kMaxSubpasses);
     std::array<VkAttachmentReference, rhi::RenderPassCompatibilityDesc::kMaxSubpasses>
         subpassDepthRefs{};
     std::pmr::vector<VkSubpassDependency> dependencies{&core::defaultCpuMemoryResource()};
@@ -1908,8 +1973,7 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
             auto& inputRefs = subpassInputRefs[sp];
             for (const auto index : source.colorAttachmentIndices) {
                 if (index >= renderPassColorCount) {
-                    destroyShaderModule(*runtime_, vertexModule);
-                    destroyShaderModule(*runtime_, fragmentModule);
+
                     result.diagnostics =
                         "Vulkan RHI pipeline compatible color subpass index is out of range";
                     return result;
@@ -1918,8 +1982,7 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
             }
             for (const auto index : source.inputAttachmentIndices) {
                 if (index >= renderPassColorCount) {
-                    destroyShaderModule(*runtime_, vertexModule);
-                    destroyShaderModule(*runtime_, fragmentModule);
+
                     result.diagnostics =
                         "Vulkan RHI pipeline compatible input subpass index is out of range";
                     return result;
@@ -1934,8 +1997,7 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
             native.pInputAttachments = inputRefs.empty() ? nullptr : inputRefs.data();
             if (source.useDepthStencilAttachment) {
                 if (!hasDepthStencilAttachment) {
-                    destroyShaderModule(*runtime_, vertexModule);
-                    destroyShaderModule(*runtime_, fragmentModule);
+
                     result.diagnostics =
                         "Vulkan RHI compatible subpass requires a depth attachment";
                     return result;
@@ -1944,8 +2006,7 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
                 native.pDepthStencilAttachment = &subpassDepthRefs[sp];
             }
             if (source.readDepthInputAttachment) {
-                destroyShaderModule(*runtime_, vertexModule);
-                destroyShaderModule(*runtime_, fragmentModule);
+
                 result.diagnostics =
                     "Vulkan RHI pipeline compatible depth input attachment lowering is unsupported";
                 return result;
@@ -2002,12 +2063,12 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
     renderPassInfo.dependencyCount = static_cast<std::uint32_t>(dependencies.size());
     renderPassInfo.pDependencies = dependencies.empty() ? nullptr : dependencies.data();
 
-    VkRenderPass renderPass = VK_NULL_HANDLE;
+    auto& renderPass = objects.renderPass;
     const auto renderPassCreated =
         createRenderPass(runtime_->logicalDevice(), &renderPassInfo, nullptr, &renderPass);
+    observe(renderPassCreated);
     if (renderPassCreated != VK_SUCCESS) {
-        destroyShaderModule(*runtime_, vertexModule);
-        destroyShaderModule(*runtime_, fragmentModule);
+
         result.diagnostics = vkFailure("vkCreateRenderPass", renderPassCreated);
         return result;
     }
@@ -2023,8 +2084,10 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
     stages[1].module = fragmentModule;
     stages[1].pName = desc.fragmentShader.entryPoint.c_str();
 
-    std::pmr::vector<VkVertexInputBindingDescription> vertexBindings;
-    std::pmr::vector<VkVertexInputAttributeDescription> vertexAttributes;
+    core::pmr::Vector<VkVertexInputBindingDescription> vertexBindings{
+        &core::defaultCpuMemoryResource()};
+    core::pmr::Vector<VkVertexInputAttributeDescription> vertexAttributes{
+        &core::defaultCpuMemoryResource()};
     vertexBindings.reserve(desc.vertexBuffers.size());
     for (const auto& vertexBuffer : desc.vertexBuffers) {
         const VkVertexInputRate rate = (vertexBuffer.inputRate == rhi::VertexInputRate::Instance)
@@ -2139,7 +2202,8 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
         desc.multisample.alphaToCoverageEnabled ? VK_TRUE : VK_FALSE;
 
     const auto colorBlendTargetCount = rhi::effectiveColorTargetCount(desc);
-    std::pmr::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments;
+    core::pmr::Vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments{
+        &core::defaultCpuMemoryResource()};
     colorBlendAttachments.resize(colorBlendTargetCount);
     for (std::uint32_t index = 0; index < colorBlendTargetCount; ++index) {
         const auto target = rhi::effectiveColorTargetAt(desc, index);
@@ -2184,29 +2248,30 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
     // non-zero subpassIndex pipelines).
     pipelineInfo.subpass = desc.subpassIndex;
 
-    VkPipeline pipeline = VK_NULL_HANDLE;
+    auto& pipeline = objects.pipeline;
     const auto pipelineCreated = createGraphicsPipelines(
         runtime_->logicalDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
-    destroyShaderModule(*runtime_, vertexModule);
-    destroyShaderModule(*runtime_, fragmentModule);
+    observe(pipelineCreated);
+
     if (pipelineCreated != VK_SUCCESS) {
-        destroyRenderPass(runtime_->logicalDevice(), renderPass, nullptr);
+
         result.diagnostics = vkFailure("vkCreateGraphicsPipelines", pipelineCreated);
         return result;
     }
 
     ++stats_->nativeRenderPipelineCreateCount;
-    const auto nativeLayout = layoutBuild.releaseLayout();
-    auto nativeDescriptorSetLayouts = layoutBuild.releaseDescriptorSetLayouts();
     const auto pushConstantStages = desc.layout->desc().pushConstantRanges.empty()
         ? 0u
         : shaderStagesFor(desc.layout->desc().pushConstantRanges.front().stages);
     result.payload = arp::core::makeShared<NativePipelinePayload>(runtime_,
         pipeline,
-        nativeLayout,
+        layoutBuild.layout,
         renderPass,
         pushConstantStages,
-        std::move(nativeDescriptorSetLayouts));
+        std::move(layoutBuild.descriptorSetLayouts));
+    layoutBuild.releaseLayout();
+    layoutBuild.descriptorSetLayouts.clear();
+    objects.releasePipeline();
     result.success = true;
     return result;
 }
@@ -2245,8 +2310,16 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createComputePip
         result.diagnostics = "RHI-VULKAN-ORIGINAL-COMPUTE-BYTES-INVALID";
         return result;
     }
-    return createComputePayload(
-        runtime_, desc.layout->desc(), desc.computeShader.entryPoint, words, count, *stats_);
+    const auto observe = [this](VkResult result) noexcept {
+        runtime_->captureOriginalDeviceLoss(result);
+    };
+    return createComputePayload(runtime_,
+        desc.layout->desc(),
+        desc.computeShader.entryPoint,
+        words,
+        count,
+        *stats_,
+        observe);
 }
 
 } // namespace arp::rhi_vulkan

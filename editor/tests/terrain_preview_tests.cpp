@@ -1,11 +1,15 @@
 #include "3d/components.h"
 #include "core/encoding/yaml_contract.h"
 #include "core/io/file_io.h"
+#include "editor/tests/fixtures/project_fixture.h"
+#include "editor/tests/fixtures/recovery_fixture.h"
 #include "editor/viewport/editor_scene_viewport_frame_builder.h"
 #include "editor/viewport/editor_scene_viewport_mesh_cache.h"
 #include "editor/viewport/editor_scene_viewport_resource_resolver.h"
 #include "editor/viewport/editor_scene_viewport_texture_cache.h"
 #include "editor/workspace/editor_project_resources.h"
+#include "editor/workspace/editor_recovery_preparation.h"
+#include "editor/workspace/editor_scene_authoring_codec.h"
 #include "editor/workspace/editor_scene_document.h"
 #include "editor/workspace/editor_shell.h"
 #include "editor/workspace/editor_terrain_browser.h"
@@ -13,6 +17,7 @@
 #include "resource/terrain_asset_resource.h"
 #include "rhi/backends/null/null_backend.h"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -40,13 +45,67 @@ void write(const std::filesystem::path& path, const core::pmr::String& contents)
     assert(stream.good());
 }
 
-void check(const std::filesystem::path& root, const char* terrain, const char* preview)
+void check(const std::filesystem::path& root,
+    const char* terrain,
+    const char* preview,
+    bool testInputConflicts = false)
 {
     editor::EditorProjectResources owner;
     const auto loaded = owner.load(root);
     if (!loaded.success)
         std::fprintf(stderr, "%s\n", loaded.diagnostics.c_str());
     assert(loaded.success);
+    {
+        core::pmr::String diagnostic;
+        const auto canonicalRoot = std::filesystem::canonical(root);
+        assert(
+            editor::ProjectInputSnapshot::verify(canonicalRoot, owner.inputBindings(), diagnostic));
+        editor::EditorRecoverySnapshot snapshot;
+        snapshot.sessionId = "4305ee93-3897-43ae-93da-ecbb0c569c83";
+        snapshot.sequence = snapshot.workspaceEpoch = 1;
+        snapshot.projectRoot = core::FilePath::utf8(canonicalRoot);
+        snapshot.workspace = "Game";
+        editor::EditorSceneDocument empty(false);
+        assert(editor::EditorSceneAuthoringCodec::encode(empty, snapshot.scene.yaml, diagnostic));
+        snapshot.project.emplace();
+        snapshot.project->id = owner.manifest()->id;
+        snapshot.project->savedFileBytes = snapshot.project->draftYaml = owner.manifestSnapshot();
+        assert(editor::EditorRecoveryPreparation::capturePackages(canonicalRoot,
+            snapshot.project->savedFileBytes,
+            snapshot.project->packages,
+            diagnostic));
+        assert(editor::EditorRecoveryPreparation::captureInputs(
+            canonicalRoot, owner, *snapshot.project, diagnostic));
+        auto candidate =
+            editor::EditorRecoveryPreparation::prepare(snapshot, canonicalRoot, diagnostic);
+        if (!candidate)
+            std::fprintf(stderr, "terrain recovery: %s\n", diagnostic.c_str());
+        assert(candidate
+            && editor::ProjectInputSnapshot::equal(
+                owner.inputBindings(), candidate->resources.inputBindings()));
+        const auto found = std::find_if(
+            owner.inputBindings().begin(), owner.inputBindings().end(), [](const auto& input) {
+                return input.path == "map.png";
+            });
+        // The synthetic fixture uses one PNG in 24 layer channels: one binding.
+        if (testInputConflicts) {
+            assert(found != owner.inputBindings().end());
+            const auto bytes = editor::tests::RecoveryFixture::read(root / "map.png");
+            auto changed = bytes;
+            changed.back() ^= 1;
+            editor::tests::RecoveryFixture::write(root / "map.png", changed);
+            assert(!editor::EditorRecoveryPreparation::prepare(snapshot, canonicalRoot, diagnostic)
+                && diagnostic == "PROJECT-INPUT-CONTENT-CHANGED");
+            editor::tests::RecoveryFixture::write(root / "map.png", bytes);
+            auto omitted = snapshot;
+            omitted.project->inputFiles.erase(omitted.project->inputFiles.begin()
+                + std::distance(owner.inputBindings().begin(), found));
+            assert(!editor::EditorRecoveryPreparation::prepare(omitted, canonicalRoot, diagnostic)
+                && diagnostic == "EDITOR-RECOVERY-INPUT-CLOSURE-MISMATCH");
+        }
+        std::puts(
+            "PASS terrain actual-input provenance and independent cold recovery, changed PNG and omitted input rejected");
+    }
     auto& manager = owner.manager();
     editor::EditorTerrainBrowser browser;
     assert(browser.refresh(manager) && browser.entries().size() == 1);
@@ -122,7 +181,9 @@ void check(const std::filesystem::path& root, const char* terrain, const char* p
     }
     const auto* stableOwner = &owner.manager();
     const auto bad = owner.loadManifest(root,
-        "format: ArpEditorProject\nversion: 1\nassetPackages: []\nterrainPreviews: [missing.yaml]\n");
+        arp::editor::tests::ProjectFixture::document("assetPackages: []\n"
+                                                     "physics2d: null\n",
+            "missing-metadata.yaml"));
     assert(!bad.success && &owner.manager() == stableOwner);
     assert(
         owner.manager().find<resource::TerrainAssetResource>(core::pmr::String(terrain)).ready());
@@ -374,10 +435,14 @@ int main(int argc, char** argv)
         config["layers"].get_value_ref<Yaml::Node::sequence_type&>().push_back(std::move(layer));
     }
     write(root / "preview.yaml", Yaml::serialize(config));
-    write(root / "project.arp.yaml",
+    write(root / "editor-project.yaml",
         core::pmr::String(
-            "format: ArpEditorProject\nversion: 1\nassetPackages: []\nterrainPreviews: [preview.yaml]\n"));
-    check(root, terrainId, previewId);
+            "type: arp.editor-project\ncontractVersion: 1\nterrainPreviews: [preview.yaml]\n"));
+    write(root / "project.arp.yaml",
+        core::pmr::String(arp::editor::tests::ProjectFixture::document("assetPackages: []\n"
+                                                                       "physics2d: null\n",
+            "editor-project.yaml")));
+    check(root, terrainId, previewId, true);
     checkBrowser(root);
     editor::EditorProjectResources owner;
     config["maxPreviewBytes"] = 639;

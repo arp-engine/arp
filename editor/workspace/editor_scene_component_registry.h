@@ -22,6 +22,9 @@ struct EditorSceneComponentFactoryContext {
     core::SharedCallback<core::SharedPtr<physics2d::PhysicsWorld2D>()> physicsWorld2DProvider;
 };
 
+// Only factories with isolated authoring construction may enter exact history.
+bool editorSceneComponentIdentityRestorable(std::string_view typeName) noexcept;
+
 core::UniquePtr<scene::Component> createEditorSceneComponent(
     std::string_view typeName, EditorSceneComponentFactoryContext& context);
 

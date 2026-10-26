@@ -52,6 +52,9 @@ public:
         std::uint32_t maxInstances,
         const AotPackageDescriptorV5* nativePackage = nullptr);
     bool bind(scene::Scene&);
+    enum class RegistrationScope { Unqualified, ResourceQualified };
+    bool bind(scene::Scene&, const core::pmr::Vector<core::pmr::String>& types, RegistrationScope);
+    core::pmr::String qualifiedTypeName(const core::pmr::String& type) const;
     core::UniquePtr<scene::Component> create(
         scene::GameObject&, const core::pmr::String&, bool runConstructor = true);
     const Type* find(const core::pmr::String&) const;

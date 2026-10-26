@@ -23,6 +23,8 @@
 namespace arp::rhi {
 class BindlessCrossExtension;
 class OriginalCommandBindlessRootSource;
+template <class Descriptor> class OriginalCommandDescriptorSource;
+using OriginalCommandDescriptorSetSource = OriginalCommandDescriptorSource<DescriptorSet>;
 struct BindlessCapabilities;
 } // namespace arp::rhi
 
@@ -231,6 +233,9 @@ rhi::ResourceBarrierResult prepareMetalRhiTextureForPoolReuse(rhi::GpuTexture& t
 
 std::shared_ptr<MetalRhiNativeDescriptorGroupPayload> metalRhiNativePayloadFor(
     const rhi::DescriptorSet& descriptorSet);
+std::shared_ptr<const MetalRhiNativeDescriptorGroupPayload> metalRhiOriginalSynchronousPayloadFor(
+    const std::shared_ptr<const rhi::OriginalCommandDescriptorSetSource>&) noexcept;
+
 std::shared_ptr<MetalRhiNativeDescriptorGroupPayload>
 prepareMetalRhiOriginalCompletedImageDescriptors(
     const rhi::BindlessSnapshot& snapshot, rhi::OriginalBindlessCompletedImageScope scope);
@@ -346,6 +351,15 @@ arp::core::UniquePtr<rhi::CommandEncoder> createMetalRhiCommandEncoder(
     const rhi::CommandEncoderDesc& desc,
     MetalRhiStagingUploadPool* stagingUploadPool = nullptr,
     std::shared_ptr<MetalRhiResourceRegistry> registry = nullptr);
+
+// Backend-private cold storage; public preparation/lowering admission remains
+// the device extension's responsibility.
+core::UniquePtr<rhi::CommandEncoder> createMetalRhiOriginalOrdinaryCommandEncoder(
+    std::shared_ptr<const rhi::OriginalCommandStreamProgram>,
+    const rhi::GpuDevice&,
+    const rhi::OriginalRenderPassPreparationRequest&,
+    std::shared_ptr<MetalRhiResourceRegistry>,
+    core::pmr::String&);
 
 arp::core::UniquePtr<rhi::CommandEncoder> createMetalRhiCommandEncoder(
     const rhi::CommandEncoderDesc& desc,

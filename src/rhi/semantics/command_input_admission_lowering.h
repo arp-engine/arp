@@ -126,6 +126,8 @@ public:
                 false,
                 "RHI-ORIGINAL-CONSUMPTION-NULL-VALIDATOR-ONLY"};
         case Backend::Vulkan:
+            if (contractVersion == 4u)
+                return {CapabilityMode::Equivalent, false, true, false, false, nullptr};
             return {CapabilityMode::DiagnosticFailure,
                 false,
                 false,
@@ -133,6 +135,10 @@ public:
                 false,
                 "RHI-ORIGINAL-CONSUMPTION-VULKAN-ACTOR-MISSING"};
         case Backend::Metal:
+            // Exact general-resource CPU projection only. This grants neither
+            // native recording nor execution; Preparation6 remains independent.
+            if (contractVersion == 4u)
+                return {CapabilityMode::Equivalent, false, true, false, false, nullptr};
             return {CapabilityMode::DiagnosticFailure,
                 false,
                 false,

@@ -40,7 +40,7 @@ def main():
     ap.add_argument('--browser');ap.add_argument('--prepare-only',action='store_true');ap.add_argument('--frames',type=int,default=2)
     args=ap.parse_args();prepare(args.directory,args.exe,args.output)
     if args.prepare_only:return
-    report=BrowserContractRunner(args.browser,args.output,'index.html?frames='+str(args.frames),args.output/'run',60).run()
+    report=BrowserContractRunner(args.browser,args.output,'index.html?frames='+str(args.frames)+'&progress=1',args.output/'run',60,capture_progress=True).run()
     pixels=report.pop('rgba',None)
     if pixels:
         from PIL import Image

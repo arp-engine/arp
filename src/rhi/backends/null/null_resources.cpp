@@ -484,6 +484,12 @@ void ResourceRegistry::unregisterResource(GpuResourceId id)
     for (auto it = resources_.begin(); it != resources_.end(); ++it) {
         if (it->id == id) {
             resources_.erase(it);
+            // The last original resource may be a failed cold-creation prefix.
+            // Do not retain its caller's CPU quota in an empty validator cache.
+            // Empty-vector swap preserves the registry allocator and allocates
+            // nothing; other live resources keep their existing metadata.
+            if (resources_.empty())
+                decltype(resources_)(resources_.get_allocator()).swap(resources_);
             return;
         }
     }

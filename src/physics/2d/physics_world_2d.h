@@ -28,6 +28,11 @@ enum class JointType {
     Prismatic,
 };
 
+// Fixed at construction. Authoring owns descriptors and references only; it
+// never publishes native simulation objects or valid simulation handles.
+enum class ComponentUsage { Simulation, Authoring };
+ComponentUsage requireComponentUsage(ComponentUsage);
+
 struct WorldConfig {
     core::Vec2 gravity;
     std::uint32_t maxBodies = 0, maxColliders = 0, maxJoints = 0, maxNativeShapes = 0;
@@ -158,6 +163,13 @@ struct BodyState {
     APROP()
     float angularVelocity = 0;
 };
+
+// Read-only, allocation-free domain admission, shared by native simulation and
+// authoring. Null means valid; otherwise a stable diagnostic identifies refusal.
+const char* validateBodyDesc(const BodyDesc&) noexcept;
+const char* validateShapeDesc(
+    const ShapeDesc&, std::uint32_t maxChainPoints, bool query = false) noexcept;
+const char* validateJointDesc(const JointDesc&) noexcept;
 enum class EventType { ContactBegin, ContactEnd, SensorBegin, SensorEnd };
 
 struct ContactEvent {
@@ -174,6 +186,8 @@ struct QueryHit {
 struct PhysicsTelemetry {
     std::uint32_t bodies = 0, colliders = 0, joints = 0;
     std::uint64_t ticks = 0, thirdPartyBytes = 0, thirdPartyPeakBytes = 0;
+    // Process-wide allocator-hook counter, including allocations later freed.
+    std::uint64_t thirdPartyAllocations = 0;
 };
 // Single owner thread. No backend types escape. Native shape IDs are private.
 // Config fixes all engine container capacities. Box2D's own growth is measured
@@ -199,6 +213,7 @@ public:
     PhysicsWorld2D(const PhysicsWorld2D&) = delete;
     PhysicsWorld2D& operator=(const PhysicsWorld2D&) = delete;
     bool valid() const;
+    std::uint32_t chainPointCapacity() const;
 
     const reflection::object& nativeReflectionObject() const { return reflection_; }
     AFUNC()

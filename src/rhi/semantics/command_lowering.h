@@ -1504,11 +1504,9 @@ public:
             return {{CapabilityMode::DiagnosticFailure, false, false, false},
                 "RHI-ORIGINAL-GENERAL-SOURCE-NULL-VALIDATOR-ONLY"};
         case Backend::Vulkan:
-            return {{CapabilityMode::DiagnosticFailure, false, false, false},
-                "RHI-ORIGINAL-GENERAL-SOURCE-VULKAN-ADAPTER-MISSING"};
+            return {{CapabilityMode::Equivalent, true, false, false}, nullptr};
         case Backend::Metal:
-            return {{CapabilityMode::DiagnosticFailure, false, false, false},
-                "RHI-ORIGINAL-GENERAL-SOURCE-METAL-ADAPTER-MISSING"};
+            return {{CapabilityMode::Equivalent, true, false, false}, nullptr};
         case Backend::WebGPU:
             return {{CapabilityMode::Equivalent, true, false, false}, nullptr};
         case Backend::WebGL:
@@ -1541,8 +1539,26 @@ public:
         const char* diagnostic = "RHI-ORIGINAL-PIPELINE-SOURCE-BACKEND";
     };
 
-    static constexpr Decision lowering(Backend backend) noexcept
+    static constexpr Decision lowering(
+        Backend backend, std::uint32_t version = 1u, bool graphics = false) noexcept
     {
+        if (version == 2u) {
+            if (backend == Backend::Vulkan || backend == Backend::Metal)
+                return {CapabilityMode::Equivalent, false, true, false, false, nullptr};
+            return {CapabilityMode::DiagnosticFailure,
+                backend == Backend::Null,
+                false,
+                false,
+                false,
+                "RHI-ORIGINAL-PIPELINE-SOURCE-SYNC-PROFILE"};
+        }
+        if (version != 1u)
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                false,
+                false,
+                "RHI-ORIGINAL-PIPELINE-SOURCE-VERSION"};
         switch (backend) {
         case Backend::Null:
             return {CapabilityMode::DiagnosticFailure,

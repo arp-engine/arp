@@ -83,7 +83,7 @@ public:
                 expected = "RHI-ORIGINAL-DESCRIPTOR-SOURCE-OPT-IN";
                 break;
             case 6u:
-                bad.contractVersion = 7u;
+                bad.contractVersion = 8u;
                 expected = "RHI-ORIGINAL-DESCRIPTOR-SOURCE-VERSION";
                 break;
             }
@@ -117,29 +117,28 @@ public:
         depth.maxFrozenDynamicOffsets = 0u;
         depth.finiteFullBoundViewOptIn = false;
         assert(!Set::validateBudget(depth));
-        for (std::uint32_t assembly = 0u; assembly <= 7u; ++assembly)
-            for (std::uint32_t source = 1u; source <= 7u; ++source)
+        for (std::uint32_t assembly = 0u; assembly <= 8u; ++assembly)
+            for (std::uint32_t source = 1u; source <= 8u; ++source)
                 assert(Sources::allowsDescriptorSourceVersion(assembly, source)
-                    == ((assembly >= 1u && assembly <= 6u && source == 2u)
+                    == ((assembly >= 1u && assembly <= 8u && source == 2u)
                         || (assembly >= 3u && assembly <= 5u && source == assembly)
-                        || (assembly == 6u && (source == 5u || source == 6u))));
+                        || (assembly == 6u && (source == 5u || source == 6u))
+                        || (assembly == 7u && source == 5u)
+                        || (assembly == 8u && (source == 5u || source == 7u))));
         const std::array backends{
             rhi::Backend::Null, rhi::Backend::Vulkan, rhi::Backend::Metal, rhi::Backend::WebGPU};
         const std::array<const char*, 4u> diagnostics{
-            {"RHI-ORIGINAL-GENERAL-SOURCE-NULL-VALIDATOR-ONLY",
-                "RHI-ORIGINAL-GENERAL-SOURCE-VULKAN-ADAPTER-MISSING",
-                "RHI-ORIGINAL-GENERAL-SOURCE-METAL-ADAPTER-MISSING",
-                nullptr}};
+            {"RHI-ORIGINAL-GENERAL-SOURCE-NULL-VALIDATOR-ONLY", nullptr, nullptr, nullptr}};
         for (std::size_t i = 0u; i < backends.size(); ++i) {
             const auto d =
                 rhi::semantics::OriginalCommandDescriptorSourceLowering::generalFiniteLowering(
                     backends[i]);
             assert(!d.positionalAdapterAvailable && !d.executionAvailable);
-            assert(d.freezeAvailable == (i == 3u));
+            assert(d.freezeAvailable == (i == 1u || i == 2u || i == 3u));
             assert(d.mode
-                == (i == 3u ? rhi::CapabilityMode::Equivalent
-                            : rhi::CapabilityMode::DiagnosticFailure));
-            if (i == 3u)
+                == (i == 1u || i == 2u || i == 3u ? rhi::CapabilityMode::Equivalent
+                                                  : rhi::CapabilityMode::DiagnosticFailure));
+            if (i == 1u || i == 2u || i == 3u)
                 assert(!d.diagnostic);
             else
                 is(d.diagnostic, diagnostics[i]);

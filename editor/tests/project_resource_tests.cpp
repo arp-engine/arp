@@ -1,4 +1,7 @@
 #include "3d/animator_component.h"
+#include "core/io/file_io.h"
+#include "editor/tests/fixtures/project_fixture.h"
+#include "editor/tests/fixtures/project_package_fixture.h"
 #include "editor/workspace/editor_project_resources.h"
 #include "editor/workspace/editor_terrain_build.h"
 #include "resource/internal_asset_package.h"
@@ -7,11 +10,13 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
 #include <thread>
+#include <type_traits>
 
 namespace {
 std::filesystem::path makeRoot()
@@ -23,7 +28,7 @@ std::filesystem::path makeRoot()
     return root;
 }
 
-void writeManifest(const std::filesystem::path& root, const char* contents)
+void writeManifest(const std::filesystem::path& root, std::string_view contents)
 {
     std::ofstream output(root / "project.arp.yaml", std::ios::binary);
     output << contents;
@@ -37,20 +42,166 @@ arp::core::pmr::String text(const char* value)
 
 arp::resource::PrefabAssetGraphBuildDesc packageDesc()
 {
-    using namespace arp::resource;
-    PrefabAssetGraphBuildDesc desc;
-    desc.ids.rootId = text("0b5f7a2d-78a7-47d2-91f5-4ab0f8b827e1");
-    desc.ids.prefabId = desc.ids.rootId;
-    desc.ids.basicShaderId = text("f0817aa6-f639-46c9-b9de-0ea317a2b94d");
-    desc.alias = text("prefab/editor-test");
-    desc.displayName = text("editor-test");
-    desc.sourcePath = text("synthetic/editor-test");
-    desc.sourceKind = text("SyntheticPrefabFolder");
-    desc.shaderPaths.basicMaterialPreview = text("shaders/basic.slang");
-    desc.shaderPaths.stylizedScene = text("shaders/stylized.slang");
-    desc.shaderPaths.guiOverlay = text("shaders/gui.slang");
-    desc.startupSplashShaderPath = text("shaders/startup.slang");
-    return desc;
+    return arp::editor::tests::ProjectPackageFixture::descriptor();
+}
+
+void projectIntegrationTests(const std::filesystem::path& root)
+{
+    using namespace arp;
+    using editor::tests::ProjectFixture;
+    std::filesystem::create_directory(root);
+    const auto yaml =
+        ProjectFixture::document("assetPackages: []\nphysics2d: null\n", "editor-project.yaml");
+    writeManifest(root, yaml);
+    constexpr auto metadata = "type: arp.editor-project\ncontractVersion: 1\nterrainPreviews: []\n";
+    std::ofstream(root / "editor-project.yaml") << metadata;
+    editor::EditorProjectResources owner;
+    assert(owner.load(root).success);
+    assert(owner.manifest() && owner.manifest()->editorMetadata == "editor-project.yaml");
+    assert(owner.packageProvenanceBound() && owner.packageBindings().empty());
+    const auto originalMetadata = core::readTextFile(
+        root / "editor-project.yaml", editor::EditorProjectResources::maxManifestBytes);
+    assert(originalMetadata.success && owner.metadataSnapshot() == originalMetadata.text
+        && owner.inputBindings().size() == 1);
+    const auto originalBindings = owner.inputBindings();
+    const auto* original = &owner.manager();
+    std::ofstream(root / "editor-project.yaml")
+        << "type: arp.editor-project\ncontractVersion: 2\nterrainPreviews: []\n";
+    const auto invalidMetadata = owner.load(root);
+    assert(!invalidMetadata.success
+        && invalidMetadata.diagnostics.find("PROJECT-METADATA-VERSION-UNSUPPORTED") == 0);
+    assert(&owner.manager() == original && owner.manifestSnapshot() == yaml);
+    assert(owner.metadataSnapshot() == originalMetadata.text
+        && editor::ProjectInputSnapshot::equal(owner.inputBindings(), originalBindings));
+    std::ofstream(root / "editor-project.yaml") << metadata;
+
+    auto scripted = yaml;
+    const auto offset = scripted.find("scriptModules: []");
+    assert(offset != core::pmr::String::npos);
+    scripted.replace(offset,
+        std::string_view("scriptModules: []").size(),
+        "scriptModules:\n  - id: gameplay\n"
+        "    resourceId: 4305ee93-3897-43ae-93da-ecbb0c569c84\n"
+        "    source: gameplay.arp\n    schemaVersion: 1\n    dependencies: []");
+    const auto missingSource = owner.loadManifest(root, scripted);
+    assert(!missingSource.success && &owner.manager() == original);
+    assert(owner.manifestSnapshot() == yaml);
+    // Opening references checks the file without executing or compiling it.
+    std::ofstream(root / "gameplay.arp") << "// Source-only authoring fixture\n";
+    assert(owner.loadManifest(root, scripted).success);
+    assert(owner.manifest()->scriptModules.size() == 1 && owner.inputBindings().size() == 2);
+    core::pmr::String inputDiagnostic;
+    assert(editor::ProjectInputSnapshot::verify(
+        std::filesystem::canonical(root), owner.inputBindings(), inputDiagnostic));
+    const auto previousSnapshot = core::pmr::String(owner.manifestSnapshot());
+    const auto* scriptOwner = &owner.manager();
+    auto escaping =
+        ProjectFixture::document("assetPackages: []\nphysics2d: null\n", "../outside.yaml");
+    assert(!owner.loadManifest(root, escaping).success);
+    assert(&owner.manager() == scriptOwner && owner.manifestSnapshot() == previousSnapshot);
+
+    const auto invalidRoot = root / "invalid-project";
+    std::filesystem::create_directories(invalidRoot / "project.arp.yaml");
+    assert(!owner.load(invalidRoot).success);
+    assert(&owner.manager() == scriptOwner && owner.manifestSnapshot() == previousSnapshot);
+    std::filesystem::remove(invalidRoot / "project.arp.yaml");
+    std::error_code linkError;
+    std::filesystem::create_symlink(
+        root / "missing.yaml", invalidRoot / "project.arp.yaml", linkError);
+    if (!linkError) {
+        const auto dangling = owner.load(invalidRoot);
+        assert(!dangling.success && dangling.manifestFound);
+        assert(&owner.manager() == scriptOwner && owner.manifestSnapshot() == previousSnapshot);
+    } else {
+        std::puts("PROJECT-SYMLINK-TEST: OS denied symlink creation; case not exercised");
+    }
+
+    // Normal project open, rejected reload and destruction must return owned
+    // core allocations to the same warmed baseline; this is not a stress test.
+    const auto cycle = [&] {
+        editor::EditorProjectResources resources;
+        assert(resources.load(root).success);
+        assert(!resources.loadManifest(root, "type: invalid\n").success);
+        assert(resources.manifest() && resources.manifestSnapshot() == yaml);
+    };
+    cycle();
+    const auto baseline = core::defaultCpuAllocator().stats();
+    for (int i = 0; i < 20; ++i) {
+        cycle();
+        const auto current = core::defaultCpuAllocator().stats();
+        assert(current.liveBytes == baseline.liveBytes);
+        assert(current.allocationCount - current.deallocationCount
+            == baseline.allocationCount - baseline.deallocationCount);
+    }
+    std::puts(
+        "PROJECT-RESOURCE-LIFETIME: 20 open/reject/destroy cycles, core live bytes/count delta = 0");
+}
+
+void retainedOwnerTests(const std::filesystem::path& root)
+{
+    using namespace arp;
+    static_assert(!std::is_copy_constructible_v<editor::EditorProjectResources>);
+    static_assert(std::is_nothrow_move_constructible_v<editor::EditorProjectResources>);
+    std::filesystem::create_directories(root);
+    const auto package = resource::PrefabAssetGraphBuilder().buildPackage(packageDesc());
+    assert(package.success);
+    assert(resource::InternalAssetPackageWriter().write(package.package, root / "asset").success);
+    const auto yaml =
+        editor::tests::ProjectFixture::document("assetPackages: [asset]\nphysics2d: null\n");
+    const auto cycle = [&] {
+        core::SharedPtr<resource::ResourceManager> retained;
+        std::weak_ptr<resource::ResourceManager> weak;
+        resource::ResourceHandle<resource::PrefabResource> borrowed;
+        {
+            editor::EditorProjectResources owner;
+            assert(owner.loadManifest(root, yaml).success);
+            retained = owner.retainManager();
+            weak = retained;
+            borrowed = retained->find<resource::PrefabResource>(package.ids.prefabId);
+            assert(borrowed.ready());
+            assert(!owner.loadManifest(root, "type: invalid\n").success);
+            assert(owner.retainManager() == retained);
+            editor::EditorProjectResources candidate;
+            assert(candidate.loadManifest(root, yaml).success);
+            owner.publishAssetPackages(std::move(candidate));
+            assert(owner.retainManager() != retained && !weak.expired() && borrowed.ready());
+            // Same UUID/generation is a different owner, not cache equivalence.
+            const auto replacement =
+                owner.manager().find<resource::PrefabResource>(package.ids.prefabId);
+            assert(replacement.ready() && replacement.generation() == borrowed.generation()
+                && replacement.get() != borrowed.get());
+        }
+        // Owner destruction cannot invalidate an attached consumer's record.
+        assert(!weak.expired() && borrowed.ready());
+        class Observer final : public resource::ResourceLifecycleObserver {
+        public:
+            bool beforeResourceUnload(resource::NameView) noexcept override
+            {
+                ++unloads;
+                return true;
+            }
+            bool beforeRetiredResourcesRelease() noexcept override { return true; }
+            unsigned unloads = 0;
+        } observer;
+        retained->addLifecycleObserver(observer);
+        assert(retained->unload(package.ids.prefabId).success && observer.unloads == 1);
+        assert(!borrowed.ready());
+        retained->removeLifecycleObserver(observer);
+        borrowed = {};
+        retained.reset();
+        assert(weak.expired());
+    };
+    cycle();
+    const auto baseline = core::defaultCpuAllocator().stats();
+    for (unsigned i = 0; i < 20; ++i) {
+        cycle();
+        const auto stats = core::defaultCpuAllocator().stats();
+        assert(stats.liveBytes == baseline.liveBytes
+            && stats.allocationCount - stats.deallocationCount
+                == baseline.allocationCount - baseline.deallocationCount);
+    }
+    std::puts(
+        "PROJECT-RESOURCE-OWNER: 20 warmed reload/reject/replace/destroy/detach cycles; core live bytes/count delta = 0");
 }
 } // namespace
 
@@ -58,6 +209,12 @@ int main()
 {
     using namespace arp;
     const auto root = makeRoot();
+    {
+        editor::EditorProjectResources empty;
+        assert(!empty.packageProvenanceBound() && !empty.packageProvenanceDiagnostic().empty());
+        assert(empty.load(root).success && !empty.packageProvenanceBound()
+            && empty.packageBindings().empty() && !empty.packageProvenanceDiagnostic().empty());
+    }
     {
         const auto terrainRoot = root / "terrain";
         std::filesystem::create_directory(terrainRoot);
@@ -75,6 +232,15 @@ int main()
         };
         assert(!build.start(terrainRoot, "../hill.yaml", "escape.arpkg"));
         assert(build.start(terrainRoot, "hill.yaml", "hill.arpkg"));
+        wait();
+        const auto noProject = build.finish(terrainRoot);
+        assert(!noProject.success
+            && noProject.diagnostic.find("EDITOR-TERRAIN-PROJECT-REQUIRED") == 0);
+        assert(!std::filesystem::exists(terrainRoot / "project.arp.yaml"));
+        assert(!std::filesystem::exists(terrainRoot / "hill.arpkg"));
+        writeManifest(terrainRoot,
+            editor::tests::ProjectFixture::document("assetPackages: []\nphysics2d: null\n"));
+        assert(build.start(terrainRoot, "hill.yaml", "hill.arpkg"));
         assert(!build.start(terrainRoot, "hill.yaml", "parallel.arpkg"));
         wait();
         auto completed = build.finish(terrainRoot);
@@ -83,6 +249,8 @@ int main()
         assert(completed.resources->manager().find<resource::TerrainAssetResource>(id).ready());
         editor::EditorProjectResources reopened;
         assert(reopened.load(terrainRoot).success);
+        assert(reopened.manifest()
+            && reopened.manifest()->id == "4305ee93-3897-43ae-93da-ecbb0c569c83");
         assert(reopened.manager().find<resource::TerrainAssetResource>(id).ready());
         assert(build.start(terrainRoot, "hill.yaml", "hill.arpkg"));
         wait();
@@ -94,9 +262,14 @@ int main()
         std::filesystem::copy_file(
             fixture / "editor-hill.terrain.yaml", conflictRoot / "hill.yaml");
         std::filesystem::copy_file(fixture / "editor-hill.r32", conflictRoot / "editor-hill.r32");
+        writeManifest(conflictRoot,
+            editor::tests::ProjectFixture::document("assetPackages: []\nphysics2d: null\n"));
         assert(build.start(conflictRoot, "hill.yaml", "hill.arpkg"));
         wait();
-        writeManifest(conflictRoot, "format: ArpEditorProject\nversion: 1\nassetPackages: []\n");
+        writeManifest(conflictRoot,
+            arp::editor::tests::ProjectFixture::document("assetPackages: []\n"
+                                                         "physics2d: null\n")
+                + "# external edit\n");
         auto conflict = build.finish(conflictRoot);
         assert(!conflict.success && conflict.diagnostic == "EDITOR-TERRAIN-MANIFEST-CONFLICT");
         assert(!std::filesystem::exists(conflictRoot / "hill.arpkg"));
@@ -116,6 +289,8 @@ int main()
         assert(!std::filesystem::exists(terrainRoot / "stale.arpkg"));
         assert(!std::filesystem::exists(invalidRoot / "project.arp.yaml"));
         assert(!std::filesystem::exists(invalidRoot / "bad.arpkg"));
+        writeManifest(invalidRoot,
+            editor::tests::ProjectFixture::document("assetPackages: []\nphysics2d: null\n"));
         assert(build.start(invalidRoot, "bad.yaml", "bad.arpkg"));
         wait();
         assert(!build.finish(invalidRoot).success);
@@ -125,19 +300,39 @@ int main()
 
         const auto missing = resources.load(root);
         assert(missing.success && !missing.manifestFound && missing.packageCount == 0u);
+        assert(!resources.manifest());
         assert(
             missing.diagnostics.find("EDITOR-PROJECT-MANIFEST-MISSING") != core::pmr::String::npos);
 
-        writeManifest(root, "format: ArpEditorProject\nversion: 1\nassetPackages: []\n");
+        writeManifest(root,
+            arp::editor::tests::ProjectFixture::document("assetPackages: []\n"
+                                                         "physics2d: null\n"));
         const auto empty = resources.load(root);
         assert(empty.success && empty.manifestFound && empty.packageCount == 0u);
         assert(empty.diagnostics.empty());
+        assert(resources.manifest()
+            && resources.manifest()->id == "4305ee93-3897-43ae-93da-ecbb0c569c83");
+        const auto* stableManager = &resources.manager();
+        const core::pmr::String stableSnapshot(resources.manifestSnapshot());
+        const auto legacy = resources.loadManifest(
+            root, "format: ArpEditorProject\nversion: 1\nassetPackages: []\n");
+        assert(
+            !legacy.success && legacy.diagnostics.find("PROJECT-LEGACY-MIGRATION-REQUIRED") == 0);
+        assert(&resources.manager() == stableManager
+            && resources.manifestSnapshot() == stableSnapshot);
         writeManifest(root,
-            "format: ArpEditorProject\nversion: 1\nassetPackages: []\nphysics2d:\n"
-            "  gravity: {x: 0, y: -9.8}\n  maxBodies: 32\n  maxColliders: 64\n"
-            "  maxJoints: 16\n  maxNativeShapes: 128\n  maxEvents: 256\n"
-            "  maxQueryResults: 128\n  maxChainPoints: 32\n  substeps: 4\n"
-            "  fixedSeconds: 0.016666667\n");
+            arp::editor::tests::ProjectFixture::document("assetPackages: []\n"
+                                                         "physics2d:\n"
+                                                         "  gravity: {x: 0, y: -9.8}\n"
+                                                         "  maxBodies: 32\n"
+                                                         "  maxColliders: 64\n"
+                                                         "  maxJoints: 16\n"
+                                                         "  maxNativeShapes: 128\n"
+                                                         "  maxEvents: 256\n"
+                                                         "  maxQueryResults: 128\n"
+                                                         "  maxChainPoints: 32\n"
+                                                         "  substeps: 4\n"
+                                                         "  fixedSeconds: 0.016666667\n"));
         const auto configuredPhysics = resources.load(root);
         const auto physicsOwner = resources.physicsWorld2D();
         assert(configuredPhysics.success && configuredPhysics.physicsWorld2DReady);
@@ -150,18 +345,27 @@ int main()
         assert(!resources.manifestSnapshot().empty());
 
         writeManifest(root,
-            "format: ArpEditorProject\nversion: 1\nassetPackages: []\nphysics2d:\n"
-            "  gravity: {x: 0, y: -9.8}\n  maxBodies: 0\n  maxColliders: 64\n"
-            "  maxJoints: 16\n  maxNativeShapes: 128\n  maxEvents: 256\n"
-            "  maxQueryResults: 128\n  maxChainPoints: 32\n  substeps: 4\n"
-            "  fixedSeconds: 0.016666667\n");
+            arp::editor::tests::ProjectFixture::document("assetPackages: []\n"
+                                                         "physics2d:\n"
+                                                         "  gravity: {x: 0, y: -9.8}\n"
+                                                         "  maxBodies: 0\n"
+                                                         "  maxColliders: 64\n"
+                                                         "  maxJoints: 16\n"
+                                                         "  maxNativeShapes: 128\n"
+                                                         "  maxEvents: 256\n"
+                                                         "  maxQueryResults: 128\n"
+                                                         "  maxChainPoints: 32\n"
+                                                         "  substeps: 4\n"
+                                                         "  fixedSeconds: 0.016666667\n"));
         const auto invalidPhysics = resources.load(root);
         assert(!invalidPhysics.success);
-        assert(invalidPhysics.diagnostics.find("EDITOR-PROJECT-PHYSICS2D-SCHEMA")
+        assert(invalidPhysics.diagnostics.find("PROJECT-PHYSICS2D-FIELD-INVALID")
             != core::pmr::String::npos);
         assert(resources.physicsWorld2D() == physicsOwner);
 
-        writeManifest(root, "format: ArpEditorProject\nversion: 1\nassetPackages: []\n");
+        writeManifest(root,
+            arp::editor::tests::ProjectFixture::document("assetPackages: []\n"
+                                                         "physics2d: null\n"));
         const auto clearedPhysics = resources.load(root);
         assert(clearedPhysics.success && !clearedPhysics.physicsWorld2DReady);
         assert(!resources.physicsWorld2D());
@@ -170,13 +374,27 @@ int main()
         assert(package.success);
         const auto packageRoot = root / "Assets" / "Base.arpkg";
         assert(resource::InternalAssetPackageWriter().write(package.package, packageRoot).success);
-        writeManifest(
-            root, "format: ArpEditorProject\nversion: 1\nassetPackages:\n  - Assets/Base.arpkg\n");
+        writeManifest(root,
+            arp::editor::tests::ProjectFixture::document("assetPackages:\n"
+                                                         "  - Assets/Base.arpkg\n"
+                                                         "physics2d: null\n"));
         const auto populated = resources.load(root);
         assert(populated.success && populated.manifestFound && populated.packageCount == 1u);
         const auto loadedPrefab = resources.manager().find<resource::PrefabResource>(
             "0b5f7a2d-78a7-47d2-91f5-4ab0f8b827e1");
         assert(loadedPrefab.ready());
+        assert(resources.resourceLocations().size() == package.package.entries.size());
+        for (const auto& entry : package.package.entries) {
+            std::filesystem::path definition;
+            assert(!resources.resourceLocations().resolve(
+                entry.resourceId, entry.resourceType, resources.manager(), definition));
+            assert(definition == packageRoot / std::filesystem::u8path(entry.envelopePath));
+        }
+        editor::EditorProjectResources definitionCandidate;
+        assert(definitionCandidate.load(root).success);
+        resources.publishAssetPackages(std::move(definitionCandidate));
+        assert(resources.resourceLocations().size() == package.package.entries.size());
+
         std::filesystem::path resolvedPackageRoot;
         assert(resources.packageRootForResource(
             "0b5f7a2d-78a7-47d2-91f5-4ab0f8b827e1", resolvedPackageRoot));
@@ -198,8 +416,10 @@ int main()
             packageManifestOutput << packageManifest;
             assert(packageManifestOutput.good());
         }
-        writeManifest(
-            root, "format: ArpEditorProject\nversion: 1\nassetPackages:\n  - Assets/Base.arpkg\n");
+        writeManifest(root,
+            arp::editor::tests::ProjectFixture::document("assetPackages:\n"
+                                                         "  - Assets/Base.arpkg\n"
+                                                         "physics2d: null\n"));
         const auto escapedEnvelope = resources.load(root);
         assert(!escapedEnvelope.success);
         assert(escapedEnvelope.diagnostics.find("unsafe package envelope path")
@@ -211,32 +431,41 @@ int main()
             "0b5f7a2d-78a7-47d2-91f5-4ab0f8b827e1", resolvedPackageRoot));
         assert(resolvedPackageRoot == packageRoot);
 
-        writeManifest(root, "format: ArpEditorProject\nversion: 2\nassetPackages: []\n");
+        writeManifest(root,
+            arp::editor::tests::ProjectFixture::document("assetPackages: []\n"
+                                                         "physics2d: null\n",
+                "null",
+                2));
         const auto unsupported = resources.load(root);
         assert(!unsupported.success);
-        assert(unsupported.diagnostics.find("EDITOR-PROJECT-MANIFEST-SCHEMA")
-            != core::pmr::String::npos);
+        assert(
+            unsupported.diagnostics.find("PROJECT-VERSION-UNSUPPORTED") != core::pmr::String::npos);
         assert(resources.lastLoad().diagnostics == unsupported.diagnostics);
         assert(resources.manager()
                 .find<resource::PrefabResource>("0b5f7a2d-78a7-47d2-91f5-4ab0f8b827e1")
                 .ready());
 
-        writeManifest(
-            root, "format: ArpEditorProject\nversion: 1\nassetPackages:\n  - ../outside\n");
+        writeManifest(root,
+            arp::editor::tests::ProjectFixture::document("assetPackages:\n"
+                                                         "  - ../outside\n"
+                                                         "physics2d: null\n"));
         const auto traversal = resources.load(root);
         assert(!traversal.success);
-        assert(
-            traversal.diagnostics.find("EDITOR-PROJECT-MANIFEST-PATH") != core::pmr::String::npos);
+        assert(traversal.diagnostics.find("PROJECT-PATH-INVALID") != core::pmr::String::npos);
 
         writeManifest(root,
-            "format: ArpEditorProject\nversion: 1\nassetPackages:\n  - Assets/Main.arpkg\n  - Assets/Main.arpkg\n");
+            arp::editor::tests::ProjectFixture::document("assetPackages:\n"
+                                                         "  - Assets/Main.arpkg\n"
+                                                         "  - Assets/Main.arpkg\n"
+                                                         "physics2d: null\n"));
         const auto duplicate = resources.load(root);
         assert(!duplicate.success);
-        assert(duplicate.diagnostics.find("EDITOR-PROJECT-MANIFEST-DUPLICATE")
-            != core::pmr::String::npos);
+        assert(duplicate.diagnostics.find("PROJECT-PATH-DUPLICATE") != core::pmr::String::npos);
 
         writeManifest(root,
-            "format: ArpEditorProject\nversion: 1\nassetPackages:\n  - Assets/Missing.arpkg\n");
+            arp::editor::tests::ProjectFixture::document("assetPackages:\n"
+                                                         "  - Assets/Missing.arpkg\n"
+                                                         "physics2d: null\n"));
         const auto missingPackage = resources.load(root);
         assert(!missingPackage.success);
         assert(missingPackage.diagnostics.find("EDITOR-PROJECT-ASSET-PACKAGE-PATH")
@@ -244,7 +473,9 @@ int main()
         assert(resources.packageRootForResource(
             "0b5f7a2d-78a7-47d2-91f5-4ab0f8b827e1", resolvedPackageRoot));
 
-        writeManifest(root, "format: ArpEditorProject\nversion: 1\nassetPackages: []\n");
+        writeManifest(root,
+            arp::editor::tests::ProjectFixture::document("assetPackages: []\n"
+                                                         "physics2d: null\n"));
         const auto cleared = resources.load(root);
         assert(cleared.success && cleared.packageCount == 0u);
         assert(!resources.packageRootForResource(
@@ -300,7 +531,9 @@ int main()
                 .write(animatedPackage.package, packageRoot)
                 .success);
         writeManifest(animatorRoot,
-            "format: ArpEditorProject\nversion: 1\nassetPackages:\n  - Assets/Animated.arpkg\n");
+            arp::editor::tests::ProjectFixture::document("assetPackages:\n"
+                                                         "  - Assets/Animated.arpkg\n"
+                                                         "physics2d: null\n"));
         editor::EditorProjectResources animatorResources;
         const auto loaded = animatorResources.load(animatorRoot);
         assert(loaded.success && loaded.packageCount == 1u);
@@ -332,13 +565,17 @@ int main()
             == animatedPackage.ids.prefabId);
         assert(animator.evaluate(scene3d::AnimatorEvaluationRequest{}).ok());
 
-        writeManifest(animatorRoot, "format: ArpEditorProject\nversion: 1\nassetPackages: []\n");
+        writeManifest(animatorRoot,
+            arp::editor::tests::ProjectFixture::document("assetPackages: []\n"
+                                                         "physics2d: null\n"));
         assert(animatorResources.load(animatorRoot).success);
         assert(!animator.evaluate(scene3d::AnimatorEvaluationRequest{}).ok());
         assert(animator.desc().character == nullptr && animator.desc().controller == nullptr
             && !animator.editorBindingDiagnostic().empty());
     }
 
+    projectIntegrationTests(root / "project-integration");
+    retainedOwnerTests(root / "retained-owner");
     std::error_code error;
     std::filesystem::remove_all(root, error);
     assert(!error);

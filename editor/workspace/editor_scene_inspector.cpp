@@ -9,8 +9,163 @@
 #include <string_view>
 
 namespace arp::editor {
-namespace {
-constexpr std::size_t kMaxInspectorResourceChoices = 32u;
+bool EditorSceneObjectReferenceChoices::matchesTarget(
+    const scene::GameObject& object, std::string_view type) noexcept
+{
+    return type == "*"
+        || (!type.empty()
+            && std::any_of(
+                object.components().begin(), object.components().end(), [&](const auto& c) {
+                    return type == c->scriptTypeName();
+                }));
+}
+
+EditorSceneObjectReferenceChoices::TargetStatus EditorSceneObjectReferenceChoices::targetStatus(
+    const scene::Scene& scene, const SceneInspectorProperty& property) noexcept
+{
+    if (property.kind != SceneInspectorPropertyKind::SceneObjectReference
+        || property.sceneObjectType.empty())
+        return TargetStatus::InvalidMetadata;
+    if (!property.sceneObjectReferenceValue)
+        return property.resourceOptional ? TargetStatus::None : TargetStatus::Unassigned;
+    const auto* target =
+        scene.findObject(scene::GameObjectId::fromValue(property.sceneObjectReferenceValue));
+    if (!target)
+        return TargetStatus::Missing;
+    return matchesTarget(*target, property.sceneObjectType) ? TargetStatus::Valid
+                                                            : TargetStatus::WrongType;
+}
+
+SceneInspectorProperty EditorSceneObjectReferenceChoices::build(
+    const scene::Scene& scene, const SceneInspectorProperty& source)
+{
+    auto property = source;
+    property.enumOptions.clear();
+    property.resourceDiagnostic.clear();
+    property.integerValue = -1;
+    const auto append = [&](std::string_view label, std::uint64_t objectId) {
+        auto& option = property.enumOptions.emplace_back();
+        option.name = label;
+        char value[32];
+        std::snprintf(value, sizeof(value), "%llu", static_cast<unsigned long long>(objectId));
+        option.commandValue = value;
+        option.value = static_cast<int>(property.enumOptions.size() - 1u);
+        if (objectId == property.sceneObjectReferenceValue)
+            property.integerValue = option.value;
+    };
+    if (targetStatus(scene, property) == TargetStatus::InvalidMetadata) {
+        append("<Invalid reference metadata>", property.sceneObjectReferenceValue);
+        property.resourceDiagnostic = "EDITOR-INSPECTOR-REFERENCE-METADATA";
+        property.editable = false;
+        return property;
+    }
+    if (property.resourceOptional || property.sceneObjectReferenceValue == 0) {
+        append(property.resourceOptional ? "<None>" : "<Unassigned>", 0);
+        if (!property.resourceOptional)
+            property.resourceDiagnostic = "Target is required";
+    }
+    for (const auto& candidate : scene.objects()) {
+        if (matchesTarget(*candidate, property.sceneObjectType))
+            append(candidate->name(), candidate->id().value());
+    }
+    if (property.integerValue == -1) {
+        const auto* target =
+            scene.findObject(scene::GameObjectId::fromValue(property.sceneObjectReferenceValue));
+        char label[64];
+        std::snprintf(label,
+            sizeof(label),
+            target ? "<Wrong type: %llu>" : "<Missing: %llu>",
+            static_cast<unsigned long long>(property.sceneObjectReferenceValue));
+        append(label, property.sceneObjectReferenceValue);
+        property.resourceDiagnostic = target ? "Wrong type: " : "Missing object: ";
+        property.resourceDiagnostic +=
+            target ? property.sceneObjectType : property.enumOptions.back().commandValue;
+    }
+    return property;
+}
+
+SceneInspectorProperty EditorSceneResourceReferenceChoices::build(
+    const resource::ResourceManager* resources, const SceneInspectorProperty& source)
+{
+    auto property = source;
+    property.enumOptions.clear();
+    property.resourceDiagnostic.clear();
+    const bool invalidId =
+        !property.stringValue.empty() && !resource::isResourceUuid(property.stringValue);
+    if (invalidId)
+        property.resourceDiagnostic = "Invalid resource ID: expected UUID";
+    property.integerValue = -1;
+    const auto append = [&](std::string_view label, std::string_view id) {
+        auto& option = property.enumOptions.emplace_back();
+        option.name = label;
+        option.commandValue = id;
+        option.value = static_cast<int>(property.enumOptions.size() - 1u);
+        if (id == property.stringValue)
+            property.integerValue = option.value;
+    };
+    if (property.resourceOptional || property.stringValue.empty()) {
+        append(property.resourceOptional ? "<None>" : "<Unassigned>", {});
+        if (!property.resourceOptional)
+            property.resourceDiagnostic = "Resource is required";
+    }
+    if (!resources) {
+        property.editable = false;
+        property.resourceDiagnostic = "EDITOR-RESOURCE-MANAGER-UNAVAILABLE";
+    } else {
+        const auto snapshot = resources->snapshotReferences(property.resourceType, maxEntries);
+        if (!snapshot.success) {
+            property.editable = false;
+            property.resourceDiagnostic = snapshot.diagnostics;
+        } else {
+            for (const auto& entry : snapshot.entries)
+                if (entry.state == resource::ResourceState::Ready)
+                    append(entry.reference.id, entry.reference.id);
+        }
+    }
+    if (property.integerValue == -1) {
+        // The exact record is read only to diagnose the current ID. It is never
+        // retained and cannot bypass a rejected/over-budget candidate snapshot.
+        const auto* record = resources ? resources->recordSnapshot(property.stringValue) : nullptr;
+        const char* label = "Unavailable";
+        if (property.resourceDiagnostic.empty()) {
+            if (!record) {
+                label = "Missing";
+                property.resourceDiagnostic = "Missing resource: ";
+                property.resourceDiagnostic += property.stringValue;
+            } else if (record->type != property.resourceType) {
+                label = "Wrong type";
+                property.resourceDiagnostic = "Wrong type: ";
+                property.resourceDiagnostic += property.resourceType;
+            } else {
+                label = "Not Ready";
+                property.resourceDiagnostic = "Resource is not Ready: ";
+                property.resourceDiagnostic += property.stringValue;
+            }
+        }
+        core::pmr::String name("<");
+        name += label;
+        name += ": ";
+        name += property.stringValue;
+        name += ">";
+        append(invalidId ? std::string_view("<Invalid resource ID>") : std::string_view(name),
+            property.stringValue);
+    }
+    return property;
+}
+
+std::array<std::string_view, 2> EditorSceneResourceReferenceChoices::identifierLines(
+    std::string_view id) noexcept
+{
+    if (id.empty())
+        return {};
+    if (!resource::isResourceUuid(id))
+        return {"Invalid resource ID", {}};
+    // This is the UUID presentation contract, not a guessed font-width wrap.
+    constexpr std::size_t prefixGroups = 3;
+    std::size_t delimiter = 0;
+    for (std::size_t group = 0; group < prefixGroups; ++group)
+        delimiter = id.find('-', group == 0 ? 0 : delimiter + 1);
+    return {id.substr(0, delimiter), id.substr(delimiter)};
 }
 
 core::pmr::String scenePropertyControlSource(const SceneInspectorProperty& property)
@@ -39,7 +194,10 @@ core::pmr::String sceneInspectorDisplayValue(const SceneInspectorProperty& prope
         std::snprintf(buffer, sizeof(buffer), "%d", property.integerValue);
         return buffer;
     case SceneInspectorPropertyKind::UnsignedInteger:
-        std::snprintf(buffer, sizeof(buffer), "%u", property.unsignedIntegerValue);
+        std::snprintf(buffer,
+            sizeof(buffer),
+            "%llu",
+            static_cast<unsigned long long>(property.unsignedIntegerValue));
         return buffer;
     case SceneInspectorPropertyKind::Number:
         std::snprintf(buffer, sizeof(buffer), "%.6g", static_cast<double>(property.numberValue));
@@ -77,10 +235,18 @@ core::pmr::String sceneInspectorDisplayValue(const SceneInspectorProperty& prope
     case SceneInspectorPropertyKind::String:
         return property.stringValue;
     case SceneInspectorPropertyKind::ResourceReference:
-        return property.stringValue.empty() ? "<unassigned>" : property.stringValue;
+        for (const auto& option : property.enumOptions)
+            if (option.value == property.integerValue)
+                return option.name;
+        return property.stringValue.empty()
+            ? text(property.resourceOptional ? "<None>" : "<Unassigned>")
+            : property.stringValue;
     case SceneInspectorPropertyKind::SceneObjectReference:
+        for (const auto& option : property.enumOptions)
+            if (option.value == property.integerValue)
+                return option.name;
         if (property.sceneObjectReferenceValue == 0)
-            return text("<none>");
+            return text(property.resourceOptional ? "<None>" : "<Unassigned>");
         std::snprintf(buffer,
             sizeof(buffer),
             "%llu",
@@ -107,40 +273,7 @@ core::pmr::Vector<SceneInspectorProperty> buildSceneInspectorProperties(
     auto properties = document.inspectorProperties(objectId);
     for (auto& property : properties) {
         if (property.kind == SceneInspectorPropertyKind::SceneObjectReference) {
-            std::uint32_t selectedOption = 0;
-            for (const auto& candidate : document.scene().objects()) {
-                const bool hasTargetType = std::any_of(candidate->components().begin(),
-                    candidate->components().end(),
-                    [&](const auto& component) {
-                        return property.sceneObjectType == component->scriptTypeName();
-                    });
-                if (!hasTargetType)
-                    continue;
-                property.enumOptions.emplace_back();
-                auto& option = property.enumOptions.back();
-                option.name = candidate->name();
-                option.commandValue = std::to_string(candidate->id().value());
-                option.value = static_cast<int>(property.enumOptions.size() - 1u);
-                if (candidate->id().value() == property.sceneObjectReferenceValue)
-                    selectedOption = static_cast<std::uint32_t>(property.enumOptions.size() - 1u);
-            }
-            if (property.resourceOptional) {
-                property.enumOptions.insert(property.enumOptions.begin(), {});
-                property.enumOptions.front().name = "<None>";
-                property.enumOptions.front().commandValue = "0";
-                property.enumOptions.front().value = 0;
-                for (std::size_t index = 1; index < property.enumOptions.size(); ++index)
-                    property.enumOptions[index].value = static_cast<int>(index);
-                if (property.sceneObjectReferenceValue == 0)
-                    selectedOption = 0;
-                else
-                    ++selectedOption;
-            }
-            property.integerValue = static_cast<int>(selectedOption);
-            if (property.enumOptions.empty()) {
-                property.editable = false;
-                property.resourceDiagnostic = "No scene object matches the required component type";
-            }
+            property = EditorSceneObjectReferenceChoices::build(document.scene(), property);
             continue;
         }
         if (property.kind == SceneInspectorPropertyKind::SceneObjectLinkList) {
@@ -159,56 +292,8 @@ core::pmr::Vector<SceneInspectorProperty> buildSceneInspectorProperties(
             property.integerValue = static_cast<int>(selectedOption);
             continue;
         }
-        if (property.kind != SceneInspectorPropertyKind::ResourceReference)
-            continue;
-
-        if (property.resourceOptional) {
-            property.enumOptions.emplace_back();
-            property.enumOptions.back().name = "<None>";
-            property.enumOptions.back().commandValue.clear();
-            property.enumOptions.back().value = 0;
-        }
-        std::uint32_t selectedOption = 0;
-        if (!resources) {
-            property.editable = false;
-            property.resourceDiagnostic = "EDITOR-RESOURCE-MANAGER-UNAVAILABLE";
-            continue;
-        }
-        const auto snapshot = resources->snapshotReferences(
-            std::string_view(property.resourceType.data(), property.resourceType.size()),
-            kMaxInspectorResourceChoices);
-        if (!snapshot.success) {
-            property.editable = false;
-            property.resourceDiagnostic = snapshot.diagnostics;
-        } else {
-            bool selectedReferenceFound = property.stringValue.empty();
-            for (const auto& entry : snapshot.entries) {
-                if (entry.state != resource::ResourceState::Ready)
-                    continue;
-                property.enumOptions.emplace_back();
-                auto& option = property.enumOptions.back();
-                option.commandValue = entry.reference.id;
-                option.value = static_cast<int>(property.enumOptions.size() - 1u);
-                option.name = entry.reference.id;
-                if (entry.reference.id == property.stringValue) {
-                    selectedOption = static_cast<std::uint32_t>(property.enumOptions.size() - 1u);
-                    selectedReferenceFound = true;
-                }
-            }
-            if (!property.stringValue.empty() && !selectedReferenceFound) {
-                property.enumOptions.emplace_back();
-                auto& unavailable = property.enumOptions.back();
-                unavailable.name = "<Unavailable: ";
-                unavailable.name += property.stringValue;
-                unavailable.name += ">";
-                unavailable.commandValue = property.stringValue;
-                unavailable.value = static_cast<int>(property.enumOptions.size() - 1u);
-                selectedOption = static_cast<std::uint32_t>(property.enumOptions.size() - 1u);
-                property.resourceDiagnostic =
-                    "Current resource is missing, not Ready, or has the wrong type";
-            }
-        }
-        property.integerValue = static_cast<int>(selectedOption);
+        if (property.kind == SceneInspectorPropertyKind::ResourceReference)
+            property = EditorSceneResourceReferenceChoices::build(resources, property);
     }
     return properties;
 }

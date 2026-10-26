@@ -7,7 +7,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGES = {
     'algorithm', 'concurrency', 'container', 'diagnostics', 'encoding', 'hash', 'image',
-    'io', 'math', 'memory', 'meta', 'ownership', 'runtime', 'system', 'text',
+    'io', 'math', 'memory', 'meta', 'ownership', 'runtime', 'system', 'text', 'time',
 }
 PUBLIC_ROOTS = {'api.h', 'cpu_allocator.h', 'math.h', 'log.h', 'curve.h'}
 SOURCE_SUFFIXES = {'.h', '.hpp', '.hh', '.c', '.cc', '.cpp', '.cxx', '.m', '.mm', '.inl'}
@@ -25,6 +25,9 @@ class CorePackageBoundaryTests(unittest.TestCase):
         for path in (ROOT / 'src/core').iterdir():
             self.assertIn(path.name, PACKAGES if path.is_dir() else PUBLIC_ROOTS, str(path))
         self.assertFalse((ROOT / 'src/image').exists())
+        self.assertFalse((ROOT / 'src/scene/time').exists())
+        for name in ('game_clock.h', 'timer_service.h', 'tween.h'):
+            self.assertTrue((ROOT / 'src/core/time' / name).is_file(), name)
         for name in PUBLIC_ROOTS - {'api.h'}:
             text = (ROOT / 'src/core' / name).read_text(encoding='utf-8-sig')
             self.assertEqual(len(INCLUDES.findall(text)), 1, name)
@@ -65,7 +68,7 @@ class CorePackageBoundaryTests(unittest.TestCase):
         self.assertTrue(all(name.startswith('src/pcg/') for name in modules['arp_pcg'].srcs))
 
     def test_domain_policy_definitions_cannot_return_to_core(self):
-        forbidden = r'\b(?:Camera|FrameTelemetry|MobilePerformanceBudget|FrameRetiredPageSliceAllocator|GameClock|ScreenDiameterLod|RadianceCube)\s*\{'
+        forbidden = r'\b(?:Camera|FrameTelemetry|MobilePerformanceBudget|FrameRetiredPageSliceAllocator|ScreenDiameterLod|RadianceCube)\s*\{'
         for path in (ROOT / 'src/core').rglob('*.h'):
             self.assertNotRegex(path.read_text(encoding='utf-8-sig'), forbidden, str(path))
 
