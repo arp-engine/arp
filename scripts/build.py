@@ -82,6 +82,7 @@ WEB_SMOKE_TESTS = [
 CTEST_BUILD_DEPENDENCIES = {
     "arp_script_component_authoring_smoke": ["arp_script_component_authoring_tests"],
     "arp_script_component_identity_admission_tests": ["arp_script_component_authoring_tests"],
+    "arp_script_component_identity_smoke": ["arp_script_component_identity_tests"],
     "arp_editor_scene_history_budget_tests": ["arp_editor_document_transaction_tests"],
     "arp_editor_scene_history_budget_smoke": ["arp_editor_document_transaction_tests"],
     "arp_editor_physics_authoring_history_tests": ["arp_editor_document_transaction_tests"],

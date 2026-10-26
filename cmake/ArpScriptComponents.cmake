@@ -1,5 +1,5 @@
 # Scene/ArpScript component integration; independent of game logic.
-add_library(arp_script_components STATIC src/scene/script_component_module.cpp src/scene/script_component_persistence.cpp)
+add_library(arp_script_components STATIC src/scene/script_component_module.cpp src/scene/script_component_persistence.cpp src/scene/script_component_identity.cpp)
 arp_reflection_generate(
     TARGET arp_script_components MODULE script_component_authoring
     OUT_JSON "${CMAKE_CURRENT_BINARY_DIR}/generated/reflection/script_component_authoring/schema.json"
@@ -40,6 +40,15 @@ arp_add_mingw_static_runtime(arp_script_component_authoring_tests)
 add_test(NAME arp_script_component_authoring_tests COMMAND arp_script_component_authoring_tests)
 add_test(NAME arp_script_component_authoring_smoke COMMAND arp_script_component_authoring_tests --smoke)
 add_test(NAME arp_script_component_identity_admission_tests COMMAND arp_script_component_authoring_tests --identity-gates)
+
+add_executable(arp_script_component_identity_tests tests/contract/script_component_identity_tests.cpp)
+target_include_directories(arp_script_component_identity_tests PRIVATE .)
+target_compile_definitions(arp_script_component_identity_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_options(arp_script_component_identity_tests PRIVATE -UNDEBUG)
+target_link_libraries(arp_script_component_identity_tests PRIVATE arp_script_components arp_scene_script_reflection)
+arp_add_mingw_static_runtime(arp_script_component_identity_tests)
+add_test(NAME arp_script_component_identity_tests COMMAND arp_script_component_identity_tests)
+add_test(NAME arp_script_component_identity_smoke COMMAND arp_script_component_identity_tests --smoke)
 
 arp_add_script_plugin(
     MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/modules/arp.scene2d_module.arpplugin"

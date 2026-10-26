@@ -64,6 +64,19 @@ GameObject* Scene::IdentityRestoration::resolveObject(GameObjectId id) const noe
     return candidate ? candidate : scene_.findObject(id);
 }
 
+Component* Scene::IdentityRestoration::resolveComponent(
+    GameObjectId ownerId, ComponentId id) const noexcept
+{
+    auto* owner = resolveObject(ownerId);
+    if (!owner || owner->pendingDestroy())
+        return nullptr;
+    for (const auto& item : components_)
+        if (item.owner == owner && item.component && item.component->id() == id)
+            return item.component.get();
+    auto* component = owner->findComponent(id);
+    return component && !component->pendingDestroy() ? component : nullptr;
+}
+
 bool Scene::IdentityRestoration::componentIdUsed(ComponentId id) const noexcept
 {
     if (scene_.findComponent(id))
@@ -167,41 +180,56 @@ Component& Scene::IdentityRestoration::restoreComponent(
 {
     requirePreparing();
     try {
-        validateComponentId(id);
-        auto* candidate = findCandidate(ownerId);
-        auto* owner = candidate ? candidate : scene_.findObject(ownerId);
-        if (!owner || owner->pendingDestroy() || !factory_ || type.empty()
-            || type == "TransformComponent"
+        auto* owner = &validateComponentRequest(ownerId, id, componentIndex);
+        if (!factory_ || type.empty() || type == "TransformComponent"
             || scene_.scriptFactories_.find(type) != scene_.scriptFactories_.end())
             throw std::invalid_argument("ARP-SCENE-IDENTITY-FACTORY-UNSUPPORTED");
-        std::size_t count = owner->components_.size();
-        for (const auto& item : components_)
-            count += item.owner == owner;
-        if (!componentIndex || componentIndex > count)
-            throw std::invalid_argument("ARP-SCENE-IDENTITY-COMPONENT-INDEX");
         auto component = factory_(*owner, type);
         if (!component || component->id().valid() || component->gameObject()
             || type != component->scriptTypeName() || !component->scriptInstance().is_undefined())
             throw std::invalid_argument("ARP-SCENE-IDENTITY-FACTORY-UNSUPPORTED");
-        component->bind(id, ownerId, owner);
         component->bindNativeReflectionObject();
-        auto* result = component.get();
-        if (candidate) {
-            owner->componentIds_.insert(
-                owner->componentIds_.begin() + static_cast<std::ptrdiff_t>(componentIndex), id);
-            owner->components_.insert(
-                owner->components_.begin() + static_cast<std::ptrdiff_t>(componentIndex),
-                std::move(component));
-        } else {
-            components_.push_back({owner, componentIndex, std::move(component)});
-        }
-        ++componentCount_;
-        nextComponent_ = std::max(nextComponent_, id.value() + 1);
-        return *result;
+        return stageComponent(*owner, id, componentIndex, std::move(component));
     } catch (...) {
         failed_ = true;
         throw;
     }
+}
+
+GameObject& Scene::IdentityRestoration::validateComponentRequest(
+    GameObjectId ownerId, ComponentId id, std::size_t componentIndex) const
+{
+    validateComponentId(id);
+    auto* owner = resolveObject(ownerId);
+    if (!owner || owner->pendingDestroy())
+        throw std::invalid_argument("ARP-SCENE-IDENTITY-FACTORY-UNSUPPORTED");
+    std::size_t count = owner->components_.size();
+    for (const auto& item : components_)
+        count += item.owner == owner;
+    if (!componentIndex || componentIndex > count)
+        throw std::invalid_argument("ARP-SCENE-IDENTITY-COMPONENT-INDEX");
+    return *owner;
+}
+
+Component& Scene::IdentityRestoration::stageComponent(GameObject& owner,
+    ComponentId id,
+    std::size_t componentIndex,
+    core::UniquePtr<Component> component)
+{
+    component->bind(id, owner.id(), &owner);
+    auto* result = component.get();
+    if (findCandidate(owner.id())) {
+        owner.componentIds_.insert(
+            owner.componentIds_.begin() + static_cast<std::ptrdiff_t>(componentIndex), id);
+        owner.components_.insert(
+            owner.components_.begin() + static_cast<std::ptrdiff_t>(componentIndex),
+            std::move(component));
+    } else {
+        components_.push_back({&owner, componentIndex, std::move(component)});
+    }
+    ++componentCount_;
+    nextComponent_ = std::max(nextComponent_, id.value() + 1);
+    return *result;
 }
 
 void Scene::IdentityRestoration::prepare()
@@ -210,6 +238,28 @@ void Scene::IdentityRestoration::prepare()
         return;
     requirePreparing();
     try {
+        // An isolated pre-delete probe may coexist with its live source while
+        // fields/references are checked. Such a duplicate can never be published,
+        // including two different modules with the same bare receiver type.
+        const auto validateScript = [&](const Component& component, const GameObject& owner) {
+            if (component.scriptInstance().is_undefined())
+                return;
+            const auto sameType = [&](const Component& other) {
+                return &other != &component
+                    && std::string_view(other.scriptTypeName()) == component.scriptTypeName();
+            };
+            for (const auto& other : owner.components_)
+                if (sameType(*other))
+                    throw std::invalid_argument("ARP-SCENE-IDENTITY-SCRIPT-DUPLICATE");
+            for (const auto& other : components_)
+                if (other.owner == &owner && sameType(*other.component))
+                    throw std::invalid_argument("ARP-SCENE-IDENTITY-SCRIPT-DUPLICATE");
+        };
+        for (const auto& object : candidates_)
+            for (const auto& component : object->components_)
+                validateScript(*component, *object);
+        for (const auto& item : components_)
+            validateScript(*item.component, *item.owner);
         // Copying the map prepares actual nodes, not just bucket capacity. No
         // unordered_map insertion (and therefore no node allocation) follows.
         lookup_ = scene_.objectLookup_;

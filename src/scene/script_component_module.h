@@ -77,6 +77,10 @@ public:
     auto& session() { return *session_; }
 
 private:
+    friend class scene::Scene::IdentityRestoration;
+    core::UniquePtr<scene::Component> createInstance(
+        scene::GameObject&, const core::pmr::String&, bool runConstructor, bool isolatedProbe);
+
     struct Counters {
         struct Construction {
             const scene::GameObject* owner;

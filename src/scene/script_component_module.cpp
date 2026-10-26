@@ -250,6 +250,14 @@ bool ScriptComponentModule::bind(
 core::UniquePtr<scene::Component> ScriptComponentModule::create(
     scene::GameObject& owner, const core::pmr::String& name, bool runConstructor)
 {
+    return createInstance(owner, name, runConstructor, false);
+}
+
+core::UniquePtr<scene::Component> ScriptComponentModule::createInstance(scene::GameObject& owner,
+    const core::pmr::String& name,
+    bool runConstructor,
+    bool isolatedProbe)
+{
     if (runConstructor && owner.scene()
         && owner.scene()->executionMode() == scene::SceneExecutionMode::Passive) {
         fail("ARP-SCRIPT-COMPONENT-PASSIVE-CONSTRUCTOR");
@@ -261,7 +269,7 @@ core::UniquePtr<scene::Component> ScriptComponentModule::create(
             type = candidate;
     if (!type)
         return {};
-    if (!owner.get_component(name).is_undefined()) {
+    if (!isolatedProbe && !owner.get_component(name).is_undefined()) {
         fail("ARP-SCRIPT-COMPONENT-DUPLICATE-TYPE");
         return {};
     }

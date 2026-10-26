@@ -9,7 +9,14 @@
 
 #include <initializer_list>
 
+namespace arp::scriptvm {
+class ScriptComponentModule;
+struct ScriptComponentIdentity;
+} // namespace arp::scriptvm
+
 namespace arp::scene {
+
+class ScriptBehaviorComponent;
 
 inline constexpr const char* kMainSceneService = "arp.scene.main-scene";
 inline constexpr std::uint32_t kMainSceneServiceVersion = 1u;
@@ -292,7 +299,19 @@ public:
     GameObject& createObject(core::pmr::String name, GameObjectId parent, std::size_t childIndex);
     Component& createComponent(
         GameObjectId owner, const core::pmr::String& type, std::size_t componentIndex);
+    // Script candidates use the prepared module's cold path, never the native
+    // factory. Identity is explicit; ordinary create keeps its duplicate gate.
+    ScriptBehaviorComponent& restoreScriptComponent(GameObjectId owner,
+        ComponentId,
+        scriptvm::ScriptComponentModule&,
+        const scriptvm::ScriptComponentIdentity&,
+        std::size_t componentIndex);
+    ScriptBehaviorComponent& createScriptComponent(GameObjectId owner,
+        scriptvm::ScriptComponentModule&,
+        const scriptvm::ScriptComponentIdentity&,
+        std::size_t componentIndex);
     GameObject* resolveObject(GameObjectId) const noexcept;
+    Component* resolveComponent(GameObjectId owner, ComponentId) const noexcept;
     // Same TRS composition as Scene, including unpublished candidate parents.
     bool worldTransform(GameObjectId, Transform&) const noexcept;
     void prepare();
@@ -315,6 +334,8 @@ private:
     void requirePreparing() const;
     bool componentIdUsed(ComponentId) const noexcept;
     void validateComponentId(ComponentId) const;
+    GameObject& validateComponentRequest(GameObjectId, ComponentId, std::size_t) const;
+    Component& stageComponent(GameObject&, ComponentId, std::size_t, core::UniquePtr<Component>);
     Scene& scene_;
     Limits limits_;
     ComponentFactory factory_;
