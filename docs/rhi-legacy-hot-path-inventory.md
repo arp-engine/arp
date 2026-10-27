@@ -14,7 +14,7 @@ This document is kept as a removal ledger rather than an active compatibility in
 
 | Area | Representative paths | Local evidence |
 | --- | --- | --- |
-| Platform frame lifecycle | `src/platform/render_system.h`, `src/platform/render_system_vulkan.cpp`, `src/platform/render_system_webgpu.cpp` | RHI acquire, present, frame serial, mesh upload, pipeline setup, GUI, particles, and Custom graph composition are covered by `render_system_custom_graph_frame`. |
+| Platform frame lifecycle | `src/platform/render_system.h`, `src/platform/native/render_system_vulkan.cpp`, `src/platform/web/render_system_webgpu.cpp` | RHI acquire, present, frame serial, mesh upload, pipeline setup, GUI, particles, and Custom graph composition are covered by `render_system_custom_graph_frame`. |
 | RenderGraph execution | `src/renderer/render_graph/render_graph.h`, `src/renderer/render_graph/rhi_frame_plan.h`, `src/renderer/render_graph/frame_graph_rhi_active_executor.cpp` | FrameGraph resources and execution lower to RHI resource, barrier, queue, load/store, transient alias, and command encoder records. |
 | Renderer facade | `src/renderer/renderers/renderers.h`, `src/renderer/renderers/gui_renderer.h`, `src/renderer/renderers/particle_renderer.h`, `src/renderer/renderers/fxaa_renderer.h`, `src/renderer/renderers/ssao_renderer.h`, `src/renderer/gui/gui_rhi_draw_commands.h`, `src/renderer/particles/particle_rhi_draw_commands.h` | Scene, GUI, particle, postprocess, transfer, and GI pass recording use RHI descriptors, command encoders, backend-owned staging, and deterministic diagnostics. |
 | Samples | `samples/stylized_showcase/main.cpp`, `samples/production_demo/main.cpp` | Hidden-window MinGW/Vulkan smokes pass through RHI-only acquire, workload build, Custom graph render, and present paths. |
@@ -29,7 +29,7 @@ Vulkan local validation now includes resource destruction releasing backend-owne
 ## Status Boundaries
 
 - Contract Complete: removal boundary, RHI L2 descriptors, RenderGraph lowering contracts, renderer pass contracts, and documentation state are locally defined.
-- Backend validation evidence is limited to the recorded Null and synthetic Vulkan RHI paths, affected MinGW builds, sample hidden-window smokes, and Character Viewer smoke.
+- Backend Validated locally: Null and synthetic Vulkan RHI paths, affected MinGW builds, sample hidden-window smokes, and Character Viewer smoke have local evidence in `TODO.md`.
 - Platform Validated is not claimed: macOS, iOS, Android, browser WebGPU, and hardware-backed Vulkan runtime validation still require their external environments.
 - Production Ready is not claimed: broader driver, hardware, telemetry, visual, lifecycle, and platform matrix evidence remains required.
 

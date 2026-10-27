@@ -3,7 +3,7 @@
 > Status: **Contract Complete** for resource and runtime fields (`depthFadeEnabled`, `depthFadeDistance`). Renderer descriptor binding and deterministic diagnostic are **Prototype Complete**: `ParticleRenderer` allocates a depth descriptor set, binds it in `recordFrameSet()`, and returns a deterministic diagnostic when `depthFadeEnabled == true` but `frame.depthTexture == nullptr`. Backend capability and visible sample validation remain **Not Complete**.
 > This document closes TODO P3-2 "定义 soft particle / depth fade / distortion contract".
 >
-> Any subset not implemented below must fail closed with deterministic diagnostics or be explicitly marked `Prototype/Legacy fallback` per `engine-wide constraints`.
+> Any subset not implemented below must fail closed with deterministic diagnostics or be explicitly marked `Prototype/Legacy fallback` per `AGENTS.md`.
 
 ---
 

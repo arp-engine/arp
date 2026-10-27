@@ -1,5 +1,9 @@
 # Anime Open World Rendering Pipeline Roadmap
 
+Future mobile-first cross-platform plan: [mobile-first-technical-roadmap.md](mobile-first-technical-roadmap.md)
+
+FrameGraph v2 upgrade plan: [framegraph-v2-roadmap.md](framegraph-v2-roadmap.md)
+
 ## Vision
 
 Build a C++17 self-authored stylized open-world rendering stack for clean anime-style 3D rendering. The target first playable slice is a 512m x 512m world containing terrain, vegetation, static props, one high-quality character, day/night lighting, character NPR shading, stylized scene shading, outline, shadows, postprocess, asset import, runtime tuning, and a retained GUI that can serve both tools and game UI.

@@ -1,5 +1,7 @@
 # RHI V2 Layered Design
 
+> **2026-07-09 四层治理更新**：本文档的原始两层（L2+semantics）描述已被新的四层模型取代。职责定义、依赖规则、文件清单见 [`rhi-layer-governance.md`](rhi-layer-governance.md)。五步收束执行记录见 `games/world_of_claudecraft/rhi_collapse_design.md`。
+
 Status: In Progress for the final Production Ready gate. RHI L2/Null contracts, semantics-layer bridges, renderer/FrameGraph planning contracts, and the removed-module production boundary are Contract Complete. Vulkan RHI has hidden-window native resource, descriptor, pipeline, command, queue, swapchain, and render-output hash evidence. WebGPU RHI has browser/runtime native resource, descriptor, pipeline, command, queue, canvas, lifecycle, and screenshot/hash evidence when an Emscripten browser runtime is available. Metal RHI has backend-owned Apple-only native resource, argument binding, pipeline, command, queue, drawable/swapchain, lifecycle, and hash-gated smoke telemetry, with MinGW remaining diagnostic-only. Final local Production Ready matrix passed on 2026-05-17. Production Ready is not claimed. Production Ready remains blocked by Pending Confirmation / External Validation. The blocking gaps are macOS Metal runtime/hash, iOS Metal lifecycle, Android Vulkan lifecycle, and broader hardware/driver matrix.
 
 ## Positioning

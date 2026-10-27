@@ -3,7 +3,7 @@ contractVersion: 1
 scope: Windows editor title bar and taskbar icon binding
 status: Platform Validated
 platform: Windows MinGW Debug
-evidence: ./build/godot-editor-evidence/window-icon
+evidence: D:/arp/build/godot-editor-evidence/window-icon
 validation:
   focusedTests: 6/6 passed
   embeddedIcon: all 10 source ICO payloads match executable

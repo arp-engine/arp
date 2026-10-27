@@ -9,6 +9,11 @@ integration component.
 
 ## Overview
 
+The source package is `src/physics/`: `3d/` contains the Jolt integration
+covered by this matrix, and `2d/` contains the Box2D runtime and its components.
+See `docs/physics-package-organization.md` for the source migration and its
+focused validation; the two runtimes retain separate targets and contracts.
+
 JoltPhysics 5.6.0 is integrated as a static library (MinGW build) to provide
 CPU-side rigid body simulation, terrain heightfield collision, and contact
 event callbacks. The integration follows the AGENTS.md contract-first
@@ -87,7 +92,7 @@ expresses L2 intent only.
 │  └────────┬─────────────────────────────────────────────────┘│
 │           │ lowering contract                                   │
 │  ┌────────▼─────────────────────────────────────────────────┐│
-│  │ Jolt Backend (src/physics/backends/jolt/)                ││
+│  │ Jolt Backend (src/physics/3d/backends/jolt/)                ││
 │  │ JoltPhysicsWorld / JoltShapeFactory / JoltContactBridge  ││
 │  └────────┬─────────────────────────────────────────────────┘│
 │           │ JPH::PhysicsSystem                                  │
@@ -98,10 +103,10 @@ expresses L2 intent only.
 ```
 
 ### Layer Separation (AGENTS.md §1)
-- **L2 headers** (`src/physics/physics_*.h`) contain zero backend includes.
+- **L2 headers** (`src/physics/3d/physics_*.h`) contain zero backend includes.
   Verified by compile-time check in `physics_l2_contract_tests.cpp`:
   `JPH_NAMESPACE_BEGIN` is never defined when only L2 headers are included.
-- **Backend code** (`src/physics/backends/jolt/`) is the only place that
+- **Backend code** (`src/physics/3d/backends/jolt/`) is the only place that
   includes Jolt headers. It lowers L2 descriptors into native Jolt types.
 - **Upper layer** (`ColliderComponent`, `PhysicsMovementController`,
   `GameScene`) holds `PhysicsWorld*` and never references Jolt types.

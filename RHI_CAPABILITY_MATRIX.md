@@ -95,7 +95,7 @@ when its required artifact or runtime contract is absent:
 
 ## WebGL1 Prototype profile
 
-Source: `src/platform/render_system_webgl.cpp`,
+Source: `src/platform/web/render_system_webgl.cpp`,
 `src/platform/render_system_ordered_profile.h`,
 `src/rhi/semantics/webgl_runtime_profile.h`, and `src/rhi/backends/webgl/`.
 The profile is admitted only for a queried WebGL 1.0 context with validated
@@ -236,12 +236,23 @@ The broader `NativeSync` feature remains diagnostic because the public binary
 backend-private. WebGPU queue completion callbacks only retire backend-owned
 resources and signal CPU fences; they do not implement L2 timeline ordering.
 
-## Capability contract maintenance
+## Known alignment gaps and required governance action
 
-For each RHI change, update the L2 contract, backend lowering decisions,
-capability reporting, focused contract tests, and relevant platform evidence in
-the same change. Keep capability status separate from implementation presence;
-unsupported behavior must fail with a deterministic diagnostic.
+| Priority | Gap | Required action |
+|---|---|---|
+| P0 | Push constant E paths can hide differing behavior. | Execute the authoritative Push Constant plan in `TODO.md`; introduce shared validation and `PushConstantLoweringPlan`. |
+| Resolved | Lowering planner hid fallback detail and boolean capabilities flattened E/C/D. | `DeviceCapabilities::executionStatuses` and bounded status telemetry are synchronized from final probes and carried into active `RhiFramePlan`/execution reports without native handles. |
+| Resolved | Metal compute, storage texture, fixed-count indirect, timestamp, timeline, and framebuffer-fetch paths were previously described as stubs. | Native source lowerings and runtime/reflection probes are now present; capability publication remains probe-gated. |
+| Resolved | WebGPU transfer/push paths could report success without executable backend payload. | Command recording now gates native payload presence and native operation success before incrementing command counts; remaining browser validation is platform evidence only. |
+| P1 | Metal RenderBundle and secondary push constants need an explicit replay mode. | Keep `allowCpuReplay=false` fail-closed; use the implemented CPU replay IR only when the RHI descriptor opts in. |
+| Resolved | Vulkan/Metal compute and storage facts were absent from the capability contract. | Vulkan and Metal now publish executable native facts; Metal remains runtime/probe gated. Compute pipeline and dispatch lowering are both covered. |
+| P1 | Secondary-command explicit flags and CPU-replay lowering differ on Metal/WebGPU. | Metal now reports/uses native ICB by default and explicit CPU replay for the payloads that need it; WebGPU remains explicit CPU replay. |
+| Resolved | Timeline/native synchronization policy disagreed with dummy factories. | Vulkan timeline submission now uses `VkTimelineSemaphoreSubmitInfo`; Vulkan public binary semaphores fail closed until queue-bound lowering; WebGPU timeline and binary factories are unavailable while callback completion remains backend-private. |
+| Resolved | Pipeline-statistics query results had no shared RHI result contract. | `GpuPipelineStatisticsSample` and explicit availability fields now define the shared contract; Metal has an optional native counter lowering, while Vulkan/WebGPU remain deterministic Unsupported. |
+| Resolved | Transient aliasing paths lacked a shared budget/lifetime equivalence proof. | Allocation validates lifetime intervals, size metadata, physical peak budget, and completion-gated retirement before heap/placed-texture execution. Backend/platform validation and dedicated telemetry fixtures remain. |
+| Resolved | Vulkan/WebGPU query pools exposed only a capability-level `NotRecorded` snapshot. | Both backends now track per-query `Recorded`/`Pending`/`Available`/`DiagnosticFailure`, reject premature reset, and use native completion-gated readback; pipeline statistics remains explicit unsupported on WebGPU/Vulkan. |
+| Resolved | PSO creation bypassed capability lowering; WebGPU/Metal depthBias/stencil silently dropped; compute pipeline had no lowering contract. | The shared four-backend `createRenderPipeline`/`createComputePipeline` paths now gate on `lowerRenderPipelineState`/`lowerComputePipelineState`; `depthBiasClampSupported` capability + fail-closed gate added; WebGPU/Metal depthBias+stencil native payload fields filled; compute lowering contract added. WebGL1 remains under its separate ordered-graphics Prototype gate. See the "Pipeline state lowering (PSO gate)" section. |
+| Resolved (source contract) | WebGPU generated descriptor groups can exceed the guaranteed four-group baseline. | `WebGpuBindingSpace/5` generates the compact group/binding map and exact physical group count from the WGSL artifact; pipeline lowering consumes that map explicitly and accepts groups above four only with the queried `maxBindGroups` limit. Browser validation of `binding_array` and its native header ABI remains pending; capability promotion stays fail-closed until platform evidence exists. |
 
 ## SSR (Screen-Space Reflection) capability status
 

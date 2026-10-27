@@ -137,8 +137,8 @@ closed. No dummy windows, no silent fallbacks.
   take `WindowSystem&`.
 - Vulkan / Metal / WebGPU render systems and `render_system_native_shared`
   consume the new types only; the Vulkan TU no longer links or loads SDL.
-- `tools/render_feature_lab` pumps events and feeds the input bridge on its
-  visible-window path.
+- The historical Render Feature Lab entry was retired with `src/tools`;
+  shared DDGI regression fixtures now live under `tests/fixtures`.
 - SDL3 is removed from ThirdParty discovery, presets, vendored sources
   (`3rd/SDL3-3.4.8` deleted) and test registration; the architecture boundary
   test now forbids `SDL_` tokens across the whole `src/` tree, so any
