@@ -67,12 +67,23 @@ struct VulkanRhiRecordingStorageLimits {
 
     const char* diagnostic() const noexcept
     {
+        const bool mixedTiming =
+            originalProgram && originalQueries && originalQueries->recordingContractVersion == 2u;
         if (originalProgram) {
             if (const auto* id =
                     rhi::OriginalCommandStreamProgram::validateOriginal(originalProgram))
                 return id;
-            if (originalQueries)
+            if (originalQueries && !mixedTiming)
                 return "RHI-VULKAN-COLD-PROGRAM-QUERY-JOIN-UNAVAILABLE";
+            if (mixedTiming
+                && (!originalQueries->recordingOptIn
+                    || originalProgram->originalInputs() != originalQueries->inputs
+                    || originalProgram->originalBudget().contractVersion != 5u
+                    || originalQueries->inputs->originalBudget().contractVersion != 11u
+                    || !originalQueries->inputs->originalBudget().passTiming
+                    || originalQueries->internalProfilingRequested
+                    || originalQueries->profilingBudget))
+                return "RHI-MIXED-PASS-TIMING-PROGRAM-JOIN";
             if (!originalProgram->recordingBudget())
                 return "RHI-VULKAN-COLD-PASS-RECORDING-BUDGET-REQUIRED";
             const char* id = nullptr;
@@ -87,7 +98,7 @@ struct VulkanRhiRecordingStorageLimits {
         }
         if (originalQueries) {
             const auto& query = *originalQueries;
-            if (query.recordingContractVersion || query.recordingOptIn) {
+            if (!mixedTiming && (query.recordingContractVersion || query.recordingOptIn)) {
                 const auto recording = rhi::semantics::QueryLowering::originalRecording(
                     rhi::Backend::Vulkan, query.recordingContractVersion, query.recordingOptIn);
                 if (recording.diagnostic)
@@ -142,9 +153,12 @@ struct VulkanRhiRecordingStorageLimits {
                     }
                 }
             }
-            if (const auto* id = rhi::OriginalQueryRecordingStorageContract::inspect(
-                    query.inputs, query.budget, query.recordingQuota)
-                    .diagnostic)
+            const auto inspection = mixedTiming
+                ? rhi::OriginalQueryRecordingStorageContract::inspectPassTiming(
+                      query.inputs, query.budget, query.recordingQuota)
+                : rhi::OriginalQueryRecordingStorageContract::inspect(
+                      query.inputs, query.budget, query.recordingQuota);
+            if (const auto* id = inspection.diagnostic)
                 return id;
         }
         constexpr auto maximum = std::numeric_limits<std::uint32_t>::max();

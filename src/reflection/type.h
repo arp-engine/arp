@@ -61,6 +61,7 @@ public:
     bool containsEnumValue(int value) const;
 
 private:
+    friend class db;
     friend class RegistrationTransaction;
     type_mask mask_;
     const class_info* cls_ = nullptr;

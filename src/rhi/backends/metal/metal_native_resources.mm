@@ -7,6 +7,7 @@
 #include "rhi/backends/metal/metal_native_runtime.h"
 #include "rhi/frontend/bindless_image_and_indirect_validation.h"
 #include "rhi/frontend/bindless_produced_image.h"
+#include "rhi/frontend/buffer_placement.h"
 #include "rhi/frontend/resource_native_allocation_observation.h"
 #include "rhi/frontend/resource_texture_extent.h"
 #include "rhi/frontend/transfer_upload_destination_validation.h"
@@ -548,6 +549,11 @@ MetalRhiNativeStorageMode metalRhiNativeStorageMode(MetalRhiMemoryPolicy policy)
 std::shared_ptr<MetalRhiNativeBufferPayload> createMetalRhiNativeBufferPayload(
     const rhi::BufferDesc& desc, MetalRhiMemoryPolicy policy)
 {
+    if (const auto* id =
+            rhi::HostVisibleDeviceLocalBufferContract::validate(desc, rhi::Backend::Metal, false)) {
+        rhi::RhiErrorHandler::get().report(rhi::RhiSeverity::Error, id);
+        return {};
+    }
     switch (policy) {
     case MetalRhiMemoryPolicy::PrivateStorage:
     case MetalRhiMemoryPolicy::SharedUpload:

@@ -28,6 +28,12 @@ EditorUiAssets EditorUiAssets::failure(const char* stage, const core::pmr::Strin
     return result;
 }
 
+void EditorUiAssets::applyTextMetrics(EditorShell& shell) const
+{
+    shell.setCodeColumnWidth(codeAdvance_);
+    shell.setCodeCjkColumnWidth(cjkAdvance_);
+}
+
 EditorUiAssets EditorUiAssets::build(EditorShell& shell,
     const std::filesystem::path& root,
     const core::pmr::Vector<renderer::ui::UiDrawCommand>& commands)
@@ -139,8 +145,9 @@ EditorUiAssets EditorUiAssets::build(EditorShell& shell,
     const auto measuredCodeAdvance = ui::UiFontTextRasterizer().rasterize(codeAdvanceDesc);
     if (!measuredCodeAdvance.ok())
         return failure("CODE-FONT", measuredCodeAdvance.diagnostic().message);
-    shell.setCodeColumnWidth(measuredCodeAdvance.text().advanceX / 4.0f
-        * static_cast<float>(codeFont.sizePx) / static_cast<float>(kCodeSdfSampleSize));
+    const float codeAdvance = measuredCodeAdvance.text().advanceX / 4.0f
+        * static_cast<float>(codeFont.sizePx) / static_cast<float>(kCodeSdfSampleSize);
+    shell.setCodeColumnWidth(codeAdvance);
     fonts.push_back(std::move(codeFont));
     // Use the static regular face so the requested weight is encoded in
     // the font outline instead of relying on an unapplied variable axis.
@@ -162,8 +169,9 @@ EditorUiAssets EditorUiAssets::build(EditorShell& shell,
     const auto measuredCjkAdvance = ui::UiFontTextRasterizer().rasterize(cjkAdvanceDesc);
     if (!measuredCjkAdvance.ok())
         return failure("CODE-CJK-FONT", measuredCjkAdvance.diagnostic().message);
-    shell.setCodeCjkColumnWidth(measuredCjkAdvance.text().advanceX
-        * static_cast<float>(cjkCodeFont.sizePx) / static_cast<float>(kCodeSdfSampleSize));
+    const float cjkAdvance = measuredCjkAdvance.text().advanceX
+        * static_cast<float>(cjkCodeFont.sizePx) / static_cast<float>(kCodeSdfSampleSize);
+    shell.setCodeCjkColumnWidth(cjkAdvance);
     fonts.push_back(std::move(cjkCodeFont));
     auto warm = commands;
     renderer::ui::UiDrawCommand alphabet;
@@ -202,6 +210,8 @@ EditorUiAssets EditorUiAssets::build(EditorShell& shell,
             "combined image and glyph atlas extent does not match editor atlas layout");
     EditorUiAssets result;
     result.atlas_.emplace(std::move(atlas));
+    result.codeAdvance_ = codeAdvance;
+    result.cjkAdvance_ = cjkAdvance;
     return result;
 }
 } // namespace arp::editor

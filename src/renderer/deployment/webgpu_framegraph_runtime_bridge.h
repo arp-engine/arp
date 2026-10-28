@@ -4,7 +4,7 @@
 #include "renderer/render_graph/rhi_frame_plan.h"
 #include "rhi/semantics/native_platform_lifecycle_lowering.h"
 #include "rhi/semantics/webgpu_runtime_profile.h"
-#include "rhi/semantics/webgpu_runtime_telemetry.h"
+#include "rhi/semantics/webgpu_runtime_telemetry_values.h"
 
 #include <cstdint>
 

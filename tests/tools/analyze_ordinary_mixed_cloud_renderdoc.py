@@ -30,10 +30,13 @@ def main():
         with open(path + ".replay.log", "a", encoding="utf-8") as log:
             log.write(stage + "\n")
     Path(path + ".replay.log").write_text("RenderDoc " + rd.GetVersionString() + "\n", encoding="utf-8")
+    timing_profile = os.environ.get("ARP_CLOUD_CAPTURE_TIMING") == "1"
     graph_profile = os.environ.get("ARP_CLOUD_CAPTURE_GRAPH") == "1"
     oracle_path = os.environ.get("ARP_CLOUD_ORACLE_PATH")
     oracle = json.loads(Path(oracle_path).read_text(encoding="utf-8")) if oracle_path else None
     foreground = bool(oracle and oracle.get("foreground"))
+    scene_opaque = oracle.get("sceneOpaqueVersion", 0) if oracle else 0
+    assert scene_opaque in (0, 1)
     sequence = bool(oracle and "rawExpected" in oracle)
     width, height = (oracle["width"], oracle["height"]) if oracle else (4, 4)
     sample_width = oracle.get("sampleWidth", width) if oracle else 1
@@ -44,7 +47,7 @@ def main():
     resolved_height = oracle.get("resolvedHeight", sample_height) if oracle else sample_height
     resolved_count = resolved_width * resolved_height
     if spatial:
-        assert oracle["reconstructionVersion"] == 1
+        assert oracle["reconstructionVersion"] in (1, 2)
         assert (resolved_width, resolved_height) == (width, height)
         assert (sample_width, sample_height) == ((width + 1) // 2, (height + 1) // 2)
     resolve_density = resolve_depth = ray_density = None
@@ -72,6 +75,8 @@ def main():
         composite = draws[-1]
         assert dispatches[0].eventId < dispatches[1].eventId < composite.eventId < copies[0].eventId
         foreground_vertices = None
+        scene_opaque_evidence = None
+        producer_color = producer_depth = None
         if foreground:
             assert draws[0].eventId < dispatches[0].eventId
             checkpoint("Foreground SetFrameEvent")
@@ -82,10 +87,58 @@ def main():
             data = bytes(controller.GetBufferData(mesh.vertexResourceId, mesh.vertexByteOffset,
                 mesh.vertexByteStride * mesh.numIndices))
             foreground_vertices = [struct.unpack_from("<4f", data, i * mesh.vertexByteStride) for i in range(3)]
-            assert foreground_vertices == [(-.75, -.75, .5, 1.), (.75, -.75, .5, 1.), (0., .75, .5, 1.)]
+            if scene_opaque:
+                pipeline = controller.GetPipelineState()
+                producer_color = descriptor_resource(pipeline.GetOutputTargets()[0])
+                producer_depth = descriptor_resource(pipeline.GetDepthTarget())
+                reflection = pipeline.GetShaderReflection(rd.ShaderStage.Vertex)
+                blocks = [b.descriptor for b in pipeline.GetConstantBlocks(rd.ShaderStage.Vertex)
+                          if reflection.constantBlocks[b.access.index].fixedBindNumber == 0]
+                assert len(blocks) == 1 and blocks[0].byteSize == 112
+                constants_data = bytes(controller.GetBufferData(blocks[0].resource, blocks[0].byteOffset, 112))
+                matrix = struct.unpack_from("<16f", constants_data)
+                storage = binding(pipeline, rd.ShaderStage.Vertex, reflection, 1)
+                assert storage.byteSize == 3 * 48
+                geometry = bytes(controller.GetBufferData(storage.resource, storage.byteOffset, storage.byteSize))
+                world = [struct.unpack_from("<4f", geometry, i * 48) for i in range(3)]
+                expected_clip = [[sum(matrix[4*r+c] * v[c] for c in range(4)) for r in range(4)] for v in world]
+                # IEEE float32: four products and three additions. Use the
+                # forward error bound gamma(7)*sum(abs(M_rc*v_c)); a relative
+                # clip-coordinate threshold is invalid under cancellation.
+                unit_roundoff = 2.**-24
+                gamma7 = 7*unit_roundoff/(1-7*unit_roundoff)
+                matrix_bounds = [[gamma7*sum(abs(matrix[4*r+c]*v[c]) for c in range(4))
+                                  for r in range(4)] for v in world]
+                matrix_ratios = [abs(a-e)/bound if bound else float(a != e)
+                                 for actual,expected,bounds in zip(foreground_vertices,expected_clip,matrix_bounds)
+                                 for a,e,bound in zip(actual,expected,bounds)]
+                assert max(matrix_ratios) <= 1., (matrix_ratios, foreground_vertices, expected_clip, matrix_bounds)
+                matrix_error = max(abs(a-e)/max(1., abs(e)) for actual, expected in zip(foreground_vertices, expected_clip)
+                                   for a,e in zip(actual, expected))
+                transposed_clip = [[sum(matrix[4*c+r]*v[c] for c in range(4)) for r in range(4)] for v in world]
+                assert any(abs(a-t)>bound for actual,wrong,bounds in zip(foreground_vertices,transposed_clip,matrix_bounds)
+                           for a,t,bound in zip(actual,wrong,bounds))
+                vx, vy, vw, vh = oracle["foregroundViewport"]
+                ndc_expected = [[(vx + (x+1)*vw*.5)*2/width-1, (vy + (y+1)*vh*.5)*2/height-1, .5]
+                                for x,y in ((-.75,-.75),(.75,-.75),(0.,.75))]
+                ndc_error = max(abs(actual[c]/actual[3]-expected[c]) for actual,expected in zip(foreground_vertices, ndc_expected) for c in range(3))
+                assert ndc_error < oracle["tolerance"], (ndc_error, foreground_vertices, ndc_expected)
+                assert constants_data[:64] == struct.pack("<16f", *oracle["sceneRasterViewProjection"])
+                assert geometry == struct.pack("<36f", *oracle["sceneOpaqueVertices"])
+                fragment = pipeline.GetShaderReflection(rd.ShaderStage.Fragment)
+                fragment_blocks = [b.descriptor for b in pipeline.GetConstantBlocks(rd.ShaderStage.Fragment)
+                                   if fragment.constantBlocks[b.access.index].fixedBindNumber == 0]
+                assert len(fragment_blocks) == 1
+                assert (fragment_blocks[0].resource, fragment_blocks[0].byteOffset, fragment_blocks[0].byteSize) == (blocks[0].resource, blocks[0].byteOffset, 112)
+                scene_opaque_evidence = dict(version=1, uniformBytes=112, vertexStrideBytes=48, vertexCount=3,
+                    matrixRelativeMaxError=matrix_error, matrixForwardErrorBoundRatio=max(matrix_ratios), transposeRejected=True, ndcMaxError=ndc_error,
+                    geometrySha256=hashlib.sha256(geometry).hexdigest(), constantsSha256=hashlib.sha256(constants_data).hexdigest())
+            else:
+                assert foreground_vertices == [(-.75, -.75, .5, 1.), (.75, -.75, .5, 1.), (0., .75, .5, 1.)]
         checkpoint("StructuredFile")
         structured = controller.GetStructuredFile()
         visited, command_buffers, calls = set(), set(), {}
+        timestamps, native_sequence = [], []
         image_barriers, buffer_barriers, sets, viewports = [], [], [], []
         for action in actions:
             for event in action.events:
@@ -96,6 +149,10 @@ def main():
                 if not chunk.name.startswith("vkCmd"):
                     continue
                 native = fields(chunk)
+                native_sequence.append({"name": chunk.name, "event": event.eventId})
+                if chunk.name == "vkCmdWriteTimestamp":
+                    timestamps.append({"event": event.eventId, **{k: number(native[k])
+                        for k in ("queryPool", "query", "pipelineStage")}})
                 calls[chunk.name] = calls.get(chunk.name, 0) + 1
                 command_buffers.add(number(native["commandBuffer"]))
                 if chunk.name == "vkCmdSetViewport":
@@ -123,6 +180,19 @@ def main():
                                 "destinationStages": number(native["destStageMask"]),
                                 **{k: number(values[k]) for k in keys}})
         assert len(command_buffers) == 1, command_buffers
+        if timing_profile:
+            assert len(timestamps) == 6, timestamps
+            assert [t["query"] for t in timestamps] == list(range(6)), timestamps
+            assert len({t["queryPool"] for t in timestamps}) == 1, timestamps
+            assert all(t["pipelineStage"] == 65536 for t in timestamps), timestamps
+            for i, action in enumerate([*dispatches, composite]):
+                assert timestamps[2*i]["event"] < action.eventId < timestamps[2*i+1]["event"]
+            names = [n["name"] for n in native_sequence]
+            for i, item in enumerate(native_sequence):
+                if item["event"] == timestamps[4]["event"]:
+                    assert names[i-1] == "vkCmdBeginRenderPass"
+                if item["event"] == timestamps[5]["event"]:
+                    assert names[i+1] == "vkCmdEndRenderPass"
         assert calls["vkCmdDispatch"] == 2 and calls["vkCmdDraw"] == len(draws)
         assert calls["vkCmdCopyImageToBuffer"] == 1
         assert calls["vkCmdBeginRenderPass"] == calls["vkCmdEndRenderPass"] == 2
@@ -137,9 +207,11 @@ def main():
             if "opaqueDistances" in oracle:
                 assert len(oracle["opaqueDistances"]) == sample_count
             if foreground:
-                assert viewports == [oracle["foregroundViewport"] + [0., 1.], [0., 0., float(width), float(height), 0., 1.]], viewports
+                raster_viewport = [0., 0., float(width), float(height)] if scene_opaque else oracle["foregroundViewport"]
+                assert viewports == [raster_viewport + [0., 1.], [0., 0., float(width), float(height), 0., 1.]], viewports
                 if oracle["historyUsed"] and oracle.get("requireOcclusionChange", True) and not spatial:
                     assert oracle["opaqueRejected"] > 0 and oracle["disoccluded"] > 0 and oracle["newlyOccluded"] > 0
+        expected_buffer_barriers += int(bool(scene_opaque))  # geometry + UBO replace the old single color UBO
         assert len(image_barriers) == 6 and len(buffer_barriers) == expected_buffer_barriers, (image_barriers, buffer_barriers)
         assert [s["pipelineBindPoint"] for s in sets] == ([0, 1, 1, 0] if foreground else [1, 1, 0])
         assert all([s[k] for k in ("firstSet", "setCount", "dynamicOffsetCount")] == [0, 1, 0]
@@ -173,7 +245,7 @@ def main():
                 assert policy.resource != cb.resource and policy.byteOffset == 0
                 policy_data = bytes(controller.GetBufferData(policy.resource, policy.byteOffset, 16))
                 version, lr, tr, reserved = struct.unpack("<IffI", policy_data)
-                assert version == 1 and reserved == 0
+                assert version == oracle["reconstructionVersion"] and reserved == 0
                 assert all(abs(a-b) < 1.e-8 for a,b in zip((lr,tr), oracle["reconstructionRanges"]))
                 policy_binding = {"resource": str(policy.resource), "version": version, "ranges": [lr,tr], "reserved": reserved}
                 resolve_density = binding(pipeline, rd.ShaderStage.Compute, reflection, 4)
@@ -182,12 +254,15 @@ def main():
                 ray_density = binding(pipeline, rd.ShaderStage.Compute, reflection, 1)
             output = binding(pipeline, rd.ShaderStage.Compute, reflection, 3)
             count = resolved_count if index else sample_count
-            sample = bytes(controller.GetBufferData(output.resource, output.byteOffset, 32 * count))
-            assert len(sample) == count * 32
-            values = [struct.unpack_from("<8f", sample, i * 32) for i in range(count)]
+            stride = 24 if index and spatial and oracle["reconstructionVersion"] == 2 else 32
+            sample = bytes(controller.GetBufferData(output.resource, output.byteOffset, stride * count))
+            assert len(sample) == count * stride
+            values = [struct.unpack_from("<6f" if stride == 24 else "<8f", sample, i * stride)
+                      + ((0., 0.) if stride == 24 else ()) for i in range(count)]
             if index:
                 resolved_values = values
             assert all(math.isfinite(v) for row in values for v in row)
+            assert all(row[6:] == (0., 0.) for row in values)
             if oracle:
                 expected = oracle[("resolvedExpected" if index else "rawExpected")] if sequence else oracle["expected"]
                 assert len(expected) == count
@@ -215,8 +290,9 @@ def main():
                     previous_input = {"resource": str(previous.resource), "offset": previous.byteOffset}
                     if oracle["historyUsed"]:
                         assert previous.resource not in (source.resource, output.resource)
-                        old_bytes = bytes(controller.GetBufferData(previous.resource, previous.byteOffset, resolved_count * 32))
-                        old = [struct.unpack_from("<8f", old_bytes, i * 32) for i in range(resolved_count)]
+                        old_bytes = bytes(controller.GetBufferData(previous.resource, previous.byteOffset, resolved_count * stride))
+                        old = [struct.unpack_from("<6f" if stride == 24 else "<8f", old_bytes, i * stride)
+                               + ((0., 0.) if stride == 24 else ()) for i in range(resolved_count)]
                         assert len(oracle["previousExpected"]) == resolved_count
                         previous_error = max(abs(row[c]-e[c]) for row, e in zip(old, oracle["previousExpected"]) for c in range(4))
                         assert previous_error < oracle["tolerance"], previous_error
@@ -231,7 +307,7 @@ def main():
                         else:
                             assert (previous.resource, previous.byteOffset) == (source.resource, source.byteOffset)
             samples.append({"resource": output.resource, "offset": output.byteOffset,
-                "event": action.eventId, "sample": actual, "count": count, "groups": list(action.dispatchDimension)})
+                "event": action.eventId, "sample": actual, "count": count, "strideBytes": stride, "groups": list(action.dispatchDimension)})
         assert constants[0] == constants[1]
         for index, sample in enumerate(samples):
             matches = [b for b in buffer_barriers if b["buffer"] == int(sample["resource"])
@@ -263,7 +339,7 @@ def main():
         depth = binding(pipeline, rd.ShaderStage.Fragment, reflection, 3)
         target = descriptor_resource(pipeline.GetOutputTargets()[0])
         background = (.125, .375, .75, .625)
-        foreground_color = (.75, .125, .0625, .875)
+        foreground_color = oracle["foregroundColor"] if scene_opaque else (.75, .125, .0625, .875)
         coverage = [foreground and -.75 < 2 * (y + .5) / height - 1 < .75
             and abs(2 * (x + .5) / width - 1) < (.75 - (2 * (y + .5) / height - 1)) * .5
             for y in range(height) for x in range(width)]
@@ -278,8 +354,21 @@ def main():
                 assert coverage == independent_coverage
         scene_colors = [foreground_color if covered else background for covered in coverage]
         expected_pixel = struct.pack("<4e", *background)
-        assert texture_bytes(controller, scene.resource) == b"".join(struct.pack("<4e", *color) for color in scene_colors)
-        assert texture_bytes(controller, depth.resource) == b"".join(struct.pack("<f", .5 if covered else 1.) for covered in coverage)
+        if scene_opaque:
+            assert scene.resource == producer_color and depth.resource == producer_depth
+            scene_data = texture_bytes(controller, scene.resource)
+            depth_data = texture_bytes(controller, depth.resource)
+            color_error = max(abs(a-e) for i,color in enumerate(scene_colors)
+                              for a,e in zip(struct.unpack_from("<4e", scene_data, i*8), color))
+            depth_error = max(abs(struct.unpack_from("<f", depth_data, i*4)[0]-(.5 if covered else 1.))
+                              for i,covered in enumerate(coverage))
+            assert color_error < oracle["tolerance"] and depth_error < oracle["tolerance"], (color_error, depth_error)
+            scene_opaque_evidence.update(colorMaxError=color_error, depthMaxError=depth_error)
+            assert all(struct.unpack_from("<4e", scene_data, i*8)[3] == 1. for i,covered in enumerate(coverage) if covered)
+            scene_opaque_evidence.update(producerColor=str(producer_color), producerDepth=str(producer_depth), sameAttachmentsConsumed=True)
+        else:
+            assert texture_bytes(controller, scene.resource) == b"".join(struct.pack("<4e", *color) for color in scene_colors)
+            assert texture_bytes(controller, depth.resource) == b"".join(struct.pack("<f", .5 if covered else 1.) for covered in coverage)
         # Raymarch must consume the same actual D32 owner as the composite.
         controller.SetFrameEvent(dispatches[0].eventId, True)
         ray_pipeline = controller.GetPipelineState()
@@ -327,10 +416,16 @@ def main():
                 if clipped:
                     vacuum = oracle["qualityVacuumMask"]
                     assert len(vacuum) == width * height
-                    for covered, empty, value, color, scene_color in zip(coverage, vacuum, resolved_values, actual_colors, scene_colors):
+                    for pixel_index, (covered, empty, value, color, scene_color) in enumerate(zip(coverage, vacuum, resolved_values, actual_colors, scene_colors)):
                         assert color[3] == scene_color[3]
                         if covered and empty:
-                            assert value[:4] == (0.,0.,0.,1.) and color == scene_color
+                            assert value[:4] == (0.,0.,0.,1.)
+                            if scene_opaque:
+                                # Vacuum must preserve the already quantized producer
+                                # texel exactly, including its actual binary16 rounding.
+                                assert actual[pixel_index*8:(pixel_index+1)*8] == scene_data[pixel_index*8:(pixel_index+1)*8]
+                            else:
+                                assert color == scene_color
             for name, measured in measured_metrics.items():
                 assert measured["count"] == q[name]["count"]
                 assert abs(measured["rms"]-q[name]["rms"]) < 1.e-7, (name, measured, q[name])
@@ -370,7 +465,8 @@ def main():
             sample["resource"] = str(sample["resource"])
         report = {"success": quality_report is None or quality_report["passed"], "renderdocVersion": rd.GetVersionString(),
             "replayOptimisation": "NoOptimisation", "apiValidation": options.apiValidation,
-            "contract": "Preparation6/Content3/Recording3/Inputs10",
+            "contract": ("Preparation9/Content6/Recording6/Inputs11" if foreground else "Preparation8/Content5/Recording5/Inputs11") if timing_profile else "Preparation6/Content3/Recording3/Inputs10",
+            "timestampWrites": timestamps, "nativeSequence": native_sequence,
             "opaqueDepthGraphicsVersion": 1 if foreground else 0,
             "scope": os.environ.get("ARP_CLOUD_CAPTURE_SCOPE", "ordinary mixed real cloud passes, vacuum oracle; FrameGraph integration remains separate"),
             "capture": path, "commandBuffers": sorted(command_buffers), "nativeCalls": calls,
@@ -381,6 +477,7 @@ def main():
             "refinedPixels": oracle.get("refinedPixels", 0) if oracle else 0,
             "samples": samples, "checkedHdrTexels": width * height, "checkedReadbackBytes": readback_bytes,
             "foregroundVertices": foreground_vertices, "foregroundTexels": sum(coverage),
+            "sceneOpaque": scene_opaque_evidence,
             "viewports": viewports,
             "opaqueDistanceMaxError": max_opaque_error,
             "sequenceFrame": oracle["frame"] if sequence else None,
@@ -424,6 +521,14 @@ def main():
             "src/renderer/volumetric_cloud/cloud_quality.h",
             "src/renderer/volumetric_cloud/cloud_quality.cpp",
             "tests/fixtures/cloud_foreground.slang",
+            "src/renderer/pipeline/scene_opaque_producer.h",
+            "src/renderer/pipeline/scene_opaque_producer.cpp",
+            "src/renderer/pipeline/scene_opaque_cloud_composition.h",
+            "src/renderer/pipeline/scene_opaque_cloud_composition.cpp",
+            "src/renderer/pipeline/scene_runtime_pipeline_payload.h",
+            "src/renderer/pipeline/scene_runtime_pipeline_payload.cpp",
+            "src/renderer/pipeline/scene_runtime_render_pipeline.cpp",
+            "shaders/renderer/scene_opaque.slang",
             "tests/tools/analyze_ordinary_mixed_cloud_renderdoc.py",
             "shaders/renderer/cloud_common.slang",
             "shaders/renderer/cloud_ray_integration.slang",

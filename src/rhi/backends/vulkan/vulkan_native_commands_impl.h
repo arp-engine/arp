@@ -161,6 +161,7 @@ struct VulkanRhiNativeCommandPayload::Impl {
         rhi::GpuTexture::CommittedStateObservation initialState;
         VulkanRhiStagingUploadSlice slice;
         std::optional<rhi::common::OriginalTextureContentControl::PendingObservation> pending;
+        std::shared_ptr<rhi::OriginalTextureUploadPublication> publication;
     };
 
     core::pmr::Vector<OrdinaryTextureUpload> ordinaryTextureUploads;

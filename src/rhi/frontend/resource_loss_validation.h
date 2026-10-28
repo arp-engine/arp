@@ -122,8 +122,12 @@ public:
             || (!budget.maxComputePipelines && !budget.maxGraphicsPipelines))
             return "RHI-ORIGINAL-TYPED-LOSS-PIPELINE-BUDGET";
         if (request.contractVersion >= 3u
-            && (budget.maxDescriptorTables || budget.samplers.requested()
-                || budget.heaps.requested() || budget.queries.requested()))
+            && (budget.maxDescriptorTables
+                || (budget.samplers.requested()
+                    && !OriginalResourceRegistrationContract::joinsSamplerNativeLoss(budget))
+                || budget.heaps.requested()
+                || (budget.queries.requested()
+                    && !OriginalResourceRegistrationContract::joinsQueryNativeLoss(budget))))
             return "RHI-ORIGINAL-TYPED-LOSS-SYNC-PROFILE";
         if (request.contractVersion == 4u
             && (!budget.maxDescriptorArenas || !budget.maxDescriptorSets))
@@ -158,6 +162,33 @@ public:
     static constexpr const char* groupDiagnostic() noexcept
     {
         return "RHI-ORIGINAL-TYPED-LOSS-GROUP-JOIN-MISSING";
+    }
+};
+
+// Query registration joins the existing registry10 subscription only through
+// this independent opt-in. Typed join /3 or /4 still grants no query execution.
+// The original native candidate/runtime seal, bounded pool registration and
+// original slot/completion journal remain required by their own contracts.
+class OriginalQueryNativeLossJoinContract final {
+public:
+    struct Decision {
+        bool validatorOnly = false, nativeSourceAvailable = false;
+        bool recordingAvailable = false, executionAvailable = false;
+        const char* diagnostic = "RHI-ORIGINAL-QUERY-LOSS-BACKEND";
+    };
+
+    static constexpr const char* validate(const OriginalResourceRegistrationBudget& budget) noexcept
+    {
+        if (const auto* id = OriginalResourceRegistrationContract::validateIntent(budget))
+            return id;
+        if (!OriginalResourceRegistrationContract::joinsQueryNativeLoss(budget))
+            return "RHI-ORIGINAL-QUERY-LOSS-OPT-IN";
+        return OriginalTypedNativeLossJoinContract::validate({3u, true}, budget);
+    }
+
+    static constexpr Decision lowering(Backend backend) noexcept
+    {
+        return semantics::ResourceLowering::OriginalQueryNativeLossJoin_lowering<Decision>(backend);
     }
 };
 
@@ -219,6 +250,11 @@ public:
     static constexpr const char* validateRegistration(
         const OriginalResourceRegistrationBudget& budget, std::uint32_t version = 1u) noexcept
     {
+        if (version == 3u) {
+            if (!OriginalResourceRegistrationContract::joinsSamplerNativeLoss(budget))
+                return "RHI-ORIGINAL-SYNC-SAMPLER-LOSS-OPT-IN";
+            return OriginalTypedNativeLossJoinContract::validate({3u, true}, budget);
+        }
         if (version == 2u)
             return OriginalDescriptorNativeLossRegistrationContract::validate({2u, true}, budget);
         if (version != 1u)

@@ -8,10 +8,12 @@
 namespace arp::core {
 
 class ImmutableBuildInputSnapshot;
+struct ProcessRunRequest;
 
 struct CompilerToolchainLayoutResult final {
     bool success = false;
     std::filesystem::path programSearchDirectory;
+    std::filesystem::path systemRoot, resourceDirectory, linkerExecutable;
     pmr::Vector<std::filesystem::path> auxiliaryProgramSearchDirectories{
         &defaultCpuMemoryResource()};
     pmr::Vector<std::filesystem::path> systemIncludeDirectories{&defaultCpuMemoryResource()};
@@ -28,11 +30,12 @@ struct CompilerToolchainSnapshotResult final {
 
 // Resolves compiler support programs from a versioned installation layout.
 // GCC installations must expose exactly one cc1plus directory below
-// <installation>/libexec/gcc. Other self-contained compiler drivers need no
-// external program search directory and return an empty path.
+// <installation>/libexec/gcc. AppleClangSnapshot/1 inspects actual driver
+// metadata and captures its macOS SDK, resources and native linker inputs.
 class ARP_API CompilerToolchainLayout final {
 public:
     CompilerToolchainLayoutResult inspect(const std::filesystem::path& compilerExecutable) const;
+    static void appendCompilerArguments(const CompilerToolchainLayoutResult&, ProcessRunRequest&);
 
     // Captures every compiler-controlled program, system include, and library
     // directory consumed by inspect(). Returned paths point exclusively into

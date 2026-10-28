@@ -800,7 +800,7 @@ public:
                         + std::chrono::nanoseconds(
                             VulkanRhiFrameWaitPolicy::frameFenceTimeoutNanoseconds);
                     std::pmr::string drainDiagnostics;
-                    if (!drainVulkanRhiSubmittedCommandsUntil(deadline, drainDiagnostics)
+                    if (!drainVulkanRhiSubmittedCommandsUntil(*device_, deadline, drainDiagnostics)
                         || !device_->drainPresentFencesUntil(deadline, drainDiagnostics)) {
                         return {false,
                             drainDiagnostics,
@@ -823,7 +823,7 @@ public:
                             desc_.extent};
                     }
                 }
-                retireCompletedVulkanRhiSubmittedCommands();
+                retireCompletedVulkanRhiSubmittedCommands(*device_);
                 if (lifetime_ && lifetime_.use_count() != 2) {
                     return {false,
                         "RHI-VULKAN-RESIZE-IMAGE-OWNERS-RETAINED",

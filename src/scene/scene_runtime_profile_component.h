@@ -33,7 +33,7 @@ struct SceneRuntimeProfileState {
 /// capabilities and use the returned facts to author real scene objects.
 ACLASS(Name = "SceneRuntimeProfileComponent", Ownership = Engine, Lifecycle = Explicit)
 
-class SceneRuntimeProfileComponent final : public Component {
+class ARP_API SceneRuntimeProfileComponent final : public Component {
 public:
     const char* scriptTypeName() const override { return "SceneRuntimeProfileComponent"; }
 

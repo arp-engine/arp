@@ -5,6 +5,7 @@
 #include "renderer/renderer_common.h"
 #include "renderer/shader_package_reflection.h"
 #include "renderer/volumetric_cloud/cloud_prepared_feature.h"
+#include "renderer/volumetric_cloud/cloud_scene_binding.h"
 
 #include <cstring>
 #include <stdexcept>
@@ -17,6 +18,7 @@ struct VolumetricCloudFeature::PreparedState {
     CloudPreparedPipelines pipelines;
     // Destruction drains history before dropping its pipelines.
     CloudPreparedResources resources;
+    std::shared_ptr<const CloudSceneBinding> sceneBinding;
     std::uint64_t contributedGeneration = 0u;
 };
 
@@ -126,6 +128,26 @@ CloudResult VolumetricCloudFeature::create(
     }
 }
 
+CloudResult VolumetricCloudFeature::createScene(
+    const std::shared_ptr<const CloudSceneBinding>& binding,
+    const scene3d::Scene3DRenderQueue& queue,
+    const resource::ResourceManager& resources,
+    const CloudPreparedFeatureCreateContext& context,
+    core::pmr::String& diagnostic)
+{
+    diagnostic.clear();
+    if (!binding)
+        return CloudResult::failure("CLOUD-SCENE-BINDING-EMPTY");
+    if (const auto result = binding->validateCurrent(queue, resources); !result.success)
+        return result;
+    if (&context.resources.asset != binding->asset().get())
+        return CloudResult::failure("CLOUD-SCENE-FEATURE-ASSET");
+    if (const auto result = create(context, diagnostic); !result.success)
+        return result;
+    prepared_->sceneBinding = binding;
+    return {};
+}
+
 const CloudPreparedResources* VolumetricCloudFeature::preparedResources() const noexcept
 {
     return prepared_ ? &prepared_->resources : nullptr;
@@ -134,6 +156,11 @@ const CloudPreparedResources* VolumetricCloudFeature::preparedResources() const 
 const CloudPreparedPipelines* VolumetricCloudFeature::preparedPipelines() const noexcept
 {
     return prepared_ ? &prepared_->pipelines : nullptr;
+}
+
+const CloudSceneBinding* VolumetricCloudFeature::preparedSceneBinding() const noexcept
+{
+    return prepared_ ? prepared_->sceneBinding.get() : nullptr;
 }
 
 CloudPreparedHistory* VolumetricCloudFeature::preparedHistory() noexcept
@@ -147,6 +174,30 @@ render_graph::PassSubmissionToken VolumetricCloudFeature::preparedToken() const 
 }
 
 CloudResult VolumetricCloudFeature::prepareFrame(
+    const CloudGraphContext& c, CloudPreparedFrameBuffers& output)
+{
+    output = {};
+    if (prepared_ && prepared_->sceneBinding)
+        return CloudResult::failure("CLOUD-SCENE-FEATURE-PREPARE-REQUIRED");
+    return prepareFrameInternal(c, output);
+}
+
+CloudResult VolumetricCloudFeature::prepareSceneFrame(const scene3d::Scene3DRenderQueue& queue,
+    const resource::ResourceManager& resources,
+    CloudGraphContext context,
+    CloudPreparedFrameBuffers& output)
+{
+    output = {};
+    if (!prepared_ || !prepared_->sceneBinding)
+        return CloudResult::failure("CLOUD-SCENE-FEATURE-NOT-CREATED");
+    if (const auto result = prepared_->sceneBinding->validateCurrent(queue, resources);
+        !result.success)
+        return result;
+    context.layer = queue.cloud().layer;
+    return prepareFrameInternal(context, output);
+}
+
+CloudResult VolumetricCloudFeature::prepareFrameInternal(
     const CloudGraphContext& c, CloudPreparedFrameBuffers& output)
 {
     output = {};
@@ -164,6 +215,18 @@ CloudResult VolumetricCloudFeature::prepareFrame(
 
 CloudResult VolumetricCloudFeature::contributeGraph(
     const CloudPreparedFeatureGraphContext& c, CloudOutputs& output)
+{
+    return contributeGraphInternal(c, output, false);
+}
+
+CloudResult VolumetricCloudFeature::validateGraph(const CloudPreparedFeatureGraphContext& c)
+{
+    CloudOutputs ignored;
+    return contributeGraphInternal(c, ignored, true);
+}
+
+CloudResult VolumetricCloudFeature::contributeGraphInternal(
+    const CloudPreparedFeatureGraphContext& c, CloudOutputs& output, bool validateOnly)
 {
     output = {};
     if (!prepared_)
@@ -211,9 +274,12 @@ CloudResult VolumetricCloudFeature::contributeGraph(
         // GPU mutability is authorized only by the ordinary graph access set.
         return graph.importBufferRef({lease, const_cast<rhi::GpuBuffer*>(lease->originalObject())});
     };
-    const bool spatial =
-        prepared_->pipelines.selection().resolve == CloudPreparedResolve::Reconstruction1;
-    CloudPreparedGraphContext next{spatial ? 3u : 2u,
+    const bool spatial = prepared_->pipelines.selection().isReconstruction();
+    CloudPreparedGraphContext next{spatial
+            ? (prepared_->pipelines.selection().resolve == CloudPreparedResolve::Reconstruction2
+                      ? 4u
+                      : 3u)
+            : 2u,
         true,
         c.execution,
         plan_,
@@ -233,9 +299,12 @@ CloudResult VolumetricCloudFeature::contributeGraph(
         next.reconstruction = &next.history->reconstructionPlan();
         next.reconstructionConstants = import(buffers.reconstructionConstants);
     }
-    if (const auto result = contributePreparedGraph(next, output, &preparedSubmission_, token);
+    if (const auto result =
+            contributePreparedGraph(next, output, &preparedSubmission_, token, validateOnly);
         !result.success)
         return result;
+    if (validateOnly)
+        return {};
     if (const auto result = preparedSubmission_.markContributed(token); !result.success)
         return result;
     prepared_->contributedGeneration = buffers.historyGeneration;
@@ -246,6 +315,8 @@ CloudResult VolumetricCloudFeature::resize(const CloudPreparedResourceCreateCont
 try {
     if (!prepared_)
         return CloudResult::failure("CLOUD-PREPARED-FEATURE-NOT-CREATED");
+    if (prepared_->sceneBinding && &c.asset != prepared_->sceneBinding->asset().get())
+        return CloudResult::failure("CLOUD-SCENE-FEATURE-ASSET");
     if (&c.device != device_ || c.cameraId != cameraId_
         || !sameSelection(c.selection, prepared_->pipelines.selection()))
         return CloudResult::failure("CLOUD-PREPARED-FEATURE-RESIZE-MISMATCH");

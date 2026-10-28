@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/memory/cpu_allocator.h"
+#include "rhi/frontend/memory_allocator_backing.h"
 #include "rhi/gpu_resources.h"
 
 #include <cstdint>
@@ -107,6 +108,7 @@ public:
         VkImageCreateInfo imageInfo,
         std::uint64_t maxNativeAllocationBytes = 0u);
     rhi::MemoryStats memoryStats() const;
+    rhi::AllocatorBackingObservation observeBacking(std::uint32_t version = 1u) const;
 
 private:
     friend class VulkanRhiStagingUploadPool;

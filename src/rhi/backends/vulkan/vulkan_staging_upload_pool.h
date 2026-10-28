@@ -89,6 +89,10 @@ public:
         const char*& diagnostic) noexcept;
 
     bool coldStoragePrepared() const noexcept;
+    bool overlapsColdCpuQuota(const core::CpuMemoryQuota*) const noexcept;
+
+    const char* prepareColdStorage(const rhi::semantics::UploadStagingColdStorageBudget&,
+        const std::shared_ptr<core::CpuMemoryQuota>&) noexcept;
 
     VulkanRhiStagingUploadSlice allocate(const VulkanRhiStagingUploadRequest& request);
     VulkanRhiStagingUploadSlice initializeOriginalTexture(

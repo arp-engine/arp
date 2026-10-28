@@ -1,8 +1,10 @@
 #pragma once
 
 #include "core/memory/cpu_allocator.h"
+#include "rhi/backends/vulkan/vulkan_command_domain.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 #include "rhi/backends/vulkan/vulkan_timeline_semaphore.h"
+#include "rhi/frontend/original_texture_upload_device.h"
 #include "rhi/frontend/transfer_upload_recording_validation.h"
 #include "rhi/gpu_bindless.h"
 #include "rhi/gpu_common.h"
@@ -81,7 +83,6 @@ private:
 
 // Existing backend-owned retirement ceiling, exposed here for preparation and
 // behavioral tests. It is not a public bindless capability or a frame count.
-inline constexpr std::size_t kVulkanMaxAsyncSubmittedCommands = 64;
 
 /// NativeTimelineOwnership/1: typed original owners, never borrowed raw handles.
 struct VulkanRhiTimelineSubmitInfo {
@@ -291,12 +292,19 @@ public:
         const std::shared_ptr<const rhi::BindlessPreparedBinding>&, core::pmr::String& diagnostic);
     bool retainIndexedSnapshot(const std::shared_ptr<const void>&, core::pmr::String& diagnostic);
     std::uint64_t observedFrameSerial() const;
+    const std::shared_ptr<VulkanRhiRuntime>& runtime() const noexcept;
     bool submittedFenceCompleted();
     bool acceptOrdinaryRecordedOwnership() const noexcept;
     // Private original ordinary attachment profile; no public capability is
     // inferred from these backend implementation entrypoints.
     bool hasOrdinaryAttachments() const noexcept;
     bool hasOrdinaryMixedPasses() const noexcept;
+    // Shared backend-private pass wrapper gateway. Authenticates the original
+    // identity/ordinal/slot and consumes only the already selected meter.
+    const char* recordOriginalTimestamp(const rhi::QueryPool&,
+        std::uint32_t queryIndex,
+        std::uint32_t commandOrdinal,
+        std::uint64_t recordingIdentity) noexcept;
     const char* recordOrdinaryRenderPassBegin(std::uint32_t, const rhi::RenderPassDesc&) noexcept;
     const char* recordOrdinaryRenderPassEnd(std::uint32_t) noexcept;
     const char* recordOrdinaryGraphicsCommand(std::uint32_t,
@@ -321,8 +329,12 @@ private:
         const rhi::OriginalOrdinaryTextureUploadContract::Budget&,
         const rhi::OriginalOrdinaryTextureUploadContract::Binding*,
         std::size_t,
-        core::pmr::String&);
+        core::pmr::String&,
+        const rhi::OriginalTextureUploadPreparationRequest*,
+        const std::shared_ptr<core::CpuMemoryQuota>&,
+        core::pmr::Vector<std::shared_ptr<const rhi::OriginalTextureUploadPublication>>*);
     bool hasOrdinaryTextureUploads() const noexcept;
+    const char* ordinaryTextureUploadThreadDiagnostic() const noexcept;
     const char* preflightOrdinaryAttachmentOperation(
         rhi::CommandUsageKind, std::uint32_t) const noexcept;
     const char* preflightOrdinaryBufferTransition(
@@ -354,15 +366,13 @@ private:
         core::MutationJournal*,
         const VulkanRhiNativeCommandPayload*);
     const char* recordOrdinaryTextureUpload(std::uint32_t, const rhi::UploadTextureDesc&) noexcept;
-    bool adoptOriginalStreamJournal(core::UniquePtr<core::MutationJournal>&, core::pmr::String&);
+    bool adoptOriginalStreamJournal(core::UniquePtr<core::MutationJournal>&,
+        core::pmr::String&,
+        std::uint64_t recordingIdentity = 0u);
     bool adoptOriginalQueryJournal(core::UniquePtr<core::MutationJournal>&,
         std::uint64_t recordingIdentity,
         const rhi::semantics::NativeCommandLoweringDecision&,
         core::pmr::String&);
-    const char* recordOriginalTimestamp(const rhi::QueryPool&,
-        std::uint32_t queryIndex,
-        std::uint32_t commandOrdinal,
-        std::uint64_t recordingIdentity) noexcept;
     const char* sealOriginalQueries(std::uint32_t commandCount) noexcept;
     bool recordValidatedOriginalImageBarrier(
         const VulkanRhiNativeResourcePayload&, const rhi::ResourceBarrierDesc&, core::pmr::String&);
@@ -387,7 +397,7 @@ private:
     friend class VulkanOriginalBindlessComputeExecutionView;
     friend class VulkanOriginalTextureUploadCommand;
     friend class VulkanRhiRetainedCommand;
-    friend void drainVulkanRhiSubmittedCommandsForShutdown();
+    friend void drainVulkanRhiSubmittedCommandsForShutdown(const VulkanRhiRuntime& runtime);
     bool prepareInternalProfiling(core::pmr::String&);
     friend const char* waitIdleAndRetireVulkanRhiSubmittedCommands(
         const std::shared_ptr<VulkanRhiRuntime>&);
@@ -409,7 +419,14 @@ bool recordVulkanRhiNativeCommand(
     const std::shared_ptr<VulkanRhiNativeCommandPayload>& nativePayload,
     std::pmr::string& diagnostics);
 
-void retireCompletedVulkanRhiSubmittedCommands();
+void retireCompletedVulkanRhiSubmittedCommands(const VulkanRhiRuntime& runtime);
+// Backend-private device-scoped observations for native conformance fixtures.
+void retireCompletedVulkanRhiSubmittedCommands(const rhi::GpuDevice& device);
+std::uint64_t completedVulkanRhiSubmittedFrameSerial(const rhi::GpuDevice& device);
+void drainVulkanRhiSubmittedCommandsForShutdown(const rhi::GpuDevice& device);
+bool drainVulkanRhiSubmittedCommandsUntil(const rhi::GpuDevice& device,
+    std::chrono::steady_clock::time_point deadline,
+    core::pmr::String& diagnostics);
 // Explicit blocking GpuDevice::waitIdle path, never a per-frame fallback.
 // Executes real vkDeviceWaitIdle and only then completes this exact runtime's
 // submissions. No supplied result/flag can authorize retirement; failure retains.
@@ -418,17 +435,18 @@ const char* waitIdleAndRetireVulkanRhiSubmittedCommands(
     const std::shared_ptr<VulkanRhiRuntime>& runtime);
 // Bounded resource pools call this only under allocation pressure. It waits
 // for already-submitted work and retires its resource payloads before reuse.
-void waitForVulkanRhiSubmittedCommandsForResourcePressure();
+void waitForVulkanRhiSubmittedCommandsForResourcePressure(const VulkanRhiRuntime& runtime);
 // Headless shutdown only: wait for every tracked Vulkan submission using one
 // absolute deadline. A failure retains unfinished commands and their storage.
-bool drainVulkanRhiSubmittedCommandsUntil(
-    std::chrono::steady_clock::time_point deadline, std::pmr::string& diagnostics);
-void drainVulkanRhiSubmittedCommandsForShutdown();
-std::uint64_t completedVulkanRhiSubmittedFrameSerial();
+bool drainVulkanRhiSubmittedCommandsUntil(const VulkanRhiRuntime& runtime,
+    std::chrono::steady_clock::time_point deadline,
+    std::pmr::string& diagnostics);
+void drainVulkanRhiSubmittedCommandsForShutdown(const VulkanRhiRuntime& runtime);
+std::uint64_t completedVulkanRhiSubmittedFrameSerial(const VulkanRhiRuntime& runtime);
 
 /// Latest completed backend-owned timestamp result. This is intentionally an
 /// internal Vulkan bridge; VulkanRhiDevice publishes it through the generic
 /// GpuDevice::latestGpuTiming() contract.
-rhi::GpuTimingSample latestVulkanRhiGpuTimingSample();
+rhi::GpuTimingSample latestVulkanRhiGpuTimingSample(const VulkanRhiRuntime& runtime);
 
 } // namespace arp::rhi_vulkan

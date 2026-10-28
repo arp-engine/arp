@@ -1,0 +1,11 @@
+type: arp.project
+contractVersion: 1
+id: 8634cfad-90ee-451e-a262-fab54cf04d59
+name: Web authoring workspace
+engineContract: arp-editor-web-authoring/1
+entryScene: null
+editorMetadata: null
+physics2d: null
+execution: Interpreter
+assetPackages: []
+scriptModules: []

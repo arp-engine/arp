@@ -300,9 +300,11 @@ const char* CloudPreparedHistory::validateGraph(const CloudPreparedGraphContext&
         return "CLOUD-PREPARED-HISTORY-STALE-GENERATION";
     auto& graph = context.execution.graph();
     if (reconstruction_.contractVersion) {
-        if (context.contractVersion != 3u || !context.reconstruction
-            || !pendingReconstructionConstants_
+        if (context.contractVersion != (reconstruction_.contractVersion == 2u ? 4u : 3u)
+            || !context.reconstruction || !pendingReconstructionConstants_
             || context.reconstruction->resolvedCount != reconstructionPlan_.resolvedCount
+            || context.reconstruction->sampleContractVersion
+                != reconstructionPlan_.sampleContractVersion
             || context.reconstruction->resolvedBufferBytes
                 != reconstructionPlan_.resolvedBufferBytes
             || context.reconstruction->dispatchGroups != reconstructionPlan_.dispatchGroups
@@ -312,7 +314,7 @@ const char* CloudPreparedHistory::validateGraph(const CloudPreparedGraphContext&
             || &graph.buffer(context.reconstructionConstants)
                 != pendingReconstructionConstants_->originalObject())
             return "CLOUD-RECONSTRUCTION-HISTORY-BINDING";
-    } else if (context.reconstruction || context.contractVersion == 3u)
+    } else if (context.reconstruction || context.contractVersion >= 3u)
         return "CLOUD-RECONSTRUCTION-HISTORY-VERSION";
     if (context.plan.extent.width != plan_.extent.width
         || context.plan.extent.height != plan_.extent.height

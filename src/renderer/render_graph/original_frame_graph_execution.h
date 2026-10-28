@@ -10,6 +10,10 @@ namespace arp::render_graph {
 // original-Program projection. No callback is invoked during projection.
 class OriginalFrameGraphPass final {
 public:
+    struct TimingBinding {
+        std::size_t sourceIndex;
+        std::uint32_t beginQuery, endQuery;
+    };
     enum class Kind { Clear, Compute, Graphics, TextureToBuffer };
     std::shared_ptr<const rhi::OriginalCommandResourceSources> sources;
     Kind kind = Kind::Clear;
@@ -19,6 +23,19 @@ public:
     rhi::ScissorState scissor;
     rhi::CommandScalarArguments::Draw draw{3u, 1u, 0u, 0u};
     rhi::TextureToBufferCopyDesc copy;
+
+    const auto& timing() const noexcept { return timing_; }
+
+private:
+    friend class OriginalFrameGraphExecution;
+    // Installed only after successful cold admission; indices into Sources,
+    // never another query owner inventory. Cleared on cancellation.
+    mutable std::optional<TimingBinding> timing_;
+};
+
+struct OriginalFrameGraphTimingBudget {
+    std::size_t querySourceIndex = SIZE_MAX;
+    rhi::QueryCommandPointsBudget points;
 };
 
 struct OriginalFrameGraphBudget {
@@ -29,6 +46,9 @@ struct OriginalFrameGraphBudget {
     rhi::OriginalCommandStreamBudget stream;
     rhi::OriginalRenderPassPreparationRequest preparation;
     std::uint64_t maxCpuIntentBytes = 0u;
+    // Version2 explicitly joins authored physical pass scopes. Inputs query
+    // points are derived from the one assembled stream, never supplied twice.
+    std::optional<OriginalFrameGraphTimingBudget> timing;
 };
 
 // Single-use, explicit Prototype projection into the existing FrameGraph
@@ -36,6 +56,28 @@ struct OriginalFrameGraphBudget {
 // The graph and device must outlive this cold preparation and its execution.
 class ARP_API OriginalFrameGraphExecution final {
 public:
+    static const char* validateBudget(const OriginalFrameGraphBudget& budget) noexcept
+    {
+        if ((budget.contractVersion != 1u && budget.contractVersion != 2u)
+            || !budget.prototypeOptIn)
+            return "RG-ORIGINAL-PROFILE-OPT-IN";
+        if (bool(budget.timing) != (budget.contractVersion == 2u)
+            || bool(budget.inputs.passTiming) != bool(budget.timing) || budget.inputs.queryPoints
+            || rhi::OriginalRenderPassPreparationContract::hasPassTiming(budget.preparation)
+                != bool(budget.timing))
+            return "RG-ORIGINAL-TIMING-PROFILE";
+        if (budget.timing) {
+            if (budget.inputs.contractVersion != 11u || budget.timing->querySourceIndex == SIZE_MAX)
+                return "RG-ORIGINAL-TIMING-INPUTS";
+            if (const auto* id = rhi::QueryCommandPoints::validateBudget(budget.timing->points))
+                return id;
+            if (const auto* id =
+                    rhi::OriginalPassTimingContract::validateIntent(*budget.inputs.passTiming))
+                return id;
+        }
+        return nullptr;
+    }
+
     OriginalFrameGraphExecution(FrameGraph& graph,
         std::shared_ptr<const rhi::OriginalCommandResourceSources> sources,
         std::shared_ptr<core::CpuMemoryQuota> intentQuota);

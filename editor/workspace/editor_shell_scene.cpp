@@ -47,6 +47,7 @@ EditorCommandOutcome EditorShell::newScene(bool discardChanges)
         || commitSceneReplacement(*prepared, candidate) != SceneReplacementResult::Committed)
         return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
     // An untitled document has no save point, including when it is still empty.
+    sceneAuthoringVersion_ = EditorSceneAuthoringCodec::contractVersion;
     savedSceneHash_.clear();
     activeScenePath_.clear();
     savedSceneFileTarget_.clear();

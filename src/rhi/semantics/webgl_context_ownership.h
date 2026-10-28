@@ -15,10 +15,26 @@ struct WebGlContextOwnershipRequest {
     bool shaderTextureLodOptIn = false;
     std::uint64_t maxCpuMetadataBytes = 0;
     std::uint32_t maxIdentityFieldBytes = 0;
+    bool mainBrowserThreadWithWorkersOptIn = false;
 };
 
 class WebGlContextOwnershipContract final {
 public:
+    // Pure validation of observations. The runtime re-reads both Emscripten
+    // thread identities at creation/use/destruction; no caller flag grants GL.
+    static const char* executionThreadDiagnostic(const WebGlContextOwnershipRequest& request,
+        bool pthreadProduct,
+        bool mainRuntimeThread,
+        bool mainBrowserThread) noexcept
+    {
+        if (pthreadProduct
+            && (request.contractVersion != 2 || !request.mainBrowserThreadWithWorkersOptIn))
+            return "RHI-WEBGL1-CONTEXT-PTHREAD-PRODUCT-UNAVAILABLE";
+        if (!mainRuntimeThread || !mainBrowserThread)
+            return "RHI-WEBGL1-CONTEXT-OWNER-THREAD";
+        return nullptr;
+    }
+
     // This chooses the declared creation route, never a capability or native
     // payload. Even WebGL must pass its actual owner/query factory afterward.
     static const char* validateForBackend(
@@ -41,8 +57,10 @@ public:
 
     static const char* validate(const WebGlContextOwnershipRequest& request) noexcept
     {
-        if (request.contractVersion != 1u)
+        if (request.contractVersion != 1u && request.contractVersion != 2u)
             return "RHI-WEBGL1-CONTEXT-OWNERSHIP-VERSION";
+        if (request.contractVersion == 1 && request.mainBrowserThreadWithWorkersOptIn)
+            return "RHI-WEBGL1-CONTEXT-WORKERS-PROFILE-REQUIRED";
         if (request.canvasSelector.empty()
             || request.canvasSelector.find('\0') != std::string_view::npos)
             return "RHI-WEBGL1-CONTEXT-CANVAS-SELECTOR";

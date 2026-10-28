@@ -1,4 +1,5 @@
-#include "rhi/semantics/push_constant_validation.h"
+#include "rhi/gpu_pipeline.h"
+#include "rhi/semantics/push_constant_validation_values.h"
 
 #include <optional>
 #include <string_view>
@@ -90,26 +91,6 @@ ValidationResult validatePushConstantCommand(
 {
     const auto* id = pushConstantCommandDiagnostic(stages, offsetBytes, sizeBytes, data);
     return {id == nullptr, id ? id : ""};
-}
-
-ValidationResult validatePushConstantBinding(const PipelineLayout* pipelineLayout,
-    ShaderStage passType,
-    ShaderStage stages,
-    std::uint32_t offsetBytes,
-    std::uint32_t sizeBytes,
-    const ShaderReflectionDesc* reflection)
-{
-    if (!pipelineLayout) {
-        return {false,
-            std::pmr::string(PushConstantDiagCode::kNoPipeline)
-                + "pipeline must be bound before push constant update"};
-    }
-    return validatePushConstantBinding(pipelineLayout->desc().pushConstantRanges,
-        passType,
-        stages,
-        offsetBytes,
-        sizeBytes,
-        reflection);
 }
 
 const char* pushConstantBindingDiagnostic(const core::pmr::Vector<PushConstantRange>& ranges,

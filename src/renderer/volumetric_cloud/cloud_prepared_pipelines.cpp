@@ -71,6 +71,12 @@ CloudResult CloudPreparedPipelines::validateSelection(
             return CloudResult::failure("CLOUD-PREPARED-PIPELINE-UNUSED-RECONSTRUCTION");
         return {};
     case CloudPreparedResolve::Reconstruction1:
+        if (c.reconstruction.contractVersion != 1u)
+            return CloudResult::failure("CLOUD-PREPARED-PIPELINE-SAMPLE-VERSION");
+        return CloudReconstruction::validate(c.reconstruction);
+    case CloudPreparedResolve::Reconstruction2:
+        if (c.reconstruction.contractVersion != 2u)
+            return CloudResult::failure("CLOUD-PREPARED-PIPELINE-SAMPLE-VERSION");
         return CloudReconstruction::validate(c.reconstruction);
     default:
         return CloudResult::failure("CLOUD-PREPARED-PIPELINE-RESOLVE");
@@ -97,7 +103,7 @@ CloudResult CloudPreparedPipelines::validateInputs(const CloudPreparedPipelineSe
         D::UniformBuffer};
     constexpr std::array compositeTypes{
         D::UniformBuffer, D::ReadOnlyStorageBuffer, D::SampledTexture, D::SampledTexture};
-    const bool spatial = c.resolve == CloudPreparedResolve::Reconstruction1;
+    const bool spatial = c.isReconstruction();
     if (!computeEntry(raymarch) || !bindingsMatch(raymarch, ShaderStage::Compute, rayTypes, 2u))
         return CloudResult::failure("CLOUD-PREPARED-PIPELINE-RAYMARCH-ABI");
     if (!computeEntry(resolve)
@@ -110,6 +116,37 @@ CloudResult CloudPreparedPipelines::validateInputs(const CloudPreparedPipelineSe
         || composite.entrypoints[1].entryPoint != "fragmentMain"
         || !bindingsMatch(composite, ShaderStage::Fragment, compositeTypes, 3u))
         return CloudResult::failure("CLOUD-PREPARED-PIPELINE-COMPOSITE-ABI");
+    return {};
+}
+
+CloudResult CloudPreparedPipelines::validateStorageInputs(
+    const CloudPreparedPipelineSelection& selection,
+    const std::shared_ptr<const shader::SingleEntryShaderArtifact>& raymarch,
+    const std::shared_ptr<const shader::SingleEntryShaderArtifact>& resolve,
+    const std::shared_ptr<const shader::GraphicsShaderModuleArtifact>& composite) noexcept
+{
+    if (const auto result = validateSelection(selection); !result.success)
+        return result;
+    if (const auto* id = shader::GraphicsShaderModuleArtifact::validateOriginal(composite))
+        return CloudResult::failure(id);
+    const auto sampleBytes = CloudSampleStorage::stride(
+        selection.resolve == CloudPreparedResolve::Reconstruction2 ? 2u : 1u);
+    const auto matches = [](const auto& artifact, std::uint32_t binding, std::uint64_t bytes) {
+        shader::SpirvBufferDeclarationLayout facts;
+        return !shader::SingleEntryShaderArtifact::originalBufferDeclarationLayout(
+                   artifact, 0u, binding, facts)
+            && facts.hasRuntimeArray && facts.runtimeArrayOffsetBytes == 0u
+            && facts.runtimeArrayStrideBytes == bytes
+            && facts.runtimeElementOccupiedExtentBytes == bytes;
+    };
+    if (!matches(raymarch, 1u, sizeof(core::Vec4)) || !matches(raymarch, 3u, kCloudSampleBytes))
+        return CloudResult::failure("CLOUD-PREPARED-PIPELINE-RAYMARCH-STORAGE");
+    if (!matches(resolve, 1u, kCloudSampleBytes) || !matches(resolve, 2u, sampleBytes)
+        || !matches(resolve, 3u, sampleBytes)
+        || (selection.isReconstruction() && !matches(resolve, 4u, sizeof(core::Vec4))))
+        return CloudResult::failure("CLOUD-PREPARED-PIPELINE-RESOLVE-STORAGE");
+    if (!matches(composite->fragment(), 1u, sampleBytes))
+        return CloudResult::failure("CLOUD-PREPARED-PIPELINE-COMPOSITE-STORAGE");
     return {};
 }
 
@@ -141,7 +178,7 @@ CloudResult CloudPreparedPipelines::planResourcesWithAdmission(
     if (const auto result = validateSelection(selection); !result.success)
         return result;
     CloudPreparedResourcePlan next;
-    const bool spatial = selection.resolve == CloudPreparedResolve::Reconstruction1;
+    const bool spatial = selection.isReconstruction();
     if (spatial) {
         if (const auto result = admission
                 ? CloudReconstruction::describeResources(selection.reconstruction,
@@ -241,10 +278,14 @@ try {
     auto* extension = OriginalPreparedCommandDeviceExtension::query(c.device, c.preparation, id);
     if (!extension)
         return fail(id);
-    const bool spatial = c.selection.resolve == CloudPreparedResolve::Reconstruction1;
-    const auto& resolvePath = spatial ? c.publications.spatialResolve : c.publications.temporal;
-    const auto& compositePath =
-        spatial ? c.publications.spatialComposite : c.publications.composite;
+    const bool spatial = c.selection.isReconstruction();
+    const bool compact = c.selection.resolve == CloudPreparedResolve::Reconstruction2;
+    const auto& resolvePath = compact ? c.publications.compactResolve
+        : spatial                     ? c.publications.spatialResolve
+                                      : c.publications.temporal;
+    const auto& compositePath = compact ? c.publications.compactComposite
+        : spatial                       ? c.publications.spatialComposite
+                                        : c.publications.composite;
     if (c.publications.raymarch.empty() || resolvePath.empty() || compositePath.empty())
         return fail("CLOUD-PREPARED-PIPELINE-PUBLICATION-PATH");
     core::CpuMemoryQuotaScope orchestration(c.orchestrationQuota);
@@ -270,6 +311,10 @@ try {
         return fail("CLOUD-PREPARED-PIPELINE-INPUT");
     if (const auto result = validateInputs(
             c.selection, inputs[0]->package(), inputs[1]->package(), graphics->package());
+        !result.success)
+        return fail(result.diagnostic);
+    if (const auto result = validateStorageInputs(
+            c.selection, inputs[0]->artifact(), inputs[1]->artifact(), graphics->artifact());
         !result.success)
         return fail(result.diagnostic);
     // Build into local owners. No partially-created pipeline set is published.

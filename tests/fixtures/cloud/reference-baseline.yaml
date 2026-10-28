@@ -1,0 +1,22 @@
+type: CloudReferenceBaseline
+contractVersion: 1
+scope: P0-P3 reference cloud; full resolution relative to the fixed output extent
+recipe: scene-reference-v3.cook.yaml
+resourceMode: id
+width: 32
+height: 24
+viewSteps: 256
+lightSteps: 32
+temporal: false
+absoluteTolerance: 0.002
+cases:
+  - clear
+  - sparse
+  - thick
+  - below
+  - inside
+  - above
+  - horizon
+  - backlit
+  - occlusion
+  - orthographic

@@ -1,6 +1,6 @@
 #pragma once
-
 #include "rhi/gpu_common.h"
+#include "rhi/semantics/memory_admission_lowering.h"
 
 #include <cstdint>
 #include <limits>
@@ -173,31 +173,7 @@ public:
     {
         if (const auto* id = validate(budget))
             return {Disposition::DiagnosticFailure, false, false, id};
-        switch (backend) {
-        case Backend::Null:
-            return {Disposition::ValidatorOnly,
-                false,
-                false,
-                "RHI-STAGING-COLD-STORAGE-NULL-VALIDATOR"};
-        case Backend::Vulkan:
-            return {Disposition::Prototype, true, false, nullptr};
-        case Backend::Metal:
-            return {Disposition::DiagnosticFailure,
-                false,
-                false,
-                "RHI-STAGING-COLD-STORAGE-METAL-PAYLOAD-MISSING"};
-        case Backend::WebGPU:
-            return {Disposition::DiagnosticFailure,
-                false,
-                false,
-                "RHI-STAGING-COLD-STORAGE-WEBGPU-PAYLOAD-MISSING"};
-        case Backend::WebGL:
-            return {Disposition::DiagnosticFailure,
-                false,
-                false,
-                "RHI-STAGING-COLD-STORAGE-WEBGL-UNSUPPORTED"};
-        }
-        return {};
+        return MemoryAdmissionLowering::stagingColdStorage<Decision, Disposition>(backend);
     }
 };
 

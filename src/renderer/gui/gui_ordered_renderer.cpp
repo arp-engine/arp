@@ -2,6 +2,8 @@
 
 #include "core/diagnostics/diagnostic_error.h"
 #include "core/math/quad_geometry.h"
+#include "renderer/gui/gui_ordered_unified_contract.h"
+#include "renderer/ui/ui_atlas_runtime.h"
 #include "rhi/frontend/descriptor_set_validation.h"
 
 namespace arp::renderer {
@@ -32,8 +34,8 @@ struct GuiOrderedRenderer::State {
 
 RendererResult GuiOrderedRenderer::create(const GuiOrderedRendererDesc& d)
 try {
-    if (state_ || d.contractVersion != 1 || !d.execution || !d.pipeline || !d.maxCommands
-        || !d.maxTextures || !d.frameSlots || !d.maxCpuMetadataBytes || !d.quota
+    if (state_ || (d.contractVersion != 1 && d.contractVersion != 2) || !d.execution || !d.pipeline
+        || !d.maxCommands || !d.maxTextures || !d.frameSlots || !d.maxCpuMetadataBytes || !d.quota
         || d.quota->limitBytes() != d.maxCpuMetadataBytes || d.coordinates.contractVersion != 1
         || d.coordinates.flipRectangleY || d.coordinates.flipTextureUvY)
         return {false, "GUI-ORDERED-CONFIG"};
@@ -120,6 +122,19 @@ try {
         || (d.bitmapGlyphPage && (d.fontToken.empty() || d.alpha != GuiSampleAlpha::Straight)))
         return {false, "GUI-ORDERED-TEXTURE-CONTRACT"};
     auto& state = *state_;
+    if (!d.unifiedFonts.empty()) {
+        if (state.desc.contractVersion != 2 || d.bitmapGlyphPage || d.externalTexture
+            || d.alpha != GuiSampleAlpha::Straight || d.flipUvY)
+            return {false, "GUI-ORDERED-UNIFIED-ATLAS-CONTRACT"};
+        for (std::size_t i = 0; i < d.unifiedFonts.size(); ++i) {
+            const auto& face = d.unifiedFonts[i];
+            if (face.tokenId.empty() || (face.renderMode != "sdf" && face.renderMode != "alpha"))
+                return {false, "GUI-ORDERED-UNIFIED-FONT-CONTRACT"};
+            for (std::size_t j = 0; j < i; ++j)
+                if (d.unifiedFonts[j].tokenId == face.tokenId)
+                    return {false, "GUI-ORDERED-UNIFIED-FONT-DUPLICATE"};
+        }
+    }
     if (const auto* id = state.desc.execution->diagnostic(device_))
         return {false, id};
     for (const auto& texture : state.textures)
@@ -138,6 +153,8 @@ try {
     rhi::SamplerDesc sampler;
     sampler.label = d.resourceId;
     sampler.minFilter = sampler.magFilter = rhi::SamplerFilter::Nearest;
+    if (!d.unifiedFonts.empty())
+        sampler.minFilter = sampler.magFilter = rhi::SamplerFilter::Linear;
     sampler.mipFilter = rhi::SamplerMipFilter::None;
     texture->sampler = device_.createSampler(sampler);
     texture->arena = device_.createDescriptorArena({d.resourceId, 1, 2});
@@ -168,6 +185,73 @@ bool GuiOrderedRenderer::readyForFrame(std::uint64_t frame) const
 {
     return state_ && !state_->desc.execution->diagnostic(device_)
         && state_->slots[frame % state_->slots.size()].use_count() == 1;
+}
+
+RendererResult GuiOrderedRenderer::registerUnifiedAtlas(const ui::UnifiedUiAtlasRuntime& atlas)
+try {
+    if (!state_ || state_->desc.contractVersion != 2 || !atlas.ok() || atlas.fontFaces().empty()
+        || atlas.atlas().srgb)
+        return {false, "GUI-ORDERED-UNIFIED-ATLAS-CONTRACT"};
+    const auto& image = atlas.atlas();
+    core::CpuMemoryQuotaScope scope(state_->desc.quota);
+    auto texture = core::shareUnique(device_.createTexture({image.resourceId,
+        {image.extent.width, image.extent.height, 1},
+        rhi::TextureFormat::Rgba8Unorm,
+        rhi::TextureUsage::Sampled | rhi::TextureUsage::CopyDst,
+        rhi::MemoryUsage::GpuOnly,
+        rhi::ResourceState::ShaderRead}));
+    if (!texture)
+        return {false, "GUI-ORDERED-UNIFIED-TEXTURE"};
+    rhi::semantics::ClientTextureUpload upload;
+    upload.contractVersion = 1;
+    upload.extent = {image.extent.width, image.extent.height, 1};
+    upload.bytesPerRow = image.extent.width * 4;
+    upload.bytes = image.rgba8;
+    auto result = state_->desc.execution->uploadTexture(*texture, upload);
+    if (!result.success)
+        return {false, result.diagnostics};
+    GuiOrderedTextureDesc desc;
+    desc.resourceId = image.resourceId;
+    desc.texture = std::move(texture);
+    desc.unifiedFonts = atlas.fontFaces();
+    return registerTexture(desc);
+} catch (const std::bad_alloc&) {
+    return {false, "GUI-ORDERED-CPU-ALLOCATION"};
+}
+
+RendererResult GuiOrderedRenderer::updateUnifiedAtlas(const ui::UnifiedUiAtlasRuntime& atlas)
+try {
+    if (!state_ || state_->desc.contractVersion != 2 || !atlas.ok())
+        return {false, "GUI-ORDERED-UNIFIED-ATLAS-CONTRACT"};
+    for (const auto& slot : state_->slots)
+        if (slot.use_count() != 1)
+            return {false, "GUI-ORDERED-TEXTURE-GRAPH-RESERVED"};
+    for (const auto& entry : state_->textures) {
+        if (entry->source.resourceId != atlas.atlas().resourceId)
+            continue;
+        const auto& source = entry->source;
+        const auto& image = atlas.atlas();
+        if (source.unifiedFonts.size() != atlas.fontFaces().size()
+            || source.texture->desc().extent.width != image.extent.width
+            || source.texture->desc().extent.height != image.extent.height)
+            return {false, "GUI-ORDERED-UNIFIED-ATLAS-CHANGED"};
+        for (std::size_t i = 0; i < source.unifiedFonts.size(); ++i)
+            if (source.unifiedFonts[i].tokenId != atlas.fontFaces()[i].tokenId
+                || source.unifiedFonts[i].renderMode != atlas.fontFaces()[i].renderMode)
+                return {false, "GUI-ORDERED-UNIFIED-ATLAS-CHANGED"};
+        if (const auto* id = state_->desc.execution->resourceReuseDiagnostic(*source.texture))
+            return {false, id};
+        rhi::semantics::ClientTextureUpload upload;
+        upload.contractVersion = 1;
+        upload.extent = {image.extent.width, image.extent.height, 1};
+        upload.bytesPerRow = image.extent.width * 4;
+        upload.bytes = image.rgba8;
+        const auto result = state_->desc.execution->uploadTexture(*source.texture, upload);
+        return {result.success, result.diagnostics};
+    }
+    return {false, "GUI-ORDERED-TEXTURE-MISSING"};
+} catch (const std::bad_alloc&) {
+    return {false, "GUI-ORDERED-CPU-ALLOCATION"};
 }
 
 RendererResult GuiOrderedRenderer::registerBitmapFont(const arp::ui::UiBitmapFontResource& font)
@@ -264,20 +348,31 @@ try {
         if (command.textureSource != ui::UiTextureSource::Atlas
             && command.textureSource != ui::UiTextureSource::External)
             return {false, "GUI-ORDERED-TEXTURE-SOURCE"};
-        if (command.sdfMode)
+        if (command.sdfMode && state.desc.contractVersion == 1)
             return {false, "GUI-ORDERED-SDF-PROFILE-REQUIRED"};
         const auto& clip = command.clipRect;
         const auto& rect = command.rect;
         const auto integral = [](float x) {
             return std::isfinite(x) && x == std::floor(x);
         };
-        if (!rect.valid() || !clip.valid() || clip.width <= 0 || clip.height <= 0
-            || !integral(clip.x) || !integral(clip.y) || !integral(clip.width)
-            || !integral(clip.height) || clip.x < 0 || clip.y < 0
-            || double(clip.x) + clip.width > extent.width
-            || double(clip.y) + clip.height > extent.height || double(clip.x) > INT32_MAX
-            || double(clip.y) > INT32_MAX)
+        rhi::ScissorState quantized;
+        if (state.desc.contractVersion == 2) {
+            if (const auto* id = GuiOrderedUnifiedContract::clip(clip, extent, quantized))
+                return {false, id};
+        }
+        if (!rect.valid()
+            || (state.desc.contractVersion == 1
+                && (!clip.valid() || clip.width <= 0 || clip.height <= 0 || !integral(clip.x)
+                    || !integral(clip.y) || !integral(clip.width) || !integral(clip.height)
+                    || clip.x < 0 || clip.y < 0 || double(clip.x) + clip.width > extent.width
+                    || double(clip.y) + clip.height > extent.height || double(clip.x) > INT32_MAX
+                    || double(clip.y) > INT32_MAX)))
             return {false, "GUI-ORDERED-EXPLICIT-INTEGER-CLIP-REQUIRED"};
+        if (state.desc.contractVersion == 1)
+            quantized = {static_cast<std::int32_t>(clip.x),
+                static_cast<std::int32_t>(clip.y),
+                static_cast<std::uint32_t>(clip.width),
+                static_cast<std::uint32_t>(clip.height)};
         auto push = plan.commands[i].pushConstants;
         for (float c : push.color)
             if (!std::isfinite(c) || c < 0 || c > 1)
@@ -303,22 +398,30 @@ try {
                 || push.uvSize[1] <= 0 || double(push.uvOrigin[0]) + push.uvSize[0] > 1
                 || double(push.uvOrigin[1]) + push.uvSize[1] > 1))
             return {false, "GUI-ORDERED-SOURCE-RECT-RANGE"};
-        if (plan.commands[i].text
+        if (plan.commands[i].text && !source.unifiedFonts.empty()) {
+            const auto face = std::find_if(
+                source.unifiedFonts.begin(), source.unifiedFonts.end(), [&](const auto& value) {
+                    return value.tokenId == command.fontToken;
+                });
+            if (!command.hasAtlasPageIndex || command.atlasPageIndex != 0
+                || face == source.unifiedFonts.end()
+                || command.sdfMode != (face->renderMode == "sdf"))
+                return {false, "GUI-ORDERED-UNIFIED-GLYPH-MISMATCH"};
+        } else if (plan.commands[i].text
             && (!source.bitmapGlyphPage || !command.hasAtlasPageIndex
                 || command.atlasPageIndex != source.atlasPage || command.fontToken.empty()
                 || command.fontToken != source.fontToken))
             return {false, "GUI-ORDERED-GLYPH-PAGE-FONT-MISMATCH"};
+        if (command.sdfMode && (source.unifiedFonts.empty() || !plan.commands[i].text))
+            return {false, "GUI-ORDERED-UNIFIED-GLYPH-MISMATCH"};
         if (source.flipUvY) {
             push.uvOrigin[1] += push.uvSize[1];
             push.uvSize[1] = -push.uvSize[1];
         }
-        push.flags[1] = source.alpha == GuiSampleAlpha::Premultiplied ? 1.f : 0.f;
-        slot->draws.push_back({*found,
-            push,
-            {static_cast<std::int32_t>(clip.x),
-                static_cast<std::int32_t>(clip.y),
-                static_cast<std::uint32_t>(clip.width),
-                static_cast<std::uint32_t>(clip.height)}});
+        push.flags[1] = command.sdfMode                     ? 2.f
+            : source.alpha == GuiSampleAlpha::Premultiplied ? 1.f
+                                                            : 0.f;
+        slot->draws.push_back({*found, push, quantized});
     }
     const auto vertex = graph.importBufferRef(state.corners);
     auto pass = graph.addPass("GuiOrderedBitmap");
@@ -330,9 +433,14 @@ try {
             state.corners->desc().sizeBytes)
         .writeAttachment(
             target, rhi::ResourceState::ColorAttachment, load, rhi::StoreOp::Store, {}, clear);
-    for (const auto& draw : slot->draws)
-        pass.read(
-            graph.importTextureRef(draw.texture->source.texture), rhi::ResourceState::ShaderRead);
+    // One graph resource/access per actual atlas owner. Importing the same
+    // atlas for every glyph creates thousands of duplicate graph identities.
+    for (const auto& texture : state.textures)
+        if (std::any_of(slot->draws.begin(), slot->draws.end(), [&](const auto& draw) {
+                return draw.texture == texture;
+            }))
+            pass.read(
+                graph.importTextureRef(texture->source.texture), rhi::ResourceState::ShaderRead);
     auto pipeline = state.desc.pipeline;
     auto corners = state.corners;
     pass.executeRenderPass([slot, pipeline, corners, extent](

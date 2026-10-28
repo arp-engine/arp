@@ -653,14 +653,14 @@ public:
     rhi::CommandValidationResult writeTimestamp(
         const rhi::QueryPool& pool, std::uint32_t queryIndex) override
     {
-        if (!pass_.preflightResources(0u))
-            return pass_.rejected();
         if (nativePayload_ && nativePayload_->recordingStorageBound()) {
             if (const auto* id = nativePayload_->recordOriginalTimestamp(
                     pool, queryIndex, pass_.commandCount(), recordingIdentity_))
                 return pass_.rejectStorage(id);
             return pass_.acceptOriginalTimestamp();
         }
+        if (!pass_.preflightResources(0u))
+            return pass_.rejected();
         if (!capabilityContract_) {
             return commandFail("Vulkan RHI timestamp write has no capability contract", 0);
         }
@@ -945,7 +945,8 @@ public:
             return commandFail("Vulkan RHI upload requires a backend-owned staging pool", 0);
         }
         const auto stagingRetirementSerial = currentFrameSerial_;
-        retireCompletedVulkanRhiSubmittedCommands();
+        if (nativePayload_)
+            retireCompletedVulkanRhiSubmittedCommands(*nativePayload_->runtime());
         auto staging = stagingUploadPool_->allocate({
             desc.label,
             desc.sizeBytes,
@@ -1026,7 +1027,8 @@ public:
                 "Vulkan RHI texture upload requires a backend-owned staging pool", 0);
         }
         const auto stagingRetirementSerial = currentFrameSerial_;
-        retireCompletedVulkanRhiSubmittedCommands();
+        if (nativePayload_)
+            retireCompletedVulkanRhiSubmittedCommands(*nativePayload_->runtime());
         auto staging = stagingUploadPool_->allocate({
             desc.label,
             desc.pixelDataSize,
@@ -1405,13 +1407,17 @@ public:
         }
         if (nativePayload_ && coldPassProgram_) {
             originalRecordingStates_ = recordedStates_.get();
-            if (!nativePayload_->adoptOriginalStreamJournal(recordedStates_, diagnostics)) {
+            if (!nativePayload_->adoptOriginalStreamJournal(
+                    recordedStates_, diagnostics, recordingIdentity_)) {
                 originalRecordingStates_ = nullptr;
                 nativePayload_.reset();
                 lastValidation_ = {false, std::move(diagnostics), commandCount_};
             }
         }
-        if (nativePayload_ && storage && storage->originalQueries
+        if (nativePayload_ && renderPreparation
+            && rhi::OriginalRenderPassPreparationContract::hasPassTiming(*renderPreparation))
+            nativePayload_->observeFrameSerial(renderPreparation->passTimingFrameSerial);
+        if (nativePayload_ && !coldPassProgram_ && storage && storage->originalQueries
             && storage->originalQueries->recordingContractVersion) {
             originalRecordingStates_ = recordedStates_.get();
             if (!queryLowering
@@ -1453,7 +1459,11 @@ public:
         const rhi::OriginalOrdinaryTextureUploadContract::Budget& budget,
         const rhi::OriginalOrdinaryTextureUploadContract::Binding* bindings,
         std::size_t count,
-        core::pmr::String& diagnostic)
+        core::pmr::String& diagnostic,
+        const rhi::OriginalTextureUploadPreparationRequest* publicRequest,
+        const std::shared_ptr<core::CpuMemoryQuota>& publicationQuota,
+        core::pmr::Vector<std::shared_ptr<const rhi::OriginalTextureUploadPublication>>*
+            publications)
     {
         return nativePayload_ && stagingUploadPool_ && stagingUploads_
             && nativePayload_->prepareOrdinaryTextureUploads(device,
@@ -1463,7 +1473,10 @@ public:
                 budget,
                 bindings,
                 count,
-                diagnostic);
+                diagnostic,
+                publicRequest,
+                publicationQuota,
+                publications);
     }
 
     std::uint64_t recordingIdentity() const noexcept override { return recordingIdentity_; }
@@ -2250,6 +2263,19 @@ core::UniquePtr<rhi::CommandEncoder> createColdPassEncoder(
             diagnostic = result.diagnostic;
             return {};
         }
+        if (rhi::OriginalRenderPassPreparationContract::hasPassTiming(*preparation)) {
+            VulkanRhiRecordingStorageLimits::OriginalQueries queries;
+            queries.inputs = original->originalInputs();
+            queries.budget = *preparation->passTimingRetention;
+            queries.recordingQuota = preparation->passTimingRecordingQuota;
+            queries.recordingContractVersion = 2u;
+            queries.recordingOptIn = true;
+            storage->originalQueries = std::move(queries);
+            if (const auto* id = storage->diagnostic()) {
+                diagnostic = id;
+                return {};
+            }
+        }
     } else if (original->counts().renderPasses) {
         diagnostic = "RHI-VULKAN-COLD-RENDER-PASS-STORAGE-UNAVAILABLE";
         return {};
@@ -2428,7 +2454,10 @@ core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoderWithColdTextur
     const rhi::OriginalOrdinaryTextureUploadContract::Budget& budget,
     const rhi::OriginalOrdinaryTextureUploadContract::Binding* bindings,
     std::size_t count,
-    core::pmr::String& diagnostic)
+    core::pmr::String& diagnostic,
+    const rhi::OriginalTextureUploadPreparationRequest* publicRequest,
+    const std::shared_ptr<core::CpuMemoryQuota>& publicationQuota,
+    core::pmr::Vector<std::shared_ptr<const rhi::OriginalTextureUploadPublication>>* publications)
 {
     using Contract = rhi::OriginalOrdinaryTextureUploadContract;
     diagnostic.clear();
@@ -2440,6 +2469,22 @@ core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoderWithColdTextur
     if (const auto* id = Contract::inspect(program, budget, bindings, count)) {
         diagnostic = id;
         return {};
+    }
+    if (bool(publicRequest) != bool(publications)
+        || bool(publicRequest) != bool(publicationQuota)) {
+        diagnostic = "RHI-TEXTURE-UPLOAD-PUBLICATION-REQUEST";
+        return {};
+    }
+    if (publicRequest) {
+        if (const auto* id = rhi::OriginalTextureUploadPreparationContract::inspect(
+                program, *publicRequest, bindings, count, publicationQuota)) {
+            diagnostic = id;
+            return {};
+        }
+        if (!publications->empty() || publications->capacity() < count) {
+            diagnostic = "RHI-TEXTURE-UPLOAD-PUBLICATION-STORAGE";
+            return {};
+        }
     }
     if (capabilities.backend != rhi::Backend::Vulkan) {
         diagnostic = "RHI-ORDINARY-TEXTURE-UPLOAD-CAPABILITY";
@@ -2461,8 +2506,14 @@ core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoderWithColdTextur
         return {};
     try {
         core::CpuMemoryQuotaScope scope(program->originalMetadataQuota());
-        if (!static_cast<VulkanRhiCommandEncoder&>(*result).prepareOrdinaryTextureUploads(
-                device, budget, bindings, count, diagnostic))
+        if (!static_cast<VulkanRhiCommandEncoder&>(*result).prepareOrdinaryTextureUploads(device,
+                budget,
+                bindings,
+                count,
+                diagnostic,
+                publicRequest,
+                publicationQuota,
+                publications))
             return {};
     } catch (const std::bad_alloc&) {
         diagnostic = "RHI-ORDINARY-TEXTURE-UPLOAD-ALLOCATION";

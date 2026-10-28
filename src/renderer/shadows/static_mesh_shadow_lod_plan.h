@@ -2,6 +2,7 @@
 
 #include "assets/mesh_shadow_lod_source.h"
 #include "core/algorithm/index_runs.h"
+#include "renderer/geometry/static_mesh_lod_bank_layout.h"
 #include "renderer/shadows/orthographic_error_projection.h"
 
 #include <cstring>
@@ -14,6 +15,14 @@ class StaticMeshShadowLodPlan final {
 public:
     struct Budget {
         std::size_t sources = 0, sections = 0, runs = 0;
+    };
+
+    // Explicit CPU selection policy; this changes neither error ceilings nor
+    // L2 draw semantics. Index cohorts are not spatial clusters. A cohort uses
+    // the coarsest level certified for EVERY member, separately per cascade.
+    struct IndexCohortPolicy {
+        std::uint32_t contractVersion = 1;
+        std::uint32_t maxSources = 1;
     };
 
     struct Cascade {
@@ -39,18 +48,30 @@ public:
         double texelCeiling,
         double depthCeiling)
     {
+        prepare(sources, budget, texelCeiling, depthCeiling, IndexCohortPolicy{});
+    }
+
+    void prepare(const core::pmr::Vector<assets::MeshShadowLodSource>& sources,
+        Budget budget,
+        double texelCeiling,
+        double depthCeiling,
+        IndexCohortPolicy cohortPolicy)
+    {
         clear();
+        if (cohortPolicy.contractVersion != 1 || !cohortPolicy.maxSources)
+            fail("SHADOW-LOD-PLAN-COHORT-POLICY-INVALID");
         if (sources.empty() || sources.size() > budget.sources || !budget.sections || !budget.runs
             || budget.runs > UINT32_MAX || sources.size() > UINT32_MAX)
             fail("SHADOW-LOD-PLAN-BUDGET-INVALID");
         // The projection utility owns validation of the quality ceilings.
         core::OrthographicErrorProjection::ProjectedError{}.fits(texelCeiling, depthCeiling);
         budget_ = budget;
+        cohortPolicy_ = cohortPolicy;
         texelCeiling_ = texelCeiling;
         depthCeiling_ = depthCeiling;
         sources_.reserve(sources.size());
         for (const auto& source : sources) {
-            sources_.push_back({source, {}, {}});
+            sources_.push_back({source, {}, {}, {}});
             for (unsigned level = 0; level < 3; ++level) {
                 const auto& range = source.ranges[level];
                 if (!range.indices.indexCount || range.indices.indexCount % 3u
@@ -61,66 +82,11 @@ public:
                     fail("SHADOW-LOD-PLAN-EXACT-ERROR-INVALID");
             }
         }
-        for (auto& order : order_) {
-            order.resize(sources.size());
-            for (std::uint32_t i = 0; i < order.size(); ++i)
-                order[i] = i;
-        }
-        auto& identities = order_[0];
-        std::sort(identities.begin(), identities.end(), [&](auto a, auto b) {
-            const auto& x = sources_[a].asset;
-            const auto& y = sources_[b].asset;
-            return std::pair{x.node, x.primitive} < std::pair{y.node, y.primitive};
-        });
-        for (std::size_t i = 1; i < identities.size(); ++i) {
-            const auto& a = sources_[identities[i - 1]].asset;
-            const auto& b = sources_[identities[i]].asset;
-            if (a.node == b.node && a.primitive == b.primitive)
-                fail("SHADOW-LOD-PLAN-IDENTITY-DUPLICATE");
-        }
-        // Sort each bank independently. Candidate offsets and parent ordinals
-        // are not inferred from the original bank or source traversal order.
-        for (unsigned level = 0; level < 3; ++level) {
-            auto& order = order_[level];
-            std::sort(order.begin(), order.end(), [&](auto a, auto b) {
-                const auto& x = sources_[a].asset.ranges[level];
-                const auto& y = sources_[b].asset.ranges[level];
-                return std::pair{x.parentSubmesh, x.indices.firstIndex}
-                < std::pair{y.parentSubmesh, y.indices.firstIndex};
-            });
-            std::size_t sections = 0;
-            for (std::size_t first = 0; first < order.size();) {
-                const auto& initial = sources_[order[first]].asset.ranges[level];
-                auto end = initial.indices.firstIndex;
-                bool approximable = false;
-                std::size_t last = first;
-                while (last < order.size()) {
-                    const auto& source = sources_[order[last]].asset;
-                    const auto& range = source.ranges[level];
-                    if (range.parentSubmesh != initial.parentSubmesh)
-                        break;
-                    if (range.indices.firstIndex != end
-                        || range.indices.materialSlot != initial.indices.materialSlot)
-                        fail("SHADOW-LOD-PLAN-PARTITION-INVALID");
-                    end += range.indices.indexCount;
-                    approximable |= source.approximable;
-                    ++last;
-                }
-                if (++sections > budget.sections)
-                    fail("SHADOW-LOD-PLAN-SECTION-BUDGET");
-                if (!level || approximable) {
-                    Carrier carrier;
-                    carrier.level = level;
-                    carrier.parentSubmesh = initial.parentSubmesh;
-                    carrier.materialSlot = initial.indices.materialSlot;
-                    carrier.parent = {initial.indices.firstIndex,
-                        end - initial.indices.firstIndex,
-                        initial.indices.materialSlot};
-                    carriers_.push_back(carrier);
-                    carrierOrdinals_.push_back({first, last - first});
-                }
-                first = last;
-            }
+        layout_.prepare(sources, budget.sections);
+        for (const auto& section : layout_.sections()) {
+            carriers_.push_back(
+                {section.level, section.parentSubmesh, section.materialSlot, section.parent, {}});
+            carrierOrdinals_.push_back(section.ordinals);
         }
         runs_.reserve(budget.runs);
         prepared_ = true;
@@ -167,6 +133,7 @@ public:
         statistics_ = {};
         for (auto& source : sources_) {
             source.chosen = {};
+            source.eligibleMasks = {1, 1, 1};
             for (unsigned c = 0; c < 3; ++c) {
                 if (source.asset.approximable)
                     for (unsigned level = 2; level > 0; --level) {
@@ -175,15 +142,42 @@ public:
                             cascades[c].width,
                             cascades[c].height);
                         if (error.fits(texelCeiling_, depthCeiling_)) {
-                            source.chosen[c] = level;
-                            break;
+                            source.eligibleMasks[c] |= 1u << level;
+                            if (!source.chosen[c])
+                                source.chosen[c] = level;
+                            // Preserve the independent policy's early exit.
+                            if (cohortPolicy_.maxSources == 1)
+                                break;
                         }
                     }
+            }
+        }
+        if (cohortPolicy_.maxSources > 1) {
+            const auto& order = layout_.order(0);
+            for (std::size_t first = 0; first < order.size();) {
+                const auto parent = sources_[order[first]].asset.ranges[0].parentSubmesh;
+                std::size_t last = first;
+                std::array<unsigned, 3> common{7, 7, 7};
+                while (last < order.size() && last - first < cohortPolicy_.maxSources
+                    && sources_[order[last]].asset.ranges[0].parentSubmesh == parent) {
+                    for (unsigned c = 0; c < 3; ++c)
+                        common[c] &= sources_[order[last]].eligibleMasks[c];
+                    ++last;
+                }
+                for (std::size_t i = first; i < last; ++i)
+                    for (unsigned c = 0; c < 3; ++c)
+                        sources_[order[i]].chosen[c] = common[c] & 4u ? 2u
+                            : common[c] & 2u                          ? 1u
+                                                                      : 0u;
+                first = last;
+            }
+        }
+        for (const auto& source : sources_)
+            for (unsigned c = 0; c < 3; ++c) {
                 const auto chosen = source.chosen[c];
                 ++statistics_.sources[c][chosen];
                 statistics_.triangles[c] += source.asset.ranges[chosen].indices.indexCount / 3u;
             }
-        }
         runs_.clear();
         for (std::size_t i = 0; i < carriers_.size(); ++i) {
             auto& carrier = carriers_[i];
@@ -193,20 +187,21 @@ public:
                 core::forEachSelectedIndexRun(
                     ordinals.count,
                     [&](std::size_t n) {
-                        return sources_[order_[carrier.level][ordinals.first + n]].chosen[c]
+                        return sources_[layout_.order(carrier.level)[ordinals.first + n]].chosen[c]
                             == carrier.level;
                     },
                     [&](core::IndexRun run) {
                         if (runs_.size() >= budget_.runs)
                             fail("SHADOW-LOD-PLAN-RUN-BUDGET");
                         const auto& first =
-                            sources_[order_[carrier.level][ordinals.first + run.first]]
+                            sources_[layout_.order(carrier.level)[ordinals.first + run.first]]
                                 .asset.ranges[carrier.level]
                                 .indices;
-                        const auto& last = sources_[order_[carrier.level][ordinals.first + run.first
-                                                        + run.count - 1]]
-                                               .asset.ranges[carrier.level]
-                                               .indices;
+                        const auto& last =
+                            sources_[layout_.order(
+                                         carrier.level)[ordinals.first + run.first + run.count - 1]]
+                                .asset.ranges[carrier.level]
+                                .indices;
                         runs_.push_back({first.firstIndex,
                             std::size_t(last.firstIndex) + last.indexCount - first.firstIndex});
                     });
@@ -243,8 +238,7 @@ public:
     {
         valid_ = prepared_ = envelopesValid_ = false;
         sources_.clear();
-        for (auto& order : order_)
-            order.clear();
+        layout_.clear();
         carriers_.clear();
         carrierOrdinals_.clear();
         runs_.clear();
@@ -255,6 +249,7 @@ private:
         assets::MeshShadowLodSource asset;
         std::array<core::OrthographicErrorProjection::WorldEnvelope, 2> envelopes;
         std::array<unsigned, 3> chosen;
+        std::array<unsigned, 3> eligibleMasks;
     };
 
     [[noreturn]] static void fail(const char* diagnostic)
@@ -279,16 +274,14 @@ private:
     }
 
     Budget budget_;
+    IndexCohortPolicy cohortPolicy_;
     double texelCeiling_ = 0, depthCeiling_ = 0;
     float normalBias_ = 0;
     bool prepared_ = false, valid_ = false, envelopesValid_ = false;
     std::array<Cascade, 3> cascades_{};
     Statistics statistics_;
     core::pmr::Vector<Source> sources_{&core::defaultCpuMemoryResource()};
-    std::array<core::pmr::Vector<std::uint32_t>, 3> order_{
-        core::pmr::Vector<std::uint32_t>{&core::defaultCpuMemoryResource()},
-        core::pmr::Vector<std::uint32_t>{&core::defaultCpuMemoryResource()},
-        core::pmr::Vector<std::uint32_t>{&core::defaultCpuMemoryResource()}};
+    StaticMeshLodBankLayout layout_;
     core::pmr::Vector<Carrier> carriers_{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<core::IndexRun> carrierOrdinals_{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<core::IndexRun> runs_{&core::defaultCpuMemoryResource()};

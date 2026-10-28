@@ -1,6 +1,7 @@
 #pragma once
 
 #include "3d/camera_parameters.h"
+#include "core/api.h"
 #include "core/math/math.h"
 #include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
@@ -31,7 +32,7 @@ enum class CameraAspectPolicyKind {
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
-struct CameraAspectPolicy {
+struct ARP_API CameraAspectPolicy {
     APROP(Serialize, Editor)
     CameraAspectPolicyKind kind = CameraAspectPolicyKind::Fixed;
     APROP(Serialize, Editor)
@@ -44,7 +45,7 @@ struct CameraAspectPolicy {
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
-struct ViewportRect {
+struct ARP_API ViewportRect {
     APROP(Serialize, Editor)
     float x = 0.0f;
     APROP(Serialize, Editor)
@@ -60,7 +61,7 @@ struct ViewportRect {
 
 ACLASS(Ownership = Value, Lifecycle = Value)
 
-class RenderQueueMask {
+class ARP_API RenderQueueMask {
 public:
     static RenderQueueMask none();
     static RenderQueueMask queue2D();
@@ -89,7 +90,7 @@ enum class CameraLoadOp {
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
-struct CameraClearIntent {
+struct ARP_API CameraClearIntent {
     APROP(Serialize, Editor)
     CameraLoadOp colorLoadOp = CameraLoadOp::Load;
     float clearColor[4]{0.0f, 0.0f, 0.0f, 1.0f};
@@ -102,7 +103,7 @@ struct CameraClearIntent {
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
-struct CameraComponentDesc {
+struct ARP_API CameraComponentDesc {
     APROP(Serialize, Editor)
     CameraProjection projection = CameraProjection::Perspective;
     APROP(Serialize, Editor)
@@ -135,7 +136,7 @@ struct CameraComponentDesc {
 
 ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
-class CameraComponent final : public Component {
+class ARP_API CameraComponent final : public Component {
 public:
     const char* scriptTypeName() const override { return "CameraComponent"; }
 
@@ -273,7 +274,7 @@ struct ResolvedCamera {
     float depthPositiveProjectionScale = 0.0f;
 };
 
-class CameraResolverResult {
+class ARP_API CameraResolverResult {
 public:
     static CameraResolverResult success(arp::core::pmr::Vector<ResolvedCamera> cameras);
     static CameraResolverResult failure(CameraDiagnosticCode code, arp::core::pmr::String message);
@@ -296,7 +297,7 @@ private:
 
 class Scene;
 
-class CameraResolver {
+class ARP_API CameraResolver {
 public:
     CameraResolverResult resolve(const Scene& scene, const SceneTraversalSnapshot& snapshot) const;
     static CameraResolverResult validate(const CameraComponentDesc& desc);

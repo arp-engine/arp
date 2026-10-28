@@ -948,6 +948,20 @@ private:
             // CPU state opt-in and existing exact Sources/Inputs correspondence.
             for (const auto& source : sources->sources()) {
                 const auto domain = OriginalCommandResourceSources::domain(source);
+                if (domain == CommandReferenceDomain::Query) {
+                    // Query slot state is not shader resource state. Inputs11
+                    // already authenticated every point/pair against this exact
+                    // source; admission grants no native journal authority.
+                    if (budget.contractVersion != 5u
+                        || inputs->originalBudget().contractVersion != 11u
+                        || !inputs->originalBudget().passTiming)
+                        return "RHI-ORIGINAL-TYPED-STATE-QUERY-PROFILE";
+                    const auto& query =
+                        std::get<std::shared_ptr<const OriginalCommandQueryPoolSource>>(source);
+                    if (const auto* id = query->independentCpuQuotaDiagnostic(quota))
+                        return id;
+                    continue;
+                }
                 if (domain == CommandReferenceDomain::Readback && readbacks) {
                     const auto* readback =
                         std::get_if<std::shared_ptr<const OriginalCommandTextureReadbackSource>>(
@@ -1750,6 +1764,12 @@ private:
     {
         const auto& item = usage(graph).commands()[command];
         switch (item.kind) {
+        case K::Timestamp:
+            if (graph.stateContractVersion() != 5u
+                || graph.originalInputs()->originalBudget().contractVersion != 11u
+                || !graph.originalInputs()->originalBudget().passTiming)
+                return "RHI-ORIGINAL-SEQUENCE-QUERY-PROFILE";
+            break;
         case K::RetainIndexedSnapshot: {
             if (graph.budget_.bindlessRoots.empty())
                 return "RHI-ORIGINAL-BINDLESS-SEQUENCE-STATE-PROFILE";
@@ -2049,6 +2069,12 @@ public:
                     ->sources()[usage.references()[command.firstReference + i].sourceIndex];
             };
             switch (command.kind) {
+            case K::Timestamp:
+                if (graph->stateContractVersion() != 5u
+                    || inputs.originalBudget().contractVersion != 11u
+                    || !inputs.originalBudget().passTiming)
+                    result.diagnostic = "RHI-ORIGINAL-ACCESS-QUERY-PROFILE";
+                break;
             case K::BindVertexBuffer:
             case K::BindIndexBuffer:
                 if (graph->stateContractVersion() != 4u && budget.bindlessRootStateVersion != 5u

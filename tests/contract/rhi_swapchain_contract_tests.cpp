@@ -17,7 +17,11 @@ public:
 
     std::uint32_t maxFramesInFlight() const override { return wrapped_.maxFramesInFlight(); }
 
-    arp::rhi::AcquiredFrame acquireNextFrame() override { return wrapped_.acquireNextFrame(); }
+    arp::rhi::AcquiredFrame acquireNextFrame() override
+    {
+        ++acquireCalls;
+        return wrapped_.acquireNextFrame();
+    }
 
     bool isFrameAcquired(const arp::rhi::AcquiredFrame& frame) const noexcept override
     {
@@ -71,6 +75,7 @@ public:
     bool failDiscard = true;
     bool invalidateOnFailure = false;
     unsigned discardCalls = 0u;
+    unsigned acquireCalls = 0u;
 
 private:
     arp::rhi::Swapchain& wrapped_;
@@ -114,6 +119,72 @@ void verifyPresentationCompletionRetiresTheExactSlot()
     assert(recycled.success && recycled.frameIndex == first.frameIndex);
     assert(swapchain->discardFrame(recycled).success);
     assert(swapchain->discardFrame(second).success);
+}
+
+void verifySharedReadinessBeforeAcquisition()
+{
+    using namespace arp;
+    auto device = rhi::createNullDevice();
+    auto swapchain = device->createSwapchain(
+        {"SharedInputReadiness", {16u, 16u}, rhi::TextureFormat::Bgra8Unorm, 2u});
+    assert(swapchain);
+    DiscardFailureSwapchain observed(*swapchain);
+    observed.failDiscard = false;
+    platform::FrameInputAdmission admission;
+    bool sharedReady = false;
+    bool slotReady = false;
+    unsigned slotQueries = 0u;
+    unsigned sharedQueries = 0u;
+    const auto poll = [&] {
+        return admission.acquire(
+            observed,
+            [&](std::uint32_t) {
+                ++slotQueries;
+                return slotReady;
+            },
+            [&] {
+                ++sharedQueries;
+                return sharedReady;
+            });
+    };
+    for (unsigned i = 0u; i < 8u; ++i) {
+        const auto pending = poll();
+        assert(!pending.success && pending.status == rhi::AcquireStatus::NotReady
+            && pending.recoverable && !pending.swapchainRebuildRequired
+            && pending.frameSerial == 0u);
+    }
+    assert(!admission.pending() && observed.acquireCalls == 0u && slotQueries == 0u);
+    sharedReady = true;
+    const auto slotPending = poll();
+    assert(!slotPending.success && slotPending.status == rhi::AcquireStatus::NotReady
+        && slotPending.frameSerial != 0u && admission.pending());
+    assert(observed.acquireCalls == 1u && slotQueries == 1u);
+    sharedReady = false;
+    for (unsigned i = 0u; i < 8u; ++i) {
+        const auto retained = poll();
+        assert(retained.frameSerial == slotPending.frameSerial
+            && retained.frameIndex == slotPending.frameIndex && !retained.success);
+    }
+    assert(observed.acquireCalls == 1u && slotQueries == 1u);
+    assert(observed
+            .discardFrame(
+                rhi::makeAcquireSuccessResult(slotPending.frameSerial, slotPending.frameIndex))
+            .success);
+    const auto beforeInvalidation = sharedQueries;
+    const auto invalidated = poll();
+    assert(!invalidated.success && invalidated.status == rhi::AcquireStatus::NotReady
+        && invalidated.diagnostics == "PLATFORM-FRAME-INPUT-ACQUISITION-INVALIDATED");
+    assert(!admission.pending() && sharedQueries == beforeInvalidation);
+    sharedReady = slotReady = true;
+    const auto first = poll();
+    assert(first.success && !admission.pending() && observed.acquireCalls == 2u);
+    const auto second = poll();
+    assert(second.success && second.frameIndex != first.frameIndex && observed.acquireCalls == 3u);
+    assert(observed.discardFrame(first).success && observed.discardFrame(second).success);
+    slotReady = false;
+    assert(poll().status == rhi::AcquireStatus::NotReady && admission.pending());
+    sharedReady = false;
+    assert(admission.cancel().success && !admission.pending());
 }
 
 void verifyDiscardFailureRetention()
@@ -247,6 +318,7 @@ void verifyInputAdmission()
 
 int main()
 {
+    verifySharedReadinessBeforeAcquisition();
     verifyPresentationCompletionRetiresTheExactSlot();
     verifyDiscardFailureRetention();
     verifyPendingSurfaceInvalidation();

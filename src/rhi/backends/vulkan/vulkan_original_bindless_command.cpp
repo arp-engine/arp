@@ -81,7 +81,7 @@ public:
             return false;
         const bool done = command_->submittedFenceCompleted();
         if (done)
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(*command_->runtime());
         return done;
     }
 

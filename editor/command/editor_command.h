@@ -350,6 +350,37 @@ struct AddSceneComponentCommand {
     core::pmr::Vector<SetSceneComponentPropertyCommand> initialProperties;
 };
 
+// Complete explicit script configuration. Native property setters and bare
+// component type names cannot identify a script module/schema binding.
+
+struct SceneScriptConfiguration {
+    SceneScriptConfiguration(std::string_view resource,
+        std::string_view type,
+        std::uint32_t schema,
+        std::string_view yaml,
+        bool active,
+        std::pmr::memory_resource* memory = &core::defaultCpuMemoryResource())
+        : resourceId(resource, memory), scriptType(type, memory), fields(yaml, memory),
+          schemaVersion(schema), enabled(active)
+    {}
+
+    core::pmr::String resourceId, scriptType, fields;
+    std::uint32_t schemaVersion;
+    bool enabled;
+};
+
+struct SetSceneScriptFieldsCommand : SceneScriptConfiguration {
+    using SceneScriptConfiguration::SceneScriptConfiguration;
+    std::uint64_t objectId = 0, componentId = 0;
+};
+
+// Attachment is explicit and requires the entire initial configuration; it
+// cannot execute a constructor to obtain defaults or select a module by name.
+struct AddSceneScriptComponentCommand : SceneScriptConfiguration {
+    using SceneScriptConfiguration::SceneScriptConfiguration;
+    std::uint64_t objectId = 0;
+};
+
 struct UndoScriptCommand {
     std::uint64_t documentId = 0;
 };
@@ -602,7 +633,9 @@ using EditorCommandPayload = std::variant<BuildTerrainResourceCommand,
     GetSceneInspectorQuery,
     GetSceneInspectorSelectionQuery,
     GetSceneHierarchyQuery,
-    GetSceneComponentCatalogQuery>;
+    GetSceneComponentCatalogQuery,
+    SetSceneScriptFieldsCommand,
+    AddSceneScriptComponentCommand>;
 
 struct EditorCommandEnvelope {
     static constexpr std::uint16_t currentVersion = 1;
@@ -688,6 +721,7 @@ struct EditorStateSnapshot {
     std::uint64_t scenePersistenceTaskId = 0;
     ScenePersistenceTaskStatus scenePersistenceTaskStatus = ScenePersistenceTaskStatus::Unknown;
     core::pmr::String scenePersistenceTaskDiagnostic{&core::defaultCpuMemoryResource()};
+    bool scenePersistenceTaskCommitted = false;
 };
 
 struct EditorCommandOutcome {

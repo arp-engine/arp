@@ -2,6 +2,7 @@
 
 #include "rhi/frontend/compute_dispatch_validation.h"
 #include "rhi/frontend/resource_device_lifetime.h"
+#include "rhi/semantics/compute_dispatch_admission_lowering.h"
 
 #include <array>
 
@@ -44,18 +45,7 @@ public:
 
     static constexpr const char* reservationDiagnostic(Backend backend) noexcept
     {
-        switch (backend) {
-        case Backend::Metal:
-            return nullptr;
-        case Backend::Null:
-            return "RHI-DISPATCH-VALIDATION-VALIDATOR-ONLY";
-        case Backend::Vulkan:
-        case Backend::WebGPU:
-            return "RHI-DISPATCH-VALIDATION-QUERIED-LIMITS";
-        case Backend::WebGL:
-            return "RHI-DISPATCH-VALIDATION-UNSUPPORTED";
-        }
-        return "RHI-DISPATCH-VALIDATION-BACKEND";
+        return semantics::ComputeDispatchAdmissionLowering::reservationDiagnostic(backend);
     }
 
     static const char* inspect(const ComputeDispatchValidationRequest& request,

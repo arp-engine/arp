@@ -97,6 +97,7 @@ struct AliasModel {
 
 struct HeaderModel {
     std::string path;
+    std::string canonicalSource;
     std::vector<ClassModel> classes;
     std::vector<FunctionModel> functions;
     std::vector<EnumModel> enums;
@@ -1360,6 +1361,12 @@ ParseResult parseHeaders(const std::vector<std::filesystem::path>& paths)
 
         HeaderModel header;
         header.path = path.generic_string();
+        // GeneratedSchemaReuse/1 canonical source is LF-separated logical lines.
+        for (auto sourceLine : lines) {
+            if (!sourceLine.empty() && sourceLine.back() == '\r')
+                sourceLine.pop_back();
+            header.canonicalSource += sourceLine + "\n";
+        }
         std::vector<std::string> namespaces;
         for (std::size_t index = 0; index < lines.size(); ++index) {
             const std::string rawLine = trim(lines[index]);
@@ -1829,6 +1836,87 @@ std::string lifecycleExpression(const std::string& value)
     return "::arp::reflection::RegistrationLifecycle::Unspecified";
 }
 
+std::string nativeTypeBindingBase(std::string value)
+{
+    value = trim(value);
+    for (;;) {
+        if (value.rfind("const ", 0u) == 0u)
+            value.erase(0u, 6u);
+        else if (value.rfind("volatile ", 0u) == 0u)
+            value.erase(0u, 9u);
+        else
+            break;
+        value = trim(value);
+    }
+    while (!value.empty() && (value.back() == '&' || value.back() == '*')) {
+        value.pop_back();
+        value = trim(value);
+    }
+    return value;
+}
+
+using NativeTypeBindings = std::map<std::string, std::vector<std::string>>;
+
+bool collectNativeTypeBindings(
+    const std::vector<HeaderModel>& headers, NativeTypeBindings& bindings, std::string& diagnostics)
+{
+    auto add = [&](const std::string& source, std::string expression) {
+        const auto key = nativeTypeBindingBase(source);
+        if (key.empty()) {
+            diagnostics = "empty native type binding";
+            return false;
+        }
+        auto& expressions = bindings[key];
+        if (std::find(expressions.begin(), expressions.end(), expression) == expressions.end())
+            expressions.push_back(std::move(expression));
+        return true;
+    };
+    for (const auto& header : headers) {
+        for (const auto& cls : header.classes) {
+            for (const auto& base : cls.bases)
+                if (!add(base, qualifyKnownTypes(base, headers, cls.namespaceName)))
+                    return false;
+            for (const auto& property : cls.properties) {
+                const auto expression = property.accessor
+                    ? "std::invoke_result_t<decltype("
+                        + methodPointerExpression(cls, cls.methods[property.getterIndex], headers)
+                        + "), " + cls.cppName + "*>"
+                    : "decltype(std::declval<" + cls.cppName + ">()." + property.name + ")";
+                if (!add(property.cppType, expression))
+                    return false;
+            }
+            for (const auto& constructor : cls.constructors)
+                for (const auto& parameter : constructor)
+                    if (!add(parameter.cppType,
+                            qualifyUnqualifiedTypeTokens(
+                                qualifyKnownTypes(parameter.cppType, headers, cls.namespaceName),
+                                cls.namespaceName)))
+                        return false;
+            for (const auto& method : cls.methods) {
+                const auto traits = "::arp::reflection::detail::function_traits<decltype("
+                    + methodPointerExpression(cls, method, headers) + ")>";
+                if (!add(method.returnType, traits + "::return_type"))
+                    return false;
+                for (std::size_t i = 0; i < method.parameters.size(); ++i)
+                    if (!add(method.parameters[i].cppType,
+                            traits + "::arg_t<" + std::to_string(i) + ">"))
+                        return false;
+            }
+        }
+        for (const auto& function : header.functions) {
+            const auto traits = "::arp::reflection::detail::function_traits<decltype("
+                + functionPointerExpression(function, headers) + ")>";
+            if (!add(function.returnType, traits + "::return_type"))
+                return false;
+            for (std::size_t i = 0; i < function.parameters.size(); ++i)
+                if (!add(function.parameters[i].cppType,
+                        traits + "::arg_t<" + std::to_string(i) + ">"))
+                    return false;
+        }
+    }
+    return true;
+}
+
 bool writeJson(const ProgramOptions& options,
     const std::vector<HeaderModel>& headers,
     std::string& diagnostics)
@@ -1842,6 +1930,19 @@ bool writeJson(const ProgramOptions& options,
 
     out << "{\n";
     out << "  \"module\": \"" << jsonEscape(options.module) << "\",\n";
+    NativeTypeBindings nativeBindings;
+    if (!collectNativeTypeBindings(headers, nativeBindings, diagnostics))
+        return false;
+    out << "  \"nativeTypeBindingsVersion\": 1,\n";
+    out << "  \"nativeTypeBindings\": [";
+    bool firstBinding = true;
+    for (const auto& [source, expressions] : nativeBindings) {
+        if (!firstBinding)
+            out << ", ";
+        firstBinding = false;
+        out << "\"" << jsonEscape(source) << "\"";
+    }
+    out << "],\n";
     out << "  \"headers\": [";
     for (std::size_t index = 0; index < headers.size(); ++index) {
         if (index != 0) {
@@ -2066,6 +2167,7 @@ bool writeCpp(const ProgramOptions& options,
         out << "#include \"" << jsonEscape(header.path) << "\"\n";
     }
     out << "#include \"reflection/reflection.h\"\n\n";
+    out << "#include \"reflection/registration_type_binding.h\"\n\n";
     out << "#include \"core/hash/sha256.h\"\n\n";
     out << "#include \"scriptvm/runtime/module_registration.h\"\n\n";
     out << "#include <utility>\n\n";
@@ -2096,12 +2198,44 @@ bool writeCpp(const ProgramOptions& options,
     out << "{\n";
     out << "    using namespace ::arp::reflection;\n\n";
 
+    std::map<std::string, std::string> headerSources;
+    for (const auto& header : headers) {
+        const auto variable = "generated_header_source_" + std::to_string(headerSources.size());
+        headerSources.emplace(header.path, variable);
+        out << "    static const auto " << variable << " = generatedReflectionSignatureHash(\""
+            << jsonEscape(header.canonicalSource) << "\");\n";
+    }
+
+    // Establish all public type identities before any member can reference
+    // them. Contract snapshots must never depend on declaration order.
+    std::size_t classIndex = 0;
+    std::size_t enumDeclarationIndex = 0;
+    for (const auto& header : headers) {
+        for (const auto& cls : header.classes) {
+            const auto variable = "generated_class_" + std::to_string(classIndex++);
+            out << "    if (!prepareGeneratedRegistrationClass(detail::getTypeName<" << cls.cppName
+                << ">(), \"" << jsonEscape(classDescriptorContract(cls)) << "\", "
+                << headerSources.at(header.path) << ")) { return false; }\n";
+            out << "    auto " << variable << " = registration::class_<" << cls.cppName << ">(\""
+                << jsonEscape(cls.reflectName) << "\");\n";
+            out << "    if (" << variable << ".info() == nullptr) { return false; }\n";
+        }
+        for (const auto& enumeration : header.enums) {
+            const auto variable = "enum_cls_" + std::to_string(enumDeclarationIndex++);
+            out << "    if (!prepareGeneratedRegistrationClass(detail::getTypeName<"
+                << enumeration.cppName << ">(), \""
+                << jsonEscape(enumDescriptorContract(enumeration)) << "\", "
+                << headerSources.at(header.path) << ")) { return false; }\n";
+            out << "    auto " << variable << " = registration::class_<" << enumeration.cppName
+                << ">(\"" << jsonEscape(enumeration.reflectName) << "\");\n";
+            out << "    if (" << variable << ".info() == nullptr) { return false; }\n";
+        }
+    }
+    classIndex = 0;
     for (const auto& header : headers) {
         for (const auto& cls : header.classes) {
             out << "    {\n";
-            out << "        auto cls = registration::class_<" << cls.cppName << ">(\""
-                << jsonEscape(cls.reflectName) << "\");\n";
-            out << "        if (cls.info() == nullptr) { return false; }\n";
+            out << "        auto& cls = generated_class_" << classIndex++ << ";\n";
             if (cls.defaultConstruct) {
                 out << "        cls.construct<>();\n";
             }
@@ -2205,11 +2339,11 @@ bool writeCpp(const ProgramOptions& options,
                 out << "        }\n";
             }
             const auto classContract = classDescriptorContract(cls);
-            out << "        if (!::arp::reflection::declareRegistrationClassContract(\"class:"
+            out << "        if (!::arp::reflection::declareGeneratedRegistrationClassContract(\"class:"
                 << jsonEscape(cls.reflectName) << "\", \"" << jsonEscape(classContract)
-                << "\", cls.info(), " << ownershipExpression(cls.ownership) << ", "
-                << lifecycleExpression(cls.lifecycle) << ", \"" << jsonEscape(cls.moduleExportName)
-                << "\")) { return false; }\n";
+                << "\", cls.info(), " << headerSources.at(header.path) << ", "
+                << ownershipExpression(cls.ownership) << ", " << lifecycleExpression(cls.lifecycle)
+                << ", \"" << jsonEscape(cls.moduleExportName) << "\")) { return false; }\n";
             out << "        if (module != nullptr && !module->bindType(\""
                 << jsonEscape(cls.reflectName) << "\", cls.info())) {\n";
             out << "            return false;\n";
@@ -2275,9 +2409,6 @@ bool writeCpp(const ProgramOptions& options,
     for (const auto& header : headers) {
         for (const auto& enumeration : header.enums) {
             const auto enumVariable = "enum_cls_" + std::to_string(enumIndex++);
-            out << "    auto " << enumVariable << " = registration::class_<" << enumeration.cppName
-                << ">(\"" << jsonEscape(enumeration.reflectName) << "\");\n";
-            out << "    if (" << enumVariable << ".info() == nullptr) { return false; }\n";
             out << "    " << enumVariable << ".constant<" << enumeration.cppName << ">(\n";
             out << "            \"" << jsonEscape(enumeration.reflectName) << "\",\n";
             out << "            {\n";
@@ -2295,14 +2426,27 @@ bool writeCpp(const ProgramOptions& options,
             out << "        return false;\n";
             out << "    }\n\n";
             const auto enumerationContract = enumDescriptorContract(enumeration);
-            out << "    if (!::arp::reflection::declareRegistrationClassContract(\"enum:"
+            out << "    if (!::arp::reflection::declareGeneratedRegistrationClassContract(\"enum:"
                 << jsonEscape(enumeration.reflectName) << "\", \""
-                << jsonEscape(enumerationContract) << "\", " << enumVariable
-                << ".info(), ::arp::reflection::RegistrationOwnership::Unspecified, "
+                << jsonEscape(enumerationContract) << "\", " << enumVariable << ".info(), "
+                << headerSources.at(header.path)
+                << ", ::arp::reflection::RegistrationOwnership::Unspecified, "
                 << "::arp::reflection::RegistrationLifecycle::Unspecified, \"\")) { return false; }\n\n";
         }
     }
 
+    NativeTypeBindings nativeBindings;
+    if (!collectNativeTypeBindings(headers, nativeBindings, diagnostics))
+        return false;
+    for (const auto& [source, expressions] : nativeBindings) {
+        for (std::size_t i = 1; i < expressions.size(); ++i) {
+            out << "    static_assert(std::is_same_v<::arp::reflection::detail::raw_type_t<"
+                << expressions.front() << ">, ::arp::reflection::detail::raw_type_t<"
+                << expressions[i] << ">>, \"ambiguous compiled native type binding\");\n";
+        }
+        out << "    if (!::arp::reflection::bindRegistrationNativeType<" << expressions.front()
+            << ">(\"" << jsonEscape(source) << "\")) { return false; }\n";
+    }
     out << "    return true;\n";
     out << "}\n\n";
     if (!moduleObjectExport.empty()) {
@@ -2324,7 +2468,7 @@ bool writeCpp(const ProgramOptions& options,
 int main(int argc, char** argv)
 {
     if (argc == 2 && std::string(argv[1]) == "--version") {
-        std::cout << "arp_reflect_codegen 3\n";
+        std::cout << "arp_reflect_codegen 5\n";
         return 0;
     }
     ProgramOptions options;

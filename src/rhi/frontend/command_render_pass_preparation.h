@@ -3,6 +3,8 @@
 #include "rhi/frontend/command_attachment_validation.h"
 #include "rhi/frontend/command_read_only_graphics.h"
 #include "rhi/frontend/command_render_pass_storage.h"
+#include "rhi/frontend/ordinary_sampled_color.h"
+#include "rhi/frontend/query_recording_storage.h"
 #include "rhi/frontend/resource_access_usage.h"
 #include "rhi/frontend/resource_state_sequence.h"
 #include "rhi/frontend/transfer_validation.h"
@@ -15,6 +17,9 @@ namespace arp::rhi {
 // every literal occurrence and every replay visit, including repeated snapshots.
 // Creation4 supplies the queried native fixed-cell domain; no mutation plan or
 // completion authority is inferred from an observation.
+// A valid mixed Program may contain only compute/transfer commands. Its zero
+// literal render passes require zero attachment observations, not a placeholder
+// pass; storage budgets remain positive ceilings rather than required counts.
 struct OriginalRenderPassContentBudget {
     std::uint32_t contractVersion = 0u;
     bool prototypeOptIn = false;
@@ -36,7 +41,7 @@ public:
 
     static const char* validate(const OriginalRenderPassContentBudget& b) noexcept
     {
-        if (b.contractVersion != 1u && b.contractVersion != 2u && b.contractVersion != 3u && b.contractVersion != 4u)
+        if (b.contractVersion < 1u || b.contractVersion > 6u)
             return "RHI-RENDER-PASS-CONTENT-VERSION";
         if (!b.prototypeOptIn)
             return "RHI-RENDER-PASS-CONTENT-OPT-IN";
@@ -81,6 +86,7 @@ struct OriginalRenderPassRecordingBudget {
     bool opaqueDepthGraphicsOptIn = false;
     std::uint32_t dispatchDomainVersion = 0u;
     bool dispatchDomainOptIn = false;
+    semantics::OriginalOrdinarySampledColorContract::Intent sampledColor;
 };
 
 class OriginalRenderPassRecordingContract final {
@@ -92,14 +98,19 @@ public:
 
     static const char* validate(const OriginalRenderPassRecordingBudget& b) noexcept
     {
-        if (b.contractVersion != 1u && b.contractVersion != 2u && b.contractVersion != 3u && b.contractVersion != 4u)
+        if (const auto* id =
+                semantics::OriginalOrdinarySampledColorContract::validate(b.sampledColor))
+            return id;
+        if (!b.sampledColor.empty() && b.contractVersion != 3u)
+            return "RHI-ORDINARY-SAMPLED-COLOR-RECORDING-PROFILE";
+        if (b.contractVersion < 1u || b.contractVersion > 6u)
             return "RHI-ORDINARY-ATTACHMENT-RECORDING-VERSION";
         if (!b.prototypeOptIn)
             return "RHI-ORDINARY-ATTACHMENT-RECORDING-OPT-IN";
         if (const auto* id = semantics::OpaqueDepthGraphicsContract::validateIntent(
                 b.opaqueDepthGraphicsVersion, b.opaqueDepthGraphicsOptIn))
             return id;
-        if (b.opaqueDepthGraphicsVersion && b.contractVersion != 3u)
+        if (b.opaqueDepthGraphicsVersion && b.contractVersion != 3u && b.contractVersion != 6u)
             return "RHI-OPAQUE-DEPTH-GRAPHICS-RECORDING-PROFILE";
         if (const auto* id = semantics::ComputeDispatchRecordingContract::validateIntent(
                 b.dispatchDomainVersion, b.dispatchDomainOptIn))
@@ -134,10 +145,29 @@ struct OriginalRenderPassPreparationRequest {
     std::optional<OriginalRenderPassContentBudget> content;
     std::optional<OriginalRenderPassRecordingBudget> recording;
     std::shared_ptr<const ComputeDispatchValidationDomain> dispatchDomain;
+    // Preparation8/9 are independently budgeted. The ordinary Program owns the
+    // sole command meter/journal; these limits reserve query custody only.
+    std::optional<CommandRetentionBudget> passTimingRetention;
+    std::shared_ptr<core::CpuMemoryQuota> passTimingRecordingQuota;
+    // Application correlation carried unchanged into completedFrameSerial.
+    // Nonzero for Preparation8/9; never evidence of native completion itself.
+    std::uint64_t passTimingFrameSerial = 0u;
 };
 
 class OriginalRenderPassPreparationContract final {
 public:
+    // /9 joins timed mixed passes with the independently authored opaque-depth
+    // subdomain. /8 retains its original read-only graphics restriction.
+    static constexpr bool hasPassTiming(const OriginalRenderPassPreparationRequest& r) noexcept
+    {
+        return r.contractVersion == 8u || r.contractVersion == 9u;
+    }
+
+    static constexpr bool hasMixedPasses(const OriginalRenderPassPreparationRequest& r) noexcept
+    {
+        return r.contractVersion == 6u || hasPassTiming(r);
+    }
+
     struct Decision {
         bool validatorOnly = false, privatePreparationAvailable = false;
         bool recordingAvailable = false;
@@ -146,7 +176,7 @@ public:
 
     static const char* validate(const OriginalRenderPassPreparationRequest& request) noexcept
     {
-        if (request.contractVersion < 1u || request.contractVersion > 7u)
+        if (request.contractVersion < 1u || request.contractVersion > 9u)
             return "RHI-RENDER-PASS-PREPARATION-VERSION";
         if (!request.prototypeOptIn)
             return "RHI-RENDER-PASS-PREPARATION-OPT-IN";
@@ -178,6 +208,19 @@ public:
             return "RHI-DISPATCH-RECORDING-DOMAIN-INPUT";
         if (request.dispatchDomain && request.contractVersion != 6u)
             return "RHI-DISPATCH-RECORDING-PREPARATION-PROFILE";
+        if (bool(request.passTimingRetention) != hasPassTiming(request)
+            || bool(request.passTimingRecordingQuota) != hasPassTiming(request))
+            return "RHI-MIXED-PASS-TIMING-RETENTION-PROFILE";
+        if (bool(request.passTimingFrameSerial) != hasPassTiming(request))
+            return "RHI-MIXED-PASS-TIMING-FRAME-SERIAL";
+        if (request.passTimingRetention) {
+            if (const auto* id = semantics::CommandRetentionBudgetLowering::validateIntent(
+                    *request.passTimingRetention))
+                return id;
+            if (request.passTimingRecordingQuota->limitBytes()
+                != request.passTimingRetention->maxCpuMetadataBytes)
+                return "RHI-MIXED-PASS-TIMING-RECORDING-QUOTA";
+        }
         return OriginalRenderPassStorageContract::validate(request.storage);
     }
 
@@ -196,24 +239,22 @@ public:
     {
         if (const auto* id = validate(request))
             return {false, false, false, id};
+        if (request.recording && !request.recording->sampledColor.empty()) {
+            const auto decision = semantics::OriginalOrdinarySampledColorContract::lowering(
+                backend, request.recording->sampledColor);
+            if (!decision.nativeAvailable)
+                return {decision.validatorOnly, false, false, decision.diagnostic};
+        }
+        if (hasPassTiming(request))
+            if (const auto* id = semantics::QueryLowering::mixedPassTimingRecording(backend))
+                return semantics::CommandBudgetLowering::passTimingFailure<Decision>(backend, id);
         if (request.dispatchDomain) {
             const auto admission = semantics::ComputeDispatchRecordingContract::lowering(backend);
             if (!admission.inspectionAvailable || admission.diagnostic)
                 return {admission.validatorOnly, false, false, admission.diagnostic};
         }
-        switch (backend) {
-        case Backend::Null:
-            return {true, false, false, "RHI-RENDER-PASS-PREPARATION-NULL-VALIDATOR"};
-        case Backend::Vulkan:
-            return {false, true, bool(request.recording), nullptr};
-        case Backend::Metal:
-            return {false, false, false, "RHI-RENDER-PASS-PREPARATION-METAL-PAYLOAD-MISSING"};
-        case Backend::WebGPU:
-            return {false, false, false, "RHI-RENDER-PASS-PREPARATION-WEBGPU-PAYLOAD-MISSING"};
-        case Backend::WebGL:
-            return {false, false, false, "RHI-RENDER-PASS-PREPARATION-WEBGL-UNSUPPORTED"};
-        }
-        return {};
+        return semantics::CommandBudgetLowering::renderPassPreparation<Decision>(
+            backend, bool(request.recording));
     }
 
     static const char* inspectDescriptor(const RenderPassDesc& desc) noexcept
@@ -280,6 +321,8 @@ OriginalRenderPassContentContract::Result OriginalRenderPassContentContract::pro
     for (const auto& operation : program->operations())
         if (operation.kind != K::TextureBarrier && operation.kind != K::BeginRenderPass
             && operation.kind != K::EndRenderPass && operation.kind != K::Finish
+            && !((budget.contractVersion == 5u || budget.contractVersion == 6u)
+                && operation.kind == K::Timestamp)
             && !(budget.contractVersion >= 2u
                 && (operation.kind == K::BindGraphicsPipeline
                     || operation.kind == K::BindRenderDescriptor || operation.kind == K::SetViewport
@@ -499,7 +542,18 @@ inline OriginalRenderPassRecordingContract::Result OriginalRenderPassRecordingCo
                 budget.maxCommandVisits,
                 result.commandVisits,
                 budget.opaqueDepthGraphicsVersion == 1u && budget.opaqueDepthGraphicsOptIn,
-                dispatchAdmission))
+                dispatchAdmission,
+                budget.sampledColor.contractVersion))
+            return {id};
+    if (budget.contractVersion == 5u)
+        if (const auto* id = OriginalReadOnlyGraphicsPassProjection::inspectTimedMixed(
+                *program, budget.maxCommandVisits, result.commandVisits))
+            return {id};
+    if (budget.contractVersion == 6u)
+        if (const auto* id = OriginalReadOnlyGraphicsPassProjection::inspectTimedMixed(*program,
+                budget.maxCommandVisits,
+                result.commandVisits,
+                budget.opaqueDepthGraphicsVersion == 1u && budget.opaqueDepthGraphicsOptIn))
             return {id};
     if (budget.contractVersion == 2u)
         if (const auto* id = OriginalReadOnlyGraphicsPassProjection::inspect(
@@ -579,8 +633,27 @@ inline OriginalRenderPassRecordingContract::Result OriginalRenderPassRecordingCo
                                 });
                         if (joined)
                             return joined;
-                        if (!found)
-                            return "RHI-ORDINARY-GRAPHICS-SAMPLED-CONTENT-OWNER";
+                        if (!found) {
+                            if (budget.sampledColor.contractVersion != 1u
+                                || sampledSet->originalObject()
+                                        ->originalSampledColorContractVersion()
+                                    != 1u)
+                                return "RHI-ORDINARY-GRAPHICS-SAMPLED-CONTENT-OWNER";
+                            const auto& e = element.declaration;
+                            const auto allowed =
+                                PipelineStage::VertexShader | PipelineStage::FragmentShader;
+                            if (operation.kind != K::BindRenderDescriptor
+                                && operation.kind != K::Draw)
+                                return "RHI-ORDINARY-SAMPLED-COLOR-STAGES";
+                            if (e.access != ResourceAccess::ShaderRead
+                                || e.stages == PipelineStage::None
+                                || (e.stages & allowed) != e.stages)
+                                return "RHI-ORDINARY-SAMPLED-COLOR-STAGES";
+                            OriginalOrdinarySampledColorRead::Snapshot completed;
+                            if (const auto* id =
+                                    OriginalOrdinarySampledColorRead::capture(**view, completed))
+                                return id;
+                        }
                         if ((*view)->originalParentLease()->originalObject() != &parent)
                             continue;
                         if (rangeOf(**view) != range || state != ResourceState::ShaderRead)

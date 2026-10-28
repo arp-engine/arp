@@ -134,6 +134,8 @@ struct MemoryCapabilities {
     bool hostVisible = false;
     bool transientAliasing = false;
     bool backendFallbacksHiddenFromUpperLayer = true;
+    // Same native memory type must support both. Does not enable an opt-in.
+    bool hostVisibleDeviceLocalBuffers = false;
 };
 
 struct RuntimeFeatureCapabilities {

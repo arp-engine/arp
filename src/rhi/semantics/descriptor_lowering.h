@@ -5,6 +5,17 @@ namespace arp::rhi::semantics {
 // Versioned value-only decisions. Template results preserve existing public decision types.
 class DescriptorLowering final {
 public:
+    static constexpr bool requiresLegacyWriteDecision(Backend backend) noexcept
+    {
+        return backend != Backend::WebGPU;
+    }
+
+    static constexpr bool requiresSynchronousLossJoin(
+        Backend backend, std::uint32_t version, bool requested) noexcept
+    {
+        return backend == Backend::Metal && version >= 3u && !requested;
+    }
+
     template <class Decision>
     static constexpr Decision OriginalGraphicsBindingInspection_lowering(Backend backend) noexcept
     {

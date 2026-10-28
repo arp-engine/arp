@@ -1,7 +1,12 @@
 #include "scriptvm/plugin/compiler_toolchain_layout.h"
 
+#include "core/system/process_runner.h"
 #include "core/text/number_format.h"
 #include "scriptvm/plugin/immutable_build_input_snapshot.h"
+
+#if defined(__APPLE__)
+#include "scriptvm/plugin/detail/apple_clang_toolchain.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -12,6 +17,9 @@ namespace arp::core {
 CompilerToolchainLayoutResult CompilerToolchainLayout::inspect(
     const std::filesystem::path& compilerExecutable) const
 {
+#if defined(__APPLE__)
+    return AppleClangToolchain::inspect(compilerExecutable);
+#endif
     CompilerToolchainLayoutResult result;
     std::error_code error;
     if (!std::filesystem::is_regular_file(compilerExecutable, error) || error) {
@@ -84,11 +92,54 @@ CompilerToolchainLayoutResult CompilerToolchainLayout::inspect(
     return result;
 }
 
+void CompilerToolchainLayout::appendCompilerArguments(
+    const CompilerToolchainLayoutResult& layout, ProcessRunRequest& request)
+{
+    const auto add = [&](std::string_view text) {
+        request.arguments.emplace_back(text.data(), text.size());
+    };
+    const auto pathArgument =
+        [&](std::string_view prefix, const std::filesystem::path& path, bool directory) {
+            pmr::String argument(prefix.data(), prefix.size(), &defaultCpuMemoryResource());
+            argument += path.generic_string();
+            if (directory)
+                argument += "/";
+            request.arguments.push_back(std::move(argument));
+        };
+    if (!layout.programSearchDirectory.empty())
+        pathArgument("-B", layout.programSearchDirectory, true);
+    for (const auto& path : layout.auxiliaryProgramSearchDirectories)
+        pathArgument("-B", path, true);
+    add("-nostdinc");
+    add("-nostdinc++");
+    for (const auto& path : layout.systemIncludeDirectories) {
+        add("-isystem");
+        pathArgument("", path, false);
+    }
+    for (const auto& path : layout.libraryDirectories) {
+        pathArgument("-B", path, true);
+        pathArgument("-L", path, false);
+    }
+    if (!layout.systemRoot.empty()) {
+        add("-isysroot");
+        pathArgument("", layout.systemRoot, false);
+    }
+    if (!layout.resourceDirectory.empty()) {
+        add("-resource-dir");
+        pathArgument("", layout.resourceDirectory, false);
+    }
+    if (!layout.linkerExecutable.empty())
+        pathArgument("-fuse-ld=", layout.linkerExecutable, false);
+}
+
 CompilerToolchainSnapshotResult CompilerToolchainLayout::captureSnapshot(
     ImmutableBuildInputSnapshot& snapshot,
     std::string_view logicalRoot,
     const std::filesystem::path& compilerExecutable) const
 {
+#if defined(__APPLE__)
+    return AppleClangToolchain::capture(snapshot, logicalRoot, compilerExecutable);
+#endif
     CompilerToolchainSnapshotResult result;
     if (logicalRoot.empty()) {
         result.diagnostics = "compiler toolchain snapshot logical root is empty";

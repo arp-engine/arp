@@ -5,8 +5,13 @@
 #include "renderer/renderer_result.h"
 #include "rhi/frontend/ordered_graphics_execution.h"
 #include "ui/ui_bitmap_font_resource.h"
+#include "ui/ui_font.h"
 
 namespace arp::renderer {
+
+namespace ui {
+class UnifiedUiAtlasRuntime;
+}
 
 enum class GuiSampleAlpha { Straight, Premultiplied };
 
@@ -19,6 +24,7 @@ struct GuiOrderedTextureDesc {
     bool externalTexture = false;
     core::pmr::String fontToken{&core::defaultCpuMemoryResource()};
     std::uint32_t atlasPage = 0;
+    core::pmr::Vector<arp::ui::UiFontFaceDesc> unifiedFonts{&core::defaultCpuMemoryResource()};
 };
 
 struct GuiOrderedRendererDesc {
@@ -41,6 +47,8 @@ public:
     RendererResult create(const GuiOrderedRendererDesc&);
     RendererResult registerTexture(const GuiOrderedTextureDesc&);
     RendererResult registerBitmapFont(const arp::ui::UiBitmapFontResource&);
+    RendererResult registerUnifiedAtlas(const ui::UnifiedUiAtlasRuntime&);
+    RendererResult updateUnifiedAtlas(const ui::UnifiedUiAtlasRuntime&);
     RendererResult unregisterTexture(core::StringView resourceId);
     bool readyForFrame(std::uint64_t) const;
     RendererResult addPass(render_graph::FrameGraph&,

@@ -3,7 +3,7 @@
 #include "rhi/backends/webgl/webgl_runtime.h"
 #include "rhi/gpu_resources.h"
 #include "rhi/semantics/webgl_canvas_lease.h"
-#include "rhi/semantics/webgl_execution_telemetry.h"
+#include "rhi/semantics/webgl_execution_telemetry_values.h"
 #include "rhi/semantics/webgl_pipeline_creation.h"
 #include "rhi/semantics/webgl_program_creation.h"
 #include "rhi/semantics/webgl_resource_creation.h"

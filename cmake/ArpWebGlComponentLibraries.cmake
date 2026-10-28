@@ -38,6 +38,7 @@ function(arp_add_webgl_component_libraries)
         "${arp_component_root}/src/rhi/frontend/descriptor_descriptors.cpp"
         "${arp_component_root}/src/rhi/frontend/pipeline_cache.cpp"
         "${arp_component_root}/src/rhi/frontend/descriptor_cache.cpp"
+        "${arp_component_root}/src/rhi/frontend/command_push_constant_binding.cpp"
         "${arp_component_root}/src/rhi/semantics/push_constant_validation.cpp")
     target_include_directories(arp_rhi PUBLIC "${arp_component_root}/src")
     target_link_libraries(arp_rhi PUBLIC arp_core arp_shader)

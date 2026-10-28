@@ -1,6 +1,6 @@
 #pragma once
 
-#include "rhi/gpu_commands.h"
+#include "rhi/frontend/resource_barrier_values.h"
 
 namespace arp::rhi::semantics {
 

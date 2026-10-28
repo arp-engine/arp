@@ -1,6 +1,7 @@
 #include "core/ownership/shared_owner_projection.h"
 #include "rhi/backends/webgl/webgl_execution.h"
 #include "rhi/backends/webgl/webgl_resources_internal.h"
+#include "rhi/frontend/buffer_placement.h"
 
 #include <cstring>
 #include <stdexcept>
@@ -396,6 +397,9 @@ WebGlMemoryCounters WebGlResources::counters() const noexcept
 core::UniquePtr<GpuBuffer> WebGlResources::createBuffer(const BufferDesc& desc)
 {
     auto& d = *domain_;
+    if ((d.lastDiagnostic =
+                HostVisibleDeviceLocalBufferContract::validate(desc, Backend::WebGL, false)))
+        return {};
     if ((d.lastDiagnostic = WebGlResourceCreationContract::buffer(desc))
         || d.preflight(desc.sizeBytes, 0))
         return {};

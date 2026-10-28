@@ -178,7 +178,10 @@ SceneRuntimePipelineRhiParityResultV2 verifySceneRuntimePipelineRhiParityV2(
     result.bridgedFramePlan =
         RendererRhiFramePlanBridge(bridgeDesc).buildFramePlan(result.framePlan);
     if (!result.bridgedFramePlan.success) {
-        return fail(std::move(result), result.bridgedFramePlan.diagnostics);
+        // Do not read a member in another argument of a call that moves its
+        // owner: argument evaluation order differs between GCC and Clang.
+        auto diagnostics = result.bridgedFramePlan.diagnostics;
+        return fail(std::move(result), std::move(diagnostics));
     }
 
     for (const auto backend : rhi::semantics::SemanticReportBackendAdmission::backends) {

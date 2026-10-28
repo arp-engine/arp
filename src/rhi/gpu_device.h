@@ -1,6 +1,6 @@
 #pragma once
-
 #include "core/api.h"
+#include "core/diagnostics/diagnostic_error.h"
 #include "core/memory/cpu_allocator.h"
 #include "core/ownership/shared_owner_projection.h"
 #include "rhi/conformance/clear_execution.h"
@@ -13,6 +13,7 @@
 #include "rhi/frontend/descriptor_buffer_write_validation.h"
 #include "rhi/frontend/descriptor_general_write_validation.h"
 #include "rhi/frontend/descriptor_set_validation.h"
+#include "rhi/frontend/memory_allocator_backing.h"
 #include "rhi/frontend/memory_physical_budget_ledger.h"
 #include "rhi/frontend/memory_shutdown_drain.h"
 #include "rhi/frontend/memory_upload_staging_readiness.h"
@@ -199,6 +200,15 @@ public:
             "RHI query-pool reset is unavailable",
             0,
         };
+    }
+
+protected:
+    // Unpublished native candidates have no factory owner quota yet. Once the
+    // common factory publishes a record, retirement/loss/expiry must fail closed
+    // before reset or observation even if the native runtime remains healthy.
+    const char* originalFactoryLifetimeDiagnostic() const noexcept
+    {
+        return originalOwnerQuota_ ? originalResourceRegistration().diagnostic() : nullptr;
     }
 
 private:
@@ -454,6 +464,14 @@ public:
     virtual Backend backend() const = 0;
     virtual DeviceCapabilities capabilities() const = 0;
     virtual MemoryStats memoryStats() const = 0;
+
+    // AllocatorBackingObservation/1. Cold diagnostic, externally quiescent
+    // creation/destruction only. Never substitute this for an enforced budget.
+    virtual AllocatorBackingObservation observeAllocatorBacking(std::uint32_t version = 1u) const
+    {
+        return AllocatorBackingContract::unavailable(backend(), version);
+    }
+
     /// PhysicalBudgetLedger/1 reports only backend-owned scalar accounting.
     /// The default preserves correctness for a backend that has not published
     /// an observer: every category is Unknown, never a synthetic zero budget.
@@ -489,6 +507,9 @@ public:
     /// Explicit teardown/diagnostic boundary.  It must never be called from a
     /// normal frame hot path.  Backends keep all native synchronization
     /// private while making the L2 lifetime boundary expressible.
+    /// Returns normally only after native completion, or Null validator completion.
+    /// Unsupported or failed waits throw core::DiagnosticError; return is never
+    /// a best-effort signal. Callers must preserve ownership on failure.
     virtual void waitIdle();
     /// ShutdownDrain/1 is the bounded replacement for waitIdle at externally
     /// observable teardown boundaries.  Callers supply one absolute deadline

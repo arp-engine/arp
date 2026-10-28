@@ -1,6 +1,7 @@
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 
 #include "core/memory/cpu_allocator.h"
+#include "rhi/backends/vulkan/vulkan_command_domain.h"
 #include "rhi/backends/vulkan/vulkan_original_device_native_loss.h"
 #include "rhi/semantics/query_lowering.h"
 
@@ -137,10 +138,19 @@ struct VulkanRhiRuntime::Impl {
                     ? desc.getDeviceProcAddr(logicalDevice, "vkDestroyFence")
                     : nullptr);
         if (destroyFence) {
+            for (auto fence : commands.reusableFences)
+                if (fence)
+                    destroyFence(logicalDevice, fence, nullptr);
             for (auto& entry : presentFences)
                 if (entry.fence)
                     destroyFence(logicalDevice, entry.fence, nullptr);
         }
+        const auto destroyPool = functionFrom<PFN_vkDestroyCommandPool>(
+            desc.getDeviceProcAddr(logicalDevice, "vkDestroyCommandPool"));
+        if (destroyPool)
+            for (const auto& entry : commands.reusableCommands)
+                if (entry.commandPool)
+                    destroyPool(logicalDevice, entry.commandPool, nullptr);
     }
 
     struct PresentFenceEntry {
@@ -389,6 +399,7 @@ struct VulkanRhiRuntime::Impl {
     }
 
     VulkanRhiRuntimeDesc desc;
+    VulkanRhiCommandDomain commands;
     bool nativeAdmitted = false;
     const char* admissionDiagnostic = nullptr;
     rhi::CoreCapabilities coreQueue;
@@ -417,6 +428,11 @@ struct VulkanRhiRuntime::Impl {
     std::weak_ptr<VulkanOriginalDeviceNativeResultLoss> originalResultLoss;
     bool originalDeviceLost = false;
 };
+
+VulkanRhiCommandDomain& VulkanRhiRuntime::commandDomain() const noexcept
+{
+    return impl_->commands;
+}
 
 VulkanRhiRuntime::VulkanRhiRuntime(const VulkanRhiRuntimeDesc& desc)
     : impl_(arp::core::makeShared<Impl>(desc))

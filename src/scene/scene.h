@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/api.h"
 #include "core/concurrency/callback.h"
 #include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
@@ -34,7 +35,7 @@ struct SceneUpdateOptions {
     float unscaledDeltaSeconds = 0;
 };
 
-class SceneUpdateResult {
+class ARP_API SceneUpdateResult {
 public:
     static SceneUpdateResult success(size_t visitedObjectCount);
     static SceneUpdateResult failure(SceneDiagnosticCode code, arp::core::pmr::String message);
@@ -54,7 +55,7 @@ private:
 
 ACLASS(Name = "Scene", Export = "main_scene", Ownership = Engine, Lifecycle = Explicit)
 
-class Scene final : public GameObject {
+class ARP_API Scene final : public GameObject {
 public:
     class RestorationTransaction;
     class IdentityRestoration;
@@ -254,7 +255,7 @@ private:
 // A restoration transaction may append candidate objects and bind script types.
 // It must run outside scene dispatch; rollback restores identity allocation and
 // published factories after tearing down all candidate components.
-class Scene::RestorationTransaction final {
+class ARP_API Scene::RestorationTransaction final {
 public:
     explicit RestorationTransaction(Scene& scene);
     ~RestorationTransaction();
@@ -274,7 +275,7 @@ private:
 // Explicit Passive-only candidate transaction. The caller supplies an allow-listed
 // factory whose constructors/destructors have isolated, rollback-safe ownership.
 // Ordinary scene lookup never exposes candidates; only this object resolves them.
-class Scene::IdentityRestoration final {
+class ARP_API Scene::IdentityRestoration final {
 public:
     struct Limits {
         std::size_t objects;

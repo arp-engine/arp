@@ -1,7 +1,7 @@
 #include "core/memory/cpu_allocator.h"
 #include "renderer/deployment/webgpu_deployment_readiness.h"
+#include "rhi/frontend/webgpu_runtime_telemetry.h"
 #include "rhi/semantics/webgpu_canvas_lifecycle_bridge.h"
-#include "rhi/semantics/webgpu_runtime_telemetry.h"
 
 #include <cassert>
 #include <string>

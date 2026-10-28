@@ -24,6 +24,9 @@ struct CloudPreparedResourceCreateContext {
     // last owner dies. This is not queried driver allocation accounting.
     std::shared_ptr<core::AtomicCapacityBudget> retainedLogicalBytes;
     std::shared_ptr<const rhi::ComputeDispatchValidationDomain> dispatchDomain;
+    // Applies to density and raw/resolved/history buffers; no initialization
+    // authority is added and existing host-defined-byte seals are preserved.
+    rhi::HostVisibleDeviceLocalBufferPlacement hostVisibleDeviceLocal;
 };
 
 struct CloudPreparedFrameBuffers {

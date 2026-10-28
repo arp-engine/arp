@@ -600,6 +600,8 @@ public:
 
     virtual std::uint32_t originalGeneralContentContractVersion() const noexcept { return 0u; }
 
+    virtual std::uint32_t originalSampledColorContractVersion() const noexcept { return 0u; }
+
     virtual bool originalGeneralWriteScopeObserved(std::uint32_t) const noexcept { return false; }
 
     virtual bool originalGeneralWriteScopesDrained() const noexcept { return false; }

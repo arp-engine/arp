@@ -66,7 +66,7 @@ struct VulkanStorageExecutionBackendFixture {
                 while (snapshot->originalSubmissionBudgetOwner()->used()) {
                     if (execution)
                         execution->pollCompletion();
-                    retireCompletedVulkanRhiSubmittedCommands();
+                    retireCompletedVulkanRhiSubmittedCommands(*runtime);
                     if (failure == 2u) {
                         Hooks::uncertainFenceResult = false;
                         device.waitIdle();
@@ -105,21 +105,38 @@ struct VulkanStorageExecutionBackendFixture {
     {
         using namespace rhi;
         std::array<semantics::TextureUploadPackedMip, 2u> mips;
+        std::size_t byteCount = 0u;
         for (std::size_t i = 0u; i < mips.size(); ++i) {
             auto& mip = mips[i];
             mip.range = defaultTextureSubresourceRange(texture.desc());
             mip.range.baseMipLevel = i + 1u;
             mip.range.mipLevelCount = 1u;
             mip.extent = {i ? 1u : 2u, i ? 1u : 2u, 1u};
-            mip.packedOffset = i ? 32u : 0u;
-            mip.packedBytesPerRow = i ? 8u : 16u;
+            mip.packedOffset = byteCount;
+            mip.packedBytesPerRow = kTextureUploadRowPitchAlignment;
             mip.rowCount = i ? 1u : 2u;
+            assert(semantics::TextureTransferValidation::copyRowBytes(
+                       texture.desc().format, mip.extent.width)
+                <= mip.packedBytesPerRow);
+            byteCount += static_cast<std::size_t>(mip.packedBytesPerRow) * mip.rowCount;
         }
         const auto bytes = VulkanCompletedTextureReadbackFixture::read(
-            texture, runtime, mips, 40u, ResourceState::ShaderRead);
+            texture, runtime, mips, byteCount, ResourceState::ShaderRead);
         std::array<std::uint16_t, 20u> values;
-        assert(bytes.size() == sizeof(values));
-        std::memcpy(values.data(), bytes.data(), sizeof(values));
+        std::size_t packedOffset = 0u;
+        for (const auto& mip : mips) {
+            const auto rowBytes = semantics::TextureTransferValidation::copyRowBytes(
+                texture.desc().format, mip.extent.width);
+            for (std::uint32_t row = 0u; row < mip.rowCount; ++row) {
+                assert(packedOffset + rowBytes <= sizeof(values));
+                std::memcpy(reinterpret_cast<std::byte*>(values.data()) + packedOffset,
+                    bytes.data() + mip.packedOffset
+                        + static_cast<std::size_t>(row) * mip.packedBytesPerRow,
+                    rowBytes);
+                packedOffset += rowBytes;
+            }
+        }
+        assert(packedOffset == sizeof(values));
         return values;
     }
 };

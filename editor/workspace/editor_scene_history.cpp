@@ -267,6 +267,11 @@ EditorCommandOutcome EditorShell::applySceneHistory(bool undo)
             // Scene preparation has not published any hierarchy change here.
             return {false, false, EditorDiagnosticCode::CommandPreparationFailed};
         }
+    } else if (entry.kind == SceneHistoryEntry::Kind::ScriptFields) {
+        const auto result = applyScriptFieldHistory(entry, undo);
+        if (!result.success)
+            return result;
+        refreshObjectInspector = true;
     } else if (entry.kind == SceneHistoryEntry::Kind::ComponentPresence
         || entry.kind == SceneHistoryEntry::Kind::ObjectPresence) {
         const auto result = applyPresenceHistory(entry, undo);

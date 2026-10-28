@@ -1,3 +1,6 @@
+#include "../../tests/fixtures/cloud/cloud_fixture.h"
+#include "../../tests/fixtures/cloud/cloud_reference_cases.h"
+#include "3d/scene_3d.h"
 #include "core/diagnostics/frame_time_statistics.h"
 #include "core/io/file_io.h"
 #include "platform/render_system.h"
@@ -6,8 +9,10 @@
 #include "renderer/raster_viewport.h"
 #include "renderer/renderer_common.h"
 #include "renderer/volumetric_cloud/cloud_quality.h"
+#include "renderer/volumetric_cloud/cloud_scene_binding.h"
 #include "renderer/volumetric_cloud/volumetric_cloud_feature.h"
 #include "resource/cloud_asset_cooked.h"
+#include "resource/resource_contract.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/semantics/render_target_coordinates.h"
 
@@ -16,6 +21,10 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#endif
 
 using namespace arp;
 namespace cloud = renderer::cloud;
@@ -34,12 +43,18 @@ void requireCloud(const cloud::CloudResult& result)
 }
 
 struct Options {
-    core::pmr::String asset, capture, quality, backend = "native", camera = "below";
+    core::pmr::String asset, capture, quality, sceneResourceMode, backend = "native",
+                                                                  camera = "below";
     unsigned frames = 40u, captureFrame = 20u, divisor = 1u;
     unsigned width = 640u, height = 360u, warmup = 8u;
+    std::uint64_t densityEvaluationBudget = 2000000000u;
     float coverage = 1.0f, extinction = .004f;
     bool hidden = false, temporal = false, timings = false;
     bool preparedOffscreen = false, reconstruction = false;
+    bool hostDeviceBuffers = false;
+    bool compactHistory = false;
+    bool prototypeBatch = false;
+    const tests::cloud::ReferenceCase* referenceCase = nullptr;
 };
 
 Options parse(int argc, char** argv)
@@ -69,8 +84,14 @@ Options parse(int argc, char** argv)
                 throw std::runtime_error("invalid scalar");
             return result;
         };
-        if (key == "--asset")
+        if (key == "--reference-case") {
+            o.referenceCase = tests::cloud::ReferenceCases::find(value());
+            if (!o.referenceCase)
+                throw std::runtime_error("CLOUD-DEMO-REFERENCE-CASE");
+        } else if (key == "--asset")
             o.asset = value();
+        else if (key == "--scene-resource-mode")
+            o.sceneResourceMode = value();
         else if (key == "--capture")
             o.capture = value();
         else if (key == "--backend")
@@ -92,7 +113,14 @@ Options parse(int argc, char** argv)
             o.height = integer();
         else if (key == "--warmup")
             o.warmup = integer();
-        else if (key == "--coverage")
+        else if (key == "--density-evaluation-budget") {
+            const auto text = value();
+            const auto parsed =
+                std::from_chars(text.data(), text.data() + text.size(), o.densityEvaluationBudget);
+            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()
+                || !o.densityEvaluationBudget)
+                throw std::runtime_error("CLOUD-DEMO-WORK-BUDGET");
+        } else if (key == "--coverage")
             o.coverage = scalar();
         else if (key == "--extinction")
             o.extinction = scalar();
@@ -100,22 +128,48 @@ Options parse(int argc, char** argv)
             o.hidden = true;
         else if (key == "--prepared-offscreen")
             o.preparedOffscreen = true;
+        else if (key == "--host-device-buffers")
+            o.hostDeviceBuffers = true;
         else if (key == "--reconstruction")
             o.reconstruction = true;
+        else if (key == "--compact-history")
+            o.compactHistory = true;
         else if (key == "--temporal") {
             o.temporal = true;
             samplingOverride = true;
-        } else if (key == "--timings")
+        } else if (key == "--prototype-frozen-batch")
+            o.prototypeBatch = true;
+        else if (key == "--timings")
             o.timings = true;
         else
             throw std::runtime_error("unknown cloud example option");
     }
+    if (o.preparedOffscreen && (o.prototypeBatch || o.referenceCase))
+        throw std::runtime_error("CLOUD-DEMO-REFERENCE-PROFILE-CONFLICT");
+    if (o.referenceCase && !o.quality.empty() && o.quality != "reference")
+        throw std::runtime_error("CLOUD-DEMO-REFERENCE-QUALITY-CONFLICT");
+    if (o.referenceCase) {
+        o.width = tests::cloud::ReferenceCases::width;
+        o.height = tests::cloud::ReferenceCases::height;
+        o.quality = "reference";
+    }
     if (!o.quality.empty() && samplingOverride)
         throw std::runtime_error("CLOUD-DEMO-QUALITY-SAMPLING-CONFLICT");
+    if (!o.sceneResourceMode.empty() && o.sceneResourceMode != "id"
+        && o.sceneResourceMode != "alias")
+        throw std::runtime_error("CLOUD-DEMO-SCENE-REFERENCE-MODE");
+    if (!o.sceneResourceMode.empty() && !o.preparedOffscreen)
+        throw std::runtime_error("CLOUD-DEMO-SCENE-REQUIRES-PREPARED");
     if (o.reconstruction && !o.preparedOffscreen)
         throw std::runtime_error("CLOUD-DEMO-RECONSTRUCTION-REQUIRES-PREPARED");
-    if (o.preparedOffscreen && (!o.hidden || o.timings))
+    if (o.compactHistory && !o.reconstruction)
+        throw std::runtime_error("CLOUD-DEMO-COMPACT-REQUIRES-RECONSTRUCTION");
+    if (o.hostDeviceBuffers && !o.preparedOffscreen)
+        throw std::runtime_error("CLOUD-DEMO-PLACEMENT-REQUIRES-PREPARED");
+    if (o.preparedOffscreen && !o.hidden)
         throw std::runtime_error("CLOUD-DEMO-PREPARED-OFFSCREEN-PROFILE");
+    if (o.timings && o.warmup >= o.frames)
+        throw std::runtime_error("CLOUD-DEMO-TIMING-WARMUP");
     if (!o.quality.empty() && o.quality != "reference" && o.quality != "high"
         && o.quality != "medium")
         throw std::runtime_error("CLOUD-DEMO-QUALITY-TIER");
@@ -165,14 +219,38 @@ int run(const Options& o)
 {
     constexpr std::uint64_t maxDocument = 4u * 1024u * 1024u;
     constexpr std::uint64_t maxPayload = 1u * 1024u * 1024u;
-    const auto file = core::readTextFile(o.asset.c_str(), maxDocument);
-    if (!file.success)
-        throw std::runtime_error(core::toStdString(file.diagnostics));
-    assets::cloud::CloudAsset asset;
-    const auto decoded =
-        resource::CloudAssetCookedCodec::decode(file.text, maxDocument, maxPayload, asset);
-    if (!decoded.success)
-        throw std::runtime_error(decoded.diagnostic);
+    assets::cloud::CloudAsset decodedAsset;
+    core::UniquePtr<resource::ResourceManager> sceneResources;
+    std::shared_ptr<const assets::cloud::CloudAsset> sceneAsset;
+    resource::CloudAssetResourceDesc sceneResource;
+    if (!o.sceneResourceMode.empty()) {
+        sceneResources = core::makeUnique<resource::ResourceManager>();
+        // Explicit sample registration metadata; --asset is only the cooked
+        // loader path, never inferred from the component's reference text.
+        sceneResource.reference = {resource::deriveResourceUuid("cloud-demo", "density"),
+            "CloudAssetResource",
+            "cloud.demo",
+            "Prototype Complete",
+            "Cloud demo density"};
+        sceneResource.cookedPath = o.asset;
+        sceneResource.maxDocumentBytes = maxDocument;
+        sceneResource.maxPayloadBytes = maxPayload;
+        require(sceneResources->load<resource::CloudAssetResource>({}, sceneResource));
+        const auto ready =
+            sceneResources->find<resource::CloudAssetResource>(sceneResource.reference.id);
+        if (!ready.ready())
+            throw std::runtime_error("CLOUD-DEMO-SCENE-RESOURCE-NOT-READY");
+        sceneAsset = ready.get()->asset();
+    } else {
+        const auto file = core::readTextFile(o.asset.c_str(), maxDocument);
+        if (!file.success)
+            throw std::runtime_error(core::toStdString(file.diagnostics));
+        const auto decoded = resource::CloudAssetCookedCodec::decode(
+            file.text, maxDocument, maxPayload, decodedAsset);
+        if (!decoded.success)
+            throw std::runtime_error(decoded.diagnostic);
+    }
+    const auto& asset = sceneAsset ? *sceneAsset : decodedAsset;
     platform::WindowSystem windows;
     platform::PlatformWindow window;
     core::UniquePtr<platform::RenderSystem> system;
@@ -186,7 +264,8 @@ int run(const Options& o)
     const rhi::semantics::DirectObjectBudget directBudget{
         rhi::semantics::kDirectObjectBudgetContractVersion,
         o.preparedOffscreen ? "Cloud.DemoPreparedDirectObjects/1" : "Cloud.DemoDirectObjects/1",
-        cloud::kCloudDirectPipelineEntries + (o.preparedOffscreen ? 0u : 2u),
+        cloud::kCloudDirectPipelineEntries + (o.preparedOffscreen ? 0u : 2u)
+            + (o.referenceCase && o.referenceCase->foreground ? 2u : 0u),
         o.preparedOffscreen ? (o.reconstruction ? 15u : 12u)
                             : frameSlots * (cloud::kCloudDescriptorElementsPerSlot + 1u)};
     // Explicit demo allowance: at most one maximum-size cooked payload per
@@ -217,8 +296,8 @@ int run(const Options& o)
                 window,
                 "ARP Volumetric Cloud",
                 rhi::PresentationMode::Auto,
-                &stagingBudget,
-                &directBudget));
+                o.prototypeBatch || o.referenceCase ? nullptr : &stagingBudget,
+                o.prototypeBatch || o.referenceCase ? nullptr : &directBudget));
         if (!system->valid())
             throw std::runtime_error(core::toStdString(system->diagnostics()));
         device = system->gpuDevice();
@@ -240,7 +319,7 @@ int run(const Options& o)
     config.lightSteps = 8u;
     config.framesInFlight = frameSlots;
     config.gpuBudgetBytes = 128u * 1024u * 1024u;
-    config.maxDensityEvaluations = 2000000000u;
+    config.maxDensityEvaluations = o.densityEvaluationBudget;
     config.maxDistance = 60000;
     config.historyWeight = .9f;
     config.historyDepthTolerance = 50;
@@ -268,8 +347,14 @@ int run(const Options& o)
     layer.detailPeriod = 900;
     layer.coverage = o.coverage;
     layer.erosion = .12f;
-    if (o.preparedOffscreen)
-        return cloud_demo::runPreparedOffscreen({*device,
+    if (o.referenceCase) {
+        config.maxDistance = 10000.f;
+        layer = tests::cloud::layer();
+        layer.coverage = o.referenceCase->coverage;
+        layer.extinction = o.referenceCase->extinction;
+    }
+    if (o.preparedOffscreen) {
+        cloud_demo::PreparedOffscreenRequest request{*device,
             asset,
             config,
             extent,
@@ -278,7 +363,46 @@ int run(const Options& o)
             o.capture,
             o.frames,
             o.captureFrame,
-            o.reconstruction});
+            o.reconstruction,
+            o.timings,
+            o.warmup,
+            o.hostDeviceBuffers,
+            o.compactHistory};
+        scene3d::Scene3DRenderQueue visibleQueue;
+        if (sceneResources) {
+            scene::Scene scene;
+            auto& component =
+                scene.createObject("cloud").addComponent<scene3d::VolumetricCloudComponent>();
+            scene3d::CloudDesc desc;
+            desc.layer = layer;
+            desc.densityResource = o.sceneResourceMode == "id" ? sceneResource.reference.id
+                                                               : sceneResource.reference.alias;
+            if (!component.set_cloud(desc))
+                throw std::runtime_error("CLOUD-DEMO-SCENE-COMPONENT");
+            const auto extracted = scene3d::Scene3DRenderExtractor{}.extract(
+                scene, scene.extractTraversalSnapshot({}));
+            if (!extracted.ok())
+                throw std::runtime_error("CLOUD-DEMO-SCENE-EXTRACTION");
+            auto visible = scene3d::Scene3DVisibilitySystem{}.filterVisible(extracted.queue(), {});
+            if (!visible.ok())
+                throw std::runtime_error("CLOUD-DEMO-SCENE-VISIBILITY");
+            visibleQueue = visible.queue();
+            cloud::CloudSceneBindingDesc binding;
+            binding.contractVersion = 1u;
+            binding.prototypeOptIn = true;
+            binding.referenceMode = o.sceneResourceMode == "id"
+                ? cloud::CloudSceneReferenceMode::ResourceId
+                : cloud::CloudSceneReferenceMode::Alias;
+            binding.maxReferenceBytes = 128u;
+            binding.maxCpuBytes = 64u * 1024u;
+            binding.quota = core::makeShared<core::CpuMemoryQuota>(binding.maxCpuBytes);
+            requireCloud(cloud::CloudSceneBinding::create(
+                visibleQueue, *sceneResources, binding, request.sceneBinding));
+            request.sceneQueue = &visibleQueue;
+            request.sceneResources = sceneResources.get();
+        }
+        return cloud_demo::runPreparedOffscreen(request);
+    }
     cloud::VolumetricCloudFeature feature;
     requireCloud(feature.create({*device, extent, config, asset, ARP_CLOUD_SHADER_DIR}));
     rhi::DescriptorLayoutDesc bindings;
@@ -307,6 +431,58 @@ int run(const Options& o)
     auto arena = device->createDescriptorArena({"Cloud.DemoDescriptors", frameSlots, frameSlots});
     if (!present || !arena)
         throw std::runtime_error("CLOUD-DEMO-PIPELINE");
+    core::UniquePtr<rhi::PipelineLayout> foregroundLayout;
+    core::UniquePtr<rhi::RenderPipeline> foregroundPipeline;
+    core::UniquePtr<rhi::GpuBuffer> foregroundConstants;
+    core::UniquePtr<rhi::DescriptorArena> foregroundArena;
+    core::UniquePtr<rhi::DescriptorSet> foregroundSet;
+    rhi::ShaderPackageDesc foregroundPackage;
+    if (o.referenceCase && o.referenceCase->foreground) {
+        rhi::DescriptorLayoutDesc binding;
+        binding.name = "Cloud.ReferenceForeground";
+        binding.bindings = {{0u, rhi::DescriptorType::UniformBuffer, rhi::ShaderStage::Fragment}};
+        foregroundPackage = renderer::detail::makeGraphicsShaderPackage(
+            binding.name, core::pmr::String(ARP_CLOUD_SHADER_DIR) + "/cloud_foreground.slang", 0u);
+        if (!renderer::hydrateShaderPackageReflectionFromArtifact(foregroundPackage))
+            throw std::runtime_error("CLOUD-REFERENCE-FOREGROUND-REFLECTION");
+        foregroundPackage.reflection.descriptorBindings.push_back(
+            rhi::makeShaderReflectionBinding(0u, binding.bindings[0]));
+        rhi::PipelineLayoutDesc layoutDesc;
+        layoutDesc.descriptorLayouts.push_back(binding);
+        layoutDesc.descriptorSets.push_back({0u, binding.name});
+        foregroundLayout = device->createPipelineLayout(layoutDesc);
+        if (!foregroundLayout)
+            throw std::runtime_error("CLOUD-REFERENCE-FOREGROUND-LAYOUT");
+        auto pipeline = renderer::detail::makeRenderPipelineDesc(binding.name,
+            *foregroundLayout,
+            foregroundPackage,
+            rhi::TextureFormat::Rgba16Float,
+            extent);
+        pipeline.depthFormat = rhi::TextureFormat::D32Float;
+        pipeline.depthStencil.depthTestEnabled = pipeline.depthStencil.depthWriteEnabled = true;
+        pipeline.depthStencil.depthCompare = rhi::CompareOp::Less;
+        renderer::useDynamicRasterViewport(pipeline);
+        foregroundPipeline = device->createRenderPipeline(pipeline);
+        rhi::BufferDesc buffer;
+        buffer.label = binding.name;
+        buffer.sizeBytes = 16u;
+        buffer.usage = rhi::ResourceUsage::UniformBuffer | rhi::ResourceUsage::CopyDst;
+        buffer.memory = rhi::MemoryUsage::CpuToGpu;
+        buffer.initialState = rhi::ResourceState::ShaderRead;
+        foregroundConstants = device->createBuffer(buffer);
+        foregroundArena = device->createDescriptorArena({binding.name, 1u, 1u});
+        if (!foregroundPipeline || !foregroundConstants || !foregroundArena)
+            throw std::runtime_error("CLOUD-REFERENCE-FOREGROUND-RESOURCE");
+        const std::array<float, 4u> color{.125f, .375f, .75f, .625f};
+        require(device->writeBuffer(*foregroundConstants, color.data(), sizeof(color)));
+        foregroundSet = foregroundArena->allocateDescriptorSet({binding.name, binding});
+        if (!foregroundSet)
+            throw std::runtime_error("CLOUD-REFERENCE-FOREGROUND-SET");
+        require(foregroundSet->write({0u,
+            rhi::DescriptorType::UniformBuffer,
+            foregroundConstants->id(),
+            rhi::DescriptorResourceKind::Buffer}));
+    }
     std::array<Flight, frameSlots> flights;
     DeviceDrain drain(*device);
     for (auto& f : flights) {
@@ -348,12 +524,27 @@ int run(const Options& o)
             break;
         auto& flight = flights[frame % flights.size()];
         if (!flight.ready() || !feature.frameReady()) {
+#if defined(__EMSCRIPTEN__)
+            emscripten_sleep(1);
+#else
             std::this_thread::yield();
+#endif
             continue;
         }
         flight.view.reset();
         flight.graph = core::makeUnique<render_graph::FrameGraph>(*device);
         auto& graph = *flight.graph;
+        if (o.prototypeBatch) {
+            rhi::CommandEncoderDesc recording{"CloudPrototypeFrozenBatch"};
+            recording.prototypeBatch =
+                rhi::PrototypeCommandBatchBudget{rhi::PrototypeCommandBatchContract::version,
+                    true,
+                    512u,
+                    8u * 1024u * 1024u,
+                    256u * 1024u * 1024u,
+                    10000000000ull};
+            graph.setCommandEncoderDesc(std::move(recording));
+        }
         if (o.timings)
             graph.setGpuTimingPassScopes({{"Cloud.Raymarch", 1u, true},
                 {"Cloud.Temporal", 2u, true},
@@ -372,10 +563,23 @@ int run(const Options& o)
                 rhi::LoadOp::Clear,
                 rhi::StoreOp::Store,
                 {},
-                {.15f, .35f, .65f, 1})
+                o.referenceCase ? rhi::Color{0, 0, 0, 1} : rhi::Color{.15f, .35f, .65f, 1})
             .writeAttachment(
                 depth, rhi::ResourceState::DepthAttachment, rhi::LoadOp::Clear, rhi::StoreOp::Store)
-            .executeRenderPass([](render_graph::RenderPassContext&) {});
+            .executeRenderPass([&](render_graph::RenderPassContext& rc) {
+                if (foregroundPipeline) {
+                    require(
+                        renderer::bindRasterPipeline(rc.renderPass(), *foregroundPipeline, extent));
+                    require(rc.renderPass().setViewport({.25f,
+                        .25f,
+                        float(extent.width) - .5f,
+                        float(extent.height) - .5f,
+                        0.f,
+                        1.f}));
+                    require(rc.renderPass().bindDescriptorSet(0u, *foregroundSet));
+                    require(rc.renderPass().draw(3u, 1u, 0u, 0u));
+                }
+            });
         cloud::CloudGraphContext c{graph, color, depth};
         c.layer = layer;
         c.cameraPosition = {0,
@@ -390,7 +594,20 @@ int run(const Options& o)
         c.sunDirection = core::normalize(core::Vec3{.7f, .5f, .8f});
         c.sunRadiance = {12, 11, 10};
         c.ambientRadiance = {.3f, .4f, .55f};
-        c.time = 10.0f; // Fixed camera/time for capture reproducibility.
+        if (o.referenceCase) {
+            c.cameraPosition = {39.f, o.referenceCase->altitude, -57.f};
+            c.view = core::lookAt(c.cameraPosition,
+                c.cameraPosition + core::Vec3{.25f, o.referenceCase->viewElevation, 1.f});
+            c.orthographic = o.referenceCase->orthographic;
+            c.projection = c.orthographic
+                ? core::orthographic(1600.f, 1200.f, 1.f, 20000.f)
+                : core::perspective(57.f, float(extent.width) / extent.height, 1.f, 20000.f);
+            rhi::semantics::applyProjectionYConvention(c.projection.m.data(), device->backend());
+            c.sunDirection = core::normalize(o.referenceCase->sun);
+            c.sunRadiance = {2.f, 1.8f, 1.6f};
+            c.ambientRadiance = {.1f, .2f, .3f};
+        }
+        c.time = o.referenceCase ? 0.f : 10.0f; // Fixed camera/time for capture reproducibility.
         cloud::CloudOutputs output;
         requireCloud(feature.contributeGraph(c, output));
         historyFrames += output.historyUsed;
@@ -447,7 +664,7 @@ int run(const Options& o)
     collectTiming(o.frames);
     std::cout << "Cloud example frames=" << o.frames << " history=" << historyFrames
               << " retainedBytes=" << feature.plan().retainedGpuBytes << '\n';
-    if (swapchain) {
+    if (swapchain && !o.prototypeBatch && !o.referenceCase) {
         const auto ledger = device->physicalBudgetLedger();
         const auto& pipelines =
             ledger.category(rhi::semantics::PhysicalBudgetCategory::DirectPipelineObjects);

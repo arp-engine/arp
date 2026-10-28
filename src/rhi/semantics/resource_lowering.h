@@ -5,6 +5,41 @@ namespace arp::rhi::semantics {
 // Versioned value-only decisions. Template results preserve existing public decision types.
 class ResourceLowering final {
 public:
+    template <class Result>
+    static constexpr Result HostVisibleDeviceLocalBuffer_lowering(
+        Backend backend, bool nativeCapability) noexcept
+    {
+        switch (backend) {
+        case Backend::Null:
+            return {CapabilityMode::DiagnosticFailure,
+                true,
+                false,
+                "RHI-HOST-DEVICE-BUFFER-NULL-VALIDATOR-ONLY"};
+        case Backend::Vulkan:
+            return nativeCapability ? Result{CapabilityMode::Native, false, true, nullptr}
+                                    : Result{CapabilityMode::DiagnosticFailure,
+                                          false,
+                                          false,
+                                          "RHI-HOST-DEVICE-BUFFER-CAPABILITY"};
+        case Backend::Metal:
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                "RHI-HOST-DEVICE-BUFFER-METAL-PAYLOAD-MISSING"};
+        case Backend::WebGPU:
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                "RHI-HOST-DEVICE-BUFFER-WEBGPU-PLACEMENT-UNAVAILABLE"};
+        case Backend::WebGL:
+            return {CapabilityMode::DiagnosticFailure,
+                false,
+                false,
+                "RHI-HOST-DEVICE-BUFFER-WEBGL-PLACEMENT-UNAVAILABLE"};
+        }
+        return {};
+    }
+
     template <class Result, class Disposition>
     static constexpr Result OriginalNativeAllocationObservation_lowering(
         Backend backend, std::uint32_t version) noexcept
@@ -78,6 +113,33 @@ public:
     static constexpr Result OriginalSamplerNativeLossJoin_lowering(
         Backend backend, std::uint32_t version) noexcept
     {
+        if (version == 3u) {
+            switch (backend) {
+            case Backend::Null:
+                return {
+                    3u, true, false, false, false, "RHI-ORIGINAL-SYNC-SAMPLER-LOSS-NULL-VALIDATOR"};
+            case Backend::Vulkan:
+                return {3u, false, true, false, false, nullptr};
+            case Backend::Metal:
+                return {
+                    3u, false, false, false, false, "RHI-ORIGINAL-SYNC-SAMPLER-LOSS-METAL-MISSING"};
+            case Backend::WebGPU:
+                return {3u,
+                    false,
+                    false,
+                    false,
+                    false,
+                    "RHI-ORIGINAL-SYNC-SAMPLER-LOSS-WEBGPU-MISSING"};
+            case Backend::WebGL:
+                return {3u,
+                    false,
+                    false,
+                    false,
+                    false,
+                    "RHI-ORIGINAL-SYNC-SAMPLER-LOSS-WEBGL-UNSUPPORTED"};
+            }
+            return {};
+        }
         if (version == 2u) {
             switch (backend) {
             case Backend::Null:
@@ -129,6 +191,26 @@ public:
                 false,
                 false,
                 "RHI-WEBGL1-SAMPLER-REFERENCE-UNAVAILABLE"};
+        }
+        return {};
+    }
+
+    template <class Result>
+    static constexpr Result OriginalQueryNativeLossJoin_lowering(Backend backend) noexcept
+    {
+        switch (backend) {
+        case Backend::Null:
+            return {true, false, false, false, "RHI-ORIGINAL-QUERY-LOSS-VALIDATOR-ONLY"};
+        case Backend::Vulkan:
+            // Native pool creation/result paths already report device loss to
+            // the sole runtime subscription. Registration grants no recording.
+            return {false, true, false, false, nullptr};
+        case Backend::Metal:
+            return {false, false, false, false, "RHI-ORIGINAL-QUERY-LOSS-METAL-SOURCE-MISSING"};
+        case Backend::WebGPU:
+            return {false, false, false, false, "RHI-ORIGINAL-QUERY-LOSS-WEBGPU-SOURCE-MISSING"};
+        case Backend::WebGL:
+            return {false, false, false, false, "RHI-WEBGL1-QUERY-LOSS-UNAVAILABLE"};
         }
         return {};
     }

@@ -7,6 +7,7 @@
 #include "rhi/frontend/descriptor_validation.h"
 #include "rhi/frontend/resource_access_scope.h"
 #include "rhi/frontend/resource_memory_barrier.h"
+#include "rhi/frontend/vertex_input_validation.h"
 #include "rhi/gpu_commands.h"
 #include "rhi/gpu_pipeline.h"
 #include "rhi/semantics/command_draw_lowering.h"
@@ -43,21 +44,7 @@ public:
     // cold owner and positional validators consume the same shape calculation.
     static const char* inspectStream(const VertexBufferLayoutDesc& input, Stream& output) noexcept
     {
-        if (!input.strideBytes || input.attributes.empty())
-            return "RHI-VERTEX-INPUT-LAYOUT-INVALID";
-        if (input.inputRate != VertexInputRate::Vertex
-            && input.inputRate != VertexInputRate::Instance)
-            return "RHI-VERTEX-INPUT-RATE-UNKNOWN";
-        std::uint64_t footprint = 0u;
-        for (const auto& attribute : input.attributes) {
-            const auto bytes = formatBytes(attribute.format);
-            if (!bytes)
-                return "RHI-VERTEX-INPUT-FORMAT-UNKNOWN";
-            footprint = std::max(footprint, std::uint64_t{attribute.offsetBytes} + bytes);
-        }
-        output = {
-            input.slot, input.strideBytes, input.inputRate, 0u, input.attributes.size(), footprint};
-        return nullptr;
+        return VertexInputValidation::inspectStream(input, output);
     }
 
     explicit VertexInputConsumptionContract(const core::pmr::Vector<VertexBufferLayoutDesc>& source)
@@ -112,19 +99,7 @@ public:
 
     static constexpr std::uint64_t formatBytes(VertexFormat format) noexcept
     {
-        // All existing formats explicitly consist of 32-bit float scalars.
-        constexpr auto scalarBytes = 32u / 8u;
-        switch (format) {
-        case VertexFormat::Float32x1:
-            return scalarBytes;
-        case VertexFormat::Float32x2:
-            return 2u * scalarBytes;
-        case VertexFormat::Float32x3:
-            return 3u * scalarBytes;
-        case VertexFormat::Float32x4:
-            return 4u * scalarBytes;
-        }
-        return 0u;
+        return VertexInputValidation::formatBytes(format);
     }
 
     bool matches(const core::pmr::Vector<VertexBufferLayoutDesc>& source) const noexcept
@@ -928,16 +903,12 @@ class ZeroBaseIndirectSourceLowering final {
 public:
     static constexpr IndirectArgumentLoweringPlan current(Backend backend) noexcept
     {
-        auto plan = IndirectArgumentLowering::current(backend);
-        plan.contractVersion = ZeroBaseIndirectSourceConsumptionContract::version;
-        if (backend != Backend::Null && backend != Backend::Vulkan && backend != Backend::Metal
-            && backend != Backend::WebGPU) {
-            plan.diagnosticId = "RHI-ZERO-BASE-SOURCE-BACKEND-UNKNOWN";
-            return plan;
-        }
-        plan.diagnosticId = plan.validatorOnly ? "RHI-ZERO-BASE-SOURCE-VALIDATOR-ONLY"
-                                               : "RHI-ZERO-BASE-SOURCE-PAYLOAD-MISSING";
-        return plan;
+        return CommandDrawLowering::indirectSourceDisposition(backend,
+            IndirectArgumentLowering::current(backend),
+            ZeroBaseIndirectSourceConsumptionContract::version,
+            "RHI-ZERO-BASE-SOURCE-BACKEND-UNKNOWN",
+            "RHI-ZERO-BASE-SOURCE-VALIDATOR-ONLY",
+            "RHI-ZERO-BASE-SOURCE-PAYLOAD-MISSING");
     }
 };
 } // namespace semantics

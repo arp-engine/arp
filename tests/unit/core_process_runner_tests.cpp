@@ -176,6 +176,7 @@ int main()
     assert(changedContract.fingerprint() != contractA.fingerprint());
     assert(!contractB.add("source", "changed", snapshotDiagnostics));
     const std::filesystem::path executableSource = ARP_TEST_CXX_COMPILER;
+    const auto capturedCompilerSource = std::filesystem::canonical(executableSource);
     assert(std::filesystem::is_regular_file(executableSource));
     const auto compilerLayout = arp::core::CompilerToolchainLayout().inspect(executableSource);
     const auto relocatedCompiler =
@@ -190,15 +191,62 @@ int main()
         std::abort();
     }
     assert(snapshot.captureExecutable(
-        "tools/snapshot-tool.bin", executableSource, snapshotDiagnostics));
+        "tools/snapshot-tool.bin", capturedCompilerSource, snapshotDiagnostics));
     const auto reverseSnapshotRoot = lockRoot / "snapshot-reverse";
     arp::core::ImmutableBuildInputSnapshot reverseSnapshot(reverseSnapshotRoot);
     assert(reverseSnapshot.captureExecutable(
-        "tools/snapshot-tool.bin", executableSource, snapshotDiagnostics));
+        "tools/snapshot-tool.bin", capturedCompilerSource, snapshotDiagnostics));
     assert(reverseSnapshot.captureDirectory("include", snapshotSource, snapshotDiagnostics));
     assert(reverseSnapshot.fingerprint() == snapshot.fingerprint());
     assert(reverseSnapshot.verifySourcesUnchanged(snapshotDiagnostics));
 #if !defined(_WIN32) && !defined(__CYGWIN__)
+    const auto resolvedRoot = lockRoot / "resolved-input-v1";
+    std::filesystem::remove_all(resolvedRoot);
+    std::filesystem::create_directories(resolvedRoot / "headers");
+    {
+        std::ofstream file(resolvedRoot / "headers" / "value.h");
+        file << "resolved-input-v1";
+    }
+    std::filesystem::create_directory_symlink("headers", resolvedRoot / "alias");
+    std::filesystem::create_directory_symlink(".", resolvedRoot / "headers/self");
+    std::filesystem::create_symlink("headers/value.h", resolvedRoot / "value.h");
+    arp::core::ImmutableBuildInputSnapshot resolvedSnapshot(lockRoot / "resolved-snapshot-v1");
+    assert(resolvedSnapshot.captureResolvedDirectory("sdk", resolvedRoot, snapshotDiagnostics));
+    assert(resolvedSnapshot.verifySourcesUnchanged(snapshotDiagnostics));
+    assert(!std::filesystem::is_symlink(resolvedSnapshot.path("sdk/value.h")));
+    assert(!std::filesystem::is_symlink(resolvedSnapshot.path("sdk/alias/value.h")));
+    assert(arp::core::readTextFile(resolvedSnapshot.path("sdk/alias/value.h")).text
+        == "resolved-input-v1");
+    assert(arp::core::readTextFile(resolvedSnapshot.path("sdk/headers/self/value.h")).text
+        == "resolved-input-v1");
+    const auto capturedAlias = resolvedSnapshot.path("sdk/alias");
+    std::filesystem::remove(capturedAlias);
+    std::filesystem::create_directory_symlink(resolvedRoot / "headers", capturedAlias);
+    assert(!resolvedSnapshot.verifySourcesUnchanged(snapshotDiagnostics));
+    std::filesystem::remove(capturedAlias);
+    std::filesystem::create_directory_symlink("headers", capturedAlias);
+    assert(resolvedSnapshot.verifySourcesUnchanged(snapshotDiagnostics));
+    arp::core::ImmutableBuildInputSnapshot strictLinks(lockRoot / "strict-snapshot-v1");
+    assert(!strictLinks.captureDirectory("sdk", resolvedRoot, snapshotDiagnostics));
+    std::filesystem::remove(resolvedRoot / "value.h");
+    std::filesystem::create_symlink("alias/value.h", resolvedRoot / "value.h");
+    // Changing the lexical link chain but retaining the canonical binding is
+    // semantically equivalent. A different canonical file is rejected below.
+    assert(resolvedSnapshot.verifySourcesUnchanged(snapshotDiagnostics));
+    std::filesystem::copy_file(resolvedRoot / "headers/value.h", resolvedRoot / "headers/other.h");
+    std::filesystem::remove(resolvedRoot / "value.h");
+    std::filesystem::create_symlink("headers/other.h", resolvedRoot / "value.h");
+    assert(!resolvedSnapshot.verifySourcesUnchanged(snapshotDiagnostics));
+    std::filesystem::create_symlink("cycle-b", resolvedRoot / "cycle-a");
+    std::filesystem::create_symlink("cycle-a", resolvedRoot / "cycle-b");
+    arp::core::ImmutableBuildInputSnapshot cycles(lockRoot / "cycle-snapshot-v1");
+    assert(!cycles.captureResolvedDirectory("sdk", resolvedRoot, snapshotDiagnostics));
+    std::filesystem::remove(resolvedRoot / "cycle-a");
+    std::filesystem::remove(resolvedRoot / "cycle-b");
+    std::filesystem::create_symlink(output, resolvedRoot / "escape");
+    arp::core::ImmutableBuildInputSnapshot escapes(lockRoot / "escape-snapshot-v1");
+    assert(!escapes.captureResolvedDirectory("sdk", resolvedRoot, snapshotDiagnostics));
+    std::filesystem::remove(resolvedRoot / "escape");
     const auto permissionSource = snapshotSource / "nested" / "input.txt";
     const auto originalPermissions = std::filesystem::status(permissionSource).permissions();
     arp::core::ImmutableBuildInputSnapshot permissionBaseline(

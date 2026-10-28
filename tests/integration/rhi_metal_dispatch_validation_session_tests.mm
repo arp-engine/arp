@@ -1,5 +1,7 @@
 #include "../fixtures/capability_override_device.h"
 #include "../fixtures/cloud/cloud_fixture.h"
+#include "../fixtures/cloud/cloud_reference_cases.h"
+#include "../fixtures/cloud/cloud_scene_fixture.h"
 #include "../fixtures/cloud/cloud_sequence_oracle.h"
 #include "../fixtures/cloud_native_memory_fixture.h"
 #include "core/math/half_float.h"
@@ -3338,6 +3340,8 @@ struct OrdinaryCloudSequence {
     unsigned submitted = 0u;
     bool registered = false;
     unsigned slotCount = 0u;
+    rhi::Extent2D extent{4u, 4u};
+    render_graph::PassSubmissionToken retiredToken{};
     std::array<renderer::cloud::CloudPreparedHistorySlot, 3u> slots;
     std::array<std::array<rhi::GpuBuffer*, 2u>, 3u> slotObjects{};
     std::shared_ptr<core::CpuMemoryQuota> historyQuota =
@@ -3360,13 +3364,15 @@ struct OrdinaryCloudSequence {
 
 void ordinaryCloudContext(renderer::cloud::CloudGraphContext& context,
     const scene3d::CloudLayerDesc& layer,
-    unsigned frame)
+    unsigned frame,
+    rhi::Extent2D extent = {4u, 4u})
 {
     context.layer = layer;
     context.cameraPosition = {39.f, 10.f, -57.f};
     context.view =
         core::lookAt(context.cameraPosition, context.cameraPosition + core::Vec3{.25f, .6f, 1.f});
-    context.projection = core::perspective(57.f, 1.f, 1.f, 20000.f);
+    context.projection =
+        core::perspective(57.f, float(extent.width) / float(extent.height), 1.f, 20000.f);
     rhi::semantics::applyProjectionYConvention(context.projection.m.data(), rhi::Backend::Metal);
     context.sunDirection = core::normalize(core::Vec3{1.f, 1.f, -.2f});
     context.sunRadiance = {2.f, 1.8f, 1.6f};
@@ -3382,7 +3388,9 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
     bool sampled = false,
     bool cloud = false,
     OrdinaryCloudSequence* sequence = nullptr,
-    OrdinaryQueueSequence* queueSequence = nullptr)
+    OrdinaryQueueSequence* queueSequence = nullptr,
+    const tests::cloud::ReferenceCase* visualCase = nullptr,
+    const char* visualOutput = nullptr)
 {
     using namespace rhi;
     using K = CommandUsageKind;
@@ -3419,6 +3427,20 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
         : queueSequence ? queueSequence->device
                         : ownedDevice.get();
     const bool controlled = sequence && sequence->slotCount;
+    if (visualOutput) {
+        FrameCaptureRequest capture;
+        capture.outputPath = core::pmr::String(visualOutput) + ".gputrace";
+        const auto result = d->beginFrameCapture(capture);
+        if (!result.success())
+            std::fprintf(stderr, "capture: %s\n", result.diagnostics.c_str());
+        assert(result.success());
+    }
+    const auto extent = visualCase ? Extent2D{32u, 24u}
+        : sequence                 ? sequence->extent
+                                   : Extent2D{4u, 4u};
+    assert(extent.width && extent.width <= 32u && extent.height && extent.height <= 24u);
+    const auto sampleCount = extent.width * extent.height;
+    const auto sampleStorageBytes = (sampleCount + 1u) * sizeof(renderer::cloud::CloudGpuSample);
     bool reuseCloudSlot = false;
     const auto bindingCount = cloud ? 4u : compute || sampled ? 2u : 1u;
     const bool omitDepthTransition = sampled && mode == 21u;
@@ -3512,15 +3534,25 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
             canonical, rhi_metal::metalRhiOriginalSubmissionDomain(*d)));
     }
     TextureDesc td;
-    td.extent = {4u, 4u, 1u};
+    td.extent = {extent.width, extent.height, 1u};
     td.format = TextureFormat::Rgba16Float;
     td.usage = TextureUsage::RenderAttachment | TextureUsage::CopySrc;
     if (sampled)
         td.usage = td.usage | TextureUsage::Sampled;
     const auto nativeBytes = d->queryOriginalContentTextureAllocation(td, id, 4u);
     require(id);
-    auto texture = d->createOriginalContentTexture(
-        td, {4u, true, 1u, 1u, 128u, 2u, metadata, 1u, nativeBytes}, contentQuota, id);
+    auto texture = d->createOriginalContentTexture(td,
+        {4u,
+            true,
+            1u,
+            1u,
+            std::uint64_t(extent.width) * extent.height * 8u,
+            2u,
+            metadata,
+            1u,
+            nativeBytes},
+        contentQuota,
+        id);
     require(id);
     assert(texture);
     auto* textureObject = texture.get();
@@ -3543,14 +3575,14 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
         id);
     require(id);
     BufferDesc bd;
-    bd.sizeBytes = 1024u;
+    bd.sizeBytes = visualCase ? 6144u : 1024u;
     bd.usage = ResourceUsage::CopyDst;
     bd.memory = MemoryUsage::GpuToCpu;
     bd.initialState = ResourceState::CopyDst;
     auto buffer = d->createBuffer(bd);
     assert(buffer);
-    std::array<unsigned char, 1024u> initial;
-    initial.fill(0x5a);
+    core::pmr::Vector<unsigned char> initial(bd.sizeBytes);
+    std::fill(initial.begin(), initial.end(), 0x5a);
     assert(d->writeBuffer(*buffer, initial.data(), initial.size()).success);
     buffer->sealHostWrites();
     auto bufferLease = OriginalCommandBufferLease::prepareOriginal(
@@ -3582,16 +3614,19 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
     pipelineDesc.colorTargets.push_back({pipelineDesc.colorFormat});
     pipelineDesc.hasViewport = pipelineDesc.hasScissor = false;
     pipelineDesc.dynamicViewportScissor = true;
-    pipelineDesc.viewport = {0.f, 0.f, 4.f, 4.f, 0.f, 1.f};
+    pipelineDesc.viewport = {0.f, 0.f, float(extent.width), float(extent.height), 0.f, 1.f};
     const auto compositeViewport = pipelineDesc.viewport;
-    pipelineDesc.scissor = {0, 0, 4u, 4u};
+    pipelineDesc.scissor = {0, 0, extent.width, extent.height};
     if (sampled) {
-        pipelineDesc.viewport = {.25f, .25f, 3.5f, 3.5f, 0.f, 1.f};
+        pipelineDesc.viewport = {
+            .25f, .25f, float(extent.width) - .5f, float(extent.height) - .5f, 0.f, 1.f};
         pipelineDesc.depthFormat = TextureFormat::D32Float;
         pipelineDesc.depthStencil.depthTestEnabled = true;
         pipelineDesc.depthStencil.depthWriteEnabled = true;
         pipelineDesc.depthStencil.depthCompare = CompareOp::Less;
     }
+    if (visualCase && !visualCase->foreground)
+        pipelineDesc.viewport.x = float(extent.width) + 1.f;
     const auto receipt = d->createOriginalSynchronousGraphicsCreation(input,
         layout,
         pipelineDesc,
@@ -3737,9 +3772,18 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
     tests::cloud::SequenceOracle pendingOracle;
     renderer::cloud::CloudExecutionPlan cloudPlan;
     auto cloudAsset = cloud ? tests::cloud::asset() : assets::cloud::CloudAsset{};
+    if (visualCase) {
+        tests::cloud::SceneResourceFixture source(
+            renderer::cloud::CloudSceneReferenceMode::ResourceId);
+        cloudAsset = *source.binding->asset();
+    }
     auto cloudLayer = tests::cloud::layer();
-    std::array<renderer::cloud::CloudGpuSample, 16u> cloudExpected{};
-    std::array<renderer::cloud::CloudGpuSample, 16u> cloudResolvedExpected{};
+    if (visualCase) {
+        cloudLayer.coverage = visualCase->coverage;
+        cloudLayer.extinction = visualCase->extinction;
+    }
+    std::array<renderer::cloud::CloudGpuSample, 768u> cloudExpected{};
+    std::array<renderer::cloud::CloudGpuSample, 768u> cloudResolvedExpected{};
     std::array<std::shared_ptr<const OriginalCommandBufferLease>, 3u> cloudBuffers;
     std::array<std::shared_ptr<ComputePipeline>, 2u> cloudPipelines;
     std::array<std::shared_ptr<const OriginalCommandComputePipelineSource>, 2u> cloudSources;
@@ -3751,30 +3795,45 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
         using namespace renderer::cloud;
         auto config = tests::cloud::config();
         config.temporal = sequence != nullptr;
+        if (visualCase) {
+            config.viewSteps = tests::cloud::ReferenceCases::viewSteps;
+            config.lightSteps = tests::cloud::ReferenceCases::lightSteps;
+        }
         if (controlled)
             config.framesInFlight = sequence->slotCount;
         requireCloud(CloudExecutionPlanner::describeResources(config,
-            {4u, 4u},
+            extent,
             cloudAsset.cells.size() * sizeof(core::Vec4),
             sizeof(CloudGpuConstants),
             cloudPlan));
         render_graph::FrameGraph parameterGraph(*d);
         CloudGraphContext context{parameterGraph};
-        ordinaryCloudContext(context, cloudLayer, sequence ? sequence->submitted : 0u);
+        ordinaryCloudContext(context, cloudLayer, sequence ? sequence->submitted : 0u, extent);
+        if (visualCase) {
+            context.cameraPosition = {39.f, visualCase->altitude, -57.f};
+            context.view = core::lookAt(context.cameraPosition,
+                context.cameraPosition + core::Vec3{.25f, visualCase->viewElevation, 1.f});
+            context.sunDirection = core::normalize(visualCase->sun);
+            context.orthographic = visualCase->orthographic;
+            if (context.orthographic) {
+                context.projection = core::orthographic(1600.f, 1200.f, 1.f, 20000.f);
+                semantics::applyProjectionYConvention(context.projection.m.data(), Backend::Metal);
+            }
+        }
         if (controlled) {
             if (!sequence->historyCreated) {
                 for (unsigned slot = 0u; slot < sequence->slotCount; ++slot)
                     for (unsigned buffer = 0u; buffer < 2u; ++buffer) {
                         BufferDesc desc;
-                        desc.sizeBytes = sizeof(CloudGpuSample) * 17u;
+                        desc.sizeBytes = sampleStorageBytes;
                         desc.usage = ResourceUsage::StorageBuffer;
                         desc.memory = MemoryUsage::CpuToGpu;
                         desc.initialState = ResourceState::ShaderWrite;
                         auto object = d->createBuffer(desc);
                         assert(object);
-                        std::array<CloudGpuSample, 17u> initial;
+                        std::array<CloudGpuSample, 769u> initial;
                         std::memset(initial.data(), 0x5a, sizeof(initial));
-                        requireResult(d->writeBuffer(*object, initial.data(), sizeof(initial)));
+                        requireResult(d->writeBuffer(*object, initial.data(), desc.sizeBytes));
                         object->sealHostWrites();
                         sequence->slotObjects[slot][buffer] = object.get();
                         auto lease = OriginalCommandBufferLease::prepareOriginal(
@@ -3798,6 +3857,10 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                 sequence->historyCreated = true;
             }
             requireCloud(sequence->history.prepareFrame(context));
+            if (sequence->retiredToken.generation) {
+                const auto* stale = sequence->history.validateSubmission(sequence->retiredToken);
+                assert(stale && !std::strcmp(stale, "CLOUD-STALE-SUBMISSION"));
+            }
             cloudFrame = sequence->history.pendingFrame();
             CloudFrameState expectedFrame;
             requireCloud(CloudFrameParameters::build(context,
@@ -3836,13 +3899,18 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
         geometry.parameters = cloudParameters;
         CloudReference reference;
         requireCloud(reference.configure(cloudAsset, cloudLayer));
-        const tests::cloud::ForegroundFixture triangle{true, .25f, .25f, 3.5f, 3.5f};
-        for (unsigned y = 0u; y < 4u; ++y)
-            for (unsigned x = 0u; x < 4u; ++x) {
-                const float u = (x + .5f) / 4.f, v = (y + .5f) / 4.f;
+        const tests::cloud::ForegroundFixture triangle{true,
+            pipelineDesc.viewport.x,
+            pipelineDesc.viewport.y,
+            pipelineDesc.viewport.width,
+            pipelineDesc.viewport.height};
+        for (unsigned y = 0u; y < extent.height; ++y)
+            for (unsigned x = 0u; x < extent.width; ++x) {
+                const float u = (x + .5f) / float(extent.width),
+                            v = (y + .5f) / float(extent.height);
                 auto ray = geometry.ray(u, v);
                 const auto nativeY =
-                    semantics::projectionRequiresYFlip(Backend::Metal) ? 3u - y : y;
+                    semantics::projectionRequiresYFlip(Backend::Metal) ? extent.height - 1u - y : y;
                 const bool covered = triangle.covers(x, nativeY);
                 const auto surface = core::transformPoint(
                     cloudParameters.inverseViewProjection, {2 * u - 1, 2 * v - 1, .5f});
@@ -3862,10 +3930,10 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                     integral,
                     cloudParameters.jitter.z,
                     &moment));
-                cloudExpected[y * 4u + x] = {{integral.radiance.x,
-                                                 integral.radiance.y,
-                                                 integral.radiance.z,
-                                                 integral.transmittance},
+                cloudExpected[y * extent.width + x] = {{integral.radiance.x,
+                                                           integral.radiance.y,
+                                                           integral.radiance.z,
+                                                           integral.transmittance},
                     {integral.transmittance < 1.f ? moment : cloudParameters.temporal.z,
                         opaque,
                         0.f,
@@ -3880,15 +3948,15 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
             pendingOracle.foreground = triangle;
             pendingOracle.flipForegroundY = semantics::projectionRequiresYFlip(Backend::Metal);
             pendingOracle.build(cloudAsset);
-            assert(pendingOracle.raw.size() == cloudExpected.size());
-            for (unsigned i = 0u; i < cloudExpected.size(); ++i) {
+            assert(pendingOracle.raw.size() == sampleCount);
+            for (unsigned i = 0u; i < sampleCount; ++i) {
                 assert(
                     !std::memcmp(&cloudExpected[i], &pendingOracle.raw[i], sizeof(CloudGpuSample)));
                 cloudResolvedExpected[i] = pendingOracle.resolved[i];
             }
         }
         auto proof = d->prepareOriginalComputeDispatchValidation(
-            request({1u, 1u, 1u}), budget, domainQuotas, id);
+            request(cloudPlan.dispatchGroups), budget, domainQuotas, id);
         require(id);
         assert(proof);
         until(
@@ -3941,7 +4009,8 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                     true,
                     1u,
                     1u,
-                    format == TextureFormat::D32Float ? 64u : 128u,
+                    std::uint64_t(extent.width) * extent.height
+                        * (format == TextureFormat::D32Float ? 4u : 8u),
                     2u,
                     metadata,
                     1u,
@@ -3982,15 +4051,13 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                 continue;
             }
             BufferDesc desc;
-            desc.sizeBytes = i
-                ? (cloud ? sizeof(renderer::cloud::CloudGpuSample) * 17u : sizeof(sample))
-                : sizeof(constants);
+            desc.sizeBytes = i ? (cloud ? sampleStorageBytes : sizeof(sample)) : sizeof(constants);
             desc.usage = i ? ResourceUsage::StorageBuffer : ResourceUsage::UniformBuffer;
             desc.memory = MemoryUsage::CpuToGpu;
             desc.initialState = cloud && i ? ResourceState::ShaderWrite : ResourceState::ShaderRead;
             auto object = d->createBuffer(desc);
             assert(object);
-            std::array<renderer::cloud::CloudGpuSample, 17u> initial;
+            std::array<renderer::cloud::CloudGpuSample, 769u> initial;
             std::memset(initial.data(), 0x5a, sizeof(initial));
             requireResult(d->writeBuffer(*object,
                 i ? (cloud ? static_cast<const void*>(initial.data())
@@ -4084,14 +4151,13 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                 continue;
             }
             BufferDesc desc;
-            desc.sizeBytes = i ? sizeof(renderer::cloud::CloudGpuSample) * 17u
-                               : cloudAsset.cells.size() * sizeof(core::Vec4);
+            desc.sizeBytes = i ? sampleStorageBytes : cloudAsset.cells.size() * sizeof(core::Vec4);
             desc.usage = ResourceUsage::StorageBuffer;
             desc.memory = MemoryUsage::CpuToGpu;
             desc.initialState = i == 1u ? ResourceState::ShaderWrite : ResourceState::ShaderRead;
             auto object = d->createBuffer(desc);
             assert(object);
-            std::array<renderer::cloud::CloudGpuSample, 17u> initial;
+            std::array<renderer::cloud::CloudGpuSample, 769u> initial;
             std::memset(initial.data(), 0x5a, sizeof(initial));
             requireResult(d->writeBuffer(*object,
                 i ? static_cast<const void*>(initial.data())
@@ -4561,7 +4627,7 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
     copy.textureSubresources = enter.textureSubresources;
     copy.extent = td.extent;
     copy.bytesPerRow = 256u;
-    copy.rowsPerImage = 4u;
+    copy.rowsPerImage = extent.height;
     core::pmr::Vector<CommandUsage> commands;
     core::pmr::Vector<OriginalCommandUsage::Reference> refs;
     core::pmr::Vector<CommandVariableArguments::Input> arguments;
@@ -4654,7 +4720,10 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                             ->originalResourceRegistration()
                             .generation(),
                         cloudSets[pass]->originalObject()->contentRevision()}});
-                op(K::Dispatch, {}, CommandScalarArguments::Dispatch{1u, 1u, 1u});
+                op(K::Dispatch,
+                    {},
+                    CommandScalarArguments::Dispatch{
+                        cloudPlan.dispatchGroups.width, cloudPlan.dispatchGroups.height, 1u});
                 op(K::EndComputePass, {}, none);
                 if (mode != 24u + pass)
                     descriptors.push_back({op(K::BufferBarrier, {pass ? 11u : 13u}, none),
@@ -5092,7 +5161,8 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                                 "METAL_ORDINARY_CLOUD_TUPLE_REJECTION_PASS noDispatch=true noSubmit=true rollback=true cloudFrames=0");
                             return;
                         }
-                        requireResult(compute->dispatch(1u, 1u, 1u));
+                        requireResult(compute->dispatch(
+                            cloudPlan.dispatchGroups.width, cloudPlan.dispatchGroups.height, 1u));
                         requireResult(compute->end());
                         compute.reset();
                         auto& object = pass ? *resolvedObject : *rawObject;
@@ -5271,7 +5341,8 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                                 && !std::strcmp(refused.diagnostic, "CLOUD-RESIZE-IN-FLIGHT"));
                             render_graph::FrameGraph nextGraph(*d);
                             renderer::cloud::CloudGraphContext next{nextGraph};
-                            ordinaryCloudContext(next, cloudLayer, sequence->submitted + 1u);
+                            ordinaryCloudContext(
+                                next, cloudLayer, sequence->submitted + 1u, extent);
                             const auto countBefore =
                                 core::defaultCpuAllocator().stats().allocationCount;
                             const auto result = sequence->history.prepareFrame(next);
@@ -5406,7 +5477,7 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                         assert(controllerFence->isSignaled() && sequence->history.idle());
                     assert(textureObject->state()
                         == (sampled ? ResourceState::ShaderRead : ResourceState::CopySrc));
-                    std::array<unsigned char, 1024u> result;
+                    core::pmr::Vector<unsigned char> result(bd.sizeBytes);
                     assert(rhi_metal::readMetalRhiNativeBuffer(
                         rhi_metal::metalRhiNativePayloadFor(*bufferLease->originalObject()),
                         result.data(),
@@ -5425,16 +5496,17 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                         float worstSample = 0.f, worstMoment = 0.f, worstHdr = 0.f;
                         float historyInfluence = 0.f, expectedHistoryInfluence = 0.f;
                         unsigned nonVacuum = 0u, foregroundCount = 0u;
-                        std::array<Sample, 17u> actualRaw, actualResolved;
+                        std::array<Sample, 769u> actualRaw, actualResolved;
                         for (unsigned pass = 0u; pass < 2u; ++pass) {
                             const auto& lease = pass ? compositeBuffers[1] : cloudBuffers[1];
-                            std::array<Sample, 17u> actual;
+                            std::array<Sample, 769u> actual;
+                            std::memset(actual.data(), 0x5a, sizeof(actual));
                             assert(rhi_metal::readMetalRhiNativeBuffer(
                                 rhi_metal::metalRhiNativePayloadFor(*lease->originalObject()),
                                 actual.data(),
-                                sizeof(actual),
+                                sampleStorageBytes,
                                 0u,
-                                sizeof(actual),
+                                sampleStorageBytes,
                                 diagnostic));
                             if (pass) {
                                 actualResolved = actual;
@@ -5445,8 +5517,9 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                                 actualRaw = actual;
                             std::array<unsigned char, sizeof(Sample)> sentinel;
                             sentinel.fill(0x5a);
-                            assert(!std::memcmp(&actual[16], sentinel.data(), sentinel.size()));
-                            for (unsigned i = 0u; i < 16u; ++i) {
+                            assert(!std::memcmp(
+                                &actual[sampleCount], sentinel.data(), sentinel.size()));
+                            for (unsigned i = 0u; i < sampleCount; ++i) {
                                 const auto a = tests::cloud::SequenceOracle::components(
                                     actual[i].radianceTransmittance);
                                 const auto e = tests::cloud::SequenceOracle::components(
@@ -5474,20 +5547,25 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                                 assert(actual[i].metadata.z == 0.f && actual[i].metadata.w == 0.f);
                             }
                         }
-                        const tests::cloud::ForegroundFixture triangle{
-                            true, .25f, .25f, 3.5f, 3.5f};
-                        for (unsigned y = 0u; y < 4u; ++y) {
-                            for (unsigned x = 0u; x < 4u; ++x) {
+                        const tests::cloud::ForegroundFixture triangle{true,
+                            pipelineDesc.viewport.x,
+                            pipelineDesc.viewport.y,
+                            pipelineDesc.viewport.width,
+                            pipelineDesc.viewport.height};
+                        for (unsigned y = 0u; y < extent.height; ++y) {
+                            for (unsigned x = 0u; x < extent.width; ++x) {
                                 const auto nativeY =
-                                    semantics::projectionRequiresYFlip(Backend::Metal) ? 3u - y : y;
+                                    semantics::projectionRequiresYFlip(Backend::Metal)
+                                    ? extent.height - 1u - y
+                                    : y;
                                 const bool covered = triangle.covers(x, nativeY);
                                 foregroundCount += covered;
-                                const auto& expected =
-                                    cloudResolvedExpected[y * 4u + x].radianceTransmittance;
+                                const auto& expected = cloudResolvedExpected[y * extent.width + x]
+                                                           .radianceTransmittance;
                                 nonVacuum += !covered && expected.w < 1.f;
                                 std::array<std::uint16_t, 4u> texel;
                                 std::memcpy(texel.data(), result.data() + y * 256u + x * 8u, 8u);
-                                if (covered) {
+                                if (covered && !(visualCase && visualCase->orthographic)) {
                                     assert(expected.x == 0.f && expected.y == 0.f
                                         && expected.z == 0.f && expected.w == 1.f);
                                     assert(texel == pixel);
@@ -5502,9 +5580,11 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                                     worstHdr = std::max(
                                         worstHdr, std::fabs(core::halfToFloat(texel[c]) - hdr[c]));
                             }
-                            for (unsigned x = 32u; x < 256u; ++x)
+                            for (unsigned x = extent.width * 8u; x < 256u; ++x)
                                 assert(result[y * 256u + x] == 0x5a);
                         }
+                        for (unsigned i = extent.height * 256u; i < result.size(); ++i)
+                            assert(result[i] == 0x5a);
                         std::printf(
                             "METAL_ORDINARY_CLOUD_NUMERIC mode=%u sampleError=%.9g momentError=%.9g hdrError=%.9g nonVacuum=%u foreground=%u\n",
                             mode,
@@ -5514,8 +5594,8 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                             nonVacuum,
                             foregroundCount);
                         std::fflush(stdout);
-                        assert(worstSample < .002f && worstMoment < .02f && worstHdr < .002f
-                            && nonVacuum && foregroundCount);
+                        assert(worstSample < .002f && (visualCase || worstMoment < .02f)
+                            && worstHdr < .002f && (visualCase || (nonVacuum && foregroundCount)));
                         assert(nativeStats->nativeDispatchEncoded && nativeStats->nativeDrawEncoded
                             && nativeStats->nativeBlitCopyEncoded);
                         assert(depthObject->state() == ResourceState::ShaderRead
@@ -5536,7 +5616,7 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                             && depthObject->validateOriginalContent(*depthContent)
                             && outputObject->validateOriginalContent(*outputContent));
                         if (sequence) {
-                            for (unsigned i = 0u; i < 16u; ++i) {
+                            for (unsigned i = 0u; i < sampleCount; ++i) {
                                 const auto raw = tests::cloud::SequenceOracle::components(
                                     actualRaw[i].radianceTransmittance);
                                 const auto resolved = tests::cloud::SequenceOracle::components(
@@ -5555,17 +5635,19 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                             }
                             if (cloudFrame.historyUsed) {
                                 assert(sequence->previous == cloudBuffers[2]);
-                                std::array<Sample, 17u> old;
+                                std::array<Sample, 769u> old;
+                                std::memset(old.data(), 0x5a, sizeof(old));
                                 assert(rhi_metal::readMetalRhiNativeBuffer(
                                     rhi_metal::metalRhiNativePayloadFor(
                                         *sequence->previous->originalObject()),
                                     old.data(),
-                                    sizeof(old),
+                                    sampleStorageBytes,
                                     0u,
-                                    sizeof(old),
+                                    sampleStorageBytes,
                                     diagnostic));
-                                assert(!std::memcmp(
-                                    old.data(), sequence->previousBytes.data(), sizeof(old)));
+                                assert(!std::memcmp(old.data(),
+                                    sequence->previousBytes.data(),
+                                    sizeof(sequence->previousBytes)));
                                 assert(pendingOracle.accepted && historyInfluence > .00001f
                                     && expectedHistoryInfluence > .00001f);
                             }
@@ -5577,11 +5659,39 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                                 double(historyInfluence),
                                 double(expectedHistoryInfluence));
                             sequence->previous = compositeBuffers[1];
-                            sequence->previousBytes = actualResolved;
+                            std::copy_n(actualResolved.begin(),
+                                sequence->previousBytes.size(),
+                                sequence->previousBytes.begin());
                             sequence->frame = cloudFrame;
                             sequence->oracle = std::move(pendingOracle);
                             ++sequence->submitted;
                             return;
+                        }
+                        if (visualOutput) {
+                            const auto save =
+                                [&](const char* suffix, const void* data, std::size_t bytes) {
+                                    const auto path = core::pmr::String(visualOutput) + suffix;
+                                    auto* file = std::fopen(path.c_str(), "wb");
+                                    assert(file && std::fwrite(data, 1u, bytes, file) == bytes);
+                                    assert(std::fclose(file) == 0);
+                                };
+                            save(".hdr.rgba16f", result.data(), result.size());
+                            save(".samples.f32",
+                                actualResolved.data(),
+                                sampleCount * sizeof(Sample));
+                            save(".expected.f32",
+                                cloudResolvedExpected.data(),
+                                sampleCount * sizeof(Sample));
+                            save(".constants.bin", &cloudParameters, sizeof(cloudParameters));
+                            const auto captured = d->endFrameCapture();
+                            assert(captured.success());
+                            std::printf(
+                                "METAL_CLOUD_VISUAL_PASS case=%s width=%u height=%u hdrBytes=%zu sampleCount=%u\n",
+                                visualCase->name.data(),
+                                extent.width,
+                                extent.height,
+                                result.size(),
+                                sampleCount);
                         }
                         std::puts(
                             "METAL_ORDINARY_CLOUD_FIRST_FRAME_PASS raymarch=true temporal=true historyUsed=false actualResolvedConsumed=true hotAllocation0=true rawAndResolvedTailPreserved=true publicGateClosed=true cloudFrames=1");
@@ -5593,12 +5703,14 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                         pipelineDesc.viewport.y,
                         pipelineDesc.viewport.width,
                         pipelineDesc.viewport.height};
-                    for (unsigned y = 0u; y < 4u; ++y) {
-                        for (unsigned x = 0u; x < 4u; ++x) {
+                    for (unsigned y = 0u; y < extent.height; ++y) {
+                        for (unsigned x = 0u; x < extent.width; ++x) {
                             const auto* texel = result.data() + y * 256u + x * 8u;
                             if (sampled) {
                                 const auto nativeY =
-                                    semantics::projectionRequiresYFlip(Backend::Metal) ? 3u - y : y;
+                                    semantics::projectionRequiresYFlip(Backend::Metal)
+                                    ? extent.height - 1u - y
+                                    : y;
                                 const auto& expected =
                                     foreground.covers(x, nativeY) ? pixel : cleared;
                                 assert(!std::memcmp(texel, expected.data(), 8u));
@@ -5610,10 +5722,10 @@ void ordinaryOwnerClearCopy(const std::filesystem::path& directory,
                                 ++background;
                             }
                         }
-                        for (unsigned x = 32u; x < 256u; ++x)
+                        for (unsigned x = extent.width * 8u; x < 256u; ++x)
                             assert(result[y * 256u + x] == 0x5a);
                     }
-                    assert(drawn && background && drawn + background == 16u);
+                    assert(drawn && background && drawn + background == sampleCount);
                     assert(nativeStats->nativeDrawEncoded && nativeStats->nativeBlitCopyEncoded);
                     if (sampled) {
                         assert(depthParent->originalObject()->state() == ResourceState::ShaderRead);
@@ -5765,6 +5877,68 @@ void ordinaryCloudSlots(const std::filesystem::path& directory, unsigned slotCou
         slotCount);
 }
 
+void ordinaryCloudResize(const std::filesystem::path& directory, unsigned slotCount)
+{
+    assert(slotCount == 2u || slotCount == 3u);
+    auto d = device(true, true, 13u, 8u);
+    OrdinaryCloudSequence sequence;
+    sequence.device = d.get();
+    sequence.slotCount = slotCount;
+    ordinaryOwnerClearCopy(directory, 0u, false, true, true, &sequence);
+    assert(sequence.submitted == 1u && !sequence.frame.historyUsed);
+    const auto firstPhase = sequence.frame.parameters.jitter.z;
+    const auto domain = rhi_metal::metalRhiOriginalSubmissionDomain(*d);
+    assert(domain && sequence.firstWriterFence->isSignaled() && sequence.history.idle());
+    sequence.retiredToken = sequence.history.token();
+    std::array<std::weak_ptr<const rhi::OriginalCommandBufferLease>, 6u> retired;
+    for (unsigned slot = 0u; slot < slotCount; ++slot) {
+        retired[slot * 2u] = sequence.slots[slot].raw;
+        retired[slot * 2u + 1u] = sequence.slots[slot].resolved;
+        assert(sequence.slots[slot].raw->originalObject()->desc().sizeBytes
+            == 17u * sizeof(renderer::cloud::CloudGpuSample));
+    }
+    assert(sequence.history.releaseIdle().success);
+    sequence.previous.reset();
+    sequence.firstWriterFence.reset();
+    sequence.slots = {};
+    sequence.slotObjects = {};
+    for (auto& owner : retired) {
+        assert(owner.expired());
+        owner.reset();
+    }
+    assert(!sequence.sourceQuota->liveBytes() && !sequence.historyQuota->liveBytes());
+    const auto* stale = sequence.history.validateSubmission(sequence.retiredToken);
+    assert(stale && !std::strcmp(stale, "CLOUD-STALE-SUBMISSION"));
+    sequence.frame = {};
+    sequence.oracle = {};
+    sequence.previousBytes = {};
+    sequence.submitted = 0u;
+    sequence.historyCreated = false;
+    sequence.extent = {3u, 2u};
+    ordinaryOwnerClearCopy(directory, 0u, false, true, true, &sequence);
+    assert(sequence.submitted == 1u && !sequence.frame.historyUsed);
+    assert(sequence.frame.parameters.jitter.z == firstPhase);
+    assert(sequence.frame.parameters.dimensions[2] == 3u
+        && sequence.frame.parameters.dimensions[3] == 2u);
+    for (unsigned slot = 0u; slot < slotCount; ++slot)
+        for (auto* object : sequence.slotObjects[slot])
+            assert(object->desc().sizeBytes == 7u * sizeof(renderer::cloud::CloudGpuSample));
+    assert(sequence.previous == sequence.slots[0].resolved);
+    ordinaryOwnerClearCopy(directory, 0u, false, true, true, &sequence);
+    assert(sequence.submitted == 2u && sequence.frame.historyUsed);
+    assert(sequence.previous == sequence.slots[1].resolved);
+    assert(core::SharedOwnerProjection::sameOwner(
+        domain, rhi_metal::metalRhiOriginalSubmissionDomain(*d)));
+    assert(sequence.history.releaseIdle().success);
+    sequence.previous.reset();
+    sequence.firstWriterFence.reset();
+    sequence.slots = {};
+    assert(!sequence.sourceQuota->liveBytes() && !sequence.historyQuota->liveBytes());
+    std::printf(
+        "METAL_CLOUD_RESIZE_RECREATE_PASS slots=%u frames=3 oldExtent=4x4 newExtent=3x2 sameDeviceAndDomain=true oldLeaseOwnersExpired=true sourceAndHistoryQuotaDrained=true staleTokenRefused=true newHistoryReset=true newGpuHistoryConsumed=true cpuHistoryNeverUploaded=true publicGateClosed=true\n",
+        slotCount);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -5787,6 +5961,12 @@ int main(int argc, char** argv)
             ordinaryCloudSlots(argv[2], slots);
             return 0;
         }
+        if (argc == 4 && !std::strcmp(argv[1], "--ordinary-cloud-resize")) {
+            unsigned slots = 0u;
+            assert(std::sscanf(argv[3], "%u", &slots) == 1);
+            ordinaryCloudResize(argv[2], slots);
+            return 0;
+        }
         if ((argc == 3 || argc == 4) && !std::strcmp(argv[1], "--ordinary-cloud-history")) {
             unsigned mode = 0u;
             if (argc == 4) {
@@ -5794,6 +5974,13 @@ int main(int argc, char** argv)
                 assert(mode == 0u || mode == 1u || mode == 4u || mode == 12u);
             }
             ordinaryCloudHistory(argv[2], mode);
+            return 0;
+        }
+        if (argc == 5 && !std::strcmp(argv[1], "--ordinary-cloud-visual")) {
+            const auto* selected = tests::cloud::ReferenceCases::find(argv[3]);
+            assert(selected);
+            ordinaryOwnerClearCopy(
+                argv[2], 0u, false, true, true, nullptr, nullptr, selected, argv[4]);
             return 0;
         }
         if ((argc == 3 || argc == 4) && !std::strcmp(argv[1], "--ordinary-owner-cloud")) {

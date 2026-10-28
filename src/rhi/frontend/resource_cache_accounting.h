@@ -2,15 +2,11 @@
 
 #include "core/diagnostics/diagnostic_error.h"
 #include "rhi/frontend/memory_physical_budget_ledger.h"
+#include "rhi/frontend/resource_cache_accounting_values.h"
 #include "rhi/frontend/transfer_upload_destination_validation.h"
+#include "rhi/semantics/memory_admission_lowering.h"
 
 namespace arp::rhi {
-
-enum class ResourceCacheAccountingDomain : std::uint8_t {
-    Unspecified,
-    LogicalDescriptor,
-    NativePhysical,
-};
 
 struct ResourceCacheAccountingRequest {
     std::uint32_t contractVersion = 1u;
@@ -60,16 +56,8 @@ public:
     {
         if (request.contractVersion != contractVersion)
             return "RHI-CACHE-ACCOUNTING-VERSION";
-        switch (backend) {
-        case Backend::Null:
-        case Backend::Vulkan:
-        case Backend::Metal:
-        case Backend::WebGPU:
-        case Backend::WebGL:
-            break;
-        default:
+        if (!semantics::MemoryAdmissionLowering::knownBackend(backend))
             return "RHI-CACHE-ACCOUNTING-BACKEND";
-        }
         if (request.domain == ResourceCacheAccountingDomain::NativePhysical)
             return "RHI-CACHE-ACCOUNTING-NATIVE-PHYSICAL-UNAVAILABLE";
         if (request.domain != ResourceCacheAccountingDomain::LogicalDescriptor)

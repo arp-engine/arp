@@ -101,7 +101,7 @@ int main()
     const auto root = projectRoot();
     const auto webGpuRoot = root / "src" / "rhi" / "backends" / "webgpu";
     const auto webGpuTelemetryHeader =
-        root / "src" / "rhi" / "semantics" / "webgpu_runtime_telemetry.h";
+        root / "src" / "rhi" / "frontend" / "webgpu_runtime_telemetry.h";
     assert(std::filesystem::exists(webGpuRoot));
     assert(std::filesystem::exists(webGpuTelemetryHeader));
 

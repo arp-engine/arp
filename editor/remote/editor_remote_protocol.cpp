@@ -2,6 +2,7 @@
 
 #include "core/text/number_format.h"
 #include "core/text/string_utils.h"
+#include "editor/workspace/editor_scene_script_policy.h"
 #include "editor/workspace/editor_shell.h"
 #include "network/http/uri.h"
 
@@ -475,6 +476,8 @@ void appendSnapshot(core::pmr::String& out, const EditorStateSnapshot& snapshot)
     appendJsonString(out, sceneTaskStatusName(snapshot.scenePersistenceTaskStatus));
     out += ",\"diagnostic\":";
     appendJsonString(out, snapshot.scenePersistenceTaskDiagnostic);
+    out += ",\"committed\":";
+    out += snapshot.scenePersistenceTaskCommitted ? "true" : "false";
     out += "}";
     const auto& task = snapshot.sceneExportTask;
     out += ",\"sceneExportTask\":{\"taskId\":";
@@ -1091,6 +1094,27 @@ std::uint64_t fingerprint(std::string_view command,
                 static_cast<std::size_t>(propertyResult.ptr - textBuffer.data())));
         }
     }
+    const auto feedScriptConfiguration = [&feed](const SceneScriptConfiguration& configuration,
+                                             std::uint64_t owner,
+                                             std::uint64_t component) {
+        const auto feedUnsigned = [&feed](std::uint64_t value) {
+            std::array<char, 32> buffer{};
+            const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+            feed(std::string_view(
+                buffer.data(), static_cast<std::size_t>(result.ptr - buffer.data())));
+        };
+        feedUnsigned(owner);
+        feedUnsigned(component);
+        feed(configuration.resourceId);
+        feed(configuration.scriptType);
+        feedUnsigned(configuration.schemaVersion);
+        feed(configuration.fields);
+        feed(configuration.enabled ? "true" : "false");
+    };
+    if (const auto* fields = payload ? std::get_if<SetSceneScriptFieldsCommand>(payload) : nullptr)
+        feedScriptConfiguration(*fields, fields->objectId, fields->componentId);
+    if (const auto* add = payload ? std::get_if<AddSceneScriptComponentCommand>(payload) : nullptr)
+        feedScriptConfiguration(*add, add->objectId, 0);
     if (const auto* remove =
             payload ? std::get_if<RemoveSceneComponentCommand>(payload) : nullptr) {
         std::array<char, 32> textBuffer{};
@@ -1531,6 +1555,47 @@ bool makeCommand(std::string_view name,
         payload = std::move(command);
         return true;
     }
+    if (name == "scene.script.fields.set" || name == "scene.script.add") {
+        std::uint64_t objectId = 0, componentId = 0;
+        const auto* resource = member(arguments, "resourceId");
+        const auto* type = member(arguments, "scriptType");
+        const auto* schema = member(arguments, "moduleSchemaVersion");
+        const auto* fields = member(arguments, "fieldsYaml");
+        const auto* enabled = member(arguments, "enabled");
+        if (!unsignedValue(member(arguments, "objectId"), objectId) || objectId == 0
+            || (name == "scene.script.fields.set"
+                && (!unsignedValue(member(arguments, "componentId"), componentId)
+                    || componentId == 0))
+            || !resource || !resource->IsString() || resource->GetStringLength() != 36
+            || asView(*resource).find('\0') != std::string_view::npos || !type || !type->IsString()
+            || type->GetStringLength() == 0 || type->GetStringLength() > 128
+            || asView(*type).find('\0') != std::string_view::npos || !schema || !schema->IsUint()
+            || schema->GetUint() == 0 || !fields || !fields->IsString()
+            || fields->GetStringLength() == 0
+            || fields->GetStringLength() > EditorSceneScriptPolicy::fields().maxYamlBytes
+            || asView(*fields).find('\0') != std::string_view::npos || !enabled
+            || !enabled->IsBool())
+            return false;
+        if (name == "scene.script.add") {
+            AddSceneScriptComponentCommand command(asView(*resource),
+                asView(*type),
+                schema->GetUint(),
+                asView(*fields),
+                enabled->GetBool());
+            command.objectId = objectId;
+            payload = std::move(command);
+            return true;
+        }
+        SetSceneScriptFieldsCommand command(asView(*resource),
+            asView(*type),
+            schema->GetUint(),
+            asView(*fields),
+            enabled->GetBool());
+        command.objectId = objectId;
+        command.componentId = componentId;
+        payload = std::move(command);
+        return true;
+    }
     if (name == "scene.component.remove") {
         std::uint64_t objectId = 0;
         std::uint64_t componentId = 0;
@@ -1794,7 +1859,7 @@ network::http::Response EditorRemoteProtocol::discovery(EditorShell& shell)
     body += "{\"schemaVersion\":1,\"stateVersion\":";
     appendUnsigned(body, shell.stateVersion());
     body +=
-        ",\"capabilities\":[\"project.create\",\"project.open\",\"project.close\",\"project.rename\",\"project.settings.set\",\"project.save\",\"editor.state.get\",\"editor.exit\",\"editor.activate\",\"editor.search\",\"editor.text.set\",\"scene.inspector.get\",\"scene.inspector.selection.get\",\"scene.hierarchy.get\",\"scene.component.catalog.get\",\"scene.component.add\",\"scene.component.remove\",\"scene.component.property.set\",\"scene.undo\",\"scene.redo\",\"scene.reparent\",\"scene.rename\",\"scene.active.set\",\"scene.object.view.set\",\"scene.select\",\"scene.selection.focus\",\"scene.reference.focus\",\"scene.resource.locate\",\"scene.selection.transform\",\"scene.transform.pivot.set\",\"scene.transform.settings.get\",\"scene.transform.settings.set\",\"scene.new\",\"scene.duplicate\",\"scene.export\",\"scene.export.task.get\",\"scene.save\",\"scene.load\",\"scene.task.get\",\"script.replace\",\"script.save\",\"script.reload\",\"script.close\",\"script.undo\",\"script.redo\"]}";
+        ",\"capabilities\":[\"project.create\",\"project.open\",\"project.close\",\"project.rename\",\"project.settings.set\",\"project.save\",\"editor.state.get\",\"editor.exit\",\"editor.activate\",\"editor.search\",\"editor.text.set\",\"scene.inspector.get\",\"scene.inspector.selection.get\",\"scene.hierarchy.get\",\"scene.component.catalog.get\",\"scene.component.add\",\"scene.component.remove\",\"scene.script.fields.set\",\"scene.script.add\",\"scene.component.property.set\",\"scene.undo\",\"scene.redo\",\"scene.reparent\",\"scene.rename\",\"scene.active.set\",\"scene.object.view.set\",\"scene.select\",\"scene.selection.focus\",\"scene.reference.focus\",\"scene.resource.locate\",\"scene.selection.transform\",\"scene.transform.pivot.set\",\"scene.transform.settings.get\",\"scene.transform.settings.set\",\"scene.new\",\"scene.duplicate\",\"scene.export\",\"scene.export.task.get\",\"scene.save\",\"scene.load\",\"scene.task.get\",\"script.replace\",\"script.save\",\"script.reload\",\"script.close\",\"script.undo\",\"script.redo\"]}";
     return jsonResponse(200, body);
 }
 
@@ -1848,6 +1913,11 @@ network::http::Response EditorRemoteProtocol::restCommand(
                 "componentId",
                 "type",
                 "properties",
+                "resourceId",
+                "scriptType",
+                "moduleSchemaVersion",
+                "fieldsYaml",
+                "enabled",
                 "property",
                 "kind",
                 "tool",
@@ -1875,6 +1945,42 @@ network::http::Response EditorRemoteProtocol::restCommand(
                 "documentEpoch",
                 "hidden",
                 "locked"}))
+        return protocolError(400, "invalid_command_fields");
+    if (commandName == "scene.script.fields.set"
+        && !hasUniqueAllowedMembers(document,
+            {"schemaVersion",
+                "command",
+                "commandId",
+                "correlationId",
+                "expectedStateVersion",
+                "idempotencyKey",
+                "objectId",
+                "componentId",
+                "resourceId",
+                "scriptType",
+                "moduleSchemaVersion",
+                "fieldsYaml",
+                "enabled"}))
+        return protocolError(400, "invalid_command_fields");
+    if (commandName == "scene.script.add"
+        && !hasUniqueAllowedMembers(document,
+            {"schemaVersion",
+                "command",
+                "commandId",
+                "correlationId",
+                "expectedStateVersion",
+                "idempotencyKey",
+                "objectId",
+                "resourceId",
+                "scriptType",
+                "moduleSchemaVersion",
+                "fieldsYaml",
+                "enabled"}))
+        return protocolError(400, "invalid_command_fields");
+    if (commandName != "scene.script.fields.set" && commandName != "scene.script.add"
+        && (member(document, "resourceId") || member(document, "scriptType")
+            || member(document, "moduleSchemaVersion") || member(document, "fieldsYaml")
+            || member(document, "enabled")))
         return protocolError(400, "invalid_command_fields");
     if (commandName != "scene.active.set" && member(document, "active"))
         return protocolError(400, "invalid_command_fields");
@@ -2193,6 +2299,7 @@ network::http::Response EditorRemoteProtocol::restCommand(
         && commandName != "scene.rename" && commandName != "scene.select"
         && commandName != "scene.object.view.set" && commandName != "scene.reparent"
         && commandName != "scene.component.add" && commandName != "scene.component.remove"
+        && commandName != "scene.script.fields.set" && commandName != "scene.script.add"
         && (member(document, "objectId") || member(document, "componentId")
             || member(document, "property") || member(document, "kind")))
         return protocolError(400, "invalid_command_fields");
@@ -2364,6 +2471,8 @@ network::http::Response EditorRemoteProtocol::mcpMessage(
 {"name":"scene.component.catalog.get","description":"Read the explicit allowlisted component factory catalog.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
 {"name":"scene.component.add","description":"Add one allowlisted component, optionally applying typed initial Inspector properties atomically.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"type":{"type":"string","minLength":1,"maxLength":128},"properties":{"type":"array","maxItems":64,"items":{"type":"object","properties":{"property":{"type":"string","minLength":1,"maxLength":256},"kind":{"type":"string","enum":["boolean","integer","unsignedInteger","number","enumeration","vector2","vector2List","vector3","color4","string","resourceReference","sceneObjectReference"]},"value":{}},"required":["property","kind","value"],"additionalProperties":false}},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId","type"],"additionalProperties":false}},
 {"name":"scene.component.remove","description":"Remove one non-Transform component by stable object and component IDs.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"componentId":{"type":"integer","minimum":1},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId","componentId"],"additionalProperties":false}},
+{"name":"scene.script.fields.set","description":"Replace complete explicit YAML fields and enabled state of one v4 ScriptComponent through shared history. Requires exact resource/module schema/type; never evaluates defaults or user code. fieldsYaml is limited to 262144 UTF-8 bytes, with 64 exact local references.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"componentId":{"type":"integer","minimum":1},"resourceId":{"type":"string","minLength":36,"maxLength":36},"scriptType":{"type":"string","minLength":1,"maxLength":128},"moduleSchemaVersion":{"type":"integer","minimum":1,"maximum":4294967295},"fieldsYaml":{"type":"string","minLength":1,"maxLength":262144},"enabled":{"type":"boolean"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId","componentId","resourceId","scriptType","moduleSchemaVersion","fieldsYaml","enabled"],"additionalProperties":false}},
+{"name":"scene.script.add","description":"Attach one ScriptComponent to an explicit owner in a v4 document, with exact resource/module schema/type and complete initial YAML fields. Uses shared exact identity history; never evaluates defaults or user code. fieldsYaml is limited to 262144 UTF-8 bytes, with 64 exact local references.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"resourceId":{"type":"string","minLength":36,"maxLength":36},"scriptType":{"type":"string","minLength":1,"maxLength":128},"moduleSchemaVersion":{"type":"integer","minimum":1,"maximum":4294967295},"fieldsYaml":{"type":"string","minLength":1,"maxLength":262144},"enabled":{"type":"boolean"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId","resourceId","scriptType","moduleSchemaVersion","fieldsYaml","enabled"],"additionalProperties":false}},
 {"name":"scene.component.property.set","description":"Set one typed scene component Inspector property through the editor command history.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"componentId":{"type":"integer","minimum":1},"property":{"type":"string","minLength":1,"maxLength":256},"kind":{"type":"string","enum":["boolean","integer","unsignedInteger","number","enumeration","vector2","vector2List","vector3","color4","string","resourceReference","sceneObjectReference"]},"value":{},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId","componentId","property","kind","value"],"additionalProperties":false}},
 {"name":"scene.select","description":"Select an existing scene object by exact ID using the shared Inspector selection command. Selection does not edit authoring content or Undo history.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId"],"additionalProperties":false}},
 {"name":"scene.selection.focus","description":"Move the editor camera target to the center of selected world origins, preserving orientation, distance, scene contents and selection. This does not fit geometry bounds. Modal, gesture and workspace busy guards apply.","inputSchema":{"type":"object","properties":{"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false}},
@@ -2484,6 +2593,25 @@ network::http::Response EditorRemoteProtocol::mcpMessage(
             : toolName == "scene.component.add"
             ? hasOnlyMembers(*arguments,
                   {"objectId", "type", "properties", "idempotencyKey", "expectedStateVersion"})
+            : toolName == "scene.script.fields.set" ? hasUniqueAllowedMembers(*arguments,
+                                                          {"objectId",
+                                                              "componentId",
+                                                              "resourceId",
+                                                              "scriptType",
+                                                              "moduleSchemaVersion",
+                                                              "fieldsYaml",
+                                                              "enabled",
+                                                              "idempotencyKey",
+                                                              "expectedStateVersion"})
+            : toolName == "scene.script.add"        ? hasUniqueAllowedMembers(*arguments,
+                                                          {"objectId",
+                                                              "resourceId",
+                                                              "scriptType",
+                                                              "moduleSchemaVersion",
+                                                              "fieldsYaml",
+                                                              "enabled",
+                                                              "idempotencyKey",
+                                                              "expectedStateVersion"})
             : toolName == "scene.component.remove"
             ? hasOnlyMembers(
                   *arguments, {"objectId", "componentId", "idempotencyKey", "expectedStateVersion"})

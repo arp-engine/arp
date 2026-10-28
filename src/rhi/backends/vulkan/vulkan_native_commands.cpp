@@ -21,10 +21,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
 #include <iostream>
 #include <limits>
-#include <mutex>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -281,209 +279,140 @@ VkImageAspectFlags aspectFor(rhi::TextureAspect aspect)
     return VK_IMAGE_ASPECT_COLOR_BIT;
 }
 
-constexpr std::size_t kMaxReusableCommandResources = 8;
-constexpr std::size_t kMaxReusableFences = 8;
+using ReusableCommandResources = VulkanRhiCommandDomain::ReusableCommandResources;
 
-struct ReusableCommandResources {
-    std::shared_ptr<VulkanRhiRuntime> runtime;
-    VkCommandPool commandPool = VK_NULL_HANDLE;
-    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-    std::uint32_t queueFamilyIndex = 0u;
-};
-
-std::mutex g_reusableCommandResourcesMutex;
-std::deque<ReusableCommandResources> g_reusableCommandResources;
-
-struct ReusableFence {
-    std::shared_ptr<VulkanRhiRuntime> runtime;
-    VkFence fence = VK_NULL_HANDLE;
-};
-
-std::mutex g_reusableFencesMutex;
-std::deque<ReusableFence> g_reusableFences;
-
-void destroyReusableFence(ReusableFence fence)
+void destroyReusableCommandResources(
+    const VulkanRhiRuntime& runtime, ReusableCommandResources resources)
 {
-    if (!fence.runtime || !fence.fence)
-        return;
-    auto* destroyFence =
-        functionFrom<PFN_vkDestroyFence>(fence.runtime->getDeviceProcAddr("vkDestroyFence"));
-    if (destroyFence) {
-        destroyFence(fence.runtime->logicalDevice(), fence.fence, nullptr);
-    }
+    const auto destroy =
+        functionFrom<PFN_vkDestroyCommandPool>(runtime.getDeviceProcAddr("vkDestroyCommandPool"));
+    if (destroy && resources.commandPool)
+        destroy(runtime.logicalDevice(), resources.commandPool, nullptr);
 }
 
-bool acquireReusableFence(const std::shared_ptr<VulkanRhiRuntime>& runtime, VkFence& fence)
+bool acquireReusableFence(const std::shared_ptr<VulkanRhiRuntime>& runtime,
+    VkFence& fence,
+    core::pmr::String& diagnostics)
 {
+    diagnostics.clear();
     if (!runtime)
         return false;
-    auto* resetFences =
-        functionFrom<PFN_vkResetFences>(runtime->getDeviceProcAddr("vkResetFences"));
-    if (!resetFences)
+    if (const auto* id = runtime->commandDomain().ownerDiagnostic()) {
+        diagnostics = id;
         return false;
-
-    std::lock_guard lock(g_reusableFencesMutex);
-    for (auto it = g_reusableFences.begin(); it != g_reusableFences.end(); ++it) {
-        if (it->runtime.get() != runtime.get())
+    }
+    for (auto& cached : runtime->commandDomain().reusableFences) {
+        if (!cached)
             continue;
-        const auto reset = resetFences(runtime->logicalDevice(), 1u, &it->fence);
-        if (reset != VK_SUCCESS) {
-            auto stale = std::move(*it);
-            g_reusableFences.erase(it);
-            destroyReusableFence(std::move(stale));
+        const auto reset =
+            functionFrom<PFN_vkResetFences>(runtime->getDeviceProcAddr("vkResetFences"));
+        if (!reset) {
+            diagnostics = "RHI-VULKAN-REUSE-FENCE-RESET-ENTRYPOINT";
             return false;
         }
-        fence = it->fence;
-        g_reusableFences.erase(it);
+        if (reset(runtime->logicalDevice(), 1u, &cached) != VK_SUCCESS) {
+            diagnostics = "RHI-VULKAN-REUSE-FENCE-RESET-FAILED";
+            return false;
+        }
+        fence = std::exchange(cached, VK_NULL_HANDLE);
         return true;
     }
     return false;
 }
 
-void releaseReusableFence(std::shared_ptr<VulkanRhiRuntime> runtime, const VkFence fence)
+void releaseReusableFence(const std::shared_ptr<VulkanRhiRuntime>& runtime, VkFence fence)
 {
     if (!runtime || !fence)
         return;
-    ReusableFence reusable{std::move(runtime), fence};
-    std::lock_guard lock(g_reusableFencesMutex);
-    if (g_reusableFences.size() >= kMaxReusableFences) {
-        destroyReusableFence(std::move(reusable));
-        return;
-    }
-    g_reusableFences.push_back(std::move(reusable));
+    if (!runtime->commandDomain().ownerDiagnostic())
+        for (auto& slot : runtime->commandDomain().reusableFences)
+            if (!slot) {
+                slot = fence;
+                return;
+            }
+    const auto destroy =
+        functionFrom<PFN_vkDestroyFence>(runtime->getDeviceProcAddr("vkDestroyFence"));
+    if (destroy)
+        destroy(runtime->logicalDevice(), fence, nullptr);
 }
 
-void clearReusableFences()
+void clearReusableFences(const VulkanRhiRuntime& runtime)
 {
-    std::lock_guard lock(g_reusableFencesMutex);
-    for (auto& fence : g_reusableFences) {
-        destroyReusableFence(std::move(fence));
-    }
-    g_reusableFences.clear();
-}
-
-void destroyReusableCommandResources(ReusableCommandResources resources)
-{
-    if (!resources.runtime)
+    const auto destroy =
+        functionFrom<PFN_vkDestroyFence>(runtime.getDeviceProcAddr("vkDestroyFence"));
+    if (!destroy)
         return;
-    auto* freeCommandBuffers = functionFrom<PFN_vkFreeCommandBuffers>(
-        resources.runtime->getDeviceProcAddr("vkFreeCommandBuffers"));
-    auto* destroyCommandPool = functionFrom<PFN_vkDestroyCommandPool>(
-        resources.runtime->getDeviceProcAddr("vkDestroyCommandPool"));
-    if (freeCommandBuffers && resources.commandPool && resources.commandBuffer) {
-        freeCommandBuffers(resources.runtime->logicalDevice(),
-            resources.commandPool,
-            1u,
-            &resources.commandBuffer);
-    }
-    if (destroyCommandPool && resources.commandPool) {
-        destroyCommandPool(resources.runtime->logicalDevice(), resources.commandPool, nullptr);
-    }
+    for (auto& fence : runtime.commandDomain().reusableFences)
+        if (fence)
+            destroy(runtime.logicalDevice(), std::exchange(fence, VK_NULL_HANDLE), nullptr);
 }
 
 bool acquireReusableCommandResources(const std::shared_ptr<VulkanRhiRuntime>& runtime,
-    const std::uint32_t queueFamilyIndex,
-    VkCommandPool& commandPool,
-    VkCommandBuffer& commandBuffer)
+    std::uint32_t family,
+    VkCommandPool& pool,
+    VkCommandBuffer& buffer,
+    core::pmr::String& diagnostics)
 {
+    diagnostics.clear();
     if (!runtime)
         return false;
-    auto* resetCommandPool =
-        functionFrom<PFN_vkResetCommandPool>(runtime->getDeviceProcAddr("vkResetCommandPool"));
-    if (!resetCommandPool)
+    if (const auto* id = runtime->commandDomain().ownerDiagnostic()) {
+        diagnostics = id;
         return false;
-
-    std::lock_guard lock(g_reusableCommandResourcesMutex);
-    for (auto it = g_reusableCommandResources.begin(); it != g_reusableCommandResources.end();
-        ++it) {
-        if (it->runtime.get() != runtime.get() || it->queueFamilyIndex != queueFamilyIndex) {
+    }
+    for (auto& cached : runtime->commandDomain().reusableCommands) {
+        if (!cached.commandPool || cached.queueFamilyIndex != family)
             continue;
-        }
-        const auto reset = resetCommandPool(runtime->logicalDevice(), it->commandPool, 0u);
-        if (reset != VK_SUCCESS) {
-            auto stale = std::move(*it);
-            g_reusableCommandResources.erase(it);
-            destroyReusableCommandResources(std::move(stale));
+        const auto reset =
+            functionFrom<PFN_vkResetCommandPool>(runtime->getDeviceProcAddr("vkResetCommandPool"));
+        if (!reset) {
+            diagnostics = "RHI-VULKAN-REUSE-COMMAND-RESET-ENTRYPOINT";
             return false;
         }
-        commandPool = it->commandPool;
-        commandBuffer = it->commandBuffer;
-        g_reusableCommandResources.erase(it);
+        if (reset(runtime->logicalDevice(), cached.commandPool, 0u) != VK_SUCCESS) {
+            diagnostics = "RHI-VULKAN-REUSE-COMMAND-RESET-FAILED";
+            return false;
+        }
+        pool = cached.commandPool;
+        buffer = cached.commandBuffer;
+        cached = {};
         return true;
     }
     return false;
 }
 
-void releaseReusableCommandResources(std::shared_ptr<VulkanRhiRuntime> runtime,
-    const std::uint32_t queueFamilyIndex,
-    const VkCommandPool commandPool,
-    const VkCommandBuffer commandBuffer)
+void releaseReusableCommandResources(const std::shared_ptr<VulkanRhiRuntime>& runtime,
+    std::uint32_t family,
+    VkCommandPool pool,
+    VkCommandBuffer buffer)
 {
-    if (!runtime || !commandPool || !commandBuffer)
+    if (!runtime || !pool)
         return;
-    ReusableCommandResources resources{
-        std::move(runtime),
-        commandPool,
-        commandBuffer,
-        queueFamilyIndex,
-    };
-    std::lock_guard lock(g_reusableCommandResourcesMutex);
-    if (g_reusableCommandResources.size() >= kMaxReusableCommandResources) {
-        destroyReusableCommandResources(std::move(resources));
-        return;
+    if (!runtime->commandDomain().ownerDiagnostic())
+        for (auto& slot : runtime->commandDomain().reusableCommands)
+            if (!slot.commandPool) {
+                slot = {pool, buffer, family};
+                return;
+            }
+    destroyReusableCommandResources(*runtime, {pool, buffer, family});
+}
+
+void clearReusableCommandResources(const VulkanRhiRuntime& runtime)
+{
+    for (auto& cached : runtime.commandDomain().reusableCommands) {
+        destroyReusableCommandResources(runtime, cached);
+        cached = {};
     }
-    g_reusableCommandResources.push_back(std::move(resources));
-}
-
-void clearReusableCommandResources()
-{
-    std::lock_guard lock(g_reusableCommandResourcesMutex);
-    for (auto& resources : g_reusableCommandResources) {
-        destroyReusableCommandResources(std::move(resources));
-    }
-    g_reusableCommandResources.clear();
-}
-
-std::array<std::shared_ptr<VulkanRhiNativeCommandPayload>, kVulkanMaxAsyncSubmittedCommands>&
-asyncSubmittedCommands()
-{
-    // Fixed physical slots match the existing backend-owned retirement ceiling.
-    // First submission needs no allocator warm-up or global per-Source charge.
-    static std::array<std::shared_ptr<VulkanRhiNativeCommandPayload>,
-        kVulkanMaxAsyncSubmittedCommands>
-        commands;
-    return commands;
-}
-
-std::uint64_t& completedSubmittedFrameSerial()
-{
-    static std::uint64_t serial = 0;
-    return serial;
-}
-
-struct CompletedGpuTiming {
-    std::atomic<std::uint64_t> sequence{0u};
-    std::atomic<std::uint64_t> frameSerial{0u};
-    std::atomic<rhi::GpuTimingAvailability> availability{rhi::GpuTimingAvailability::Pending};
-    std::atomic<const char*> diagnostic{"RHI-VULKAN-TIMING-PUBLICATION-PENDING"};
-    std::atomic<std::uint32_t> scopeCount{0u};
-    std::array<std::atomic<std::uint64_t>, rhi::GpuTimingSample::kMaxScopes> scopeIds{};
-    std::array<std::atomic<float>, rhi::GpuTimingSample::kMaxScopes> scopeMilliseconds{};
-};
-
-CompletedGpuTiming& completedGpuTiming()
-{
-    static CompletedGpuTiming timing;
-    return timing;
 }
 
 // One existing fixed cache, one bounded publication attempt. Atomics avoid
 // reader data races; the sequence prevents a mixed frame/count/scope snapshot.
 // Completion owners serialize their work; a concurrent publisher fails closed
 // instead of spinning or blocking the recording/completion path.
-bool publishCompletedTiming(const rhi::GpuTimingSample& sample) noexcept
+bool publishCompletedTiming(
+    const VulkanRhiRuntime& runtime, const rhi::GpuTimingSample& sample) noexcept
 {
-    auto& result = completedGpuTiming();
+    auto& result = runtime.commandDomain().timing;
     auto sequence = result.sequence.load(std::memory_order_acquire);
     if (sample.scopeCount > rhi::GpuTimingSample::kMaxScopes || (sequence & 1u)
         || sequence > UINT64_MAX - 2u
@@ -523,26 +452,29 @@ void publishCompletedTimingPool(const VulkanRhiRuntime& runtime,
         ++sample.scopeCount;
     }
     sample.diagnostic = "Vulkan timestamp query";
-    (void)publishCompletedTiming(sample);
+    (void)publishCompletedTiming(runtime, sample);
 }
 
-void retireCompletedSubmittedCommands()
+void retireCompletedSubmittedCommands(const VulkanRhiRuntime& runtime)
 {
-    auto& commands = asyncSubmittedCommands();
+    if (runtime.commandDomain().ownerDiagnostic())
+        return;
+    auto& commands = runtime.commandDomain().submitted;
     for (auto& command : commands) {
         if (!command || !command->submittedFenceCompleted())
             continue;
-        completedSubmittedFrameSerial() =
-            std::max(completedSubmittedFrameSerial(), command->observedFrameSerial());
+        runtime.commandDomain().completedFrameSerial =
+            std::max(runtime.commandDomain().completedFrameSerial, command->observedFrameSerial());
         command.reset();
     }
 }
 
-bool retainSubmittedCommandForAsyncRetirement(
-    std::shared_ptr<VulkanRhiNativeCommandPayload> command, std::pmr::string& diagnostics)
+bool retainSubmittedCommandForAsyncRetirement(const VulkanRhiRuntime& runtime,
+    std::shared_ptr<VulkanRhiNativeCommandPayload> command,
+    std::pmr::string& diagnostics)
 {
-    retireCompletedSubmittedCommands();
-    auto& commands = asyncSubmittedCommands();
+    retireCompletedSubmittedCommands(runtime);
+    auto& commands = runtime.commandDomain().submitted;
     const auto slot = std::find(commands.begin(), commands.end(), nullptr);
     if (slot == commands.end()) {
         diagnostics = "RHI-VULKAN-SUBMISSION-RETIREMENT-CAPACITY";
@@ -552,10 +484,11 @@ bool retainSubmittedCommandForAsyncRetirement(
     return true;
 }
 
-bool asyncSubmittedCommandRetirementHasCapacity(std::pmr::string& diagnostics)
+bool asyncSubmittedCommandRetirementHasCapacity(
+    const VulkanRhiRuntime& runtime, std::pmr::string& diagnostics)
 {
-    retireCompletedSubmittedCommands();
-    auto& commands = asyncSubmittedCommands();
+    retireCompletedSubmittedCommands(runtime);
+    auto& commands = runtime.commandDomain().submitted;
     if (std::find(commands.begin(), commands.end(), nullptr) == commands.end()) {
         diagnostics = "RHI-VULKAN-SUBMISSION-RETIREMENT-CAPACITY";
         return false;
@@ -662,18 +595,27 @@ VulkanRhiNativeCommandPayload::~VulkanRhiNativeCommandPayload()
             impl_->commandPool,
             impl_->commandBuffer);
     } else {
-        destroyReusableCommandResources({
-            impl_->deviceOwner,
-            impl_->commandPool,
-            impl_->commandBuffer,
-            impl_->device.graphicsQueueFamilyIndex(),
-        });
+        destroyReusableCommandResources(impl_->device,
+            {
+                impl_->commandPool,
+                impl_->commandBuffer,
+                impl_->device.graphicsQueueFamilyIndex(),
+            });
     }
+}
+
+const std::shared_ptr<VulkanRhiRuntime>& VulkanRhiNativeCommandPayload::runtime() const noexcept
+{
+    return impl_->deviceOwner;
 }
 
 bool VulkanRhiNativeCommandPayload::submittedFenceCompleted()
 {
+    if (ordinaryTextureUploadThreadDiagnostic())
+        return false;
     if (!impl_ || !impl_->submitted)
+        return false;
+    if (impl_->device.commandDomain().ownerDiagnostic())
         return false;
     if (impl_->submitFenceCompleted)
         return true;
@@ -717,7 +659,15 @@ bool VulkanRhiNativeCommandPayload::waitSubmittedFence(std::pmr::string& diagnos
 bool VulkanRhiNativeCommandPayload::waitSubmittedFenceUntil(
     std::chrono::steady_clock::time_point deadline, std::pmr::string& diagnostics)
 {
+    if (const auto* id = ordinaryTextureUploadThreadDiagnostic()) {
+        diagnostics = id;
+        return false;
+    }
     const auto now = std::chrono::steady_clock::now();
+    if (const auto* id = impl_->device.commandDomain().ownerDiagnostic()) {
+        diagnostics = id;
+        return false;
+    }
     if (deadline == std::chrono::steady_clock::time_point{}) {
         diagnostics = "RHI-VULKAN-COMPLETION-DEADLINE-INVALID";
         return false;
@@ -784,12 +734,20 @@ bool VulkanRhiNativeCommandPayload::waitSubmittedFenceUntil(
 
 void VulkanRhiNativeCommandPayload::resolveSubmittedCompletion()
 {
+    if (ordinaryTextureUploadThreadDiagnostic())
+        return;
+    if (impl_->device.commandDomain().ownerDiagnostic())
+        return;
     if (impl_->submitFenceCompleted)
         return;
     if ((!impl_->ordinaryTextureUploads.empty() || hasOrdinaryAttachments())
         && !impl_->originalSubmissionUnproven) {
         const char* failure = validateOrdinaryAttachmentsPending();
         for (const auto& upload : impl_->ordinaryTextureUploads) {
+            if (failure)
+                break;
+            if (upload.publication && (failure = upload.publication->publicationThreadDiagnostic()))
+                break;
             const auto& object =
                 *upload.packing->originalSource()->originalDestinationLease()->originalObject();
             failure = upload.pending
@@ -815,6 +773,9 @@ void VulkanRhiNativeCommandPayload::resolveSubmittedCompletion()
             (void)impl_->retainedResourceStates->invalidate();
         } else {
             impl_->retainedResourceStates->commit();
+            for (const auto& upload : impl_->ordinaryTextureUploads)
+                if (upload.publication)
+                    upload.publication->publish();
         }
     }
     // The private bounded transfer domain retains its buffers only here.
@@ -878,7 +839,7 @@ void VulkanRhiNativeCommandPayload::resolveSubmittedCompletion()
                     sample.scopeCount = 1u;
                     sample.scopes[0] = {0u, static_cast<float>(fullFrameNanoseconds) / 1000000.0f};
                     sample.diagnostic = "Vulkan timestamp query";
-                    (void)publishCompletedTiming(sample);
+                    (void)publishCompletedTiming(impl_->device, sample);
                 }
             }
         }
@@ -924,8 +885,36 @@ void VulkanRhiNativeCommandPayload::resolveSubmittedCompletion()
             sample.scopeCount = 0u;
             sample.diagnostic = impl_->internalTimingFailure;
         }
-        if (!publishCompletedTiming(sample))
+        if (!publishCompletedTiming(impl_->device, sample))
             impl_->internalTimingFailure = "RHI-COMMAND-PROFILING-PUBLICATION-CONTENTION";
+    } else if (!impl_->originalSubmissionUnproven && impl_->recordingStorage
+        && impl_->recordingStorage->originalProgram && impl_->recordingStorage->originalQueries) {
+        // Aggregate the complete authored set once. A per-pool publication
+        // would overwrite earlier pools and silently truncate the Program.
+        rhi::GpuTimingSample sample;
+        sample.completedFrameSerial = impl_->frameSerial;
+        sample.availability = rhi::GpuTimingAvailability::Available;
+        sample.diagnostic = "Vulkan mixed pass timestamps";
+        const auto limit = impl_->recordingStorage->originalProgram->originalInputs()
+                               ->originalBudget()
+                               .passTiming->maxPublishedScopes;
+        for (const auto& pool : impl_->retainedTimingPools) {
+            const auto named = pool->completedTimingSample(impl_->device, impl_->frameSerial);
+            if (named.availability != rhi::GpuTimingAvailability::Available
+                || named.scopeCount > limit - sample.scopeCount) {
+                impl_->internalTimingFailure = "RHI-MIXED-PASS-TIMING-RESULT-UNAVAILABLE";
+                break;
+            }
+            for (std::uint32_t i = 0u; i < named.scopeCount; ++i)
+                sample.scopes[sample.scopeCount++] = named.scopes[i];
+        }
+        if (impl_->internalTimingFailure) {
+            sample.availability = rhi::GpuTimingAvailability::DiagnosticFailure;
+            sample.scopeCount = 0u;
+            sample.diagnostic = impl_->internalTimingFailure;
+        }
+        if (!publishCompletedTiming(impl_->device, sample))
+            impl_->internalTimingFailure = "RHI-MIXED-PASS-TIMING-PUBLICATION-CONTENTION";
     } else if (!impl_->originalSubmissionUnproven) {
         for (const auto& pool : impl_->retainedTimingPools) {
             if (pool)
@@ -1032,6 +1021,8 @@ void VulkanRhiNativeCommandPayload::retainResource(
 
 const char* VulkanRhiNativeCommandPayload::recordingStorageDiagnostic() const noexcept
 {
+    if (const auto* id = ordinaryTextureUploadThreadDiagnostic())
+        return id;
     if (impl_ && impl_->recordingStorageFailure)
         return impl_->recordingStorageFailure;
     return originalQuerySlotDiagnostic();
@@ -1175,9 +1166,11 @@ std::uint64_t VulkanRhiNativeCommandPayload::observedFrameSerial() const
     return impl_ ? impl_->frameSerial : 0;
 }
 
-void retireCompletedVulkanRhiSubmittedCommands()
+void retireCompletedVulkanRhiSubmittedCommands(const VulkanRhiRuntime& runtime)
 {
-    retireCompletedSubmittedCommands();
+    if (const auto* id = runtime.commandDomain().ownerDiagnostic())
+        throw core::DiagnosticError(id);
+    retireCompletedSubmittedCommands(runtime);
 }
 
 const char* waitIdleAndRetireVulkanRhiSubmittedCommands(
@@ -1185,6 +1178,8 @@ const char* waitIdleAndRetireVulkanRhiSubmittedCommands(
 {
     if (!runtime || runtime->syntheticRuntime() || !runtime->logicalDevice())
         return "RHI-VULKAN-IDLE-COMPLETION-NATIVE-RUNTIME";
+    if (const auto* id = runtime->commandDomain().ownerDiagnostic())
+        return id;
     const auto lowering =
         rhi::semantics::OriginalCommandNativeLifecycleLowering::deviceIdleLowering(
             rhi::Backend::Vulkan, 6u);
@@ -1201,7 +1196,7 @@ const char* waitIdleAndRetireVulkanRhiSubmittedCommands(
                                               : "RHI-VULKAN-IDLE-COMPLETION-FAILED";
     // This observation is owned by the native call above. Do not probe or
     // retire another runtime's fences, and never reuse a global idle flag.
-    for (auto& command : asyncSubmittedCommands()) {
+    for (auto& command : runtime->commandDomain().submitted) {
         if (!command || !command->impl_->submitted
             || !core::SharedOwnerProjection::sameOwner(command->impl_->deviceOwner, runtime))
             continue;
@@ -1211,8 +1206,8 @@ const char* waitIdleAndRetireVulkanRhiSubmittedCommands(
                 .completionAvailable)
             continue;
         command->resolveSubmittedCompletion();
-        completedSubmittedFrameSerial() =
-            std::max(completedSubmittedFrameSerial(), command->observedFrameSerial());
+        runtime->commandDomain().completedFrameSerial =
+            std::max(runtime->commandDomain().completedFrameSerial, command->observedFrameSerial());
         command.reset();
     }
     return nullptr;
@@ -1237,21 +1232,28 @@ void VulkanRhiNativeCommandPayload::retainTimingQueryPool(
     }
 }
 
-void waitForVulkanRhiSubmittedCommandsForResourcePressure()
+void waitForVulkanRhiSubmittedCommandsForResourcePressure(const VulkanRhiRuntime& runtime)
 {
-    for (const auto& command : asyncSubmittedCommands()) {
+    if (const auto* id = runtime.commandDomain().ownerDiagnostic())
+        throw core::DiagnosticError(id);
+    for (const auto& command : runtime.commandDomain().submitted) {
         if (!command) {
             continue;
         }
         std::pmr::string diagnostics;
         command->waitSubmittedFence(diagnostics);
     }
-    retireCompletedSubmittedCommands();
+    retireCompletedSubmittedCommands(runtime);
 }
 
-bool drainVulkanRhiSubmittedCommandsUntil(
-    std::chrono::steady_clock::time_point deadline, std::pmr::string& diagnostics)
+bool drainVulkanRhiSubmittedCommandsUntil(const VulkanRhiRuntime& runtime,
+    std::chrono::steady_clock::time_point deadline,
+    std::pmr::string& diagnostics)
 {
+    if (const auto* id = runtime.commandDomain().ownerDiagnostic()) {
+        diagnostics = id;
+        return false;
+    }
     if (deadline == std::chrono::steady_clock::time_point{}) {
         diagnostics = "RHI-VULKAN-COMPLETION-DEADLINE-INVALID";
         return false;
@@ -1260,16 +1262,16 @@ bool drainVulkanRhiSubmittedCommandsUntil(
         diagnostics = "RHI-VULKAN-COMPLETION-DEADLINE-EXPIRED";
         return false;
     }
-    retireCompletedSubmittedCommands();
-    for (const auto& command : asyncSubmittedCommands()) {
+    retireCompletedSubmittedCommands(runtime);
+    for (const auto& command : runtime.commandDomain().submitted) {
         if (command && !command->waitSubmittedFenceUntil(deadline, diagnostics)) {
-            retireCompletedSubmittedCommands();
+            retireCompletedSubmittedCommands(runtime);
             return false;
         }
     }
-    retireCompletedSubmittedCommands();
-    if (std::any_of(asyncSubmittedCommands().begin(),
-            asyncSubmittedCommands().end(),
+    retireCompletedSubmittedCommands(runtime);
+    if (std::any_of(runtime.commandDomain().submitted.begin(),
+            runtime.commandDomain().submitted.end(),
             [](const auto& command) {
                 return bool(command);
             })) {
@@ -1280,23 +1282,25 @@ bool drainVulkanRhiSubmittedCommandsUntil(
     return true;
 }
 
-void drainVulkanRhiSubmittedCommandsForShutdown()
+void drainVulkanRhiSubmittedCommandsForShutdown(const VulkanRhiRuntime& runtime)
 {
-    retireCompletedSubmittedCommands();
+    if (runtime.commandDomain().ownerDiagnostic())
+        return;
+    retireCompletedSubmittedCommands(runtime);
     // Device-wrapper destruction is not completion for any submitted stream.
     // Retain every remaining native closure and charge until its real issuer
     // proves retirement; the independent deadline API reports unresolved work.
-    for (const auto& command : asyncSubmittedCommands())
+    for (const auto& command : runtime.commandDomain().submitted)
         if (command)
             return;
-    clearReusableFences();
-    clearReusableCommandResources();
+    clearReusableFences(runtime);
+    clearReusableCommandResources(runtime);
 }
 
-std::uint64_t completedVulkanRhiSubmittedFrameSerial()
+std::uint64_t completedVulkanRhiSubmittedFrameSerial(const VulkanRhiRuntime& runtime)
 {
-    retireCompletedSubmittedCommands();
-    return completedSubmittedFrameSerial();
+    retireCompletedVulkanRhiSubmittedCommands(runtime);
+    return runtime.commandDomain().completedFrameSerial;
 }
 
 bool VulkanRhiNativeCommandPayload::conformanceComputePass(
@@ -2134,6 +2138,16 @@ bool VulkanRhiNativeCommandPayload::hasOrdinaryTextureUploads() const noexcept
     return impl_ && !impl_->ordinaryTextureUploads.empty();
 }
 
+const char* VulkanRhiNativeCommandPayload::ordinaryTextureUploadThreadDiagnostic() const noexcept
+{
+    if (impl_)
+        for (const auto& upload : impl_->ordinaryTextureUploads)
+            if (upload.publication)
+                if (const auto* id = upload.publication->publicationThreadDiagnostic())
+                    return id;
+    return nullptr;
+}
+
 bool VulkanRhiNativeCommandPayload::prepareOrdinaryTextureUploads(rhi::GpuDevice& device,
     VulkanRhiStagingUploadPool& pool,
     rhi::RecordedStagingUploadJournal& journal,
@@ -2141,7 +2155,10 @@ bool VulkanRhiNativeCommandPayload::prepareOrdinaryTextureUploads(rhi::GpuDevice
     const rhi::OriginalOrdinaryTextureUploadContract::Budget& budget,
     const rhi::OriginalOrdinaryTextureUploadContract::Binding* bindings,
     std::size_t count,
-    core::pmr::String& diagnostic)
+    core::pmr::String& diagnostic,
+    const rhi::OriginalTextureUploadPreparationRequest* publicRequest,
+    const std::shared_ptr<core::CpuMemoryQuota>& publicationQuota,
+    core::pmr::Vector<std::shared_ptr<const rhi::OriginalTextureUploadPublication>>* publications)
 {
     const auto reject = [&](const char* id) {
         diagnostic = id;
@@ -2170,7 +2187,12 @@ bool VulkanRhiNativeCommandPayload::prepareOrdinaryTextureUploads(rhi::GpuDevice
                 object, *content, *impl_->retainedResourceStates))
             return reject(id);
         impl_->ordinaryTextureUploads.push_back(
-            {binding.commandIndex, binding.packing, *content, *state, {}, {}});
+            {binding.commandIndex, binding.packing, *content, *state, {}, {}, {}});
+        if (publicRequest) {
+            core::CpuMemoryQuotaScope publicationScope(publicationQuota);
+            impl_->ordinaryTextureUploads.back().publication =
+                rhi::OriginalTextureUploadPublication::issue(program, binding);
+        }
     }
     const rhi::OriginalTexturePoolInitializationBudget initialization{
         2u, true, budget.maxPackedBytes, budget.maxMipMappings};
@@ -2204,6 +2226,9 @@ bool VulkanRhiNativeCommandPayload::prepareOrdinaryTextureUploads(rhi::GpuDevice
                 return reject(recordingStorageDiagnostic());
         }
     }
+    if (publications)
+        for (const auto& upload : impl_->ordinaryTextureUploads)
+            publications->push_back(upload.publication);
     return true;
 }
 
@@ -3035,11 +3060,15 @@ bool VulkanRhiNativeCommandPayload::recordInsertDebugMarker(
 }
 
 bool VulkanRhiNativeCommandPayload::adoptOriginalStreamJournal(
-    core::UniquePtr<core::MutationJournal>& journal, core::pmr::String& diagnostic)
+    core::UniquePtr<core::MutationJournal>& journal,
+    core::pmr::String& diagnostic,
+    std::uint64_t identity)
 {
     if (!impl_ || !impl_->recordingStorage || !impl_->recordingStorage->originalProgram
-        || impl_->recordingStorage->originalQueries || !journal || !journal->empty()
-        || impl_->retainedResourceStates || impl_->ordinaryJournalAliased) {
+        || (impl_->recordingStorage->originalQueries
+            && impl_->recordingStorage->originalQueries->recordingContractVersion != 2u)
+        || !journal || !journal->empty() || impl_->retainedResourceStates
+        || impl_->ordinaryJournalAliased) {
         diagnostic = "RHI-VULKAN-ORIGINAL-STREAM-JOURNAL";
         return false;
     }
@@ -3049,6 +3078,16 @@ bool VulkanRhiNativeCommandPayload::adoptOriginalStreamJournal(
     }
     if (!prepareOriginalSubmissionFence(diagnostic))
         return false;
+    if (impl_->recordingStorage->originalQueries) {
+        const auto* id = identity ? impl_->device.timestampQueryDiagnostic()
+                                  : "RHI-MIXED-PASS-TIMING-RECORDING-IDENTITY";
+        if (id) {
+            diagnostic = id;
+            return false;
+        }
+        impl_->originalQueryRecordingIdentity = identity;
+        impl_->originalQueryFallback = rhi::FallbackMode::Native;
+    }
     impl_->retainedResourceStates = std::move(journal);
     impl_->ordinaryJournalAliased = true;
     return true;
@@ -3110,7 +3149,7 @@ const char* VulkanRhiNativeCommandPayload::recordOriginalTimestamp(const rhi::Qu
         return "RHI-VULKAN-COLD-QUERY-STORAGE-UNAVAILABLE";
     if (!impl_ || !impl_->recording || !identity
         || identity != impl_->originalQueryRecordingIdentity || !impl_->retainedResourceStates
-        || !impl_->recordingRetention || !impl_->originalQueryMeter
+        || !impl_->recordingRetention || (!impl_->originalQueryMeter && !hasOrdinaryMixedPasses())
         || impl_->originalQueryFallback != rhi::FallbackMode::Native)
         return "RHI-VULKAN-ORIGINAL-QUERY-JOURNAL";
     if (const auto* id = recordingStorageDiagnostic())
@@ -3150,7 +3189,18 @@ const char* VulkanRhiNativeCommandPayload::recordOriginalTimestamp(const rhi::Qu
     rhi::CommandRecordingUsage increment;
     increment.append(rhi::CommandUsageKind::Timestamp);
     increment.resourceReferences = 1u;
-    if (const auto* id = impl_->originalQueryMeter->preflight(increment))
+    const bool mixed = bool(impl_->recordingStorage->originalProgram);
+    if (mixed) {
+        if (!impl_->ordinaryMixedPasses
+            || (!impl_->ordinaryComputeActive && !impl_->activeRenderPass.renderPass)
+            || impl_->ordinaryTransferActive)
+            return "RHI-MIXED-PASS-TIMING-PASS-STATE";
+        if (const auto* id =
+                preflightOrdinaryAttachmentOperation(rhi::CommandUsageKind::Timestamp, ordinal))
+            return id;
+        if (const auto* id = validateOrdinaryAttachmentsPending())
+            return id;
+    } else if (const auto* id = impl_->originalQueryMeter->preflight(increment))
         return id;
     const rhi::common::CommandRetainedQueryRecord record{prepared->pool, index};
     if (const auto* id = impl_->recordingRetention->preflightTimestamp(record))
@@ -3173,7 +3223,10 @@ const char* VulkanRhiNativeCommandPayload::recordOriginalTimestamp(const rhi::Qu
             *prepared->originalSlot, *impl_->retainedResourceStates))
         return id;
     (void)impl_->recordingRetention->admitTimestamp(record);
-    (void)impl_->originalQueryMeter->consume(increment);
+    if (mixed)
+        consumeOrdinaryAttachmentOperation();
+    else
+        (void)impl_->originalQueryMeter->consume(increment);
     if (!retained)
         impl_->retainedTimingPools.push_back(prepared->pool);
     prepared->recorded = true;
@@ -3366,8 +3419,10 @@ bool VulkanRhiNativeCommandPayload::prepareOriginalSubmissionFence(core::pmr::St
         diagnostic = "RHI-VULKAN-ROOT-FENCE-COLD-FENCE-STATUS";
         return false;
     }
-    if (acquireReusableFence(impl_->deviceOwner, impl_->submitFence))
+    if (acquireReusableFence(impl_->deviceOwner, impl_->submitFence, diagnostic))
         return true;
+    if (!diagnostic.empty())
+        return false;
     const auto createFence =
         functionFrom<PFN_vkCreateFence>(impl_->device.getDeviceProcAddr("vkCreateFence"));
     if (!createFence) {
@@ -3389,6 +3444,12 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
     std::pmr::string& diagnostics,
     bool* acceptedThisAttempt)
 {
+    if (const auto* id = ordinaryTextureUploadThreadDiagnostic()) {
+        if (acceptedThisAttempt)
+            *acceptedThisAttempt = false;
+        diagnostics = id;
+        return false;
+    }
     if (impl_ && impl_->conformanceClear
         && (!impl_->conformanceClear->submitAuthorized_ || impl_->conformanceClear->failure_
             || impl_->conformanceClear->state_ != VulkanConformanceClearFrame::State::Copied))
@@ -3404,7 +3465,10 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
         diagnostics = "Vulkan RHI native command buffer was already submitted";
         return false;
     }
-    if (impl_->internalProfiling && !impl_->frameSerial) {
+    if ((impl_->internalProfiling
+            || (impl_->recordingStorage && impl_->recordingStorage->originalQueries
+                && impl_->recordingStorage->originalQueries->recordingContractVersion == 2u))
+        && !impl_->frameSerial) {
         diagnostics = "RHI-COMMAND-PROFILING-FRAME-SERIAL";
         return false;
     }
@@ -3459,7 +3523,11 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
         diagnostics = "RHI-VULKAN-SWAPCHAIN-SYNC-ALREADY-SUBMITTED";
         return false;
     }
-    if (!asyncSubmittedCommandRetirementHasCapacity(diagnostics)) {
+    if (const auto* id = impl_->device.commandDomain().ownerDiagnostic()) {
+        diagnostics = id;
+        return false;
+    }
+    if (!asyncSubmittedCommandRetirementHasCapacity(impl_->device, diagnostics)) {
         return false;
     }
     if (impl_->device.syntheticRuntime()) {
@@ -3480,7 +3548,8 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
             impl_->swapchainFrameSyncState->renderSubmitted_ = true;
             impl_->swapchainFrameSyncState->submittedCommand_ = shared_from_this();
         }
-        if (!retainSubmittedCommandForAsyncRetirement(shared_from_this(), diagnostics)) {
+        if (!retainSubmittedCommandForAsyncRetirement(
+                impl_->device, shared_from_this(), diagnostics)) {
             return false;
         }
         if (impl_->stats) {
@@ -3499,7 +3568,10 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
     const bool hasTimelineWait = bool(timeline.waitSemaphore);
     const bool hasTimelineSignal = bool(timeline.signalSemaphore);
 
-    if (!impl_->submitFence && !acquireReusableFence(impl_->deviceOwner, impl_->submitFence)) {
+    if (!impl_->submitFence
+        && !acquireReusableFence(impl_->deviceOwner, impl_->submitFence, diagnostics)) {
+        if (!diagnostics.empty())
+            return false;
         VkFenceCreateInfo fenceInfo{};
         fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         const auto fenceCreated =
@@ -3595,7 +3667,8 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
         || impl_->ordinaryJournalAliased || impl_->internalProfiling || hasTimelineWait
         || hasTimelineSignal || impl_->hasRecordedTimestampQueries();
     if (retainBeforeInvocation
-        && !retainSubmittedCommandForAsyncRetirement(shared_from_this(), diagnostics)) {
+        && !retainSubmittedCommandForAsyncRetirement(
+            impl_->device, shared_from_this(), diagnostics)) {
         cancelUninvokedQueries();
         return false;
     }
@@ -3666,7 +3739,8 @@ bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo& ti
         impl_->swapchainFrameSyncState->submittedCommand_ = shared_from_this();
     }
     if (!retainBeforeInvocation
-        && !retainSubmittedCommandForAsyncRetirement(shared_from_this(), diagnostics)) {
+        && !retainSubmittedCommandForAsyncRetirement(
+            impl_->device, shared_from_this(), diagnostics)) {
         return false;
     }
     if (impl_->stats) {
@@ -4033,9 +4107,7 @@ bool VulkanRhiNativeCommandPayload::prepareInternalProfiling(core::pmr::String& 
         return false;
     }
     impl_->internalProfiling = decision;
-    // Initialize the shared publication cache during cold preparation, before
-    // completion can run with exhausted allocation domains.
-    (void)completedGpuTiming();
+    // Publication storage was constructed with this runtime before preparation.
     const auto create =
         functionFrom<PFN_vkCreateQueryPool>(impl_->device.getDeviceProcAddr("vkCreateQueryPool"));
     if (!create) {
@@ -4097,6 +4169,10 @@ std::shared_ptr<VulkanRhiNativeCommandPayload> createVulkanRhiNativeCommandPaylo
     }
     auto runtime = nativeResources.runtime();
     const auto& device = *runtime;
+    if (const auto* id = runtime->commandDomain().bindOwner()) {
+        diagnostics = id;
+        return {};
+    }
     if (storage && device.syntheticRuntime()) {
         diagnostics = "RHI-VULKAN-COLD-RECORDING-SYNTHETIC-RUNTIME";
         return {};
@@ -4222,7 +4298,9 @@ std::shared_ptr<VulkanRhiNativeCommandPayload> createVulkanRhiNativeCommandPaylo
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     const bool reused = acquireReusableCommandResources(
-        runtime, device.graphicsQueueFamilyIndex(), commandPool, commandBuffer);
+        runtime, device.graphicsQueueFamilyIndex(), commandPool, commandBuffer, diagnostics);
+    if (!reused && !diagnostics.empty())
+        return {};
     if (!reused) {
         VkCommandPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -4260,12 +4338,12 @@ std::shared_ptr<VulkanRhiNativeCommandPayload> createVulkanRhiNativeCommandPaylo
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     const auto began = beginCommandBuffer(commandBuffer, &beginInfo);
     if (began != VK_SUCCESS) {
-        destroyReusableCommandResources({
-            runtime,
-            commandPool,
-            commandBuffer,
-            device.graphicsQueueFamilyIndex(),
-        });
+        destroyReusableCommandResources(device,
+            {
+                commandPool,
+                commandBuffer,
+                device.graphicsQueueFamilyIndex(),
+            });
         diagnostics = vkFailure("vkBeginCommandBuffer", began);
         return {};
     }
@@ -4327,10 +4405,10 @@ bool recordVulkanRhiNativeCommand(
     return nativePayload->record(diagnostics);
 }
 
-rhi::GpuTimingSample latestVulkanRhiGpuTimingSample()
+rhi::GpuTimingSample latestVulkanRhiGpuTimingSample(const VulkanRhiRuntime& runtime)
 {
     rhi::GpuTimingSample result;
-    auto& timing = completedGpuTiming();
+    auto& timing = runtime.commandDomain().timing;
     const auto sequence = timing.sequence.load(std::memory_order_acquire);
     if (!(sequence & 1u)) {
         result.completedFrameSerial = timing.frameSerial.load(std::memory_order_relaxed);

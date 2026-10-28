@@ -13,7 +13,7 @@ namespace arp::scene {
 /// camera state needed to detect projection changes and camera cuts.
 ACLASS(Name = "CameraTemporalComponent", Ownership = Engine, Lifecycle = Explicit)
 
-class CameraTemporalComponent final : public Component {
+class ARP_API CameraTemporalComponent final : public Component {
 public:
     const char* scriptTypeName() const override { return "CameraTemporalComponent"; }
     AFUNC()

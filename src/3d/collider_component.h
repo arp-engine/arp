@@ -26,6 +26,7 @@
 //
 // Memory: dynamic containers use core::pmr aliases (AGENTS.md allocator rule).
 
+#include "core/api.h"
 #include "core/math/math.h"
 #include "core/memory/cpu_allocator.h"
 #include "physics/3d/physics_event_listener.h"
@@ -63,8 +64,8 @@ struct ColliderComponentDesc {
 /// scene/game-session).
 ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
-class ColliderComponent final : public arp::scene::Component,
-                                public arp::physics::PhysicsEventListener {
+class ARP_API ColliderComponent final : public arp::scene::Component,
+                                        public arp::physics::PhysicsEventListener {
 public:
     const char* scriptTypeName() const override { return "ColliderComponent"; }
 

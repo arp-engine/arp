@@ -30,6 +30,7 @@
 #include "rhi/gpu_bindless.h"
 #include "rhi/gpu_extensions.h"
 #include "rhi/semantics/webgpu_runtime_capability_bridge.h"
+#include "tests/fixtures/device_idle_failure_fixture.h"
 #include "tests/fixtures/webgpu_host_diagnostic_device_fixture.h"
 
 #include <cassert>
@@ -758,7 +759,7 @@ void assertWebGpuStorageBufferCapabilityIsIndependent()
     const auto platformSource =
         readText(ARP_SOURCE_DIR "/src/platform/web/render_system_webgpu.cpp");
     const auto profileSource =
-        readText(ARP_SOURCE_DIR "/src/rhi/semantics/webgpu_runtime_profile.cpp");
+        readText(ARP_SOURCE_DIR "/src/rhi/frontend/webgpu_runtime_profile.cpp");
     const auto deviceSource = readText(ARP_SOURCE_DIR "/src/rhi/backends/webgpu/webgpu_device.cpp");
     const auto bridgeSource =
         readText(ARP_SOURCE_DIR "/src/rhi/semantics/webgpu_runtime_capability_bridge.cpp");
@@ -814,7 +815,7 @@ void assertWebGpuFixedIndirectCapabilityIsPublishedOnlyAfterProbe()
     const auto bridgeSource =
         readText(ARP_SOURCE_DIR "/src/rhi/semantics/webgpu_runtime_capability_bridge.cpp");
     const auto profileSource =
-        readText(ARP_SOURCE_DIR "/src/rhi/semantics/webgpu_runtime_profile.cpp");
+        readText(ARP_SOURCE_DIR "/src/rhi/frontend/webgpu_runtime_profile.cpp");
     const auto deviceSource = readText(ARP_SOURCE_DIR "/src/rhi/backends/webgpu/webgpu_device.cpp");
 
     assert(bridgeSource.find("NativeBackendFeature::IndirectDraw") != std::pmr::string::npos);
@@ -829,7 +830,7 @@ void assertWebGpuDescriptorTableCapabilityFailsClosed()
 {
 #if defined(ARP_SOURCE_DIR) && !defined(__EMSCRIPTEN__)
     const auto profileSource =
-        readText(ARP_SOURCE_DIR "/src/rhi/semantics/webgpu_runtime_profile.cpp");
+        readText(ARP_SOURCE_DIR "/src/rhi/frontend/webgpu_runtime_profile.cpp");
     const auto capabilitySource =
         readText(ARP_SOURCE_DIR "/src/rhi/semantics/native_backend_capabilities.cpp");
     const auto commandSource =
@@ -1344,6 +1345,8 @@ int main(int argc, char** argv)
             assert(!arp::rhi_webgpu::createWebGpuRhiHostDiagnosticDevice(desc, version));
         auto fixture = arp::rhi_webgpu::createWebGpuRhiHostDiagnosticDevice(desc, 1u);
         assert(fixture && !fixture->capabilities().core.graphics);
+        arp::tests::DeviceIdleFailureFixture::verify(
+            *fixture, "RHI-WEBGPU-IDLE-SYNCHRONOUS-UNSUPPORTED");
         auto invalid = desc;
         invalid.uploadStagingByteCapacity = 0u;
         assert(!arp::rhi_webgpu::createWebGpuRhiHostDiagnosticDevice(invalid, 1u));

@@ -2,6 +2,7 @@
 #include "core/io/filesystem_path.h"
 #include "core/io/staged_directory.h"
 #include "editor/project/project_scene_authoring.h"
+#include "editor/workspace/editor_scene_file_format.h"
 #include "editor/workspace/editor_scene_service_session.h"
 #include "editor/workspace/editor_scene_transaction.h"
 #include "editor/workspace/editor_shell.h"
@@ -11,11 +12,20 @@
 
 namespace arp::editor {
 
+bool EditorShell::observeSceneHash(core::pmr::String& hash, core::pmr::String& diagnostic) const
+{
+    return EditorSceneFileFormat::observeHash(sceneDocument_,
+        sceneAuthoringVersion_,
+        projectRoot(),
+        projectManifest_ ? &*projectManifest_ : nullptr,
+        hash,
+        diagnostic);
+}
+
 bool EditorShell::sceneDirty() const
 {
     core::pmr::String hash, diagnostic;
-    return !EditorSceneAuthoringCodec::contentHash(sceneDocument_, hash, diagnostic)
-        || hash != savedSceneHash_;
+    return !observeSceneHash(hash, diagnostic) || hash != savedSceneHash_;
 }
 
 void EditorShell::appendProjectSnapshot(EditorStateSnapshot& snapshot) const
@@ -139,6 +149,7 @@ bool EditorShell::publishProject(EditorProjectResources&& resources, ProjectBrow
     projectManifestDirty_ = false;
     projectDiagnostic_.clear();
     projectBrowser_ = std::move(browser);
+    sceneAuthoringVersion_ = EditorSceneAuthoringCodec::contractVersion;
     savedSceneHash_ = std::move(hash);
     activeScenePath_.clear();
     savedSceneFileTarget_.clear();

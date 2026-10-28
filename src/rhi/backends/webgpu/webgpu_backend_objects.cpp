@@ -9,6 +9,7 @@
 #include "rhi/backends/webgpu/webgpu_transfer_retention.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "rhi/frontend/bindless_snapshot.h"
+#include "rhi/frontend/buffer_placement.h"
 #include "rhi/frontend/pipeline_graphics_input.h"
 #include "rhi/frontend/pipeline_state_copy.h"
 #include "rhi/frontend/pipeline_validation_report_builder.h"
@@ -711,6 +712,11 @@ arp::core::UniquePtr<rhi::GpuBuffer> createWebGpuRhiBuffer(rhi::GpuResourceId id
     std::shared_ptr<WebGpuRhiResourceRegistry> registry,
     const WebGpuNativeBufferInitializer& initializer)
 {
+    if (const auto* id = rhi::HostVisibleDeviceLocalBufferContract::validate(
+            desc, rhi::Backend::WebGPU, false)) {
+        rhi::RhiErrorHandler::get().report(rhi::RhiSeverity::Error, id);
+        return {};
+    }
     if (initializer.initialize && !nativePayloadPolicy.enabled)
         return {};
     auto nativePayload =

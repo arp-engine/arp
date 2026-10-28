@@ -4,6 +4,7 @@
 #include "core/text/number_format.h"
 #include "editor/workspace/editor_recovery_codec.h"
 #include "editor/workspace/editor_recovery_digest.h"
+#include "editor/workspace/editor_scene_file_format.h"
 #include "editor/workspace/editor_shell.h"
 
 namespace arp::editor {
@@ -72,7 +73,12 @@ bool EditorRecoveryAdmission::fingerprint(const EditorShell& shell,
         digest.field(package.fingerprint);
     }
     core::pmr::String sceneYaml;
-    if (!EditorSceneAuthoringCodec::encode(shell.sceneDocument_, sceneYaml, diagnostic))
+    if (!EditorSceneFileFormat::observe(shell.sceneDocument_,
+            shell.sceneAuthoringVersion_,
+            shell.projectRoot(),
+            shell.projectManifest_ ? &*shell.projectManifest_ : nullptr,
+            sceneYaml,
+            diagnostic))
         return false;
     digest.field(sceneYaml);
     digest.field(shell.savedSceneHash_);

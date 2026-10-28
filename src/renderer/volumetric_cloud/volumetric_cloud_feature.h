@@ -11,11 +11,20 @@ namespace arp::render_graph {
 class OriginalFrameGraphExecution;
 }
 
+namespace arp::resource {
+class ResourceManager;
+}
+
+namespace arp::scene3d {
+class Scene3DRenderQueue;
+}
+
 namespace arp::renderer::cloud {
 
 class CloudPreparedHistory;
 class CloudPreparedResources;
 class CloudPreparedPipelines;
+class CloudSceneBinding;
 struct CloudPreparedFrameBuffers;
 struct CloudPreparedResourceCreateContext;
 struct CloudPreparedFeatureCreateContext;
@@ -85,14 +94,28 @@ public:
     // Explicit original path: all budgets, publications and memory intents
     // come from the caller. No conversion from legacy creation is inferred.
     CloudResult create(const CloudPreparedFeatureCreateContext&, core::pmr::String& diagnostic);
+    CloudResult createScene(const std::shared_ptr<const CloudSceneBinding>&,
+        const scene3d::Scene3DRenderQueue&,
+        const resource::ResourceManager&,
+        const CloudPreparedFeatureCreateContext&,
+        core::pmr::String& diagnostic);
     CloudResult resize(rhi::Extent2D extent);
     CloudResult resize(const CloudPreparedResourceCreateContext&);
     CloudResult contributeGraph(const CloudGraphContext& context, CloudOutputs& output);
     CloudResult contributeGraph(const CloudPreparedFeatureGraphContext&, CloudOutputs&);
+    // Cold preflight may intern existing buffer owners in the same graph, but
+    // adds no pass and does not advance the pending generation.
+    CloudResult validateGraph(const CloudPreparedFeatureGraphContext&);
     // Cold preparation precedes assembly of the caller's single inventory.
     CloudResult prepareFrame(const CloudGraphContext&, CloudPreparedFrameBuffers&);
+    // Cold registry validation precedes the same ordinary frame preparation.
+    CloudResult prepareSceneFrame(const scene3d::Scene3DRenderQueue&,
+        const resource::ResourceManager&,
+        CloudGraphContext,
+        CloudPreparedFrameBuffers&);
     const CloudPreparedResources* preparedResources() const noexcept;
     const CloudPreparedPipelines* preparedPipelines() const noexcept;
+    const CloudSceneBinding* preparedSceneBinding() const noexcept;
     CloudPreparedHistory* preparedHistory() noexcept;
     render_graph::PassSubmissionToken preparedToken() const noexcept;
     static CloudResult contributePreparedGraph(
@@ -116,13 +139,17 @@ public:
         const std::shared_ptr<const rhi::GpuFence>& completion) noexcept override;
 
 private:
+    CloudResult prepareFrameInternal(const CloudGraphContext&, CloudPreparedFrameBuffers&);
+    CloudResult contributeGraphInternal(
+        const CloudPreparedFeatureGraphContext&, CloudOutputs&, bool validateOnly);
     struct PreparedState;
     detail::CloudPreparedSubmission preparedSubmission_;
     core::UniquePtr<PreparedState> prepared_;
     static CloudResult contributePreparedGraph(const CloudPreparedGraphContext&,
         CloudOutputs&,
         render_graph::PassSubmissionObserver*,
-        render_graph::PassSubmissionToken);
+        render_graph::PassSubmissionToken,
+        bool validateOnly = false);
 
     struct Pipeline {
         rhi::ShaderPackageDesc package;

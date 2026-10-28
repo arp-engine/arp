@@ -80,10 +80,43 @@ WEB_SMOKE_TESTS = [
 # prerequisites explicit so `test --target` remains target-scoped without
 # accepting stale catalog/reflection output as valid evidence.
 CTEST_BUILD_DEPENDENCIES = {
+    "arp_editor_scene_script_presence_smoke": ["arp_editor_scene_script_presence_tests"],
+    "arp_editor_scene_script_remote_smoke": ["arp_editor_scene_script_remote_tests"],
+    "arp_editor_script_presence_before_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_presence_removed_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_presence_undo_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_presence_redo_hidden_smoke": ["arp_editor"],
+    "arp_editor_scene_script_recovery_tests": ["arp_editor_scene_script_shell_tests"],
+    "arp_editor_scene_script_recovery_smoke": ["arp_editor_scene_script_shell_tests"],
+    "arp_editor_scene_script_shell_smoke": ["arp_editor_scene_script_shell_tests"],
+    "arp_editor_scene_script_file_smoke": ["arp_editor_scene_script_file_tests"],
+    "arp_core_atomic_file_precondition_smoke": ["arp_core_atomic_file_precondition_tests"],
     "arp_script_component_authoring_smoke": ["arp_script_component_authoring_tests"],
     "arp_script_component_identity_admission_tests": ["arp_script_component_authoring_tests"],
     "arp_script_component_identity_smoke": ["arp_script_component_identity_tests"],
     "arp_editor_script_modules_smoke": ["arp_editor_script_modules_tests"],
+    "arp_editor_script_catalog_smoke": ["arp_editor_script_modules_tests"],
+    "arp_editor_scene_script_binding_smoke": ["arp_editor_scene_script_binding_tests"],
+    "arp_editor_script_component_archive_smoke": ["arp_editor_script_component_archive_tests"],
+    "arp_editor_script_component_form_tests": ["arp_editor_script_component_archive_tests"],
+    "arp_editor_script_component_form_smoke": ["arp_editor_script_component_archive_tests"],
+    "arp_editor_script_inspector_smoke": ["arp_editor_script_inspector_tests"],
+    "arp_editor_script_inspector_draft_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_inspector_applied_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_inspector_reference_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_inspector_invalid_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_inspector_failed_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_inspector_retry_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_attachment_ui_smoke": ["arp_editor_script_attachment_ui_tests"],
+    "arp_editor_script_attachment_menu_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_attachment_draft_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_attachment_invalid_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_attachment_applied_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_attachment_failed_hidden_smoke": ["arp_editor"],
+    "arp_editor_script_attachment_retry_hidden_smoke": ["arp_editor"],
+    "arp_editor_scene_script_codec_smoke": ["arp_editor_scene_script_codec_tests"],
+    "arp_editor_scene_script_file_preparation_smoke": ["arp_editor_scene_script_file_preparation_tests"],
+    "arp_editor_script_persistence_boundary_smoke": ["arp_editor_scene_script_binding_tests"],
     "arp_editor_scene_history_budget_tests": ["arp_editor_document_transaction_tests"],
     "arp_editor_scene_history_budget_smoke": ["arp_editor_document_transaction_tests"],
     "arp_editor_physics_authoring_history_tests": ["arp_editor_document_transaction_tests"],
@@ -498,6 +531,9 @@ Examples:
 
     # editor
     sub.add_parser("editor", help="Build the standard ARP Editor")
+    from build_editor_webgl import add_arguments, EditorWebGlBuilder
+    editor_web = sub.add_parser("editor-webgl", help="Build the real WebGL browser editor")
+    add_arguments(editor_web, ROOT)
 
     # shaders
     sub.add_parser("shaders", help="Build shader artifacts only")
@@ -562,6 +598,7 @@ Examples:
     dispatch = {
         "engine": cmd_engine,
         "editor": cmd_editor,
+        "editor-webgl": lambda args: EditorWebGlBuilder(args).build(),
         "shaders": cmd_shaders,
         "game": cmd_game,
         "configure": cmd_configure,
@@ -573,7 +610,7 @@ Examples:
         "all": cmd_all,
     }
     try:
-        if args.command not in ('webgl1-probe','webgl1-runtime','webgl1-visual','webgl1-performance'):
+        if args.command not in ('editor-webgl','webgl1-probe','webgl1-runtime','webgl1-visual','webgl1-performance'):
             category = ('configurePresets' if args.command == 'configure' else
                         'testPresets' if args.command == 'test' else 'buildPresets')
             args.config = _config_for_preset(args.preset, args.config, category)

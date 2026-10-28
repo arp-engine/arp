@@ -41,7 +41,7 @@ public:
         if (terminal == 6u)
             device.retireOriginalDeviceLifetime();
         if (terminal == 9u) {
-            drainVulkanRhiSubmittedCommandsForShutdown();
+            drainVulkanRhiSubmittedCommandsForShutdown(device);
             assert(capacity->used() == 1u);
         }
         Hooks::withholdCompletion = false;
@@ -49,7 +49,7 @@ public:
         while (capacity->used()) {
             if (execution)
                 execution->pollCompletion();
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(device);
             if (terminal == 7u || terminal == 9u
                 || (terminal == 8u
                     && tx->status() == OriginalCommandStateTransaction::Status::Invalidated)) {

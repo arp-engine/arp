@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/diagnostics/diagnostic_error.h"
-#include "renderer/shadows/detail/projection_rounding.h"
+#include "renderer/geometry/affine_surface_error_envelope.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,10 +15,7 @@ namespace arp::core {
 // bound the independently biased surfaces. QEM residuals are not valid inputs.
 class OrthographicErrorProjection final {
 public:
-    struct WorldEnvelope {
-        double deviation[3]{};
-        double absoluteSupport[3]{};
-    };
+    using WorldEnvelope = renderer::AffineSurfaceErrorEnvelope::WorldEnvelope;
 
     struct ProjectedError {
         double pixelsX = 0, pixelsY = 0, normalizedDepth = 0;
@@ -34,8 +31,6 @@ public:
         }
     };
 
-    // localAbsoluteSupport must contain BOTH surfaces. Normal envelopes describe
-    // actual imported float normals, including the importer's normalization.
     static WorldEnvelope worldEnvelope(const float* affine,
         double certifiedLocalSurfaceDistance,
         const double* localAbsoluteSupport,
@@ -43,51 +38,12 @@ public:
         const double* candidateBakedNormalMaximum,
         float normalBias)
     {
-        requireAffine(affine);
-        requireNonnegative(certifiedLocalSurfaceDistance);
-        if (!std::isfinite(normalBias) || !localAbsoluteSupport || !originalBakedNormalMaximum
-            || !candidateBakedNormalMaximum)
-            throw DiagnosticError("ORTHO-ERROR-ENVELOPE-INVALID");
-        for (unsigned a = 0; a < 3; ++a) {
-            requireNonnegative(localAbsoluteSupport[a]);
-            requireNonnegative(originalBakedNormalMaximum[a]);
-            requireNonnegative(candidateBakedNormalMaximum[a]);
-            requireFloatRange(localAbsoluteSupport[a]);
-            requireFloatRange(originalBakedNormalMaximum[a]);
-            requireFloatRange(candidateBakedNormalMaximum[a]);
-        }
-        WorldEnvelope result;
-        for (unsigned row = 0; row < 3; ++row) {
-            double squaredNorm = 0, magnitude = std::abs(double(affine[row * 4 + 3]));
-            double coefficients = magnitude, inputs = 1;
-            for (unsigned a = 0; a < 3; ++a) {
-                const double coefficient = std::abs(double(affine[row * 4 + a]));
-                squaredNorm = add(squaredNorm, multiply(coefficient, coefficient));
-                magnitude = add(magnitude, multiply(coefficient, localAbsoluteSupport[a]));
-                coefficients = add(coefficients, coefficient);
-                inputs = add(inputs, localAbsoluteSupport[a]);
-            }
-            const double transformError = rounding(magnitude, coefficients, inputs);
-            const double originalBias =
-                multiply(std::abs(double(normalBias)), originalBakedNormalMaximum[row]);
-            const double candidateBias =
-                multiply(std::abs(double(normalBias)), candidateBakedNormalMaximum[row]);
-            const double biasMaximum = std::max(originalBias, candidateBias);
-            const double supportBeforeBias = add(magnitude, transformError);
-            // Two more shader float operations: normal*bias and position+offset.
-            // gamma(10) also encloses fused evaluation and FTZ of these inputs.
-            const double biasError = rounding(add(supportBeforeBias, biasMaximum),
-                add(1, std::abs(double(normalBias))),
-                add(supportBeforeBias,
-                    std::max(originalBakedNormalMaximum[row], candidateBakedNormalMaximum[row])));
-            result.absoluteSupport[row] = add(add(supportBeforeBias, biasMaximum), biasError);
-            result.deviation[row] =
-                add(add(multiply(certifiedLocalSurfaceDistance, upward(std::sqrt(squaredNorm))),
-                        multiply(2, transformError)),
-                    add(add(originalBias, candidateBias), multiply(2, biasError)));
-            requireFloatRange(result.absoluteSupport[row]);
-        }
-        return result;
+        return renderer::AffineSurfaceErrorEnvelope::build(affine,
+            certifiedLocalSurfaceDistance,
+            localAbsoluteSupport,
+            originalBakedNormalMaximum,
+            candidateBakedNormalMaximum,
+            normalBias);
     }
 
     static ProjectedError project(const float* lightViewProjection,

@@ -5,6 +5,7 @@
 #include "3d/components.h"
 #include "core/text/utf8.h"
 #include "editor/workspace/editor_scene_component_registry.h"
+#include "editor/workspace/editor_scene_script_bindings.h"
 #include "editor/workspace/editor_scene_service_session.h"
 #include "reflection/reflection.h"
 #include "scene/camera.h"
@@ -483,6 +484,9 @@ EditorSceneDocument::EditorSceneDocument(bool createDefaultScene)
           scene::SceneExecutionMode::Passive))
 {
     ensureSceneReflectionRegistered();
+    scene_->bindMainSceneRegistry(scriptSceneRegistry_.get());
+    if (!scriptSceneRegistry_->registerScene(*scene_))
+        throw std::logic_error("EDITOR-SCENE-REGISTRY-ADMISSION");
     scene_->setComponentFactory(makeComponentFactory());
     if (createDefaultScene) {
         const auto cameraId = createObject("Camera3D");
@@ -504,6 +508,42 @@ EditorSceneDocument::EditorSceneDocument(bool createDefaultScene)
     }
 }
 
+EditorSceneDocument::~EditorSceneDocument()
+{
+    if (scene_ && scriptSceneRegistry_)
+        (void)scriptSceneRegistry_->unregisterScene(*scene_);
+    scene_.reset();
+}
+
+EditorSceneDocument::EditorSceneDocument(EditorSceneDocument&& source) : EditorSceneDocument(false)
+{
+    *this = std::move(source);
+}
+
+EditorSceneDocument& EditorSceneDocument::operator=(EditorSceneDocument&& source)
+{
+    if (this == &source)
+        return *this;
+    // Prepare the callback before consuming either owner. A moved Scene must
+    // not keep the native component factory's capture of the source document.
+    auto factory = makeComponentFactory();
+    if (scene_ && scriptSceneRegistry_)
+        (void)scriptSceneRegistry_->unregisterScene(*scene_);
+    scene_.reset();
+    ownerEpoch_ = std::move(source.ownerEpoch_);
+    audioSystem_ = std::move(source.audioSystem_);
+    services_ = std::move(source.services_);
+    schemaOnlyComponentCreation_ = source.schemaOnlyComponentCreation_;
+    scene_ = std::move(source.scene_);
+    scriptSceneRegistry_ = std::move(source.scriptSceneRegistry_);
+    scriptBindings_ = std::move(source.scriptBindings_);
+    selectedObject_ = source.selectedObject_;
+    runtimeSceneId_ = std::move(source.runtimeSceneId_);
+    if (scene_)
+        scene_->setComponentFactory(std::move(factory));
+    return *this;
+}
+
 bool EditorSceneDocument::loadRuntimeScene(const scene::SceneDocumentResource& asset,
     resource::ResourceManager& resources,
     const scene::SceneComponentFactory& factory,
@@ -519,7 +559,13 @@ bool EditorSceneDocument::loadRuntimeScene(const scene::SceneDocumentResource& a
     if (!restored)
         return false;
     EditorSceneDocument candidate(false);
+    (void)candidate.scriptSceneRegistry_->unregisterScene(*candidate.scene_);
     candidate.scene_ = std::move(restored);
+    candidate.scene_->bindMainSceneRegistry(candidate.scriptSceneRegistry_.get());
+    if (!candidate.scriptSceneRegistry_->registerScene(*candidate.scene_)) {
+        diagnostic = "EDITOR-SCENE-REGISTRY-ADMISSION";
+        return false;
+    }
     candidate.runtimeSceneId_ = asset.reference().id;
     candidate.selectedObject_ = candidate.scene_->rootId();
     return replaceWith(std::move(candidate));
@@ -538,23 +584,27 @@ bool EditorSceneDocument::replaceWith(EditorSceneDocument&& candidate)
     return prepared && commitReplacement(*prepared, candidate) == ReplacementResult::Committed;
 }
 
-scene::Scene::ComponentFactory EditorSceneDocument::makeComponentFactory() const
+scene::Scene::ComponentFactory EditorSceneDocument::makeComponentFactory(
+    ComponentResolver resolver) const
 {
-    return [this](scene::GameObject& owner, const core::pmr::String& type) {
+    return [this, resolver = std::move(resolver)](
+               scene::GameObject& owner, const core::pmr::String& type) {
         EditorSceneComponentFactoryContext context{owner,
             *audioSystem_,
             services_.resources ? services_.resources() : nullptr,
             services_.resources,
             services_.physics ? services_.physics() : nullptr,
             schemaOnlyComponentCreation_,
-            services_.physics};
+            services_.physics,
+            resolver};
         return createEditorSceneComponent(std::string_view(type.data(), type.size()), context);
     };
 }
 
-scene::Scene::ComponentFactory EditorSceneDocument::identityRestorationFactory() const
+scene::Scene::ComponentFactory EditorSceneDocument::identityRestorationFactory(
+    ComponentResolver resolver) const
 {
-    auto factory = makeComponentFactory();
+    auto factory = makeComponentFactory(std::move(resolver));
     return [factory = std::move(factory), schemaOnly = schemaOnlyComponentCreation_](
                scene::GameObject& owner,
                const core::pmr::String& type) -> core::UniquePtr<scene::Component> {
@@ -578,12 +628,19 @@ core::UniquePtr<EditorSceneDocument::PreparedReplacement> EditorSceneDocument::p
         || !candidate.audioSystem_
         || candidate.scene_->executionMode() != scene::SceneExecutionMode::Passive
         || !candidate.scene_->findObject(candidate.selectedObject_)
+        || (candidate.scriptBindings_
+            && !candidate.scriptBindings_->matches(*candidate.scene_,
+                servicePolicy == ServicePolicy::AdoptCandidate ? candidate.sceneServiceSession()
+                                                               : sceneServiceSession(),
+                candidate.scriptSceneRegistry_))
         || runtimeSceneId_.get_allocator().resource()
             != candidate.runtimeSceneId_.get_allocator().resource()) {
         diagnostic = "EDITOR-SCENE-REPLACEMENT-INVALID";
         return nullptr;
     }
     try {
+        if (candidate.scriptBindings_ && !candidate.scriptBindings_->verifySources(diagnostic))
+            return nullptr;
         auto result = core::makeUnique<PreparedReplacement>();
         result->destination_ = this;
         result->candidate_ = &candidate;
@@ -633,6 +690,13 @@ EditorSceneDocument::ReplacementResult EditorSceneDocument::replacementReadiness
         || candidate.scene_->executionMode() != scene::SceneExecutionMode::Passive
         || !candidate.scene_->findObject(candidate.selectedObject_))
         return ReplacementResult::Stale;
+    if (candidate.scriptBindings_
+        && !candidate.scriptBindings_->matches(*candidate.scene_,
+            prepared.servicePolicy_ == ServicePolicy::AdoptCandidate
+                ? candidate.sceneServiceSession()
+                : sceneServiceSession(),
+            candidate.scriptSceneRegistry_))
+        return ReplacementResult::Stale;
     return ReplacementResult::Ready;
 }
 
@@ -648,6 +712,8 @@ EditorSceneDocument::ReplacementResult EditorSceneDocument::commitReplacement(
     if (scene_)
         scene_->setComponentFactory(prepared.retiredFactory_);
     scene_.swap(candidate.scene_);
+    scriptSceneRegistry_.swap(candidate.scriptSceneRegistry_);
+    scriptBindings_.swap(candidate.scriptBindings_);
     audioSystem_.swap(candidate.audioSystem_);
     std::swap(selectedObject_, candidate.selectedObject_);
     runtimeSceneId_.swap(candidate.runtimeSceneId_);

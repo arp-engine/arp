@@ -1,3 +1,4 @@
+#include "3d/vegetation/mesh_adapter.h"
 #include "renderer/mesh/immutable_mesh_upload.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/backends/null/null_hidden_frame_smoke.h"
@@ -58,6 +59,93 @@ int main()
     const auto bytes = mesh.vertices.size() * sizeof(assets::MeshVertex)
         + mesh.indices.size() * sizeof(std::uint32_t);
     const Upload::Budget budget{1, bytes, bytes, 4096, 16, 64};
+    {
+        auto vertices = vegetation::convertToInstanceVertices(mesh, nullptr, false);
+        vertices[1].flutter = 0.375f;
+        vertices[2].stiffness = 0.625f;
+        const auto streamBytes = vertices.size() * sizeof(vegetation::InstanceVertex)
+            + mesh.indices.size() * sizeof(std::uint32_t);
+        Upload upload;
+        const auto allocations = device.bufferCreateAttempts();
+        vertices.pop_back();
+        assert(upload.prepareVertexStream(device, mesh, vertices, 17, budget).diagnostics
+            == "IMMUTABLE-MESH-VERTEX-STREAM-COUNT");
+        vertices = vegetation::convertToInstanceVertices(mesh, nullptr, false);
+        vertices[0].position[0] += 1;
+        assert(upload.prepareVertexStream(device, mesh, vertices, 17, budget).diagnostics
+            == "IMMUTABLE-MESH-VERTEX-STREAM-POSITION");
+        assert(device.bufferCreateAttempts() == allocations);
+        vertices = vegetation::convertToInstanceVertices(mesh, nullptr, false);
+        const Upload::Budget streamBudget{
+            1, streamBytes, streamBytes, 4096, streamBytes & ~3ull, 2};
+        assert(upload.prepareVertexStream(device, mesh, vertices, 17, streamBudget).success);
+        assert(upload.payloadBytes() == streamBytes && upload.copyCommandCount() == 2);
+        assert(upload.metadataBytes() >= mesh.submeshes.size() * sizeof(assets::Submesh));
+        core::UniquePtr<rhi::GpuBuffer> v, i;
+        upload.installPreparedGeometryBindings(v, i);
+        assert(
+            v && i && v->desc().sizeBytes == vertices.size() * sizeof(vegetation::InstanceVertex));
+        assert(v->hostWritesSealed() && i->hostWritesSealed());
+        bool duplicateRejected = false;
+        try {
+            core::UniquePtr<rhi::GpuBuffer> duplicateV, duplicateI;
+            upload.installPreparedGeometryBindings(duplicateV, duplicateI);
+        } catch (const core::DiagnosticError& error) {
+            duplicateRejected =
+                std::strcmp(error.what(), "IMMUTABLE-MESH-PREPARED-BINDING-STATE") == 0;
+        }
+        assert(duplicateRejected && !upload.ready());
+        PendingQueue pending(null->queue());
+        device.overrideQueue(&pending);
+        assert(upload.submit().success && !upload.ready() && !upload.reapCompleted());
+        pending.completion->signal();
+        assert(upload.ready() && upload.reapCompleted() && upload.retainedUploadBytes() == 0);
+        upload.clearAfterDeviceLoss(); // Null fixture teardown only.
+        device.overrideQueue(nullptr);
+    }
+    {
+        core::pmr::Vector<std::uint32_t> indices{&core::defaultCpuMemoryResource()};
+        indices.assign({2, 0, 1});
+        const Upload::Budget indexBudget{1, 12, 12, 0, 4, 3};
+        Upload upload;
+        const auto allocations = device.bufferCreateAttempts();
+        auto invalid = indexBudget;
+        --invalid.maxCopyCommands;
+        assert(upload.prepareIndexStream(device, indices, 3, 23, invalid).diagnostics
+            == "IMMUTABLE-MESH-COMMAND-BUDGET");
+        invalid = indexBudget;
+        --invalid.uploadBytes;
+        assert(upload.prepareIndexStream(device, indices, 3, 23, invalid).diagnostics
+            == "IMMUTABLE-MESH-PAYLOAD-BUDGET");
+        indices[0] = 3;
+        assert(upload.prepareIndexStream(device, indices, 3, 23, indexBudget).diagnostics
+            == "IMMUTABLE-MESH-INDEX-INVALID");
+        indices[0] = 2;
+        assert(device.bufferCreateAttempts() == allocations);
+        PendingQueue pending(null->queue());
+        device.overrideQueue(&pending);
+        assert(upload.prepareIndexStream(device, indices, 3, 23, indexBudget).success);
+        assert(device.bufferCreateAttempts() - allocations == 2);
+        assert(upload.metadataBytes() == 0 && upload.payloadBytes() == 12
+            && upload.copyCommandCount() == 3 && upload.sourceGeneration() == 23);
+        renderer::MeshGpuBuffer destination;
+        bool invalidFullBinding = false;
+        try {
+            upload.installPreparedBindings(destination);
+        } catch (const core::DiagnosticError&) {
+            invalidFullBinding = true;
+        }
+        assert(invalidFullBinding);
+        core::UniquePtr<rhi::GpuBuffer> binding;
+        upload.installPreparedIndexBinding(binding);
+        assert(binding && binding->desc().memory == rhi::MemoryUsage::GpuOnly);
+        assert(binding->hostWritesSealed() && upload.submit().success);
+        assert(!upload.ready() && !upload.cancelUnsubmitted());
+        pending.completion->signal();
+        assert(upload.ready() && upload.reapCompleted() && upload.retainedUploadBytes() == 0);
+        upload.clearAfterDeviceLoss();
+        device.overrideQueue(nullptr);
+    }
     const auto rejects =
         [&](const assets::MeshAsset& source, Upload::Budget policy, const char* diagnostic) {
             Upload upload;

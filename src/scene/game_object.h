@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/api.h"
 #include "core/memory/cpu_allocator.h"
 #include "reflection/object.h"
 #include "reflection/reflection_macros.h"
@@ -18,7 +19,7 @@ class Scene;
 
 ACLASS(Name = "GameObject", Ownership = Engine, Lifecycle = Explicit)
 
-class GameObject {
+class ARP_API GameObject {
 public:
     GameObject(const GameObject&) = delete;
     GameObject& operator=(const GameObject&) = delete;

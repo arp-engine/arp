@@ -190,16 +190,12 @@ class GpuIndirectOutputRecordingLowering final {
 public:
     static constexpr GpuIndirectProducerLoweringPlan current(Backend backend) noexcept
     {
-        auto plan = GpuIndirectProducerLowering::current(backend);
-        plan.contractVersion = GpuIndirectOutputSequence::version;
-        if (backend != Backend::Null && backend != Backend::Vulkan && backend != Backend::Metal
-            && backend != Backend::WebGPU) {
-            plan.diagnosticId = "RHI-GPU-INDIRECT-SEQUENCE-BACKEND-UNKNOWN";
-            return plan;
-        }
-        plan.diagnosticId = plan.validatorOnly ? "RHI-GPU-INDIRECT-SEQUENCE-VALIDATOR-ONLY"
-                                               : "RHI-GPU-INDIRECT-SEQUENCE-PAYLOAD-MISSING";
-        return plan;
+        return CommandDrawLowering::indirectSourceDisposition(backend,
+            GpuIndirectProducerLowering::current(backend),
+            GpuIndirectOutputSequence::version,
+            "RHI-GPU-INDIRECT-SEQUENCE-BACKEND-UNKNOWN",
+            "RHI-GPU-INDIRECT-SEQUENCE-VALIDATOR-ONLY",
+            "RHI-GPU-INDIRECT-SEQUENCE-PAYLOAD-MISSING");
     }
 };
 } // namespace semantics

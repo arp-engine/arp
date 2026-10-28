@@ -6,6 +6,17 @@ namespace arp::rhi::semantics {
 class PipelineCreationLowering final {
 public:
     template <class Result>
+    static constexpr Result acceptedSynchronousFactory(
+        Backend backend, bool accepted, const char* missing, const char* profile) noexcept
+    {
+        if (backend == Backend::Vulkan || backend == Backend::Metal)
+            return accepted
+                ? Result{CapabilityMode::Native, false, true, false, nullptr}
+                : Result{CapabilityMode::DiagnosticFailure, false, false, false, missing};
+        return {CapabilityMode::DiagnosticFailure, backend == Backend::Null, false, false, profile};
+    }
+
+    template <class Result>
     static constexpr Result synchronousComputeCreation(
         Backend backend, bool device, bool methods) noexcept
     {

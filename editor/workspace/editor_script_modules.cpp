@@ -15,6 +15,15 @@ bool EditorScriptModules::prepare(const std::filesystem::path& root,
 {
     diagnostic.clear();
     try {
+        // A zero-module project must obey the same root contract as one with
+        // source bindings; an empty snapshot is not evidence of a valid root.
+        std::error_code rootError;
+        const auto canonicalRoot = std::filesystem::canonical(root, rootError);
+        if (rootError || canonicalRoot != root
+            || !std::filesystem::is_directory(canonicalRoot, rootError) || rootError) {
+            diagnostic = "PROJECT-INPUT-ROOT";
+            return false;
+        }
         ProjectDiagnostic issue;
         core::pmr::String validated;
         if (!ProjectManifestCodec::encode(manifest, validated, issue)) {
@@ -128,6 +137,25 @@ scriptvm::ScriptComponentModule* EditorScriptModules::find(
             && entry.module->find(identity.scriptType))
             return entry.module.get();
     return nullptr;
+}
+
+bool EditorScriptModules::matchesManifest(const ProjectManifest& manifest) const
+{
+    if (entries_.size() != manifest.scriptModules.size())
+        return false;
+    auto prepared = manifest;
+    for (auto& module : prepared.scriptModules) {
+        const auto found = std::find_if(entries_.begin(), entries_.end(), [&](const auto& entry) {
+            return entry.declaration.resourceId == module.resourceId;
+        });
+        if (found == entries_.end())
+            return false;
+        module = found->declaration;
+    }
+    ProjectDiagnostic diagnostic;
+    core::pmr::String expected, actual;
+    return ProjectManifestCodec::encode(manifest, expected, diagnostic)
+        && ProjectManifestCodec::encode(prepared, actual, diagnostic) && actual == expected;
 }
 
 bool EditorScriptModules::verifySources(

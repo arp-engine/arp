@@ -657,8 +657,17 @@ public:
     rhi::CommandValidationResult writeTimestamp(
         const rhi::QueryPool& pool, std::uint32_t queryIndex) override
     {
-        if (originalPass_)
-            return rejectOriginal();
+        if (originalPass_) {
+            const auto* id = !active_ || !nativePayload_
+                ? "RHI-MIXED-PASS-TIMING-WRAPPER"
+                : nativePayload_->recordOriginalTimestamp(
+                      pool, queryIndex, commandCount_, recordingIdentity_);
+            if (id) {
+                publishOriginalFailure(id);
+                return {false, "", commandCount_};
+            }
+            return commandOk(++commandCount_);
+        }
         if (!capabilityContract_) {
             return commandFail("Vulkan RHI timestamp write has no capability contract", 0);
         }

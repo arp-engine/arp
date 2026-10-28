@@ -75,15 +75,17 @@ CloudResult VolumetricCloudFeature::contributePreparedGraph(
 CloudResult VolumetricCloudFeature::contributePreparedGraph(const CloudPreparedGraphContext& c,
     CloudOutputs& output,
     render_graph::PassSubmissionObserver* observer,
-    render_graph::PassSubmissionToken token)
+    render_graph::PassSubmissionToken token,
+    bool validateOnly)
 {
     output = {};
-    if ((c.contractVersion != 1u && c.contractVersion != 2u && c.contractVersion != 3u)
+    if ((c.contractVersion != 1u && c.contractVersion != 2u && c.contractVersion != 3u
+            && c.contractVersion != 4u)
         || !c.prototypeOptIn)
         return CloudResult::failure("CLOUD-PREPARED-GRAPH-OPT-IN");
     if ((c.contractVersion == 1u && (c.history || c.historyGeneration))
         || (c.contractVersion >= 2u && !c.history)
-        || ((c.contractVersion == 3u) != (c.reconstruction != nullptr)))
+        || ((c.contractVersion >= 3u) != (c.reconstruction != nullptr)))
         return CloudResult::failure("CLOUD-PREPARED-GRAPH-HISTORY-VERSION");
     const auto& p = c.plan;
     const auto* reconstruction = c.reconstruction;
@@ -99,7 +101,10 @@ CloudResult VolumetricCloudFeature::contributePreparedGraph(const CloudPreparedG
     if (reconstruction
         && (reconstruction->resolvedCount != std::uint64_t(p.extent.width) * p.extent.height
             || reconstruction->resolvedCount > UINT32_MAX
-            || resolvedBytes != reconstruction->resolvedCount * kCloudSampleBytes
+            || reconstruction->sampleContractVersion != (c.contractVersion == 4u ? 2u : 1u)
+            || resolvedBytes
+                != reconstruction->resolvedCount
+                    * CloudSampleStorage::stride(reconstruction->sampleContractVersion)
             || p.sampleExtent.width != 1u + (p.extent.width - 1u) / 2u
             || p.sampleExtent.height != 1u + (p.extent.height - 1u) / 2u
             || reconstruction->dispatchGroups
@@ -188,6 +193,8 @@ CloudResult VolumetricCloudFeature::contributePreparedGraph(const CloudPreparedG
                 sizeof(CloudReconstructionGpuConstants),
                 true)))
         return CloudResult::failure("CLOUD-RECONSTRUCTION-GRAPH-RESOURCE-BINDING");
+    if (validateOnly)
+        return {};
     const auto depthRange = defaultTextureSubresourceRange(depth.desc());
     c.execution.compute("Cloud.Raymarch", c.pipelines[0], c.descriptors[0], p.dispatchGroups)
         .read(c.constants, ResourceState::ShaderRead)

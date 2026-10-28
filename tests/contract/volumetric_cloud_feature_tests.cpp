@@ -1,3 +1,4 @@
+#include "3d/scene_3d.h"
 #include "renderer/volumetric_cloud/volumetric_cloud_feature.h"
 #include "rhi/backends/null/null_backend.h"
 #include "tests/fixtures/capability_override_device.h"
@@ -12,6 +13,23 @@ using namespace arp;
 using namespace renderer::cloud;
 
 namespace {
+scene3d::Scene3DRenderQueue sceneCloudQueue()
+{
+    scene::Scene scene;
+    auto& cloud = scene.createObject("cloud").addComponent<scene3d::VolumetricCloudComponent>();
+    scene3d::CloudDesc desc;
+    desc.layer = tests::cloud::layer();
+    desc.densityResource = "cloud/reference";
+    assert(cloud.set_cloud(desc));
+    const auto extracted =
+        scene3d::Scene3DRenderExtractor{}.extract(scene, scene.extractTraversalSnapshot({}));
+    assert(extracted.ok() && extracted.queue().hasCloud());
+    const auto visible = scene3d::Scene3DVisibilitySystem{}.filterVisible(extracted.queue(), {});
+    assert(visible.ok() && visible.queue().hasCloud());
+    assert(visible.queue().cloud().densityResource == desc.densityResource);
+    return visible.queue();
+}
+
 // Replay real Null validator commands immediately but delay the observer fence.
 // The existing ownership-only delayed queue intentionally does not replay, so
 // it alone cannot publish cross-frame logical resource states for this test.
@@ -189,6 +207,7 @@ int main()
         auto config = tests::cloud::config();
         VolumetricCloudFeature feature;
         assert(!feature.frameReady());
+        const auto visibleCloud = sceneCloudQueue();
         auto result = feature.create({*device, {64u, 48u}, config, asset, ARP_CLOUD_SHADER_DIR});
         if (!result.success)
             std::cerr << result.diagnostic << '\n';
@@ -214,7 +233,7 @@ int main()
                     rhi::StoreOp::Store)
                 .executeRenderPass([](render_graph::RenderPassContext&) {});
             CloudGraphContext c{graph, color, depth};
-            c.layer = tests::cloud::layer();
+            c.layer = visibleCloud.cloud().layer;
             c.cameraPosition = {0, 10, -8};
             c.view = core::lookAt(c.cameraPosition, {0, 500, 800});
             c.projection = core::perspective(60, 64.0f / 48, .1f, 20000);

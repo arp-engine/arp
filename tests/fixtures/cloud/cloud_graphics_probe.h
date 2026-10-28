@@ -599,7 +599,7 @@ private:
             && !command->waitUntil(std::chrono::steady_clock::now(), diagnostic));
         if (dropWrapper)
             command.reset();
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
         for (const auto& owner : owners)
             assert(!owner.expired());
         if (unproven) {
@@ -614,7 +614,7 @@ private:
             else
                 assert(!waitIdleAndRetireVulkanRhiSubmittedCommands(runtime));
         }
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
         command.reset();
         assert(!quota->liveBytes());
         for (std::size_t i = 0; i + 1u < owners.size(); ++i)

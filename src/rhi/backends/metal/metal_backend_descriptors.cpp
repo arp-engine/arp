@@ -263,6 +263,12 @@ public:
             return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-FRESH-COMPLETE-GROUP";
         if (const auto* id = rhi::OriginalGeneralDescriptorWriteContract::validate(request))
             return id;
+        if (!request.sampledColor.empty()) {
+            const auto decision = rhi::semantics::OriginalOrdinarySampledColorContract::lowering(
+                device.backend(), request.sampledColor);
+            if (!decision.nativeAvailable)
+                return decision.diagnostic;
+        }
         if (const auto* id =
                 rhi::OriginalCommandResourceSources::validateRegisteredLifetime(sources, device))
             return id;

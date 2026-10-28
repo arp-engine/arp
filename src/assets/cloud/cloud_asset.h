@@ -10,12 +10,16 @@
 namespace arp::assets::cloud {
 
 inline constexpr std::uint32_t kCloudAssetVersion = 1u;
-inline constexpr std::uint32_t kCloudCookAlgorithmVersion = 2u;
+inline constexpr std::uint32_t kCloudCookAlgorithmVersion = 3u;
+inline constexpr std::uint32_t kCloudLegacyCookAlgorithmVersion = 2u;
+inline constexpr const char* kCloudCookPrecision = "ieee754-binary32-nearest-even-no-contract/1";
+inline constexpr const char* kCloudCookSeedRouting = "fnv1a64-le-u64-corner/1";
 inline constexpr std::uint32_t kCloudHeightProfileCount = 3u;
 
-// CloudPeriodicSimplex/2: tileable 3D simplex fBm consuming pcg::simplex3D's
-// declared [0,1] values directly. /1 double-normalized that range and is rejected
-// with an explicit diagnostic; recook is required, never a silent conversion.
+// /3 defines explicit binary32 precision and full seed/channel hash.
+// /2 retains its platform-dependent arithmetic and original seed semantics.
+// /1 is rejected. Explicit versioned recipe and recook, never silent conversion.
+// See docs/cloud-cook-contract-v3.md.
 struct CloudCookDesc {
     std::uint32_t algorithmVersion = 0u;
     std::uint32_t seed = 0u;

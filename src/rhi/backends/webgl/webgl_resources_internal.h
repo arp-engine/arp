@@ -3,7 +3,7 @@
 #include "core/container/generation_pool.h"
 #include "core/memory/initialized_byte_buffer.h"
 #include "rhi/backends/webgl/webgl_resources.h"
-#include "rhi/semantics/webgl_execution_telemetry.h"
+#include "rhi/frontend/webgl_execution_telemetry.h"
 
 namespace arp::rhi::webgl {
 

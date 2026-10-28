@@ -56,7 +56,7 @@ public:
     const core::pmr::Vector<ModuleReflectionCallableBinding>& reflectionCallables() const;
     const core::pmr::Vector<ModuleEnumBinding>& enums() const;
     const core::pmr::Vector<ModuleObjectBinding>& objects() const;
-    void remapReflectionTypes(const arp::reflection::RegistrationTransaction& transaction);
+    bool remapReflectionTypes(const arp::reflection::RegistrationTransaction& transaction);
 
 private:
     core::pmr::String name_{&core::defaultCpuMemoryResource()};

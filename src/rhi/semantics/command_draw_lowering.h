@@ -72,6 +72,24 @@ public:
 // Versioned value-only decisions. Template results preserve existing public decision types.
 class CommandDrawLowering final {
 public:
+    template <class Plan>
+    static constexpr Plan indirectSourceDisposition(Backend backend,
+        Plan plan,
+        std::uint32_t version,
+        const char* unknown,
+        const char* validator,
+        const char* missing) noexcept
+    {
+        plan.contractVersion = version;
+        if (backend != Backend::Null && backend != Backend::Vulkan && backend != Backend::Metal
+            && backend != Backend::WebGPU) {
+            plan.diagnosticId = unknown;
+            return plan;
+        }
+        plan.diagnosticId = plan.validatorOnly ? validator : missing;
+        return plan;
+    }
+
     template <class Result>
     static constexpr Result IndirectArgumentLowering_current(
         Backend backend, std::uint32_t kIndirectArgumentConsumptionContractVersion) noexcept

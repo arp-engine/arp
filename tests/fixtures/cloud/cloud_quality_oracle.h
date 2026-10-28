@@ -189,8 +189,7 @@ public:
                 std::array<std::uint16_t, 4> pixel;
                 std::memcpy(
                     pixel.data(), actualHdr + y * rowBytes + x * sizeof(pixel), sizeof(pixel));
-                const auto& scene =
-                    covered ? ForegroundFixture::color : ForegroundFixture::background;
+                const auto& scene = covered ? frame.foregroundColor : ForegroundFixture::background;
                 assert(core::halfToFloat(pixel[3]) == scene[3]);
                 for (unsigned c = 0; c < 3; ++c) {
                     radiance.add(value[c], expected[c]);
@@ -200,8 +199,14 @@ public:
                     hdr.add(color, target);
                     if (exposed)
                         exposedHdr.add(color, target);
-                    if (covered && vacuum_[index])
-                        assert(color == scene[c] && value[c] == 0 && value[3] == 1);
+                    if (covered && vacuum_[index]) {
+                        assert(pixel[c]
+                                == core::floatToHalf(scene[c], core::HalfFloatRounding::NearestEven)
+                            || pixel[c]
+                                == core::floatToHalf(
+                                    scene[c], core::HalfFloatRounding::TowardZero));
+                        assert(value[c] == 0 && value[3] == 1);
+                    }
                 }
             }
         previous_ = frame.foreground;

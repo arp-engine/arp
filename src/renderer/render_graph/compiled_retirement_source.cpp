@@ -3,6 +3,7 @@
 #include "core/ownership/lifetime_epoch.h"
 #include "renderer/render_graph/compiled_frame_graph.h"
 #include "renderer/render_graph/render_graph.h"
+#include "rhi/frontend/original_texture_upload_device.h"
 
 #include <stdexcept>
 
@@ -148,6 +149,38 @@ void FrameGraph::invalidateCompiledRetirementSource() const noexcept
 
 const char* FrameGraph::sharedImportSourceDiagnostic() const noexcept
 {
+    for (const auto& record : textures_) {
+        if (!record.completedSampledUpload)
+            continue;
+        if (const auto* id =
+                record.completedSampledUpload->validateView(record.completedSampledView))
+            return id;
+        if (const auto* id = record.completedSampledUpload->validateReadVisibility(
+                record.completedSampledStages))
+            return id;
+        if (!record.preserveInitialContents
+            || (record.externalFinalState != rhi::ResourceState::Undefined
+                && record.externalFinalState != rhi::ResourceState::ShaderRead))
+            return "RG-COMPLETED-SAMPLED-IMPORT-READ-ONLY";
+        for (const auto& pass : passes_) {
+            for (const auto& write : pass.writes)
+                if (write.handle.id == record.handle.id)
+                    return "RG-COMPLETED-SAMPLED-IMPORT-READ-ONLY";
+            for (const auto& read : pass.reads) {
+                if (read.handle.id != record.handle.id)
+                    continue;
+                const auto stages = read.stages == rhi::PipelineStage::None
+                    ? rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader
+                        | rhi::PipelineStage::ComputeShader
+                    : read.stages;
+                if (read.state != rhi::ResourceState::ShaderRead
+                    || (read.access != rhi::ResourceAccess::None
+                        && read.access != rhi::ResourceAccess::ShaderRead)
+                    || (stages & record.completedSampledStages) != stages)
+                    return "RG-COMPLETED-SAMPLED-IMPORT-READ-SCOPE";
+            }
+        }
+    }
     if (!retirementSourceState_ || !retirementSourceState_->budget.sharedImports.requested())
         return nullptr;
     if (const auto* id = resourcePool_->validateRetirementMetadataDevice(device_))

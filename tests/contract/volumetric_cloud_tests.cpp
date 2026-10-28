@@ -1,3 +1,4 @@
+#include "../fixtures/cloud/cloud_reference_cases.h"
 #include "core/math/matrix_validation.h"
 #include "renderer/volumetric_cloud/cloud_contract.h"
 #include "renderer/volumetric_cloud/cloud_execution_plan.h"
@@ -380,6 +381,19 @@ int main(int argc, char**)
     executionTests();
     qualityTests();
     dispatchAdmissionTests();
+    for (const auto& baseline : tests::cloud::ReferenceCases::values) {
+        assert(tests::cloud::ReferenceCases::find(baseline.name) == &baseline);
+        assert(baseline.coverage >= 0.f && baseline.coverage <= 1.f);
+        assert(std::isfinite(baseline.altitude) && std::isfinite(baseline.viewElevation));
+        for (const auto& other : tests::cloud::ReferenceCases::values)
+            assert(&baseline == &other || baseline.name != other.name);
+    }
+    assert(!tests::cloud::ReferenceCases::find("unknown"));
+    CloudRenderConfig referenceConfig;
+    assert(CloudQuality::apply(1u, CloudQualityTier::Reference, referenceConfig).success);
+    assert(!referenceConfig.temporal && referenceConfig.resolutionDivisor == 1u
+        && referenceConfig.viewSteps == tests::cloud::ReferenceCases::viewSteps
+        && referenceConfig.lightSteps == tests::cloud::ReferenceCases::lightSteps);
     if (argc > 1) {
         // P0 validates the reference geometry/integral and baseline hidden-frame
         // lifecycle. Cloud GPU execution is introduced and tested in P3.

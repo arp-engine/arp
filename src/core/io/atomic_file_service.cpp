@@ -137,10 +137,21 @@ PoolHandle AtomicFileService::replace(
     return submit(AtomicFileOperation::Replace, std::move(path), std::move(bytes), validator);
 }
 
+PoolHandle AtomicFileService::replaceIfUnchanged(
+    pmr::String path, pmr::Vector<std::uint8_t> bytes, FileReplacePrecondition expected)
+{
+    return submit(AtomicFileOperation::Replace,
+        std::move(path),
+        std::move(bytes),
+        nullptr,
+        std::move(expected));
+}
+
 PoolHandle AtomicFileService::submit(AtomicFileOperation operation,
     pmr::String path,
     pmr::Vector<std::uint8_t> bytes,
-    FileContentValidator validator)
+    FileContentValidator validator,
+    std::optional<FileReplacePrecondition> expected)
 {
     diagnostic_ = nullptr;
     if (path.empty() || path.find('\0') != pmr::String::npos || !maxBytes_
@@ -148,11 +159,21 @@ PoolHandle AtomicFileService::submit(AtomicFileOperation operation,
         diagnostic_ = "ARP-FILE-REQUEST-CONFIG";
         return {};
     }
+    if (expected
+        && (bytes.capacity() > maxBytes_ || expected->expectedBytes.capacity() > maxBytes_
+            || (expected->kind != FileReplacePrecondition::Kind::MustBeMissing
+                && expected->kind != FileReplacePrecondition::Kind::MatchBytes)
+            || (expected->kind == FileReplacePrecondition::Kind::MustBeMissing
+                && !expected->expectedBytes.empty()))) {
+        diagnostic_ = "ARP-FILE-PRECONDITION-CONFIG";
+        return {};
+    }
     Request request;
     request.operation = operation;
     request.path = std::move(path);
     request.maxBytes = maxBytes_;
     request.validator = validator;
+    request.expected = std::move(expected);
     request.result.bytes = std::move(bytes);
     auto handle = requests_.emplace(std::move(request));
     if (!handle) {
@@ -160,13 +181,16 @@ PoolHandle AtomicFileService::submit(AtomicFileOperation operation,
         return {};
     }
     auto* pending = requests_.get(handle);
-    auto submission = worker_.submit({execute, pending, complete, pending, {}});
-    if (!submission.accepted()) {
-        requests_.erase(handle);
+    try {
+        auto submission = worker_.submit({execute, pending, complete, pending, {}});
+        if (submission.accepted())
+            return handle;
         diagnostic_ = "ARP-FILE-WORK-REJECTED";
-        return {};
+    } catch (...) {
+        diagnostic_ = "ARP-FILE-WORK-EXCEPTION";
     }
-    return handle;
+    requests_.erase(handle);
+    return {};
 }
 
 runtime::WorkStatus AtomicFileService::execute(void* data)
@@ -196,6 +220,30 @@ runtime::WorkStatus AtomicFileService::execute(void* data)
             result.success =
                 !request.validator || request.validator(result.bytes, result.diagnostic);
         } else {
+            if (request.expected) {
+                const auto& expected = *request.expected;
+                if (expected.kind == FileReplacePrecondition::Kind::MustBeMissing) {
+                    if (exists) {
+                        result.diagnostic = "ARP-FILE-PRECONDITION-EXISTS";
+                        return runtime::WorkStatus::Failed;
+                    }
+                } else {
+                    if (!exists) {
+                        result.missing = true;
+                        result.diagnostic = "ARP-FILE-PRECONDITION-MISSING";
+                        return runtime::WorkStatus::Failed;
+                    }
+                    const auto previous = readBinaryFile(path, request.maxBytes);
+                    if (!previous.success) {
+                        result.diagnostic = "ARP-FILE-PRECONDITION-UNREADABLE";
+                        return runtime::WorkStatus::Failed;
+                    }
+                    if (previous.bytes != expected.expectedBytes) {
+                        result.diagnostic = "ARP-FILE-PRECONDITION-CHANGED";
+                        return runtime::WorkStatus::Failed;
+                    }
+                }
+            }
             if (request.validator && !request.validator(result.bytes, result.diagnostic))
                 return runtime::WorkStatus::Failed;
             if (exists && request.validator) {

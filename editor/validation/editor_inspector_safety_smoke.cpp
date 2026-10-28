@@ -13,7 +13,9 @@
 #include "editor/validation/editor_scene_modal_smoke.h"
 #include "editor/validation/editor_script_command_smoke.h"
 #include "editor/validation/editor_script_input_smoke.h"
+#include "editor/validation/editor_script_inspector_smoke.h"
 #include "editor/validation/editor_script_modal_smoke.h"
+#include "editor/validation/editor_script_presence_smoke.h"
 #include "editor/workspace/editor_shell.h"
 
 #include <cstdio>
@@ -32,6 +34,10 @@ bool EditorInspectorSafetySmoke::run(
         return EditorScriptInputSmoke::run(shell, scenario, diagnostic);
     if (scenario.substr(0, 13) == "script_modal_")
         return EditorScriptModalSmoke::run(shell, scenario, diagnostic);
+    if (scenario.substr(0, 9) == "presence_")
+        return EditorScriptPresenceSmoke::run(shell, scenario, diagnostic);
+    if (scenario.substr(0, 7) == "fields_" || scenario.substr(0, 7) == "attach_")
+        return EditorScriptInspectorSmoke::run(shell, scenario, diagnostic);
     if (scenario.substr(0, 7) == "script_")
         return EditorScriptCommandSmoke::run(shell, scenario, diagnostic);
     if (scenario.substr(0, 6) == "label_")

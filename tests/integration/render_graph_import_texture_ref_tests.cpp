@@ -376,11 +376,44 @@ void test_persistent_buffer_import()
     }
 }
 
+void test_ordinary_read_import_retains_dependency()
+{
+    using namespace arp;
+    auto device = rhi::createNullDevice();
+    render_graph::FrameGraph graph(*device);
+    graph.setPassCullingEnabled(false);
+    auto texture = core::shareUnique(device->createTexture(textureDesc("OrdinaryRead",
+        {4u, 4u, 1u},
+        rhi::TextureFormat::Rgba8Unorm,
+        rhi::TextureUsage::Sampled | rhi::TextureUsage::Storage,
+        rhi::ResourceState::ShaderRead)));
+    const auto handle = graph.importTextureRef(texture);
+    graph.addPass("Read").access(handle,
+        {rhi::ResourceState::ShaderRead,
+            rhi::PipelineStage::FragmentShader,
+            rhi::ResourceAccess::ShaderRead},
+        rhi::defaultTextureSubresourceRange(texture->desc()));
+    auto compiled = graph.compile();
+    require(compiled.barrierPlan().size() == 1u,
+        "ordinary ShaderRead import retains its first dependency without completed upload proof");
+    graph.addPass("Write").write(handle, rhi::ResourceState::ShaderWrite);
+    compiled = graph.compile();
+    require(compiled.barrierPlan().size() == 2u, "ordinary write hazard is preserved");
+    bool rejected = false;
+    try {
+        graph.importCompletedSampledTexture({}, {}, rhi::PipelineStage::FragmentShader);
+    } catch (const std::exception&) {
+        rejected = true;
+    }
+    require(rejected, "Null cannot fabricate a completed upload import");
+}
+
 } // namespace
 
 int main()
 {
     test_persistent_buffer_import();
+    test_ordinary_read_import_retains_dependency();
     test_lifecycle_keepalive();
     test_reset_releases_borrow();
     test_graph_destruction_releases_borrow();

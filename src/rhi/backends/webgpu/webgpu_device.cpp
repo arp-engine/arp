@@ -21,6 +21,7 @@
 #include "rhi/frontend/bindless_indirect_packet.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "rhi/frontend/bindless_snapshot.h"
+#include "rhi/frontend/buffer_placement.h"
 #include "rhi/frontend/command_recorded_state.h"
 #include "rhi/frontend/device_validation.h"
 #include "rhi/frontend/transfer_readback_borrowed_retirement.h"
@@ -31,6 +32,7 @@
 #include "rhi/semantics/bindless_original_execution_lowering.h"
 #include "rhi/semantics/bindless_original_preparation_lowering.h"
 #include "rhi/semantics/bindless_pipeline_interface.h"
+#include "rhi/semantics/device_idle_lowering.h"
 #include "rhi/semantics/fallback_plan.h"
 #include "rhi/semantics/native_backend_capabilities.h"
 #include "rhi/semantics/native_engine_fallback_bridge.h"
@@ -1008,6 +1010,12 @@ public:
 
     rhi::Backend backend() const override { return rhi::Backend::WebGPU; }
 
+    void waitIdle() override
+    {
+        throw core::DiagnosticError(
+            rhi::semantics::DeviceIdleLowering::lower(backend()).diagnostic);
+    }
+
     rhi::semantics::ShutdownDrainReport drainForShutdown(
         const rhi::semantics::ShutdownDrainRequest& request) override
     {
@@ -1044,6 +1052,8 @@ public:
         caps.explicitFeatures.explicitBarriers = nativeAvailable; // Ordered equivalent.
         caps.memory.deviceLocal = nativeAvailable;                // GPU-only resource intent.
         caps.memory.hostVisible = nativeAvailable; // Upload/readback resource intent.
+        caps.memory.hostVisibleDeviceLocalBuffers =
+            false; // WebGPU exposes no physical placement guarantee.
         caps.explicitFeatures.pushConstants = false;
         // WebGPU has no native secondary command buffer API. The runtime
         // fallback plan exposes an explicit CPU replay mode; the raw native
@@ -1257,6 +1267,11 @@ public:
     core::UniquePtr<rhi::GpuBuffer> createBufferWithInitializer(
         const rhi::BufferDesc& bufferDesc, const WebGpuNativeBufferInitializer& initializer)
     {
+        if (const auto* id = rhi::HostVisibleDeviceLocalBufferContract::validate(
+                bufferDesc, rhi::Backend::WebGPU, false)) {
+            rhi::RhiErrorHandler::get().report(rhi::RhiSeverity::Error, id);
+            return {};
+        }
         if (!creationRuntimeAdmitted())
             return nullptr;
 

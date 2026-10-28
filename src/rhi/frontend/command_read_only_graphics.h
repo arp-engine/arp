@@ -44,10 +44,15 @@ public:
         std::uint64_t maxVisits,
         std::uint64_t& visits,
         bool opaqueDepthGraphics = false,
-        const OriginalComputeDispatchRecordingInput* dispatchAdmission = nullptr) noexcept
+        const OriginalComputeDispatchRecordingInput* dispatchAdmission = nullptr,
+        std::uint32_t sampledColorVersion = 0u) noexcept
     {
-        return inspectProfile<true>(
-            program, maxVisits, visits, opaqueDepthGraphics, dispatchAdmission);
+        return inspectProfile<true>(program,
+            maxVisits,
+            visits,
+            opaqueDepthGraphics,
+            dispatchAdmission,
+            sampledColorVersion);
     }
 
     static const char* inspectOpaqueDepth(const OriginalCommandStreamProgram& program,
@@ -55,6 +60,15 @@ public:
         std::uint64_t& visits) noexcept
     {
         return inspectProfile<true, true>(program, maxVisits, visits, true, nullptr);
+    }
+
+    static const char* inspectTimedMixed(const OriginalCommandStreamProgram& program,
+        std::uint64_t maxVisits,
+        std::uint64_t& visits,
+        bool opaqueDepthGraphics = false) noexcept
+    {
+        return inspectProfile<true, false, true>(
+            program, maxVisits, visits, opaqueDepthGraphics, nullptr);
     }
 
     // Preparation/7 admits one explicit D32 opaque raster attachment. A Draw
@@ -75,16 +89,21 @@ public:
     }
 
 private:
-    template <bool Mixed, bool OpaqueDepth = false>
+    template <bool Mixed, bool OpaqueDepth = false, bool PassTiming = false>
     static const char* inspectProfile(const OriginalCommandStreamProgram& program,
         std::uint64_t maxVisits,
         std::uint64_t& visits,
         bool opaqueDepthGraphics,
-        const OriginalComputeDispatchRecordingInput* dispatchAdmission) noexcept
+        const OriginalComputeDispatchRecordingInput* dispatchAdmission,
+        std::uint32_t sampledColorVersion = 0u) noexcept
     {
         using K = CommandUsageKind;
         if (program.originalBudget().contractVersion != 5u
-            || program.originalInputs()->originalBudget().contractVersion != (Mixed ? 10u : 6u))
+            || program.originalInputs()->originalBudget().contractVersion
+                != (PassTiming  ? 11u
+                        : Mixed ? 10u
+                                : 6u)
+            || (PassTiming && !program.originalInputs()->originalBudget().passTiming))
             return "RHI-ORDINARY-GRAPHICS-PROGRAM-PROFILE";
         const auto& scalars = *program.originalInputs()->originalScalars();
         const auto& sources = scalars.originalUsage()->originalSources()->sources();
@@ -106,6 +125,10 @@ private:
             if (record.offsetCount || record.byteCount)
                 return "RHI-ORDINARY-GRAPHICS-VARIABLE-ARGUMENTS";
             switch (op.kind) {
+            case K::Timestamp:
+                if (!PassTiming || (!pass && !compute) || transfer)
+                    return "RHI-MIXED-PASS-TIMING-COMMAND-PROFILE";
+                break;
             case K::BeginComputePass:
                 if (!Mixed || pass || compute || transfer)
                     return "RHI-ORDINARY-MIXED-PASS-ORDER";
@@ -240,6 +263,11 @@ private:
                     || set->originalObject()->originalGeneralContentContractVersion() != 3u
                     || set->frozenLogicalSet() != 0u)
                     return "RHI-ORDINARY-GRAPHICS-DESCRIPTOR-PROFILE";
+                if (set->originalObject()->originalSampledColorContractVersion()
+                    && (sampledColorVersion != 1u
+                        || set->originalObject()->originalSampledColorContractVersion()
+                            != sampledColorVersion))
+                    return "RHI-ORDINARY-SAMPLED-COLOR-RECORDING-PROFILE";
                 for (const auto& element : set->frozenElements()) {
                     if (visits == maxVisits)
                         return "RHI-ORDINARY-ATTACHMENT-RECORDING-COMMAND-CAPACITY";

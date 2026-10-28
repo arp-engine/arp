@@ -1,0 +1,8 @@
+// Editable source document; this host does not provide Play yet.
+
+
+class Fibonacci:
+    def fib(self, n: int) -> int:
+        if n <= 1:
+            return n
+        return self.fib(n - 1) + self.fib(n - 2)

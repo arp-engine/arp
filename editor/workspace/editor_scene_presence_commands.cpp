@@ -1,3 +1,4 @@
+#include "editor/workspace/editor_scene_script_codec.h"
 #include "editor/workspace/editor_shell.h"
 #include "editor/workspace/editor_shell_internal.h"
 
@@ -27,6 +28,16 @@ void require(bool condition)
 {
     if (!condition)
         throw std::invalid_argument("EDITOR-SCENE-HISTORY-REJECTED");
+}
+
+bool containsScripts(const Presence::Subtree& subtree)
+{
+    return std::any_of(subtree.objects.begin(), subtree.objects.end(), [](const auto& object) {
+        return std::any_of(
+            object.components.begin(), object.components.end(), [](const auto& component) {
+                return bool(component.script);
+            });
+    });
 }
 
 SceneInspectorProperty initialValue(const SetSceneComponentPropertyCommand& command,
@@ -119,8 +130,13 @@ EditorCommandOutcome EditorShell::destroySceneObjectWithHistory()
         history.selectionBefore = history.objectId;
         history.selectionAfter = sceneDocument_.scene().rootId().value();
         history.additionalSelectionBefore = sceneViewportAdditionalSelection_;
-        auto snapshot = core::makeShared<Presence::Subtree>(
-            Presence::captureSubtree(sceneDocument_, sceneDocument_.selectedObject()));
+        auto snapshot = core::makeShared<Presence::Subtree>(Presence::captureSubtree(sceneDocument_,
+            sceneDocument_.selectedObject(),
+            sceneAuthoringVersion_ == EditorSceneScriptCodec::contractVersion
+                ? Presence::ScriptPolicy::Archive
+                : Presence::ScriptPolicy::Reject));
+        if (containsScripts(*snapshot))
+            requireSceneScriptContext();
         for (const auto& links : snapshot->externalLinks) {
             const auto gate = sceneObjectWriteGate(links.owner.value(), false);
             if (!gate.success)
@@ -229,12 +245,16 @@ EditorCommandOutcome EditorShell::removeSceneComponentWithHistory(
     if (!component || id == object->transform().id())
         return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
     try {
+        if (!component->scriptInstance().is_undefined())
+            requireSceneScriptContext();
         Presence::validateRemoval(sceneDocument_, *component);
         const auto index = static_cast<std::size_t>(
             std::find(object->componentIds().begin(), object->componentIds().end(), id)
             - object->componentIds().begin());
-        auto snapshot =
-            core::makeShared<Presence::Component>(Presence::captureComponent(*component, index));
+        auto snapshot = core::makeShared<Presence::Component>(
+            sceneAuthoringVersion_ == EditorSceneScriptCodec::contractVersion
+                ? Presence::captureComponent(sceneDocument_, *component, index)
+                : Presence::captureComponent(*component, index));
         SceneHistoryEntry history;
         history.kind = SceneHistoryEntry::Kind::ComponentPresence;
         history.objectId = objectId.value();
@@ -267,14 +287,16 @@ EditorCommandOutcome EditorShell::applyPresenceHistory(const SceneHistoryEntry& 
         if (entry.kind == SceneHistoryEntry::Kind::ComponentPresence) {
             require(bool(entry.componentSnapshot));
             const auto& snapshot = *entry.componentSnapshot;
+            if (snapshot.script)
+                requireSceneScriptContext();
             auto* owner =
                 sceneDocument_.scene().findObject(scene::GameObjectId::fromValue(entry.objectId));
             require(owner);
             if (undo ? entry.componentPresentBefore : entry.componentPresentAfter) {
                 scene::Scene::IdentityRestoration transaction(
                     sceneDocument_.scene(), {0, 1}, sceneDocument_.identityRestorationFactory());
-                auto& restored = transaction.restoreComponent(
-                    owner->id(), snapshot.id, snapshot.type, snapshot.index);
+                auto& restored =
+                    Presence::stageComponent(sceneDocument_, transaction, owner->id(), snapshot);
                 Presence::applyComponent(restored, snapshot, sceneDocument_, transaction);
                 transaction.prepare();
                 transaction.commit();
@@ -282,12 +304,14 @@ EditorCommandOutcome EditorShell::applyPresenceHistory(const SceneHistoryEntry& 
                 const auto* component = owner->findComponent(snapshot.id);
                 require(component && snapshot.index < owner->components().size()
                     && owner->components()[snapshot.index].get() == component
-                    && Presence::matchesComponent(*component, snapshot));
+                    && Presence::matchesComponent(sceneDocument_, *component, snapshot));
                 Presence::validateRemoval(sceneDocument_, *component);
                 require(sceneDocument_.removeComponent(owner->id(), snapshot.id));
             }
         } else {
             require(bool(entry.subtree) && !entry.subtree->objects.empty());
+            if (containsScripts(*entry.subtree))
+                requireSceneScriptContext();
             const bool restoring = undo ? entry.objectPresentBefore : entry.objectPresentAfter;
             const auto selection =
                 scene::GameObjectId::fromValue(undo ? entry.selectionBefore : entry.selectionAfter);

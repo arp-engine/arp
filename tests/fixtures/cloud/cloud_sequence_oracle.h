@@ -37,6 +37,10 @@ public:
     renderer::cloud::CloudGpuConstants parameters;
     scene3d::CloudLayerDesc layer;
     ForegroundFixture foreground;
+    std::array<float, 4u> foregroundColor = ForegroundFixture::color;
+    bool sceneOpaque = false;
+    std::array<float, 16u> sceneRasterViewProjection{};
+    std::array<float, 36u> sceneOpaqueVertices{};
     // Sampling UVs can use the opposite Y orientation to raster coverage.
     bool flipForegroundY = false;
     bool requireOcclusionChange = true;
@@ -334,7 +338,7 @@ public:
     {
         const auto value = integral(x, y);
         const auto& scene =
-            foreground.covers(x, y) ? ForegroundFixture::color : ForegroundFixture::background;
+            foreground.covers(x, y) ? foregroundColor : ForegroundFixture::background;
         return {value[0] + value[3] * scene[0],
             value[1] + value[3] * scene[1],
             value[2] + value[3] * scene[2],

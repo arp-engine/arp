@@ -3,6 +3,7 @@
 #include "core/math/unsigned_range.h"
 #include "rhi/frontend/command_arguments.h"
 #include "rhi/frontend/command_model.h"
+#include "rhi/semantics/command_budget_lowering.h"
 
 #include <array>
 #include <optional>
@@ -90,26 +91,7 @@ public:
     {
         if (const auto* id = validateIntent(budget))
             return {Disposition::DiagnosticFailure, false, id};
-        switch (backend) {
-        case Backend::Null:
-            return {
-                Disposition::ValidatorOnly, false, "RHI-COMMAND-RECORDING-BUDGET-NULL-VALIDATOR"};
-        case Backend::Vulkan:
-            return {Disposition::Prototype, true, nullptr};
-        case Backend::Metal:
-            return {Disposition::DiagnosticFailure,
-                false,
-                "RHI-COMMAND-RECORDING-BUDGET-METAL-PAYLOAD-MISSING"};
-        case Backend::WebGPU:
-            return {Disposition::DiagnosticFailure,
-                false,
-                "RHI-COMMAND-RECORDING-BUDGET-WEBGPU-PAYLOAD-MISSING"};
-        case Backend::WebGL:
-            return {Disposition::DiagnosticFailure,
-                false,
-                "RHI-COMMAND-RECORDING-BUDGET-WEBGL-UNSUPPORTED"};
-        }
-        return {};
+        return semantics::CommandBudgetLowering::recording<Decision, Disposition>(backend);
     }
 };
 

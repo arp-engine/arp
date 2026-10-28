@@ -745,6 +745,67 @@ targets:
     constexpr uint32_t spirvDecorationRowMajor = 4u;
     constexpr uint32_t spirvDecorationColMajor = 5u;
     constexpr uint32_t spirvDecorationMatrixStride = 7u;
+#ifdef ARP_SCENE_OPAQUE_MODULE_DIR
+    {
+        const auto source = readTextFile("shaders/renderer/scene_opaque.slang");
+        assert(source.find("    float4x4 viewProjection;") != source.npos);
+        assert(source.find("row_major float4x4") == source.npos);
+        assert(source.find("column_major float4x4") == source.npos);
+        for (const auto* stage : {"/", "/Vertex/", "/Fragment/"}) {
+            const auto prefix =
+                std::pmr::string(ARP_SCENE_OPAQUE_MODULE_DIR) + stage + "scene_opaque";
+            const auto binary = readBinaryFile((prefix + ".spv").c_str());
+            assert(spirvMemberHasDecoration(binary,
+                "SceneOpaqueFrameConstants_std140",
+                "viewProjection",
+                spirvDecorationColMajor));
+            assert(!spirvMemberHasDecoration(binary,
+                "SceneOpaqueFrameConstants_std140",
+                "viewProjection",
+                spirvDecorationRowMajor));
+            const auto reflection = arp::shader::ShaderReflectionCache::loadFromYaml(
+                readTextFile((prefix + ".reflection.yaml").c_str()));
+            assert(reflection.success && reflection.module.reflection.pushConstantSizeBytes == 0u);
+        }
+        arp::core::Mat4 matrix{};
+        matrix.m = {.5f, .125f, 0, .125f, .0625f, -.5f, 0, .0625f, 0, 0, .5f, .25f, 0, 0, 0, 1};
+        const auto value = arp::core::transformPoint(matrix, {.25f, -.5f, .75f});
+        assert(std::fabs(value.x - .1875f) < .00001f && std::fabs(value.y - .328125f) < .00001f
+            && std::fabs(value.z - .625f) < .00001f);
+        // Uniform size/offset112 and storage48 are verified from selected SPIR-V
+        // declarations by arp_scene_opaque_shader_contract, not push constants.
+    }
+#endif
+#ifdef ARP_SCENE_PBR_MODULE_DIR
+    {
+        const auto source = readTextFile("shaders/renderer/scene_pbr.slang");
+        assert(source.find("    float4x4 viewProjection;") != source.npos);
+        assert(source.find("row_major float4x4") == source.npos);
+        assert(source.find("column_major float4x4") == source.npos);
+        for (const auto* stage : {"/", "/Vertex/", "/Fragment/"}) {
+            const auto prefix = std::pmr::string(ARP_SCENE_PBR_MODULE_DIR) + stage + "scene_pbr";
+            const auto binary = readBinaryFile((prefix + ".spv").c_str());
+            assert(spirvMemberHasDecoration(binary,
+                "ScenePbrFrameConstants_std140",
+                "viewProjection",
+                spirvDecorationColMajor));
+            assert(!spirvMemberHasDecoration(binary,
+                "ScenePbrFrameConstants_std140",
+                "viewProjection",
+                spirvDecorationRowMajor));
+            const auto reflection = arp::shader::ShaderReflectionCache::loadFromYaml(
+                readTextFile((prefix + ".reflection.yaml").c_str()));
+            assert(reflection.success && reflection.module.reflection.pushConstantSizeBytes == 0u);
+        }
+        arp::core::Mat4 matrix{};
+        matrix.m = {.5f, .125f, 0, .125f, .0625f, -.5f, 0, .0625f, 0, 0, .5f, .25f, 0, 0, 0, 1};
+        const auto value = arp::core::transformPoint(matrix, {.25f, -.5f, .75f});
+        assert(std::fabs(value.x - .1875f) < .00001f && std::fabs(value.y - .328125f) < .00001f
+            && std::fabs(value.z - .625f) < .00001f);
+        // UBO128/material64/storage80 offsets are checked against selected SPIR-V
+        // by arp_scene_pbr_shader_contract; there are no push constants.
+    }
+#endif
 #ifdef ARP_CLOUD_SHADER_DIR
     {
         const auto source = readTextFile("shaders/renderer/cloud_common.slang");
@@ -757,7 +818,9 @@ targets:
                      "cloud_composite",
                      "cloud_density_slice",
                      "cloud_spatial_resolve",
-                     "cloud_spatial_composite"}) {
+                     "cloud_spatial_composite",
+                     "cloud_compact_resolve",
+                     "cloud_compact_composite"}) {
                 const auto path = std::pmr::string(ARP_CLOUD_SHADER_DIR) + "/" + name;
                 const auto bytes = readBinaryFile((path + ".spv").c_str());
                 assert(spirvMemberHasDecoration(

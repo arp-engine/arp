@@ -26,6 +26,15 @@ public:
     template <typename ReadyFn>
     rhi::AcquiredFrame acquire(rhi::Swapchain& swapchain, ReadyFn&& ready)
     {
+        return acquire(swapchain, std::forward<ReadyFn>(ready), [] {
+            return true;
+        });
+    }
+
+    template <typename ReadyFn, typename SharedReadyFn>
+    rhi::AcquiredFrame acquire(
+        rhi::Swapchain& swapchain, ReadyFn&& ready, SharedReadyFn&& sharedReady)
+    {
         if (owner_ && owner_ != &swapchain)
             return rhi::makeAcquireFailureResult(
                 "PLATFORM-FRAME-INPUT-OWNER-MISMATCH", pending_.frameSerial, pending_.frameIndex);
@@ -39,6 +48,14 @@ public:
             owner_ = nullptr;
             return invalidated;
         }
+        // Shared input dependencies do not need a drawable identity. Poll
+        // them before native acquisition, preserving any existing acquisition
+        // and its cancellation ownership. No slot or serial is invented.
+        if (!sharedReady())
+            return rhi::makeAcquireFailureResult({},
+                pending_.success ? pending_.frameSerial : 0u,
+                pending_.success ? pending_.frameIndex : 0u,
+                rhi::AcquireStatus::NotReady);
         if (!pending_.success) {
             auto acquired = swapchain.acquireNextFrame();
             if (!acquired.success)

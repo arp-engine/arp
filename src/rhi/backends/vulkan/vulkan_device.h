@@ -95,6 +95,7 @@ struct VulkanRhiNativeResourceStats {
     std::uint32_t nativeBufferCopyRecordCount = 0;
     std::uint32_t nativeUploadStagingPoolPageCount = 0;
     std::uint32_t nativeUploadStagingSliceCount = 0;
+    std::uint32_t nativeUploadStagingLiveSliceCount = 0;
     std::uint64_t nativeUploadStagingPeakBytes = 0;
     bool nativeUploadStagingPoolBounded = false;
     bool nativeUploadStagingHandlesHidden = true;

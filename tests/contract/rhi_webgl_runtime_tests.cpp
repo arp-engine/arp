@@ -1,7 +1,7 @@
 #include "rhi/backends/webgl/webgl_runtime.h"
+#include "rhi/frontend/webgl_execution_telemetry.h"
 #include "rhi/semantics/webgl_context_recovery.h"
 #include "rhi/semantics/webgl_cpu_retirement.h"
-#include "rhi/semantics/webgl_execution_telemetry.h"
 #include "rhi/semantics/webgl_surface_lifecycle.h"
 
 #include <cassert>

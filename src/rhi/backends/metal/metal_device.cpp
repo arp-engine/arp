@@ -23,6 +23,7 @@
 #include "rhi/backends/null/dummy_sync.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "rhi/frontend/bindless_snapshot.h"
+#include "rhi/frontend/buffer_placement.h"
 #include "rhi/frontend/command_recorded_state.h"
 #include "rhi/frontend/device_validation.h"
 #include "rhi/frontend/heap_placement_contract.h"
@@ -1057,6 +1058,8 @@ public:
         caps.core = {nativeAvailable, nativeAvailable};
         caps.memory.deviceLocal = nativeAvailable; // MTLStorageModePrivate intent.
         caps.memory.hostVisible = nativeAvailable; // MTLStorageModeShared intent.
+        caps.memory.hostVisibleDeviceLocalBuffers =
+            false; // Explicit placement payload not implemented.
         if (nativeAvailable)
             caps.swapchain = rhi::SwapchainCapabilities{};
         caps.explicitFeatures.pushConstants = false;
@@ -1418,21 +1421,22 @@ public:
     {
         if (submissionDomain_)
             if (const auto* id = submissionOwnerDiagnostic())
-                throw std::logic_error(id);
+                throw core::DiagnosticError(id);
         const auto runtime = describeMetalRhiNativeRuntimeBoundary();
         if (!runtime.runtimeAvailableOnThisPlatform) {
-            return;
+            throw core::DiagnosticError("RHI-METAL-IDLE-NATIVE-RUNTIME-UNAVAILABLE");
         }
         std::pmr::string diagnostics;
         if (waitMetalRhiNativeQueueIdle(diagnostics)) {
             if (submissionDomain_)
                 if (const auto* id = submissionDomain_->poll())
-                    throw std::logic_error(id);
+                    throw core::DiagnosticError(id);
             if (const auto stats = queue_.nativeStats()) {
                 stats->blockingWaitUsed = true;
             }
-        } else if (!diagnostics.empty()) {
-            rhi::RhiErrorHandler::get().report(rhi::RhiSeverity::Error, diagnostics.c_str());
+        } else {
+            throw core::DiagnosticError(diagnostics.empty() ? "RHI-METAL-IDLE-COMPLETION-FAILED"
+                                                            : std::string_view(diagnostics));
         }
     }
 
@@ -1523,6 +1527,11 @@ public:
 
     arp::core::UniquePtr<rhi::GpuBuffer> createBuffer(const rhi::BufferDesc& bufferDesc) override
     {
+        if (const auto* id = rhi::HostVisibleDeviceLocalBufferContract::validate(
+                bufferDesc, rhi::Backend::Metal, false)) {
+            rhi::RhiErrorHandler::get().report(rhi::RhiSeverity::Error, id);
+            return {};
+        }
         if (!creationRuntimeAdmitted())
             return nullptr;
 

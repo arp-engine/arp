@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/memory/cpu_allocator.h"
-#include "rhi/semantics/fallback_plan.h"
+#include "rhi/semantics/fallback_plan_values.h"
 
 #include <cstdint>
 #include <string>

@@ -86,11 +86,11 @@ public:
         std::uint32_t actual = 0u;
         std::memcpy(&actual, destination.payload->backendMappedData(), sizeof(actual));
         const bool releasedPage = observedPage.expired();
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
         command.reset();
         wait = {};
         timelineOwner.reset();
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         std::printf("staging-pool-release: retained=%d released=%d expected=%u actual=%u\n",
             retainedPage,
             releasedPage,
@@ -184,7 +184,8 @@ public:
         second.reset();
         assert(secondPayload->waitSubmittedFenceUntil(
             std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(
+            *(differentRuntime ? secondNative.runtime() : firstNative.runtime()));
         auto third = record(firstResources, firstRegistry, firstPool);
         const auto liveAfterUnrelatedCompletion = firstPool.stats().liveSliceCount;
         const auto epochBeforeCancellation = firstPool.completedSubmissionEpoch();
@@ -199,13 +200,13 @@ public:
             assert(vkSignalSemaphore(firstNative.device(), &signal) == VK_SUCCESS);
             assert(vulkanRhiCommandPayload(*first)->waitSubmittedFenceUntil(
                 std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(*firstNative.runtime());
             timelineOwner.reset();
         }
         first.reset();
         const auto liveAfterRelease = firstPool.stats().liveSliceCount;
         secondPayload.reset();
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*firstNative.runtime());
         std::printf(
             "staging-isolation: different-runtime=%d pending=%d live=%u cancelled=%u released=%u epoch-stable=%d\n",
             differentRuntime,
@@ -251,10 +252,10 @@ public:
         assert(
             command->end(diagnostic) && command->submit(wait, diagnostic, &accepted) && accepted);
         assert(!command->submittedFenceCompleted() && command.use_count() >= 2);
-        const auto completedBefore = completedVulkanRhiSubmittedFrameSerial();
+        const auto completedBefore = completedVulkanRhiSubmittedFrameSerial(*native.runtime());
         assert(completedBefore == 0u);
-        drainVulkanRhiSubmittedCommandsForShutdown();
-        const auto completedAfter = completedVulkanRhiSubmittedFrameSerial();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
+        const auto completedAfter = completedVulkanRhiSubmittedFrameSerial(*native.runtime());
         const bool retainedByBackend = command.use_count() >= 2;
         const bool stillPending = !command->submittedFenceCompleted();
         // Keep the caller owner until actual completion, even on the red path.
@@ -264,9 +265,9 @@ public:
         assert(vkSignalSemaphore(native.device(), &signal) == VK_SUCCESS);
         assert(command->waitSubmittedFenceUntil(
             std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
         command.reset();
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         wait = {};
         timelineOwner.reset();
         std::printf("shutdown-pending: before=%llu after=%llu retained=%d pending=%d\n",
@@ -387,7 +388,11 @@ int main(int argc, char** argv)
         std::puts("SKIP: real Vulkan 1.2 timeline device unavailable");
         return 77;
     }
+    tests::VulkanHeadlessRuntime independent;
+    assert(independent.runtime());
+    std::fprintf(stderr, "completion-stage: public fence\n");
     verifyOriginalPublicFence(native.runtime());
+    std::fprintf(stderr, "completion-stage: retention\n");
     VulkanRhiAllocator allocator({"completion fixture", 64u * 1024u * 1024u}, native.runtime());
     VulkanRhiNativeResourceAllocator resources(native.runtime(), &allocator);
     core::pmr::String diagnostic;
@@ -548,7 +553,7 @@ int main(int argc, char** argv)
     assert(!command->waitSubmittedFenceUntil(deadline, diagnostic));
     assert(diagnostic == "RHI-VULKAN-COMPLETION-DEADLINE-EXPIRED");
     assert(!drainVulkanRhiSubmittedCommandsUntil(
-        Clock::now() + std::chrono::milliseconds(10), diagnostic));
+        *native.runtime(), Clock::now() + std::chrono::milliseconds(10), diagnostic));
     assert(diagnostic == "RHI-VULKAN-COMPLETION-DEADLINE-EXPIRED");
     assert(!command->waitSubmittedFenceUntil(deadline, diagnostic));
     assert(faultValidation->status() == rhi::BindlessFaultValidationStatus::Pending);
@@ -556,15 +561,15 @@ int main(int argc, char** argv)
         && budget->used() == 1u);
     command.reset();
     assert(!observedPreambleCommand.expired());
-    retireCompletedVulkanRhiSubmittedCommands();
+    retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
     assert(!observedResource.expired() && !observedLease.expired());
 
     VkSemaphoreSignalInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO};
     signal.semaphore = timeline;
     signal.value = 1u;
     assert(vkSignalSemaphore(native.device(), &signal) == VK_SUCCESS);
-    assert(
-        drainVulkanRhiSubmittedCommandsUntil(Clock::now() + std::chrono::seconds(5), diagnostic));
+    assert(drainVulkanRhiSubmittedCommandsUntil(
+        *native.runtime(), Clock::now() + std::chrono::seconds(5), diagnostic));
     assert(diagnostic.empty() && observedPreambleCommand.expired());
     assert(faultValidation->status() == rhi::BindlessFaultValidationStatus::Clean);
     assert(faultValidation->faultBits() == 0u);
@@ -574,7 +579,7 @@ int main(int argc, char** argv)
     assert(destination.payload->backendInvalidateMappedRead(0, sizeof(expected), diagnostic));
     assert(std::memcmp(destination.payload->backendMappedData(), expected.data(), sizeof(expected))
         == 0);
-    retireCompletedVulkanRhiSubmittedCommands();
+    retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
 
     // Polling must release storage independently of CPU wrapper lifetime.
     command = createVulkanRhiNativeCommandPayload(resources, diagnostic, retention);
@@ -593,7 +598,7 @@ int main(int argc, char** argv)
         std::this_thread::yield();
     assert(command->submittedFenceCompleted() && observedLease.expired() && !budget->used());
     command.reset();
-    retireCompletedVulkanRhiSubmittedCommands();
+    retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
 
     // The global submitted owner also preserves indexed storage after the
     // caller releases its command wrapper while a real timeline is pending.
@@ -606,13 +611,13 @@ int main(int argc, char** argv)
     assert(command->end(diagnostic) && command->submit(wait, diagnostic, &accepted));
     std::weak_ptr<VulkanRhiNativeCommandPayload> observedCommand = command;
     command.reset();
-    retireCompletedVulkanRhiSubmittedCommands();
+    retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
     assert(!observedCommand.expired() && !observedLease.expired() && budget->used() == 1u);
     signal.value = 3u;
     assert(vkSignalSemaphore(native.device(), &signal) == VK_SUCCESS);
     const auto retireDeadline = Clock::now() + std::chrono::seconds(5);
     while (!observedLease.expired() && Clock::now() < retireDeadline) {
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
         std::this_thread::yield();
     }
     assert(observedCommand.expired() && observedLease.expired() && !budget->used());
@@ -634,6 +639,7 @@ int main(int argc, char** argv)
     assert(diagnostic == "RHI-BINDLESS-COMMAND-PIPELINE-BUDGET");
     command.reset();
 
+    std::fprintf(stderr, "completion-stage: capacity\n");
     // Fill the real retirement queue behind one unsignaled timeline. The next
     // submission must fail before vkQueueSubmit, preserving a retryable command.
     auto pendingBudget =
@@ -656,17 +662,30 @@ int main(int argc, char** argv)
     assert(diagnostic == "RHI-VULKAN-SUBMISSION-RETIREMENT-CAPACITY");
     assert(resources.stats().nativeQueueSubmitCount == submits);
     assert(pendingBudget->used() == kVulkanMaxAsyncSubmittedCommands);
+    // Saturating this device must neither consume another device's capacity
+    // nor prevent its real submission and retirement from making progress.
+    {
+        std::fprintf(stderr, "completion-stage: independent submission\n");
+        VulkanRhiNativeResourceAllocator other(independent.runtime());
+        auto isolated = createVulkanRhiNativeCommandPayload(other, diagnostic);
+        assert(isolated && isolated->end(diagnostic) && isolated->submit(diagnostic));
+        assert(
+            isolated->waitSubmittedFenceUntil(Clock::now() + std::chrono::seconds(5), diagnostic));
+        retireCompletedVulkanRhiSubmittedCommands(*independent.runtime());
+        assert(pendingBudget->used() == kVulkanMaxAsyncSubmittedCommands);
+    }
+    std::fprintf(stderr, "completion-stage: release capacity\n");
     signal.value = 4u;
     assert(vkSignalSemaphore(native.device(), &signal) == VK_SUCCESS);
     assert(
         lastPending->waitSubmittedFenceUntil(Clock::now() + std::chrono::seconds(5), diagnostic));
-    retireCompletedVulkanRhiSubmittedCommands();
+    retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
     assert(!pendingBudget->used());
     assert(command->submit(wait, diagnostic, &accepted) && accepted);
     assert(command->waitSubmittedFenceUntil(Clock::now() + std::chrono::seconds(5), diagnostic));
     command.reset();
     lastPending.reset();
-    retireCompletedVulkanRhiSubmittedCommands();
+    retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
     wait = {};
     timelineOwner.reset();
     auto drainTimelineOwner =
@@ -700,14 +719,14 @@ int main(int argc, char** argv)
     firstDrainCommand.reset();
     secondDrainCommand.reset();
     assert(!drainVulkanRhiSubmittedCommandsUntil(
-        Clock::now() + std::chrono::milliseconds(10), diagnostic));
+        *native.runtime(), Clock::now() + std::chrono::milliseconds(10), diagnostic));
     assert(diagnostic == "RHI-VULKAN-COMPLETION-DEADLINE-EXPIRED");
     assert(firstDrainObserved.expired() && firstDrainOwned.expired());
     assert(!secondDrainObserved.expired() && !secondDrainOwned.expired());
     signal.value = 2u;
     assert(vkSignalSemaphore(native.device(), &signal) == VK_SUCCESS);
-    assert(
-        drainVulkanRhiSubmittedCommandsUntil(Clock::now() + std::chrono::seconds(5), diagnostic));
+    assert(drainVulkanRhiSubmittedCommandsUntil(
+        *native.runtime(), Clock::now() + std::chrono::seconds(5), diagnostic));
     assert(secondDrainObserved.expired() && secondDrainOwned.expired());
     wait = {};
     drainTimelineOwner.reset();
@@ -769,6 +788,6 @@ int main(int argc, char** argv)
     assert(drainReport.outcome == rhi::semantics::ShutdownDrainOutcome::Native);
     assert(drainReport.remainingNanoseconds > 0u);
     headlessDevice.reset();
-    drainVulkanRhiSubmittedCommandsForShutdown(); // all test work proven complete
+    drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime()); // all test work proven complete
     std::puts("Native Vulkan completion deadline, retention and budget release: PASS");
 }

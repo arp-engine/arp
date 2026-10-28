@@ -2,6 +2,7 @@
 
 #include "core/math/unsigned_range.h"
 #include "rhi/frontend/transfer_upload_destination_validation.h"
+#include "rhi/semantics/memory_admission_lowering.h"
 
 namespace arp::rhi {
 
@@ -15,17 +16,7 @@ public:
 
     static constexpr Disposition lowering(Backend backend) noexcept
     {
-        switch (backend) {
-        case Backend::Null:
-            return Disposition::ValidatorOnly;
-        case Backend::Vulkan:
-        case Backend::Metal:
-            return Disposition::Native;
-        case Backend::WebGPU:
-        case Backend::WebGL:
-            return Disposition::DiagnosticFailure;
-        }
-        return Disposition::DiagnosticFailure;
+        return semantics::MemoryAdmissionLowering::heapPlacement<Disposition>(backend);
     }
 
     static constexpr const char* heap(

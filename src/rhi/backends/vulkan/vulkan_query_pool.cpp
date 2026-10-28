@@ -618,6 +618,8 @@ const char* VulkanRhiQueryPool::validateOriginal(
 {
     if (!self || !self->hasQuotaBoundSharedOwner(self) || !self->originalCreation_)
         return "RHI-VULKAN-ORIGINAL-QUERY-OWNER";
+    if (const auto* id = self->originalFactoryLifetimeDiagnostic())
+        return id;
     if (!self->payload_ || !self->payload_->belongsTo(runtime))
         return "RHI-VULKAN-ORIGINAL-QUERY-RUNTIME";
     if (const auto* id = runtime.timestampQueryDiagnostic())
@@ -691,6 +693,8 @@ const VulkanRhiQueryPool* asVulkanRhiQueryPool(const rhi::QueryPool& pool)
 
 rhi::CommandValidationResult VulkanRhiQueryPool::reset()
 {
+    if (const auto* id = originalFactoryLifetimeDiagnostic())
+        return {false, id, 0};
     return payload_ ? payload_->reset()
                     : rhi::CommandValidationResult{
                           false,
@@ -701,6 +705,14 @@ rhi::CommandValidationResult VulkanRhiQueryPool::reset()
 
 rhi::QueryExecutionStatus VulkanRhiQueryPool::executionStatus() const
 {
+    if (const auto* id = originalFactoryLifetimeDiagnostic()) {
+        rhi::QueryExecutionStatus status;
+        status.type = desc_.type;
+        status.count = desc_.count;
+        status.state = rhi::QueryExecutionState::DiagnosticFailure;
+        status.diagnostics = id;
+        return status;
+    }
     if (payload_) {
         return payload_->executionStatus();
     }

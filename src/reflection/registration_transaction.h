@@ -14,6 +14,10 @@ class class_info;
 class db;
 class typeinfo;
 
+namespace detail {
+template <class T, class Enable> struct NativeBindingSupport;
+}
+
 enum class RegistrationOwnership : std::uint8_t {
     Unspecified,
     Engine,
@@ -40,6 +44,7 @@ struct ReflectionRegistrationContract {
 };
 
 struct RegistrationClassReceipt {
+    core::pmr::String generatedSource{&core::defaultCpuMemoryResource()};
     core::pmr::String typeName{&core::defaultCpuMemoryResource()};
     core::pmr::String reflectedName{&core::defaultCpuMemoryResource()};
     value_t valueType = others_t;
@@ -52,10 +57,33 @@ struct RegistrationClassReceipt {
     core::pmr::String moduleExport{&core::defaultCpuMemoryResource()};
 };
 
+enum class RegistrationNativeShape : std::uint8_t {
+    Scalar,
+    FixedArray,
+    Sequence,
+    Mapping,
+    Optional,
+    OpaqueToken,
+};
+
+struct RegistrationNativeSupport {
+    core::pmr::String sourceType{&core::defaultCpuMemoryResource()};
+    core::pmr::String typeName{&core::defaultCpuMemoryResource()};
+    RegistrationNativeShape shape = RegistrationNativeShape::Scalar;
+};
+
 struct RegistrationReceipt {
     core::pmr::String ownerIdentity{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<RegistrationClassReceipt> classes{&core::defaultCpuMemoryResource()};
     ReflectionRegistrationContract declarations;
+    // CompiledNativeTypeBinding/1 binds metadata spelling to the actual C++
+    // type selected by the generated translation unit. Domain classes still
+    // require their own declarations; closed native storage has a separate,
+    // explicit support declaration and never becomes a public module type.
+    core::pmr::Map<core::pmr::String, core::pmr::String> nativeTypeBindings{
+        &core::defaultCpuMemoryResource()};
+    core::pmr::Vector<RegistrationNativeSupport> nativeSupportTypes{
+        &core::defaultCpuMemoryResource()};
 
     ARP_API core::pmr::String canonicalText() const;
     ARP_API core::pmr::String fingerprint() const;
@@ -94,6 +122,10 @@ public:
         get_derived_info_func getDerivedInfo);
     const typeinfo* registerType(NameView typeName, class_info* cls, std::uint64_t mask);
     bool setOwner(std::shared_ptr<void> owner);
+    bool bindNativeType(NameView sourceType, const typeinfo* type);
+    bool prepareGeneratedClass(NameView nativeName, NameView contract, NameView source);
+    bool recordGeneratedClass(const class_info*, NameView contract, NameView source);
+    const void* publicationFunctionIdentity(const void* staged) const;
 
     void requireDeclaredContracts() noexcept { requireDeclaredContracts_ = true; }
 
@@ -108,6 +140,7 @@ public:
 
     RegistrationReceipt receipt() const;
     const class_info* publicationClass(const class_info* staged) const;
+    const class_info* contractClass(const class_info* type) const;
     bool commit(RegistrationReceipt& receipt, core::pmr::String& diagnostics);
     bool commit(
         NameView expectedFingerprint, RegistrationReceipt& receipt, core::pmr::String& diagnostics);
@@ -116,6 +149,13 @@ public:
 
 private:
     friend class db;
+    template <class T, class Enable> friend struct detail::NativeBindingSupport;
+
+    // Only the compile-time closed-shape witnesses may authorize storage.
+    // A caller-supplied shape enum cannot turn an arbitrary domain class into
+    // an undeclared implementation type.
+    bool declareNativeSupportType(
+        NameView sourceType, const typeinfo* type, RegistrationNativeShape shape);
 
     bool ownsClass(const class_info* value) const;
     bool validate(core::pmr::String& diagnostics) const;
@@ -126,9 +166,25 @@ private:
     core::pmr::Map<core::pmr::String, core::UniquePtr<typeinfo>> types_{
         &core::defaultCpuMemoryResource()};
     core::pmr::Set<core::pmr::String> declaredClasses_{&core::defaultCpuMemoryResource()};
+    core::pmr::Map<core::pmr::String, class_info*> completingNativeClasses_{
+        &core::defaultCpuMemoryResource()};
+    core::pmr::Map<core::pmr::String, class_info*> reusingNativeClasses_{
+        &core::defaultCpuMemoryResource()};
+
+    struct GeneratedSchema {
+        core::pmr::String contract{&core::defaultCpuMemoryResource()};
+        core::pmr::String source{&core::defaultCpuMemoryResource()};
+    };
+
+    core::pmr::Map<core::pmr::String, GeneratedSchema> preparedGeneratedSchemas_{
+        &core::defaultCpuMemoryResource()};
     core::pmr::Map<core::pmr::String, std::shared_ptr<void>> owners_{
         &core::defaultCpuMemoryResource()};
     ReflectionRegistrationContract declarations_;
+    core::pmr::Map<core::pmr::String, const typeinfo*> nativeTypeBindings_{
+        &core::defaultCpuMemoryResource()};
+    core::pmr::Map<core::pmr::String, RegistrationNativeSupport> nativeSupportTypes_{
+        &core::defaultCpuMemoryResource()};
     core::pmr::Map<core::pmr::String, const class_info*> contractClasses_{
         &core::defaultCpuMemoryResource()};
     core::pmr::Map<core::pmr::String, core::pmr::String> contractClassSnapshots_{
@@ -156,6 +212,18 @@ private:
     bool committed_ = false;
 };
 
+// GeneratedSchemaReuse/1: explicit reuse of an unchanged generated schema and
+// canonical originating-header digest. The published identity and callbacks
+// remain authoritative; an arbitrary explicit declaration is never reusable.
+ARP_API bool prepareGeneratedRegistrationClass(
+    NameView nativeName, NameView contract, NameView source);
+ARP_API bool declareGeneratedRegistrationClassContract(NameView key,
+    NameView contract,
+    const class_info* cls,
+    NameView source,
+    RegistrationOwnership ownership,
+    RegistrationLifecycle lifecycle,
+    NameView moduleExport);
 ARP_API bool declareRegistrationContractRecord(NameView key, NameView contract);
 ARP_API core::pmr::String canonicalRegistrationTypeContract(NameView sourceType,
     const core::pmr::Map<core::pmr::String, core::pmr::String>& reflectedNames);

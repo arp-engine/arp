@@ -140,4 +140,53 @@ bool EditorScenePersistence::take(RequestHandle handle, core::io::AtomicFileResu
     return store_.take(handle, result);
 }
 
+EditorScenePersistence::RequestHandle EditorScenePersistence::saveScript(
+    const EditorSceneDocument& document,
+    const EditorSceneScriptInputs& inputs,
+    const EditorSceneScriptFilePreparation::Prepared& prepared,
+    core::pmr::String& diagnostic)
+{
+    diagnostic_ = nullptr;
+    diagnostic.clear();
+    try {
+        // Allocate all worker-owned payloads before final contextual admission.
+        auto path = prepared.path();
+        auto bytes = prepared.replacementBytes();
+        core::io::FileReplacePrecondition expected(prepared.targetExisted()
+                ? core::io::FileReplacePrecondition::Kind::MatchBytes
+                : core::io::FileReplacePrecondition::Kind::MustBeMissing);
+        expected.expectedBytes = prepared.previousBytes();
+        if (!prepared.current(document, inputs, diagnostic))
+            return {};
+        const auto handle =
+            files_.replaceIfUnchanged(std::move(path), std::move(bytes), std::move(expected));
+        if (!handle) {
+            diagnostic_ = files_.diagnostic();
+            diagnostic = diagnostic_ ? diagnostic_ : "EDITOR-SCRIPT-FILE-SUBMIT";
+        }
+        return handle;
+    } catch (const std::exception&) {
+        diagnostic_ = "EDITOR-SCRIPT-FILE-SUBMIT-EXCEPTION";
+        diagnostic = diagnostic_;
+        return {};
+    }
+}
+
+EditorScenePersistence::RequestHandle EditorScenePersistence::readScript(
+    const std::filesystem::path& projectRoot,
+    std::string_view relativePath,
+    std::filesystem::path* resolvedTarget)
+{
+    diagnostic_ = nullptr;
+    std::filesystem::path resolved;
+    if (!resolvePath(projectRoot, relativePath, true, resolved, diagnostic_))
+        return {};
+    const auto request = readResolved(resolved);
+    if (!request)
+        diagnostic_ = files_.diagnostic();
+    if (request && resolvedTarget)
+        resolvedTarget->swap(resolved);
+    return request;
+}
+
 } // namespace arp::editor

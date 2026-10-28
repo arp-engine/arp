@@ -734,7 +734,7 @@ void verifyNativePreparation(const std::shared_ptr<VulkanRhiRuntime>& runtime)
             std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
         assert(observer->submittedFenceCompleted() && probe.created == probe.destroyed
             && !probe.imageDestructions);
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
         observer.reset();
         assert(probe.imageDestructions == 2u);
         assert(!probe.queryPoolCreations && !probe.queryResets && !probe.timestampWrites);
@@ -970,7 +970,7 @@ void verifyContentObservations(const std::shared_ptr<VulkanRhiRuntime>& runtime)
             && !probe.imageDestructions
             && std::string_view(observer->preparedOrdinaryRenderPassContentDiagnostic())
                 == "RHI-VULKAN-COLD-RENDER-PASS-CONTENT-UNPREPARED");
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
         observer.reset();
         assert(probe.imageDestructions == 2u);
         assert(!probe.queryPoolCreations && !probe.queryResets && !probe.timestampWrites);
@@ -1155,7 +1155,7 @@ void verifyOrdinaryAttachmentRecording(const std::shared_ptr<VulkanRhiRuntime>& 
                     assert(native->waitSubmittedFenceUntil(
                         std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
                     assert(native->submittedFenceCompleted());
-                    retireCompletedVulkanRhiSubmittedCommands();
+                    retireCompletedVulkanRhiSubmittedCommands(*runtime);
                     return nullptr;
                 }));
             if (capture)
@@ -1241,7 +1241,7 @@ void verifyOrdinaryAttachmentRecording(const std::shared_ptr<VulkanRhiRuntime>& 
                     assert(finished && native->submit(diagnostic));
                     assert(native->waitSubmittedFenceUntil(
                         std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
-                    retireCompletedVulkanRhiSubmittedCommands();
+                    retireCompletedVulkanRhiSubmittedCommands(*runtime);
                     return nullptr;
                 }));
             const auto content =
@@ -1263,7 +1263,7 @@ void verifyOrdinaryAttachmentRecording(const std::shared_ptr<VulkanRhiRuntime>& 
         assert(finished && native->submit(diagnostic)
             && native->waitSubmittedFenceUntil(
                 std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
         const auto content =
             f.parentAt(0u).observeOriginalContent(f.barriers[0].textureSubresources);
         assert(content

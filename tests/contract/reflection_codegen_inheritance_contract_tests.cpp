@@ -1,14 +1,20 @@
 #include "core/memory/cpu_allocator.h"
 #include "fixtures/reflection_codegen_inheritance_fixture.h"
+#include "scriptvm/runtime/module_registration.h"
 
 #include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 
+namespace arp::scriptvm {
+class ModuleRegistration;
+}
+
 namespace arp::reflection::generated {
 void register_reflection_codegen_inheritance_reflection();
-}
+bool register_reflection_codegen_inheritance_reflection(arp::scriptvm::ModuleRegistration*);
+} // namespace arp::reflection::generated
 
 namespace {
 
@@ -26,6 +32,7 @@ arp::core::pmr::String readText(const std::filesystem::path& path)
 int main()
 {
     const auto json = readText(std::filesystem::path(ARP_REFLECTION_CODEGEN_INHERITANCE_META));
+    assert(json.find("\"nativeTypeBindingsVersion\": 1") != arp::core::pmr::String::npos);
     assert(json.find("\"ownership\": \"Engine\"") != arp::core::pmr::String::npos);
     assert(json.find("\"lifecycle\": \"Explicit\"") != arp::core::pmr::String::npos);
     assert(json.find("\"bases\": [\"arp::tests::reflection_codegen::CodegenNativeBase\"]")
@@ -47,8 +54,18 @@ int main()
             "\"name\": \"value\", \"cppType\": \"int\", \"access\": \"public\", \"source\": \"accessor\", \"getter\": \"value\", \"setter\": \"set_value\"")
         != arp::core::pmr::String::npos);
 
-    arp::reflection::generated::register_reflection_codegen_inheritance_reflection();
     using namespace arp::reflection;
+    RegistrationTransaction transaction("generated-inheritance-contract");
+    transaction.requireDeclaredContracts();
+    {
+        RegistrationScope scope(transaction);
+        assert(generated::register_reflection_codegen_inheritance_reflection(nullptr));
+    }
+    auto generatedReceipt = transaction.receipt();
+    assert(!generatedReceipt.nativeTypeBindings.empty());
+    assert(transaction.setOwner(arp::core::makeShared<int>(1)));
+    arp::core::pmr::String diagnostics{&arp::core::defaultCpuMemoryResource()};
+    assert(transaction.commit(generatedReceipt, diagnostics));
     using namespace arp::tests::reflection_codegen;
     object value = class_of<CodegenNativeDerived>()->new_object();
     assert(!value.is_undefined());
@@ -69,5 +86,24 @@ int main()
     assert(constructed.call("add_one", 4).cast<int>() == 5);
     assert(constructed.call("add_int", 4).cast<int>() == 14);
     assert(constructed.call("add_float", 4.0f).cast<int>() == 24);
+    const auto* identity = class_of<CodegenConstructible>();
+    const auto* callback = identity->get_field("add_int").cast<function>().identity();
+    RegistrationTransaction reuse("generated-inheritance-reuse");
+    reuse.requireDeclaredContracts();
+    arp::scriptvm::ModuleRegistration module("reflection_codegen_inheritance");
+    {
+        RegistrationScope scope(reuse);
+        assert(generated::register_reflection_codegen_inheritance_reflection(&module));
+    }
+    assert(module.remapReflectionTypes(reuse));
+    bool retainedCallback = false;
+    for (const auto& binding : module.reflectionCallables())
+        retainedCallback |= binding.contract.functionIdentity == callback;
+    assert(retainedCallback);
+    assert(reuse.setOwner(arp::core::makeShared<int>(2)));
+    RegistrationReceipt reused;
+    assert(reuse.commit(reused, diagnostics));
+    assert(class_of<CodegenConstructible>() == identity);
+    assert(identity->get_field("add_int").cast<function>().identity() == callback);
     return 0;
 }

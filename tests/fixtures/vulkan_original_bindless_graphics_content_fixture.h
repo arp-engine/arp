@@ -1031,7 +1031,7 @@ public:
                                     assert(command->waitSubmittedFenceUntil(
                                         std::chrono::steady_clock::now() + std::chrono::seconds(5),
                                         diagnostic));
-                                    retireCompletedVulkanRhiSubmittedCommands();
+                                    retireCompletedVulkanRhiSubmittedCommands(*device);
                                 }
                                 if (terminalCases
                                     && (terminal.uncertainSubmit || terminal.uncertainFence)) {

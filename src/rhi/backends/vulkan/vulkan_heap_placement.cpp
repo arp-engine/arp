@@ -196,7 +196,7 @@ public:
         }
         // Existing retirement proves completion with the original fences;
         // accepted/issued/presented work never makes an entry reusable.
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime_);
         for (const auto& allocation : allocations_) {
             if (allocation.use_count() == 1 && allocation->size() >= size)
                 return allocation;

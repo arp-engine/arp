@@ -27,6 +27,7 @@
 #include "rhi/gpu_descriptors.h"
 #include "rhi/gpu_extensions.h"
 #include "rhi/gpu_pipeline.h"
+#include "tests/fixtures/device_idle_failure_fixture.h"
 #include "tests/fixtures/metal_host_diagnostic_device_fixture.h"
 
 #include <cassert>
@@ -1274,6 +1275,8 @@ int main()
             assert(!arp::rhi_metal::createMetalRhiHostDiagnosticDevice(host, version));
         auto fixture = arp::rhi_metal::createMetalRhiHostDiagnosticDevice(host, 1u);
         assert(fixture && !fixture->capabilities().core.graphics);
+        arp::tests::DeviceIdleFailureFixture::verify(
+            *fixture, "RHI-METAL-IDLE-NATIVE-RUNTIME-UNAVAILABLE");
         const auto numeric = fixture->capabilities().computeResources;
         assert(!numeric.maxComputeWorkgroupSizeZ && !numeric.maxComputeWorkgroupCountX
             && !numeric.maxComputeWorkgroupCountY && !numeric.maxComputeWorkgroupCountZ

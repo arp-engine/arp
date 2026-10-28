@@ -3,6 +3,7 @@
 #include "2d/physics_components.h"
 #include "editor/workspace/editor_scene_authoring_codec.h"
 #include "editor/workspace/editor_scene_component_registry.h"
+#include "editor/workspace/editor_script_component_archive.h"
 
 #include <algorithm>
 #include <cassert>
@@ -17,6 +18,17 @@ void require(bool condition, const char* diagnostic)
 {
     if (!condition)
         throw std::invalid_argument(diagnostic);
+}
+
+EditorScriptComponentArchive scriptArchive(const EditorSceneDocument& document)
+{
+    // History owns explicit operation budgets. Field traversal retains the
+    // formal SerializationArchive limits; no gameplay defaults are inferred.
+    return EditorScriptComponentArchive(document,
+        {Presence::operationLimit.bytes,
+            Presence::operationLimit.references,
+            Presence::operationLimit.bytes,
+            reflection::SerializationOptions{}});
 }
 
 bool sameLinks(const core::pmr::Vector<scene::SceneObjectLink>& a,
@@ -243,6 +255,55 @@ EditorScenePresence::Component EditorScenePresence::captureComponent(
     return result;
 }
 
+EditorScenePresence::Component EditorScenePresence::captureComponent(
+    const EditorSceneDocument& document,
+    const scene::Component& component,
+    std::size_t index,
+    const scene::Scene::IdentityRestoration* transaction)
+{
+    if (component.scriptInstance().is_undefined())
+        return captureComponent(component, index);
+    require(index, "EDITOR-SCENE-HISTORY-COMPONENT-INDEX");
+    Component result;
+    result.id = component.id();
+    result.index = index;
+    result.type = component.scriptTypeName();
+    result.script = core::makeShared<EditorScriptComponentState>(
+        scriptArchive(document).capture(component, transaction));
+    result.cost = {sizeof(Component) + result.type.capacity() + 1
+            + EditorScriptComponentArchive::storageBytes(*result.script),
+        0,
+        1,
+        result.script->references.size()};
+    checkBudget(result.cost);
+    return result;
+}
+
+scene::Component& EditorScenePresence::stageComponent(const EditorSceneDocument& document,
+    scene::Scene::IdentityRestoration& transaction,
+    scene::GameObjectId owner,
+    const Component& snapshot,
+    bool allocateIdentity)
+{
+    if (snapshot.script)
+        return scriptArchive(document).stage(
+            transaction, owner, snapshot.id, snapshot.index, *snapshot.script, allocateIdentity);
+    return allocateIdentity
+        ? transaction.createComponent(owner, snapshot.type, snapshot.index)
+        : transaction.restoreComponent(owner, snapshot.id, snapshot.type, snapshot.index);
+}
+
+bool EditorScenePresence::matchesComponent(const EditorSceneDocument& document,
+    const scene::Component& component,
+    const Component& snapshot)
+{
+    if (!snapshot.script)
+        return matchesComponent(component, snapshot);
+    return component.id() == snapshot.id && component.scriptTypeName() == snapshot.type
+        && EditorScriptComponentArchive::equal(
+            scriptArchive(document).capture(component), *snapshot.script);
+}
+
 bool EditorScenePresence::matchesComponent(
     const scene::Component& component, const Component& snapshot)
 {
@@ -269,6 +330,13 @@ void EditorScenePresence::applyComponent(scene::Component& component,
 {
     require(component.id() == snapshot.id && component.scriptTypeName() == snapshot.type,
         "EDITOR-SCENE-HISTORY-COMPONENT-MISMATCH");
+    if (snapshot.script) {
+        require(snapshot.properties.empty(), "EDITOR-SCENE-HISTORY-MIXED-COMPONENT-RECORD");
+        scriptArchive(document).apply(component, *snapshot.script, transaction);
+        return;
+    }
+    require(
+        component.scriptInstance().is_undefined(), "EDITOR-SCENE-HISTORY-SCRIPT-RECORD-REQUIRED");
     const auto schema = EditorSceneDocument::componentProperties(component);
     for (const auto& property : snapshot.properties) {
         const auto found = std::find_if(schema.begin(), schema.end(), [&](const auto& item) {
@@ -287,19 +355,35 @@ void EditorScenePresence::applyComponent(scene::Component& component,
 void EditorScenePresence::validateRemoval(
     const EditorSceneDocument& document, const scene::Component& component)
 {
-    require(editorSceneComponentIdentityRestorable(component.scriptTypeName()),
+    require(!component.scriptInstance().is_undefined()
+            || editorSceneComponentIdentityRestorable(component.scriptTypeName()),
         "EDITOR-SCENE-HISTORY-FACTORY-UNSUPPORTED");
     const auto* owner = component.gameObject();
     require(owner, "EDITOR-SCENE-HISTORY-OWNER");
     // This constructor dependency is already explicit in the component registry.
-    if (std::string_view(component.scriptTypeName()) == "RigidBody2DComponent")
+    if (component.scriptInstance().is_undefined()
+        && std::string_view(component.scriptTypeName()) == "RigidBody2DComponent")
         for (const auto& sibling : owner->components())
             require(std::string_view(sibling->scriptTypeName()) != "Collider2DComponent",
                 "EDITOR-SCENE-HISTORY-COMPONENT-DEPENDENCY");
-    if (std::string_view(component.scriptTypeName()) == "SpriteRendererComponent")
+    if (component.scriptInstance().is_undefined()
+        && std::string_view(component.scriptTypeName()) == "SpriteRendererComponent")
         for (const auto& sibling : owner->components())
             require(std::string_view(sibling->scriptTypeName()) != "SpriteAnimationComponent",
                 "EDITOR-SCENE-HISTORY-COMPONENT-DEPENDENCY");
+    const auto checkScripts = [&](const scene::GameObject& object) {
+        for (const auto& candidate : object.components()) {
+            if (candidate.get() == &component || candidate->scriptInstance().is_undefined())
+                continue;
+            const auto state = scriptArchive(document).capture(*candidate);
+            for (const auto& reference : state.references)
+                require(reference.owner != owner->id() || reference.component != component.id(),
+                    "EDITOR-SCENE-HISTORY-COMPONENT-REFERENCED");
+        }
+    };
+    checkScripts(document.scene());
+    for (const auto& object : document.scene().objects())
+        checkScripts(*object);
     for (const auto* object : {static_cast<const scene::GameObject*>(&document.scene())})
         for (const auto& field : document.inspectorProperties(object->id()))
             require(!(field.kind == Kind::SceneObjectReference
@@ -324,9 +408,9 @@ void EditorScenePresence::validateRestoration(
         document.scene(), {0, 1}, document.identityRestorationFactory());
     const auto* object = document.scene().findObject(owner);
     require(object, "EDITOR-SCENE-HISTORY-OWNER");
-    auto& candidate =
-        transaction.createComponent(owner, snapshot.type, object->components().size());
     auto probe = snapshot;
+    probe.index = object->components().size();
+    auto& candidate = stageComponent(document, transaction, owner, probe, true);
     probe.id = candidate.id();
     applyComponent(candidate, probe, document, transaction);
     // Abandon the candidate: neither its temporary ID nor its native control is
@@ -334,7 +418,7 @@ void EditorScenePresence::validateRestoration(
 }
 
 EditorScenePresence::Subtree EditorScenePresence::captureSubtree(
-    const EditorSceneDocument& document, scene::GameObjectId root)
+    const EditorSceneDocument& document, scene::GameObjectId root, ScriptPolicy scripts)
 {
     require(root != document.scene().rootId() && document.scene().findObject(root),
         "EDITOR-SCENE-HISTORY-SUBTREE-ROOT");
@@ -362,7 +446,9 @@ EditorScenePresence::Subtree EditorScenePresence::captureSubtree(
         result.cost += {sizeof(Object) + value.name.capacity() + 1, 1, 1, 0};
         checkBudget(result.cost);
         for (std::size_t index = 1; index < object->components().size(); ++index) {
-            auto component = captureComponent(*object->components()[index], index);
+            auto component = scripts == ScriptPolicy::Archive
+                ? captureComponent(document, *object->components()[index], index)
+                : captureComponent(*object->components()[index], index);
             result.cost += component.cost;
             checkBudget(result.cost);
             value.components.push_back(std::move(component));
@@ -387,6 +473,12 @@ EditorScenePresence::Subtree EditorScenePresence::captureSubtree(
         for (std::size_t componentIndex = 0; componentIndex < object.components().size();
             ++componentIndex) {
             const auto& component = object.components()[componentIndex];
+            if (!component->scriptInstance().is_undefined()) {
+                const auto state = scriptArchive(document).capture(*component);
+                for (const auto& reference : state.references)
+                    require(!contains(result, reference.owner),
+                        "EDITOR-SCENE-HISTORY-EXTERNAL-SCRIPT-REFERENCE-UNSUPPORTED");
+            }
             const auto* joint = dynamic_cast<const physics2d::Joint2DComponent*>(component.get());
             if (joint
                 && (contains(result, scene::GameObjectId::fromValue(joint->bodyAObjectId()))
@@ -450,7 +542,16 @@ bool EditorScenePresence::matchesSubtree(
         return false;
     // Capturing again also detects newly added descendants and external incoming
     // references. No irreversible deletion precedes this comparison.
-    const auto actual = captureSubtree(document, snapshot.objects.front().id);
+    const bool hasScripts =
+        std::any_of(snapshot.objects.begin(), snapshot.objects.end(), [](const auto& object) {
+            return std::any_of(
+                object.components.begin(), object.components.end(), [](const auto& component) {
+                    return bool(component.script);
+                });
+        });
+    const auto actual = captureSubtree(document,
+        snapshot.objects.front().id,
+        hasScripts ? ScriptPolicy::Archive : ScriptPolicy::Reject);
     if (actual.objects.size() != snapshot.objects.size()
         || actual.externalLinks.size() != snapshot.externalLinks.size()
         || actual.externalJoints.size() != snapshot.externalJoints.size())
@@ -465,7 +566,7 @@ bool EditorScenePresence::matchesSubtree(
             return false;
         const auto* object = document.scene().findObject(b.id);
         for (std::size_t c = 0; c < b.components.size(); ++c)
-            if (!matchesComponent(*object->components()[c + 1], b.components[c]))
+            if (!matchesComponent(document, *object->components()[c + 1], b.components[c]))
                 return false;
     }
     for (std::size_t i = 0; i < snapshot.externalLinks.size(); ++i) {
@@ -504,10 +605,10 @@ void EditorScenePresence::restoreSubtree(EditorSceneDocument& document, const Su
     // Create every component before resolving local object/type references.
     for (const auto& object : snapshot.objects)
         for (const auto& component : object.components)
-            transaction.restoreComponent(object.id, component.id, component.type, component.index);
+            stageComponent(document, transaction, object.id, component);
     for (const auto& object : snapshot.objects)
         for (const auto& component : object.components)
-            applyComponent(*transaction.findCandidate(object.id)->findComponent(component.id),
+            applyComponent(*transaction.resolveComponent(object.id, component.id),
                 component,
                 document,
                 transaction);

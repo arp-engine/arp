@@ -1,8 +1,11 @@
 #include "platform/render_backend_preference.h"
 #include "platform/render_system_ordered_profile.h"
+#include "renderer/gui/gui_ordered_unified_contract.h"
+#include "rhi/semantics/webgl_context_ownership.h"
 
 #include <cassert>
 #include <cstring>
+#include <limits>
 
 #ifdef NDEBUG
 #error Ordered platform contracts require assertions
@@ -38,6 +41,34 @@ int main()
     p.frames.commandQuota = core::makeShared<core::CpuMemoryQuota>(8388608);
     p.frames.surface = {"#canvas", {1280, 720}, rhi::TextureFormat::Rgba8Unorm, 0};
     assert(!validate());
+    p.derivativesOptIn = true;
+    assert(std::strcmp(validate(), "PLATFORM-ORDERED-DERIVATIVES-PROFILE-REQUIRED") == 0);
+    p.contractVersion = 2;
+    p.mainBrowserThreadWithWorkersOptIn = true;
+    assert(!validate());
+    rhi::semantics::WebGlContextOwnershipRequest context;
+    using Context = rhi::semantics::WebGlContextOwnershipContract;
+    assert(std::strcmp(Context::executionThreadDiagnostic(context, true, true, true),
+               "RHI-WEBGL1-CONTEXT-PTHREAD-PRODUCT-UNAVAILABLE")
+        == 0);
+    context.contractVersion = 2;
+    context.mainBrowserThreadWithWorkersOptIn = true;
+    assert(!Context::executionThreadDiagnostic(context, true, true, true));
+    assert(Context::executionThreadDiagnostic(context, true, false, true));
+    assert(Context::executionThreadDiagnostic(context, true, true, false));
+    assert(!Context::executionThreadDiagnostic(context, false, true, true));
+    rhi::ScissorState scissor{7, 9, 2, 3};
+    assert(
+        !renderer::GuiOrderedUnifiedContract::clip({.25f, 1.5f, 10.5f, 4.25f}, {64, 32}, scissor));
+    assert(scissor.x == 0 && scissor.y == 1 && scissor.width == 11 && scissor.height == 5);
+    assert(renderer::GuiOrderedUnifiedContract::clip({-.25f, 0, 1, 1}, {64, 32}, scissor));
+    assert(scissor.x == 0 && scissor.width == 11);
+    assert(renderer::GuiOrderedUnifiedContract::clip({0, 0, 65, 1}, {64, 32}, scissor));
+    assert(renderer::GuiOrderedUnifiedContract::clip({0, 0, 0, 1}, {64, 32}, scissor));
+    assert(renderer::GuiOrderedUnifiedContract::clip(
+        {std::numeric_limits<float>::quiet_NaN(), 0, 1, 1}, {64, 32}, scissor));
+    assert(renderer::GuiOrderedUnifiedContract::clip(
+        {0, 0, std::numeric_limits<float>::infinity(), 1}, {64, 32}, scissor));
     const auto allocations = core::defaultCpuAllocator().stats().allocationCount;
     for (auto backend :
         {rhi::Backend::Null, rhi::Backend::Vulkan, rhi::Backend::Metal, rhi::Backend::WebGPU}) {

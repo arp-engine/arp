@@ -6,6 +6,11 @@ namespace arp::scene {
 
 class SceneId {
 public:
+    // ReflectionNativeToken/1 describes CPU identity storage only. It grants
+    // no serialization, object resolution or lifetime authority.
+    using ReflectionNativeTokenStorage = std::uint64_t;
+    static constexpr std::uint32_t reflectionNativeTokenVersion = 1u;
+
     SceneId() = default;
 
     static SceneId invalid() { return SceneId(); }
@@ -28,6 +33,11 @@ private:
 
 class GameObjectId {
 public:
+    // ReflectionNativeToken/1 describes CPU identity storage only. It grants
+    // no serialization, object resolution or lifetime authority.
+    using ReflectionNativeTokenStorage = std::uint64_t;
+    static constexpr std::uint32_t reflectionNativeTokenVersion = 1u;
+
     GameObjectId() = default;
 
     static GameObjectId invalid() { return GameObjectId(); }
@@ -50,6 +60,11 @@ private:
 
 class ComponentId {
 public:
+    // ReflectionNativeToken/1 describes CPU identity storage only. It grants
+    // no serialization, object resolution or lifetime authority.
+    using ReflectionNativeTokenStorage = std::uint64_t;
+    static constexpr std::uint32_t reflectionNativeTokenVersion = 1u;
+
     ComponentId() = default;
 
     static ComponentId invalid() { return ComponentId(); }

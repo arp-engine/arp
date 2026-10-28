@@ -329,6 +329,9 @@ bool buildClassDescriptorContract(
         arp::reflection::appendRegistrationContractField(value, "name", name);
         arp::reflection::appendRegistrationContractField(value, "cpp-type", cppType);
         arp::reflection::appendRegistrationContractField(value, "access", access);
+        const auto doc = yamlTextOrEmpty(property, "doc");
+        if (!doc.empty())
+            arp::reflection::appendRegistrationContractField(value, "doc", doc);
         arp::reflection::appendRegistrationContractField(value, "source", source);
         if (source == "accessor") {
             const auto getter = yamlTextOrEmpty(property, "getter");
@@ -343,6 +346,10 @@ bool buildClassDescriptorContract(
         }
         if (!appendSortedYamlStrings(property, "flags", value, "flag", diagnostics))
             return false;
+        const auto referenceTarget = yamlTextOrEmpty(property, "referenceTarget");
+        if (!referenceTarget.empty())
+            arp::reflection::appendRegistrationContractField(
+                value, "reference-target", referenceTarget);
         propertyValues.push_back(std::move(value));
     }
     std::sort(propertyValues.begin(), propertyValues.end());
@@ -577,6 +584,41 @@ bool reflectionMetadataMatchesRuntimeReceipt(const std::filesystem::path& metada
             }
             cppToReflectedName.emplace(shortName, reflectedTypeName);
         }
+    }
+    const auto* bindingVersion = findYamlValue(root, "nativeTypeBindingsVersion");
+    const auto* nativeBindings = findYamlValue(root, "nativeTypeBindings");
+    if (bindingVersion == nullptr || !bindingVersion->is_integer()
+        || bindingVersion->get_value<YamlNode::integer_type>() != 1 || nativeBindings == nullptr
+        || !nativeBindings->is_sequence()) {
+        diagnostics = "generated reflection native type binding contract is missing or unsupported";
+        return false;
+    }
+    core::pmr::Set<core::pmr::String> boundSources{&core::defaultCpuMemoryResource()};
+    for (const auto& binding : nativeBindings->get_value_ref<const YamlNode::sequence_type&>()) {
+        if (!binding.is_string() || !boundSources.insert(yamlString(binding)).second) {
+            diagnostics =
+                "generated reflection native type binding source is invalid or duplicated";
+            return false;
+        }
+        const auto source = yamlString(binding);
+        const auto compiled = receipt.nativeTypeBindings.find(source);
+        if (compiled == receipt.nativeTypeBindings.end() || compiled->second.empty()) {
+            diagnostics = "runtime reflection native type binding is missing: ";
+            diagnostics += source;
+            return false;
+        }
+        const auto existing = cppToReflectedName.find(source);
+        if (existing != cppToReflectedName.end() && existing->second != compiled->second) {
+            diagnostics =
+                "runtime reflection native type binding conflicts with a declared class: ";
+            diagnostics += source;
+            return false;
+        }
+        cppToReflectedName.insert_or_assign(source, compiled->second);
+    }
+    if (boundSources.size() != receipt.nativeTypeBindings.size()) {
+        diagnostics = "runtime reflection native type binding has an undeclared source";
+        return false;
     }
     for (const auto& value : classes->get_value_ref<const YamlNode::sequence_type&>()) {
         const auto name = yamlString(*findYamlValue(value, "reflectName"));
@@ -840,7 +882,8 @@ bool reflectionMetadataMatchesRuntimeReceipt(const std::filesystem::path& metada
         const auto expectedType = expectedObjectTypes.find(object.name);
         const auto* actualClass = object.value.class_();
         if (expectedType == expectedObjectTypes.end() || actualClass == nullptr
-            || actualClass->name() != expectedType->second) {
+            || metadataRuntimeTypeContract(actualClass->nativeTypeName(), cppToReflectedName)
+                != expectedType->second) {
             diagnostics =
                 "runtime reflection module object does not match its generated class contract";
             return false;
@@ -850,16 +893,61 @@ bool reflectionMetadataMatchesRuntimeReceipt(const std::filesystem::path& metada
     if (receipt.declarations.canonicalText() != expectedDeclarations.canonicalText()) {
         diagnostics =
             "runtime reflection canonical descriptor receipt does not match generated metadata";
+        for (const auto& expected : expectedDeclarations.records) {
+            const auto actual = std::find_if(receipt.declarations.records.begin(),
+                receipt.declarations.records.end(),
+                [&](const auto& record) {
+                    return record.key == expected.key;
+                });
+            if (actual != receipt.declarations.records.end()
+                && actual->contract == expected.contract)
+                continue;
+            diagnostics += "; record=";
+            diagnostics += expected.key;
+            diagnostics += "; expected=";
+            diagnostics += expected.contract;
+            diagnostics += "; actual=";
+            diagnostics +=
+                actual == receipt.declarations.records.end() ? "<missing>" : actual->contract;
+            break;
+        }
         return false;
     }
 
+    core::pmr::Set<core::pmr::String> supportNames{&core::defaultCpuMemoryResource()};
+    for (const auto& support : receipt.nativeSupportTypes) {
+        if (boundSources.find(support.sourceType) == boundSources.end() || support.typeName.empty()
+            || !supportNames.insert(support.typeName).second
+            || static_cast<unsigned>(support.shape)
+                > static_cast<unsigned>(arp::reflection::RegistrationNativeShape::OpaqueToken)) {
+            diagnostics = "runtime reflection native support declaration is invalid";
+            return false;
+        }
+    }
     core::pmr::Set<core::pmr::String> receiptNames{&core::defaultCpuMemoryResource()};
     for (const auto& cls : receipt.classes) {
+        if (supportNames.erase(cls.typeName) != 0u) {
+            if (cls.reflectedName != cls.typeName || !cls.bases.empty() || !cls.members.empty()
+                || cls.size == 0u || cls.alignment == 0u
+                || cls.ownership != arp::reflection::RegistrationOwnership::Unspecified
+                || cls.lifecycle != arp::reflection::RegistrationLifecycle::Unspecified
+                || !cls.moduleExport.empty()
+                || expectedTypes.find(cls.reflectedName) != expectedTypes.end()
+                || expectedEnums.find(cls.reflectedName) != expectedEnums.end()) {
+                diagnostics =
+                    "runtime reflection native support type has undeclared class semantics";
+                return false;
+            }
+            continue;
+        }
         receiptNames.insert(cls.reflectedName);
         const auto expected = expectedClasses.find(cls.reflectedName);
         if (expected == expectedClasses.end()) {
             if (expectedEnums.find(cls.reflectedName) == expectedEnums.end()) {
-                diagnostics = "runtime reflection transaction declared an unexpected class";
+                diagnostics = "runtime reflection transaction declared an unexpected class: ";
+                diagnostics += cls.typeName;
+                diagnostics += "; reflected=";
+                diagnostics += cls.reflectedName;
                 return false;
             }
             if (cls.members.size() != 1u
@@ -954,7 +1042,7 @@ bool reflectionMetadataMatchesRuntimeReceipt(const std::filesystem::path& metada
     }
     auto expectedDeclaredNames = expectedTypes;
     expectedDeclaredNames.insert(expectedEnums.begin(), expectedEnums.end());
-    if (receiptNames != expectedDeclaredNames) {
+    if (receiptNames != expectedDeclaredNames || !supportNames.empty()) {
         diagnostics = "runtime reflection transaction receipt is incomplete";
         return false;
     }
@@ -2224,34 +2312,7 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
         core::ProcessRunRequest request;
         request.executable = std::filesystem::path(snapshotCompilerCommand.c_str());
         request.outputFile = logPath;
-        const auto& compilerLayout = compilerSnapshot.layout;
-        if (!compilerLayout.programSearchDirectory.empty()) {
-            core::pmr::String toolchainSearch("-B", &core::defaultCpuMemoryResource());
-            toolchainSearch += compilerLayout.programSearchDirectory.generic_string().c_str();
-            toolchainSearch.push_back('/');
-            addProcessArgument(request, toolchainSearch);
-        }
-        for (const auto& auxiliaryProgram : compilerLayout.auxiliaryProgramSearchDirectories) {
-            core::pmr::String toolchainSearch("-B", &core::defaultCpuMemoryResource());
-            toolchainSearch += auxiliaryProgram.generic_string().c_str();
-            toolchainSearch.push_back('/');
-            addProcessArgument(request, toolchainSearch);
-        }
-        addProcessArgument(request, "-nostdinc");
-        addProcessArgument(request, "-nostdinc++");
-        for (const auto& systemInclude : compilerLayout.systemIncludeDirectories) {
-            addProcessArgument(request, "-isystem");
-            addProcessPathArgument(request, systemInclude);
-        }
-        for (const auto& libraryDirectory : compilerLayout.libraryDirectories) {
-            core::pmr::String programArgument("-B", &core::defaultCpuMemoryResource());
-            programArgument += libraryDirectory.generic_string().c_str();
-            programArgument.push_back('/');
-            addProcessArgument(request, programArgument);
-            core::pmr::String argument("-L", &core::defaultCpuMemoryResource());
-            argument += libraryDirectory.generic_string().c_str();
-            addProcessArgument(request, argument);
-        }
+        core::CompilerToolchainLayout::appendCompilerArguments(compilerSnapshot.layout, request);
         addProcessArgument(request, "-std=c++17");
         addProcessArgument(request, "-shared");
 #if defined(__MINGW32__)
@@ -2458,14 +2519,16 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
         return nullptr;
     }
 
-    registrar.reflectionModule()->remapReflectionTypes(reflectionTransaction);
     const auto runtimeReceipt = reflectionTransaction.receipt();
-    if (!manifest.reflectionHeaders.empty()
-        && !reflectionMetadataMatchesRuntimeReceipt(reflectionMetaPath,
-            *registrar.reflectionModule(),
-            runtimeReceipt,
-            impl_->lastDiagnostic)) {
-        return nullptr;
+    {
+        arp::reflection::RegistrationScope validationScope(reflectionTransaction);
+        if (!manifest.reflectionHeaders.empty()
+            && !reflectionMetadataMatchesRuntimeReceipt(reflectionMetaPath,
+                *registrar.reflectionModule(),
+                runtimeReceipt,
+                impl_->lastDiagnostic)) {
+            return nullptr;
+        }
     }
     reflectionHash = runtimeReceipt.reflectionContractFingerprint();
     if (!manifest.reflectionRegistryHash.empty()
@@ -2480,6 +2543,10 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
         return nullptr;
     }
 
+    if (!registrar.reflectionModule()->remapReflectionTypes(reflectionTransaction)) {
+        impl_->lastDiagnostic = "C++ plugin reflection publication callable mapping failed";
+        return nullptr;
+    }
     auto exports = registrar.build();
     if (!exports || exports->symbols.empty()) {
         impl_->lastDiagnostic =

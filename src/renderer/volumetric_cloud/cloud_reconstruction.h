@@ -4,6 +4,7 @@
 #include "core/math/unsigned_range.h"
 #include "renderer/volumetric_cloud/cloud_execution_plan.h"
 #include "renderer/volumetric_cloud/cloud_gpu_contract.h"
+#include "renderer/volumetric_cloud/cloud_sample_storage.h"
 
 #include <algorithm>
 #include <array>
@@ -25,6 +26,7 @@ struct CloudReconstructionResources {
     rhi::Extent3D dispatchGroups{};
     std::uint64_t resolvedCount = 0u, resolvedBufferBytes = 0u;
     std::uint64_t retainedGpuBytes = 0u, densityEvaluationBound = 0u;
+    std::uint32_t sampleContractVersion = 0u;
 };
 
 class CloudReconstruction final {
@@ -34,7 +36,7 @@ public:
 
     static CloudResult validate(const CloudReconstructionConfig& c) noexcept
     {
-        if (c.contractVersion != 1u)
+        if (c.contractVersion != 1u && c.contractVersion != 2u)
             return CloudResult::failure("CLOUD-RECONSTRUCTION-VERSION");
         if (!std::isfinite(c.maxRadianceRange) || c.maxRadianceRange <= 0
             || !std::isfinite(c.maxTransmittanceRange) || c.maxTransmittanceRange <= 0
@@ -101,10 +103,12 @@ public:
             !result.success)
             return result;
         CloudReconstructionResources next;
+        next.sampleContractVersion = reconstruction.contractVersion;
         next.resolvedCount = std::uint64_t(extent.width) * extent.height;
         if (next.resolvedCount > UINT32_MAX)
             return CloudResult::failure("CLOUD-SAMPLE-INDEX-OVERFLOW");
-        next.resolvedBufferBytes = next.resolvedCount * kCloudSampleBytes;
+        next.resolvedBufferBytes =
+            next.resolvedCount * CloudSampleStorage::stride(reconstruction.contractVersion);
         const auto perRay = base.densityEvaluationBound / base.sampleCount;
         if (!core::canMultiplyUnsigned(perRay, next.resolvedCount)
             || !core::canAddUnsigned(base.densityEvaluationBound, perRay * next.resolvedCount))
@@ -114,12 +118,14 @@ public:
             return CloudResult::failure("CLOUD-RECONSTRUCTION-WORK-BUDGET");
         // The additional immutable classification uniform belongs to each
         // slot. It is not hidden in the original 368-byte parameter block.
-        const auto delta = next.resolvedBufferBytes - base.sampleBufferBytes
-            + sizeof(CloudReconstructionGpuConstants);
-        if (!core::canMultiplyUnsigned(delta, std::uint64_t(c.framesInFlight))
-            || !core::canAddUnsigned(base.retainedGpuBytes, delta * c.framesInFlight))
+        const auto resolvedSlotBytes =
+            next.resolvedBufferBytes + sizeof(CloudReconstructionGpuConstants);
+        const auto retainedWithoutResolved =
+            base.retainedGpuBytes - base.sampleBufferBytes * c.framesInFlight;
+        if (!core::canMultiplyUnsigned(resolvedSlotBytes, std::uint64_t(c.framesInFlight))
+            || !core::canAddUnsigned(retainedWithoutResolved, resolvedSlotBytes * c.framesInFlight))
             return CloudResult::failure("CLOUD-MEMORY-OVERFLOW");
-        next.retainedGpuBytes = base.retainedGpuBytes + delta * c.framesInFlight;
+        next.retainedGpuBytes = retainedWithoutResolved + resolvedSlotBytes * c.framesInFlight;
         if (next.retainedGpuBytes > c.gpuBudgetBytes)
             return CloudResult::failure("CLOUD-RECONSTRUCTION-MEMORY-BUDGET");
         if (c.framesInFlight > UINT32_MAX / descriptorElementsPerSlot)

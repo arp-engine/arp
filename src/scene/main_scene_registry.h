@@ -17,7 +17,7 @@ class Scene;
 /// registers them for the duration of that world. Script calls only enqueue a
 /// switch; the host commits it at a frame boundary so update/render cannot see
 /// two roots in one frame.
-class MainSceneRegistry final {
+class ARP_API MainSceneRegistry final {
 public:
     using SceneFactory = std::function<Scene*(const arp::core::pmr::String& name)>;
     using SceneDestroyer = std::function<bool(Scene& scene)>;

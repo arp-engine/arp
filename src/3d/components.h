@@ -1,6 +1,7 @@
 #pragma once
 
 #include "3d/bounds.h"
+#include "core/api.h"
 #include "core/math/math.h"
 #include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
@@ -108,7 +109,7 @@ struct TerrainComponentDesc {
 
 ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
-class MeshComponent final : public arp::scene::Component {
+class ARP_API MeshComponent final : public arp::scene::Component {
 public:
     const char* scriptTypeName() const override { return "MeshComponent"; }
 
@@ -215,7 +216,7 @@ private:
 
 ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
-class TerrainComponent final : public arp::scene::Component {
+class ARP_API TerrainComponent final : public arp::scene::Component {
 public:
     const char* scriptTypeName() const override { return "TerrainComponent"; }
 
@@ -343,7 +344,7 @@ struct LightComponentDesc {
 
 ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
-class LightComponent final : public arp::scene::Component {
+class ARP_API LightComponent final : public arp::scene::Component {
 public:
     const char* scriptTypeName() const override { return "LightComponent"; }
 

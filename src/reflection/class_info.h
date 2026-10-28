@@ -59,6 +59,12 @@ public:
 
     object get_field(NameView name) const;
     core::pmr::Map<core::pmr::String, object> get_all_fields() const;
+
+    const core::pmr::Map<core::pmr::String, object>& declaredFields() const noexcept
+    {
+        return dict_;
+    }
+
     core::pmr::Map<core::pmr::String, object> get_all_properties() const;
     object get_attr(const object& inst, NameView name) const;
     object set_attr(const object& inst, NameView name, const object& value) const;
@@ -78,6 +84,9 @@ public:
     void destruct(void* ptr) const;
     object operator[](NameView name) const;
     const core::pmr::String& name() const;
+
+    const core::pmr::String& nativeTypeName() const noexcept { return nativeName_; }
+
     void set_name(NameView name);
     value_t valueType() const;
     std::size_t size() const;
@@ -89,6 +98,7 @@ public:
     bool hasBuiltinOrdering() const noexcept { return builtinOrdering_; }
 
 private:
+    core::pmr::String nativeName_{&core::defaultCpuMemoryResource()};
     friend class object;
     friend class db;
     friend class RegistrationTransaction;
@@ -100,6 +110,13 @@ private:
     void invalidateBuiltinComparisons(NameView name);
     bool builtinEquality_ = false;
     bool builtinOrdering_ = false;
+    bool explicitlyDeclared_ = false;
+    core::pmr::String generatedContract_{&core::defaultCpuMemoryResource()};
+    core::pmr::String generatedSource_{&core::defaultCpuMemoryResource()};
+    core::pmr::String generatedStructure_{&core::defaultCpuMemoryResource()};
+
+    bool isUncompletedNativeReference() const noexcept;
+    void completeNativeReference(class_info& staged) noexcept;
 
     value_t type_ = others_t;
     std::size_t size_ = 0;

@@ -34,6 +34,16 @@ public:
         const std::filesystem::path& source,
         pmr::String& diagnostics);
 
+    // Explicit metadata-bound resolution; the strict APIs above still reject
+    // symlinks. Captured files are regular bytes, never mutable host links.
+    bool captureResolvedFile(std::string_view logicalName,
+        const std::filesystem::path& source,
+        const std::filesystem::path& allowedRoot,
+        pmr::String& diagnostics);
+    bool captureResolvedDirectory(std::string_view logicalName,
+        const std::filesystem::path& source,
+        pmr::String& diagnostics);
+
     std::filesystem::path path(std::string_view logicalName) const;
     pmr::String fingerprint() const;
     bool verifySourcesUnchanged(pmr::String& diagnostics) const;
@@ -46,12 +56,17 @@ private:
         pmr::String versionOutput{&defaultCpuMemoryResource()};
         std::filesystem::perms permissions = std::filesystem::perms::unknown;
         bool tracksPermissions = false;
+        std::filesystem::path resolutionSource;
+        pmr::String resolutionBinding{&defaultCpuMemoryResource()};
     };
 
     struct DirectoryRecord {
         pmr::String logicalName{&defaultCpuMemoryResource()};
         std::filesystem::path source;
         pmr::Vector<pmr::String> relativeFiles{&defaultCpuMemoryResource()};
+        pmr::Map<pmr::String, pmr::String> resolvedEntries{&defaultCpuMemoryResource()};
+        pmr::Map<pmr::String, pmr::String> directoryLinks{&defaultCpuMemoryResource()};
+        bool resolvesLinks = false;
     };
 
     bool captureFileInternal(std::string_view logicalName,

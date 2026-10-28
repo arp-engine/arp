@@ -432,9 +432,10 @@ WebGlRuntime::Impl::~Impl()
         ownedRuntime = nullptr;
     if (!context)
         return;
-    // This backend currently admits only the non-pthread main-runtime product.
+    // Only the main browser/runtime thread owns the context, even in products
+    // with file workers. Proxy contexts and worker rendering remain forbidden.
     // Never issue GL/context destruction from a foreign worker thread.
-    if (!emscripten_is_main_runtime_thread())
+    if (!emscripten_is_main_runtime_thread() || !emscripten_is_main_browser_thread())
         std::terminate();
     if (lossCallbackRegistered)
         unregisterLoss(context);
@@ -464,11 +465,15 @@ core::UniquePtr<WebGlRuntime> WebGlRuntime::create(const WebGlContextOwnershipRe
     return {};
 #else
 #ifdef __EMSCRIPTEN_PTHREADS__
-    diagnostic = "RHI-WEBGL1-CONTEXT-PTHREAD-PRODUCT-UNAVAILABLE";
-    return {};
+    constexpr bool pthreadProduct = true;
+#else
+    constexpr bool pthreadProduct = false;
 #endif
-    if (!emscripten_is_main_runtime_thread()) {
-        diagnostic = "RHI-WEBGL1-CONTEXT-OWNER-THREAD";
+    diagnostic = WebGlContextOwnershipContract::executionThreadDiagnostic(request,
+        pthreadProduct,
+        emscripten_is_main_runtime_thread(),
+        emscripten_is_main_browser_thread());
+    if (diagnostic) {
         return {};
     }
     if (ownedRuntime) {
@@ -644,7 +649,7 @@ const char* WebGlRuntime::resizeSurface(Extent2D extent) noexcept
 const char* WebGlRuntime::currentDiagnostic() const noexcept
 {
 #ifdef __EMSCRIPTEN__
-    if (!emscripten_is_main_runtime_thread())
+    if (!emscripten_is_main_runtime_thread() || !emscripten_is_main_browser_thread())
         return "RHI-WEBGL1-CONTEXT-OWNER-THREAD";
     if (emscripten_is_webgl_context_lost(impl_->context))
         contextLost(impl_.get());
@@ -692,7 +697,7 @@ const char* WebGlRuntime::restore() noexcept
 #ifndef __EMSCRIPTEN__
     return "RHI-WEBGL1-CONTEXT-PLATFORM-UNAVAILABLE";
 #else
-    if (!emscripten_is_main_runtime_thread())
+    if (!emscripten_is_main_runtime_thread() || !emscripten_is_main_browser_thread())
         return "RHI-WEBGL1-CONTEXT-OWNER-THREAD";
     if (!impl_->maxRestorations)
         return "RHI-WEBGL1-RECOVERY-OPT-IN-REQUIRED";
@@ -757,7 +762,7 @@ const char* WebGlRuntime::drawingBufferExtent(Extent2D& extent) const noexcept
 int WebGlRuntime::beginNativeDestruction() noexcept
 {
 #ifdef __EMSCRIPTEN__
-    if (!emscripten_is_main_runtime_thread())
+    if (!emscripten_is_main_runtime_thread() || !emscripten_is_main_browser_thread())
         std::terminate();
     if (impl_->lost || emscripten_is_webgl_context_lost(impl_->context))
         return -1;

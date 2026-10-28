@@ -134,12 +134,22 @@ struct TextureSubresourceState {
     ResourceState state = ResourceState::Undefined;
 };
 
+// HostVisibleDeviceLocalBuffer/1 is an independent, explicit placement opt-in.
+// Both properties are required on the same allocation; no upload-heap fallback.
+struct HostVisibleDeviceLocalBufferPlacement {
+    std::uint32_t contractVersion = 0u;
+    bool prototypeOptIn = false;
+
+    bool requested() const noexcept { return contractVersion != 0u || prototypeOptIn; }
+};
+
 struct BufferDesc {
     core::pmr::String label;
     std::uint64_t sizeBytes = 0;
     ResourceUsage usage = ResourceUsage::None;
     MemoryUsage memory = MemoryUsage::GpuOnly;
     ResourceState initialState = ResourceState::Undefined;
+    HostVisibleDeviceLocalBufferPlacement hostVisibleDeviceLocal;
 };
 
 struct TextureDesc {

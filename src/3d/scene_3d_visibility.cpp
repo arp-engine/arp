@@ -39,6 +39,8 @@ Scene3DVisibilityResult Scene3DVisibilitySystem::filterVisible(
     const Scene3DRenderQueue& sourceQueue, const Scene3DCameraBinding& camera) const
 {
     Scene3DRenderQueue visibleQueue;
+    if (sourceQueue.hasCloud())
+        visibleQueue.setCloud(sourceQueue.cloud());
     if (sourceQueue.hasFog())
         visibleQueue.setFog(sourceQueue.fog());
     for (const auto& volume : sourceQueue.fogVolumes())

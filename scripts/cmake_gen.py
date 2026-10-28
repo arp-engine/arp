@@ -602,6 +602,7 @@ class CmakeWriter:
         self._w("else()")
         self._w("    target_link_libraries(arp_engine PRIVATE ${ARP_ENGINE_MODULE_TARGETS})")
         self._w("endif()")
+        self._w("include(cmake/ArpEnginePluginAbi.cmake)")
         self._w()
 
     def _emit_sdl3_link(self):
@@ -864,7 +865,9 @@ class CmakeWriter:
         self._w("include(cmake/ArpHttpServer.cmake)")
         self._w("include(cmake/ArpVolumetricFog.cmake)")
         self._w("include(cmake/ArpVolumetricCloud.cmake)")
+        self._w("include(cmake/ArpOriginalTextureUpload.cmake)")
         self._w("include(cmake/ArpVulkanCommandRetention.cmake)")
+        self._w("include(cmake/ArpQueryPassTiming.cmake)")
         self._w("include(cmake/ArpMetalDispatchProbe.cmake)")
         self._w("include(cmake/ArpOriginalSubmissionContracts.cmake)")
         self._w()

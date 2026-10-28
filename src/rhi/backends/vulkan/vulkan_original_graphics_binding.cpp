@@ -17,9 +17,20 @@ const char* VulkanOriginalGraphicsBindingInspection::inspect(Contract::Request r
     const auto decision = Contract::lowering(device.backend(), request);
     if (!decision.inspectionAvailable)
         return decision.diagnostic;
-    return request.contractVersion == 2u
-        ? inspectOriginal<true>(device, sources, pipelineSourceIndex, logicalSet, element, output)
-        : inspectOriginal<false>(device, sources, pipelineSourceIndex, logicalSet, element, output);
+    return request.contractVersion == 2u ? inspectOriginal<true>(device,
+                                               sources,
+                                               pipelineSourceIndex,
+                                               logicalSet,
+                                               element,
+                                               output,
+                                               request.sampledColor)
+                                         : inspectOriginal<false>(device,
+                                               sources,
+                                               pipelineSourceIndex,
+                                               logicalSet,
+                                               element,
+                                               output,
+                                               request.sampledColor);
 }
 
 template <bool compute>
@@ -28,7 +39,8 @@ const char* VulkanOriginalGraphicsBindingInspection::inspectOriginal(const rhi::
     std::size_t pipelineSourceIndex,
     std::uint32_t logicalSet,
     const rhi::OriginalCommandDescriptorSetElement& element,
-    Observation& output) noexcept
+    Observation& output,
+    rhi::semantics::OriginalOrdinarySampledColorContract::Intent sampledColor) noexcept
 {
     std::shared_ptr<const Contract::PipelineSource<compute>> source;
     if (const auto* id =
@@ -144,8 +156,10 @@ const char* VulkanOriginalGraphicsBindingInspection::inspectOriginal(const rhi::
                     || (view->aspect != rhi::TextureAspect::Color
                         && view->aspect != rhi::TextureAspect::Depth))
                     return "RHI-GRAPHICS-BINDING-INSPECTION-VIEW-PARENT-IDENTITY";
-                if (const auto* error = Contract::validateTexture(
-                        parent->originalObject()->desc(), *view, binding->depthTexture))
+                if (const auto* error = Contract::validateTexture(parent->originalObject()->desc(),
+                        *view,
+                        binding->depthTexture,
+                        sampledColor))
                     return error;
                 VkFormatProperties properties{};
                 vkGetPhysicalDeviceFormatProperties(

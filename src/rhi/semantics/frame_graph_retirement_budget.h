@@ -1,7 +1,8 @@
 #pragma once
 
 #include "core/memory/budget_vector_preflight.h"
-#include "rhi/frontend/resource_cache_accounting.h"
+#include "rhi/frontend/resource_cache_accounting_values.h"
+#include "rhi/gpu_common.h"
 
 #include <limits>
 

@@ -353,7 +353,17 @@ void assertVulkanSubmittedCommandsDrainBeforeRuntimeTeardown()
     // its completion. The real pending-fence test exercises the behavior.
     assert(commands.find("asyncSubmittedCommands().fill({})") == std::pmr::string::npos);
     assert(device.find("~VulkanRhiDevice() override") != std::pmr::string::npos);
-    assert(device.find("drainVulkanRhiSubmittedCommandsForShutdown();") != std::pmr::string::npos);
+    assert(device.find("drainVulkanRhiSubmittedCommandsForShutdown(*desc_.runtime)")
+        != std::pmr::string::npos);
+    const auto domain = readText(ARP_SOURCE_DIR "/src/rhi/backends/vulkan/vulkan_command_domain.h");
+    const auto runtime = readText(ARP_SOURCE_DIR "/src/rhi/backends/vulkan/vulkan_runtime.cpp");
+    assert(domain.find("std::array<ReusableCommandResources, reuseCapacity>")
+        != std::pmr::string::npos);
+    assert(domain.find("std::array<VkFence, reuseCapacity>") != std::pmr::string::npos);
+    assert(runtime.find("VulkanRhiCommandDomain commands") != std::pmr::string::npos);
+    for (const char* forbidden :
+        {"g_reusable", "asyncSubmittedCommands()", "std::deque", "std::mutex"})
+        assert(commands.find(forbidden) == std::pmr::string::npos);
 #endif
 }
 
@@ -585,7 +595,8 @@ void assertVulkanTransientAliasingOwnsBoundedNativeLifetime()
     assert(pool.find("std::shared_ptr<VulkanRhiRuntime> runtime_") != std::pmr::string::npos);
     assert(pool.find("VulkanRhiAllocator* allocator_") == std::pmr::string::npos);
     assert(pool.find("allocator_->") == std::pmr::string::npos);
-    assert(pool.find("retireCompletedVulkanRhiSubmittedCommands()") != std::pmr::string::npos);
+    assert(pool.find("retireCompletedVulkanRhiSubmittedCommands(*runtime_)")
+        != std::pmr::string::npos);
     assert(pool.find("allocation.use_count() == 1") != std::pmr::string::npos);
     assert(pool.find("allocations_.reserve(") != std::pmr::string::npos);
     assert(pool.find("maxMemoryAllocationCount") != std::pmr::string::npos);

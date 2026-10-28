@@ -91,12 +91,17 @@ RenderSystem createRenderSystem(const RenderSystemDesc& desc)
         const char* id = nullptr;
         rhi::semantics::WebGlContextOwnershipRequest context;
         context.contractVersion = context.context.contractVersion = 1;
+        if (p.mainBrowserThreadWithWorkersOptIn) {
+            context.contractVersion = 2;
+            context.mainBrowserThreadWithWorkersOptIn = true;
+        }
         context.canvasSelector = p.frames.surface.surfaceName;
         context.colorSpace = rhi::semantics::WebGlCanvasColorSpace::SRgb;
         context.maxCpuMetadataBytes = b.contextMetadataBytes;
         context.maxIdentityFieldBytes = b.identityFieldBytes;
         context.extensionOptIn.contractVersion = 1;
         context.extensionOptIn.extensions.depthTextures = p.sampledDepthOptIn;
+        context.extensionOptIn.extensions.derivatives = p.derivativesOptIn;
         auto runtime = rhi::webgl::WebGlRuntime::create(
             context, core::makeShared<core::CpuMemoryQuota>(b.contextMetadataBytes), id);
         if (!runtime) {

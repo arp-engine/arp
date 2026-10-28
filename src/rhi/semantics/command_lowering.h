@@ -1,10 +1,9 @@
 #pragma once
 
-#include "rhi/frontend/descriptor_buffer_write_validation.h"
-#include "rhi/frontend/descriptor_validation.h"
 #include "rhi/gpu_common.h"
-#include "rhi/gpu_resources.h"
+#include "rhi/gpu_resource_types.h"
 #include "rhi/semantics/command_input_admission_lowering.h"
+#include "rhi/semantics/descriptor_lowering.h"
 #include "rhi/semantics/transfer_dependency_lowering.h"
 
 // region Command input binding lowering
@@ -1519,9 +1518,21 @@ public:
     static constexpr FiniteDecision finiteLowering(
         Backend backend, std::uint32_t version = 3u) noexcept
     {
+        struct SourceDecision {
+            CapabilityMode mode = CapabilityMode::DiagnosticFailure;
+            bool validatorOnly = false, preparationAvailable = false, executionAvailable = false;
+            const char* diagnostic = "RHI-ORIGINAL-FINITE-WRITE-BACKEND";
+        };
+
+        struct SourceFacts {
+            bool device, group, layoutQuery, pushScope, popScope;
+        };
+
         const auto decision = version == 4u
-            ? OriginalFiniteTargetMemoryWriteContract::sourceDiagnosticDecision(backend)
-            : OriginalFiniteDescriptorWriteContract::sourceDiagnosticDecision(backend);
+            ? DescriptorLowering::OriginalFiniteTargetMemoryWrite_decide<SourceDecision>(
+                  backend, SourceFacts{true, true, true, true, true})
+            : DescriptorLowering::OriginalFiniteDescriptorWrite_sourceDiagnosticDecision<
+                  SourceDecision>(backend);
         return {{decision.mode, decision.preparationAvailable, false, false}, decision.diagnostic};
     }
 };
@@ -3284,7 +3295,7 @@ public:
     static constexpr auto projectionLowering(Backend backend, std::uint32_t version = 1u) noexcept
     {
         if (version == 3u || version == 4u || version == 5u || version == 6u) {
-            using D = OriginalRenderDescriptorUsageContract::Decision;
+            using D = OriginalCommandDescriptorConsumptionLowering::Decision;
             // Usage3 keeps Consumption2/RenderUsage2; Usage4 consumes the exact
             // State4/Stream4 geometry footprint with Consumption3/RenderUsage3.
             // Neither CPU projection authorizes native transfer or geometry.
@@ -3317,7 +3328,8 @@ public:
             }
             return D{};
         }
-        return OriginalRenderDescriptorUsageContract::lowering(backend, version);
+        return DescriptorLowering::OriginalRenderDescriptorUsage_lowering<
+            OriginalCommandDescriptorConsumptionLowering::Decision>(backend, version);
     }
 
     static constexpr auto nativeLowering(Backend backend) noexcept

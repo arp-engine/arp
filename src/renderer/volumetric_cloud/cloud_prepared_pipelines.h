@@ -7,7 +7,7 @@
 
 namespace arp::renderer::cloud {
 
-enum class CloudPreparedResolve { Unspecified, Temporal1, Reconstruction1 };
+enum class CloudPreparedResolve { Unspecified, Temporal1, Reconstruction1, Reconstruction2 };
 
 // A separate explicit selection; CloudQuality/1 continues to select sampling
 // only. This does not grant resource, descriptor or command admission.
@@ -15,6 +15,12 @@ struct CloudPreparedPipelineSelection {
     std::uint32_t contractVersion = 0u;
     CloudPreparedResolve resolve = CloudPreparedResolve::Unspecified;
     CloudReconstructionConfig reconstruction;
+
+    bool isReconstruction() const noexcept
+    {
+        return resolve == CloudPreparedResolve::Reconstruction1
+            || resolve == CloudPreparedResolve::Reconstruction2;
+    }
 };
 
 struct CloudPreparedResourceRequest {
@@ -34,6 +40,7 @@ struct CloudPreparedResourcePlan {
 // never searches for alternate targets or falls back to another algorithm.
 struct CloudPreparedShaderPublications {
     core::pmr::String raymarch, temporal, composite, spatialResolve, spatialComposite;
+    core::pmr::String compactResolve, compactComposite;
 };
 
 struct CloudPreparedPipelineBudget {
@@ -90,6 +97,12 @@ public:
         const rhi::ShaderPackageDesc& raymarch,
         const rhi::ShaderPackageDesc& resolve,
         const rhi::ShaderPackageDesc& composite) noexcept;
+    // Declaration facts are verified against original immutable SPIR-V bytes;
+    // binding/type equality alone cannot distinguish the 32/24-byte contracts.
+    static CloudResult validateStorageInputs(const CloudPreparedPipelineSelection&,
+        const std::shared_ptr<const shader::SingleEntryShaderArtifact>& raymarch,
+        const std::shared_ptr<const shader::SingleEntryShaderArtifact>& resolve,
+        const std::shared_ptr<const shader::GraphicsShaderModuleArtifact>& composite) noexcept;
 
     // Atomic publication into an empty owner; failures release their prefix.
     // Re-creation refuses without changing the existing owner. Release first.

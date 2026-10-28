@@ -25,7 +25,8 @@
 
 namespace arp::rhi {
 class OriginalCommandTextureViewSource;
-}
+class OriginalTextureUploadPublication;
+} // namespace arp::rhi
 
 namespace arp::render_graph {
 
@@ -234,6 +235,12 @@ public:
     /// Repeated imports of the same object return the existing handle and
     /// share its hazard/state chain; equal descriptors do not imply identity.
     TextureHandle importTextureRef(std::shared_ptr<rhi::GpuTexture> texture);
+    /// CompletedSampledImport/1. Retains authentic completion and whole release
+    /// visibility; only ShaderRead in the requested stages is legal in this graph.
+    TextureHandle importCompletedSampledTexture(
+        const std::shared_ptr<const rhi::OriginalTextureUploadPublication>&,
+        const std::shared_ptr<const rhi::OriginalCommandTextureViewSource>&,
+        rhi::PipelineStage stages);
     /// Declares that the first graph write defines the imported texture's
     /// contents for this frame. Reads authored before that write consume the
     /// new value and are ordered after the writer instead of preserving the
@@ -415,6 +422,9 @@ private:
         std::shared_ptr<rhi::GpuTexture> bundleTexture;
         bool orderedSwapchainImage = false;
         std::shared_ptr<const rhi::OriginalCommandTextureViewSource> originalAttachmentView;
+        std::shared_ptr<const rhi::OriginalTextureUploadPublication> completedSampledUpload;
+        std::shared_ptr<const rhi::OriginalCommandTextureViewSource> completedSampledView;
+        rhi::PipelineStage completedSampledStages = rhi::PipelineStage::None;
 
         /// Resolve the underlying GpuTexture (owned or borrowed).
         rhi::GpuTexture* resolveTexture() const noexcept

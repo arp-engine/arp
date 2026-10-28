@@ -28,7 +28,7 @@ using namespace assets::cloud;
 void noiseRange()
 {
     CloudCookDesc d;
-    d.algorithmVersion = kCloudCookAlgorithmVersion;
+    d.algorithmVersion = kCloudLegacyCookAlgorithmVersion;
     d.seed = 137;
     d.weatherDimension = d.shapeDimension = d.detailDimension = 2;
     d.weatherFrequency = d.shapeFrequency = d.detailFrequency = 1;
@@ -63,7 +63,7 @@ void resources()
     if (!result.success)
         std::cerr << result.diagnostic << '\n';
     assert(result.success);
-    assert(desc.algorithmVersion == kCloudCookAlgorithmVersion);
+    assert(desc.algorithmVersion == kCloudLegacyCookAlgorithmVersion);
     auto legacy = recipe;
     const auto version = legacy.find("algorithmVersion: 2");
     assert(version != legacy.npos);
@@ -198,12 +198,15 @@ void components()
     };
     assert(extract().diagnostic().code == scene3d::Scene3DDiagnosticCode::InvalidCloud);
     scene3d::CloudDesc desc;
-    desc.layer.planetCenter = {0, -6371000, 0};
+    desc.layer.planetCenter = {17, -6371000, 29};
     desc.layer.planetRadius = 6371000;
     desc.layer.baseAltitude = 1500;
     desc.layer.thickness = 2000;
     desc.layer.extinction = 0.002f;
-    desc.layer.scatteringAlbedo = {0.9f, 0.9f, 0.9f};
+    desc.layer.scatteringAlbedo = {0.9f, 0.8f, 0.7f};
+    desc.layer.anisotropy = 0.4f;
+    desc.layer.coverage = 0.55f;
+    desc.layer.erosion = 0.2f;
     desc.layer.weatherPeriod = 40000;
     desc.layer.shapePeriod = 8000;
     desc.layer.detailPeriod = 700;
@@ -217,6 +220,30 @@ void components()
     if (!serialized.success)
         std::cerr << serialized.diagnostics << '\n';
     assert(serialized.success);
+    for (const auto projection :
+        {scene::CameraProjection::Perspective, scene::CameraProjection::Orthographic}) {
+        scene3d::Scene3DCameraBinding camera;
+        camera.camera = scene::CameraComponentDesc::perspective(60.f, 1.f, .1f, 100.f).camera;
+        camera.camera.position = {500000.f, 20000.f, -500000.f};
+        camera.projection = projection;
+        camera.orthographicWidth = 32.f;
+        camera.orthographicHeight = 24.f;
+        const auto visible =
+            scene3d::Scene3DVisibilitySystem{}.filterVisible(result.queue(), camera);
+        assert(visible.ok() && visible.queue().hasCloud() && visible.queue().items().empty());
+        const auto forwarded =
+            reflection::serialize_to_yaml(reflection::object(visible.queue().cloud()));
+        assert(forwarded.success && forwarded.yaml == serialized.yaml);
+        assert(!visible.telemetry().totalRenderables && !visible.telemetry().culledRenderables);
+
+        auto invalidQueue = result.queue();
+        invalidQueue.addItem({});
+        const auto rejected =
+            scene3d::Scene3DVisibilitySystem{}.filterVisible(invalidQueue, camera);
+        assert(!rejected.ok()
+            && rejected.diagnostic().code == scene3d::Scene3DDiagnosticCode::InvalidBounds);
+        assert(!rejected.queue().hasCloud());
+    }
     const auto restored = reflection::deserialize_from_yaml(serialized.yaml);
     if (!restored.success)
         std::cerr << restored.diagnostics << '\n';
@@ -232,7 +259,10 @@ void components()
     duplicate.setEnabled(false);
     assert(extract().ok());
     cloud.setEnabled(false);
-    assert(!extract().queue().hasCloud());
+    const auto disabled = extract();
+    assert(disabled.ok() && !disabled.queue().hasCloud());
+    const auto absent = scene3d::Scene3DVisibilitySystem{}.filterVisible(disabled.queue(), {});
+    assert(absent.ok() && !absent.queue().hasCloud());
     desc.layer.extinction = -1;
     assert(!cloud.set_cloud(desc));
     assert(cloud.desc().layer.extinction >= 0);

@@ -704,24 +704,8 @@ WindowsDynamicScriptAotPackageResult WindowsDynamicScriptAotPackageLoader::load(
         core::ProcessRunRequest compileRequest;
         compileRequest.executable = snapshotDesc.cxxCompiler;
         compileRequest.outputFile = compileLog;
-        const auto& compilerLayout = compilerSnapshot.layout;
-        if (!compilerLayout.programSearchDirectory.empty()) {
-            addArgument(
-                compileRequest, "-B" + compilerLayout.programSearchDirectory.string() + "/");
-        }
-        for (const auto& auxiliaryProgram : compilerLayout.auxiliaryProgramSearchDirectories) {
-            addArgument(compileRequest, "-B" + auxiliaryProgram.string() + "/");
-        }
-        addArgument(compileRequest, "-nostdinc");
-        addArgument(compileRequest, "-nostdinc++");
-        for (const auto& systemInclude : compilerLayout.systemIncludeDirectories) {
-            addArgument(compileRequest, "-isystem");
-            addArgument(compileRequest, systemInclude.string());
-        }
-        for (const auto& libraryDirectory : compilerLayout.libraryDirectories) {
-            addArgument(compileRequest, "-B" + libraryDirectory.string() + "/");
-            addArgument(compileRequest, "-L" + libraryDirectory.string());
-        }
+        core::CompilerToolchainLayout::appendCompilerArguments(
+            compilerSnapshot.layout, compileRequest);
         addArgument(compileRequest, "-std=c++17");
         addArgument(compileRequest, "-O3");
         addArgument(compileRequest, "-shared");

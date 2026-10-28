@@ -14,6 +14,7 @@
 #include "rhi/frontend/bindless_initialized_graphics.h"
 #include "rhi/frontend/bindless_shader_package.h"
 #include "rhi/frontend/bindless_snapshot.h"
+#include "rhi/frontend/buffer_placement.h"
 #include "rhi/frontend/command_draw_validation.h"
 #include "rhi/frontend/descriptor_general_write_validation.h"
 #include "rhi/frontend/descriptor_set_validation.h"
@@ -1167,6 +1168,11 @@ WebGpuOrdinaryPipelineObservation::contract() const noexcept
 std::shared_ptr<WebGpuNativeBufferPayload> createWebGpuNativeBufferPayload(
     const rhi::BufferDesc& desc, const WebGpuNativeBufferInitializer& initializer)
 {
+    if (const auto* id = rhi::HostVisibleDeviceLocalBufferContract::validate(
+            desc, rhi::Backend::WebGPU, false)) {
+        rhi::RhiErrorHandler::get().report(rhi::RhiSeverity::Error, id);
+        return {};
+    }
     if (bool(initializer.context) != bool(initializer.initialize)
         || (initializer.initialize
             && (!desc.sizeBytes || desc.sizeBytes > SIZE_MAX || desc.sizeBytes % 4u)))
@@ -1208,6 +1214,9 @@ std::shared_ptr<WebGpuNativeBufferCreation> WebGpuNativeBufferCreation::prepareR
     const std::shared_ptr<core::CpuMemoryQuota>& quota,
     const char*& diagnostic)
 {
+    if ((diagnostic = rhi::HostVisibleDeviceLocalBufferContract::validate(
+             desc, rhi::Backend::WebGPU, false)))
+        return {};
     diagnostic = nullptr;
     if (!quota || !quota->limitBytes()) {
         diagnostic = "RHI-READBACK-BUFFER-CREATION-QUOTA";

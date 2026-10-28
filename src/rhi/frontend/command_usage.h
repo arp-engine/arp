@@ -10,6 +10,7 @@
 #include "rhi/frontend/descriptor_validation.h"
 #include "rhi/frontend/pipeline_shader_interface_validation.h"
 #include "rhi/frontend/query_command_points.h"
+#include "rhi/frontend/query_pass_timing.h"
 #include "rhi/frontend/query_pool_arguments.h"
 #include "rhi/frontend/resource_access_scope.h"
 #include "rhi/frontend/resource_access_usage.h"
@@ -1233,6 +1234,9 @@ struct OriginalCommandInputsBudget {
     std::uint32_t maxVertexBindings = 0u, maxIndexBindings = 0u;
     std::uint32_t maxQueryBindings = 0u;
     std::shared_ptr<const QueryCommandPoints> queryPoints;
+    // Inputs11 explicitly joins Inputs10 ordinary shader resources with the
+    // same canonical query points. Older profiles cannot borrow this opt-in.
+    std::optional<OriginalPassTimingBudget> passTiming;
 };
 
 // Selected canonical positional /2. No new ownership inventory or state/native
@@ -1246,18 +1250,28 @@ public:
         if (b.contractVersion != 1u && b.contractVersion != 2u && b.contractVersion != 3u
             && b.contractVersion != 4u && b.contractVersion != 5u && b.contractVersion != 6u
             && b.contractVersion != 7u && b.contractVersion != 8u && b.contractVersion != 9u
-            && b.contractVersion != 10u)
+            && b.contractVersion != 10u && b.contractVersion != 11u)
             return "RHI-ORIGINAL-INPUTS-VERSION";
-        if (b.contractVersion != 9u && (b.maxQueryBindings || b.queryPoints))
+        if ((b.contractVersion == 11u) != bool(b.passTiming))
+            return "RHI-ORIGINAL-PASS-TIMING-PROFILE";
+        if (b.passTiming) {
+            if (const auto* id = OriginalPassTimingContract::validateIntent(*b.passTiming))
+                return id;
+            if (b.maxQueryBindings != b.passTiming->maxTimestampWrites)
+                return "RHI-ORIGINAL-PASS-TIMING-WRITE-BUDGET";
+        }
+        if (b.contractVersion != 9u && b.contractVersion != 11u
+            && (b.maxQueryBindings || b.queryPoints))
             return "RHI-ORIGINAL-QUERY-POSITIONAL-PROFILE";
-        if (b.contractVersion == 9u && (!b.maxQueryBindings || !b.queryPoints))
+        if ((b.contractVersion == 9u || b.contractVersion == 11u)
+            && (!b.maxQueryBindings || !b.queryPoints))
             return "RHI-ORIGINAL-QUERY-POSITIONAL-BUDGET";
         if (b.contractVersion != 5u && b.contractVersion != 7u && b.contractVersion != 8u
             && (b.maxVertexBindings || b.maxIndexBindings))
             return "RHI-ORIGINAL-INPUTS-VERSION";
         // Inputs6 independently joins Source5 mixed ordinary sets. Existing
         // table/geometry profiles cannot borrow this positional version.
-        if ((b.contractVersion == 6u || b.contractVersion == 10u)
+        if ((b.contractVersion == 6u || b.contractVersion == 10u || b.contractVersion == 11u)
             && (b.maxTableBindings || !b.maxDescriptorBindings))
             return "RHI-ORIGINAL-INPUTS-GENERAL-FINITE-SCHEMA";
         if (b.contractVersion == 9u && b.maxTableBindings)
@@ -1559,7 +1573,7 @@ public:
     static constexpr const char* validateSetProfile(
         std::uint32_t inputsVersion, std::uint32_t sourceVersion) noexcept
     {
-        if (inputsVersion == 10u)
+        if (inputsVersion == 10u || inputsVersion == 11u)
             return sourceVersion == 5u || sourceVersion == 7u
                 ? nullptr
                 : "RHI-ORIGINAL-TYPED-INPUT-SYNCHRONOUS-SOURCE";
@@ -1609,7 +1623,7 @@ public:
         std::uint32_t inputsVersion = 3u) noexcept
     {
         if (inputsVersion != 3u && inputsVersion != 4u && inputsVersion != 5u && inputsVersion != 6u
-            && inputsVersion != 9u && inputsVersion != 10u)
+            && inputsVersion != 9u && inputsVersion != 10u && inputsVersion != 11u)
             return "RHI-ORIGINAL-INPUTS-VERSION";
         const auto& usage = *scalars.originalUsage();
         const auto& sources = *usage.originalSources();
@@ -1649,7 +1663,7 @@ public:
                 return "RHI-ORIGINAL-TYPED-INPUT-PIPELINE-KIND";
             const auto& original = sources.sources()[binding.sourceIndex];
             if (isTable(command.kind)) {
-                if (inputsVersion == 6u || inputsVersion == 9u)
+                if (inputsVersion == 6u || inputsVersion == 9u || inputsVersion == 11u)
                     return "RHI-ORIGINAL-INPUTS-GENERAL-FINITE-SCHEMA";
                 if (inputsVersion == 4u || inputsVersion == 5u)
                     return validateDepthTable(binding, input, pipeline, sources);
@@ -1688,7 +1702,7 @@ public:
                     != source.frozenLogicalSet())
                     return "RHI-ORIGINAL-TYPED-INPUT-FINITE-SET";
                 std::size_t consumed = 0u;
-                if (inputsVersion == 6u || inputsVersion == 9u) {
+                if (inputsVersion == 6u || inputsVersion == 9u || inputsVersion == 11u) {
                     // The same mixed sequence supplies binding identity and
                     // ordered offsets. Do not fill the legacy finite-only list.
                     for (const auto& frozen : source.frozenElements()) {
@@ -2637,7 +2651,7 @@ private:
             return "RHI-ORIGINAL-GEOMETRY-GRAPH-CAPACITY";
         if (inputBudget.maxQueryBindings > budget.maxInputDescriptors)
             return "RHI-ORIGINAL-QUERY-GRAPH-CAPACITY";
-        if (inputBudget.contractVersion == 9u) {
+        if (inputBudget.contractVersion == 9u || inputBudget.contractVersion == 11u) {
             if (const auto* id = QueryCommandPoints::validateOriginalStream(
                     inputBudget.queryPoints, scalars->originalArguments()))
                 return id;
@@ -2646,6 +2660,12 @@ private:
                 return "RHI-ORIGINAL-QUERY-POINTS-GRAPH-QUOTA";
             if (inputBudget.queryPoints->points().size() > inputBudget.maxQueryBindings)
                 return "RHI-ORIGINAL-QUERY-INPUT-CAPACITY";
+            if (inputBudget.passTiming) {
+                const auto timing = OriginalPassTimingContract::inspect(
+                    inputBudget.queryPoints, scalars->originalArguments(), *inputBudget.passTiming);
+                if (timing.diagnostic)
+                    return timing.diagnostic;
+            }
         }
         if (count > budget.maxInputDescriptors || (count && !descriptors))
             return "RHI-ORIGINAL-INPUTS-CAPACITY";
@@ -2835,7 +2855,7 @@ private:
                     || kind == CommandUsageKind::IndirectProcessorDraw))
                 return "RHI-ORIGINAL-BINDLESS-INDIRECT-INPUT-CONSUMER";
             if (isQuery(kind)) {
-                if (inputBudget.contractVersion != 9u)
+                if (inputBudget.contractVersion != 9u && inputBudget.contractVersion != 11u)
                     return "RHI-ORIGINAL-QUERY-POSITIONAL-PROFILE";
                 const auto& points = inputBudget.queryPoints->points();
                 if (queryBindings >= inputBudget.maxQueryBindings || queryBindings >= points.size())
@@ -3275,7 +3295,8 @@ private:
                 return fail(id);
             // RenderUsage3 enumerates binding footprints only; State4 still
             // requires independently opted-in indexed shader consumption.
-            if (!supported(kind, budget.contractVersion, budget.contractVersion == 3u))
+            if (!supported(kind, budget.contractVersion, budget.contractVersion == 3u)
+                && !passTimingTimestamp(kind, *inputs, budget.contractVersion))
                 return fail("RHI-ORIGINAL-RENDER-USAGE-COMMAND-PROFILE");
             if (kind == K::BeginRenderPass || kind == K::BeginComputePass
                 || kind == K::BeginTransferPass) {
@@ -3413,6 +3434,16 @@ private:
         default:
             return false;
         }
+    }
+
+    // A timestamp contributes no descriptor footprint. Only the independently
+    // validated Inputs11 pair projection may pass through the existing /4
+    // walkers; ordinary versions and other query kinds stay unsupported.
+    static bool passTimingTimestamp(K kind, const Inputs& inputs, std::uint32_t version) noexcept
+    {
+        const auto& original = inputs.originalBudget();
+        return kind == K::Timestamp && version == 4u && original.contractVersion == 11u
+            && original.passTiming && original.queryPoints;
     }
 
     template <class Footprint, class Counts, class Visitor>
@@ -3791,7 +3822,8 @@ private:
             const auto kind = usage.commands()[command].kind;
             if ((result.diagnostic = order.append(kind)))
                 return result;
-            if (!supported(kind, budget.contractVersion, budget.indexedDrawConsumptionOptIn)) {
+            if (!supported(kind, budget.contractVersion, budget.indexedDrawConsumptionOptIn)
+                && !passTimingTimestamp(kind, *inputs, budget.contractVersion)) {
                 result.diagnostic = "RHI-ORIGINAL-CONSUMPTION-COMMAND-PROFILE";
                 return result;
             }

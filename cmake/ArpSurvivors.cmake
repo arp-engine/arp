@@ -70,7 +70,7 @@ add_test(NAME arp_ui_bitmap_font_cook_tests
 add_executable(arp_basic_forward_contract_tests tests/contract/basic_forward_contract_tests.cpp
     src/renderer/pipeline/basic_forward_contract.cpp
     src/renderer/pipeline/basic_forward_pipeline.cpp src/renderer/pipeline/render_pipeline.cpp)
-target_link_libraries(arp_basic_forward_contract_tests PRIVATE arp_resource arp_render_graph arp_rhi arp_rhi_semantics)
+target_link_libraries(arp_basic_forward_contract_tests PRIVATE arp_resource arp_render_graph arp_rhi arp_rhi_semantics arp_scriptvm_runtime)
 target_compile_options(arp_basic_forward_contract_tests PRIVATE -UNDEBUG)
 arp_add_mingw_static_runtime(arp_basic_forward_contract_tests)
 add_test(NAME arp_basic_forward_contract_tests COMMAND arp_basic_forward_contract_tests)

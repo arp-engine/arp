@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/memory/cpu_allocator.h"
-#include "rhi/semantics/fallback_plan.h"
+#include "rhi/semantics/fallback_plan_values.h"
 #include "rhi/semantics/native_backend_capabilities.h"
 
 namespace arp::rhi::semantics {

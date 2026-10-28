@@ -84,7 +84,7 @@ public:
                       readbackDeclaredBytes = 0u;
         std::uint64_t pipelineBinds = 0u, descriptorBinds = 0u, consumptions = 0u,
                       implicitAccesses = 0u, geometryBinds = 0u, geometryDraws = 0u,
-                      geometryDrawAccesses = 0u;
+                      geometryDrawAccesses = 0u, timestampWrites = 0u;
 
         bool matches(const Counts& rhs) const noexcept
         {
@@ -106,7 +106,8 @@ public:
                        implicitAccesses,
                        geometryBinds,
                        geometryDraws,
-                       geometryDrawAccesses)
+                       geometryDrawAccesses,
+                       timestampWrites)
                 == std::tie(rhs.commands,
                     rhs.descriptors,
                     rhs.references,
@@ -125,7 +126,8 @@ public:
                     rhs.implicitAccesses,
                     rhs.geometryBinds,
                     rhs.geometryDraws,
-                    rhs.geometryDrawAccesses);
+                    rhs.geometryDrawAccesses,
+                    rhs.timestampWrites);
         }
     };
 
@@ -930,7 +932,20 @@ private:
                         return false;
                     break;
                 case Family::Scalar:
-                    if (std::holds_alternative<OriginalCommandPipelineBinding>(value)) {
+                    if (std::holds_alternative<OriginalCommandQueryBinding>(value)) {
+                        const auto& inputBudget = inputs_.originalBudget();
+                        if (budget_.contractVersion != 5u || inputBudget.contractVersion != 11u
+                            || !inputBudget.passTiming
+                            || command.kind != CommandUsageKind::Timestamp)
+                            return fail("RHI-ORIGINAL-STREAM-QUERY-PROFILE");
+                        out.firstElement = c.timestampWrites;
+                        out.elementCount = 1u;
+                        if (!charge(c.timestampWrites,
+                                1u,
+                                inputBudget.passTiming->maxTimestampWrites,
+                                "RHI-ORIGINAL-STREAM-TIMESTAMP-CAPACITY"))
+                            return false;
+                    } else if (std::holds_alternative<OriginalCommandPipelineBinding>(value)) {
                         out.firstElement = c.pipelineBinds;
                         out.elementCount = 1u;
                         if (!charge(c.pipelineBinds,

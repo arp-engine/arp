@@ -26,6 +26,27 @@ public:
         const char* diagnostic = "RHI-ORDINARY-TEXTURE-UPLOAD-BACKEND";
     };
 
+    static const char* validateCompletedReadBarrier(const TextureDesc& texture,
+        GpuResourceId destination,
+        const ResourceBarrierDesc& barrier,
+        PipelineStage stages) noexcept
+    {
+        const auto shaderStages = PipelineStage::VertexShader | PipelineStage::FragmentShader
+            | PipelineStage::ComputeShader;
+        if (stages == PipelineStage::None || (stages & shaderStages) != stages)
+            return "RHI-TEXTURE-UPLOAD-READ-STAGES";
+        return barrier.resource == destination
+                && barrier.textureSubresources == defaultTextureSubresourceRange(texture)
+                && barrier.before == ResourceState::CopyDst
+                && barrier.after == ResourceState::ShaderRead
+                && barrier.sourceStages == PipelineStage::Transfer
+                && barrier.sourceAccess == ResourceAccess::TransferWrite
+                && barrier.destinationAccess == ResourceAccess::ShaderRead
+                && (barrier.destinationStages & stages) == stages
+            ? nullptr
+            : "RHI-TEXTURE-UPLOAD-READ-VISIBILITY";
+    }
+
     static constexpr const char* validate(const Budget& budget) noexcept
     {
         if (budget.contractVersion != 1u)
@@ -50,19 +71,7 @@ public:
     {
         if (const auto* id = validate(budget))
             return {false, false, true, id};
-        switch (backend) {
-        case Backend::Null:
-            return {true, false, true, "RHI-ORDINARY-TEXTURE-UPLOAD-NULL-VALIDATOR"};
-        case Backend::Vulkan:
-            return {false, true, true, nullptr};
-        case Backend::Metal:
-            return {false, false, true, "RHI-ORDINARY-TEXTURE-UPLOAD-METAL-PAYLOAD-MISSING"};
-        case Backend::WebGPU:
-            return {false, false, true, "RHI-ORDINARY-TEXTURE-UPLOAD-WEBGPU-PAYLOAD-MISSING"};
-        case Backend::WebGL:
-            return {false, false, true, "RHI-ORDINARY-TEXTURE-UPLOAD-WEBGL-UNSUPPORTED"};
-        }
-        return {};
+        return semantics::TransferUploadLowering::ordinaryRecording<Decision>(backend);
     }
 
     static const char* inspect(const std::shared_ptr<const OriginalCommandStreamProgram>& program,

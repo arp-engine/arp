@@ -2,6 +2,8 @@
 
 #include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
+#include "rhi/frontend/buffer_placement.h"
+#include "rhi/frontend/detail/allocator_backing_ledger.h"
 #include "rhi/frontend/memory_budget_ledger.h"
 
 #ifndef ARP_RHI_NO_VMA
@@ -134,7 +136,20 @@ struct VulkanRhiAllocator::VmaState {
     // Allocation payloads can outlive the allocator facade. Keep the original
     // native device/instance alive through vmaDestroyAllocator itself.
     const std::shared_ptr<VulkanRhiRuntime> runtimeOwner;
+    rhi::detail::AllocatorBackingLedger backing;
 #ifndef ARP_RHI_NO_VMA
+    static void VKAPI_PTR allocated(
+        VmaAllocator, std::uint32_t, VkDeviceMemory, VkDeviceSize bytes, void* user) noexcept
+    {
+        static_cast<VmaState*>(user)->backing.allocated(bytes);
+    }
+
+    static void VKAPI_PTR released(
+        VmaAllocator, std::uint32_t, VkDeviceMemory, VkDeviceSize bytes, void* user) noexcept
+    {
+        static_cast<VmaState*>(user)->backing.released(bytes);
+    }
+
     ~VmaState()
     {
         if (allocator) {
@@ -201,6 +216,8 @@ VulkanRhiAllocator::VulkanRhiAllocator(
     vma_->functions.vkGetDeviceProcAddr = runtime_->getDeviceProcAddr();
 
     VmaAllocatorCreateInfo createInfo{};
+    const VmaDeviceMemoryCallbacks callbacks{&VmaState::allocated, &VmaState::released, vma_.get()};
+    createInfo.pDeviceMemoryCallbacks = &callbacks;
     createInfo.instance = runtime_->instance();
     createInfo.physicalDevice = runtime_->physicalDevice();
     createInfo.device = runtime_->logicalDevice();
@@ -264,6 +281,20 @@ VulkanRhiVmaBufferAllocation VulkanRhiAllocator::createBuffer(
     const rhi::BufferDesc& desc, VkBufferUsageFlags usage)
 {
     VulkanRhiVmaBufferAllocation result;
+    constexpr auto hostDeviceFlags =
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    bool hostDeviceAvailable = false;
+    if (runtime_ && runtime_->valid() && !runtime_->syntheticRuntime()) {
+        const auto& memory = runtime_->memoryProperties();
+        for (std::uint32_t i = 0u; i < memory.memoryTypeCount; ++i)
+            hostDeviceAvailable = hostDeviceAvailable
+                || (memory.memoryTypes[i].propertyFlags & hostDeviceFlags) == hostDeviceFlags;
+    }
+    if (const auto* id = rhi::HostVisibleDeviceLocalBufferContract::validate(
+            desc, rhi::Backend::Vulkan, hostDeviceAvailable)) {
+        result.diagnostics = id;
+        return result;
+    }
     const auto report = describeVulkanRhiAllocator(desc_);
     if (!report.success) {
         result.diagnostics = report.diagnostics;
@@ -302,13 +333,32 @@ VulkanRhiVmaBufferAllocation VulkanRhiAllocator::createBuffer(
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     auto allocationInfo = allocationCreateInfoFor(desc.memory);
+    if (desc.hostVisibleDeviceLocal.requested()) {
+        allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        allocationInfo.requiredFlags |= hostDeviceFlags;
+    }
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
     VmaAllocationInfo vmaInfo{};
     const auto created = vmaCreateBuffer(
         vma_->allocator, &bufferInfo, &allocationInfo, &buffer, &allocation, &vmaInfo);
     if (created != VK_SUCCESS) {
-        result.diagnostics = vkFailure("vmaCreateBuffer", created);
+        result.diagnostics = desc.hostVisibleDeviceLocal.requested()
+            ? core::toPmrString("RHI-HOST-DEVICE-BUFFER-ALLOCATION")
+            : vkFailure("vmaCreateBuffer", created);
+        return result;
+    }
+
+    // Actual buffer-compatible type and mapped payload must satisfy the same
+    // declaration. A global type query alone cannot prove this allocation.
+    if (desc.hostVisibleDeviceLocal.requested()
+        && (!vmaInfo.pMappedData || !vmaInfo.size || vmaInfo.size < desc.sizeBytes
+            || vmaInfo.memoryType >= runtime_->memoryProperties().memoryTypeCount
+            || (runtime_->memoryProperties().memoryTypes[vmaInfo.memoryType].propertyFlags
+                   & hostDeviceFlags)
+                != hostDeviceFlags)) {
+        vmaDestroyBuffer(vma_->allocator, buffer, allocation);
+        result.diagnostics = "RHI-HOST-DEVICE-BUFFER-NATIVE-PLACEMENT";
         return result;
     }
 
@@ -579,6 +629,23 @@ VulkanRhiVmaImageAllocation VulkanRhiAllocator::createImage(const rhi::TextureDe
 rhi::MemoryStats VulkanRhiAllocator::memoryStats() const
 {
     return ledger_ ? ledger_->memoryStats() : rhi::MemoryStats{};
+}
+
+rhi::AllocatorBackingObservation VulkanRhiAllocator::observeBacking(std::uint32_t version) const
+{
+    auto result = rhi::AllocatorBackingContract::unavailable(rhi::Backend::Vulkan, version);
+    if (version != 1u)
+        return result;
+#ifndef ARP_RHI_NO_VMA
+    if (vma_ && vma_->allocator && runtime_ && runtime_->valid() && !runtime_->syntheticRuntime()) {
+        VmaTotalStatistics statistics{};
+        vmaCalculateStatistics(vma_->allocator, &statistics);
+        const auto& total = statistics.total.statistics;
+        return vma_->backing.observe(
+            total.blockBytes, total.blockCount, total.allocationBytes, total.allocationCount);
+    }
+#endif
+    return result;
 }
 
 } // namespace arp::rhi_vulkan

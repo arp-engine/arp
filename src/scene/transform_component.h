@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/api.h"
 #include "scene/component.h"
 #include "scene/transform.h"
 
@@ -26,7 +27,7 @@ struct TransformEditorProperties {
 // reflection methods.
 ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
-class TransformComponent final : public Component {
+class ARP_API TransformComponent final : public Component {
 public:
     const char* scriptTypeName() const override { return "TransformComponent"; }
     AFUNC()

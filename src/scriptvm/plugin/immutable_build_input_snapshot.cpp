@@ -32,6 +32,33 @@ bool hashFile(const std::filesystem::path& path, pmr::String& fingerprint)
     return true;
 }
 
+bool executableVersion(
+    std::string_view text, const std::filesystem::path& executable, pmr::String& output)
+{
+    std::error_code error;
+    const auto directory = std::filesystem::weakly_canonical(executable.parent_path(), error);
+    if (error)
+        return false;
+    output.assign(text.data(), text.size());
+    // ExecutableVersionRelocation/1: only the exact captured executable
+    // directory is relocated. All other native metadata remains unchanged.
+    const auto replace = [&](const auto& pathText) {
+        if (pathText.empty())
+            return;
+        std::size_t offset = 0u;
+        constexpr std::string_view logical = "@snapshot-executable-directory@";
+        while ((offset = output.find(pathText, offset)) != pmr::String::npos) {
+            output.replace(offset, pathText.size(), logical.data(), logical.size());
+            offset += logical.size();
+        }
+    };
+    replace(directory.generic_string());
+#if !defined(_WIN32) && !defined(__CYGWIN__)
+    replace(directory.native());
+#endif
+    return true;
+}
+
 bool safeLogicalPath(std::string_view value)
 {
     if (value.empty())
@@ -42,6 +69,83 @@ bool safeLogicalPath(std::string_view value)
     return std::none_of(path.begin(), path.end(), [](const auto& component) {
         return component == "..";
     });
+}
+
+bool resolvedInputPath(const std::filesystem::path& source,
+    const std::filesystem::path& root,
+    std::filesystem::path& canonical,
+    pmr::String& diagnostics)
+{
+    std::error_code error;
+    const auto canonicalRoot = std::filesystem::canonical(root, error);
+    if (!error)
+        canonical = std::filesystem::canonical(source, error);
+    const auto relative = canonical.lexically_relative(canonicalRoot);
+    if (error || canonical.empty() || relative.empty() || relative.is_absolute()
+        || *relative.begin() == "..") {
+        diagnostics = "immutable resolved input escapes its declared root or is unavailable";
+        return false;
+    }
+    return true;
+}
+
+bool enumerateResolvedInputs(const std::filesystem::path& root,
+    pmr::Vector<std::filesystem::path>& files,
+    pmr::Map<pmr::String, pmr::String>& entries,
+    pmr::Map<pmr::String, pmr::String>& links,
+    pmr::String& diagnostics)
+{
+    pmr::Vector<std::filesystem::path> ancestors{&defaultCpuMemoryResource()};
+    const auto visit = [&](const auto& self, const std::filesystem::path& directory) -> bool {
+        std::filesystem::path canonical;
+        if (!resolvedInputPath(directory, root, canonical, diagnostics))
+            return false;
+        if (std::find(ancestors.begin(), ancestors.end(), canonical) != ancestors.end()) {
+            diagnostics = "immutable resolved input directory cycle";
+            return false;
+        }
+        ancestors.push_back(canonical);
+        std::error_code error;
+        for (std::filesystem::directory_iterator it(directory, error), end; !error && it != end;
+            it.increment(error)) {
+            if (!resolvedInputPath(it->path(), root, canonical, diagnostics))
+                return false;
+            const auto key = it->path().lexically_relative(root).generic_string();
+            const auto target = canonical.lexically_relative(ancestors.front()).generic_string();
+            entries.emplace(pmr::String(key, &defaultCpuMemoryResource()),
+                pmr::String(target, &defaultCpuMemoryResource()));
+            const auto status = std::filesystem::status(canonical, error);
+            if (error)
+                break;
+            if (std::filesystem::is_directory(status)) {
+                const auto entryStatus = it->symlink_status(error);
+                if (error)
+                    break;
+                if (std::filesystem::is_symlink(entryStatus)) {
+                    // Directory aliases are graph edges, not recursive copies.
+                    // They will point only into the captured immutable tree.
+                    links.emplace(pmr::String(key, &defaultCpuMemoryResource()),
+                        pmr::String(target, &defaultCpuMemoryResource()));
+                } else if (!self(self, it->path()))
+                    return false;
+            } else if (std::filesystem::is_regular_file(status)) {
+                files.push_back(it->path());
+            } else {
+                diagnostics = "immutable resolved input is not a regular file or directory";
+                return false;
+            }
+        }
+        ancestors.pop_back();
+        if (error) {
+            diagnostics = "immutable resolved input directory enumeration failed";
+            return false;
+        }
+        return true;
+    };
+    if (!visit(visit, root))
+        return false;
+    std::sort(files.begin(), files.end());
+    return true;
 }
 
 } // namespace
@@ -130,7 +234,74 @@ bool ImmutableBuildInputSnapshot::captureExecutable(
         diagnostics = "immutable build snapshot executable has no stable version output";
         return false;
     }
-    files_.back().versionOutput = versionRead.text;
+    if (!executableVersion(versionRead.text, path(logicalName), files_.back().versionOutput)) {
+        diagnostics = "immutable build snapshot could not canonicalize executable version metadata";
+        return false;
+    }
+    return true;
+}
+
+bool ImmutableBuildInputSnapshot::captureResolvedFile(std::string_view logicalName,
+    const std::filesystem::path& source,
+    const std::filesystem::path& allowedRoot,
+    pmr::String& diagnostics)
+{
+    std::filesystem::path canonical;
+    if (!resolvedInputPath(source, allowedRoot, canonical, diagnostics)
+        || !captureFile(logicalName, canonical, diagnostics))
+        return false;
+    std::error_code error;
+    const auto root = std::filesystem::canonical(allowedRoot, error);
+    if (error)
+        return false;
+    files_.back().resolutionSource = source;
+    files_.back().resolutionBinding = canonical.lexically_relative(root).generic_string();
+    return true;
+}
+
+bool ImmutableBuildInputSnapshot::captureResolvedDirectory(
+    std::string_view logicalName, const std::filesystem::path& source, pmr::String& diagnostics)
+{
+    if (!safeLogicalPath(logicalName)) {
+        diagnostics = "immutable resolved input logical directory is invalid";
+        return false;
+    }
+    DirectoryRecord directory;
+    directory.logicalName.assign(logicalName.data(), logicalName.size());
+    directory.source = source;
+    directory.resolvesLinks = true;
+    pmr::Vector<std::filesystem::path> files{&defaultCpuMemoryResource()};
+    if (!enumerateResolvedInputs(
+            source, files, directory.resolvedEntries, directory.directoryLinks, diagnostics))
+        return false;
+    for (const auto& file : files) {
+        const auto relative = file.lexically_relative(source).generic_string();
+        pmr::String logical(logicalName.data(), logicalName.size(), &defaultCpuMemoryResource());
+        logical += "/";
+        logical += relative;
+        if (!captureResolvedFile(logical, file, source, diagnostics))
+            return false;
+        directory.relativeFiles.emplace_back(relative);
+    }
+    for (const auto& [name, binding] : directory.directoryLinks) {
+        const auto alias = path(logicalName) / std::filesystem::path(name);
+        const auto target = path(logicalName) / std::filesystem::path(binding);
+        const auto relative = target.lexically_relative(alias.parent_path());
+        std::error_code error;
+        std::filesystem::create_directories(alias.parent_path(), error);
+        if (!error && std::filesystem::is_symlink(alias, error)) {
+            if (std::filesystem::read_symlink(alias, error) != relative)
+                error = std::make_error_code(std::errc::file_exists);
+        } else if (!error || error == std::errc::no_such_file_or_directory) {
+            error.clear();
+            std::filesystem::create_directory_symlink(relative, alias, error);
+        }
+        if (error) {
+            diagnostics = "immutable resolved input could not bind captured directory alias";
+            return false;
+        }
+    }
+    directories_.push_back(std::move(directory));
     return true;
 }
 
@@ -163,6 +334,8 @@ bool ImmutableBuildInputSnapshot::captureFileInternal(
     std::ofstream output(target, std::ios::binary | std::ios::trunc);
     if (!output.good()) {
         diagnostics = "immutable build snapshot could not create its target file";
+        diagnostics += ": ";
+        diagnostics += target.generic_string();
         return false;
     }
     Sha256 hash;
@@ -285,19 +458,39 @@ pmr::String ImmutableBuildInputSnapshot::fingerprint() const
                 return {};
         }
         if (!file->versionOutput.empty()
-            && !fileContract.add("version-output", file->versionOutput, diagnostics)) {
+            && !fileContract.add("version-output/1", file->versionOutput, diagnostics)) {
             return {};
         }
+        if (!file->resolutionBinding.empty()
+            && !fileContract.add("resolved-input/1", file->resolutionBinding, diagnostics))
+            return {};
         const auto value = fileContract.canonicalText();
         if (!snapshotContract.add(file->logicalName, value, diagnostics))
             return {};
     }
+    for (const auto& directory : directories_)
+        for (const auto& [name, target] : directory.directoryLinks) {
+            pmr::String key("directory-link/1/", &defaultCpuMemoryResource());
+            key += directory.logicalName;
+            key += "/";
+            key += name;
+            if (!snapshotContract.add(key, target, diagnostics))
+                return {};
+        }
     return snapshotContract.fingerprint();
 }
 
 bool ImmutableBuildInputSnapshot::verifySourcesUnchanged(pmr::String& diagnostics) const
 {
     for (const auto& file : files_) {
+        if (!file.resolutionSource.empty()) {
+            std::error_code error;
+            const auto current = std::filesystem::canonical(file.resolutionSource, error);
+            if (error || current != file.source) {
+                diagnostics = "immutable resolved input binding changed during tool execution";
+                return false;
+            }
+        }
         pmr::String sourceFingerprint{&defaultCpuMemoryResource()};
         if (!hashFile(file.source, sourceFingerprint) || sourceFingerprint != file.fingerprint) {
             diagnostics = "immutable build snapshot source changed during tool execution: ";
@@ -342,7 +535,10 @@ bool ImmutableBuildInputSnapshot::verifySourcesUnchanged(pmr::String& diagnostic
             const auto read = readTextFile(versionPath);
             std::error_code cleanupError;
             std::filesystem::remove(versionPath, cleanupError);
-            if (!process.ok() || !read.success || read.text != file.versionOutput) {
+            pmr::String currentVersion{&defaultCpuMemoryResource()};
+            if (!process.ok() || !read.success
+                || !executableVersion(read.text, path(file.logicalName), currentVersion)
+                || currentVersion != file.versionOutput) {
                 diagnostics =
                     "immutable build snapshot executable version output drifted during tool execution: ";
                 diagnostics += file.logicalName;
@@ -351,6 +547,30 @@ bool ImmutableBuildInputSnapshot::verifySourcesUnchanged(pmr::String& diagnostic
         }
     }
     for (const auto& directory : directories_) {
+        if (directory.resolvesLinks) {
+            pmr::Vector<std::filesystem::path> files{&defaultCpuMemoryResource()};
+            pmr::Map<pmr::String, pmr::String> entries{&defaultCpuMemoryResource()};
+            pmr::Map<pmr::String, pmr::String> links{&defaultCpuMemoryResource()};
+            if (!enumerateResolvedInputs(directory.source, files, entries, links, diagnostics)
+                || entries != directory.resolvedEntries || links != directory.directoryLinks) {
+                diagnostics =
+                    "immutable resolved input directory or bindings changed during tool execution";
+                return false;
+            }
+            for (const auto& [name, binding] : links) {
+                const auto alias = path(directory.logicalName) / std::filesystem::path(name);
+                const auto target = path(directory.logicalName) / std::filesystem::path(binding);
+                std::error_code error;
+                if (std::filesystem::read_symlink(alias, error)
+                        != target.lexically_relative(alias.parent_path())
+                    || error) {
+                    diagnostics =
+                        "immutable captured directory alias changed during tool execution";
+                    return false;
+                }
+            }
+            continue;
+        }
         pmr::Vector<pmr::String> current{&defaultCpuMemoryResource()};
         std::error_code error;
         for (std::filesystem::recursive_directory_iterator iterator(directory.source, error), end;

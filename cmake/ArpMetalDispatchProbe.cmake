@@ -115,6 +115,11 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE)
                     "${CMAKE_CURRENT_BINARY_DIR}" "${slot_count}")
             set_tests_properties(arp_rhi_metal_ordinary_cloud_slots_${slot_count} PROPERTIES
                 TIMEOUT 180 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+            add_test(NAME arp_rhi_metal_ordinary_cloud_resize_${slot_count}
+                COMMAND arp_rhi_metal_dispatch_validation_session_tests --ordinary-cloud-resize
+                    "${CMAKE_CURRENT_BINARY_DIR}" "${slot_count}")
+            set_tests_properties(arp_rhi_metal_ordinary_cloud_resize_${slot_count} PROPERTIES
+                TIMEOUT 180 ENVIRONMENT "MTL_DEBUG_LAYER=1")
         endforeach()
         add_test(NAME arp_rhi_metal_ordinary_owner_sampled
             COMMAND arp_rhi_metal_dispatch_validation_session_tests --ordinary-owner-sampled "${CMAKE_CURRENT_BINARY_DIR}")

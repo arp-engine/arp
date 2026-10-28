@@ -15,7 +15,7 @@ namespace arp::scene {
 /// world deterministically and prevents later hooks from running.
 ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
-class ScriptBehaviorComponent final : public Component {
+class ARP_API ScriptBehaviorComponent final : public Component {
 public:
     const char* scriptTypeName() const override
     {

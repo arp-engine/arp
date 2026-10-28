@@ -2,13 +2,11 @@
 
 #include "core/memory/cpu_allocator.h"
 #include "editor/workspace/editor_scene_document.h"
+#include "editor/workspace/editor_scene_property_codec.h"
 
 #include <string_view>
 
 namespace arp::editor {
-using EditorSceneResourceValidator = bool (*)(
-    void* context, std::string_view resourceType, std::string_view resourceId);
-
 class EditorSceneAuthoringCodec final {
 public:
     static constexpr std::uint32_t contractVersion = 3;

@@ -2,6 +2,7 @@
 
 #include "core/diagnostics/diagnostic_builder.h"
 #include "core/memory/cpu_allocator.h"
+#include "rhi/frontend/fallback_planner.h"
 
 namespace arp::rhi {
 

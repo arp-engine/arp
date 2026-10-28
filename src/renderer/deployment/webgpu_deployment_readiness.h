@@ -1,6 +1,6 @@
 #pragma once
 
-#include "rhi/semantics/webgpu_runtime_telemetry.h"
+#include "rhi/semantics/webgpu_runtime_telemetry_values.h"
 
 #include <cstdint>
 #include <memory_resource>

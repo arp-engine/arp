@@ -9,6 +9,7 @@
 #include "reflection/builtin.h"
 #include "reflection/class_info.h"
 #include "reflection/internal/type_name.h"
+#include "reflection/property.h"
 #include "reflection/registration_transaction.h"
 #include "reflection/type.h"
 
@@ -105,15 +106,23 @@ class_info* db::find_class(NameView name)
     std::lock_guard<std::mutex> lock(mutex_);
     auto key = detail::makeString(name);
     auto found = classes_.find(key);
-    if (found != classes_.end()) {
+    if (found != classes_.end() && found->second->explicitlyDeclared_
+        && found->second->name() == key) {
         return found->second.get();
     }
     for (auto& entry : classes_) {
-        if (entry.second && entry.second->name() == key) {
+        if (entry.second && entry.second->explicitlyDeclared_ && entry.second->name() == key) {
             return entry.second.get();
         }
     }
-    return nullptr;
+    return found == classes_.end() ? nullptr : found->second.get();
+}
+
+class_info* db::findNativeClass(NameView nativeName)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = classes_.find(detail::makeString(nativeName));
+    return found == classes_.end() ? nullptr : found->second.get();
 }
 
 const typeinfo* db::find_type(NameView name) const
@@ -121,6 +130,33 @@ const typeinfo* db::find_type(NameView name) const
     std::lock_guard<std::mutex> lock(mutex_);
     auto found = types_.find(detail::makeString(name));
     return found == types_.end() ? nullptr : found->second.get();
+}
+
+void db::markExplicitClassDeclaration(class_info* cls)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (cls != nullptr)
+        cls->explicitlyDeclared_ = true;
+}
+
+bool db::recordGeneratedClassSchema(
+    const class_info* value, NameView contract, NameView source, NameView structure)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!value || !value->explicitlyDeclared_ || contract.empty() || source.empty()
+        || structure.empty())
+        return false;
+    const auto found = classes_.find(value->nativeTypeName());
+    if (found == classes_.end() || found->second.get() != value)
+        return false;
+    auto& cls = *found->second;
+    if (!cls.generatedContract_.empty())
+        return cls.generatedContract_ == contract && cls.generatedSource_ == source
+            && cls.generatedStructure_ == structure;
+    cls.generatedContract_.assign(contract);
+    cls.generatedSource_.assign(source);
+    cls.generatedStructure_.assign(structure);
+    return true;
 }
 
 class_info* db::register_class(NameView name,
@@ -158,16 +194,44 @@ const typeinfo* db::register_type(NameView name, class_info* cls, std::uint64_t 
 bool db::commitRegistrationTransaction(
     RegistrationTransaction& transaction, core::pmr::String& diagnostics)
 {
+    // Resolve type-erased payloads before taking the DB mutex: reflection
+    // casts may query type identities, including across the shared ABI.
+    core::pmr::Vector<property*> properties{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<core::UniquePtr<class_info>> retiredSchemas{
+        &core::defaultCpuMemoryResource()};
+    retiredSchemas.reserve(transaction.reusingNativeClasses_.size());
+    for (auto& [key, cls] : transaction.classes_)
+        for (auto& [name, value] : cls->dict_)
+            if (value.is_property())
+                properties.push_back(&value.cast<property&>());
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& [key, info] : transaction.classes_) {
-        if (classes_.find(key) != classes_.end()) {
+        const auto existingClass = classes_.find(key);
+        const auto completing = transaction.completingNativeClasses_.find(key);
+        const bool nativeCompletion = completing != transaction.completingNativeClasses_.end()
+            && existingClass != classes_.end() && existingClass->second.get() == completing->second
+            && existingClass->second->isUncompletedNativeReference()
+            && existingClass->second->nativeTypeName() == info->nativeTypeName()
+            && existingClass->second->valueType() == info->valueType()
+            && existingClass->second->size() == info->size()
+            && existingClass->second->alignment() == info->alignment();
+        const auto reusing = transaction.reusingNativeClasses_.find(key);
+        const bool generatedReuse = reusing != transaction.reusingNativeClasses_.end()
+            && existingClass != classes_.end() && existingClass->second.get() == reusing->second
+            && existingClass->second->generatedContract_ == info->generatedContract_
+            && existingClass->second->generatedSource_ == info->generatedSource_
+            && existingClass->second->generatedStructure_ == info->generatedStructure_;
+        if (existingClass != classes_.end() && !nativeCompletion && !generatedReuse) {
             diagnostics = "reflection registration commit found a class conflict";
             diagnostics += ": ";
             diagnostics += key;
             return false;
         }
         for (const auto& existing : classes_) {
-            if (existing.second != nullptr && info != nullptr
+            if (transaction.nativeSupportTypes_.find(key) == transaction.nativeSupportTypes_.end()
+                && existing.second != nullptr && info != nullptr
+                && (!nativeCompletion || existing.second.get() != completing->second)
+                && (!generatedReuse || existing.second.get() != reusing->second)
                 && existing.second->name() == info->name()) {
                 diagnostics = "reflection registration commit found a reflected-name conflict";
                 diagnostics += ": ";
@@ -196,6 +260,24 @@ bool db::commitRegistrationTransaction(
     // Both maps use the process default PMR resource. std::map::merge moves
     // existing nodes without allocating, so after preflight publication is
     // all-or-nothing under the database mutex.
+    for (auto& [key, type] : transaction.types_)
+        type->cls_ = transaction.publicationClass(type->cls_);
+    for (auto& [key, cls] : transaction.classes_) {
+        for (auto*& base : cls->bases_)
+            base = const_cast<class_info*>(transaction.publicationClass(base));
+    }
+    for (auto* prop : properties)
+        prop->indirectClass_ = transaction.publicationClass(prop->indirectClass_);
+    for (const auto& [key, target] : transaction.completingNativeClasses_) {
+        const auto staged = transaction.classes_.find(key);
+        target->completeNativeReference(*staged->second);
+        transaction.classes_.erase(staged);
+    }
+    for (const auto& [key, target] : transaction.reusingNativeClasses_) {
+        const auto staged = transaction.classes_.find(key);
+        retiredSchemas.push_back(std::move(staged->second));
+        transaction.classes_.erase(staged);
+    }
     classes_.merge(transaction.classes_);
     types_.merge(transaction.types_);
     owners_.merge(transaction.owners_);

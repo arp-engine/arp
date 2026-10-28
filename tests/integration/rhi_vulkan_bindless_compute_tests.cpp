@@ -229,7 +229,7 @@ struct VulkanRootFenceFixture {
                 }
             }
             assert(!command->submit(diagnostic));
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(device);
         }
         command.reset();
         assert(root->originalSnapshot()->originalSubmissionBudgetOwner()->used() == 0u);
@@ -2834,8 +2834,8 @@ int main(int argc, char** argv)
     faultReadback.reset();
     clearedCommand.reset();
     command.reset();
-    retireCompletedVulkanRhiSubmittedCommands();
-    drainVulkanRhiSubmittedCommandsForShutdown();
+    retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
+    drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
     std::cout
         << "PASS: public Vulkan BindlessCross compute plus vertex/fragment graphics, fault reports and GPU readbacks; WOCC and other backends pending\n";
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include "cpu_quota_factory_fixture.h"
+#include "device_idle_failure_fixture.h"
 #include "rhi/backends/vulkan/vulkan_original_bindless_command.h"
 #include "vulkan_headless_runtime.h"
 
@@ -173,9 +174,9 @@ public:
                 == (scenario.uncertainSubmit ? "RHI-VULKAN-ROOT-FENCE-QUEUE-QUARANTINED"
                                              : "RHI-VULKAN-COMPLETION-DEADLINE-EXPIRED"));
         assert(!drainVulkanRhiSubmittedCommandsUntil(
-            std::chrono::steady_clock::now() + std::chrono::milliseconds(1), diagnostic));
-        drainVulkanRhiSubmittedCommandsForShutdown();
-        retireCompletedVulkanRhiSubmittedCommands();
+            device, std::chrono::steady_clock::now() + std::chrono::milliseconds(1), diagnostic));
+        drainVulkanRhiSubmittedCommandsForShutdown(device);
+        retireCompletedVulkanRhiSubmittedCommands(device);
         checkRetained();
         if (scenario.uncertainFence) {
             Hooks::withholdCompletion = false;
@@ -197,19 +198,12 @@ public:
             checkRetained();
             assert(!command->submittedFenceCompleted());
             Hooks::omitIdleEntrypoint = true;
-            assert(!CpuQuotaFactoryFixture::verifyHotNoAllocation(
-                hotQuotas, [&]() noexcept -> const char* {
-                    device.waitIdle();
-                    return nullptr;
-                }));
+            tests::DeviceIdleFailureFixture::verify(
+                device, "RHI-VULKAN-IDLE-COMPLETION-ENTRYPOINT");
             Hooks::omitIdleEntrypoint = false;
             checkRetained();
             Hooks::uncertainIdleResult = true;
-            assert(!CpuQuotaFactoryFixture::verifyHotNoAllocation(
-                hotQuotas, [&]() noexcept -> const char* {
-                    device.waitIdle();
-                    return nullptr;
-                }));
+            tests::DeviceIdleFailureFixture::verify(device, "RHI-VULKAN-IDLE-COMPLETION-FAILED");
             Hooks::uncertainIdleResult = false;
             checkRetained();
             assert(!CpuQuotaFactoryFixture::verifyHotNoAllocation(
@@ -243,7 +237,7 @@ public:
             assert(Hooks::queryReadCalls == queryReadsBefore);
         checkResources();
         assert(!command->submit(diagnostic));
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(device);
     }
 };
 } // namespace arp::test

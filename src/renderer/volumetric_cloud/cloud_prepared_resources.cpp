@@ -1,5 +1,7 @@
 #include "renderer/volumetric_cloud/cloud_prepared_resources.h"
 
+#include "rhi/frontend/buffer_placement.h"
+
 namespace arp::renderer::cloud {
 using BufferLease = rhi::OriginalCommandBufferLease;
 
@@ -32,6 +34,13 @@ CloudResult CloudPreparedResources::validateCreate(const CloudPreparedResourceCr
         || (*c.sampleMemory != rhi::MemoryUsage::GpuOnly
             && *c.sampleMemory != rhi::MemoryUsage::CpuToGpu))
         return CloudResult::failure("CLOUD-PREPARED-RESOURCES-MEMORY-INTENT");
+    rhi::BufferDesc placement;
+    placement.sizeBytes = c.resources.assetBytes;
+    placement.memory = *c.sampleMemory;
+    placement.hostVisibleDeviceLocal = c.hostVisibleDeviceLocal;
+    if (const auto* id = rhi::HostVisibleDeviceLocalBufferContract::validate(
+            placement, c.device.backend(), capabilities.memory.hostVisibleDeviceLocalBuffers))
+        return CloudResult::failure(id);
     CloudPreparedResourcePlan plan;
     if (const auto result = c.dispatchDomain
             ? CloudPreparedPipelines::planResources(c.selection,
@@ -45,7 +54,7 @@ CloudResult CloudPreparedResources::validateCreate(const CloudPreparedResourceCr
         return result;
     if (!capabilities.memory.hostVisible)
         return CloudResult::failure("CLOUD-CAPABILITY-UNAVAILABLE");
-    const bool spatial = c.selection.resolve == CloudPreparedResolve::Reconstruction1;
+    const bool spatial = c.selection.isReconstruction();
     const auto resolvedBytes =
         spatial ? plan.reconstruction.resolvedBufferBytes : plan.raw.sampleBufferBytes;
     const auto initializeBytes = std::max(plan.raw.sampleBufferBytes, resolvedBytes);
@@ -78,7 +87,7 @@ CloudResult CloudPreparedResources::create(const CloudPreparedResourceCreateCont
         CloudPreparedResourcePlan plan;
         if (const auto result = validateCreate(c, capabilities, plan); !result.success)
             return result;
-        const bool spatial = c.selection.resolve == CloudPreparedResolve::Reconstruction1;
+        const bool spatial = c.selection.isReconstruction();
         const auto resolvedBytes =
             spatial ? plan.reconstruction.resolvedBufferBytes : plan.raw.sampleBufferBytes;
         const auto initializeBytes = std::max(plan.raw.sampleBufferBytes, resolvedBytes);
@@ -105,6 +114,7 @@ CloudResult CloudPreparedResources::create(const CloudPreparedResourceCreateCont
             desc.usage = rhi::ResourceUsage::StorageBuffer
                 | (writable ? rhi::ResourceUsage::CopySrc : rhi::ResourceUsage::None);
             desc.memory = writable ? *c.sampleMemory : rhi::MemoryUsage::CpuToGpu;
+            desc.hostVisibleDeviceLocal = c.hostVisibleDeviceLocal;
             desc.initialState =
                 writable ? rhi::ResourceState::ShaderWrite : rhi::ResourceState::ShaderRead;
             auto object = c.device.createBuffer(desc);

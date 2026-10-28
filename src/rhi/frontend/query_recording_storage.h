@@ -29,6 +29,25 @@ public:
         const CommandRetentionBudget& budget,
         const std::shared_ptr<core::CpuMemoryQuota>& quota) noexcept
     {
+        return inspectProfile(inputs, budget, quota, false);
+    }
+
+    // Independent cold projection for Inputs11. Native recording remains
+    // unavailable until the same Program/meter/journal join is authenticated.
+    // The legacy query-only entry above must continue rejecting this profile.
+    static Inspection inspectPassTiming(const std::shared_ptr<const OriginalCommandInputs>& inputs,
+        const CommandRetentionBudget& budget,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota) noexcept
+    {
+        return inspectProfile(inputs, budget, quota, true);
+    }
+
+private:
+    static Inspection inspectProfile(const std::shared_ptr<const OriginalCommandInputs>& inputs,
+        const CommandRetentionBudget& budget,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota,
+        bool passTiming) noexcept
+    {
         Inspection result;
         const auto fail = [&](const char* id) noexcept {
             result.diagnostic = id;
@@ -38,7 +57,7 @@ public:
             return fail(id);
         if (const auto* id = OriginalCommandInputs::validateOriginal(inputs))
             return fail(id);
-        if (inputs->originalBudget().contractVersion != 9u)
+        if (inputs->originalBudget().contractVersion != (passTiming ? 11u : 9u))
             return fail("RHI-ORIGINAL-QUERY-STORAGE-INPUT-PROFILE");
         const auto& sources = *inputs->originalScalars()->originalUsage()->originalSources();
         using D = OriginalCommandAdmissionBudget::CpuDomain;

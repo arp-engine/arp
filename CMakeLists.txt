@@ -14,11 +14,21 @@ include(cmake/ArpWebRhiSelection.cmake)
 set(ARP_WEB_RHI "" CACHE STRING "Web RHI product: empty preserves platform default; none, webgpu or webgl1")
 set_property(CACHE ARP_WEB_RHI PROPERTY STRINGS "" none webgpu webgl1)
 option(ARP_WEBGL1_PROTOTYPE_PRODUCT "Build explicit WebGL1 runtime component Prototype" OFF)
+option(ARP_EDITOR_WEBGL_PRODUCT "Build the explicit WebGL1 Editor Prototype" OFF)
 if(ARP_WEBGL1_PROTOTYPE_PRODUCT)
     include(cmake/ArpWebGlProduct.cmake)
     return()
 endif()
-arp_select_web_rhi("${CMAKE_SYSTEM_NAME}" "${ARP_WEB_RHI}" ARP_SELECTED_WEB_RHI)
+if(ARP_EDITOR_WEBGL_PRODUCT)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten" OR NOT ARP_WEB_RHI STREQUAL "webgl1")
+        message(FATAL_ERROR "ARP-EDITOR-WEBGL-BUILD-SELECTION")
+    endif()
+    set(ARP_SELECTED_WEB_RHI webgl1)
+    add_compile_options(-pthread)
+    add_link_options(-pthread)
+else()
+    arp_select_web_rhi("${CMAKE_SYSTEM_NAME}" "${ARP_WEB_RHI}" ARP_SELECTED_WEB_RHI)
+endif()
 
 option(ARP_RHI_WEBGPU_POST_SUPPRESSION_CONTRACT_PROBES
     "Compile negative post-suppression probes only into the WebGPU browser smoke" OFF)
@@ -1133,6 +1143,8 @@ add_library(arp_rhi
     src/rhi/conformance/matrix.cpp
     src/rhi/conformance/runner.cpp
     src/rhi/frontend/telemetry_debug_telemetry.cpp
+    src/rhi/frontend/command_push_constant_binding.cpp
+    src/rhi/frontend/webgpu_runtime_telemetry.cpp
     src/rhi/frontend/descriptor_descriptors.cpp
     src/rhi/frontend/bindless_command_source.cpp
     src/rhi/frontend/command_source_assembly.cpp
@@ -1153,14 +1165,14 @@ add_library(arp_rhi
     src/rhi/frontend/bindless_initialized_buffer.cpp
     src/rhi/frontend/bindless_binding_preparation.cpp
     src/rhi/frontend/bindless_graphics_binding.cpp
-    src/rhi/semantics/fallback_plan.cpp
+    src/rhi/frontend/fallback_planner.cpp
     src/rhi/frontend/frame_validation.cpp
     src/rhi/frontend/frame_resources.cpp
     src/rhi/frontend/memory_lifetime_validation.cpp
     src/rhi/frontend/resource_identity.cpp
     src/rhi/frontend/transfer_texture_readback_batch.cpp
     src/rhi/frontend/pipeline_cache.cpp
-    src/rhi/semantics/webgpu_runtime_profile.cpp
+    src/rhi/frontend/webgpu_runtime_profile.cpp
 )
 target_include_directories(arp_rhi PUBLIC src)
 set(bindless_zero_base_identity "${CMAKE_CURRENT_BINARY_DIR}/generated/rhi/bindless_zero_base_identity.h")
@@ -1250,7 +1262,7 @@ add_library(arp_rhi_semantics
     src/rhi/semantics/gpu_timing_lowering.cpp
     src/rhi/semantics/native_backend_capabilities.cpp
     src/rhi/semantics/native_command_lowering.cpp
-    src/rhi/semantics/native_engine_fallback_bridge.cpp
+    src/rhi/frontend/native_engine_fallback_bridge.cpp
     src/rhi/semantics/native_pipeline_state_lowering.cpp
     src/rhi/semantics/native_platform_lifecycle_lowering.cpp
     src/rhi/semantics/push_constant_validation.cpp
@@ -1258,7 +1270,6 @@ add_library(arp_rhi_semantics
     src/rhi/semantics/vulkan_device_capability_query.cpp
     src/rhi/semantics/webgpu_canvas_lifecycle_bridge.cpp
     src/rhi/semantics/webgpu_runtime_capability_bridge.cpp
-    src/rhi/semantics/webgpu_runtime_telemetry.cpp
 )
 target_include_directories(arp_rhi_semantics PUBLIC src)
 target_link_libraries(arp_rhi_semantics PUBLIC arp_rhi)
@@ -1301,6 +1312,21 @@ add_library(arp_platform
     src/platform/common/render_system_rhi_startup_readiness.cpp
 )
 target_include_directories(arp_platform PUBLIC src)
+
+if(ARP_EDITOR_WEBGL_PRODUCT)
+    # This application opts into OrderedRenderSystem; native frame stubs are
+    # implemented by that platform path and must not be linked twice.
+    get_target_property(_arp_platform_sources arp_platform SOURCES)
+    list(REMOVE_ITEM _arp_platform_sources src/platform/common/render_system.cpp)
+    set_property(TARGET arp_platform PROPERTY SOURCES "${_arp_platform_sources}")
+    if(NOT TARGET arp_rhi_webgl)
+        include(cmake/ArpWebGlRuntime.cmake)
+        arp_add_webgl_runtime(arp_core arp_shader)
+    endif()
+    target_link_libraries(arp_rhi_webgl PUBLIC arp_rhi arp_render_graph)
+    target_sources(arp_platform PRIVATE src/platform/web/window_web.cpp src/platform/web/render_system_webgl.cpp)
+    target_link_libraries(arp_platform PUBLIC arp_rhi_webgl)
+endif()
 target_link_libraries(arp_platform PUBLIC arp_core arp_input arp_platform_window_mapping arp_gui arp_renderer arp_audio arp_rhi_semantics arp_renderer_deployment)
 if(ARP_SELECTED_WEB_RHI STREQUAL "webgpu")
     target_link_libraries(arp_platform PUBLIC arp_rhi_webgpu)
@@ -1506,7 +1532,7 @@ arp_add_script_plugin(
 arp_add_script_plugin(
     MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/modules/arp.scene3d_module.arpplugin"
     TARGET arp_script_plugin_scene3d
-    LINK_LIBRARIES arp_scriptvm_runtime arp_scriptvm_ir arp_scriptvm_frontend arp_scriptvm_interpreter arp_scriptvm_aot_tooling arp_3d)
+    LINK_LIBRARIES arp_scriptvm_runtime arp_scriptvm_ir arp_scriptvm_frontend arp_scriptvm_interpreter arp_scriptvm_aot_tooling arp_3d arp_resource)
 arp_add_script_plugin(
     MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/modules/arp.resources_module.arpplugin"
     TARGET arp_script_plugin_resources
@@ -1904,6 +1930,17 @@ else()
 endif()
 add_test(NAME arp_immutable_mesh_upload_tests COMMAND arp_immutable_mesh_upload_tests)
 
+add_executable(arp_static_mesh_shadow_lod_gpu_tests tests/contract/static_mesh_shadow_lod_gpu_tests.cpp)
+target_include_directories(arp_static_mesh_shadow_lod_gpu_tests PRIVATE . src)
+target_link_libraries(arp_static_mesh_shadow_lod_gpu_tests PRIVATE arp_core arp_rhi arp_rhi_semantics)
+if(MSVC)
+    target_compile_options(arp_static_mesh_shadow_lod_gpu_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_static_mesh_shadow_lod_gpu_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_static_mesh_shadow_lod_gpu_tests COMMAND arp_static_mesh_shadow_lod_gpu_tests)
+
+
 add_executable(arp_orthographic_error_projection_tests tests/contract/orthographic_error_projection_tests.cpp)
 target_include_directories(arp_orthographic_error_projection_tests PRIVATE . src)
 target_link_libraries(arp_orthographic_error_projection_tests PRIVATE arp_core)
@@ -1913,6 +1950,17 @@ else()
     target_compile_options(arp_orthographic_error_projection_tests PRIVATE -UNDEBUG)
 endif()
 add_test(NAME arp_orthographic_error_projection_tests COMMAND arp_orthographic_error_projection_tests)
+
+add_executable(arp_perspective_surface_error_projection_tests tests/contract/perspective_surface_error_projection_tests.cpp)
+target_include_directories(arp_perspective_surface_error_projection_tests PRIVATE . src)
+target_link_libraries(arp_perspective_surface_error_projection_tests PRIVATE arp_core arp_rhi arp_rhi_semantics)
+if(MSVC)
+    target_compile_options(arp_perspective_surface_error_projection_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_perspective_surface_error_projection_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_perspective_surface_error_projection_tests COMMAND arp_perspective_surface_error_projection_tests)
+
 
 add_executable(arp_mesh_source_identity_tests tests/contract/mesh_source_identity_tests.cpp)
 target_include_directories(arp_mesh_source_identity_tests PRIVATE . src)
@@ -2089,6 +2137,13 @@ foreach(recorded_staging_test IN ITEMS
     endif()
     add_test(NAME ${recorded_staging_test} COMMAND ${recorded_staging_test})
 endforeach()
+
+add_executable(arp_core_atomic_file_precondition_tests tests/unit/atomic_file_precondition_tests.cpp)
+target_link_libraries(arp_core_atomic_file_precondition_tests PRIVATE arp_core arp_fkyaml_headers)
+target_compile_options(arp_core_atomic_file_precondition_tests PRIVATE -UNDEBUG)
+add_test(NAME arp_core_atomic_file_precondition_tests COMMAND arp_core_atomic_file_precondition_tests)
+add_test(NAME arp_core_atomic_file_precondition_smoke COMMAND arp_core_atomic_file_precondition_tests --smoke)
+set_tests_properties(arp_core_atomic_file_precondition_tests arp_core_atomic_file_precondition_smoke PROPERTIES TIMEOUT 60)
 
 add_executable(arp_core_atomic_capacity_tests tests/unit/atomic_capacity_tests.cpp)
 target_link_libraries(arp_core_atomic_capacity_tests PRIVATE arp_core)
@@ -6828,7 +6883,7 @@ add_dependencies(arp_scriptvm_five_domain_plugin_gate_tests
 target_include_directories(arp_scriptvm_five_domain_plugin_gate_tests PRIVATE . src modules)
 target_link_libraries(arp_scriptvm_five_domain_plugin_gate_tests PRIVATE
     arp_scriptvm_runtime arp_scriptvm_ir arp_scriptvm_frontend arp_scriptvm_interpreter arp_scriptvm_aot_tooling
-    arp_scene arp_3d arp_resource arp_network)
+    arp_scene arp_2d arp_3d arp_resource arp_network)
 if(MSVC)
     target_compile_options(arp_scriptvm_five_domain_plugin_gate_tests PRIVATE /UNDEBUG)
 else()
@@ -7463,6 +7518,7 @@ if(MINGW)
 else()
     target_link_libraries(arp_engine PRIVATE ${ARP_ENGINE_MODULE_TARGETS})
 endif()
+include(cmake/ArpEnginePluginAbi.cmake)
 
 if(CMAKE_NM)
     add_custom_command(TARGET arp_engine POST_BUILD
@@ -7488,7 +7544,9 @@ if(ARP_HAS_VULKAN_HEADERS AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
-    target_link_libraries(arp_platform PUBLIC arp_rhi_webgpu)
+    if(NOT ARP_EDITOR_WEBGL_PRODUCT)
+        target_link_libraries(arp_platform PUBLIC arp_rhi_webgpu)
+    endif()
 elseif(APPLE)
     target_link_libraries(arp_platform PUBLIC arp_rhi_metal)
 else()
@@ -7611,6 +7669,10 @@ if(SLANGC_EXECUTABLE)
             "${CMAKE_BINARY_DIR}/shaders/pbr_scene.metal"
             "${CMAKE_BINARY_DIR}/shaders/pbr_scene.wgsl"
             "${CMAKE_BINARY_DIR}/shaders/pbr_scene.reflection.yaml"
+            "${CMAKE_BINARY_DIR}/shaders/scene_pbr.spv"
+            "${CMAKE_BINARY_DIR}/shaders/scene_pbr.metal"
+            "${CMAKE_BINARY_DIR}/shaders/scene_pbr.wgsl"
+            "${CMAKE_BINARY_DIR}/shaders/scene_pbr.reflection.yaml"
             "${CMAKE_BINARY_DIR}/shaders/pbr_scene.shader_bindings.h"
             "${CMAKE_BINARY_DIR}/shaders/editor_viewport_pbr.spv"
             "${CMAKE_BINARY_DIR}/shaders/editor_viewport_pbr.metal"
@@ -7744,6 +7806,10 @@ if(SLANGC_EXECUTABLE)
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/gui/overlay.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/wocc/particles.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/wocc/pbr_scene.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/scene_pbr.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/pbr_brdf.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/core/leaf_surface.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/core/pbr_material.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/editor/viewport_pbr.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/editor/viewport_sprite.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/wocc/pbr_scene_terrain.slang"
@@ -7807,6 +7873,10 @@ if(SLANGC_EXECUTABLE)
         "${CMAKE_BINARY_DIR}/shaders/pbr_scene.metal"
         "${CMAKE_BINARY_DIR}/shaders/pbr_scene.wgsl"
         "${CMAKE_BINARY_DIR}/shaders/pbr_scene.reflection.yaml"
+        "${CMAKE_BINARY_DIR}/shaders/scene_pbr.spv"
+        "${CMAKE_BINARY_DIR}/shaders/scene_pbr.metal"
+        "${CMAKE_BINARY_DIR}/shaders/scene_pbr.wgsl"
+        "${CMAKE_BINARY_DIR}/shaders/scene_pbr.reflection.yaml"
         "${CMAKE_BINARY_DIR}/shaders/pbr_scene.shader_bindings.h"
         "${CMAKE_BINARY_DIR}/shaders/editor_viewport_pbr.spv"
         "${CMAKE_BINARY_DIR}/shaders/editor_viewport_pbr.metal"
@@ -8370,7 +8440,9 @@ include(cmake/BindlessNativeSceneLifecycle.cmake)
 include(cmake/BindlessGraphicsDepthFixture.cmake)
 include(cmake/ArpVolumetricFog.cmake)
 include(cmake/ArpVolumetricCloud.cmake)
+include(cmake/ArpOriginalTextureUpload.cmake)
 include(cmake/ArpVulkanCommandRetention.cmake)
+include(cmake/ArpQueryPassTiming.cmake)
 
 # Terrain/vegetation/LOD dependency governance regressions.
 add_executable(arp_lod_profile_tests tests/unit/lod_profile_tests.cpp)

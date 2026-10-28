@@ -1,9 +1,11 @@
+#include "3d/cloud_component.h"
 #include "3d/collider_component.h"
 #include "3d/components.h"
 #include "core/math/math.h"
 #include "core/runtime/async_runtime.h"
 #include "network/io_context.h"
 #include "network/network_module.h"
+#include "reflection/serialization.h"
 #include "resource/resource_manager.h"
 #include "resource/resource_module.h"
 #include "scene/camera.h"
@@ -242,6 +244,8 @@ arp::core::UniquePtr<arp::scene::Component> scene3dFactory(
         return arp::core::makeUnique<arp::scene::CameraComponent>();
     if (type == "ColliderComponent")
         return arp::core::makeUnique<arp::scene3d::ColliderComponent>();
+    if (type == "VolumetricCloudComponent")
+        return arp::core::makeUnique<arp::scene3d::VolumetricCloudComponent>();
     return {};
 }
 
@@ -264,10 +268,47 @@ void assertDirectObjectSmoke(const std::shared_ptr<arp::scriptvm::ModuleExports>
     assert(meshComponent.is_native_reference());
     assert(meshComponent.native_reference_alive());
     assert(object.call("component_count").cast<std::uint32_t>() == 2u);
+    for (const auto* name : {"CloudLayerDesc", "CloudDesc", "VolumetricCloudComponent"}) {
+        bool found = false;
+        for (const auto& binding : scene3dExports->reflectionRegistration->types())
+            found |= binding.name == name;
+        assert(found);
+    }
+    const auto cloudComponent = object.call("create_component",
+        String("VolumetricCloudComponent", &arp::core::defaultCpuMemoryResource()));
+    assert(cloudComponent.is_native_reference() && cloudComponent.native_reference_alive());
+    arp::scene3d::CloudDesc authored;
+    authored.layer.planetCenter = {0.f, -6371000.f, 0.f};
+    authored.layer.planetRadius = 6371000.f;
+    authored.layer.baseAltitude = 1000.f;
+    authored.layer.thickness = 1500.f;
+    authored.layer.extinction = .002f;
+    authored.layer.scatteringAlbedo = {1.f, .97f, .92f};
+    authored.layer.anisotropy = .5f;
+    authored.layer.windVelocity = {10.f, 0.f, 3.f};
+    authored.layer.weatherPeriod = 16000.f;
+    authored.layer.shapePeriod = 4000.f;
+    authored.layer.detailPeriod = 600.f;
+    authored.layer.coverage = 1.f;
+    authored.layer.erosion = .1f;
+    authored.densityResource = "cloud/formal-plugin";
+    assert(cloudComponent.call("set_cloud", authored).cast<bool>());
+    const auto value = cloudComponent.call("cloud");
+    const auto* cloud = value.cast<arp::scene3d::CloudDesc*>();
+    assert(cloud && cloud->densityResource == authored.densityResource);
+    const auto yaml = arp::reflection::serialize_to_yaml(value);
+    assert(yaml.success);
+    const auto restored = arp::reflection::deserialize_from_yaml(yaml.yaml);
+    assert(restored.success);
+    const auto* roundtrip = restored.value.cast<arp::scene3d::CloudDesc*>();
+    assert(roundtrip && roundtrip->densityResource == authored.densityResource);
+    authored.layer.extinction = -1.f;
+    assert(!cloudComponent.call("set_cloud", authored).cast<bool>());
     assert(sceneObject.call("destroy_object_ref", object.cast<arp::scene::GameObject*>())
             .cast<bool>());
     assert(!object.native_reference_alive());
     assert(!meshComponent.native_reference_alive());
+    assert(!cloudComponent.native_reference_alive());
 
     const auto manager =
         resourceExports->symbols.find(String("manager", &arp::core::defaultCpuMemoryResource()));

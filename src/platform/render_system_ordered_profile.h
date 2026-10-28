@@ -21,17 +21,23 @@ struct RenderSystemOrderedProfile {
     std::uint32_t contractVersion = 0;
     bool prototypeOptIn = false;
     bool sampledDepthOptIn = false;
+    bool derivativesOptIn = false;
     OrderedRenderSystemBudgets budgets;
     rhi::OrderedGraphicsExecutionRequest execution;
     RenderSystemOrderedGraphicsDesc frames;
+    bool mainBrowserThreadWithWorkersOptIn = false;
 };
 
 class RenderSystemOrderedProfileContract final {
 public:
     static const char* validate(rhi::Backend backend, const RenderSystemOrderedProfile& p)
     {
-        if (p.contractVersion != 1)
+        if (p.contractVersion != 1 && p.contractVersion != 2)
             return "PLATFORM-ORDERED-PROFILE-VERSION";
+        if (p.contractVersion == 1 && p.derivativesOptIn)
+            return "PLATFORM-ORDERED-DERIVATIVES-PROFILE-REQUIRED";
+        if (p.contractVersion == 1 && p.mainBrowserThreadWithWorkersOptIn)
+            return "PLATFORM-ORDERED-WORKERS-PROFILE-REQUIRED";
         if (!p.prototypeOptIn || !p.execution.prototypeOptIn || !p.frames.prototypeOptIn)
             return "PLATFORM-ORDERED-PROFILE-OPT-IN";
         const auto& b = p.budgets;

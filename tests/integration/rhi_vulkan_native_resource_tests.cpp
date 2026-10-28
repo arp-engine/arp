@@ -5,6 +5,7 @@
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 #include "rhi/semantics/vulkan_device_capability_query.h"
 #include "tests/fixtures/descriptor_liveness_contract.h"
+#include "tests/fixtures/device_idle_failure_fixture.h"
 #include "tests/fixtures/recorded_resource_state_checks.h"
 #include "tests/fixtures/resource_identity_contract.h"
 #include "tests/fixtures/sampled_depth_descriptor_contract.h"
@@ -466,10 +467,12 @@ int main(int argc, char** argv)
     if (argc == 2 && std::string_view(argv[1]) == "--recorded-state-synthetic") {
         auto device = createSyntheticVulkanDevice("RecordedStateSynthetic", 1024u * 1024u);
         assert(device);
-        arp::tests::checkRecordedResourceStates(*device);
+        arp::tests::checkRecordedResourceStates(*device, false);
+        arp::tests::DeviceIdleFailureFixture::verify(
+            *device, "RHI-VULKAN-IDLE-COMPLETION-NATIVE-RUNTIME");
         // Synthetic waitIdle has no native queue. Explicitly drain its already
         // complete metadata submissions before checking retained allocations.
-        arp::rhi_vulkan::retireCompletedVulkanRhiSubmittedCommands();
+        arp::rhi_vulkan::retireCompletedVulkanRhiSubmittedCommands(*device);
         assert(device->memoryStats().allocatedBytes == 0u);
         return 0; // Synthetic backend metadata only; no native GPU claim.
     }

@@ -321,7 +321,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         device=self.read_rhi_api_and_implementation("src/rhi/gpu_device.h")
         creation=device.split("using Loss=OriginalSamplerNativeLossJoinContract",1)[1].split("record->object_",1)[0]
         self.assertLess(creation.index("Loss::validateRegistration"),creation.index("Loss::lowering"))
-        self.assertLess(creation.index("validateOriginalTypedNativeLossJoin(*observed)"),
+        self.assertLess(creation.index("validateOriginalTypedNativeLossJoin(*observed,{version==3u?3u:1u,true})"),
                         creation.index("validateOriginalNativeLossResource(object)"))
         backend=self.read_source("src/rhi/backends/webgpu/webgpu_device.cpp")
         self.assertIn("const rhi::GpuSampler& sampler) const noexcept override",backend)
@@ -1588,7 +1588,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         source=self.read_source("src/rhi/backends/vulkan/vulkan_native_commands.cpp")
         header=self.read_source("src/rhi/backends/vulkan/vulkan_native_commands.h")
         for token in ["VulkanNativeTextureReadbackSample", "PendingVulkanTextureReadback", "g_textureReadbackMutex", "g_textureReadbacks", "pollVulkanNativeTextureReadback", "applyTextureReadbackStatistics"]:self.assertNotIn(token,source+header)
-        for token in ["scheduleBindlessFaultReadback", "resolveBindlessFaultReadbacks", "completedGpuTiming()", "recordImageToBufferCopy", "recordImageToImageCopy"]:self.assertIn(token,source)
+        for token in ["scheduleBindlessFaultReadback", "resolveBindlessFaultReadbacks", "runtime.commandDomain().timing", "recordImageToBufferCopy", "recordImageToImageCopy"]:self.assertIn(token,source)
         self.assertIn("BorrowedTextureReadbackRetirementContract::lowering(rhi::Backend::Vulkan)",source)
 
     def test_owned_execution_consumes_the_same_resolved_l2_decision_as_availability(self):
@@ -3288,8 +3288,10 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         preparation = self.read_source("src/rhi/frontend/command_render_pass_preparation.h")
         for token in ["dispatchDomainVersion = 0u", "dispatchDomainOptIn = false", "std::shared_ptr<const ComputeDispatchValidationDomain> dispatchDomain",
                       "RHI-DISPATCH-RECORDING-DOMAIN-INPUT", "RHI-DISPATCH-RECORDING-ADMISSION-INPUT",
-                      "RHI-DISPATCH-RECORDING-PROFILE", "RHI-RENDER-PASS-PREPARATION-METAL-PAYLOAD-MISSING"]:
+                      "RHI-DISPATCH-RECORDING-PROFILE", "CommandBudgetLowering::renderPassPreparation<Decision>"]:
             self.assertIn(token, preparation)
+        self.assertIn("RHI-RENDER-PASS-PREPARATION-METAL-PAYLOAD-MISSING",
+                      self.read_source("src/rhi/semantics/command_budget_lowering.h"))
         native = CppSource(self.read_source("src/rhi/backends/vulkan/vulkan_render_pass_storage.cpp"))
         self.assertIn("OriginalComputeDispatchRecordingInput admission{device,request.dispatchDomain}", native)
         self.assertIn("request.dispatchDomain?&admission:nullptr", native)
@@ -7236,7 +7238,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
     def test_root_fence_queue_invocation_retains_before_submit_and_quarantines_failure(self):
         native = self.read_source("src/rhi/backends/vulkan/vulkan_native_commands.cpp")
         submit = native.split("bool VulkanRhiNativeCommandPayload::submit(const VulkanRhiTimelineSubmitInfo&", 1)[1]
-        self.assertLess(submit.index("retainSubmittedCommandForAsyncRetirement(shared_from_this(), diagnostics)",
+        self.assertLess(submit.index("retainSubmittedCommandForAsyncRetirement(impl_->device, shared_from_this(), diagnostics)",
                                     submit.index("beforeSubmit(*this, diagnostics)")),
                         submit.index("queueSubmit(impl_->device.graphicsQueue()"))
         for token in ["originalSubmissionUnproven = true", "submissionUnproven(*this)",
@@ -7737,7 +7739,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         sampler = device.split("using Loss = OriginalSamplerNativeLossJoinContract", 1)[1].split(
             "auto& object =", 1)[0]
         for token in ["Loss::validateRegistration(originalRegistry_->budget_, version)",
-                      "Loss::lowering(backend(), version)", "validateOriginalTypedNativeLossJoin(*observed)",
+                      "Loss::lowering(backend(), version)", "validateOriginalTypedNativeLossJoin(*observed,{version==3u?3u:1u,true})",
                       "sameOwner(originalRegistry_->loss_.lock(), observed->binding_)",
                       "sameOwner(originalRegistry_->domain_, observed->domain_)"]:
             self.assertIn(token, sampler)
@@ -8144,7 +8146,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
             self.assertIn(token, common)
         native = self.read_source("src/rhi/backends/vulkan/vulkan_original_bindless_command.cpp")
         for token in ("VulkanOriginalBindlessGraphicsExecutionView", "submittedFenceCompleted()",
-                      "retireCompletedVulkanRhiSubmittedCommands()", "custody->record(*command_,diagnostic_)",
+                      "retireCompletedVulkanRhiSubmittedCommands(*command_->runtime())", "custody->record(*command_,diagnostic_)",
                       "command_->submit(diagnostic_)", "validateGeometryFetch(closure,inputs.readback->originalProgram(),budget.fetch)",
                       "budget.fetch,true", "transaction_->status()==OriginalCommandStateTransaction::Status::Committed",
                       "result_->publishedBytes()"):

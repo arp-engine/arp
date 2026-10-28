@@ -26,8 +26,21 @@ inline std::shared_ptr<QueryPool> GpuDevice::createOriginalQueryPool(
         return reject(id);
     if (originalLossBinding_
         || OriginalResourceRegistrationContract::observesNativeLoss(
-            originalRegistry_->budget_.contractVersion))
-        return reject("RHI-ORIGINAL-QUERY-NATIVE-LOSS-JOIN-UNAVAILABLE");
+            originalRegistry_->budget_.contractVersion)) {
+        if (!OriginalResourceRegistrationContract::joinsQueryNativeLoss(originalRegistry_->budget_))
+            return reject("RHI-ORIGINAL-QUERY-NATIVE-LOSS-JOIN-UNAVAILABLE");
+        if (const auto* id =
+                OriginalQueryNativeLossJoinContract::validate(originalRegistry_->budget_))
+            return reject(id);
+        const auto decision = OriginalQueryNativeLossJoinContract::lowering(backend());
+        if (!decision.nativeSourceAvailable)
+            return reject(decision.diagnostic);
+        const auto loss = observeOriginalDeviceNativeLoss(diagnostic);
+        if (!loss)
+            return reject(diagnostic);
+        if (const auto* id = validateOriginalTypedNativeLossJoin(*loss, {3u, true}))
+            return reject(id);
+    }
     if (const auto* id = budget.diagnostic())
         return reject(id);
     if (!input || !input->hasQuotaBoundSharedOwner(input))
@@ -612,6 +625,21 @@ inline const char* GpuDevice::prepareOriginalTypedNativeLossRegistration(
 {
     if (const auto* id = OriginalTypedNativeLossJoinContract::validate(request, budget))
         return id;
+    if (budget.queryNativeLoss.requested()) {
+        if (const auto* id = OriginalQueryNativeLossJoinContract::validate(budget))
+            return id;
+        const auto query = OriginalQueryNativeLossJoinContract::lowering(backend());
+        if (!query.nativeSourceAvailable)
+            return query.diagnostic;
+    }
+    if (budget.samplerNativeLoss.requested()) {
+        if (const auto* id =
+                OriginalSamplerNativeLossJoinContract::validateRegistration(budget, 3u))
+            return id;
+        const auto sampler = OriginalSamplerNativeLossJoinContract::lowering(backend(), 3u);
+        if (!sampler.nativeSourceAvailable)
+            return sampler.diagnostic;
+    }
     const auto decision =
         OriginalTypedNativeLossJoinContract::lowering(backend(), request.contractVersion);
     if (!decision.registrationAvailable)
@@ -661,13 +689,34 @@ inline const char* GpuDevice::prepareOriginalResourceRegistrationImpl(
     std::shared_ptr<core::CpuMemoryQuota> quota,
     std::weak_ptr<const OriginalDeviceNativeLossBinding> loss)
 {
+    if (budget.samplerNativeLoss.requested()) {
+        if (loss.expired())
+            return "RHI-ORIGINAL-SYNC-SAMPLER-LOSS-SUBSCRIPTION";
+        if (const auto* id =
+                OriginalSamplerNativeLossJoinContract::validateRegistration(budget, 3u))
+            return id;
+        const auto sampler = OriginalSamplerNativeLossJoinContract::lowering(backend(), 3u);
+        if (!sampler.nativeSourceAvailable)
+            return sampler.diagnostic;
+    }
     if (budget.queries.requested()) {
         if (const auto* id =
                 OriginalResourceRegistrationContract::queryLowering(backend(), budget.queries)
                     .diagnostic)
             return id;
-        if (originalLossBinding_ || !loss.expired())
-            return "RHI-ORIGINAL-QUERY-NATIVE-LOSS-JOIN-UNAVAILABLE";
+        if (originalLossBinding_ || !loss.expired() || budget.queryNativeLoss.requested()) {
+            if (!OriginalResourceRegistrationContract::joinsQueryNativeLoss(budget))
+                return "RHI-ORIGINAL-QUERY-NATIVE-LOSS-JOIN-UNAVAILABLE";
+            if (const auto* id = OriginalQueryNativeLossJoinContract::validate(budget))
+                return id;
+            const auto decision = OriginalQueryNativeLossJoinContract::lowering(backend());
+            if (!decision.nativeSourceAvailable)
+                return decision.diagnostic;
+            const auto subscription = loss.lock();
+            if (!subscription
+                || !core::SharedOwnerProjection::sameOwner(subscription, originalLossBinding_))
+                return "RHI-ORIGINAL-QUERY-LOSS-SUBSCRIPTION";
+        }
     }
     if (budget.heaps.requested()) {
         if (const auto* id =
@@ -1076,7 +1125,7 @@ inline const char* GpuDevice::beginOriginalFiniteDescriptorWrite(DescriptorSet& 
         std::is_same_v<Pipeline, ComputePipeline> || std::is_same_v<Pipeline, RenderPipeline>);
     if (const auto* id = Contract::validate(request))
         return id;
-    if (backend() != Backend::WebGPU)
+    if (semantics::DescriptorLowering::requiresLegacyWriteDecision(backend()))
         return Contract::decide(backend()).diagnostic;
     if (!count || count > request.maxBindings || !writes)
         return "RHI-ORIGINAL-FINITE-WRITE-BINDING-COUNT";
@@ -1143,7 +1192,7 @@ inline const char* GpuDevice::beginOriginalWholeDescriptorWrite(DescriptorSet& o
         std::is_same_v<Pipeline, ComputePipeline> || std::is_same_v<Pipeline, RenderPipeline>);
     if (const auto* id = OriginalWholeDescriptorWriteContract::validate(request))
         return id;
-    if (backend() != Backend::WebGPU)
+    if (semantics::DescriptorLowering::requiresLegacyWriteDecision(backend()))
         return OriginalWholeDescriptorWriteContract::decide(backend()).diagnostic;
     if (!count || count > request.maxBindings || !writes)
         return "RHI-ORIGINAL-WHOLE-WRITE-BINDING-COUNT";
@@ -1180,11 +1229,18 @@ inline const char* GpuDevice::beginOriginalGeneralDescriptorWrite(DescriptorSet&
         std::is_same_v<Pipeline, ComputePipeline> || std::is_same_v<Pipeline, RenderPipeline>);
     if (const auto* id = OriginalGeneralDescriptorWriteContract::validate(request))
         return id;
+    if (!request.sampledColor.empty()) {
+        const auto decision = semantics::OriginalOrdinarySampledColorContract::lowering(
+            backend(), request.sampledColor);
+        if (!decision.nativeAvailable)
+            return decision.diagnostic;
+    }
     // An explicitly requested /4 join authenticates the original closure even
     // while a backend's complete-group publication payload remains unavailable.
     // Defaults keep their existing lowering and refusal order.
     const bool synchronousLossJoin = request.lossGroupJoinVersion || request.lossGroupJoinOptIn;
-    if (backend() == Backend::Metal && request.contractVersion >= 3u && !synchronousLossJoin)
+    if (semantics::DescriptorLowering::requiresSynchronousLossJoin(
+            backend(), request.contractVersion, synchronousLossJoin))
         return "RHI-ORIGINAL-TYPED-LOSS-SYNC-GROUP-OPT-IN";
     if (synchronousLossJoin) {
         if ((request.contractVersion == 3u && !std::is_same_v<Pipeline, RenderPipeline>)
@@ -1213,7 +1269,7 @@ inline const char* GpuDevice::beginOriginalGeneralDescriptorWrite(DescriptorSet&
             OriginalGeneralDescriptorWriteContract::synchronousComputeLowering(backend());
         if (!decision.preparationAvailable)
             return decision.diagnostic;
-    } else if (backend() != Backend::WebGPU)
+    } else if (semantics::DescriptorLowering::requiresLegacyWriteDecision(backend()))
         return OriginalGeneralDescriptorWriteContract::decide(backend()).diagnostic;
     if (!count || count > request.maxBindings || !elements || !sources)
         return "RHI-ORIGINAL-GENERAL-WRITE-BINDING-COUNT";
@@ -1304,7 +1360,9 @@ inline GpuPipelineStatisticsSample GpuDevice::readPipelineStatistics(
 }
 
 inline void GpuDevice::waitIdle()
-{}
+{
+    throw core::DiagnosticError("RHI-DEVICE-IDLE-IMPLEMENTATION-UNAVAILABLE");
+}
 
 inline semantics::ShutdownDrainReport GpuDevice::drainForShutdown(
     const semantics::ShutdownDrainRequest& request)
@@ -1829,7 +1887,10 @@ inline core::UniquePtr<T> GpuDevice::completeOriginalResourceCreation(
         }
         if (originalLossBinding_) {
             using Loss = OriginalSamplerNativeLossJoinContract;
-            const auto version = originalRegistry_->budget_.contractVersion
+            const auto version = OriginalResourceRegistrationContract::joinsSamplerNativeLoss(
+                                     originalRegistry_->budget_)
+                ? 3u
+                : originalRegistry_->budget_.contractVersion
                     == OriginalDescriptorNativeLossRegistrationContract::registrationVersion
                 ? 2u
                 : 1u;
@@ -1844,9 +1905,9 @@ inline core::UniquePtr<T> GpuDevice::completeOriginalResourceCreation(
             auto observed = observeOriginalDeviceNativeLoss(lastOriginalRegistrationDiagnostic_);
             if (!observed)
                 return {};
-            if (version == 1u) {
-                if ((lastOriginalRegistrationDiagnostic_ =
-                            validateOriginalTypedNativeLossJoin(*observed)))
+            if (version == 1u || version == 3u) {
+                if ((lastOriginalRegistrationDiagnostic_ = validateOriginalTypedNativeLossJoin(
+                         *observed, {version == 3u ? 3u : 1u, true})))
                     return {};
             } else {
                 // The independent descriptor/sampler request was consumed by

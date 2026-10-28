@@ -1439,7 +1439,7 @@ void reconstructionContract(rhi::GpuDevice& device)
         if (mutation == 0)
             invalid.contractVersion = 0;
         if (mutation == 1)
-            invalid.contractVersion = 2;
+            invalid.contractVersion = 3;
         if (mutation == 2)
             invalid.maxRadianceRange = 0;
         if (mutation == 3)

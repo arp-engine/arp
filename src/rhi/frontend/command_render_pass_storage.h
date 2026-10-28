@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rhi/frontend/command_stream_program.h"
+#include "rhi/semantics/command_budget_lowering.h"
 
 namespace arp::rhi {
 
@@ -68,19 +69,7 @@ public:
     {
         if (const auto* id = validate(budget))
             return {false, false, id};
-        switch (backend) {
-        case Backend::Null:
-            return {true, false, "RHI-RENDER-PASS-STORAGE-NULL-VALIDATOR"};
-        case Backend::Vulkan:
-            return {false, false, "RHI-RENDER-PASS-STORAGE-VULKAN-PAYLOAD-MISSING"};
-        case Backend::Metal:
-            return {false, false, "RHI-RENDER-PASS-STORAGE-METAL-PAYLOAD-MISSING"};
-        case Backend::WebGPU:
-            return {false, false, "RHI-RENDER-PASS-STORAGE-WEBGPU-PAYLOAD-MISSING"};
-        case Backend::WebGL:
-            return {false, false, "RHI-RENDER-PASS-STORAGE-WEBGL-UNSUPPORTED"};
-        }
-        return {};
+        return semantics::CommandBudgetLowering::renderPassStorage<Decision>(backend);
     }
 
     static Result inspect(const std::shared_ptr<const OriginalCommandStreamProgram>& program,

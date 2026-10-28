@@ -170,7 +170,6 @@ public:
     static int run(Mode mode)
     {
         using namespace rhi_vulkan;
-        drainVulkanRhiSubmittedCommandsForShutdown();
         std::fprintf(stderr, "timeline-owner: mode=%u stage=primary-create\n", unsigned(mode));
         auto native = core::makeUnique<VulkanHeadlessRuntime>(false, resolve);
         std::fprintf(stderr, "timeline-owner: mode=%u stage=foreign-create\n", unsigned(mode));
@@ -290,7 +289,7 @@ public:
             device.reset();
             std::fprintf(stderr, "timeline-owner: stage=primary-runtime-release\n");
             native.reset();
-            drainVulkanRhiSubmittedCommandsForShutdown();
+            drainVulkanRhiSubmittedCommandsForShutdown(*rescue);
             rescue.reset();
             std::fprintf(stderr, "timeline-owner: stage=foreign-runtime-release\n");
             observation_ = nullptr;
@@ -351,8 +350,8 @@ public:
                 assert(value == 2u);
             }
         }
-        retireCompletedVulkanRhiSubmittedCommands();
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        retireCompletedVulkanRhiSubmittedCommands(*rescue);
+        drainVulkanRhiSubmittedCommandsForShutdown(*rescue);
         // Red cleanup only; green must not need any deferred native destroy.
         for (unsigned i = 0u; i < o.deferredCount; ++i)
             vkDestroySemaphore(o.device, o.deferred[i], nullptr);

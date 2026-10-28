@@ -243,6 +243,11 @@ public:
 
     const renderer::GuiAtlasTextureDesc& atlas() const { return combinedAtlas_; }
 
+    const arp::core::pmr::Vector<arp::ui::UiFontFaceDesc>& fontFaces() const noexcept
+    {
+        return fontFaces_;
+    }
+
     const arp::core::pmr::String& logicalAtlasResourceId() const { return logicalAtlasResourceId_; }
 
     const UnifiedUiAtlasRuntimeTelemetry& telemetry() const { return telemetry_; }

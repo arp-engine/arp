@@ -56,7 +56,7 @@ template <typename T> std::enable_if_t<!std::is_void_v<T>, class_info*> class_of
     if (transaction != nullptr) {
         auto* cls = transaction->findStagedClass(name);
         if (cls == nullptr)
-            cls = db::rawInstance().find_class(name);
+            cls = db::rawInstance().findNativeClass(name);
         return cls != nullptr ? cls
                               : transaction->registerReferencedClass(name,
                                     value_type_v<Raw>,
@@ -68,7 +68,7 @@ template <typename T> std::enable_if_t<!std::is_void_v<T>, class_info*> class_of
     // populate this cache with staged metadata that a transaction can discard.
     static class_info* published = [] {
         const auto key = detail::getTypeName<Raw>();
-        auto* cls = db::rawInstance().find_class(key);
+        auto* cls = db::rawInstance().findNativeClass(key);
         return cls != nullptr ? cls
                               : db::rawInstance().register_class(key,
                                     value_type_v<Raw>,
@@ -86,8 +86,11 @@ template <typename T> class_info* registrationClassOf()
     using Raw = raw_type_t<T>;
     (void)db::instance();
     auto* transaction = currentRegistrationTransaction();
-    if (transaction == nullptr)
-        return class_of_raw<T>();
+    if (transaction == nullptr) {
+        auto* cls = class_of_raw<T>();
+        db::rawInstance().markExplicitClassDeclaration(cls);
+        return cls;
+    }
     const auto name = typeName<Raw>();
     return transaction->declareClass(
         name, value_type_v<Raw>, sizeof(Raw), alignof(Raw), getDerivedInfoImpl<Raw>);
@@ -98,7 +101,7 @@ template <typename T> class_info* registrationClassOf()
 template <typename T> std::enable_if_t<std::is_void_v<T>, class_info*> class_of_raw()
 {
     auto name = detail::typeName<void>();
-    class_info* cls = db::rawInstance().find_class(name);
+    class_info* cls = db::rawInstance().findNativeClass(name);
     if (!cls) {
         cls = db::rawInstance().register_class(name, undefined_t, 0, 0, nullptr);
     }

@@ -12,10 +12,9 @@ const char* BasicForwardContract::camera(const core::Mat4& matrix) noexcept
     return nullptr;
 }
 
-const char* BasicForwardContract::material(const resource::MaterialResource& m,
+const char* BasicForwardContract::materialSurface(const resource::MaterialResource& m,
     const resource::ShaderPackageResource& shader,
     std::string_view shaderId,
-    const BasicForwardLighting& light,
     BasicForwardMaterialConstants& output)
 {
     output = {};
@@ -38,6 +37,21 @@ const char* BasicForwardContract::material(const resource::MaterialResource& m,
             return "BASIC-FORWARD-MATERIAL-COLOR";
     if (m.alphaMode == "Opaque" && m.baseColorA != 1)
         return "BASIC-FORWARD-OPAQUE-ALPHA";
+    output.baseColor = {m.baseColorR, m.baseColorG, m.baseColorB, m.baseColorA};
+    output.flags = {m.baseColorTextureId.empty() ? 0.f : 1.f,
+        m.doubleSided ? 1.f : 0.f,
+        0.f,
+        m.alphaMode == "Blend" ? 1.f : 0.f};
+    return nullptr;
+}
+
+const char* BasicForwardContract::lighting(const BasicForwardLighting& light,
+    BasicForwardLightingRange range,
+    BasicForwardLightingConstants& output) noexcept
+{
+    output = {};
+    if (range != BasicForwardLightingRange::Ldr1 && range != BasicForwardLightingRange::LinearHdr1)
+        return "BASIC-FORWARD-LIGHT-RANGE-PROFILE";
     if (light.contractVersion != 1 || light.maxLights != 1 || light.lightCount > light.maxLights
         || !std::isfinite(light.intensity) || light.intensity < 0
         || (!light.lightCount && light.intensity != 0))
@@ -59,9 +73,12 @@ const char* BasicForwardContract::material(const resource::MaterialResource& m,
     const std::array<float, 3> colors{light.color.x, light.color.y, light.color.z};
     const std::array<float, 3> ambient{light.ambient.x, light.ambient.y, light.ambient.z};
     for (unsigned i = 0; i < 3; ++i)
-        if (colors[i] < 0 || ambient[i] < 0 || ambient[i] + colors[i] * light.intensity > 1)
-            return "BASIC-FORWARD-LDR-IRRADIANCE-RANGE";
-    output.baseColor = {m.baseColorR, m.baseColorG, m.baseColorB, m.baseColorA};
+        if (colors[i] < 0 || ambient[i] < 0
+            || !std::isfinite(ambient[i] + colors[i] * light.intensity)
+            || (range == BasicForwardLightingRange::Ldr1
+                && ambient[i] + colors[i] * light.intensity > 1))
+            return range == BasicForwardLightingRange::Ldr1 ? "BASIC-FORWARD-LDR-IRRADIANCE-RANGE"
+                                                            : "BASIC-FORWARD-HDR-IRRADIANCE-RANGE";
     output.directionIntensity = light.lightCount ? core::Vec4{light.direction.x / length,
                                                        light.direction.y / length,
                                                        light.direction.z / length,
@@ -69,18 +86,42 @@ const char* BasicForwardContract::material(const resource::MaterialResource& m,
                                                  : core::Vec4{};
     output.lightColor = {light.color.x, light.color.y, light.color.z, 0};
     output.ambientColor = {light.ambient.x, light.ambient.y, light.ambient.z, 0};
-    output.flags = {m.baseColorTextureId.empty() ? 0.f : 1.f,
-        m.doubleSided ? 1.f : 0.f,
-        float(light.lightCount),
-        m.alphaMode == "Blend" ? 1.f : 0.f};
+    return nullptr;
+}
+
+const char* BasicForwardContract::material(const resource::MaterialResource& m,
+    const resource::ShaderPackageResource& shader,
+    std::string_view shaderId,
+    const BasicForwardLighting& light,
+    BasicForwardMaterialConstants& output)
+{
+    if (const auto* id = materialSurface(m, shader, shaderId, output))
+        return id;
+    BasicForwardLightingConstants illumination;
+    if (const auto* id = lighting(light, BasicForwardLightingRange::Ldr1, illumination)) {
+        output = {};
+        return id;
+    }
+    output.directionIntensity = illumination.directionIntensity;
+    output.lightColor = illumination.lightColor;
+    output.ambientColor = illumination.ambientColor;
+    output.flags.z = float(light.lightCount);
     return nullptr;
 }
 
 const char* BasicForwardContract::mesh(
     const assets::MeshAsset& mesh, const BasicWorldMeshProfile& p)
 {
-    if (p.contractVersion != 1 || !p.worldSpaceStatic || !p.maxVertices || !p.maxIndices
-        || !p.maxSections || !p.materialCount
+    if (!p.worldSpaceStatic)
+        return "BASIC-FORWARD-MESH-PROFILE";
+    return meshData(mesh, p);
+}
+
+const char* BasicForwardContract::meshData(
+    const assets::MeshAsset& mesh, const BasicWorldMeshProfile& p)
+{
+    if (p.contractVersion != 1 || !p.maxVertices || !p.maxIndices || !p.maxSections
+        || !p.materialCount
         || (p.indexPolicy != BasicWorldMeshIndexPolicy::Uint16Exact
             && p.indexPolicy != BasicWorldMeshIndexPolicy::RequireUint32))
         return "BASIC-FORWARD-MESH-PROFILE";

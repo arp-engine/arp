@@ -1,6 +1,6 @@
 #pragma once
 
-#include "rhi/semantics/query_lowering.h"
+#include "rhi/semantics/command_budget_lowering.h"
 
 namespace arp::rhi {
 
@@ -57,41 +57,8 @@ public:
     {
         if (const auto* id = validateIntent(budget))
             return {CapabilityMode::DiagnosticFailure, false, false, 0.0, id};
-        switch (backend) {
-        case Backend::Null:
-            return {CapabilityMode::DiagnosticFailure,
-                true,
-                false,
-                0.0,
-                "RHI-COMMAND-PROFILING-VALIDATOR-ONLY"};
-        case Backend::Vulkan:
-            if (runtimeDiagnostic)
-                return {CapabilityMode::DiagnosticFailure, false, false, 0.0, runtimeDiagnostic};
-            if (const auto* id = semantics::QueryLowering::vulkanTimestampDiagnostic(facts))
-                return {CapabilityMode::Degraded, false, false, 0.0, id};
-            if (budget.requireNativeAllocationFootprint)
-                return {CapabilityMode::DiagnosticFailure,
-                    false,
-                    false,
-                    0.0,
-                    "RHI-COMMAND-PROFILING-NATIVE-FOOTPRINT-UNAVAILABLE"};
-            return {
-                CapabilityMode::Native, false, false, facts.timestampPeriodNanoseconds, nullptr};
-        case Backend::Metal:
-        case Backend::WebGPU:
-            return {CapabilityMode::DiagnosticFailure,
-                false,
-                false,
-                0.0,
-                "RHI-COMMAND-PROFILING-NATIVE-PAYLOAD-UNAVAILABLE"};
-        case Backend::WebGL:
-            return {CapabilityMode::DiagnosticFailure,
-                false,
-                false,
-                0.0,
-                "RHI-WEBGL1-QUERY-UNSUPPORTED"};
-        }
-        return {};
+        return semantics::CommandBudgetLowering::profiling<Decision>(
+            backend, budget.requireNativeAllocationFootprint, facts, runtimeDiagnostic);
     }
 };
 

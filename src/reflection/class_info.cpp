@@ -9,10 +9,12 @@
 #include "reflection/property.h"
 
 #include <stdexcept>
+#include <utility>
 
 namespace arp::reflection {
 
-class_info::class_info(NameView name) : name_(detail::makeString(name))
+class_info::class_info(NameView name)
+    : nativeName_(detail::makeString(name)), name_(detail::makeString(name))
 {}
 
 class_info::class_info(NameView name, value_t type, std::size_t size, std::size_t alignment)
@@ -31,6 +33,31 @@ class_info::class_info(NameView name,
     : class_info(name, type, size, alignment)
 {
     getDerivedInfo_ = getDerivedInfo;
+}
+
+bool class_info::isUncompletedNativeReference() const noexcept
+{
+    return !explicitlyDeclared_ && name_ == nativeName_ && dict_.empty() && bases_.empty()
+        && castFuncs_.empty() && new_.is_undefined() && init_.is_undefined() && del_.is_undefined()
+        && getitem_.is_undefined() && setitem_.is_undefined();
+}
+
+void class_info::completeNativeReference(class_info& staged) noexcept
+{
+    generatedContract_.swap(staged.generatedContract_);
+    generatedSource_.swap(staged.generatedSource_);
+    generatedStructure_.swap(staged.generatedStructure_);
+    name_.swap(staged.name_);
+    doc_.swap(staged.doc_);
+    bases_.swap(staged.bases_);
+    castFuncs_.swap(staged.castFuncs_);
+    dict_.swap(staged.dict_);
+    std::swap(new_, staged.new_);
+    std::swap(init_, staged.init_);
+    std::swap(del_, staged.del_);
+    std::swap(getitem_, staged.getitem_);
+    std::swap(setitem_, staged.setitem_);
+    explicitlyDeclared_ = true;
 }
 
 bool class_info::is_base_of(const class_info* other) const

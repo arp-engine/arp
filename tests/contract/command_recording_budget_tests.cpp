@@ -127,7 +127,12 @@ void overflowAndGates()
         if (backend == Backend::WebGPU)
             is(decision.diagnostic, "RHI-COMMAND-RECORDING-BUDGET-WEBGPU-PAYLOAD-MISSING");
     }
-    assert(!CommandRecordingBudgetContract::lowering(Backend::WebGL, b).privateRecordingAvailable);
+    const auto webgl = CommandRecordingBudgetContract::lowering(Backend::WebGL, b);
+    assert(!webgl.privateRecordingAvailable);
+    is(webgl.diagnostic, "RHI-COMMAND-RECORDING-BUDGET-WEBGL-UNSUPPORTED");
+    const auto unknown = CommandRecordingBudgetContract::lowering(static_cast<Backend>(255), b);
+    assert(!unknown.privateRecordingAvailable);
+    is(unknown.diagnostic, "RHI-COMMAND-RECORDING-BUDGET-BACKEND");
     CommandRecordingUsage input;
     assert(!input.append(CommandUsageKind::Count));
     assert(!input.append(static_cast<CommandUsageKind>(UINT32_MAX)));

@@ -462,7 +462,7 @@ public:
         assert(command->submit(diagnostic));
         assert(command->waitSubmittedFenceUntil(
             std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(device);
         assert(tx->status() == OriginalCommandStateTransaction::Status::Committed);
         assert(lease->originalObject()->observeOriginalContent()->contentGeneration() == 1u);
         return lease;
@@ -619,7 +619,7 @@ public:
                     }));
                 assert(command->waitSubmittedFenceUntil(
                     std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
-                retireCompletedVulkanRhiSubmittedCommands();
+                retireCompletedVulkanRhiSubmittedCommands(*device);
                 assert(tx->status() == OriginalCommandStateTransaction::Status::Committed
                     && result->publishedBytes());
             }

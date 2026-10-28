@@ -5,7 +5,7 @@ endif()
 file(GLOB_RECURSE _webgpu_sources LIST_DIRECTORIES false
     "${ARP_SOURCE_DIR}/src/rhi/backends/webgpu/*")
 list(APPEND _webgpu_sources
-    "${ARP_SOURCE_DIR}/src/rhi/semantics/webgpu_runtime_telemetry.h")
+    "${ARP_SOURCE_DIR}/src/rhi/frontend/webgpu_runtime_telemetry.h")
 
 set(_source_extensions
     ".c" ".cc" ".cpp" ".cxx" ".h" ".hpp" ".inc" ".inl" ".ipp" ".mm")

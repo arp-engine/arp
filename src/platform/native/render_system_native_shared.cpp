@@ -640,9 +640,14 @@ rhi::AcquiredFrame RenderSystem::acquireFrame()
         return rhi::makeAcquireFailureResult("PLATFORM-FRAME-ALREADY-ACQUIRED",
             impl_->currentFrame.frameSerial,
             impl_->currentFrame.frameIndex);
-    auto frame = impl_->inputAdmission.acquire(*impl_->swapchain, [this](std::uint32_t slot) {
-        return !impl_->activePipeline || impl_->activePipeline->frameInputsReady(slot);
-    });
+    auto frame = impl_->inputAdmission.acquire(
+        *impl_->swapchain,
+        [this](std::uint32_t slot) {
+            return !impl_->activePipeline || impl_->activePipeline->frameInputsReady(slot);
+        },
+        [this] {
+            return !impl_->activePipeline || impl_->activePipeline->sharedFrameInputsReady();
+        });
     if (frame.success) {
         impl_->currentFrame = frame;
         impl_->currentFramePresentationCompletion.reset();

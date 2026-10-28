@@ -147,6 +147,8 @@ VegetationSceneRuntime::~VegetationSceneRuntime()
 
 void VegetationSceneRuntime::clear()
 {
+    if (prototypeUploadsRequireDrain())
+        throw core::DiagnosticError("VEGETATION-PROTOTYPE-UPLOAD-DRAIN-REQUIRED");
     if (work_) {
         work_->shutdown(core::runtime::WorkShutdownPolicy::Drain);
         if (completions_)
@@ -161,16 +163,43 @@ void VegetationSceneRuntime::clear()
     telemetry_ = {};
     transitionBudget_.active = transitionBudget_.starts = 0;
     transitionBudget_.triangles = 0;
+    prototypeResidencyEnabled_ = prototypeSubmissionAttempted_ = prototypeSubmissionSucceeded_ =
+        false;
+    prototypeUploadStats_ = {};
 }
 
 bool VegetationSceneRuntime::initialize(
     const std::filesystem::path& manifest, rhi::GpuDevice& device, core::pmr::String& diagnostics)
+{
+    return initializeImpl(manifest, device, diagnostics, nullptr);
+}
+
+bool VegetationSceneRuntime::initialize(const std::filesystem::path& manifest,
+    rhi::GpuDevice& device,
+    core::pmr::String& diagnostics,
+    const PrototypeResidencyBudget& budget)
+{
+    return initializeImpl(manifest, device, diagnostics, &budget);
+}
+
+bool VegetationSceneRuntime::initializeImpl(const std::filesystem::path& manifest,
+    rhi::GpuDevice& device,
+    core::pmr::String& diagnostics,
+    const PrototypeResidencyBudget* budget)
 {
     if (ready_) {
         diagnostics = "VEGETATION-ALREADY-INITIALIZED";
         return false;
     }
     try {
+        if (budget
+            && (budget->total.contractVersion != 1 || !budget->sourceGeneration
+                || !budget->maxModels || !budget->total.destinationBytes
+                || !budget->total.uploadBytes || !budget->total.metadataBytes
+                || !budget->total.maxCopyBytes || budget->total.maxCopyBytes % 4
+                || !budget->total.maxCopyCommands))
+            throw core::DiagnosticError("VEGETATION-PROTOTYPE-RESIDENCY-BUDGET-INVALID");
+        auto remaining = budget ? budget->total : ImmutableMeshUpload::Budget{};
         const auto root = validatedManifest(manifest);
         const auto& fade = root["lodTransitions"];
         if (fade["contractVersion"].get_value<int>() != 1)
@@ -239,6 +268,8 @@ bool VegetationSceneRuntime::initialize(
                 if (p.shadowLods[index] >= lods.size())
                     throw std::runtime_error("VEGETATION-SHADOW-LOD-CONTRACT-INVALID");
                 const auto& lod = lods[index];
+                if (budget && prototypeUploadStats_.models >= budget->maxModels)
+                    throw core::DiagnosticError("VEGETATION-PROTOTYPE-MODEL-BUDGET");
                 const auto source = localPath(manifest.parent_path(), lod["source"]);
                 if (!hashMatches(source, stringValue(lod["sha256"])))
                     throw std::runtime_error("VEGETATION-MODEL-HASH-MISMATCH");
@@ -253,11 +284,6 @@ bool VegetationSceneRuntime::initialize(
                     vegetation::convertToInstanceVertices(imported.mesh, nullptr, false);
                 for (const auto& vertex : vertices)
                     p.deformationEnvelope.include(vertex);
-                model.vertices = upload(device,
-                    "VegetationPrototypeVertices",
-                    vertices.data(),
-                    vertices.size() * sizeof(vegetation::InstanceVertex),
-                    rhi::ResourceUsage::VertexBuffer);
                 for (const auto& section : imported.mesh.submeshes) {
                     auto sourceSlot = section.materialSlot;
                     if (lod.contains("materialSources"))
@@ -306,11 +332,37 @@ bool VegetationSceneRuntime::initialize(
                                 {cluster.minimum, cluster.maximum}});
                     }
                 }
-                model.indices = upload(device,
-                    "VegetationPrototypeIndices",
-                    imported.mesh.indices.data(),
-                    imported.mesh.indices.size() * sizeof(std::uint32_t),
-                    rhi::ResourceUsage::IndexBuffer);
+                if (budget) {
+                    model.immutableUpload = core::makeUnique<ImmutableMeshUpload>();
+                    const auto prepared = model.immutableUpload->prepareVertexStream(
+                        device, imported.mesh, vertices, budget->sourceGeneration, remaining);
+                    if (!prepared.success)
+                        throw core::DiagnosticError(prepared.diagnostics.c_str());
+                    const auto bytes = model.immutableUpload->payloadBytes();
+                    const auto metadata = model.immutableUpload->metadataBytes();
+                    const auto copies = model.immutableUpload->copyCommandCount();
+                    remaining.destinationBytes -= bytes;
+                    remaining.uploadBytes -= bytes;
+                    remaining.metadataBytes -= metadata;
+                    remaining.maxCopyCommands -= copies;
+                    prototypeUploadStats_.destinationBytes += bytes;
+                    prototypeUploadStats_.metadataBytes += metadata;
+                    prototypeUploadStats_.copyCommands += copies;
+                    ++prototypeUploadStats_.models;
+                    model.immutableUpload->installPreparedGeometryBindings(
+                        model.vertices, model.indices);
+                } else {
+                    model.vertices = upload(device,
+                        "VegetationPrototypeVertices",
+                        vertices.data(),
+                        vertices.size() * sizeof(vegetation::InstanceVertex),
+                        rhi::ResourceUsage::VertexBuffer);
+                    model.indices = upload(device,
+                        "VegetationPrototypeIndices",
+                        imported.mesh.indices.data(),
+                        imported.mesh.indices.size() * sizeof(std::uint32_t),
+                        rhi::ResourceUsage::IndexBuffer);
+                }
                 if (!model.vertices || !model.indices)
                     throw std::runtime_error("VEGETATION-MODEL-UPLOAD-FAILED");
                 bool first = true;
@@ -356,6 +408,7 @@ bool VegetationSceneRuntime::initialize(
         if (!work_->valid())
             throw std::runtime_error("VEGETATION-WORK-SERVICE-UNAVAILABLE");
         ready_ = true;
+        prototypeResidencyEnabled_ = budget != nullptr;
         diagnostics.clear();
         return true;
     } catch (const std::exception& error) {
@@ -363,6 +416,104 @@ bool VegetationSceneRuntime::initialize(
         clear();
         return false;
     }
+}
+
+bool VegetationSceneRuntime::submitPrototypeUploads(core::pmr::String& diagnostics)
+{
+    if (!ready_ || prototypeSubmissionAttempted_) {
+        diagnostics = "VEGETATION-PROTOTYPE-SUBMISSION-STATE";
+        return false;
+    }
+    if (!prototypeResidencyEnabled_) {
+        diagnostics.clear();
+        return true;
+    }
+    prototypeSubmissionAttempted_ = true;
+    try {
+        for (auto& prototype : prototypes_)
+            for (auto& model : prototype.models) {
+                const auto submitted = model.immutableUpload->submit();
+                if (!submitted.success) {
+                    diagnostics = submitted.diagnostics;
+                    return false;
+                }
+            }
+        prototypeSubmissionSucceeded_ = true;
+        diagnostics.clear();
+        return true;
+    } catch (const std::exception& error) {
+        diagnostics = error.what();
+        return false;
+    }
+}
+
+bool VegetationSceneRuntime::prototypeGeometryReady() const
+{
+    if (!ready_)
+        return false;
+    if (!prototypeResidencyEnabled_)
+        return true;
+    if (!prototypeSubmissionSucceeded_)
+        return false;
+    for (const auto& prototype : prototypes_)
+        for (const auto& model : prototype.models)
+            if (!model.immutableUpload->ready())
+                return false;
+    return true;
+}
+
+std::size_t VegetationSceneRuntime::reapPrototypeUploads()
+{
+    std::size_t count = 0;
+    for (auto& prototype : prototypes_)
+        for (auto& model : prototype.models)
+            if (model.immutableUpload
+                && model.immutableUpload->state() == ImmutableMeshUpload::State::AcceptedPending
+                && model.immutableUpload->reapCompleted())
+                ++count;
+    return count;
+}
+
+bool VegetationSceneRuntime::prototypeUploadsRequireDrain() const noexcept
+{
+    for (const auto& prototype : prototypes_)
+        for (const auto& model : prototype.models)
+            if (model.immutableUpload) {
+                const auto state = model.immutableUpload->state();
+                if (state == ImmutableMeshUpload::State::AcceptedPending
+                    || state == ImmutableMeshUpload::State::AcceptedError
+                    || state == ImmutableMeshUpload::State::Completed)
+                    return true;
+            }
+    return false;
+}
+
+std::uint64_t VegetationSceneRuntime::retainedPrototypeUploadBytes() const noexcept
+{
+    std::uint64_t bytes = 0;
+    for (const auto& prototype : prototypes_)
+        for (const auto& model : prototype.models)
+            if (model.immutableUpload)
+                bytes += model.immutableUpload->retainedUploadBytes();
+    return bytes;
+}
+
+bool VegetationSceneRuntime::clearAfterDeviceDrain(
+    const rhi::semantics::ShutdownDrainReport& report)
+{
+    if (!report.completed())
+        return false;
+    clearAfterDeviceLoss();
+    return true;
+}
+
+void VegetationSceneRuntime::clearAfterDeviceLoss()
+{
+    for (auto& prototype : prototypes_)
+        for (auto& model : prototype.models)
+            if (model.immutableUpload)
+                model.immutableUpload->clearAfterDeviceLoss();
+    clear();
 }
 
 core::runtime::WorkStatus VegetationSceneRuntime::readPage(void* context)

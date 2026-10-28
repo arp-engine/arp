@@ -1,5 +1,6 @@
 #include "core/memory/cpu_allocator.h"
 #include "rhi/backends/metal/metal_native_resources.h"
+#include "rhi/frontend/buffer_placement.h"
 
 namespace arp::rhi_metal {
 std::uint64_t observeMetalRhiOriginalContentAllocation(const MetalRhiNativeResourcePayload&,
@@ -121,8 +122,13 @@ MetalRhiNativeStorageMode metalRhiNativeStorageMode(MetalRhiMemoryPolicy policy)
 }
 
 std::shared_ptr<MetalRhiNativeBufferPayload> createMetalRhiNativeBufferPayload(
-    const rhi::BufferDesc&, MetalRhiMemoryPolicy policy)
+    const rhi::BufferDesc& desc, MetalRhiMemoryPolicy policy)
 {
+    if (const auto* id =
+            rhi::HostVisibleDeviceLocalBufferContract::validate(desc, rhi::Backend::Metal, false)) {
+        rhi::RhiErrorHandler::get().report(rhi::RhiSeverity::Error, id);
+        return {};
+    }
     return makeDiagnosticPayload<MetalRhiNativeBufferPayload>(metalRhiNativeStorageMode(policy));
 }
 

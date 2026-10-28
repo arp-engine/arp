@@ -18,6 +18,12 @@ namespace arp::renderer {
 template <typename Tag> struct RuntimeHandle {
     uint32_t id = 0;
 
+    // NativeTokenStorage/1: a renderer-owned CPU identity, not a GPU handle or
+    // a resource reference. Reflection may retain its typed opaque storage;
+    // this declaration does not grant serialization or resource resolution.
+    using ReflectionNativeTokenStorage = uint32_t;
+    static constexpr std::uint32_t reflectionNativeTokenVersion = 1u;
+
     bool valid() const { return id != 0; }
 
     bool operator==(RuntimeHandle other) const { return id == other.id; }

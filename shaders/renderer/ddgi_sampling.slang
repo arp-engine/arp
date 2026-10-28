@@ -50,6 +50,10 @@ float4 sampleDdgiScreenCache(
         : 0.0;
     normalAgreement *= normalAgreement;
 
+    // A rejected current surface contributes zero weight to every cache tap.
+    // Avoid four history reads before the caller uses the probe volume.
+    if (normalAgreement == 0.0) return float4(0.0, 0.0, 0.0, 0.0);
+
     [unroll]
     for (int y = 0; y < 2; ++y) {
         [unroll]
@@ -143,15 +147,13 @@ uint ddgiProbeStateIndex(uint3 logical, DdgiSamplingConstants constants)
         * (physical.y + constants.probeCount.y * physical.z);
 }
 
-float2 ddgiProbeAtlasUv(
-    uint3 logical,
-    float3 direction,
+float2 ddgiPhysicalProbeAtlasUv(
+    uint3 physical,
+    float2 oct,
     DdgiSamplingConstants constants,
     uint interiorTexels,
     uint physicalTexels)
 {
-    uint3 physical = ddgiLogicalToPhysical(logical, constants);
-    float2 oct = ddgiOctEncode(normalize(direction));
     float2 interior = 1.5 + oct * float(interiorTexels - 1u);
     float2 atlasTexel = float2(
         physical.x * physicalTexels,
@@ -161,6 +163,19 @@ float2 ddgiProbeAtlasUv(
         constants.probeCount.x * physicalTexels,
         constants.probeCount.y * constants.probeCount.z * physicalTexels);
     return atlasTexel / atlasExtent;
+}
+
+float2 ddgiProbeAtlasUv(
+    uint3 logical,
+    float3 direction,
+    DdgiSamplingConstants constants,
+    uint interiorTexels,
+    uint physicalTexels)
+{
+    return ddgiPhysicalProbeAtlasUv(
+        ddgiLogicalToPhysical(logical, constants),
+        ddgiOctEncode(normalize(direction)), constants,
+        interiorTexels, physicalTexels);
 }
 
 float ddgiChebyshevVisibility(float meanDepth, float meanDepthSq, float distance)
@@ -197,42 +212,54 @@ float4 sampleDdgiProbeVolume(
     float3 irradiance = 0.0.xxx;
     float weightSum = 0.0;
 
-    [unroll]
-    for (uint z = 0u; z < 2u; ++z) {
-        [unroll]
-        for (uint y = 0u; y < 2u; ++y) {
-            [unroll]
-            for (uint x = 0u; x < 2u; ++x) {
-                int3 cell = base + int3(x, y, z);
-                if (any(cell < 0) || any(uint3(cell) >= constants.probeCount.xyz)) continue;
-                uint3 logical = uint3(cell);
-                DdgiSamplingProbeState state = probeStates[
-                    ddgiProbeStateIndex(logical, constants)];
-                if (state.classification != 1u || state.confidence <= 0.0) continue;
-                float3 probePosition = constants.originNormalBias.xyz
-                    + float3(logical) * constants.spacingViewBias.xyz
-                    + state.offset;
-                float3 probeToSurface = biasedPosition - probePosition;
-                float distance = length(probeToSurface);
-                float3 direction = probeToSurface / max(distance, 0.0001);
-                float3 sampleIrradiance = irradianceAtlas.SampleLevel(
-                    atlasSampler,
-                    ddgiProbeAtlasUv(logical, normal, constants, 6u, 8u), 0.0).rgb;
-                float2 moments = distanceAtlas.SampleLevel(
-                    atlasSampler,
-                    ddgiProbeAtlasUv(logical, direction, constants, 14u, 16u), 0.0).xy;
-                float visibility = ddgiChebyshevVisibility(
-                    moments.x, moments.y, distance);
-                float wrap = saturate((dot(-direction, normal) + 1.0) * 0.5);
-                wrap = wrap * wrap + 0.2;
-                float weight = (x == 0u ? 1.0 - fraction.x : fraction.x)
-                    * (y == 0u ? 1.0 - fraction.y : fraction.y)
-                    * (z == 0u ? 1.0 - fraction.z : fraction.z)
-                    * wrap * visibility * state.confidence;
-                irradiance += sampleIrradiance * weight;
-                weightSum += weight;
-            }
-        }
+    // Adjacent logical corners are also adjacent in the toroidal atlas.
+    // Wrap the base once, then each corner needs at most one subtraction.
+    uint3 physicalBase = ddgiLogicalToPhysical(uint3(base), constants);
+    float2 irradianceOct = ddgiOctEncode(normalize(normal));
+
+    // Keep one probe's temporaries live at a time in foliage fragments.
+    // Bit order is the original z/y/x traversal; all eight probes and the
+    // floating-point accumulation order are preserved.
+    [loop]
+    for (uint corner = 0u; corner < 8u; ++corner) {
+        uint x = corner & 1u;
+        uint y = (corner >> 1u) & 1u;
+        uint z = corner >> 2u;
+        int3 cell = base + int3(x, y, z);
+        if (any(cell < 0) || any(uint3(cell) >= constants.probeCount.xyz)) continue;
+        uint3 logical = uint3(cell);
+        uint3 physical = physicalBase + uint3(x, y, z);
+        physical = uint3(
+            physical.x >= constants.probeCount.x ? physical.x - constants.probeCount.x : physical.x,
+            physical.y >= constants.probeCount.y ? physical.y - constants.probeCount.y : physical.y,
+            physical.z >= constants.probeCount.z ? physical.z - constants.probeCount.z : physical.z);
+        uint stateIndex = physical.x + constants.probeCount.x
+            * (physical.y + constants.probeCount.y * physical.z);
+        DdgiSamplingProbeState state = probeStates[stateIndex];
+        if (state.classification != 1u || state.confidence <= 0.0) continue;
+        float3 probePosition = constants.originNormalBias.xyz
+            + float3(logical) * constants.spacingViewBias.xyz
+            + state.offset;
+        float3 probeToSurface = biasedPosition - probePosition;
+        float distance = length(probeToSurface);
+        float3 direction = probeToSurface / max(distance, 0.0001);
+        float3 sampleIrradiance = irradianceAtlas.SampleLevel(
+            atlasSampler,
+            ddgiPhysicalProbeAtlasUv(physical, irradianceOct, constants, 6u, 8u), 0.0).rgb;
+        float2 moments = distanceAtlas.SampleLevel(
+            atlasSampler,
+            ddgiPhysicalProbeAtlasUv(physical, ddgiOctEncode(normalize(direction)),
+                constants, 14u, 16u), 0.0).xy;
+        float visibility = ddgiChebyshevVisibility(
+            moments.x, moments.y, distance);
+        float wrap = saturate((dot(-direction, normal) + 1.0) * 0.5);
+        wrap = wrap * wrap + 0.2;
+        float weight = (x == 0u ? 1.0 - fraction.x : fraction.x)
+            * (y == 0u ? 1.0 - fraction.y : fraction.y)
+            * (z == 0u ? 1.0 - fraction.z : fraction.z)
+            * wrap * visibility * state.confidence;
+        irradiance += sampleIrradiance * weight;
+        weightSum += weight;
     }
     const bool valid = weightSum > 0.0001;
     return float4(

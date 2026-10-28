@@ -144,7 +144,7 @@ public:
         assert(other->end(diagnostic) && other->submit(diagnostic));
         assert(other->waitSubmittedFenceUntil(
             std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
         const bool pendingAfterUnrelated = !state->graphicsCompleted()
             && pollVulkanLegacyPresentRetirement(native.runtime(), state).status == Status::Pending
             && pollVulkanLegacyPresentRetirement(native.runtime(), unsubmitted).status
@@ -163,7 +163,7 @@ public:
         assert(command->waitSubmittedFenceUntil(
             std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
         std::weak_ptr<VulkanRhiNativeCommandPayload> observedCommand = command;
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
         command.reset();
         const bool exactCompletionRetained =
             state->graphicsCompleted() && observedCommand.expired();
@@ -186,7 +186,7 @@ public:
         idleMode_ = IdleMode::Real;
         duplicate.reset();
         other.reset();
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
         VulkanRhiRuntimeDesc validatorDesc;
         validatorDesc.enableSyntheticRuntime = true;
         auto synthetic = createVulkanRhiRuntime(validatorDesc);
@@ -204,10 +204,10 @@ public:
             && pollVulkanLegacyPresentRetirement(synthetic, syntheticState).status
                 == Status::Failed;
         validator.reset();
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*native.runtime());
         // Commands are all proven complete. Release the backend reusable
         // caches while both test-owned VkDevice objects still exist.
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         vkDestroySemaphore(native.device(), acquire, nullptr);
         vkDestroySemaphore(native.device(), finished, nullptr);
         wait = {};

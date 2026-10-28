@@ -33,7 +33,11 @@ public:
     db& operator=(const db&) = delete;
 
     class_info* find_class(NameView name);
+    class_info* findNativeClass(NameView nativeName);
     const typeinfo* find_type(NameView name) const;
+    void markExplicitClassDeclaration(class_info* cls);
+    bool recordGeneratedClassSchema(
+        const class_info*, NameView contract, NameView source, NameView structure);
     class_info* register_class(NameView name,
         value_t type,
         std::size_t size,

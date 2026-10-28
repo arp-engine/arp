@@ -1,4 +1,5 @@
 # RHI-owned tests, independent of cloud/example target registration.
+include("${CMAKE_CURRENT_LIST_DIR}/ArpAllocatorBacking.cmake")
 if(TARGET arp_rhi_vulkan AND NOT APPLE AND NOT EMSCRIPTEN)
     target_sources(arp_rhi_vulkan PRIVATE
         src/rhi/backends/vulkan/vulkan_original_graphics_pipeline.cpp
@@ -10,17 +11,20 @@ if(TARGET arp_rhi_vulkan AND NOT APPLE AND NOT EMSCRIPTEN)
     target_compile_options(arp_rhi_vulkan_original_graphics_tests PRIVATE -UNDEBUG)
     target_compile_definitions(arp_rhi_vulkan_original_graphics_tests PRIVATE
         ARP_ORIGINAL_CLOUD_MODULE="${original_cloud_module}"
-        ARP_ORIGINAL_CLOUD_SPATIAL_MODULE="${original_cloud_spatial_module}")
+        ARP_ORIGINAL_CLOUD_SPATIAL_MODULE="${original_cloud_spatial_module}"
+        ARP_ORIGINAL_CLOUD_COMPACT_MODULE="${original_cloud_compact_module}")
     target_compile_definitions(arp_rhi_vulkan_original_graphics_tests PRIVATE
         ARP_ORIGINAL_CLOUD_RAYMARCH="${original_cloud_compute_dir}/cloud_raymarch.computeMain.entry.yaml"
         ARP_ORIGINAL_CLOUD_SPATIAL_RESOLVE="${original_cloud_compute_dir}/cloud_spatial_resolve.computeMain.entry.yaml"
+        ARP_ORIGINAL_CLOUD_COMPACT_RESOLVE="${original_cloud_compute_dir}/cloud_compact_resolve.computeMain.entry.yaml"
+        ARP_ORIGINAL_CLOUD_ASSET_SLICE="${original_cloud_compute_dir}/cloud_asset_slice.computeMain.entry.yaml"
         ARP_ORIGINAL_CLOUD_TEMPORAL="${original_cloud_compute_dir}/cloud_temporal.computeMain.entry.yaml")
     if(WIN32 AND EXISTS "C:/Program Files/RenderDoc/renderdoc_app.h")
         target_include_directories(arp_rhi_vulkan_original_graphics_tests PRIVATE "C:/Program Files/RenderDoc")
         target_compile_definitions(arp_rhi_vulkan_original_graphics_tests PRIVATE ARP_RENDERDOC_APP_AVAILABLE=1)
     endif()
     add_dependencies(arp_rhi_vulkan_original_graphics_tests arp_rhi_original_cloud_graphics_module)
-    add_dependencies(arp_rhi_vulkan_original_graphics_tests arp_rhi_original_cloud_spatial_graphics_module)
+    add_dependencies(arp_rhi_vulkan_original_graphics_tests arp_rhi_original_cloud_spatial_graphics_module arp_rhi_original_cloud_compact_graphics_module)
     add_dependencies(arp_rhi_vulkan_original_graphics_tests arp_rhi_original_cloud_compute_entries)
     arp_add_mingw_static_runtime(arp_rhi_vulkan_original_graphics_tests)
     add_test(NAME arp_rhi_original_graphics_creation_contract COMMAND arp_rhi_vulkan_original_graphics_tests --contract)
@@ -39,24 +43,79 @@ if(TARGET arp_rhi_vulkan AND NOT APPLE AND NOT EMSCRIPTEN)
     set_tests_properties(arp_rhi_vulkan_original_prepared_device_native PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180)
     if(TARGET arp_renderer)
         add_executable(arp_cloud_original_frame_graph_tests tests/integration/rhi_vulkan_original_graphics_tests.cpp)
-        target_link_libraries(arp_cloud_original_frame_graph_tests PRIVATE arp_renderer arp_rhi_vulkan)
+        target_link_libraries(arp_cloud_original_frame_graph_tests PRIVATE arp_renderer arp_rhi_vulkan arp_scriptvm_runtime)
         target_include_directories(arp_cloud_original_frame_graph_tests PRIVATE .)
         target_compile_options(arp_cloud_original_frame_graph_tests PRIVATE -UNDEBUG)
         get_target_property(original_test_definitions arp_rhi_vulkan_original_graphics_tests COMPILE_DEFINITIONS)
         target_compile_definitions(arp_cloud_original_frame_graph_tests PRIVATE ${original_test_definitions} ARP_CLOUD_FRAME_GRAPH_TEST=1)
+        add_test(NAME arp_cloud_cooked_asset_slices_native COMMAND arp_cloud_original_frame_graph_tests
+            --cooked-asset-slices "${CMAKE_CURRENT_BINARY_DIR}/cloud-reference.cooked.yaml")
+        set_tests_properties(arp_cloud_cooked_asset_slices_native PROPERTIES
+            FIXTURES_REQUIRED cloud_reference_cook SKIP_RETURN_CODE 77 TIMEOUT 180 LABELS "cloud;resource;native;slice")
         target_compile_definitions(arp_cloud_original_frame_graph_tests PRIVATE
-            ARP_CLOUD_FOREGROUND_MODULE="${cloud_foreground_module}")
+            ARP_CLOUD_FOREGROUND_MODULE="${cloud_foreground_module}"
+            ARP_SCENE_OPAQUE_MODULE="${scene_opaque_module}"
+            ARP_SCENE_PBR_MODULE="${scene_pbr_module}")
         if(WIN32 AND EXISTS "C:/Program Files/RenderDoc/renderdoc_app.h")
             target_include_directories(arp_cloud_original_frame_graph_tests PRIVATE "C:/Program Files/RenderDoc")
         endif()
         add_dependencies(arp_cloud_original_frame_graph_tests arp_rhi_original_cloud_graphics_module arp_rhi_original_cloud_compute_entries)
-        add_dependencies(arp_cloud_original_frame_graph_tests arp_rhi_original_cloud_spatial_graphics_module)
+        add_dependencies(arp_cloud_original_frame_graph_tests arp_rhi_original_cloud_spatial_graphics_module arp_rhi_original_cloud_compact_graphics_module)
         add_dependencies(arp_cloud_original_frame_graph_tests arp_cloud_foreground_module)
+        add_dependencies(arp_cloud_original_frame_graph_tests arp_scene_opaque_module)
+        add_dependencies(arp_cloud_original_frame_graph_tests arp_scene_pbr_module)
+        add_test(NAME arp_scene_pbr_sampling_native COMMAND arp_cloud_original_frame_graph_tests --pbr-sampling)
+        set_tests_properties(arp_scene_pbr_sampling_native PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180 LABELS "renderer;pbr;upload;native")
+        foreach(camera perspective orthographic)
+            if(camera STREQUAL "orthographic")
+                set(scene_opaque_mode --feature-owned-history-ortho)
+            else()
+                set(scene_opaque_mode --feature-owned-history)
+            endif()
+            add_test(NAME arp_cloud_scene_opaque_${camera}_native
+                COMMAND arp_cloud_original_frame_graph_tests ${scene_opaque_mode} compact)
+            set_tests_properties(arp_cloud_scene_opaque_${camera}_native PROPERTIES
+                ENVIRONMENT "ARP_CLOUD_SCENE_OPAQUE=1;ARP_CLOUD_SCENE_RESOURCE_MODE=alias"
+                SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS "renderer;cloud;scene-opaque;native")
+        endforeach()
         arp_add_mingw_static_runtime(arp_cloud_original_frame_graph_tests)
         add_test(NAME arp_cloud_original_frame_graph_contract COMMAND arp_cloud_original_frame_graph_tests --contract)
         add_test(NAME arp_cloud_original_frame_graph_null_smoke COMMAND arp_cloud_original_frame_graph_tests --null-hidden-frame)
-        add_test(NAME arp_cloud_original_frame_graph_native COMMAND arp_cloud_original_frame_graph_tests --feature-graph)
+        foreach(reference_case clear sparse thick below inside above horizon backlit occlusion orthographic)
+            add_test(NAME arp_cloud_p03_reference_${reference_case}
+                COMMAND arp_cloud_original_frame_graph_tests --reference-case ${reference_case})
+            set_tests_properties(arp_cloud_p03_reference_${reference_case} PROPERTIES
+                ENVIRONMENT "ARP_CLOUD_SCENE_RESOURCE_MODE=id"
+                SKIP_RETURN_CODE 77 TIMEOUT 180 LABELS "cloud;p03;reference;native")
+        endforeach()
+        add_test(NAME arp_cloud_mixed_pass_timing_program COMMAND arp_cloud_original_frame_graph_tests --mixed-timing-program)
+        add_test(NAME arp_cloud_mixed_pass_timing_native COMMAND arp_cloud_original_frame_graph_tests --mixed-timing-native)
+        add_test(NAME arp_cloud_frame_graph_pass_timing_native COMMAND arp_cloud_original_frame_graph_tests --frame-graph-pass-timing)
+        add_test(NAME arp_cloud_frame_graph_depth_timing_compact
+            COMMAND arp_cloud_original_frame_graph_tests --frame-graph-depth-timing-host-device compact)
+        set_tests_properties(arp_cloud_frame_graph_depth_timing_compact PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 1200 LABELS "cloud;native;history;compact")
         foreach(resolve temporal reconstruction)
+            add_test(NAME arp_cloud_frame_graph_depth_timing_${resolve}
+                COMMAND arp_cloud_original_frame_graph_tests --frame-graph-depth-timing ${resolve})
+            set_tests_properties(arp_cloud_frame_graph_depth_timing_${resolve}
+                PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 1200 LABELS "renderer;timing;native;history;opaque-depth")
+            add_test(NAME arp_cloud_frame_graph_depth_timing_host_device_${resolve}
+                COMMAND arp_cloud_original_frame_graph_tests --frame-graph-depth-timing-host-device ${resolve})
+            set_tests_properties(arp_cloud_frame_graph_depth_timing_host_device_${resolve}
+                PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 1200 LABELS "renderer;timing;native;history;placement")
+        endforeach()
+        set_tests_properties(arp_cloud_frame_graph_pass_timing_native PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180 LABELS "renderer;timing;native")
+        set_tests_properties(arp_cloud_mixed_pass_timing_native PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180 LABELS "rhi;timing;native")
+        set_tests_properties(arp_cloud_mixed_pass_timing_program PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180 LABELS "rhi;timing;program-projection")
+        add_test(NAME arp_cloud_original_frame_graph_native COMMAND arp_cloud_original_frame_graph_tests --feature-graph)
+        foreach(scene_mode id alias)
+            add_test(NAME arp_cloud_scene_feature_${scene_mode}_native
+                COMMAND arp_cloud_original_frame_graph_tests --feature-owned-history compact)
+            set_tests_properties(arp_cloud_scene_feature_${scene_mode}_native PROPERTIES
+                TIMEOUT 1200 ENVIRONMENT "ARP_CLOUD_SCENE_RESOURCE_MODE=${scene_mode}"
+                LABELS "cloud;scene;native;history")
+        endforeach()
+        foreach(resolve temporal reconstruction compact)
             add_test(NAME arp_cloud_renderer_cold_pipelines_${resolve}
                 COMMAND arp_cloud_original_frame_graph_tests --feature-cold-pipelines ${resolve})
             set_tests_properties(arp_cloud_renderer_cold_pipelines_${resolve}
@@ -154,6 +213,9 @@ if(TARGET arp_rhi_vulkan AND NOT APPLE AND NOT EMSCRIPTEN)
     add_test(NAME arp_rhi_vulkan_ordinary_texture_upload_native
         COMMAND arp_rhi_vulkan_command_retention_tests --ordinary-texture-upload)
     set_tests_properties(arp_rhi_vulkan_ordinary_texture_upload_native PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    add_test(NAME arp_rhi_vulkan_public_texture_upload_native
+        COMMAND arp_rhi_vulkan_command_retention_tests --public-texture-upload)
+    set_tests_properties(arp_rhi_vulkan_public_texture_upload_native PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS "rhi;upload;native")
     add_test(NAME arp_rhi_vulkan_bounded_debug_labels_native
         COMMAND arp_rhi_vulkan_command_retention_tests --ordinary-debug-labels)
     add_test(NAME arp_rhi_vulkan_cold_staging_journal_native

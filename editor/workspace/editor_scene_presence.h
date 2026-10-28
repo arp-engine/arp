@@ -4,6 +4,7 @@
 #include "scene/scene_asset_resource.h"
 
 namespace arp::editor {
+struct EditorScriptComponentState;
 
 // Authoring history is owned by Editor, never serialized as a runtime Scene ID.
 class EditorScenePresence final {
@@ -24,6 +25,7 @@ public:
         core::pmr::String type;
         core::pmr::Vector<SceneInspectorProperty> properties;
         Cost cost;
+        core::SharedPtr<const EditorScriptComponentState> script;
     };
 
     struct Object {
@@ -57,6 +59,18 @@ public:
     };
 
     static Component captureComponent(const scene::Component&, std::size_t index);
+    // Explicit script branch; native activity commands keep the overload above.
+    static Component captureComponent(const EditorSceneDocument&,
+        const scene::Component&,
+        std::size_t index,
+        const scene::Scene::IdentityRestoration* transaction = nullptr);
+    static scene::Component& stageComponent(const EditorSceneDocument&,
+        scene::Scene::IdentityRestoration&,
+        scene::GameObjectId,
+        const Component&,
+        bool allocateIdentity = false);
+    static bool matchesComponent(
+        const EditorSceneDocument&, const scene::Component&, const Component&);
     static bool matchesComponent(const scene::Component&, const Component&);
     static void applyComponent(scene::Component&,
         const Component&,
@@ -64,7 +78,9 @@ public:
         const scene::Scene::IdentityRestoration&);
     static void validateRemoval(const EditorSceneDocument&, const scene::Component&);
     static void validateRestoration(EditorSceneDocument&, scene::GameObjectId, const Component&);
-    static Subtree captureSubtree(const EditorSceneDocument&, scene::GameObjectId);
+    enum class ScriptPolicy { Reject, Archive };
+    static Subtree captureSubtree(
+        const EditorSceneDocument&, scene::GameObjectId, ScriptPolicy = ScriptPolicy::Reject);
     static bool matchesSubtree(const EditorSceneDocument&, const Subtree&);
     static void restoreSubtree(EditorSceneDocument&, const Subtree&);
     static void destroySubtree(EditorSceneDocument&, const Subtree&);

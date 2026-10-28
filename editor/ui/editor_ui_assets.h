@@ -22,10 +22,13 @@ public:
 
     renderer::ui::UnifiedUiAtlasRuntime& atlas() { return *atlas_; }
 
+    void applyTextMetrics(EditorShell&) const;
+
 private:
     static EditorUiAssets failure(const char* stage, const core::pmr::String& diagnostic);
     std::optional<renderer::ui::UnifiedUiAtlasRuntime> atlas_;
     const char* stage_ = "ASSETS";
     core::pmr::String diagnostic_{&core::defaultCpuMemoryResource()};
+    float codeAdvance_ = 0, cjkAdvance_ = 0;
 };
 } // namespace arp::editor

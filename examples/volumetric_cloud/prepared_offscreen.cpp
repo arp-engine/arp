@@ -1,9 +1,12 @@
 #include "prepared_offscreen.h"
 
+#include "core/diagnostics/frame_time_statistics.h"
 #include "platform/renderdoc_capture_scope.h"
 #include "renderer/render_graph/original_frame_graph_execution.h"
 #include "renderer/volumetric_cloud/cloud_prepared_descriptors.h"
 #include "renderer/volumetric_cloud/cloud_prepared_feature.h"
+#include "renderer/volumetric_cloud/cloud_scene_binding.h"
+#include "rhi/frontend/query_pool_arguments.h"
 #include "rhi/frontend/transfer_upload_destination_validation.h"
 #include "rhi/frontend/transfer_validation.h"
 #include "rhi/semantics/render_target_coordinates.h"
@@ -57,6 +60,9 @@ struct Flight final : PassSubmissionObserver {
     core::UniquePtr<FrameGraph> graph;
     core::UniquePtr<OriginalFrameGraphExecution> execution;
     std::shared_ptr<const GpuFence> completion;
+    std::shared_ptr<QueryPool> timingPool;
+    std::uint64_t timingSerial = 0u;
+    bool historyUsed = false;
 
     void onSubmitted(
         PassSubmissionToken, const std::shared_ptr<const GpuFence>& fence) noexcept override
@@ -88,10 +94,12 @@ void createFeature(const PreparedOffscreenRequest& request,
 {
     CloudPreparedPipelineCreateContext p{request.device};
     p.selection = {1u,
-        request.reconstruction ? CloudPreparedResolve::Reconstruction1
-                               : CloudPreparedResolve::Temporal1,
-        request.reconstruction ? CloudReconstructionConfig{1u, .025f, .025f}
-                               : CloudReconstructionConfig{}};
+        request.compactHistory       ? CloudPreparedResolve::Reconstruction2
+            : request.reconstruction ? CloudPreparedResolve::Reconstruction1
+                                     : CloudPreparedResolve::Temporal1,
+        request.reconstruction
+            ? CloudReconstructionConfig{request.compactHistory ? 2u : 1u, .025f, .025f}
+            : CloudReconstructionConfig{}};
     p.resources = {request.config,
         request.extent,
         request.asset.cells.size() * sizeof(core::Vec4),
@@ -103,7 +111,9 @@ void createFeature(const PreparedOffscreenRequest& request,
         compute + "/cloud_temporal.computeMain.entry.yaml",
         graphics + "/cloud_composite.graphics.module.yaml",
         compute + "/cloud_spatial_resolve.computeMain.entry.yaml",
-        graphics + "/cloud_spatial_composite.graphics.module.yaml"};
+        graphics + "/cloud_spatial_composite.graphics.module.yaml",
+        compute + "/cloud_compact_resolve.computeMain.entry.yaml",
+        graphics + "/cloud_compact_composite.graphics.module.yaml"};
     p.preparation = preparation();
     CloudPreparedResourcePlan plan;
     require(CloudPreparedPipelines::planResources(
@@ -131,6 +141,12 @@ void createFeature(const PreparedOffscreenRequest& request,
     registry.maxDescriptorSets = 3u;
     registry.maxRetainedOwners = ownerCapacity;
     registry.maxCpuMetadataBytes = cpuBytes;
+    if (request.timings) {
+        registry.queries = {1u, true, 1u};
+        registry.queryNativeLoss = {1u, true};
+        registry.maxRetainedOwners += OriginalResourceRegistrationContract::ownerCount(
+            OriginalRegisteredResourceKind::QueryPool, registry.contractVersion);
+    }
     const char* id = nullptr;
     const auto loss = request.device.observeOriginalDeviceNativeLoss(id);
     require(id);
@@ -156,6 +172,8 @@ void createFeature(const PreparedOffscreenRequest& request,
     r.selection = p.selection;
     r.resources = p.resources;
     r.sampleMemory = MemoryUsage::CpuToGpu;
+    if (request.hostDeviceBuffers)
+        r.hostVisibleDeviceLocal = {1u, true};
     r.maxCpuOwnerBytes = cpuBytes;
     r.maxCpuInitializationBytes = initializationBytes;
     r.ownerQuota = quota();
@@ -170,7 +188,10 @@ void createFeature(const PreparedOffscreenRequest& request,
     c.maxCpuStateBytes = cpuBytes;
     c.stateQuota = quota();
     core::pmr::String diagnostic;
-    const auto result = feature.create(c, diagnostic);
+    const auto result = request.sceneBinding
+        ? feature.createScene(
+              request.sceneBinding, *request.sceneQueue, *request.sceneResources, c, diagnostic)
+        : feature.create(c, diagnostic);
     if (!result.success)
         throw std::runtime_error(
             diagnostic.empty() ? result.diagnostic : core::toStdString(diagnostic));
@@ -259,7 +280,7 @@ public:
         return addBuffer(lease);
     }
 
-    std::shared_ptr<Sources> inventory()
+    std::shared_ptr<Sources> inventory(bool timing)
     {
         OriginalCommandAdmissionBudget b;
         b.contractVersion = 1u;
@@ -279,9 +300,13 @@ public:
                 prefix_[i]);
         b.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Pipeline)] = 3u;
         b.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Descriptor)] = 3u;
+        if (timing) {
+            b.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Query)] = 1u;
+            b.maxGraphOwners += OriginalCommandQueryPoolSource::cpuOwnerSlots;
+        }
         const char* id = nullptr;
         auto result = Sources::prepareColdOriginalTyped(
-            prefix_.data(), count_, b, {8u, true, 6u}, quota_, id);
+            prefix_.data(), count_, b, {timing ? 9u : 8u, true, timing ? 7u : 6u}, quota_, id);
         require(id);
         return result;
     }
@@ -389,6 +414,8 @@ void assembleFrame(const PreparedOffscreenRequest& r,
 {
     flight.graph = core::makeUnique<FrameGraph>(r.device);
     auto& graph = *flight.graph;
+    if (r.timings)
+        require(flight.timingPool->reset().success ? nullptr : "CLOUD-DEMO-TIMING-RESET");
     CloudGraphContext c{graph, {}, {}};
     c.layer = r.layer;
     c.cameraPosition = {0.f,
@@ -405,7 +432,11 @@ void assembleFrame(const PreparedOffscreenRequest& r,
     c.ambientRadiance = {.3f, .4f, .55f};
     c.time = 10.f;
     CloudPreparedFrameBuffers buffers;
-    require(feature.prepareFrame(c, buffers));
+    if (r.sceneBinding)
+        require(feature.prepareSceneFrame(*r.sceneQueue, *r.sceneResources, c, buffers));
+    else
+        require(feature.prepareFrame(c, buffers));
+    flight.historyUsed = feature.preparedHistory()->pendingFrame().historyUsed;
     FrameSources sources(r.device, sourceQuota);
     CloudPreparedDescriptorLocations locations;
     locations.constants = sources.addBuffer(buffers.constants);
@@ -431,7 +462,24 @@ void assembleFrame(const PreparedOffscreenRequest& r,
     require(
         aligned.success && aligned.alignedValue <= UINT32_MAX ? nullptr : "CLOUD-DEMO-COPY-PITCH");
     const auto readback = sources.readback(aligned.alignedValue * r.extent.height);
-    auto inventory = sources.inventory();
+    auto inventory = sources.inventory(r.timings);
+    std::size_t queryIndex = SIZE_MAX;
+    if (r.timings) {
+        using QuerySource = OriginalCommandQueryPoolSource;
+        const char* id = nullptr;
+        const auto query = QuerySource::prepareOriginal(flight.timingPool,
+            {1u,
+                true,
+                flight.timingPool->originalResourceRegistration().generation(),
+                cpuBytes,
+                QuerySource::cpuOwnerSlots},
+            sourceQuota,
+            r.device,
+            id);
+        require(id);
+        queryIndex = inventory->sources().size();
+        require(Sources::appendOriginalTyped(inventory, query, r.device));
+    }
     const auto& pipelines = *feature.preparedPipelines();
     const std::array pipelineIndices{sources.appendPipeline(inventory, pipelines.raymarch()),
         sources.appendPipeline(inventory, pipelines.resolve()),
@@ -455,7 +503,7 @@ void assembleFrame(const PreparedOffscreenRequest& r,
         request.maxRetainedOwnerSlots = OriginalGeneralDescriptorWriteContract::ownerSlots(
             request.maxBindings, request.contractVersion);
         request.maxCpuBytes.fill(cpuBytes);
-        request.maxRetainedAllocationBytes = cpuBytes;
+        request.maxRetainedAllocationBytes = r.config.gpuBudgetBytes;
         for (auto& q : publication.quotas[pass])
             q = quota();
     }
@@ -501,13 +549,79 @@ void assembleFrame(const PreparedOffscreenRequest& r,
         .read(output.color, ResourceState::CopySrc)
         .write(target, ResourceState::CopyDst)
         .onSubmitted(flight);
-    const auto budget = graphBudget(inventory->sources().size(), r.reconstruction);
+    auto budget = graphBudget(inventory->sources().size(), r.reconstruction);
+    if (r.timings) {
+        budget.contractVersion = 2u;
+        budget.inputs.contractVersion = 11u;
+        budget.inputs.maxQueryBindings = 6u;
+        budget.inputs.passTiming =
+            OriginalPassTimingBudget{1u, true, 1u, 6u, 3u, commandCapacity, 64u};
+        const auto& input = flight.timingPool->originalInput();
+        budget.timing = OriginalFrameGraphTimingBudget{queryIndex,
+            {1u,
+                true,
+                commandCapacity,
+                5u,
+                6u,
+                0u,
+                0u,
+                0u,
+                0u,
+                6u * input->scalarFields().count(),
+                6u * input->scopeIds().size(),
+                6u * input->label().size(),
+                cpuBytes}};
+        budget.preparation.contractVersion = 8u;
+        budget.preparation.content->contractVersion = 5u;
+        budget.preparation.recording->contractVersion = 5u;
+        budget.preparation.passTimingRetention =
+            CommandRetentionBudget{1u, true, 0u, 1u, 6u, 0u, cpuBytes};
+        budget.preparation.passTimingRecordingQuota = flight.recording;
+        flight.timingSerial = r.device.latestGpuTiming().completedFrameSerial + 1u;
+        require(flight.timingSerial ? nullptr : "CLOUD-DEMO-TIMING-SERIAL-OVERFLOW");
+        budget.preparation.passTimingFrameSerial = flight.timingSerial;
+        graph.setGpuTimingPassScopes({{"Cloud.Raymarch", 101u, true},
+            {"Cloud.Temporal", 103u, true},
+            {"Cloud.Composite", 107u, false}});
+    }
     require(execution.prepare(budget, flight.intent, flight.states, flight.recording));
+}
+
+void createTimingPool(const PreparedOffscreenRequest& r, Flight& flight)
+{
+    if (!r.timings)
+        return;
+    const std::array<std::uint64_t, 3u> scopes{101u, 103u, 107u};
+    QueryPoolDesc desc;
+    desc.label = "Cloud.PreparedDemoTiming/1";
+    desc.type = QueryType::Timestamp;
+    desc.count = 2u * scopes.size();
+    desc.timingScopeIds = scopes.data();
+    desc.timingScopeIdCount = scopes.size();
+    const char* id = nullptr;
+    const auto input = QueryPoolInputSnapshot::prepareOriginal(desc,
+        {1u, true, scopes.size(), desc.label.size(), cpuBytes, cpuBytes, cpuBytes},
+        flight.intent,
+        quota(),
+        quota(),
+        id);
+    require(id);
+    flight.timingPool = r.device.createOriginalQueryPool(
+        input, {1u, true, 1u, desc.count, scopes.size(), desc.label.size(), cpuBytes}, quota(), id);
+    require(id);
+    require(flight.timingPool ? nullptr : "CLOUD-DEMO-TIMING-POOL");
 }
 } // namespace
 
 int runPreparedOffscreen(const PreparedOffscreenRequest& request)
 {
+    const bool scene = request.sceneBinding != nullptr;
+    require(scene == (request.sceneQueue != nullptr) && scene == (request.sceneResources != nullptr)
+            ? nullptr
+            : "CLOUD-DEMO-SCENE-INPUT");
+    require(!request.compactHistory || request.reconstruction
+            ? nullptr
+            : "CLOUD-DEMO-COMPACT-REQUIRES-RECONSTRUCTION");
     const auto rootQuota = quota(initializationBytes);
     core::CpuMemoryQuotaScope scope(rootQuota);
     const auto sourceQuota = quota();
@@ -516,6 +630,11 @@ int runPreparedOffscreen(const PreparedOffscreenRequest& request)
     platform::RenderDocCaptureScope capture;
     Drain drain{request.device};
     createFeature(request, sourceQuota, feature);
+    createTimingPool(request, flight);
+    std::array<core::FrameTimeStatistics, 4u> statistics{core::FrameTimeStatistics(request.frames),
+        core::FrameTimeStatistics(request.frames),
+        core::FrameTimeStatistics(request.frames),
+        core::FrameTimeStatistics(request.frames)};
     bool capturing = false;
     unsigned submitted = 0u, completed = 0u;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
@@ -527,6 +646,36 @@ int runPreparedOffscreen(const PreparedOffscreenRequest& request)
             continue;
         }
         if (flight.completion) {
+            if (request.timings) {
+                const auto sample = request.device.latestGpuTiming();
+                require(sample.availability == GpuTimingAvailability::Available
+                            && sample.completedFrameSerial == flight.timingSerial
+                            && sample.scopeCount == 3u
+                        ? nullptr
+                        : "CLOUD-DEMO-TIMING-COMPLETION");
+                const std::array<std::uint64_t, 3u> ids{101u, 103u, 107u};
+                double total = 0;
+                const bool measured = completed >= request.warmupFrames;
+                for (std::size_t i = 0u; i < ids.size(); ++i) {
+                    require(
+                        sample.scopes[i].scopeId == ids[i] ? nullptr : "CLOUD-DEMO-TIMING-SCOPE");
+                    const auto ms = sample.scopes[i].elapsedMs;
+                    require(std::isfinite(ms) && ms >= 0 ? nullptr : "CLOUD-DEMO-TIMING-VALUE");
+                    total += ms;
+                    if (measured)
+                        require(
+                            statistics[i].add(ms) ? nullptr : "CLOUD-DEMO-TIMING-SAMPLE-BUDGET");
+                }
+                if (measured)
+                    require(statistics[3].add(total) ? nullptr : "CLOUD-DEMO-TIMING-SAMPLE-BUDGET");
+                std::cout << "CloudPreparedTimingSample/1 frame=" << completed
+                          << " serial=" << sample.completedFrameSerial << " measured=" << measured
+                          << " history=" << flight.historyUsed
+                          << " raymarchMs=" << sample.scopes[0].elapsedMs
+                          << " resolveMs=" << sample.scopes[1].elapsedMs
+                          << " compositeMs=" << sample.scopes[2].elapsedMs << " totalMs=" << total
+                          << '\n';
+            }
             ++completed;
             if (capturing) {
                 require(capture.end() ? nullptr : "RENDERDOC-END-FAILED");
@@ -551,9 +700,54 @@ int runPreparedOffscreen(const PreparedOffscreenRequest& request)
         ++submitted;
     }
     require(feature.preparedHistory()->idle() ? nullptr : "CLOUD-DEMO-HISTORY-IN-FLIGHT");
+    if (request.timings) {
+        const std::array names{"raymarch", "resolve", "composite", "total"};
+        for (std::size_t i = 0u; i < statistics.size(); ++i) {
+            double median = 0, p95 = 0;
+            require(statistics[i].count() == request.frames - request.warmupFrames
+                        && statistics[i].percentile(.5, median)
+                        && statistics[i].percentile(.95, p95)
+                    ? nullptr
+                    : "CLOUD-DEMO-TIMING-MISSING-SAMPLES");
+            std::cout << "CloudPreparedTimingSummary/1 scope=" << names[i]
+                      << " observations=" << statistics[i].count()
+                      << " warmup=" << request.warmupFrames << " medianMs=" << median
+                      << " p95Ms=" << p95 << '\n';
+        }
+        const auto memory = request.device.memoryStats();
+        std::cout << "CloudPreparedTimingMemory/1 deviceReportedPeakBytes="
+                  << memory.peakAllocatedBytes
+                  << " physicalPeakValidated=false includesForeground=false presentation=false\n";
+        const auto backing = request.device.observeAllocatorBacking();
+        if (backing.state == AllocatorBackingState::Observed) {
+            std::cout << "CloudAllocatorBacking/1 backingBytes=" << backing.backingBytes
+                      << " peakBackingBytes=" << backing.peakBackingBytes
+                      << " blockCount=" << backing.blockCount
+                      << " peakBlockCount=" << backing.peakBlockCount
+                      << " occupiedBytes=" << backing.occupiedBytes
+                      << " allocationCount=" << backing.allocationCount
+                      << " unusedBytes=" << backing.unusedBytes
+                      << " allocationEvents=" << backing.allocationEvents
+                      << " releaseEvents=" << backing.releaseEvents
+                      << " scope=resourceAllocator fullPhysicalPeakValidated=false\n";
+        } else {
+            std::cout << "CloudAllocatorBacking/1 observed=false diagnostic=" << backing.diagnostic
+                      << " fullPhysicalPeakValidated=false\n";
+        }
+    }
+    if (scene)
+        std::cout << "CloudSceneBinding/1 Prototype resource=" << request.sceneBinding->resourceId()
+                  << " generation=" << request.sceneBinding->generation()
+                  << " accepted=" << submitted << " completed=" << completed
+                  << " source=visibleSceneQueue loader=CloudAssetResource\n";
     std::cout << "CloudPreparedDemo/1 Prototype submitted=" << submitted
-              << " completed=" << completed
-              << " resolve=" << (request.reconstruction ? "Reconstruction/1" : "Temporal/1")
+              << " completed=" << completed << " resolve="
+              << (request.compactHistory          ? "Reconstruction/2"
+                         : request.reconstruction ? "Reconstruction/1"
+                                                  : "Temporal/1")
+              << " resolvedStrideBytes="
+              << CloudSampleStorage::stride(request.compactHistory ? 2u : 1u) << " bufferPlacement="
+              << (request.hostDeviceBuffers ? "HostVisibleDeviceLocal/1" : "Default")
               << " retainedLogicalBytes="
               << (request.reconstruction
                          ? feature.preparedResources()->plan().reconstruction.retainedGpuBytes

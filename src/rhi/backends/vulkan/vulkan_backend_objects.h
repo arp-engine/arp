@@ -4,6 +4,7 @@
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 #include "rhi/backends/vulkan/vulkan_resource_registry.h"
 #include "rhi/frontend/bindless_graphics_pass_preparation.h"
+#include "rhi/frontend/original_texture_upload_device.h"
 #include "rhi/frontend/transfer_upload_recording_validation.h"
 #include "rhi/gpu_device.h"
 #include "rhi/semantics/native_backend_capabilities.h"
@@ -235,7 +236,10 @@ core::UniquePtr<rhi::CommandEncoder> createVulkanRhiCommandEncoderWithColdTextur
     const rhi::OriginalOrdinaryTextureUploadContract::Budget&,
     const rhi::OriginalOrdinaryTextureUploadContract::Binding*,
     std::size_t,
-    core::pmr::String&);
+    core::pmr::String&,
+    const rhi::OriginalTextureUploadPreparationRequest* = nullptr,
+    const std::shared_ptr<core::CpuMemoryQuota>& = {},
+    core::pmr::Vector<std::shared_ptr<const rhi::OriginalTextureUploadPublication>>* = nullptr);
 
 arp::core::UniquePtr<rhi::SecondaryCommandEncoder> createVulkanRhiSecondaryCommandEncoder(
     const rhi::SecondaryCommandEncoderDesc& desc);

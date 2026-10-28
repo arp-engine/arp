@@ -1,5 +1,6 @@
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/frontend/memory_shutdown_drain.h"
+#include "rhi/semantics/device_idle_lowering.h"
 
 #include <cassert>
 #include <chrono>
@@ -25,6 +26,21 @@ int main()
 {
     using namespace arp::rhi;
     using namespace arp::rhi::semantics;
+
+    for (auto backend :
+        {Backend::Null, Backend::Vulkan, Backend::Metal, Backend::WebGPU, Backend::WebGL}) {
+        const auto idle = DeviceIdleLowering::lower(backend);
+        if (backend == Backend::Null)
+            assert(idle.disposition == DeviceIdleLowering::Disposition::ValidatorOnly
+                && !idle.diagnostic);
+        else if (backend == Backend::Vulkan || backend == Backend::Metal)
+            assert(idle.disposition == DeviceIdleLowering::Disposition::NativeCompletionRequired
+                && !idle.diagnostic);
+        else
+            assert(idle.disposition == DeviceIdleLowering::Disposition::DiagnosticFailure
+                && idle.diagnostic);
+        assert(DeviceIdleLowering::lower(backend, 0u).diagnostic);
+    }
 
     const auto now = std::chrono::steady_clock::now();
     // An unavailable implementation must not claim its future deadline has
@@ -55,6 +71,15 @@ int main()
 
     auto device = createNullDevice();
     assert(device);
+    device->waitIdle();
+    bool refusedDefault = false;
+    try {
+        device->GpuDevice::waitIdle();
+    } catch (const arp::core::DiagnosticError& error) {
+        refusedDefault =
+            std::string_view(error.what()) == "RHI-DEVICE-IDLE-IMPLEMENTATION-UNAVAILABLE";
+    }
+    assert(refusedDefault);
     ShutdownDrainRequest request;
     request.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     const auto report = device->drainForShutdown(request);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/api.h"
 #include "core/math/math.h"
 #include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
@@ -76,7 +77,7 @@ struct CampfireEditorProperties {
 
 ACLASS(Name = "TerrainAuthoringComponent", Ownership = Engine, Lifecycle = Explicit)
 
-class TerrainAuthoringComponent final : public arp::scene::Component {
+class ARP_API TerrainAuthoringComponent final : public arp::scene::Component {
 public:
     const char* scriptTypeName() const override { return "TerrainAuthoringComponent"; }
     AFUNC()
@@ -130,7 +131,7 @@ private:
 
 ACLASS(Name = "WaterSurfaceComponent", Ownership = Engine, Lifecycle = Explicit)
 
-class WaterSurfaceComponent final : public arp::scene::Component {
+class ARP_API WaterSurfaceComponent final : public arp::scene::Component {
 public:
     const char* scriptTypeName() const override { return "WaterSurfaceComponent"; }
     AFUNC()
@@ -202,7 +203,7 @@ private:
 
 ACLASS(Name = "RoadNetworkComponent", Ownership = Engine, Lifecycle = Explicit)
 
-class RoadNetworkComponent final : public arp::scene::Component {
+class ARP_API RoadNetworkComponent final : public arp::scene::Component {
 public:
     const char* scriptTypeName() const override { return "RoadNetworkComponent"; }
     AFUNC()
@@ -243,7 +244,7 @@ private:
 
 ACLASS(Name = "CritterFieldComponent", Ownership = Engine, Lifecycle = Explicit)
 
-class CritterFieldComponent final : public arp::scene::Component {
+class ARP_API CritterFieldComponent final : public arp::scene::Component {
 public:
     const char* scriptTypeName() const override { return "CritterFieldComponent"; }
     AFUNC()
@@ -312,7 +313,7 @@ private:
 
 ACLASS(Name = "SkyComponent", Ownership = Engine, Lifecycle = Explicit)
 
-class SkyComponent final : public arp::scene::Component {
+class ARP_API SkyComponent final : public arp::scene::Component {
 public:
     const char* scriptTypeName() const override { return "SkyComponent"; }
     AFUNC()
@@ -398,7 +399,7 @@ private:
 
 ACLASS(Name = "CampfireComponent", Ownership = Engine, Lifecycle = Explicit)
 
-class CampfireComponent final : public arp::scene::Component {
+class ARP_API CampfireComponent final : public arp::scene::Component {
 public:
     const char* scriptTypeName() const override { return "CampfireComponent"; }
     AFUNC()

@@ -3216,6 +3216,7 @@ SHADER_SOURCES = [
     ("BasicDepthReceiver", "basic_depth_receiver", "basic/depth_receiver.slang", ["vertexMain", "fragmentMain"]),
     ("BasicForward", "basic_forward", "basic/forward.slang", ["vertexMain", "fragmentMain"]),
     ("GuiBitmap", "gui_bitmap", "gui/bitmap.slang", ["vertexMain", "fragmentMain"]),
+    ("GuiUnified", "gui_unified", "gui/unified.slang", ["vertexMain", "fragmentMain"]),
     ("Scene2DSprites", "scene_2d_sprites", "2d/sprites.slang", ["vertexMain", "fragmentMain"]),
     ("Scene2DVertices", "scene_2d_vertices", "2d/sprites.slang", ["vertexMainExpanded", "fragmentMain"]),
     ("BuildAQueenScene", "queen_scene", "examples/build_a_queen.slang", ["vertexMain", "fragmentMain"]),
@@ -3250,9 +3251,14 @@ SHADER_SOURCES = [
     ("FogInject", "fog_inject", "renderer/fog_inject.slang", ["computeMain"]),
     ("CloudRaymarch", "cloud_raymarch", "renderer/cloud_raymarch.slang", ["computeMain"]),
     ("CloudDensitySlice", "cloud_density_slice", "renderer/cloud_density_slice.slang", ["computeMain"]),
+    ("CloudAssetSlice", "cloud_asset_slice", "renderer/cloud_asset_slice.slang", ["computeMain"]),
     ("CloudTemporal", "cloud_temporal", "renderer/cloud_temporal.slang", ["computeMain"]),
     ("CloudSpatialResolve", "cloud_spatial_resolve", "renderer/cloud_spatial_resolve.slang", ["computeMain"]),
     ("CloudSpatialComposite", "cloud_spatial_composite", "renderer/cloud_spatial_composite.slang", ["vertexMain", "fragmentMain"]),
+    ("CloudCompactResolve", "cloud_compact_resolve", "renderer/cloud_compact_resolve.slang", ["computeMain"]),
+    ("CloudCompactComposite", "cloud_compact_composite", "renderer/cloud_compact_composite.slang", ["vertexMain", "fragmentMain"]),
+    ("SceneOpaque", "scene_opaque", "renderer/scene_opaque.slang", ["vertexMain", "fragmentMain"]),
+    ("ScenePbr", "scene_pbr", "renderer/scene_pbr.slang", ["vertexMain", "fragmentMain"]),
     ("CloudComposite", "cloud_composite", "renderer/cloud_composite.slang", ["vertexMain", "fragmentMain"]),
     ("CloudDemoPresent", "cloud_demo_present", "samples/fog_demo_present.slang", ["vertexMain", "fragmentMain"]),
     ("FogScatter", "fog_scatter", "renderer/fog_scatter.slang", ["computeMain"]),
@@ -3344,6 +3350,9 @@ SHADER_SOURCES = [
 ]
 
 SHADER_SHARED_SOURCES = (
+    "renderer/pbr_brdf.slang",
+    "core/leaf_surface.slang",
+    "core/pbr_material.slang",
     "examples/queen_surface.slang",
     "examples/queen_sky_color.slang",
     "common/volumetric_fog.slang",
@@ -3359,6 +3368,7 @@ SHADER_SHARED_SOURCES = (
 
 # Shaders that need WGSL push constant binding annotation (keyed by prefix)
 WGSL_PUSH_CONSTANT_SHADERS = {
+    "gui_unified",
     "queen_portable_shadow",
     "queen_portable",
     "basic_depth_receiver",
@@ -3388,8 +3398,12 @@ WGSL_PUSH_CONSTANT_SHADERS = {
 
 # Shaders that need WGSL vertex output location annotation (keyed by prefix)
 WGSL_VERTEX_LOCATION_SHADERS = {
+    "gui_unified",
+    "scene_opaque",
+    "scene_pbr",
     "cloud_composite",
     "cloud_spatial_composite",
+    "cloud_compact_composite",
     "cloud_demo_present",
     "fog_composite",
     "fog_demo_scene", "fog_demo_shadow", "fog_demo_glass", "fog_demo_plain_glass", "fog_demo_present",

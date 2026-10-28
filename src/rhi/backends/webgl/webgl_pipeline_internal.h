@@ -1,6 +1,8 @@
 #pragma once
 #include "rhi/backends/webgl/webgl_program_internal.h"
+#include "rhi/frontend/command_draw_validation.h"
 #include "rhi/frontend/pipeline_state_copy.h"
+#include "rhi/frontend/vertex_input_validation.h"
 
 namespace arp::rhi::webgl {
 class WebGlPipelineLayout final : public PipelineLayout {

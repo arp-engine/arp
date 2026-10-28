@@ -270,7 +270,7 @@ public:
                 std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
         else
             assert(!waitIdleAndRetireVulkanRhiSubmittedCommands(runtime));
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
         command.reset();
         assert(!quota->liveBytes());
         const auto actual = next.readback(*next.staging_);
@@ -349,7 +349,7 @@ public:
         assert(!command->waitUntil(std::chrono::steady_clock::now(), diagnostic));
         if (dropWrapper)
             command.reset();
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
         assert(!nativeSet.expired() && !nativePipeline.expired() && !nativeInput.expired());
         assert(!sampledDepth_ || (!nativeDepth.expired() && !nativeDepthView.expired()));
         assert(!nativeOutput.expired() && !nativeReadback.expired());
@@ -361,7 +361,7 @@ public:
         } else {
             assert(!waitIdleAndRetireVulkanRhiSubmittedCommands(runtime));
         }
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
         assert(nativeSet.expired() && nativePipeline.expired() && nativeInput.expired());
         assert(nativeDepth.expired() && nativeDepthView.expired());
         assert(nativeOutput.expired() && nativeReadback.expired());
@@ -696,7 +696,7 @@ private:
         bind(0u, rhi::DescriptorType::UniformBuffer, constants_);
         // Completion retires resource storage; the backend's submitted-owner
         // sweep releases its separate strong command metadata reference.
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(device_);
         command.reset();
         assert(!quota->liveBytes());
         assert(rhi_vulkan::vulkanRhiBufferStateCommitted(*output_));

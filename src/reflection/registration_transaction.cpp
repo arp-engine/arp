@@ -10,6 +10,7 @@
 #include "reflection/type.h"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace arp::reflection {
 
@@ -72,7 +73,10 @@ core::pmr::String sha256Text(const core::pmr::String& value)
     return result;
 }
 
-core::pmr::String typeContract(const typeinfo* type, bool isConst = false, bool isVolatile = false)
+core::pmr::String typeContract(const typeinfo* type,
+    bool isConst = false,
+    bool isVolatile = false,
+    bool nativeIdentity = false)
 {
     core::pmr::String result(&core::defaultCpuMemoryResource());
     if (type == nullptr) {
@@ -83,28 +87,36 @@ core::pmr::String typeContract(const typeinfo* type, bool isConst = false, bool 
         result += "const ";
     if (isVolatile)
         result += "volatile ";
-    if (type->class_() != nullptr && type->class_()->valueType() == undefined_t
+    const auto nativeName =
+        type->class_() != nullptr ? NameView(type->class_()->nativeTypeName()) : NameView{};
+    if (nativeIdentity && type->class_() != nullptr)
+        result += nativeName;
+    else if (type->class_() != nullptr && type->class_()->valueType() == undefined_t
         && type->class_()->size() == 0u && type->class_()->alignment() == 0u)
         result += "void";
-    else if (type->is<object>())
+    else if (nativeName == detail::getTypeName<object>())
         result += "Value";
-    else if (type->is<bool>())
+    else if (nativeName == detail::getTypeName<bool>())
         result += "bool";
-    else if (type->is<int>())
+    else if (nativeName == detail::getTypeName<int>())
         result += "int";
-    else if (type->is<std::int64_t>())
+    else if (nativeName == detail::getTypeName<std::int64_t>())
         result += "int64";
-    else if (type->is<float>() || type->is<double>())
+    else if (nativeName == detail::getTypeName<float>()
+        || nativeName == detail::getTypeName<double>())
         result += "float";
-    else if (type->is<core::pmr::String>())
+    else if (nativeName == detail::getTypeName<core::pmr::String>())
         result += "str";
-    else if (type->is<hlist>())
+    else if (nativeName == detail::getTypeName<hlist>())
         result += "list";
-    else if (type->is<hdict>())
+    else if (nativeName == detail::getTypeName<hdict>())
         result += "dict";
-    else if (type->class_() != nullptr)
-        result += type->class_()->name();
-    else
+    else if (type->class_() != nullptr) {
+        const auto* transaction = detail::currentRegistrationTransaction();
+        result +=
+            (transaction != nullptr ? transaction->contractClass(type->class_()) : type->class_())
+                ->name();
+    } else
         result += "<unbound>";
     if (type->is_pointer())
         result += "*";
@@ -117,7 +129,7 @@ core::pmr::String typeContract(const typeinfo* type, bool isConst = false, bool 
     return result;
 }
 
-core::pmr::String memberContract(NameView name, const object& value)
+core::pmr::String memberContract(NameView name, const object& value, bool nativeIdentities = false)
 {
     core::pmr::String result(&core::defaultCpuMemoryResource());
     if (value.is_function()) {
@@ -127,14 +139,16 @@ core::pmr::String memberContract(NameView name, const object& value)
         result += "|static:";
         result += fn.is_static() ? "1" : "0";
         result += "|return:";
-        result += typeContract(fn.return_type());
+        result += typeContract(fn.return_type(), false, false, nativeIdentities);
         result += "|params:";
         const auto parameters = fn.params_info();
         for (std::size_t index = 0; index < parameters.size(); ++index) {
             if (index != 0u)
                 result += ",";
-            result += typeContract(
-                parameters[index].ti, parameters[index].is_const, parameters[index].is_volatile);
+            result += typeContract(parameters[index].ti,
+                parameters[index].is_const,
+                parameters[index].is_volatile,
+                nativeIdentities);
         }
         result += "|defaults:";
         result += std::to_string(fn.default_argument_count());
@@ -145,7 +159,7 @@ core::pmr::String memberContract(NameView name, const object& value)
         result = "property:";
         result.append(name.data(), name.size());
         result += "|type:";
-        result += typeContract(prop.type());
+        result += typeContract(prop.type(), false, false, nativeIdentities);
         result += "|readonly:";
         result += prop.is_readonly() ? "1" : "0";
         result += "|pointer-setter:";
@@ -158,7 +172,8 @@ core::pmr::String memberContract(NameView name, const object& value)
         result += prop.indirect_uses_result_ownership() ? "1" : "0";
         if (prop.indirect_class() != nullptr) {
             result += "|indirect-class:";
-            result += prop.indirect_class()->name();
+            result += nativeIdentities ? prop.indirect_class()->nativeTypeName()
+                                       : prop.indirect_class()->name();
         }
         return result;
     }
@@ -192,14 +207,14 @@ core::pmr::String classStructuralContract(NameView typeName, const class_info& i
     core::pmr::Vector<core::pmr::String> bases{&core::defaultCpuMemoryResource()};
     for (const auto* base : info.bases()) {
         if (base != nullptr)
-            bases.push_back(base->name());
+            bases.push_back(base->nativeTypeName());
     }
     std::sort(bases.begin(), bases.end());
     for (const auto& base : bases)
         appendRegistrationContractField(result, "base", base);
-    const auto fields = info.get_all_fields();
+    const auto& fields = info.declaredFields();
     for (const auto& [name, value] : fields) {
-        const auto contract = memberContract(name, value);
+        const auto contract = memberContract(name, value, true);
         appendRegistrationContractField(result, "member", contract);
     }
     return result;
@@ -234,6 +249,9 @@ core::pmr::String RegistrationReceipt::canonicalText() const
     for (const auto& cls : classes) {
         core::pmr::String classContract(&core::defaultCpuMemoryResource());
         appendRegistrationContractField(classContract, "type-name", cls.typeName);
+        if (!cls.generatedSource.empty())
+            appendRegistrationContractField(
+                classContract, "generated-source/1", cls.generatedSource);
         appendRegistrationContractField(classContract, "reflected-name", cls.reflectedName);
         appendRegistrationContractField(
             classContract, "value-type", std::to_string(static_cast<unsigned>(cls.valueType)));
@@ -251,6 +269,19 @@ core::pmr::String RegistrationReceipt::canonicalText() const
         appendRegistrationContractField(result, "class", classContract);
     }
     appendRegistrationContractField(result, "declarations", declarations.canonicalText());
+    if (!nativeTypeBindings.empty()) {
+        appendRegistrationContractField(result, "native-type-bindings-version", "1");
+        for (const auto& [source, target] : nativeTypeBindings) {
+            appendRegistrationContractField(result, "native-type-source", source);
+            appendRegistrationContractField(result, "native-type-contract", target);
+        }
+        for (const auto& support : nativeSupportTypes) {
+            appendRegistrationContractField(result, "support-source", support.sourceType);
+            appendRegistrationContractField(result, "support-type", support.typeName);
+            appendRegistrationContractField(
+                result, "support-shape", std::to_string(static_cast<unsigned>(support.shape)));
+        }
+    }
     return result;
 }
 
@@ -323,7 +354,7 @@ class_info* RegistrationTransaction::registerReferencedClass(NameView typeName,
         return nullptr;
     if (auto* staged = findStagedClass(typeName))
         return staged;
-    if (auto* global = db::rawInstance().find_class(typeName))
+    if (auto* global = db::rawInstance().findNativeClass(typeName))
         return global;
     auto key = makeString(typeName);
     auto info = core::makeUnique<class_info>(key, type, size, alignment, getDerivedInfo);
@@ -345,9 +376,20 @@ class_info* RegistrationTransaction::declareClass(NameView typeName,
         reject("reflection registration transaction contains a duplicate class declaration");
         return findStagedClass(typeName);
     }
-    if (db::rawInstance().find_class(typeName) != nullptr) {
-        reject("reflection registration transaction cannot replace an existing class");
-        return nullptr;
+    if (auto* existing = db::rawInstance().findNativeClass(typeName)) {
+        const auto schema = preparedGeneratedSchemas_.find(key);
+        const bool reusable = schema != preparedGeneratedSchemas_.end()
+            && !existing->generatedContract_.empty()
+            && existing->generatedContract_ == schema->second.contract
+            && existing->generatedSource_ == schema->second.source
+            && existing->generatedStructure_ == classStructuralContract(typeName, *existing);
+        if ((!existing->isUncompletedNativeReference() && !reusable)
+            || existing->valueType() != type || existing->size() != size
+            || existing->alignment() != alignment) {
+            reject("reflection registration transaction cannot replace an existing class");
+            return nullptr;
+        }
+        (reusable ? reusingNativeClasses_ : completingNativeClasses_).emplace(key, existing);
     }
     auto* result = findStagedClass(typeName);
     if (result == nullptr) {
@@ -356,6 +398,7 @@ class_info* RegistrationTransaction::declareClass(NameView typeName,
         classes_.emplace(key, std::move(info));
     }
     declaredClasses_.insert(key);
+    result->explicitlyDeclared_ = true;
     return result;
 }
 
@@ -386,6 +429,96 @@ bool RegistrationTransaction::setOwner(std::shared_ptr<void> owner)
         return false;
     }
     owners_.emplace(ownerIdentity_, std::move(owner));
+    return true;
+}
+
+bool RegistrationTransaction::prepareGeneratedClass(
+    NameView nativeName, NameView contract, NameView source)
+{
+    if (committed_ || nativeName.empty() || contract.empty() || source.size() != 71u
+        || source.substr(0u, 7u) != "sha256:" || !core::Sha256::isHexDigest(source.substr(7u))) {
+        reject("reflection generated schema preflight is incomplete");
+        return false;
+    }
+    GeneratedSchema schema;
+    schema.contract.assign(contract);
+    schema.source.assign(source);
+    if (!preparedGeneratedSchemas_.emplace(makeString(nativeName), std::move(schema)).second) {
+        reject("reflection generated schema preflight is duplicated");
+        return false;
+    }
+    return true;
+}
+
+bool RegistrationTransaction::recordGeneratedClass(
+    const class_info* value, NameView contract, NameView source)
+{
+    if (!ownsClass(value)) {
+        reject("reflection generated schema does not own its staged class");
+        return false;
+    }
+    const auto found = preparedGeneratedSchemas_.find(value->nativeTypeName());
+    if (found == preparedGeneratedSchemas_.end() || found->second.contract != contract
+        || found->second.source != source) {
+        reject("reflection generated schema does not match its preflight");
+        return false;
+    }
+    auto* cls = const_cast<class_info*>(value);
+    cls->generatedContract_.assign(contract);
+    cls->generatedSource_.assign(source);
+    cls->generatedStructure_ = classStructuralContract(value->nativeTypeName(), *value);
+    return true;
+}
+
+bool RegistrationTransaction::bindNativeType(NameView sourceType, const typeinfo* type)
+{
+    if (committed_ || sourceType.empty() || type == nullptr || type->class_() == nullptr) {
+        reject("reflection native type binding is incomplete");
+        return false;
+    }
+    if (!nativeTypeBindings_.emplace(makeString(sourceType), type).second) {
+        reject("reflection native type binding is duplicated");
+        return false;
+    }
+    return true;
+}
+
+bool RegistrationTransaction::declareNativeSupportType(
+    NameView sourceType, const typeinfo* type, RegistrationNativeShape shape)
+{
+    if (committed_ || sourceType.empty() || type == nullptr || type->class_() == nullptr
+        || nativeTypeBindings_.find(makeString(sourceType)) == nativeTypeBindings_.end()
+        || static_cast<unsigned>(shape)
+            > static_cast<unsigned>(RegistrationNativeShape::OpaqueToken)) {
+        reject("reflection native support type has no compiled source binding");
+        return false;
+    }
+    const auto* cls = type->class_();
+    if (!ownsClass(cls))
+        return true;
+    core::pmr::String typeName(&core::defaultCpuMemoryResource());
+    for (const auto& [key, info] : classes_)
+        if (info.get() == cls)
+            typeName = key;
+    if (declaredClasses_.find(typeName) != declaredClasses_.end())
+        return true;
+    if (!cls->get_all_fields().empty() || !cls->bases().empty()
+        || (shape == RegistrationNativeShape::Scalar
+            && !type->is_type(type_trait_mask::is_arithmetic))
+        || (shape == RegistrationNativeShape::Sequence && !type->is_sequential_container())
+        || (shape == RegistrationNativeShape::Mapping && !type->is_map_container())) {
+        reject("reflection native support type conflicts with its closed C++ shape");
+        return false;
+    }
+    RegistrationNativeSupport support;
+    support.sourceType = makeString(sourceType);
+    support.typeName = typeName;
+    support.shape = shape;
+    const auto [found, inserted] = nativeSupportTypes_.emplace(typeName, std::move(support));
+    if (!inserted && found->second.shape != shape) {
+        reject("reflection native support type has conflicting shape declarations");
+        return false;
+    }
     return true;
 }
 
@@ -468,12 +601,23 @@ bool RegistrationTransaction::ownsClass(const class_info* value) const
 
 RegistrationReceipt RegistrationTransaction::receipt() const
 {
+    if (detail::currentRegistrationTransaction() != this) {
+        if (detail::currentRegistrationTransaction() != nullptr)
+            throw std::logic_error("reflection receipt cannot observe a foreign transaction");
+        RegistrationScope scope(const_cast<RegistrationTransaction&>(*this));
+        return receipt();
+    }
     RegistrationReceipt result;
     result.ownerIdentity = ownerIdentity_;
     result.declarations = declarations_;
+    for (const auto& [source, type] : nativeTypeBindings_)
+        result.nativeTypeBindings.emplace(source, typeContract(type));
+    for (const auto& [key, support] : nativeSupportTypes_)
+        result.nativeSupportTypes.push_back(support);
     for (const auto& [typeName, info] : classes_) {
         RegistrationClassReceipt cls;
         cls.typeName = typeName;
+        cls.generatedSource = info->generatedSource_;
         cls.reflectedName = info->name();
         cls.valueType = info->valueType();
         cls.size = info->size();
@@ -483,7 +627,7 @@ RegistrationReceipt RegistrationTransaction::receipt() const
                 cls.bases.push_back(base->name());
         }
         std::sort(cls.bases.begin(), cls.bases.end());
-        const auto fields = info->get_all_fields();
+        const auto& fields = info->declaredFields();
         for (const auto& [name, value] : fields) {
             cls.members.push_back(memberContract(name, value));
         }
@@ -505,9 +649,35 @@ const class_info* RegistrationTransaction::publicationClass(const class_info* st
     for (const auto& [key, info] : classes_) {
         if (info.get() != staged)
             continue;
-        return staged;
+        const auto completing = completingNativeClasses_.find(key);
+        if (completing != completingNativeClasses_.end())
+            return completing->second;
+        const auto reusing = reusingNativeClasses_.find(key);
+        return reusing == reusingNativeClasses_.end() ? staged : reusing->second;
     }
     return staged;
+}
+
+const void* RegistrationTransaction::publicationFunctionIdentity(const void* staged) const
+{
+    for (const auto& [nativeName, target] : reusingNativeClasses_) {
+        const auto cls = classes_.find(nativeName);
+        for (const auto& [name, member] : cls->second->declaredFields()) {
+            if (!member.is_function() || member.cast<const function&>().identity() != staged)
+                continue;
+            const auto published = target->get_field(name);
+            return published.is_function() ? published.cast<const function&>().identity() : nullptr;
+        }
+    }
+    return staged;
+}
+
+const class_info* RegistrationTransaction::contractClass(const class_info* type) const
+{
+    if (type == nullptr)
+        return nullptr;
+    const auto staged = classes_.find(type->nativeTypeName());
+    return staged == classes_.end() ? type : staged->second.get();
 }
 
 bool RegistrationTransaction::validate(core::pmr::String& diagnostics) const
@@ -523,20 +693,49 @@ bool RegistrationTransaction::validate(core::pmr::String& diagnostics) const
     }
     core::pmr::Set<core::pmr::String> reflectedNames{&core::defaultCpuMemoryResource()};
     for (const auto& [typeName, info] : classes_) {
-        if (declaredClasses_.find(typeName) == declaredClasses_.end()) {
+        const auto support = nativeSupportTypes_.find(typeName);
+        if (declaredClasses_.find(typeName) == declaredClasses_.end()
+            && support == nativeSupportTypes_.end()) {
             diagnostics =
                 "reflection registration transaction contains an undeclared referenced class: ";
             diagnostics += typeName;
             return false;
         }
+        if (support != nativeSupportTypes_.end()
+            && (!info->get_all_fields().empty() || !info->bases().empty()
+                || info->name() != typeName)) {
+            diagnostics = "reflection native support type acquired undeclared class semantics";
+            return false;
+        }
         if (info == nullptr || info->name().empty()
-            || !reflectedNames.insert(info->name()).second) {
+            || (support == nativeSupportTypes_.end()
+                && !reflectedNames.insert(info->name()).second)) {
             diagnostics =
                 "reflection registration transaction has an invalid or duplicate reflected name";
             return false;
         }
-        if (db::rawInstance().find_class(typeName) != nullptr
-            || db::rawInstance().find_class(info->name()) != nullptr) {
+        const auto completing = completingNativeClasses_.find(typeName);
+        const auto* existing = db::rawInstance().findNativeClass(typeName);
+        const auto* reflected = db::rawInstance().find_class(info->name());
+        const bool validCompletion = completing != completingNativeClasses_.end()
+            && completing->second == existing && existing->isUncompletedNativeReference()
+            && existing->size() == info->size() && existing->alignment() == info->alignment()
+            && existing->valueType() == info->valueType()
+            && (reflected == nullptr || reflected == existing);
+        const auto reusing = reusingNativeClasses_.find(typeName);
+        const bool validReuse = reusing != reusingNativeClasses_.end()
+            && reusing->second == existing && existing != nullptr
+            && existing->valueType() == info->valueType() && existing->size() == info->size()
+            && existing->alignment() == info->alignment() && !info->generatedContract_.empty()
+            && info->generatedContract_ == existing->generatedContract_
+            && info->generatedSource_ == existing->generatedSource_
+            && info->generatedStructure_ == existing->generatedStructure_
+            && classStructuralContract(typeName, *info) == existing->generatedStructure_
+            && classStructuralContract(typeName, *existing) == existing->generatedStructure_
+            && reflected == existing;
+        if ((existing != nullptr && !validCompletion && !validReuse)
+            || (reflected != nullptr && !validCompletion && !validReuse
+                && support == nativeSupportTypes_.end())) {
             diagnostics = "reflection registration transaction reflected name already exists";
             return false;
         }
@@ -552,7 +751,8 @@ bool RegistrationTransaction::validate(core::pmr::String& diagnostics) const
             const auto declared =
                 std::find_if(classes_.begin(), classes_.end(), [&](const auto& entry) {
                     return entry.second.get() == stagedClass
-                        && declaredClasses_.find(entry.first) != declaredClasses_.end();
+                        && (declaredClasses_.find(entry.first) != declaredClasses_.end()
+                            || nativeSupportTypes_.find(entry.first) != nativeSupportTypes_.end());
                 });
             if (declared == classes_.end()) {
                 diagnostics =
@@ -599,6 +799,14 @@ bool RegistrationTransaction::commit(RegistrationReceipt& result, core::pmr::Str
 bool RegistrationTransaction::commit(
     NameView expectedFingerprint, RegistrationReceipt& result, core::pmr::String& diagnostics)
 {
+    if (detail::currentRegistrationTransaction() != this) {
+        if (detail::currentRegistrationTransaction() != nullptr) {
+            diagnostics = "reflection commit cannot execute inside a foreign transaction";
+            return false;
+        }
+        RegistrationScope scope(*this);
+        return commit(expectedFingerprint, result, diagnostics);
+    }
     if (!validate(diagnostics) || committed_)
         return false;
     result = receipt();
@@ -619,6 +827,30 @@ void RegistrationTransaction::reject(NameView diagnostics)
         return;
     valid_ = false;
     diagnostics_ = makeString(diagnostics);
+}
+
+bool prepareGeneratedRegistrationClass(NameView nativeName, NameView contract, NameView source)
+{
+    auto* transaction = detail::currentRegistrationTransaction();
+    return transaction == nullptr
+        || transaction->prepareGeneratedClass(nativeName, contract, source);
+}
+
+bool declareGeneratedRegistrationClassContract(NameView key,
+    NameView contract,
+    const class_info* cls,
+    NameView source,
+    RegistrationOwnership ownership,
+    RegistrationLifecycle lifecycle,
+    NameView moduleExport)
+{
+    if (!declareRegistrationClassContract(key, contract, cls, ownership, lifecycle, moduleExport))
+        return false;
+    auto* transaction = detail::currentRegistrationTransaction();
+    return transaction != nullptr ? transaction->recordGeneratedClass(cls, contract, source)
+                                  : cls != nullptr
+            && db::rawInstance().recordGeneratedClassSchema(
+                cls, contract, source, classStructuralContract(cls->nativeTypeName(), *cls));
 }
 
 bool declareRegistrationContractRecord(NameView key, NameView contract)

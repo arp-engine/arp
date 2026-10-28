@@ -306,6 +306,8 @@ public:
         caps.swapchain = rhi::SwapchainCapabilities{};
         caps.memory.deviceLocal = true;
         caps.memory.hostVisible = true;
+        caps.memory.hostVisibleDeviceLocalBuffers =
+            false; // Validator cannot prove native placement.
         caps.explicitFeatures.pushConstants = true;
         caps.explicitFeatures.secondaryCommandBuffers = true;
         caps.memory.transientAliasing = false;
@@ -431,6 +433,8 @@ public:
     }
 
     GpuQueue& queue() override { return queue_; }
+
+    void waitIdle() override {}
 
     /// Async compute queue. The Null backend exposes a real compute queue so
     /// the multi-queue async-compute path (timeline semaphore submit) can be

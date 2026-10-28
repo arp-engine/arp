@@ -5,6 +5,8 @@
 #include "editor/project/project_scene_authoring.h"
 #include "editor/workspace/editor_recovery_digest.h"
 #include "editor/workspace/editor_scene_authoring_codec.h"
+#include "editor/workspace/editor_scene_file_format.h"
+#include "editor/workspace/editor_scene_service_session.h"
 #include "editor/workspace/editor_shell.h"
 
 #include <algorithm>
@@ -228,6 +230,13 @@ bool EditorRecoveryPreparation::validateFiles(const Candidate& candidate,
                 return fail(diagnostic, "EDITOR-RECOVERY-PACKAGE-BINDING-CONFLICT");
         } else if (!noProjectContext(currentRoot, diagnostic))
             return false;
+        if (candidate.document) {
+            const auto catalog = candidate.document->scriptCatalog();
+            if (EditorSceneFileFormat::version(snapshot.scene.yaml)
+                    == EditorSceneScriptCodec::contractVersion
+                && (!catalog || !catalog->modules().verifySources(currentRoot, diagnostic)))
+                return fail(diagnostic, "EDITOR-RECOVERY-SCRIPT-SOURCE-OR-OWNER-STALE");
+        }
         const auto expectedCount =
             snapshot.scripts.size() + (snapshot.scene.path.empty() ? 0u : 1u);
         if (candidate.files.size() != expectedCount)
@@ -357,18 +366,19 @@ core::UniquePtr<EditorRecoveryPreparation::Candidate> EditorRecoveryPreparation:
             }
         } else if (!noProjectContext(root, diagnostic))
             return {};
+        // Cold script domains require one explicit session retaining the exact
+        // independently loaded owners, rather than unrelated provider callbacks.
+        const auto services = core::makeShared<EditorSceneServiceSession>(
+            candidate->resources.retainManager(), candidate->resources.physicsWorld2D());
         const auto document = [&] {
             auto result = core::makeUnique<EditorSceneDocument>(false);
-            if (!candidate->resources.bindSceneServices(*result, diagnostic))
+            if (!result->bindServiceSession(services, diagnostic))
                 return core::UniquePtr<EditorSceneDocument>{};
             return result;
         };
         const auto restore = [&](std::string_view yaml, EditorSceneDocument& target) {
-            return EditorSceneAuthoringCodec::decode(yaml,
-                target,
-                &EditorSceneAuthoringCodec::isResourceReady,
-                &candidate->resources.manager(),
-                diagnostic);
+            return EditorSceneFileFormat::restore(
+                yaml, target, root, snapshot.project ? &draft : nullptr, diagnostic);
         };
         core::pmr::Vector<std::filesystem::path> boundPaths;
         if (!snapshot.scene.path.empty()) {
@@ -389,7 +399,12 @@ core::UniquePtr<EditorRecoveryPreparation::Candidate> EditorRecoveryPreparation:
                 return {};
             core::pmr::String hash;
             if (!restore(snapshot.scene.savedFileBytes, *baseline)
-                || !EditorSceneAuthoringCodec::contentHash(*baseline, hash, diagnostic))
+                || !EditorSceneFileFormat::observeHash(*baseline,
+                    EditorSceneFileFormat::version(snapshot.scene.savedFileBytes),
+                    root,
+                    snapshot.project ? &draft : nullptr,
+                    hash,
+                    diagnostic))
                 return {};
             if (hash != snapshot.scene.savedContentHash) {
                 fail(diagnostic, "EDITOR-RECOVERY-SCENE-SAVEPOINT-MISMATCH");
@@ -470,7 +485,18 @@ bool EditorRecoveryPreparation::candidateFingerprint(const Candidate& candidate,
     }
     {
         core::pmr::String yaml;
-        if (!EditorSceneAuthoringCodec::encode(*candidate.document, yaml, diagnostic))
+        ProjectManifest project;
+        ProjectDiagnostic issue;
+        if (candidate.submitted.project
+            && !ProjectManifestCodec::decode(
+                candidate.submitted.project->draftYaml, project, issue))
+            return fail(diagnostic, "EDITOR-RECOVERY-CANDIDATE-PROJECT");
+        if (!EditorSceneFileFormat::observe(*candidate.document,
+                EditorSceneFileFormat::version(candidate.submitted.scene.yaml),
+                candidate.root,
+                candidate.submitted.project ? &project : nullptr,
+                yaml,
+                diagnostic))
             return false;
         digest.field(yaml);
     }
@@ -550,6 +576,7 @@ core::UniquePtr<EditorRecoveryPreparation::WorkspaceState> EditorRecoveryPrepara
         result->projectSavedBytes_ = snapshot.project->savedFileBytes;
         result->projectDraft_ = std::move(draft);
     }
+    result->sceneAuthoringVersion_ = EditorSceneFileFormat::version(snapshot.scene.yaml);
     result->scenePath_ = snapshot.scene.path;
     result->sceneTarget_ = candidate.sceneTarget;
     result->sceneSavedHash_ = snapshot.scene.savedContentHash;

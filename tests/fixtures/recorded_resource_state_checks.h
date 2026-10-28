@@ -7,7 +7,7 @@
 
 namespace arp::tests {
 
-inline void checkRecordedResourceStates(rhi::GpuDevice& device)
+inline void checkRecordedResourceStates(rhi::GpuDevice& device, bool waitForCompletion = true)
 {
     using namespace rhi;
     auto buffer = device.createBuffer({"StateRollback.Buffer",
@@ -79,7 +79,8 @@ inline void checkRecordedResourceStates(rhi::GpuDevice& device)
         encoder.reset();
         assert(buffer->state() == ResourceState::CopyDst);
         assert(texture->subresourceState(mip0) == ResourceState::CopyDst);
-        device.waitIdle();
+        if (waitForCompletion)
+            device.waitIdle();
     }
     {
         auto encoder = device.createCommandEncoder({"StateRollback.Retry"});

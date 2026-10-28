@@ -28,7 +28,7 @@ float4 cloudCompositeFragment(VertexOutput input)
         min(opaqueDistance, p.temporal.z), p, intervals, groundBlocked) == 0)
         return scene;
 #if defined(ARP_CLOUD_FULL_RESOLVED)
-    float4 integral = CloudResolved[pixel.y * p.dimensions.z + pixel.x].radianceTransmittance;
+    float4 integral = cloudLoadStored(CloudResolved[pixel.y * p.dimensions.z + pixel.x]).radianceTransmittance;
 #else
     float2 grid = uv * float2(p.dimensions.xy) - 0.5;
     int2 base = int2(floor(grid));

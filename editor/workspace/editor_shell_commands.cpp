@@ -69,179 +69,6 @@ bool sceneInspectorKindForValueKind(
     return false;
 }
 
-EditorCommandOutcome EditorShell::scenePersistenceTaskSnapshot(std::uint64_t taskId) const
-{
-    const auto found = std::find_if(
-        scenePersistenceTasks_.begin(), scenePersistenceTasks_.end(), [taskId](const auto& task) {
-            return task.id == taskId;
-        });
-    if (taskId == 0 || found == scenePersistenceTasks_.end())
-        return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
-    EditorCommandOutcome result;
-    result.stateChanged = false;
-    result.hasSnapshot = true;
-    appendProjectSnapshot(result.snapshot);
-    result.snapshot.workspace = presentationState_.workspace();
-    result.snapshot.scene = presentationState_.scene();
-    result.snapshot.selection = presentationState_.selection();
-    result.snapshot.scenePersistenceTaskId = found->id;
-    result.snapshot.scenePersistenceTaskStatus = found->status;
-    result.snapshot.scenePersistenceTaskDiagnostic = found->diagnostic;
-    return result;
-}
-
-EditorCommandOutcome EditorShell::beginScenePersistence(
-    bool loading, std::string_view relativePath, bool discardChanges, bool overwriteExisting)
-{
-    if (sceneExport_.pending())
-        return {false, false, EditorDiagnosticCode::WorkspaceBusy};
-    if (loading) {
-        const auto gate = sceneReplacementGate(discardChanges);
-        if (!gate.success)
-            return gate;
-    }
-    // Serialize document IO: completion order must never decide the clean baseline.
-    if (std::any_of(
-            scenePersistenceTasks_.begin(), scenePersistenceTasks_.end(), [](const auto& task) {
-                return task.status == ScenePersistenceTaskStatus::Pending;
-            }))
-        return {false, false, EditorDiagnosticCode::WorkspaceBusy};
-    core::pmr::String contentHash, contentDiagnostic;
-    if (!EditorSceneAuthoringCodec::contentHash(sceneDocument_, contentHash, contentDiagnostic))
-        return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
-    auto available = std::find_if(
-        scenePersistenceTasks_.begin(), scenePersistenceTasks_.end(), [](const auto& task) {
-            return task.id == 0;
-        });
-    if (available == scenePersistenceTasks_.end()) {
-        available = std::min_element(scenePersistenceTasks_.begin(),
-            scenePersistenceTasks_.end(),
-            [](const auto& lhs, const auto& rhs) {
-                const bool lhsDone = lhs.status == ScenePersistenceTaskStatus::Succeeded
-                    || lhs.status == ScenePersistenceTaskStatus::Failed;
-                const bool rhsDone = rhs.status == ScenePersistenceTaskStatus::Succeeded
-                    || rhs.status == ScenePersistenceTaskStatus::Failed;
-                if (lhsDone != rhsDone)
-                    return lhsDone;
-                return lhs.id < rhs.id;
-            });
-        if (available == scenePersistenceTasks_.end()
-            || (available->status != ScenePersistenceTaskStatus::Succeeded
-                && available->status != ScenePersistenceTaskStatus::Failed))
-            return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
-    }
-
-    // The worker may commit immediately after submission. Prepare all owned
-    // receipt/task strings before accepting it; publication below only swaps.
-    core::pmr::String preparedPath(relativePath);
-    EditorCommandOutcome result;
-    result.stateChanged = false;
-    result.hasSnapshot = true;
-    appendProjectSnapshot(result.snapshot);
-    result.snapshot.workspace = presentationState_.workspace();
-    result.snapshot.scene = presentationState_.scene();
-    result.snapshot.selection = presentationState_.selection();
-    EditorScenePersistence::RequestHandle handle;
-    std::filesystem::path resolvedTarget;
-    core::pmr::String saveYaml;
-    bool checkingFile = false;
-    if (loading) {
-        handle = scenePersistence_.load(projectBrowser_.root(), relativePath, &resolvedTarget);
-    } else {
-        for (const auto& object : sceneDocument_.scene().objects()) {
-            const auto properties = sceneDocument_.inspectorProperties(object->id());
-            for (const auto& property : properties) {
-                if (property.kind != SceneInspectorPropertyKind::ResourceReference
-                    || property.stringValue.empty())
-                    continue;
-                if (property.resourceType.empty()
-                    || !EditorSceneAuthoringCodec::isResourceReady(
-                        sceneResourceManager(sceneDocument_),
-                        std::string_view(
-                            property.resourceType.data(), property.resourceType.size()),
-                        std::string_view(property.stringValue.data(), property.stringValue.size())))
-                    return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
-            }
-        }
-        core::pmr::String yaml(&core::defaultCpuMemoryResource());
-        core::pmr::String diagnostic(&core::defaultCpuMemoryResource());
-        if (!EditorSceneAuthoringCodec::encode(sceneDocument_, yaml, diagnostic))
-            return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
-        const char* pathDiagnostic = nullptr;
-        if (!EditorScenePersistence::resolvePath(
-                projectBrowser_.root(), relativePath, false, resolvedTarget, pathDiagnostic)) {
-            feedback(pathDiagnostic ? pathDiagnostic : "EDITOR-SCENE-PATH-INVALID");
-            return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
-        }
-        std::error_code error;
-        const bool exists = std::filesystem::exists(resolvedTarget, error);
-        if (error)
-            return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
-        bool bound = !savedSceneFileTarget_.empty() && resolvedTarget == savedSceneFileTarget_;
-        if (!bound && exists && !savedSceneFileTarget_.empty()) {
-            const bool previousExists = std::filesystem::exists(savedSceneFileTarget_, error);
-            if (!error && previousExists)
-                bound = std::filesystem::equivalent(savedSceneFileTarget_, resolvedTarget, error);
-            if (error) {
-                feedback("EDITOR-SCENE-FILE-IDENTITY-UNAVAILABLE");
-                return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
-            }
-        }
-        if (relativePath == activeScenePath_ && !bound) {
-            feedback("EDITOR-SCENE-FILE-TARGET-CHANGED: reload or save to a different path.");
-            return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
-        }
-        if (exists && !bound && !overwriteExisting)
-            return {false, false, EditorDiagnosticCode::SceneOverwriteRequired};
-        checkingFile = bound;
-        if (checkingFile) {
-            handle = scenePersistence_.readResolved(resolvedTarget);
-            saveYaml = std::move(yaml);
-        } else
-            handle = scenePersistence_.saveResolved(resolvedTarget, yaml);
-    }
-    if (!handle) {
-        const auto* diagnostic = scenePersistence_.diagnostic();
-        return {false,
-            false,
-            diagnostic && std::string_view(diagnostic) == "EDITOR-SCENE-OVERWRITE-REQUIRED"
-                ? EditorDiagnosticCode::SceneOverwriteRequired
-                : EditorDiagnosticCode::InvalidCommandPayload};
-    }
-
-    available->id = nextScenePersistenceTaskId_++;
-    available->request = handle;
-    available->status = ScenePersistenceTaskStatus::Pending;
-    available->loading = loading;
-    available->checkingFile = checkingFile;
-    available->saveYaml.swap(saveYaml);
-    available->resolvedTarget.swap(resolvedTarget);
-    available->contentHash.swap(contentHash);
-    available->documentEpoch = sceneDocumentEpoch_;
-    available->relativePath.swap(preparedPath);
-    available->diagnostic.clear();
-    available->result.reset();
-    result.snapshot.sceneIoPending = true;
-    result.snapshot.scenePersistenceTaskId = available->id;
-    result.snapshot.scenePersistenceTaskStatus = available->status;
-    return result;
-}
-
-void EditorShell::pollScenePersistence()
-{
-    for (auto& task : scenePersistenceTasks_) {
-        if (task.status != ScenePersistenceTaskStatus::Pending)
-            continue;
-        core::io::AtomicFileResult fileResult;
-        if (!scenePersistence_.take(task.request, fileResult))
-            continue;
-        task.request = {};
-        task.result = std::move(fileResult);
-        (void)submitCommand(
-            CompleteScenePersistenceCommand{task.id}, EditorCommandOrigin::Internal);
-    }
-}
-
 void EditorShell::pollTasks()
 {
     pollProjectSave();
@@ -319,6 +146,8 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
                 || std::is_same_v<Command, BeginSceneTransformEditCommand>
                 || std::is_same_v<Command, AddSceneComponentCommand>
                 || std::is_same_v<Command, RemoveSceneComponentCommand>
+                || std::is_same_v<Command, SetSceneScriptFieldsCommand>
+                || std::is_same_v<Command, AddSceneScriptComponentCommand>
                 || std::is_same_v<Command, SetSceneComponentPropertyCommand>) {
                 const auto gate = sceneObjectWriteGate(
                     command.objectId, !std::is_same_v<Command, SetSceneObjectNameCommand>);
@@ -433,6 +262,8 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
             } else if constexpr (std::is_same_v<Command, ActivateControlCommand>) {
                 if (command.source.empty())
                     return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
+                if (EditorScriptInspector::handles(command.source))
+                    return scriptInspector_.activate(*this, command.source);
                 if (EditorScriptFilePanel::handles(command.source)) {
                     if (modalBlocksActivation(command.source))
                         return {false, false, EditorDiagnosticCode::WorkspaceBusy};
@@ -489,6 +320,8 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
                 }
                 applyActivation(command.source);
             } else if constexpr (std::is_same_v<Command, SetTextValueCommand>) {
+                if (EditorScriptInspector::handles(command.source))
+                    return scriptInspector_.edit(*this, command.source, command.value);
                 if (command.source == "scene_ui_path")
                     return scenePanel_.edit(*this, command.value);
                 if (EditorSceneTransformPanel::textSource(command.source))
@@ -781,6 +614,10 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
                 return addSceneComponentWithHistory(command);
             } else if constexpr (std::is_same_v<Command, RemoveSceneComponentCommand>) {
                 return removeSceneComponentWithHistory(command);
+            } else if constexpr (std::is_same_v<Command, AddSceneScriptComponentCommand>) {
+                return addSceneScriptComponentWithHistory(command);
+            } else if constexpr (std::is_same_v<Command, SetSceneScriptFieldsCommand>) {
+                return setSceneScriptFieldsWithHistory(command);
             } else if constexpr (std::is_same_v<Command, SetSceneComponentPropertyCommand>) {
                 SceneInspectorPropertyKind valueKind;
                 if (!sceneInspectorKindForValueKind(command.valueKind, valueKind))
@@ -942,94 +779,7 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
             } else if constexpr (std::is_same_v<Command, GetScenePersistenceTaskQuery>) {
                 return scenePersistenceTaskSnapshot(command.taskId);
             } else if constexpr (std::is_same_v<Command, CompleteScenePersistenceCommand>) {
-                const auto task = std::find_if(scenePersistenceTasks_.begin(),
-                    scenePersistenceTasks_.end(),
-                    [&](const auto& record) {
-                        return record.id == command.taskId;
-                    });
-                if (task == scenePersistenceTasks_.end() || !task->result
-                    || task->status != ScenePersistenceTaskStatus::Pending)
-                    return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
-                auto fileResult = std::move(*task->result);
-                task->result.reset();
-                if (task->checkingFile) {
-                    task->checkingFile = false;
-                    if (!fileResult.success) {
-                        fileResult.diagnostic = fileResult.missing
-                            ? "EDITOR-SCENE-FILE-MISSING"
-                            : "EDITOR-SCENE-FILE-READ-FAILED: " + fileResult.diagnostic;
-                    } else if (fileResult.bytes != savedSceneFileBytes_) {
-                        fileResult.success = false;
-                        fileResult.diagnostic = "EDITOR-SCENE-FILE-EXTERNAL-CHANGE";
-                    } else {
-                        auto snapshot = std::move(task->saveYaml);
-                        task->request =
-                            scenePersistence_.saveResolved(task->resolvedTarget, snapshot);
-                        if (task->request)
-                            return {true, false, EditorDiagnosticCode::None};
-                        fileResult.success = false;
-                        fileResult.diagnostic = "EDITOR-SCENE-SAVE-SUBMIT-FAILED";
-                    }
-                    core::pmr::String{}.swap(task->saveYaml);
-                }
-                if (!fileResult.success) {
-                    task->status = ScenePersistenceTaskStatus::Failed;
-                    task->diagnostic = std::move(fileResult.diagnostic);
-                    feedback(detail::sceneFileFailureMessage(task->diagnostic));
-                    presentationState_.openOutput();
-                    visible("output_panel", true);
-                    return {true, true, EditorDiagnosticCode::None};
-                }
-                if (!task->loading) {
-                    if (task->documentEpoch == sceneDocumentEpoch_) {
-                        savedSceneHash_ = std::move(task->contentHash);
-                        activeScenePath_ = task->relativePath;
-                        savedSceneFileTarget_ = std::move(task->resolvedTarget);
-                        savedSceneFileBytes_ = std::move(fileResult.bytes);
-                    }
-                    task->status = ScenePersistenceTaskStatus::Succeeded;
-                    return {true, true, EditorDiagnosticCode::None};
-                }
-                core::pmr::String beforeHash, hashDiagnostic;
-                if (task->documentEpoch != sceneDocumentEpoch_
-                    || !EditorSceneAuthoringCodec::contentHash(
-                        sceneDocument_, beforeHash, hashDiagnostic)
-                    || beforeHash != task->contentHash) {
-                    task->status = ScenePersistenceTaskStatus::Failed;
-                    task->diagnostic = "EDITOR-SCENE-LOAD-STALE-DOCUMENT";
-                    return {true, true, EditorDiagnosticCode::None};
-                }
-                EditorSceneDocument candidate(false);
-                candidate.copySceneServicesFrom(sceneDocument_);
-                core::pmr::String diagnostic(&core::defaultCpuMemoryResource());
-                const auto yaml =
-                    std::string_view(reinterpret_cast<const char*>(fileResult.bytes.data()),
-                        fileResult.bytes.size());
-                if (!EditorSceneAuthoringCodec::decode(yaml,
-                        candidate,
-                        &EditorSceneAuthoringCodec::isResourceReady,
-                        sceneResourceManager(sceneDocument_),
-                        diagnostic)
-                    || !EditorSceneAuthoringCodec::contentHash(candidate, beforeHash, diagnostic)
-                    || !sceneDocument_.replaceWith(std::move(candidate))) {
-                    task->status = ScenePersistenceTaskStatus::Failed;
-                    task->diagnostic =
-                        diagnostic.empty() ? "EDITOR-SCENE-REPLACE-FAILED" : diagnostic;
-                    return {true, true, EditorDiagnosticCode::None};
-                }
-                savedSceneHash_ = std::move(beforeHash);
-                activeScenePath_ = task->relativePath;
-                savedSceneFileTarget_ = std::move(task->resolvedTarget);
-                savedSceneFileBytes_ = std::move(fileResult.bytes);
-                ++sceneDocumentEpoch_;
-                task->status = ScenePersistenceTaskStatus::Succeeded;
-                task->diagnostic.clear();
-                resetSceneDocumentInteraction();
-                presentationState_.setScene(sceneDocument_.scene().name());
-                presentationState_.select(
-                    sceneDocument_.scene().findObject(sceneDocument_.selectedObject())->name());
-                refreshSceneInspector();
-                return {true, true, EditorDiagnosticCode::None};
+                return completeScenePersistence(command.taskId);
             } else if constexpr (std::is_same_v<Command, GetEditorStateQuery>) {
                 EditorCommandOutcome result;
                 result.stateChanged = false;

@@ -1,7 +1,7 @@
 #include "assets/cloud/cloud_asset.h"
 
+#include "assets/cloud/cloud_noise.h"
 #include "core/encoding/yaml_contract.h"
-#include "pcg/simplex_noise.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,42 +16,23 @@ bool profileValid(core::Vec4 p) noexcept
         && p.x >= 0 && p.x < p.y && p.y <= p.z && p.z < p.w && p.w <= 1;
 }
 
-float periodicSimplex(core::Vec3 uvw, float frequency, std::uint32_t seed) noexcept
-{
-    const auto smooth = [](float t) {
-        return t * t * (3 - 2 * t);
-    };
-    const core::Vec3 f{smooth(uvw.x), smooth(uvw.y), smooth(uvw.z)};
-    float result = 0;
-    for (int z = 0; z != 2; ++z)
-        for (int y = 0; y != 2; ++y)
-            for (int x = 0; x != 2; ++x) {
-                const float weight =
-                    (x ? f.x : 1 - f.x) * (y ? f.y : 1 - f.y) * (z ? f.z : 1 - f.z);
-                result += weight
-                    * pcg::simplex3D((uvw.x - x) * frequency,
-                        (uvw.y - y) * frequency,
-                        (uvw.z - z) * frequency,
-                        seed);
-            }
-    return result;
-}
+class LegacyCloudNoise final {
+    std::uint32_t seed_;
 
-float fractal(
-    core::Vec3 uvw, std::uint32_t frequency, const CloudCookDesc& d, std::uint32_t channel) noexcept
-{
-    float sum = 0, total = 0, weight = 1, scale = float(frequency);
-    for (std::uint32_t octave = 0; octave < d.octaves; ++octave) {
-        // Seed streams use distinct integer lanes; wrap is part of version 1.
-        sum += weight * periodicSimplex(uvw, scale, d.seed + channel + octave);
-        total += weight;
-        weight *= 0.5f;
-        scale *= 2;
+public:
+    explicit LegacyCloudNoise(std::uint32_t seed) noexcept : seed_(seed) {}
+
+    static LegacyCloudNoise stream(
+        std::uint32_t seed, std::uint32_t channel, std::uint32_t octave) noexcept
+    {
+        return LegacyCloudNoise(seed + (channel << 16u) + octave);
     }
-    // pcg::simplex3D already returns [0,1]. Only the normalized weighted sum
-    // belongs here; applying another signed-to-unorm remap biases every field.
-    return std::clamp(sum / total, 0.0f, 1.0f);
-}
+
+    float sample(float x, float y, float z) const noexcept
+    {
+        return pcg::simplex3D(x, y, z, seed_);
+    }
+};
 
 std::uint32_t wrap(std::int64_t index, std::uint32_t extent) noexcept
 {
@@ -105,6 +86,8 @@ CloudAssetResult CloudAssetCooker::parse(
                 "contractVersion",
                 "algorithm",
                 "algorithmVersion",
+                "precision",
+                "seedRouting",
                 "colorSpace",
                 "addressMode",
                 "filter",
@@ -125,8 +108,17 @@ CloudAssetResult CloudAssetCooker::parse(
             || Y::uint32(n, "contractVersion") != kCloudAssetVersion
             || Y::text(n, "algorithm") != "CloudPeriodicSimplex")
             return CloudAssetResult::failure("CLOUD-ASSET-VERSION");
-        if (Y::uint32(n, "algorithmVersion") != kCloudCookAlgorithmVersion)
+        const auto version = Y::uint32(n, "algorithmVersion");
+        if (version != kCloudCookAlgorithmVersion && version != kCloudLegacyCookAlgorithmVersion)
             return CloudAssetResult::failure("CLOUD-ASSET-ALGORITHM-VERSION");
+        if (version == kCloudCookAlgorithmVersion) {
+            if (!n.contains("precision") || Y::text(n, "precision") != kCloudCookPrecision)
+                return CloudAssetResult::failure("CLOUD-ASSET-PRECISION");
+            if (!n.contains("seedRouting") || Y::text(n, "seedRouting") != kCloudCookSeedRouting)
+                return CloudAssetResult::failure("CLOUD-ASSET-SEED-ROUTING");
+        } else if (n.contains("precision") || n.contains("seedRouting")) {
+            return CloudAssetResult::failure("CLOUD-ASSET-LEGACY-METADATA");
+        }
         if (Y::text(n, "colorSpace") != "linear" || Y::text(n, "addressMode") != "repeat"
             || Y::text(n, "filter") != "linear"
             || Y::text(n, "weatherChannels") != "coverage,type,density,zero"
@@ -168,7 +160,8 @@ CloudAssetResult CloudAssetCooker::parse(
 CloudAssetResult CloudAssetCooker::plan(const CloudCookDesc& d, std::uint32_t& cells) noexcept
 {
     cells = 0;
-    if (d.algorithmVersion != kCloudCookAlgorithmVersion)
+    if (d.algorithmVersion != kCloudCookAlgorithmVersion
+        && d.algorithmVersion != kCloudLegacyCookAlgorithmVersion)
         return CloudAssetResult::failure("CLOUD-ASSET-ALGORITHM-VERSION");
     if (d.weatherDimension < 2 || d.shapeDimension < 2 || d.detailDimension < 2
         || !d.weatherFrequency || !d.shapeFrequency || !d.detailFrequency || !d.octaves
@@ -215,6 +208,10 @@ CloudAssetResult CloudAssetCooker::serialize(const CloudCookDesc& d, core::pmr::
     n["contractVersion"] = kCloudAssetVersion;
     n["algorithm"] = "CloudPeriodicSimplex";
     n["algorithmVersion"] = d.algorithmVersion;
+    if (d.algorithmVersion == kCloudCookAlgorithmVersion) {
+        n["precision"] = kCloudCookPrecision;
+        n["seedRouting"] = kCloudCookSeedRouting;
+    }
     n["colorSpace"] = "linear";
     n["addressMode"] = "repeat";
     n["filter"] = "linear";
@@ -252,29 +249,12 @@ CloudAssetResult CloudAssetCooker::cook(const CloudCookDesc& d, CloudAsset& outp
     asset.source = d;
     asset.cells.reserve(count);
     asset.cells.insert(asset.cells.end(), d.heightProfiles.begin(), d.heightProfiles.end());
-    const auto w = d.weatherDimension;
-    for (std::uint32_t y = 0; y < w; ++y)
-        for (std::uint32_t x = 0; x < w; ++x) {
-            const core::Vec3 uvw{(x + 0.5f) / w, (y + 0.5f) / w, 0};
-            asset.cells.push_back({fractal(uvw, d.weatherFrequency, d, 0u),
-                fractal(uvw, d.weatherFrequency, d, 0x10000u),
-                fractal(uvw, d.weatherFrequency, d, 0x20000u),
-                0});
-        }
-    std::uint32_t channel = 0x30000u;
-    for (auto spec : {std::array<std::uint32_t, 2>{d.shapeDimension, d.shapeFrequency},
-             std::array<std::uint32_t, 2>{d.detailDimension, d.detailFrequency}}) {
-        const auto n = spec[0];
-        for (std::uint32_t z = 0; z < n; ++z)
-            for (std::uint32_t y = 0; y < n; ++y)
-                for (std::uint32_t x = 0; x < n; ++x)
-                    asset.cells.push_back(
-                        {fractal(
-                             {(x + 0.5f) / n, (y + 0.5f) / n, (z + 0.5f) / n}, spec[1], d, channel),
-                            0,
-                            0,
-                            0});
-        channel += 0x10000u;
+    if (d.algorithmVersion == kCloudCookAlgorithmVersion) {
+        const auto result = detail::cookVersion3(d, asset);
+        if (!result.success)
+            return result;
+    } else {
+        detail::CloudNoiseField<LegacyCloudNoise>::append(d, asset);
     }
     output = std::move(asset);
     return {};

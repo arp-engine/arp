@@ -1,5 +1,6 @@
 #pragma once
 #include "cpu_quota_factory_fixture.h"
+#include "device_idle_failure_fixture.h"
 #include "original_bindless_depth_stream_fixture.h"
 #include "rhi/backends/vulkan/vulkan_native_resources.h"
 #include "rhi/frontend/bindless_root_fence_execution.h"
@@ -168,22 +169,24 @@ public:
                         weak.reset();
                         assert(!q[2]->liveBytes());
                         retained();
-                        assert(!drainVulkanRhiSubmittedCommandsUntil(
+                        assert(!drainVulkanRhiSubmittedCommandsUntil(device,
                             std::chrono::steady_clock::now() + std::chrono::milliseconds(1),
                             diagnostic));
-                        drainVulkanRhiSubmittedCommandsForShutdown();
-                        retireCompletedVulkanRhiSubmittedCommands();
+                        drainVulkanRhiSubmittedCommandsForShutdown(device);
+                        retireCompletedVulkanRhiSubmittedCommands(device);
                         retained();
                         tests::VulkanHeadlessRuntime foreign(true, Hooks::resolve);
                         assert(foreign.runtime()
                             && !waitIdleAndRetireVulkanRhiSubmittedCommands(foreign.runtime()));
                         retained();
                         Hooks::omitIdleEntrypoint = true;
-                        device.waitIdle();
+                        tests::DeviceIdleFailureFixture::verify(
+                            device, "RHI-VULKAN-IDLE-COMPLETION-ENTRYPOINT");
                         Hooks::omitIdleEntrypoint = false;
                         retained();
                         Hooks::uncertainIdleResult = true;
-                        device.waitIdle();
+                        tests::DeviceIdleFailureFixture::verify(
+                            device, "RHI-VULKAN-IDLE-COMPLETION-FAILED");
                         Hooks::uncertainIdleResult = false;
                         retained();
                         assert(!CpuQuotaFactoryFixture::verifyHotNoAllocation(
@@ -204,7 +207,7 @@ public:
                             std::memcpy(&bits, result->publishedBytes(), 4u);
                             assert(!bits);
                         }
-                        retireCompletedVulkanRhiSubmittedCommands();
+                        retireCompletedVulkanRhiSubmittedCommands(device);
                     } else {
                         assert(Execution::submit(issuer, {5u, true}));
                         assert(!CpuQuotaFactoryFixture::verifyHotNoAllocation(

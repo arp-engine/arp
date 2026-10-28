@@ -18,6 +18,7 @@ struct OriginalQueryCreationFacts;
 }
 
 namespace arp::rhi_vulkan {
+class VulkanRhiCommandDomain;
 
 // Backend-private capture of the feature bits actually passed to vkCreateDevice.
 // SampledImage also covers separately indexed samplers. RO/RW buffers share one
@@ -131,6 +132,7 @@ struct VulkanRhiRuntimeInspection {
 class VulkanRhiRuntime final {
 public:
     explicit VulkanRhiRuntime(const VulkanRhiRuntimeDesc& desc);
+    VulkanRhiCommandDomain& commandDomain() const noexcept;
 
     bool valid() const;
     const char* admissionDiagnostic() const noexcept;

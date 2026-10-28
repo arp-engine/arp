@@ -390,7 +390,8 @@ int main(int argc, char** argv)
     std::filesystem::remove_all(relocated.cacheRoot, cleanupError);
 
     WindowsDynamicScriptAotPackageDesc concurrent = desc;
-    concurrent.cacheRoot = desc.cacheRoot.parent_path() / "dynamic-script-aot-concurrent";
+    concurrent.cacheRoot =
+        desc.cacheRoot.parent_path() / (desc.cacheRoot.filename().string() + "-threads");
     std::filesystem::remove_all(concurrent.cacheRoot, cleanupError);
     WindowsDynamicScriptAotPackageResult concurrentFirst;
     WindowsDynamicScriptAotPackageResult concurrentSecond;
@@ -417,7 +418,7 @@ int main(int argc, char** argv)
     // against one identity and require the published artifact to be reusable.
     WindowsDynamicScriptAotPackageDesc processConcurrent = desc;
     processConcurrent.cacheRoot =
-        desc.cacheRoot.parent_path() / "dynamic-script-aot-process-concurrent";
+        desc.cacheRoot.parent_path() / (desc.cacheRoot.filename().string() + "-processes");
     std::filesystem::remove_all(processConcurrent.cacheRoot, cleanupError);
     std::filesystem::create_directories(processConcurrent.cacheRoot, cleanupError);
     const auto executable = std::filesystem::absolute(argv[0]);

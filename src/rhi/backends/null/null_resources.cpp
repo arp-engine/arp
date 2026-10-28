@@ -1,5 +1,6 @@
 #include "core/memory/cpu_allocator.h"
 #include "null_backend_internal.h"
+#include "rhi/frontend/buffer_placement.h"
 #include "rhi/frontend/descriptor_resource_validation.h"
 #include "rhi/frontend/heap_placement_contract.h"
 
@@ -610,6 +611,11 @@ ValidationResult ResourceRegistry::validateDescriptorResource(DescriptorType typ
 arp::core::UniquePtr<GpuBuffer> createBuffer(
     const BufferDesc& desc, const MemoryLedgerPtr& ledger, const ResourceRegistryPtr& registry)
 {
+    if (const auto* id =
+            HostVisibleDeviceLocalBufferContract::validate(desc, Backend::Null, false)) {
+        RhiErrorHandler::get().report(RhiSeverity::Error, id);
+        return {};
+    }
     if (desc.sizeBytes == 0 || !hasUsage(desc.usage) || !ledger->canAllocate(desc.sizeBytes)) {
         return nullptr;
     }

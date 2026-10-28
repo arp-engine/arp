@@ -44,7 +44,7 @@ public:
         using Contract = rhi::OriginalResourceRegistrationContract;
         assert(!Contract::validateIntent(budget()));
         auto invalid = budget();
-        invalid.contractVersion = 10u;
+        invalid.contractVersion = 11u;
         is(Contract::validateIntent(invalid), "RHI-ORIGINAL-REGISTRATION-VERSION");
         invalid.contractVersion = 9u;
         assert(

@@ -26,6 +26,12 @@ struct BasicForwardLighting {
     core::Vec3 color, ambient;
 };
 
+enum class BasicForwardLightingRange { Ldr1, LinearHdr1 };
+
+struct BasicForwardLightingConstants {
+    core::Vec4 directionIntensity, lightColor, ambientColor;
+};
+
 enum class BasicWorldMeshIndexPolicy { Uint16Exact, RequireUint32 };
 
 struct BasicWorldMeshProfile {
@@ -39,11 +45,20 @@ struct BasicWorldMeshProfile {
 
 class BasicForwardContract final {
 public:
+    static const char* materialSurface(const resource::MaterialResource&,
+        const resource::ShaderPackageResource&,
+        std::string_view,
+        BasicForwardMaterialConstants&);
+    static const char* lighting(const BasicForwardLighting&,
+        BasicForwardLightingRange,
+        BasicForwardLightingConstants&) noexcept;
     static const char* material(const resource::MaterialResource&,
         const resource::ShaderPackageResource&,
         std::string_view shaderPackageId,
         const BasicForwardLighting&,
         BasicForwardMaterialConstants&);
+    // Data/section validation only; the caller owns local/world-space policy.
+    static const char* meshData(const assets::MeshAsset&, const BasicWorldMeshProfile&);
     static const char* mesh(const assets::MeshAsset&, const BasicWorldMeshProfile&);
     static const char* camera(const core::Mat4&) noexcept;
 };

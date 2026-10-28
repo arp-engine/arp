@@ -3,9 +3,11 @@
 #include "rhi/backends/vulkan/vulkan_native_commands.h"
 #include "tests/fixtures/vulkan_headless_runtime.h"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <thread>
 
 namespace arp::tests {
 
@@ -20,7 +22,47 @@ public:
         VulkanHeadlessRuntime second;
         if (!first->runtime() || !second.runtime())
             return 77;
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        {
+            VulkanRhiNativeResourceAllocator resources(first->runtime());
+            core::pmr::String diagnostic;
+            std::array<std::shared_ptr<VulkanRhiNativeCommandPayload>,
+                VulkanRhiCommandDomain::reuseCapacity + 3u>
+                prepared;
+            for (auto& command : prepared) {
+                command = createVulkanRhiNativeCommandPayload(resources, diagnostic);
+                assert(command && command->end(diagnostic) && command->submit(diagnostic));
+            }
+            assert(vkQueueWaitIdle(first->runtime()->graphicsQueue()) == VK_SUCCESS);
+            retireCompletedVulkanRhiSubmittedCommands(*first->runtime());
+            const auto allocations = core::defaultCpuAllocator().stats().allocationCount;
+            prepared.fill(nullptr);
+            assert(core::defaultCpuAllocator().stats().allocationCount == allocations);
+            const auto fenceCount = [&] {
+                const auto& slots = first->runtime()->commandDomain().reusableFences;
+                return std::count_if(slots.begin(), slots.end(), [](VkFence fence) {
+                    return fence != VK_NULL_HANDLE;
+                });
+            };
+            assert(fenceCount() == VulkanRhiCommandDomain::reuseCapacity);
+            const auto created = resources.stats().nativeCommandPoolCreateCount;
+            for (std::size_t i = 0; i < VulkanRhiCommandDomain::reuseCapacity; ++i) {
+                prepared[i] = createVulkanRhiNativeCommandPayload(resources, diagnostic);
+                assert(
+                    prepared[i] && prepared[i]->end(diagnostic) && prepared[i]->submit(diagnostic));
+            }
+            assert(resources.stats().nativeCommandPoolCreateCount == created);
+            assert(fenceCount() == 0u);
+            std::thread foreignOwner([&] {
+                core::pmr::String refused;
+                assert(!createVulkanRhiNativeCommandPayload(resources, refused));
+                assert(refused == "RHI-VULKAN-COMMAND-OWNER-THREAD");
+            });
+            foreignOwner.join();
+            assert(resources.stats().nativeCommandPoolCreateCount == created);
+            assert(vkQueueWaitIdle(first->runtime()->graphicsQueue()) == VK_SUCCESS);
+            retireCompletedVulkanRhiSubmittedCommands(*first->runtime());
+        }
+        drainVulkanRhiSubmittedCommandsForShutdown(*first->runtime());
         const auto owner = first->nativeOwner();
         const std::weak_ptr<VulkanRhiRuntime> runtime = first->runtime();
         const VkDevice device = first->device();
@@ -58,8 +100,8 @@ public:
         const bool otherSubmitted = other->submit({}, diagnostic, &otherAccepted);
         const bool otherCompleted = other->waitSubmittedFenceUntil(
             std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic);
-        retireCompletedVulkanRhiSubmittedCommands();
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        retireCompletedVulkanRhiSubmittedCommands(*second.runtime());
+        drainVulkanRhiSubmittedCommandsForShutdown(*second.runtime());
         original = observedCommand.lock();
         const bool stillPending = original && !original->submittedFenceCompleted();
         const bool retainedAfterOther = !owner.expired();
@@ -74,15 +116,15 @@ public:
         assert(signalResult == VK_SUCCESS && originalCompleted);
         wait = {};
         timelineOwner.reset();
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*original->runtime());
         original.reset();
         other.reset();
-        const bool retainedCache = !owner.expired() && !runtime.expired();
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        const bool releasedWithRuntime = owner.expired() && runtime.expired();
+        drainVulkanRhiSubmittedCommandsForShutdown(*second.runtime());
         const bool releasedAfterDrain =
             owner.expired() && runtime.expired() && observedCommand.expired();
         std::printf(
-            "runtime-owner: submitted=%d accepted=%d pending=%d retained=%d other=%d/%d/%d still-pending=%d original-completed=%d cache=%d released=%d\n",
+            "runtime-owner: submitted=%d accepted=%d pending=%d retained=%d other=%d/%d/%d still-pending=%d original-completed=%d runtime-released=%d released=%d\n",
             submitted,
             accepted,
             pendingBefore,
@@ -92,13 +134,13 @@ public:
             otherCompleted,
             stillPending,
             originalCompleted,
-            retainedCache,
+            releasedWithRuntime,
             releasedAfterDrain);
         std::fflush(stdout);
         assert(submitted && accepted && pendingBefore && retainedPending);
         assert(otherSubmitted && otherAccepted && otherCompleted && stillPending
             && retainedAfterOther);
-        assert(retainedCache && releasedAfterDrain);
+        assert(releasedWithRuntime && releasedAfterDrain);
         return 0;
     }
 };

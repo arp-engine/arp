@@ -123,6 +123,7 @@ public:
     }
 
 private:
+    friend class ImmutableMeshUpload;
     arp::core::UniquePtr<rhi::GpuBuffer> vertexBuffer_;
     arp::core::UniquePtr<rhi::GpuBuffer> indexBuffer_;
     size_t vertexCount_ = 0;

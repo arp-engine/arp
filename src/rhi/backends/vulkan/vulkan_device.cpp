@@ -18,6 +18,7 @@
 #include "rhi/backends/vulkan/vulkan_swapchain_retirement.h"
 #include "rhi/frontend/device_validation.h"
 #include "rhi/frontend/original_prepared_command_device.h"
+#include "rhi/frontend/original_texture_upload_device.h"
 #include "rhi/frontend/transfer_readback_borrowed_retirement.h"
 #include "rhi/gpu_bindless.h"
 #include "rhi/gpu_descriptors.h"
@@ -114,7 +115,17 @@ public:
         throw std::logic_error("RHI-VULKAN-FENCE-HOST-SIGNAL-UNAUTHENTICATED");
     }
 
-    bool isSignaled() const override { return payload_ && payload_->submittedFenceCompleted(); }
+    bool isSignaled() const override
+    {
+        if (!payload_ || !payload_->submittedFenceCompleted())
+            return false;
+        // Completion resolves the original journal first. Retire the queue's
+        // completed owners as part of the same backend completion observation;
+        // ordinary L2 callers must not need a native retirement helper before
+        // reusing their bounded registration capacity.
+        retireCompletedVulkanRhiSubmittedCommands(*payload_->runtime());
+        return true;
+    }
 
     void wait() override
     {
@@ -123,11 +134,12 @@ public:
         std::pmr::string diagnostics;
         if (!payload_->waitSubmittedFence(diagnostics))
             throw std::runtime_error(diagnostics.c_str());
+        retireCompletedVulkanRhiSubmittedCommands(*payload_->runtime());
     }
 
     void reset() override
     {
-        if (payload_ && !payload_->submittedFenceCompleted())
+        if (payload_ && !isSignaled())
             throw std::logic_error("RHI-VULKAN-FENCE-RESET-PENDING");
         payload_.reset();
     }
@@ -298,12 +310,17 @@ bool makeVulkanTimelineSubmitInfo(rhi::GpuTimelineSemaphore* waitSemaphore,
 } // namespace
 
 class VulkanRhiDevice final : public rhi::GpuDevice,
-                              public rhi::OriginalPreparedCommandDeviceExtension {
+                              public rhi::OriginalPreparedCommandDeviceExtension,
+                              public rhi::OriginalTextureUploadDeviceExtension {
 public:
     core::UniquePtr<VulkanRhiRetainedCommand> prepareRetainedCommand(
         core::UniquePtr<rhi::common::CommandRetentionStorage> storage,
         core::pmr::String& diagnostic)
     {
+        if (const auto* id = beginCommandPreparation()) {
+            diagnostic = id;
+            return {};
+        }
         return VulkanRhiRetainedCommand::prepare(
             nativeResources_, resourceRegistry_, std::move(storage), diagnostic);
     }
@@ -338,7 +355,8 @@ public:
     ~VulkanRhiDevice() override
     {
         closeOriginalDeviceLifetimeForShutdown();
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        if (desc_.runtime)
+            drainVulkanRhiSubmittedCommandsForShutdown(*desc_.runtime);
         if (desc_.runtime && !desc_.runtime->syntheticRuntime()) {
             const char* diagnostic = "";
             if (retireVulkanRhiSwapchainLifetimes(desc_.runtime, diagnostic))
@@ -352,6 +370,8 @@ public:
     {
         if (extensionId == rhi::OriginalPreparedCommandDeviceExtension::id)
             return static_cast<rhi::OriginalPreparedCommandDeviceExtension*>(this);
+        if (extensionId == rhi::OriginalTextureUploadDeviceExtension::id)
+            return static_cast<rhi::OriginalTextureUploadDeviceExtension*>(this);
         if (extensionId == rhi::kExtensionBindlessCross) {
             return static_cast<rhi::BindlessCrossExtension*>(&bindless_);
         }
@@ -362,6 +382,78 @@ public:
     }
 
     const rhi::GpuDevice& originalDevice() const noexcept override { return *this; }
+
+    const char* prepareStorage(const rhi::semantics::UploadStagingColdStorageBudget& budget,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota) noexcept override
+    {
+        if (uploadOwner_ != std::this_thread::get_id())
+            return "RHI-TEXTURE-UPLOAD-DEVICE-THREAD";
+        if (const auto* id = originalDeviceLifetimeTicket().diagnostic())
+            return id;
+        if (!desc_.uploadStagingBudget)
+            return "RHI-TEXTURE-UPLOAD-STORAGE-POLICY-UNDECLARED";
+        auto expected = UploadStorageState::Fresh;
+        if (!uploadStorageState_.compare_exchange_strong(expected, UploadStorageState::Preparing))
+            return "RHI-TEXTURE-UPLOAD-STORAGE-PREPARATION-STARTED";
+        const auto* diagnostic = stagingUploadPool_.prepareColdStorage(budget, quota);
+        uploadStorageState_.store(
+            diagnostic ? UploadStorageState::Fresh : UploadStorageState::Ready);
+        return diagnostic;
+    }
+
+    rhi::OriginalTextureUploadRecording prepareUploads(
+        std::shared_ptr<const rhi::OriginalCommandStreamProgram> program,
+        const rhi::OriginalTextureUploadPreparationRequest& request,
+        const rhi::OriginalOrdinaryTextureUploadContract::Binding* bindings,
+        std::size_t count,
+        const std::shared_ptr<core::CpuMemoryQuota>& quota,
+        core::pmr::String& diagnostic) override
+    {
+        const auto reject = [&](const char* id) {
+            diagnostic = id;
+            return rhi::OriginalTextureUploadRecording{};
+        };
+        if (uploadOwner_ != std::this_thread::get_id())
+            return reject("RHI-TEXTURE-UPLOAD-DEVICE-THREAD");
+        if (const auto* id = originalDeviceLifetimeTicket().diagnostic())
+            return reject(id);
+        if (!stagingUploadPool_.coldStoragePrepared())
+            return reject("RHI-ORDINARY-TEXTURE-UPLOAD-COLD-POOL");
+        if (stagingUploadPool_.overlapsColdCpuQuota(quota.get()))
+            return reject("RHI-TEXTURE-UPLOAD-PUBLICATION-INDEPENDENT-QUOTA");
+        if (const auto* id = rhi::OriginalTextureUploadPreparationContract::inspect(
+                program, request, bindings, count, quota))
+            return reject(id);
+        if (const auto* id = beginCommandPreparation())
+            return reject(id);
+        try {
+            rhi::OriginalTextureUploadRecording result;
+            {
+                core::CpuMemoryQuotaScope scope(quota);
+                result.publications.reserve(count);
+            }
+            result.encoder = createVulkanRhiCommandEncoderWithColdTextureUploads(nativeResources_,
+                resourceRegistry_,
+                &stagingUploadPool_,
+                desc_.capabilityContract,
+                std::move(program),
+                *this,
+                request.uploads,
+                bindings,
+                count,
+                diagnostic,
+                &request,
+                quota,
+                &result.publications);
+            if (!result.encoder)
+                return {};
+            return result;
+        } catch (const std::bad_alloc&) {
+            return reject("RHI-TEXTURE-UPLOAD-PUBLICATION-ALLOCATION");
+        } catch (const std::length_error&) {
+            return reject("RHI-TEXTURE-UPLOAD-PUBLICATION-ALLOCATION");
+        }
+    }
 
     std::shared_ptr<const rhi::OriginalGraphicsPipelineCreation> createGraphics(
         const std::shared_ptr<const rhi::OriginalGraphicsPipelineInput>& input,
@@ -381,6 +473,10 @@ public:
         const rhi::OriginalRenderPassPreparationRequest& request,
         core::pmr::String& diagnostic) override
     {
+        if (const auto* id = beginCommandPreparation()) {
+            diagnostic = id;
+            return {};
+        }
         if (const auto* id = validateRequest(request)) {
             diagnostic = id;
             return {};
@@ -413,6 +509,15 @@ public:
                 caps.memory.hostVisible = caps.memory.hostVisible
                     || (memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
                         != 0u;
+#if !defined(ARP_RHI_NO_VMA)
+                constexpr auto hostDeviceFlags =
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+                caps.memory.hostVisibleDeviceLocalBuffers =
+                    caps.memory.hostVisibleDeviceLocalBuffers
+                    || (desc_.enableVmaAllocator && !desc_.runtime->syntheticRuntime()
+                        && (memory.memoryTypes[i].propertyFlags & hostDeviceFlags)
+                            == hostDeviceFlags);
+#endif
             }
         } else if (desc_.runtime) {
             rhi::RhiErrorHandler::get().report(
@@ -581,6 +686,11 @@ public:
         return stats;
     }
 
+    rhi::AllocatorBackingObservation observeAllocatorBacking(std::uint32_t version) const override
+    {
+        return allocator_.observeBacking(version);
+    }
+
     rhi::semantics::PhysicalBudgetLedgerReport physicalBudgetLedger() const override
     {
         rhi::semantics::PhysicalBudgetLedgerReport report;
@@ -666,7 +776,7 @@ public:
 
     rhi::GpuTimingSample latestGpuTiming() const override
     {
-        return latestVulkanRhiGpuTimingSample();
+        return latestVulkanRhiGpuTimingSample(*desc_.runtime);
     }
 
     rhi::semantics::UploadStagingReadiness uploadStagingReadiness() const override
@@ -683,7 +793,8 @@ public:
     void waitIdle() override
     {
         const auto runtime = nativeResources_.runtime();
-        waitIdleAndRetireVulkanRhiSubmittedCommands(runtime);
+        if (const auto* diagnostic = waitIdleAndRetireVulkanRhiSubmittedCommands(runtime))
+            throw core::DiagnosticError(diagnostic);
     }
 
     rhi::semantics::ShutdownDrainReport drainForShutdown(
@@ -704,7 +815,7 @@ public:
         } else {
             std::pmr::string diagnostics;
             const bool commandsComplete =
-                drainVulkanRhiSubmittedCommandsUntil(request.deadline, diagnostics);
+                drainVulkanRhiSubmittedCommandsUntil(*runtime, request.deadline, diagnostics);
             const bool presentsComplete = commandsComplete
                 && (!runtime->surface()
                     || runtime->drainPresentFencesUntil(request.deadline, diagnostics));
@@ -753,8 +864,10 @@ public:
     {
         auto nativeResource = nativeResources_.createBuffer(desc);
         if (!nativeResource.success || !nativeResource.payload) {
-            rhi::RhiErrorHandler::get().report(
-                rhi::RhiSeverity::Error, "RHI-VULKAN-NATIVE-CREATION-FAILED");
+            rhi::RhiErrorHandler::get().report(rhi::RhiSeverity::Error,
+                desc.hostVisibleDeviceLocal.requested() && !nativeResource.diagnostics.empty()
+                    ? nativeResource.diagnostics.c_str()
+                    : "RHI-VULKAN-NATIVE-CREATION-FAILED");
             return nullptr;
         }
         auto allocation = nativeResource.allocation;
@@ -1401,6 +1514,8 @@ public:
     arp::core::UniquePtr<rhi::CommandEncoder> createCommandEncoder(
         const rhi::CommandEncoderDesc& commandDesc) override
     {
+        if (beginCommandPreparation())
+            return {};
         return createVulkanRhiCommandEncoder(nativeResources_,
             resourceRegistry_,
             &stagingUploadPool_,
@@ -1508,12 +1623,18 @@ public:
         return *descriptorCache_;
     }
 
+    const std::shared_ptr<VulkanRhiRuntime>& commandRuntime() const noexcept
+    {
+        return desc_.runtime;
+    }
+
     VulkanRhiNativeResourceStats nativeResourceStats() const
     {
         auto stats = nativeResources_.stats();
         const auto staging = stagingUploadPool_.stats();
         stats.nativeUploadStagingPoolPageCount = staging.allocatedPageCount;
         stats.nativeUploadStagingSliceCount = staging.liveSliceCount + staging.retiredSliceCount;
+        stats.nativeUploadStagingLiveSliceCount = staging.liveSliceCount;
         stats.nativeUploadStagingPeakBytes = staging.peakAllocatedBytes;
         stats.nativeUploadStagingPoolBounded = staging.boundedCapacity;
         stats.nativeUploadStagingHandlesHidden = staging.nativeHandlesHiddenFromUpperLayer;
@@ -1521,6 +1642,19 @@ public:
     }
 
 private:
+    enum class UploadStorageState { Fresh, Preparing, Ready, Commands };
+
+    const char* beginCommandPreparation() noexcept
+    {
+        auto state = uploadStorageState_.load();
+        if (state == UploadStorageState::Preparing)
+            return "RHI-TEXTURE-UPLOAD-STORAGE-BUSY";
+        if (state != UploadStorageState::Commands
+            && !uploadStorageState_.compare_exchange_strong(state, UploadStorageState::Commands))
+            return "RHI-TEXTURE-UPLOAD-STORAGE-BUSY";
+        return nullptr;
+    }
+
     std::shared_ptr<rhi::OriginalDeviceNativeLossBinding> bindOriginalDeviceNativeResultLoss(
         const rhi::OriginalDeviceLifetime::NativeLossReceiver& receiver,
         const rhi::OriginalDeviceNativeResultLossBudget& budget,
@@ -1658,6 +1792,8 @@ private:
     bool hasAsyncCompute_ = false;
     VulkanRhiAllocator allocator_;
     VulkanRhiStagingUploadPool stagingUploadPool_;
+    const std::thread::id uploadOwner_ = std::this_thread::get_id();
+    std::atomic<UploadStorageState> uploadStorageState_{UploadStorageState::Fresh};
     VulkanRhiNativeResourceAllocator nativeResources_;
     VulkanRhiHeapPlacement heapPlacement_{desc_.runtime,
         allocator_,
@@ -1813,6 +1949,42 @@ VulkanRhiNativeResourceStats inspectVulkanRhiNativeResourceStats(const rhi::GpuD
         return {};
     }
     return vulkanDevice->nativeResourceStats();
+}
+
+void retireCompletedVulkanRhiSubmittedCommands(const rhi::GpuDevice& device)
+{
+    const auto* native = dynamic_cast<const VulkanRhiDevice*>(&device);
+    if (!native || !native->commandRuntime())
+        throw core::DiagnosticError("RHI-VULKAN-COMPLETION-DEVICE");
+    retireCompletedVulkanRhiSubmittedCommands(*native->commandRuntime());
+}
+
+void drainVulkanRhiSubmittedCommandsForShutdown(const rhi::GpuDevice& device)
+{
+    const auto* native = dynamic_cast<const VulkanRhiDevice*>(&device);
+    if (!native || !native->commandRuntime())
+        throw core::DiagnosticError("RHI-VULKAN-COMPLETION-DEVICE");
+    drainVulkanRhiSubmittedCommandsForShutdown(*native->commandRuntime());
+}
+
+std::uint64_t completedVulkanRhiSubmittedFrameSerial(const rhi::GpuDevice& device)
+{
+    const auto* native = dynamic_cast<const VulkanRhiDevice*>(&device);
+    if (!native || !native->commandRuntime())
+        throw core::DiagnosticError("RHI-VULKAN-COMPLETION-DEVICE");
+    return completedVulkanRhiSubmittedFrameSerial(*native->commandRuntime());
+}
+
+bool drainVulkanRhiSubmittedCommandsUntil(const rhi::GpuDevice& device,
+    std::chrono::steady_clock::time_point deadline,
+    core::pmr::String& diagnostics)
+{
+    const auto* native = dynamic_cast<const VulkanRhiDevice*>(&device);
+    if (!native || !native->commandRuntime()) {
+        diagnostics = "RHI-VULKAN-COMPLETION-DEVICE";
+        return false;
+    }
+    return drainVulkanRhiSubmittedCommandsUntil(*native->commandRuntime(), deadline, diagnostics);
 }
 
 } // namespace arp::rhi_vulkan

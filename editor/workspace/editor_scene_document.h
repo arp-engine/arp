@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <string_view>
 #include <variant>
 
@@ -22,6 +23,10 @@ class SceneComponentFactory;
 
 namespace arp::editor {
 class EditorSceneServiceSession;
+class EditorSceneScriptBindings;
+class EditorScriptComponentCatalog;
+struct EditorScriptBindingBudget;
+struct ProjectManifest;
 
 struct SceneHierarchyEntry {
     scene::GameObjectId objectId;
@@ -80,6 +85,14 @@ public:
     };
 
     explicit EditorSceneDocument(bool createDefaultScene = true);
+    ~EditorSceneDocument();
+    EditorSceneDocument(EditorSceneDocument&&);
+    EditorSceneDocument& operator=(EditorSceneDocument&&);
+    bool prepareScriptAuthoring(const std::filesystem::path&,
+        const ProjectManifest&,
+        EditorScriptBindingBudget,
+        core::pmr::String& diagnostic);
+    core::SharedPtr<const EditorScriptComponentCatalog> scriptCatalog() const noexcept;
     bool replaceWith(EditorSceneDocument&& candidate);
     core::UniquePtr<PreparedReplacement> prepareReplacement(EditorSceneDocument& candidate,
         core::pmr::String& diagnostic,
@@ -186,10 +199,12 @@ public:
     static bool applyComponentProperties(scene::Component&,
         const core::pmr::Vector<SceneInspectorProperty>&,
         const scene::Scene::IdentityRestoration&);
-    scene::Scene::ComponentFactory identityRestorationFactory() const;
+    using ComponentResolver =
+        core::SharedCallback<scene::Component*(scene::GameObjectId, std::string_view)>;
+    scene::Scene::ComponentFactory identityRestorationFactory(ComponentResolver = {}) const;
 
 private:
-    scene::Scene::ComponentFactory makeComponentFactory() const;
+    scene::Scene::ComponentFactory makeComponentFactory(ComponentResolver = {}) const;
     // Owned indirection preserves the document's existing move availability.
     core::UniquePtr<core::LifetimeEpoch> ownerEpoch_ = core::makeUnique<core::LifetimeEpoch>();
     // Keep this service alive until the scene and its components are destroyed.
@@ -197,6 +212,10 @@ private:
     ServiceProviders services_;
     bool schemaOnlyComponentCreation_ = false;
     core::UniquePtr<scene::Scene> scene_;
+    core::SharedPtr<scene::MainSceneRegistry> scriptSceneRegistry_ =
+        core::makeShared<scene::MainSceneRegistry>();
+    // Destruction and moves retire Scene before releasing its script services.
+    core::SharedPtr<EditorSceneScriptBindings> scriptBindings_;
     scene::GameObjectId selectedObject_;
     core::pmr::String runtimeSceneId_;
 };

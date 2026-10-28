@@ -83,8 +83,9 @@ public:
     static constexpr std::size_t maxMetadataBytes = 1024u * 1024u;
 
     static bool validateBudget(const EditorRecoveryBudget& budget, core::pmr::String& diagnostic);
-    // Owner-thread cold validation only. Registered reflection metadata is
-    // consulted by the existing scene codec; concurrent-use approval is separate.
+    // Owner-thread cold validation only. Explicit nested v3/v4 wire structure
+    // is checked; v4 field schema and module/service ownership require actual
+    // EditorRecoveryPreparation admission. Concurrent-use approval is separate.
     // This does not prove resource readiness, resolved path identity or that
     // savedContentHash matches a resource-ready restoration of the baseline.
     static bool validate(const EditorRecoverySnapshot& snapshot,

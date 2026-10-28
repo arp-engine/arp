@@ -394,8 +394,8 @@ void assertValidatorUploadsDoNotPublishNativeFrameSerial()
     assert(commands);
     const auto submitted = device->queue().submit(*commands);
     assert(submitted.success);
-    arp::rhi_vulkan::retireCompletedVulkanRhiSubmittedCommands();
-    assert(arp::rhi_vulkan::completedVulkanRhiSubmittedFrameSerial() == 0u);
+    arp::rhi_vulkan::retireCompletedVulkanRhiSubmittedCommands(*device);
+    assert(arp::rhi_vulkan::completedVulkanRhiSubmittedFrameSerial(*device) == 0u);
     assert(device->uploadStagingReadiness().completionEpoch > 0u);
 }
 

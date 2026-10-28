@@ -13,6 +13,9 @@ struct CloudGraphContext;
 struct CloudFrameState {
     CloudGpuConstants parameters{};
     core::Mat4 viewProjection, canonicalProjection;
+    // Exact raster VP before the explicit render-target sampling transform.
+    core::Mat4 rasterViewProjection;
+    scene3d::CloudLayerDesc layer;
     core::Vec3 planetCenter;
     std::uint64_t sceneRevision = 0u, cameraId = 0u;
     bool historyUsed = false;

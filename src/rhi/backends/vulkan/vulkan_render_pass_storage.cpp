@@ -235,6 +235,18 @@ VulkanRhiRenderPassStorageProjection::inspectPreparation(
         if (content.diagnostic)
             return {content.diagnostic};
     }
+    if (rhi::OriginalRenderPassPreparationContract::hasPassTiming(request)) {
+        if (const auto* id = rhi::OriginalQueryRecordingStorageContract::inspectPassTiming(
+                program->originalInputs(),
+                *request.passTimingRetention,
+                request.passTimingRecordingQuota)
+                .diagnostic)
+            return {id};
+        if (const auto* id = runtime.timestampQueryDiagnostic())
+            return {id};
+        if (!runtime.getDeviceProcAddr("vkCmdWriteTimestamp"))
+            return {"RHI-VULKAN-TIMESTAMP-ENTRYPOINTS"};
+    }
     if (request.recording) {
         const rhi::OriginalComputeDispatchRecordingInput admission{device, request.dispatchDomain};
         const auto recording = rhi::OriginalRenderPassRecordingContract::inspect(program,
@@ -256,7 +268,7 @@ VulkanRhiRenderPassStorageProjection::inspectPreparation(
                      "vkCmdDraw"})
                 if (!runtime.getDeviceProcAddr(name))
                     return {"RHI-ORDINARY-GRAPHICS-RECORDING-ENTRYPOINT"};
-            if (request.contractVersion == 6u) {
+            if (rhi::OriginalRenderPassPreparationContract::hasMixedPasses(request)) {
                 for (const auto* name : {"vkCmdDispatch", "vkCmdCopyImageToBuffer"})
                     if (!runtime.getDeviceProcAddr(name))
                         return {"RHI-ORDINARY-MIXED-RECORDING-ENTRYPOINT"};
@@ -289,7 +301,7 @@ VulkanRhiRenderPassStorageProjection::inspectPreparation(
                     const auto& object = *(*buffer)->originalObject();
                     const auto native = vulkanRhiNativePayload(object);
                     if (!native || native->backendVulkanDeviceHandle() != runtime.logicalDevice()
-                        || (request.contractVersion == 6u
+                        || (rhi::OriginalRenderPassPreparationContract::hasMixedPasses(request)
                                 ? !native->originalHostDefinedBytesMatch(object)
                                 : (!native->originalHostInitializationMatches(object)
                                       || object.state() != rhi::ResourceState::ShaderRead)))
@@ -307,15 +319,16 @@ VulkanRhiRenderPassStorageProjection::inspectPreparation(
                         std::shared_ptr<const rhi::OriginalCommandComputePipelineSource>>(
                         &source)) {
                     const auto native = vulkanRhiNativePayload(*(*pipeline)->originalObject());
-                    if (request.contractVersion != 6u || !native
-                        || native->backendVulkanDeviceHandle() != runtime.logicalDevice()
+                    if (!rhi::OriginalRenderPassPreparationContract::hasMixedPasses(request)
+                        || !native || native->backendVulkanDeviceHandle() != runtime.logicalDevice()
                         || !native->backendVulkanComputePipelineHandle())
                         return {"RHI-ORDINARY-MIXED-COMPUTE-NATIVE"};
                 }
                 if (const auto* set =
                         std::get_if<std::shared_ptr<const rhi::OriginalCommandDescriptorSetSource>>(
                             &source)) {
-                    const auto native = request.contractVersion == 6u
+                    const auto native =
+                        rhi::OriginalRenderPassPreparationContract::hasMixedPasses(request)
                         ? vulkanOriginalSynchronousDescriptorPayload(*set)
                         : vulkanOriginalGraphicsDescriptorPayload(*set);
                     if (!native || native->backendVulkanDeviceHandle() != runtime.logicalDevice()
@@ -431,7 +444,8 @@ bool VulkanRhiNativeCommandPayload::prepareOrdinaryRenderPasses(const rhi::GpuDe
     }
     if (request.recording) {
         impl_->ordinaryReadOnlyGraphics = request.contractVersion >= 5u;
-        impl_->ordinaryMixedPasses = request.contractVersion == 6u;
+        impl_->ordinaryMixedPasses =
+            rhi::OriginalRenderPassPreparationContract::hasMixedPasses(request);
         const char* id = nullptr;
         impl_->ordinaryAttachmentMeter =
             rhi::CommandRecordingMeter::prepare(*program->recordingBudget(), id);
@@ -479,13 +493,13 @@ VulkanRhiNativeCommandPayload::preparedOrdinaryRenderPassContentDiagnostic() con
     if (!impl_ || !impl_->recordingStorage || !impl_->recordingStorage->originalProgram)
         return "RHI-VULKAN-COLD-RENDER-PASS-CONTENT-OWNER";
     const auto& program = *impl_->recordingStorage->originalProgram;
+    if (impl_->retainedRenderPassCount != program.counts().renderPasses)
+        return "RHI-VULKAN-COLD-RENDER-PASS-CONTENT-UNPREPARED";
     const auto& usage = *program.originalInputs()->originalScalars()->originalUsage();
-    bool found = false;
     for (std::size_t i = 0u; i < impl_->retainedRenderPassCount; ++i) {
         const auto& metadata = impl_->retainedRenderPasses[i].originalContent;
         if (!metadata)
-            continue;
-        found = true;
+            return "RHI-VULKAN-COLD-RENDER-PASS-CONTENT-UNPREPARED";
         if (metadata->commandIndex >= program.operations().size())
             return "RHI-VULKAN-COLD-RENDER-PASS-CONTENT-POSITION";
         const auto& operation = program.operations()[metadata->commandIndex];
@@ -508,7 +522,7 @@ VulkanRhiNativeCommandPayload::preparedOrdinaryRenderPassContentDiagnostic() con
                 return id;
         }
     }
-    return found ? nullptr : "RHI-VULKAN-COLD-RENDER-PASS-CONTENT-UNPREPARED";
+    return nullptr;
 }
 
 bool VulkanRhiNativeCommandPayload::hasOrdinaryAttachments() const noexcept

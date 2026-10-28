@@ -102,6 +102,41 @@ struct OriginalResourceRegistrationBudget {
     OriginalSamplerRegistrationRequest samplers;
     OriginalHeapRegistrationRequest heaps;
     OriginalQueryRegistrationRequest queries;
+
+    // Independent QueryNativeLossJoin/1. A registry version and a query budget
+    // alone never opt a query into the original native-result subscription.
+    struct QueryNativeLossJoin {
+        std::uint32_t contractVersion = 0u;
+        bool prototypeOptIn = false;
+
+        constexpr bool requested() const noexcept { return contractVersion || prototypeOptIn; }
+
+        constexpr const char* diagnostic() const noexcept
+        {
+            if (!requested())
+                return nullptr;
+            if (contractVersion != 1u)
+                return "RHI-ORIGINAL-QUERY-LOSS-VERSION";
+            return prototypeOptIn ? nullptr : "RHI-ORIGINAL-QUERY-LOSS-OPT-IN";
+        }
+    } queryNativeLoss;
+
+    // Independent synchronous sampler subscription; no group/execution grant.
+    struct SamplerNativeLossJoin {
+        std::uint32_t contractVersion = 0u;
+        bool prototypeOptIn = false;
+
+        constexpr bool requested() const noexcept { return contractVersion || prototypeOptIn; }
+
+        constexpr const char* diagnostic() const noexcept
+        {
+            if (!requested())
+                return nullptr;
+            if (contractVersion != 1u)
+                return "RHI-ORIGINAL-SYNC-SAMPLER-LOSS-VERSION";
+            return prototypeOptIn ? nullptr : "RHI-ORIGINAL-SYNC-SAMPLER-LOSS-OPT-IN";
+        }
+    } samplerNativeLoss;
 };
 
 class OriginalResourceRegistrationContract final {
@@ -109,6 +144,19 @@ public:
     static constexpr bool observesNativeLoss(std::uint32_t version) noexcept
     {
         return version == 7u || version == 8u || version == 9u || version == 10u;
+    }
+
+    static constexpr bool joinsQueryNativeLoss(const OriginalResourceRegistrationBudget& b) noexcept
+    {
+        return b.contractVersion == 10u && b.queries.requested()
+            && b.queryNativeLoss.contractVersion == 1u && b.queryNativeLoss.prototypeOptIn;
+    }
+
+    static constexpr bool joinsSamplerNativeLoss(
+        const OriginalResourceRegistrationBudget& b) noexcept
+    {
+        return b.contractVersion == 10u && b.samplers.requested()
+            && b.samplerNativeLoss.contractVersion == 1u && b.samplerNativeLoss.prototypeOptIn;
     }
 
     static constexpr std::uint32_t fixedOwnerCount = 3u, perResourceOwnerCount = 2u;
@@ -170,7 +218,16 @@ public:
             return id;
         if (const auto* id = b.queries.diagnostic())
             return id;
-        if (b.queries.requested() && observesNativeLoss(b.contractVersion))
+        if (const auto* id = b.queryNativeLoss.diagnostic())
+            return id;
+        if (const auto* id = b.samplerNativeLoss.diagnostic())
+            return id;
+        if (b.samplerNativeLoss.requested() && !joinsSamplerNativeLoss(b))
+            return "RHI-ORIGINAL-SYNC-SAMPLER-LOSS-REGISTRATION-PROFILE";
+        if (b.queryNativeLoss.requested() && !joinsQueryNativeLoss(b))
+            return "RHI-ORIGINAL-QUERY-LOSS-REGISTRATION-PROFILE";
+        if (b.queries.requested() && observesNativeLoss(b.contractVersion)
+            && !joinsQueryNativeLoss(b))
             return "RHI-ORIGINAL-QUERY-NATIVE-LOSS-JOIN-UNAVAILABLE";
         if (b.heaps.requested() && observesNativeLoss(b.contractVersion))
             return "RHI-ORIGINAL-HEAP-NATIVE-LOSS-JOIN-UNAVAILABLE";

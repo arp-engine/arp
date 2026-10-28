@@ -14,6 +14,7 @@ class RhiAbstractRootInventoryTest(unittest.TestCase):
         "gpu_device.h", "gpu_swapchain.h", "gpu_subpass.h", "gpu_bindless.h",
         "gpu_capabilities.h", "gpu_extensions.h", "gpu_execution_status.h", "gpu_texture_format.h",
         "gpu_frame_capture.h",
+        "gpu_command_sources.h", "buffer_readback_range.h", "prototype_command_batch.h",
     }
 
     def test_root_contains_only_public_abstraction_headers(self):
@@ -32,7 +33,6 @@ class RhiAbstractRootInventoryTest(unittest.TestCase):
             "pipeline": ["cache", "single_entry_input", "graphics_input", "package_reflection"],
             "descriptor": ["cache"], "frame": ["validation", "resources"],
             "memory": ["lifetime_validation"],
-            "semantics": ["fallback_plan", "webgpu_runtime_profile"],
         }.items():
             for stem in stems:
                 prefix="" if domain=="semantics" else domain+"_"
@@ -42,6 +42,10 @@ class RhiAbstractRootInventoryTest(unittest.TestCase):
                 header=public.get(name)
                 self.assertTrue((self.ROOT / "src/rhi" / header if header else
                                  self.ROOT / "src/rhi" / directory / (name+".h")).is_file())
+        for implementation, header in [("fallback_planner.cpp", "fallback_planner.h"),
+                                       ("webgpu_runtime_profile.cpp", "../semantics/webgpu_runtime_profile.h")]:
+            self.assertTrue((self.ROOT / "src/rhi/frontend" / implementation).is_file())
+            self.assertTrue((self.ROOT / "src/rhi/frontend" / header).is_file())
         cmake=(self.ROOT / "CMakeLists.txt").read_text(encoding="utf-8-sig")
         self.assertNotRegex(cmake, r'(?m)^\s+src/rhi/[^/\s]+\.cpp\s*$')
 

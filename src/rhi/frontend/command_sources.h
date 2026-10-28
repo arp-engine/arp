@@ -2786,12 +2786,24 @@ public:
         if (assembly.contractVersion != 1u && assembly.contractVersion != 2u
             && assembly.contractVersion != 3u && assembly.contractVersion != 4u
             && assembly.contractVersion != 5u && assembly.contractVersion != 6u
-            && assembly.contractVersion != 7u && assembly.contractVersion != 8u) {
+            && assembly.contractVersion != 7u && assembly.contractVersion != 8u
+            && assembly.contractVersion != 9u) {
             diagnostic = "RHI-ORIGINAL-SOURCES-ASSEMBLY-VERSION";
             return {};
         }
         if (!assembly.prototypeOptIn) {
             diagnostic = "RHI-ORIGINAL-SOURCES-ASSEMBLY-OPT-IN";
+            return {};
+        }
+        // Assembly9 is the independent ordinary mixed/query closure. Older
+        // query7 and synchronous8 profiles retain their original restrictions.
+        if (assembly.contractVersion == 9u
+            && (!budget.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Query)]
+                || budget.maxSourceOwners[static_cast<std::size_t>(
+                    CommandReferenceDomain::DescriptorTable)]
+                || budget.maxSourceOwners[static_cast<std::size_t>(
+                    CommandReferenceDomain::BindlessRoot)])) {
+            diagnostic = "RHI-ORIGINAL-SOURCES-ASSEMBLY-PASS-TIMING-PROFILE";
             return {};
         }
         const auto required =
@@ -2805,7 +2817,7 @@ public:
             + (assembly.contractVersion == 6u ? budget.maxSourceOwners[static_cast<std::size_t>(
                                                     CommandReferenceDomain::BindlessRoot)]
                                               : 0u)
-            + (assembly.contractVersion == 7u
+            + (assembly.contractVersion == 7u || assembly.contractVersion == 9u
                     ? budget
                           .maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Query)]
                     : 0u);
@@ -2878,7 +2890,7 @@ public:
                         ? nullptr
                         : "RHI-ORIGINAL-SOURCES-ASSEMBLY-FOREIGN-INVENTORY";
                 } else if constexpr (T::domain == CommandReferenceDomain::Query) {
-                    if (self->assemblyVersion_ != 7u)
+                    if (self->assemblyVersion_ != 7u && self->assemblyVersion_ != 9u)
                         return "RHI-ORIGINAL-SOURCES-ASSEMBLY-QUERY-VERSION";
                     if (const auto* error = T::validateOriginal(value, device))
                         return error;
@@ -2890,7 +2902,7 @@ public:
                     if (self->assemblyVersion_ != 2u && self->assemblyVersion_ != 3u
                         && self->assemblyVersion_ != 4u && self->assemblyVersion_ != 5u
                         && self->assemblyVersion_ != 6u && self->assemblyVersion_ != 7u
-                        && self->assemblyVersion_ != 8u)
+                        && self->assemblyVersion_ != 8u && self->assemblyVersion_ != 9u)
                         return "RHI-ORIGINAL-SOURCES-ASSEMBLY-PIPELINE-VERSION";
                     if (const auto* error = T::validateOriginal(value, device))
                         return error;
@@ -2943,7 +2955,8 @@ public:
             || (assembly == 3u && source == 3u) || (assembly == 4u && source == 4u)
             || ((assembly == 5u || assembly == 6u || assembly == 7u || assembly == 8u)
                 && source == 5u)
-            || (assembly == 8u && source == 7u) || (assembly == 6u && source == 6u);
+            || (assembly == 8u && source == 7u) || (assembly == 6u && source == 6u)
+            || (assembly == 9u && (source == 5u || source == 7u));
     }
 
     static bool isTyped(const Source& source) noexcept { return isTypedDomain(domain(source)); }
@@ -3254,7 +3267,7 @@ public:
                             ? nullptr
                             : "RHI-ORIGINAL-SOURCES-ASSEMBLY-BINDLESS-VERSION";
                     else if constexpr (T::domain == CommandReferenceDomain::Query)
-                        return typedAssembly_ && assemblyVersion_ == 7u
+                        return typedAssembly_ && (assemblyVersion_ == 7u || assemblyVersion_ == 9u)
                             ? nullptr
                             : "RHI-ORIGINAL-SOURCES-ASSEMBLY-QUERY-VERSION";
                     else if constexpr (T::domain == CommandReferenceDomain::Pipeline)
@@ -3262,7 +3275,7 @@ public:
                                 && (assemblyVersion_ == 2u || assemblyVersion_ == 3u
                                     || assemblyVersion_ == 4u || assemblyVersion_ == 5u
                                     || assemblyVersion_ == 6u || assemblyVersion_ == 7u
-                                    || assemblyVersion_ == 8u)
+                                    || assemblyVersion_ == 8u || assemblyVersion_ == 9u)
                             ? nullptr
                             : "RHI-ORIGINAL-SOURCES-ASSEMBLY-PIPELINE-VERSION";
                     else if constexpr (isTypedDomain(T::domain))

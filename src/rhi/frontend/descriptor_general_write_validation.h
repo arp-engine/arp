@@ -1,8 +1,12 @@
 #pragma once
 
+#include "core/container/array_view.h"
 #include "rhi/frontend/descriptor_buffer_write_validation.h"
+#include "rhi/semantics/ordinary_sampled_color.h"
 
 namespace arp::rhi {
+class OriginalTextureUploadPublication;
+
 // GeneralWrite1 (whole) and GeneralWrite2 (whole/finite) publish one complete
 // scalar group through the existing scoped
 // candidate transaction. Creation evidence is not command/completion authority.
@@ -15,6 +19,8 @@ struct OriginalGeneralDescriptorWriteRequest {
     // Independent TypedNativeLossJoin/4; registry10 alone grants no group join.
     std::uint32_t lossGroupJoinVersion = 0u;
     bool lossGroupJoinOptIn = false;
+    semantics::OriginalOrdinarySampledColorContract::Intent sampledColor;
+    core::ArrayView<std::shared_ptr<const OriginalTextureUploadPublication>> sampledUploads;
 };
 
 class OriginalGeneralDescriptorWriteContract final {
@@ -52,6 +58,18 @@ public:
 
     static constexpr const char* validate(const OriginalGeneralDescriptorWriteRequest& r) noexcept
     {
+        if (const auto* id =
+                semantics::OriginalOrdinarySampledColorContract::validate(r.sampledColor))
+            return id;
+        if (!r.sampledColor.empty() && r.contractVersion != 3u)
+            return "RHI-ORDINARY-SAMPLED-COLOR-GROUP-PROFILE";
+        if (r.sampledColor.empty() && !r.sampledUploads.empty())
+            return "RHI-ORDINARY-SAMPLED-COLOR-UPLOAD-PROFILE";
+        if (!r.sampledColor.empty() && r.sampledUploads.empty())
+            return "RHI-ORDINARY-SAMPLED-COLOR-UPLOAD-COVERAGE";
+        if (!r.sampledUploads.empty()
+            && (!r.sampledUploads.data() || r.sampledUploads.size() > r.maxBindings))
+            return "RHI-ORDINARY-SAMPLED-COLOR-UPLOAD-CAPACITY";
         if (r.contractVersion != 1u && r.contractVersion != 2u && r.contractVersion != 3u
             && r.contractVersion != 4u)
             return "RHI-ORIGINAL-GENERAL-WRITE-VERSION";

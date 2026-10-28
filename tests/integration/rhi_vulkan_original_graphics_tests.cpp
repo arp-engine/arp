@@ -1,5 +1,19 @@
+#include "core/io/file_io.h"
 #include "core/math/half_float.h"
 #include "renderer/volumetric_cloud/cloud_gpu_contract.h"
+#if defined(ARP_CLOUD_FRAME_GRAPH_TEST)
+#include "2d/scene_2d_render_queue.h"
+#include "assets/image_decoder.h"
+#include "renderer/pipeline/scene_opaque_cloud_composition.h"
+#include "renderer/pipeline/scene_runtime_pipeline_payload.h"
+#include "renderer/pipeline/scene_runtime_render_pipeline.h"
+#include "renderer/scene_runtime_frame.h"
+#include "scene/scene_traversal_snapshot.h"
+#include "tests/fixtures/original_texture_upload_fixture.h"
+#include "tests/fixtures/scene_opaque_fixture.h"
+#include "tests/fixtures/scene_pbr_fixture.h"
+#include "ui/ui.h"
+#endif
 #include "renderer/volumetric_cloud/cloud_reconstruction.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/backends/null/null_hidden_frame_smoke.h"
@@ -9,11 +23,13 @@
 #include "rhi/backends/vulkan/vulkan_original_compute_pipeline.h"
 #include "rhi/backends/vulkan/vulkan_original_graphics_binding.h"
 #include "rhi/backends/vulkan/vulkan_original_graphics_pipeline.h"
+#include "rhi/backends/vulkan/vulkan_query_pool.h"
 #include "rhi/backends/vulkan/vulkan_render_pass_storage.h"
 #include "rhi/frontend/command_recorded_state.h"
 #include "rhi/frontend/command_sources.h"
 #include "rhi/frontend/descriptor_general_write_validation.h"
 #include "rhi/frontend/original_prepared_command_device.h"
+#include "rhi/semantics/vulkan_device_capability_query.h"
 #include "tests/fixtures/cpu_quota_factory_fixture.h"
 #include "tests/fixtures/renderdoc_capture.h"
 #include "tests/fixtures/vulkan_core_capability_query_fixture.h"
@@ -27,9 +43,13 @@
 #include "renderer/volumetric_cloud/cloud_prepared_pipelines.h"
 #include "renderer/volumetric_cloud/cloud_reference.h"
 #include "renderer/volumetric_cloud/volumetric_cloud_feature.h"
+#include "resource/cloud_asset_resource.h"
+#include "resource/resource_contract.h"
 #include "rhi/semantics/render_target_coordinates.h"
 #include "tests/fixtures/cloud/cloud_fixture.h"
 #include "tests/fixtures/cloud/cloud_quality_oracle.h"
+#include "tests/fixtures/cloud/cloud_reference_cases.h"
+#include "tests/fixtures/cloud/cloud_scene_fixture.h"
 #include "tests/fixtures/cloud/cloud_sequence_oracle.h"
 #endif
 
@@ -220,6 +240,97 @@ public:
 
 void verifyContract()
 {
+#if defined(ARP_CLOUD_FRAME_GRAPH_TEST)
+    using GraphExecution = render_graph::OriginalFrameGraphExecution;
+    render_graph::OriginalFrameGraphBudget timing;
+    timing.contractVersion = 1u;
+    timing.prototypeOptIn = true;
+    assert(!GraphExecution::validateBudget(timing));
+    timing.contractVersion = 2u;
+    assert(GraphExecution::validateBudget(timing));
+    timing.timing = render_graph::OriginalFrameGraphTimingBudget{
+        0u, {1u, true, 64u, 5u, 6u, 0u, 0u, 0u, 0u, 36u, 18u, 128u, bytes}};
+    timing.inputs.contractVersion = 11u;
+    timing.inputs.passTiming = OriginalPassTimingBudget{1u, true, 1u, 6u, 3u, 64u, 64u};
+    timing.preparation.contractVersion = 8u;
+    assert(!GraphExecution::validateBudget(timing));
+    auto badTiming = timing;
+    badTiming.contractVersion = 1u;
+    assert(GraphExecution::validateBudget(badTiming));
+    badTiming = timing;
+    badTiming.timing->querySourceIndex = SIZE_MAX;
+    assert(GraphExecution::validateBudget(badTiming));
+    badTiming = timing;
+    badTiming.inputs.contractVersion = 10u;
+    assert(GraphExecution::validateBudget(badTiming));
+    badTiming = timing;
+    badTiming.timing->points.prototypeOptIn = false;
+    assert(GraphExecution::validateBudget(badTiming));
+    badTiming = timing;
+    badTiming.inputs.passTiming->maxPublishedScopes = 0u;
+    assert(GraphExecution::validateBudget(badTiming));
+    std::puts(
+        "ORIGINAL_GRAPH_TIMING_CONTRACT version2 canonical-Inputs11 Preparation8 explicit-points-budget PASS");
+    {
+        OriginalRenderPassPreparationRequest combined{9u,
+            true,
+            {1u, true, 2u, 1u, 3u, {1u, true, 2u, 0u, 0u, 0u, 0u, bytes}},
+            7u,
+            2u,
+            OriginalRenderPassContentBudget{6u, true, 3u, 1u, 64u, 512u, 512u},
+            OriginalRenderPassRecordingBudget{6u, true, 512u, 1024u, 1u, true}};
+        combined.passTimingRetention = CommandRetentionBudget{1u, true, 0u, 1u, 6u, 0u, bytes};
+        combined.passTimingRecordingQuota = core::makeShared<core::CpuMemoryQuota>(bytes);
+        combined.passTimingFrameSerial = 1u;
+        assert(!OriginalRenderPassPreparationContract::validate(combined));
+        assert(!OriginalPreparedCommandDeviceExtension::validateRequest(combined));
+        timing.preparation = combined;
+        assert(!GraphExecution::validateBudget(timing));
+        for (const auto backend :
+            {Backend::Null, Backend::Vulkan, Backend::Metal, Backend::WebGPU, Backend::WebGL}) {
+            const auto d = OriginalRenderPassPreparationContract::lowering(backend, combined);
+            assert(d.validatorOnly == (backend == Backend::Null));
+            assert(d.privatePreparationAvailable == (backend == Backend::Vulkan));
+            assert(d.recordingAvailable == (backend == Backend::Vulkan));
+            assert(bool(d.diagnostic) == (backend != Backend::Vulkan));
+            if (backend == Backend::Metal || backend == Backend::WebGPU)
+                assert(std::string_view(d.diagnostic)
+                    == "RHI-MIXED-PASS-TIMING-NATIVE-PAYLOAD-UNAVAILABLE");
+        }
+        for (unsigned scenario = 0u; scenario < 8u; ++scenario) {
+            auto bad = combined;
+            if (!scenario) {
+                bad.contractVersion = 8u;
+                bad.content->contractVersion = bad.recording->contractVersion = 5u;
+            } else if (scenario == 1u)
+                bad.recording->opaqueDepthGraphicsOptIn = false;
+            else if (scenario == 2u)
+                bad.recording->opaqueDepthGraphicsVersion = 2u;
+            else if (scenario == 3u)
+                bad.passTimingRetention.reset();
+            else if (scenario == 4u)
+                bad.passTimingFrameSerial = 0u;
+            else if (scenario == 5u)
+                bad.passTimingRecordingQuota = core::makeShared<core::CpuMemoryQuota>(bytes - 1u);
+            else if (scenario == 6u)
+                bad.content->contractVersion = 5u;
+            else {
+                bad.recording->dispatchDomainVersion = 1u;
+                bad.recording->dispatchDomainOptIn = true;
+            }
+            assert(OriginalRenderPassPreparationContract::validate(bad));
+        }
+        std::puts(
+            "ORIGINAL_DEPTH_TIMING_CONTRACT Preparation9 Content6 Recording6 independent-opaque-opt-in four-backends PASS");
+    }
+#endif
+    {
+        const auto unqueried = semantics::vulkan::buildVulkanNativeCapabilityContract({});
+        assert(!unqueried.queriedFromNativeDevice);
+        for (const auto feature : {semantics::NativeBackendFeature::ComputeDispatch,
+                 semantics::NativeBackendFeature::StorageBufferBinding})
+            assert(!semantics::hasExecutableNativeFeature(unqueried, feature));
+    }
     {
         OriginalResourceRegistrationBudget registration;
         registration.contractVersion = 10u;
@@ -592,6 +703,8 @@ class Fixture final {
 public:
     std::shared_ptr<VulkanRhiRuntime> runtime;
     std::array<std::shared_ptr<core::CpuMemoryQuota>, 10u> quotas;
+    std::array<std::shared_ptr<core::CpuMemoryQuota>, 4u> timingQuotas;
+    std::shared_ptr<QueryPool> timingPool;
     core::UniquePtr<GpuDevice> device;
     std::shared_ptr<const OriginalGraphicsPipelineInput> input;
     std::shared_ptr<PipelineLayout> layout;
@@ -605,21 +718,47 @@ public:
         bool foreground = false,
         unsigned historySlots = 0u,
         bool spatial = false,
-        bool loadPipeline = true)
+        bool loadPipeline = true,
+        bool passTiming = false,
+        bool sampledPbr = false)
     {
         this->runtime = runtime;
         for (auto& quota : quotas)
             quota = core::makeShared<core::CpuMemoryQuota>(bytes);
         VulkanRhiDeviceDesc desc;
         desc.runtime = runtime;
-        desc.capabilityContract.backend = Backend::Vulkan;
+        semantics::vulkan::VulkanDeviceCapabilitySnapshot snapshot;
+        snapshot.queriedFromNativeDevice = runtime && runtime->valid()
+            && !runtime->syntheticRuntime() && !runtime->coreQueueCapabilityDiagnostic();
+        if (snapshot.queriedFromNativeDevice) {
+            VkPhysicalDeviceProperties properties{};
+            vkGetPhysicalDeviceProperties(runtime->physicalDevice(), &properties);
+            snapshot.maxPushConstantSizeBytes = properties.limits.maxPushConstantsSize;
+            snapshot.supportsTimelineSynchronization = runtime->timelineSemaphoreEnabled();
+            snapshot.queueFamilyCount = runtime->queueFamilyCount();
+            const auto& memory = runtime->memoryProperties();
+            for (std::uint32_t i = 0u; i < memory.memoryTypeCount; ++i) {
+                const auto flags = memory.memoryTypes[i].propertyFlags;
+                snapshot.hasDeviceLocalMemory |=
+                    (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0u;
+                snapshot.hasHostVisibleMemory |=
+                    (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0u;
+            }
+        }
+        desc.capabilityContract = semantics::vulkan::buildVulkanNativeCapabilityContract(snapshot);
         desc.memoryBudgetBytes = 1024u * 1024u;
         desc.directObjectBudget = {1u,
             "OriginalGraphicsCreationFixture/1",
             mixed ? (foreground ? 8u : 6u) : 2u,
-            mixed                  ? 12u + std::uint32_t(foreground) + (spatial ? 3u : 0u)
+            mixed ? 12u + std::uint32_t(foreground) + (spatial ? 3u : 0u)
+                    + (std::getenv("ARP_CLOUD_SCENE_OPAQUE") ? 1u : 0u)
                 : bindingResources ? 4u
                                    : 1u};
+        if (sampledPbr) {
+            desc.directObjectBudget.descriptorCapacity += 16u;
+            desc.uploadStagingBudget =
+                semantics::UploadStagingBudgetV1{1u, 2048u, 2048u, 1u, 2048u, 256u};
+        }
         device = createVulkanRhiDevice(desc);
         assert(
             device && !device->prepareOriginalDeviceLifetime({1u, true, 1u, 2u, bytes}, quotas[0]));
@@ -672,7 +811,30 @@ public:
                 * OriginalResourceRegistrationContract::perResourceOwnerCount;
             registry.maxBuffers = historyBuffers;
         }
+        if (foreground && std::getenv("ARP_CLOUD_SCENE_OPAQUE")) {
+            registry.maxBuffers += 2u;
+            registry.maxRetainedOwners +=
+                2u * OriginalResourceRegistrationContract::perResourceOwnerCount;
+        }
+        if (sampledPbr) {
+            registry.maxBuffers += 4u;
+            registry.maxTextures += 7u;
+            registry.maxTextureViews += 7u;
+            registry.samplers = {1u, true, 1u};
+            registry.samplerNativeLoss = {1u, true};
+            registry.maxRetainedOwners +=
+                18u * OriginalResourceRegistrationContract::perResourceOwnerCount
+                + OriginalResourceRegistrationContract::ownerCount(
+                    OriginalRegisteredResourceKind::Sampler, registry.contractVersion);
+        }
         registry.maxCpuMetadataBytes = bytes;
+        if (passTiming) {
+            assert(bindingResources && mixed);
+            registry.queries = {1u, true, 1u};
+            registry.queryNativeLoss = {1u, true};
+            registry.maxRetainedOwners += OriginalResourceRegistrationContract::ownerCount(
+                OriginalRegisteredResourceKind::QueryPool, registry.contractVersion);
+        }
         if (bindingResources) {
             const auto loss = device->observeOriginalDeviceNativeLoss(diagnostic);
             assert(loss && !diagnostic);
@@ -680,6 +842,29 @@ public:
                 {3u, true}, registry, quotas[1], *loss));
         } else
             assert(!device->prepareOriginalResourceRegistration(registry, quotas[1]));
+        if (passTiming) {
+            for (auto& quota : timingQuotas)
+                quota = core::makeShared<core::CpuMemoryQuota>(bytes);
+            const std::array<std::uint64_t, 3u> scopes{101u, 103u, 107u};
+            QueryPoolDesc query;
+            query.label = "Cloud.MixedPassTiming/1";
+            query.type = QueryType::Timestamp;
+            query.count = 2u * scopes.size();
+            query.timingScopeIds = scopes.data();
+            query.timingScopeIdCount = scopes.size();
+            const auto input = QueryPoolInputSnapshot::prepareOriginal(query,
+                {1u, true, scopes.size(), query.label.size(), bytes, bytes, bytes},
+                timingQuotas[0],
+                timingQuotas[1],
+                timingQuotas[2],
+                diagnostic);
+            assert(input && !diagnostic);
+            timingPool = device->createOriginalQueryPool(input,
+                {1u, true, 1u, query.count, scopes.size(), query.label.size(), bytes},
+                timingQuotas[3],
+                diagnostic);
+            assert(timingPool && !diagnostic);
+        }
         if (!loadPipeline)
             return;
         core::pmr::String text{&core::defaultCpuMemoryResource()};
@@ -965,6 +1150,7 @@ struct MixedCloudProgramData {
     GpuBuffer *raw = nullptr, *resolved = nullptr, *readback = nullptr;
     std::array<std::uint64_t, 2u> sampleOffsets{};
     std::uint32_t rowBytes = 0u;
+    std::size_t timingSource = SIZE_MAX;
 };
 
 void verifyOrdinaryCloudDraw(Fixture& f,
@@ -976,10 +1162,18 @@ void verifyOrdinaryCloudDraw(Fixture& f,
     unsigned mode,
     const MixedCloudProgramData* mixed = nullptr,
     bool measureBudget = true,
-    bool deviceIssuer = false)
+    bool deviceIssuer = false,
+    bool nativePassTiming = false)
 {
     using K = CommandUsageKind;
     using Sources = OriginalCommandResourceSources;
+    std::optional<tests::RenderDocCaptureScope> capture;
+    if (nativePassTiming && mode == 4u) {
+        capture.emplace();
+        // Capture the host reset before taking this generation's Inputs/State
+        // observations, so replay has the same query availability as recording.
+        assert(f.timingPool->reset().success);
+    }
     const auto require = [](const char* id) {
         if (id)
             std::fprintf(stderr, "ordinary cloud Draw: %s\n", id);
@@ -1002,6 +1196,8 @@ void verifyOrdinaryCloudDraw(Fixture& f,
     core::pmr::Vector<OriginalCommandUsage::Reference> references;
     core::pmr::Vector<CommandVariableArguments::Input> arguments;
     core::pmr::Vector<OriginalCommandInputs::OriginalDescriptor> descriptors;
+    core::pmr::Vector<QueryCommandPoints::Input> queryPoints;
+    const bool passTiming = mixed && mixed->timingSource != SIZE_MAX;
     std::array<ResourceBarrierDesc, 6u> barriers;
     std::array<ResourceBarrierDesc, 2u> bufferBarriers;
     TextureToBufferCopyDesc copy;
@@ -1018,6 +1214,18 @@ void verifyOrdinaryCloudDraw(Fixture& f,
         };
     const auto none = [](K k) {
         return *CommandScalarArguments::capture(k, CommandScalarArguments::None{});
+    };
+    const auto timestamp = [&](std::uint32_t slot) {
+        if (!passTiming)
+            return;
+        const auto original = *QueryPoolOriginalInputArguments::captureOriginal(
+            K::Timestamp, slot, f.timingPool->originalInput());
+        const auto ordinal = command(K::Timestamp, {mixed->timingSource}, original.scalar());
+        queryPoints.push_back({ordinal, original});
+        descriptors.push_back({ordinal,
+            OriginalCommandQueryBinding{mixed->timingSource,
+                f.timingPool->originalResourceRegistration().generation(),
+                original}});
     };
     const auto barrier = [&](std::size_t number,
                              std::size_t source,
@@ -1043,6 +1251,7 @@ void verifyOrdinaryCloudDraw(Fixture& f,
     };
     const auto computePass = [&](std::size_t ordinal) {
         const auto begin = command(K::BeginComputePass, {}, none(K::BeginComputePass));
+        timestamp(2u * ordinal);
         const auto pipelineIndex = mixed->pipelines[ordinal];
         const auto descriptorIndex = mixed->sets[ordinal];
         const auto& pipeline =
@@ -1072,6 +1281,7 @@ void verifyOrdinaryCloudDraw(Fixture& f,
             {},
             *CommandScalarArguments::capture(
                 K::Dispatch, CommandScalarArguments::Dispatch{1u, 1u, 1u}));
+        timestamp(2u * ordinal + 1u);
         command(K::EndComputePass, {}, none(K::EndComputePass));
         auto& b = bufferBarriers[ordinal];
         b.resource = ordinal ? mixed->resolved->id() : mixed->raw->id();
@@ -1086,7 +1296,8 @@ void verifyOrdinaryCloudDraw(Fixture& f,
             {command(K::BufferBarrier, {ordinal ? 1u : 11u}, none(K::BufferBarrier)),
                 *ResourceDependencyArguments::capture(K::BufferBarrier, b)});
     };
-    const auto graphQuota = core::makeShared<core::CpuMemoryQuota>(bytes);
+    const auto graphQuota =
+        passTiming ? f.timingQuotas[0] : core::makeShared<core::CpuMemoryQuota>(bytes);
     const auto stateQuota = core::makeShared<core::CpuMemoryQuota>(bytes);
     const auto recordingQuota = core::makeShared<core::CpuMemoryQuota>(bytes);
     const OriginalRenderPassStorageContract::Budget storage{
@@ -1172,6 +1383,7 @@ void verifyOrdinaryCloudDraw(Fixture& f,
         colorAccess);
     const auto begin = command(K::BeginRenderPass, {9u}, none(K::BeginRenderPass));
     descriptors.push_back({begin, compositePass});
+    timestamp(4u);
     const auto& pipeline =
         *std::get<std::shared_ptr<const Source>>(sources[pipelineIndex])->originalObject();
     descriptors.push_back(
@@ -1200,6 +1412,7 @@ void verifyOrdinaryCloudDraw(Fixture& f,
     command(K::Draw,
         {},
         *CommandScalarArguments::capture(K::Draw, CommandScalarArguments::Draw{3u, 1u, 0u, 0u}));
+    timestamp(5u);
     command(K::EndRenderPass, {}, none(K::EndRenderPass));
     if (mixed) {
         barrier(5u,
@@ -1244,12 +1457,54 @@ void verifyOrdinaryCloudDraw(Fixture& f,
             scalars, descriptors.data(), descriptors.size(), {6u, true, 3u, 3u}, graphQuota, id));
         assert(id);
     }
-    auto inputs = OriginalCommandInputs::prepareOriginal(scalars,
-        descriptors.data(),
-        descriptors.size(),
-        {mixed ? 10u : 6u, true, mixed ? 3u : 1u, mixed ? 3u : 1u},
-        graphQuota,
-        id);
+    OriginalCommandInputsBudget inputBudget{
+        mixed ? 10u : 6u, true, mixed ? 3u : 1u, mixed ? 3u : 1u};
+    if (passTiming) {
+        inputBudget.contractVersion = 11u;
+        inputBudget.maxQueryBindings = queryPoints.size();
+        inputBudget.queryPoints = QueryCommandPoints::prepareOriginal(store,
+            queryPoints.data(),
+            queryPoints.size(),
+            {1u,
+                true,
+                static_cast<std::uint32_t>(commands.size()),
+                5u,
+                static_cast<std::uint32_t>(queryPoints.size()),
+                0u,
+                0u,
+                0u,
+                0u,
+                queryPoints.size() * f.timingPool->originalInput()->scalarFields().count(),
+                queryPoints.size() * f.timingPool->originalInput()->scopeIds().size(),
+                queryPoints.size() * f.timingPool->originalInput()->label().size(),
+                bytes},
+            graphQuota,
+            id);
+        require(id);
+        inputBudget.passTiming =
+            OriginalPassTimingBudget{1u, true, 1u, 6u, 3u, commands.size(), 64u};
+        auto old = inputBudget;
+        old.contractVersion = 10u;
+        assert(!OriginalCommandInputs::prepareOriginal(
+                   scalars, descriptors.data(), descriptors.size(), old, graphQuota, id)
+            && id);
+        auto shortBudget = inputBudget;
+        --shortBudget.passTiming->maxPublishedScopes;
+        assert(!OriginalCommandInputs::prepareOriginal(
+                   scalars, descriptors.data(), descriptors.size(), shortBudget, graphQuota, id)
+            && id);
+        auto foreign = descriptors;
+        for (auto& descriptor : foreign)
+            if (auto* query = std::get_if<OriginalCommandQueryBinding>(&descriptor.arguments)) {
+                ++query->registrationGeneration;
+                break;
+            }
+        assert(!OriginalCommandInputs::prepareOriginal(
+            scalars, foreign.data(), foreign.size(), inputBudget, graphQuota, id));
+        assert(id && std::string_view(id) == "RHI-ORIGINAL-QUERY-INPUT-GENERATION");
+    }
+    auto inputs = OriginalCommandInputs::prepareOriginal(
+        scalars, descriptors.data(), descriptors.size(), inputBudget, graphQuota, id);
     require(id);
     // The registration union includes the nested pipeline layout and arena.
     OriginalCommandStateAdmissionBudget state{5u,
@@ -1268,6 +1523,25 @@ void verifyOrdinaryCloudDraw(Fixture& f,
     state.renderDescriptorUsage.maxTextureAccesses = 2u;
     state.renderDescriptorUsage.generalShaderResourcesVersion = 2u;
     state.renderDescriptorUsage.generalShaderResourcesOptIn = true;
+    if (passTiming) {
+        auto legacy = state;
+        legacy.contractVersion = 1u;
+        legacy.descriptorConsumption = {};
+        legacy.renderDescriptorUsage = {};
+        assert(!OriginalCommandResourceStates::prepareOriginal(
+            inputs, *f.device, legacy, stateQuota, id));
+        assert(id && std::string_view(id) == "RHI-ORIGINAL-QUERY-STATE-JOIN-MISSING");
+        assert(!OriginalCommandResourceStates::prepareOriginal(
+            inputs, *f.device, state, f.timingQuotas[3], id));
+        assert(id);
+        std::printf("MIXED_PASS_TIMING_STATE_QUOTA_REFUSAL %s\n", id);
+        assert(std::string_view(id) == "RHI-ORIGINAL-QUERY-SOURCE-QUOTA-DOMAIN");
+        const auto& query = std::get<std::shared_ptr<const OriginalCommandQueryPoolSource>>(
+            sources[mixed->timingSource]);
+        const auto* queryQuota = query->independentCpuQuotaDiagnostic(f.timingQuotas[3]);
+        assert(
+            queryQuota && std::string_view(queryQuota) == "RHI-ORIGINAL-QUERY-SOURCE-QUOTA-DOMAIN");
+    }
     auto graph =
         OriginalCommandResourceStates::prepareOriginal(inputs, *f.device, state, stateQuota, id);
     require(id);
@@ -1293,6 +1567,22 @@ void verifyOrdinaryCloudDraw(Fixture& f,
         recording.limits.append(op.kind);
     recording.limits.resourceReferences = references.size();
     recording.limits.descriptorElements = mixed ? 12u : 4u;
+    if (passTiming) {
+        auto shortRecording = recording;
+        --shortRecording.limits.commands[static_cast<std::size_t>(K::Timestamp)];
+        assert(
+            OriginalCommandStreamProgram::validateOriginalRecordingBudget(inputs, shortRecording));
+        auto shortStream = stream;
+        --shortStream.maxDescriptors;
+        assert(OriginalCommandStreamProgram::inspectTyped(graph, shortStream).diagnostic);
+        std::size_t visits = 0u;
+        assert(OriginalCommandStreamProgram::visitOriginalTyped(
+            graph, shortStream, [&](const auto&) noexcept -> const char* {
+                ++visits;
+                return nullptr;
+            }));
+        assert(!visits);
+    }
     auto program = OriginalCommandStreamProgram::prepareRecordingBoundOriginalTyped(
         graph, stream, recording, recordingQuota, id);
     require(id);
@@ -1303,6 +1593,87 @@ void verifyOrdinaryCloudDraw(Fixture& f,
         2u,
         OriginalRenderPassContentBudget{mixed ? 3u : 2u, true, 3u, 1u, 64u, 512u, 512u},
         OriginalRenderPassRecordingBudget{mixed ? 3u : 2u, true, 512u, 1024u}};
+    if (passTiming) {
+        assert(program && program->counts().timestampWrites == 6u
+            && program->counts().consumptions == 3u && program->counts().renderPasses == 2u
+            && program->counts().copyElements == 1u && program->counts().implicitAccesses > 0u);
+        auto counts = program->counts();
+        --counts.timestampWrites;
+        assert(!counts.matches(program->counts()));
+        std::size_t ordinal = 0u;
+        for (const auto& operation : program->operations()) {
+            assert(operation.commandIndex < commands.size());
+            if (operation.kind == K::Timestamp) {
+                assert(operation.firstElement == ordinal++ && operation.elementCount == 1u
+                    && !operation.implicitAccessCount && operation.referenceCount == 1u);
+            }
+        }
+        assert(ordinal == 6u);
+        for (const auto backend : {Backend::Null, Backend::Vulkan, Backend::Metal, Backend::WebGPU})
+            assert(!program->nativeExecutionProven() && program->executionDiagnostic(backend));
+        const std::array hotQuotas{graphQuota,
+            stateQuota,
+            recordingQuota,
+            f.quotas[0],
+            f.quotas[1],
+            f.quotas[7],
+            f.quotas[8],
+            f.quotas[9],
+            f.timingQuotas[1],
+            f.timingQuotas[2],
+            f.timingQuotas[3]};
+        require(test::CpuQuotaFactoryFixture::verifyHotNoAllocation(
+            hotQuotas, [&]() noexcept -> const char* {
+                return OriginalCommandStreamProgram::validateOriginal(program);
+            }));
+        const auto rejected = OriginalRenderPassRecordingContract::inspect(
+            program, storage, *request.content, *request.recording);
+        assert(rejected.diagnostic);
+        const VulkanRhiNativeResourceAllocator resources(runtime);
+        semantics::NativeBackendCapabilityContract capabilities;
+        capabilities.backend = Backend::Vulkan;
+        core::pmr::String diagnostic;
+        assert(!createVulkanRhiCommandEncoderWithColdRenderPasses(
+                   resources, {}, nullptr, capabilities, program, *f.device, request, diagnostic)
+            && !diagnostic.empty());
+        assert(!resources.sharedStats()->nativeDrawRecordCount
+            && !resources.sharedStats()->nativeExecutableDispatchRecordCount
+            && !resources.sharedStats()->nativeQueueSubmitCount);
+        std::printf(
+            "MIXED_PASS_TIMING_PROGRAM_PASS writes=6 scopes=3 declaredDispatches=2 declaredDraws=1 copy=1 hotAllocations=0 recording=closed diagnostic=%s\n",
+            diagnostic.c_str());
+        if (!nativePassTiming)
+            return;
+        request.contractVersion = 8u;
+        request.content->contractVersion = 5u;
+        request.recording->contractVersion = 5u;
+        request.passTimingRetention = CommandRetentionBudget{1u, true, 0u, 1u, 6u, 0u, bytes};
+        request.passTimingRecordingQuota = recordingQuota;
+        request.passTimingFrameSerial =
+            latestVulkanRhiGpuTimingSample(*runtime).completedFrameSerial + 1u;
+        require(OriginalRenderPassPreparationContract::validate(request));
+        for (const auto backend :
+            {Backend::Null, Backend::Vulkan, Backend::Metal, Backend::WebGPU}) {
+            const auto decision = OriginalRenderPassPreparationContract::lowering(backend, request);
+            assert(decision.recordingAvailable == (backend == Backend::Vulkan)
+                && bool(decision.diagnostic) == (backend != Backend::Vulkan));
+        }
+        for (const auto shortPool : {false, true}) {
+            auto shortRequest = request;
+            if (shortPool)
+                shortRequest.passTimingRetention->maxQueryPools = 0u;
+            else
+                --shortRequest.passTimingRetention->maxTimestampWrites;
+            assert(!createVulkanRhiCommandEncoderWithColdRenderPasses(resources,
+                {},
+                nullptr,
+                capabilities,
+                program,
+                *f.device,
+                shortRequest,
+                diagnostic));
+        }
+    }
     const VulkanRhiNativeResourceAllocator resources(runtime);
     semantics::NativeBackendCapabilityContract capabilities;
     capabilities.backend = Backend::Vulkan;
@@ -1378,21 +1749,28 @@ void verifyOrdinaryCloudDraw(Fixture& f,
                 static_cast<unsigned long long>(required));
         }
     }
+    if (!capture && (mode == 3u || (mixed && mode == 4u)))
+        capture.emplace();
     auto encoder = factory();
     if (!encoder)
         std::fprintf(stderr, "ordinary cloud factory: %s\n", diagnostic.c_str());
     assert(encoder);
-    std::optional<tests::RenderDocCaptureScope> capture;
-    if (mode == 3u || (mixed && mode == 4u))
-        capture.emplace();
+    if (nativePassTiming && mode == 7u) {
+        assert(f.timingPool->reset().success);
+        assert(!encoder->transition(parent(2u), barriers[0]).success && !encoder->finish());
+        encoder.reset();
+        assert(!resources.sharedStats()->nativeQueueSubmitCount);
+        std::puts(
+            "MIXED_TIMING_STALE_COLD_PASS reset-invalidates-original-slots before-first-mutation");
+        return;
+    }
     const auto quotas = std::array{graphQuota, stateQuota, recordingQuota};
     core::UniquePtr<CommandBuffer> finished;
-    assert(
-        !test::CpuQuotaFactoryFixture::verifyHotNoAllocation(quotas, [&]() noexcept -> const char* {
+    const auto* recordingDiagnostic =
+        test::CpuQuotaFactoryFixture::verifyHotNoAllocation(quotas, [&]() noexcept -> const char* {
             const auto firstTransition = encoder->transition(parent(2u), barriers[0]);
             if (!firstTransition.success)
-                std::fprintf(stderr, "ordinary cloud first transition mode=%u\n", mode);
-            assert(firstTransition.success);
+                return "MIXED-FIRST-TRANSITION";
             if (!mode)
                 return nullptr;
             assert(encoder->transition(parent(4u), barriers[1]).success);
@@ -1411,7 +1789,15 @@ void verifyOrdinaryCloudDraw(Fixture& f,
                         *std::get<std::shared_ptr<const OriginalCommandDescriptorSetSource>>(
                             sources[mixed->sets[i]])
                              ->originalObject();
-                    assert(compute && compute->setPipeline(pipeline).success
+                    assert(compute);
+                    if (nativePassTiming && mode == 6u) {
+                        assert(!compute->writeTimestamp(*f.timingPool, 1u).success
+                            && !compute->end().success && !encoder->finish());
+                        return nullptr;
+                    }
+                    if (passTiming)
+                        assert(compute->writeTimestamp(*f.timingPool, 2u * i).success);
+                    assert(compute->setPipeline(pipeline).success
                         && compute->bindDescriptorSet(0u, set, nullptr, 0u).success);
                     if (mode == 5u) {
                         assert(!compute->dispatch(2u, 1u, 1u).success
@@ -1419,7 +1805,10 @@ void verifyOrdinaryCloudDraw(Fixture& f,
                             && !compute->end().success && !encoder->finish());
                         return nullptr;
                     }
-                    assert(compute->dispatch(1u, 1u, 1u).success && compute->end().success);
+                    assert(compute->dispatch(1u, 1u, 1u).success);
+                    if (passTiming)
+                        assert(compute->writeTimestamp(*f.timingPool, 2u * i + 1u).success);
+                    assert(compute->end().success);
                     assert(
                         encoder->transition(i ? *mixed->resolved : *mixed->raw, bufferBarriers[i])
                             .success);
@@ -1427,15 +1816,21 @@ void verifyOrdinaryCloudDraw(Fixture& f,
             }
             assert(encoder->transition(parent(8u), barriers[4]).success);
             auto pass = encoder->beginRenderPass(composite);
-            assert(pass && pass->setPipeline(pipeline).success
-                && pass->setViewport(viewport).success && pass->setScissor(scissor).success
+            assert(pass);
+            if (passTiming)
+                assert(pass->writeTimestamp(*f.timingPool, 4u).success);
+            assert(pass->setPipeline(pipeline).success && pass->setViewport(viewport).success
+                && pass->setScissor(scissor).success
                 && pass->bindDescriptorSet(0u, set, nullptr, 0u).success);
             if (mode == 2u) {
                 assert(!pass->draw(4u, 1u, 0u, 0u).success && !pass->end().success
                     && !encoder->finish());
                 return nullptr;
             }
-            assert(pass->draw(3u, 1u, 0u, 0u).success && pass->end().success);
+            assert(pass->draw(3u, 1u, 0u, 0u).success);
+            if (passTiming)
+                assert(pass->writeTimestamp(*f.timingPool, 5u).success);
+            assert(pass->end().success);
             if (mixed) {
                 assert(encoder->transition(parent(8u), barriers[5]).success);
                 auto transfer = encoder->beginTransferPass({});
@@ -1445,8 +1840,15 @@ void verifyOrdinaryCloudDraw(Fixture& f,
             finished = encoder->finish();
             assert(finished);
             return nullptr;
-        }));
-    if (mode < 3u || mode == 5u) {
+        });
+    if (recordingDiagnostic)
+        std::fprintf(stderr,
+            "ordinary cloud recording mode=%u: %s / %s\n",
+            mode,
+            recordingDiagnostic,
+            encoder->lastValidation().diagnostics.c_str());
+    assert(!recordingDiagnostic);
+    if (mode < 3u || mode == 5u || mode == 6u) {
         finished.reset();
         encoder.reset();
         assert(parent(2u).observeOriginalCommittedState(barriers[0].textureSubresources)->state()
@@ -1461,8 +1863,19 @@ void verifyOrdinaryCloudDraw(Fixture& f,
         }
         assert(!resources.sharedStats()->nativeQueueSubmitCount
             && (mode != 2u || !resources.sharedStats()->nativeDrawRecordCount));
+        if (passTiming) {
+            const auto* pool = asVulkanRhiQueryPool(*f.timingPool);
+            for (std::uint32_t i = 0u; i < 6u; ++i)
+                assert(pool->payload()->observeSlot(i)->phase()
+                    == VulkanRhiQueryPoolPayload::SlotControl::Phase::NotRecorded);
+            assert(f.timingPool->reset().success);
+            std::printf("MIXED_TIMING_CANCEL_PASS mode=%u readySlots=6 journal=original\n", mode);
+        }
         return;
     }
+    const auto previousTiming = latestVulkanRhiGpuTimingSample(*runtime).completedFrameSerial;
+    if (passTiming)
+        assert(!f.timingPool->reset().success);
     auto native = vulkanRhiCommandPayload(*finished);
     auto gate = VulkanRhiTimelineSemaphorePayload::create(runtime, 0u, diagnostic);
     assert(native && gate);
@@ -1472,20 +1885,50 @@ void verifyOrdinaryCloudDraw(Fixture& f,
                 && acceptRecordedCommandOwnership(*finished));
             assert(!native->submittedFenceCompleted()
                 && !parent(8u).observeOriginalContent(barriers[4].textureSubresources));
+            if (passTiming) {
+                assert(latestVulkanRhiGpuTimingSample(*runtime).completedFrameSerial
+                    == previousTiming);
+                const auto* pool = asVulkanRhiQueryPool(*f.timingPool);
+                for (std::uint32_t i = 0u; i < 6u; ++i)
+                    assert(!pool->payload()->observeSlot(i));
+            }
             finished.reset();
             encoder.reset();
             return nullptr;
         }));
+    if (passTiming)
+        assert(!f.timingPool->reset().success
+            && f.timingPool->executionStatus().state == QueryExecutionState::Pending);
     assert(gate->hostSignal(1u) == VK_SUCCESS);
     assert(
         !test::CpuQuotaFactoryFixture::verifyHotNoAllocation(quotas, [&]() noexcept -> const char* {
             assert(native->waitSubmittedFenceUntil(
                 std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
             assert(native->submittedFenceCompleted());
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(*runtime);
             return nullptr;
         }));
     capture->end();
+    if (passTiming) {
+        const auto sample = latestVulkanRhiGpuTimingSample(*runtime);
+        assert(sample.availability == GpuTimingAvailability::Available
+            && sample.completedFrameSerial == request.passTimingFrameSerial
+            && sample.completedFrameSerial != previousTiming && sample.scopeCount == 3u);
+        const std::array<std::uint64_t, 3u> ids{101u, 103u, 107u};
+        for (std::size_t i = 0u; i < ids.size(); ++i) {
+            assert(sample.scopes[i].scopeId == ids[i] && std::isfinite(sample.scopes[i].elapsedMs)
+                && sample.scopes[i].elapsedMs >= 0.f);
+            std::printf("MIXED_TIMING_SAMPLE scope=%llu ms=%.9f\n",
+                static_cast<unsigned long long>(ids[i]),
+                sample.scopes[i].elapsedMs);
+        }
+        const auto* pool = asVulkanRhiQueryPool(*f.timingPool);
+        const auto beforeReset = pool->payload()->observeSlot(0u);
+        assert(beforeReset && f.timingPool->reset().success
+            && !pool->payload()->matchesSlot(*beforeReset));
+        std::puts(
+            "MIXED_TIMING_NATIVE_PASS Inputs11 State5 Stream5 Preparation8 timestamps6 scopes3 same-meter same-journal real-completion reset-stale-refused hot0");
+    }
     assert(parent(8u).observeOriginalContent({0u, 1u, 0u, 1u, TextureAspect::Color})->state()
         == common::OriginalTextureContentControl::State::Completed);
     assert(deviceIssuer || resources.sharedStats()->nativeDrawRecordCount == 1u);
@@ -2223,19 +2666,129 @@ bool foregroundPixel(unsigned x, unsigned y, unsigned width, unsigned height)
 
 constexpr auto foregroundColor = tests::cloud::ForegroundFixture::color;
 
+class SceneOpaqueNativeFrame final {
+public:
+    tests::SceneOpaqueFixture data;
+    scene3d::Scene3DRenderQueue queue;
+    std::array<renderer::SceneOpaqueMeshBinding, 1u> bindings;
+    std::shared_ptr<const renderer::SceneOpaqueGeometry> geometry;
+    renderer::SceneOpaqueProducer producer;
+    std::shared_ptr<const renderer::SceneOpaqueFrame> frame;
+
+    SceneOpaqueNativeFrame(Fixture& f,
+        tests::cloud::SequenceOracle& oracle,
+        renderer::cloud::VolumetricCloudFeature& feature,
+        const RenderPipeline& pipeline)
+    {
+        const auto& pending = feature.preparedHistory()->pendingFrame();
+        const auto inverse = core::inverse(pending.rasterViewProjection);
+        constexpr std::array<core::Vec3, 3u> clip{
+            {{-.75f, -.75f, .5f}, {.75f, -.75f, .5f}, {0.f, .75f, .5f}}};
+        for (std::size_t i = 0u; i < clip.size(); ++i) {
+            auto ndc = clip[i];
+            ndc.x = (oracle.foreground.x + (ndc.x + 1.f) * oracle.foreground.width * .5f) * 2.f
+                    / oracle.plan.extent.width
+                - 1.f;
+            ndc.y = (oracle.foreground.y + (ndc.y + 1.f) * oracle.foreground.height * .5f) * 2.f
+                    / oracle.plan.extent.height
+                - 1.f;
+            const auto world = core::transformPoint(inverse, ndc);
+            const std::array position{world.x, world.y, world.z};
+            std::copy(position.begin(), position.end(), data.mesh->vertices[i].position);
+        }
+        data.material->doubleSided = true;
+        assert(data.mesh->recomputeBounds());
+        const auto& bounds = data.mesh->bounds;
+        const core::Vec3 lower{bounds.min[0], bounds.min[1], bounds.min[2]};
+        const core::Vec3 upper{bounds.max[0], bounds.max[1], bounds.max[2]};
+        data.item.worldBounds = scene3d::Bounds3D::explicitBounds(
+            core::scale(lower + upper, .5f), core::scale(upper - lower, .5f));
+        scene3d::CloudDesc cloud;
+        cloud.layer = oracle.layer;
+        assert(feature.preparedSceneBinding());
+        cloud.densityResource = feature.preparedSceneBinding()->authoredReference();
+        queue = data.queue();
+        queue.setCloud(cloud);
+        bindings[0] = data.binding();
+        const auto require = [](const char* id) {
+            if (id)
+                std::fprintf(stderr, "scene opaque: %s\n", id);
+            assert(!id);
+        };
+        require(renderer::SceneOpaqueGeometry::create(
+            queue, bindings, data.shader, data.shaderId, data.budget, geometry));
+        renderer::SceneOpaqueProducerBudget b;
+        b.contractVersion = 1u;
+        b.prototypeOptIn = true;
+        b.maxCpuBytes = bytes;
+        b.maxGpuBytes = 4096u;
+        b.quota = core::makeShared<core::CpuMemoryQuota>(bytes);
+        b.sourceQuota = f.quotas[7];
+        b.retainedGpuBytes = core::makeShared<core::AtomicCapacityBudget>(b.maxGpuBytes);
+        const auto& hash = pipeline.shaderReflection().sourceSha256;
+        assert(hash.size() == b.shaderSourceSha256.size());
+        std::copy(hash.begin(), hash.end(), b.shaderSourceSha256.begin());
+        require(producer.create(*f.device, geometry, b));
+        const auto& p = pending.parameters;
+        renderer::BasicForwardLighting light{1u,
+            1u,
+            1u,
+            {-p.sunDirection.x, -p.sunDirection.y, -p.sunDirection.z},
+            1.f,
+            {p.sunRadiance.x, p.sunRadiance.y, p.sunRadiance.z},
+            {p.ambientRadiance.x, p.ambientRadiance.y, p.ambientRadiance.z}};
+        require(producer.prepareFrame(pending.rasterViewProjection, light, frame));
+        {
+            auto preserved = frame;
+            auto excessive = light;
+            excessive.ambient.x = renderer::SceneOpaqueProducer::maxLinearColor + 1.f;
+            assert(std::string_view(
+                       producer.prepareFrame(pending.rasterViewProjection, excessive, preserved))
+                == "SCENE-OPAQUE-RGBA16F-RANGE");
+            assert(preserved == frame);
+            const char* foreignDiagnostic = nullptr;
+            std::thread foreign([&] {
+                foreignDiagnostic =
+                    producer.prepareFrame(pending.rasterViewProjection, light, preserved);
+            });
+            foreign.join();
+            assert(std::string_view(foreignDiagnostic) == "SCENE-OPAQUE-OWNER-THREAD"
+                && preserved == frame);
+        }
+        const float cosine = std::abs(core::normalize(light.direction).z);
+        oracle.foregroundColor = {
+            data.material->baseColorR * (p.ambientRadiance.x + p.sunRadiance.x * cosine),
+            data.material->baseColorG * (p.ambientRadiance.y + p.sunRadiance.y * cosine),
+            data.material->baseColorB * (p.ambientRadiance.z + p.sunRadiance.z * cosine),
+            1.f};
+        oracle.sceneOpaque = true;
+        oracle.sceneRasterViewProjection = pending.rasterViewProjection.m;
+        static_assert(
+            sizeof(oracle.sceneOpaqueVertices) == 3u * sizeof(renderer::SceneOpaqueVertex));
+        std::memcpy(oracle.sceneOpaqueVertices.data(),
+            geometry->vertices().data(),
+            sizeof(oracle.sceneOpaqueVertices));
+    }
+};
+
 struct ForegroundGraphSources {
     std::size_t pipeline = SIZE_MAX, descriptors = SIZE_MAX;
     ViewportState viewport;
+    SceneOpaqueNativeFrame* scene = nullptr;
 };
 
 std::shared_ptr<RenderPipeline> prepareForegroundPipeline(
-    Fixture& f, OriginalPreparedCommandDeviceExtension& extension)
+    Fixture& f, OriginalPreparedCommandDeviceExtension& extension, bool sampledPbr = false)
 {
     core::pmr::String text;
-    const auto artifact = shader::GraphicsShaderModuleArtifact::load(ARP_CLOUD_FOREGROUND_MODULE,
-        {bytes, 8u * bytes, bytes, 4u, 4u, 256u, 2u},
-        f.quotas[2],
-        text);
+    const bool scene = std::getenv("ARP_CLOUD_SCENE_OPAQUE");
+    const auto artifact =
+        shader::GraphicsShaderModuleArtifact::load(sampledPbr ? ARP_SCENE_PBR_MODULE
+                : scene                                       ? ARP_SCENE_OPAQUE_MODULE
+                                                              : ARP_CLOUD_FOREGROUND_MODULE,
+            {bytes, 8u * bytes, bytes, sampledPbr ? 9u : 4u, sampledPbr ? 9u : 4u, 256u, 2u},
+            f.quotas[2],
+            text);
     if (!artifact)
         std::fprintf(stderr, "foreground artifact: %s\n", text.c_str());
     assert(artifact);
@@ -2246,7 +2799,27 @@ std::shared_ptr<RenderPipeline> prepareForegroundPipeline(
     assert(!target.diagnostic);
     DescriptorLayoutDesc bindings;
     bindings.name = "Cloud.Foreground";
-    bindings.bindings.push_back({0u, DescriptorType::UniformBuffer, ShaderStage::Fragment});
+    bindings.bindings.push_back({0u,
+        DescriptorType::UniformBuffer,
+        scene ? ShaderStage::Vertex | ShaderStage::Fragment : ShaderStage::Fragment});
+    if (scene)
+        bindings.bindings.push_back(
+            {1u, DescriptorType::ReadOnlyStorageBuffer, ShaderStage::Vertex});
+    if (sampledPbr) {
+        bindings.bindings.clear();
+        for (const auto& declaration : input->package().reflection.descriptorBindings) {
+            DescriptorBindingDesc binding;
+            binding.binding = declaration.binding;
+            binding.type = declaration.type;
+            binding.stages = declaration.stages;
+            binding.arrayCount = declaration.arrayCount;
+            if (binding.type == DescriptorType::SampledTexture) {
+                binding.textureViewDimensionConstrained = true;
+                binding.textureViewDimension = TextureViewDimension::Texture2D;
+            }
+            bindings.bindings.push_back(binding);
+        }
+    }
     PipelineLayoutDesc ld;
     ld.descriptorLayouts.push_back(std::move(bindings));
     ld.descriptorSets.push_back({0u, "Cloud.Foreground"});
@@ -2265,6 +2838,10 @@ std::shared_ptr<RenderPipeline> prepareForegroundPipeline(
     authored.depthStencil.depthTestEnabled = authored.depthStencil.depthWriteEnabled = true;
     authored.depthStencil.depthCompare = CompareOp::Less;
     authored.dynamicViewportScissor = true;
+    if (sampledPbr)
+        assert(!renderer::ScenePbrProducer::validatePipeline(authored));
+    else if (scene)
+        assert(!renderer::SceneOpaqueProducer::validatePipeline(authored));
     const Contract::Budget budget{1u,
         true,
         target.sources[0]->size() + target.sources[1]->size(),
@@ -2283,6 +2860,573 @@ std::shared_ptr<RenderPipeline> prepareForegroundPipeline(
     return result;
 }
 
+// Native finite-slice acceptance. A production resource importer and the
+// representative terrain/vegetation scene have separate acceptance gates.
+void verifyPbrSampling(const std::shared_ptr<VulkanRhiRuntime>& runtime)
+{
+    using namespace renderer;
+    using namespace render_graph;
+    using Sources = OriginalCommandResourceSources;
+    using SetSource = OriginalCommandDescriptorSetSource;
+    const auto require = [](const char* id) {
+        if (id)
+            std::fprintf(stderr, "PBR sampling: %s\n", id);
+        assert(!id);
+    };
+    Fixture f(runtime, true, false, false, 0u, false, false, false, true);
+    core::CpuMemoryQuotaScope nativeOwnerScope(f.quotas[9]);
+    tests::OriginalTextureUploadFixture::prepare(*f.device);
+    resource::ResourceManager resources;
+    tests::ScenePbrFixture authored;
+    // Full viewport coverage with constant material UV; independently known
+    // coverage removes edge rasterization from this texture-transfer probe.
+    const std::array<core::Vec3, 3u> positions{
+        {{-1.f, -1.f, .5f}, {3.f, -1.f, .5f}, {-1.f, 3.f, .5f}}};
+    for (std::size_t i = 0; i < 3u; ++i) {
+        auto& v = authored.opaque.mesh->vertices[i];
+        std::copy_n(&positions[i].x, 3u, v.position);
+        v.uv[0] = v.uv[1] = .5f;
+    }
+    auto& material = *authored.opaque.material;
+    material.doubleSided = true;
+    material.alphaMode = "MASK";
+    material.alphaCutoff = .4f;
+    material.metallicFactor = .5f;
+    material.roughnessFactor = .8f;
+    material.emissiveR = .4f;
+    material.emissiveG = .3f;
+    material.emissiveB = .2f;
+    const std::array<std::array<std::uint8_t, 4u>, 5u> pixels{{{128u, 64u, 192u, 128u},
+        {128u, 128u, 255u, 255u},
+        {0u, 128u, 128u, 255u},
+        {160u, 160u, 160u, 255u},
+        {64u, 96u, 128u, 255u}}};
+    ScenePbrMaterialBinding materialBinding;
+    std::array<const resource::TextureResource*, 5u> decoded{};
+    for (std::size_t i = 0; i < pixels.size(); ++i) {
+        const bool srgb = i == 0u || i == 4u;
+        // Fixed PNG payloads, explicit MIME and metadata. The bounded decoder
+        // verifies the signature as well as dimensions before allocating.
+        const auto encoded =
+            core::readBinaryFile(std::filesystem::path(__FILE__).parent_path().parent_path()
+                    / "fixtures" / "pbr_sampling" / (std::to_string(i) + ".png"),
+                256u);
+        assert(encoded.success);
+        const auto image = assets::decodeImageToRgba8(
+            {encoded.bytes.data(), encoded.bytes.size()}, "image/png", srgb, 4u);
+        assert(image.success && image.image.alpha && image.image.rgba8.size() == 4u);
+        assert(!std::memcmp(image.image.rgba8.data(), pixels[i].data(), 4u));
+        auto texture = core::makeUnique<resource::TextureResource>();
+        texture->configureMetadata({tests::ScenePbrFixture::textureIds[i],
+            resource::TextureResource::resourceTypeName(),
+            {},
+            "Prototype Complete",
+            "PBR sampling fixture"});
+        texture->sourceResourceId = resource::deriveResourceUuid(
+            "pbr-sampling-encoded", tests::ScenePbrFixture::textureIds[i]);
+        texture->sourcePath =
+            core::pmr::String("fixture/") + tests::ScenePbrFixture::textureIds[i] + ".png";
+        texture->usage = i == 0u ? "base-color"
+            : i == 1u            ? "normal"
+            : i == 2u            ? "metallic-roughness"
+            : i == 3u            ? "occlusion"
+                                 : "emissive";
+        texture->srgb = texture->decodedSrgb = srgb;
+        texture->alpha = texture->decodedHasAlpha = true;
+        texture->decodedWidth = texture->decodedHeight = 1u;
+        texture->decodedRgba8.assign(image.image.rgba8.begin(), image.image.rgba8.end());
+        texture->sourceGeneration = 1u;
+        decoded[i] = texture.get();
+        core::UniquePtr<resource::ResourceBase> base(std::move(texture));
+        const auto loaded = resources.loadResource(std::move(base), {});
+        assert(loaded.success);
+        TextureDesc d;
+        d.label = core::pmr::String("Pbr.Upload.") + decoded[i]->usage;
+        d.extent = {1u, 1u, 1u};
+        d.format = srgb ? TextureFormat::Rgba8UnormSrgb : TextureFormat::Rgba8Unorm;
+        d.usage = TextureUsage::CopyDst | TextureUsage::Sampled;
+        tests::OriginalTextureUploadFixture upload(
+            *f.device, d, decoded[i]->decodedRgba8, f.quotas[7]);
+        require(upload.publication->validateReadVisibility(PipelineStage::FragmentShader));
+        assert(upload.publication->validateReadVisibility(PipelineStage::Transfer));
+        if (i == 0u) {
+            // Real completion/release proof, plus fail-closed graph restrictions.
+            for (unsigned mode = 0u; mode < 5u; ++mode) {
+                FrameGraph check(*f.device);
+                check.setPassCullingEnabled(false);
+                const auto imported = check.importCompletedSampledTexture(
+                    upload.publication, upload.view, PipelineStage::FragmentShader);
+                check.addPass("CompletedRead")
+                    .access(imported,
+                        {ResourceState::ShaderRead,
+                            mode == 1u ? PipelineStage::ComputeShader
+                                       : PipelineStage::FragmentShader,
+                            rhi::ResourceAccess::ShaderRead},
+                        defaultTextureSubresourceRange(d));
+                if (mode == 2u)
+                    check.addPass("ForbiddenWrite").write(imported, ResourceState::ShaderWrite);
+                if (mode == 3u)
+                    check.discardImportedContentsBeforeFirstWrite(imported);
+                if (mode == 4u)
+                    check.setExternalFinalState(imported, ResourceState::CopySrc);
+                bool rejected = false;
+                try {
+                    const auto compiled = check.compile();
+                    assert(compiled.barrierPlan().empty());
+                } catch (const std::exception& error) {
+                    assert(std::string_view(error.what())
+                        == (mode == 1u ? "RG-COMPLETED-SAMPLED-IMPORT-READ-SCOPE"
+                                       : "RG-COMPLETED-SAMPLED-IMPORT-READ-ONLY"));
+                    rejected = true;
+                }
+                assert(rejected == (mode != 0u));
+            }
+        }
+        auto& binding = materialBinding.textures[i];
+        binding.resourceId = tests::ScenePbrFixture::textureIds[i];
+        binding.view = upload.view;
+        ScenePbrTexturePublication::Budget b{
+            1u, true, 256u, 4u, bytes, core::makeShared<core::CpuMemoryQuota>(bytes)};
+        require(ScenePbrTexturePublication::create(resources,
+            binding.resourceId,
+            upload.publication,
+            upload.view,
+            b,
+            binding.publication));
+        require(binding.publication->validateCurrent(resources));
+        auto& mutableDecoded = *const_cast<resource::TextureResource*>(decoded[i]);
+        ++mutableDecoded.sourceGeneration;
+        assert(binding.publication->validateCurrent(resources));
+        --mutableDecoded.sourceGeneration;
+        mutableDecoded.decodedRgba8[0] ^= 1u;
+        assert(binding.publication->validateCurrent(resources));
+        const auto beforeMismatch = binding.publication;
+        assert(ScenePbrTexturePublication::create(resources,
+            binding.resourceId,
+            upload.publication,
+            upload.view,
+            b,
+            binding.publication));
+        assert(binding.publication == beforeMismatch);
+        mutableDecoded.decodedRgba8[0] ^= 1u;
+        require(binding.publication->validateCurrent(resources));
+        auto bad = b;
+        bad.maxPixelBytes = 3u;
+        const auto sentinel = binding.publication;
+        assert(ScenePbrTexturePublication::create(resources,
+            binding.resourceId,
+            upload.publication,
+            upload.view,
+            bad,
+            binding.publication));
+        assert(binding.publication == sentinel);
+        const char* foreignThread = nullptr;
+        std::thread other([&] {
+            foreignThread = binding.publication->validateCurrent(resources);
+        });
+        other.join();
+        assert(foreignThread
+            && std::string_view(foreignThread) == "SCENE-PBR-TEXTURE-PUBLICATION-THREAD");
+    }
+    SamplerDesc sd;
+    sd.label = "Pbr.MaterialSampler";
+    sd.mipFilter = SamplerMipFilter::None;
+    auto sampler = f.device->createSampler(sd);
+    assert(sampler);
+    materialBinding.sampler = OriginalCommandSamplerLease::prepareOriginal(
+        sampler, {1u, true, 2u, bytes}, f.quotas[7], f.diagnostic);
+    require(f.diagnostic);
+    std::shared_ptr<const ScenePbrGeometry> geometry;
+    require(authored.create(geometry));
+    ScenePbrProducer producer;
+    // Query only the already declared ordinary preparation profile.
+    OriginalRenderPassPreparationRequest request{6u,
+        true,
+        {1u, true, 1u, 1u, 2u, {1u, true, 1u, 0u, 0u, 0u, 256u, bytes}},
+        7u,
+        2u,
+        OriginalRenderPassContentBudget{3u, true, 2u, 1u, 64u, 512u, 512u},
+        OriginalRenderPassRecordingBudget{3u, true, 512u, 1024u}};
+    request.recording->opaqueDepthGraphicsVersion = 1u;
+    request.recording->opaqueDepthGraphicsOptIn = true;
+    request.recording->sampledColor = {1u, true};
+    auto* extension =
+        OriginalPreparedCommandDeviceExtension::query(*f.device, request, f.diagnostic);
+    require(f.diagnostic);
+    assert(extension);
+    auto pipeline = prepareForegroundPipeline(f, *extension, true);
+    SceneOpaqueProducerBudget pb;
+    pb.contractVersion = 1u;
+    pb.prototypeOptIn = true;
+    pb.maxCpuBytes = bytes;
+    pb.maxGpuBytes = 65536u;
+    pb.quota = core::makeShared<core::CpuMemoryQuota>(bytes);
+    pb.sourceQuota = f.quotas[7];
+    pb.retainedGpuBytes = core::makeShared<core::AtomicCapacityBudget>(pb.maxGpuBytes);
+    const auto& hash = pipeline->shaderReflection().sourceSha256;
+    assert(hash.size() == pb.shaderSourceSha256.size());
+    std::copy(hash.begin(), hash.end(), pb.shaderSourceSha256.begin());
+    const std::array materialBindings{materialBinding};
+    require(producer.create(*f.device, geometry, materialBindings, pb));
+    BasicForwardLighting lighting{
+        1u, 1u, 1u, {0.f, 0.f, -1.f}, 0.f, {1.f, 1.f, 1.f}, {.2f, .3f, .4f}};
+    std::shared_ptr<const ScenePbrFrame> frame;
+    require(producer.prepareFrame(resources,
+        core::Mat4::identity(),
+        lighting,
+        {ScenePbrView::Kind::Orthographic, {0.f, 0.f, 1.f}},
+        frame));
+    assert(producer.prepareFrame(core::Mat4::identity(),
+        lighting,
+        {ScenePbrView::Kind::Orthographic, {0.f, 0.f, 1.f}},
+        frame));
+    core::pmr::Vector<Sources::Source> prefix{
+        frame->constants(), producer.geometryBuffer(), producer.materialBuffers()[0]};
+    // Each parent is an independent state owner; exact sampled views are the
+    // descriptor owners. The sampler is retained once in this same inventory.
+    for (const auto& binding : materialBinding.textures) {
+        prefix.push_back(binding.view->originalParentLease());
+        prefix.push_back(binding.view);
+    }
+    prefix.push_back(materialBinding.sampler);
+    constexpr std::uint32_t width = 32u, height = 24u, rowBytes = 256u;
+    std::array<std::shared_ptr<const OriginalCommandTextureLease>, 2u> attachments;
+    std::array<std::size_t, 2u> attachmentViewIndices{};
+    for (std::size_t i = 0; i < 2u; ++i) {
+        TextureDesc d;
+        d.label = i ? "Pbr.Depth" : "Pbr.Hdr";
+        d.extent = {width, height, 1u};
+        d.format = i ? TextureFormat::D32Float : TextureFormat::Rgba16Float;
+        d.usage = TextureUsage::RenderAttachment | TextureUsage::Sampled
+            | (i ? TextureUsage::None : TextureUsage::CopySrc);
+        auto allocation = f.device->queryOriginalContentTextureAllocation(d, f.diagnostic, 4u);
+        require(f.diagnostic);
+        assert(allocation);
+        std::uint64_t footprint = 0;
+        require(semantics::TextureUploadDestinationValidation::footprint(d, footprint));
+        auto object = f.device->createOriginalContentTexture(
+            d, {4u, true, 1u, 1u, footprint, 1u, bytes, 1u, allocation}, f.quotas[7], f.diagnostic);
+        require(f.diagnostic);
+        assert(object);
+        attachments[i] = OriginalCommandTextureLease::prepareOriginal(
+            object, {1u, true, 2u, bytes}, f.quotas[7], f.diagnostic);
+        require(f.diagnostic);
+        prefix.push_back(attachments[i]);
+        TextureViewDesc vd;
+        vd.format = d.format;
+        vd.usage = TextureUsage::RenderAttachment;
+        vd.aspect = i ? TextureAspect::Depth : TextureAspect::Color;
+        auto view = f.device->createTextureView(*attachments[i]->originalObject(), vd);
+        assert(view);
+        auto lease = OriginalCommandTextureViewLease::prepareOriginal(
+            view, {1u, true, 2u, bytes}, f.quotas[7], f.diagnostic);
+        require(f.diagnostic);
+        attachmentViewIndices[i] = prefix.size();
+        prefix.push_back(OriginalCommandTextureViewSource::prepareOriginal(
+            lease, attachments[i], {1u, true, 5u, bytes}, f.quotas[7], f.diagnostic));
+        require(f.diagnostic);
+    }
+    BufferDesc bd;
+    bd.sizeBytes = rowBytes * height;
+    bd.usage = ResourceUsage::CopyDst;
+    bd.memory = MemoryUsage::GpuToCpu;
+    bd.initialState = ResourceState::CopyDst;
+    auto readbackObject = f.device->createBuffer(bd);
+    assert(readbackObject);
+    core::pmr::Vector<std::byte> initialReadback(bd.sizeBytes, std::byte{0xcd});
+    assert(f.device->writeBuffer(*readbackObject, initialReadback.data(), initialReadback.size())
+            .success);
+    readbackObject->sealHostWrites();
+    auto readback = OriginalCommandBufferLease::prepareOriginal(
+        readbackObject, {1u, true, 2u, bytes}, f.quotas[7], f.diagnostic);
+    require(f.diagnostic);
+    prefix.push_back(readback);
+    OriginalCommandAdmissionBudget admission;
+    admission.contractVersion = 1u;
+    admission.prototypeOptIn = true;
+    admission.maxCommands = admission.maxReferences = admission.maxInputDescriptors = 64u;
+    admission.maxStateObservations = admission.maxTextureRanges = 64u;
+    admission.maxPassColorAttachments = 1u;
+    admission.maxPassAttachmentReferences = 2u;
+    admission.maxLabelBytes = 256u;
+    admission.maxGraphOwners = 2048u;
+    admission.maxCpuBytes.fill(bytes);
+    admission.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Buffer)] = 4u;
+    admission.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Texture)] = 7u;
+    admission.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::TextureView)] = 7u;
+    admission.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Sampler)] = 1u;
+    admission.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Pipeline)] = 1u;
+    admission.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Descriptor)] = 1u;
+    auto inventory = Sources::prepareColdOriginalTyped(
+        prefix.data(), prefix.size(), admission, {5u, true, 2u}, f.quotas[7], f.diagnostic);
+    require(f.diagnostic);
+    assert(inventory);
+    auto pipelineSource = Source::prepareOriginal(pipeline,
+        {2u,
+            true,
+            Source::kind,
+            pipeline->originalResourceRegistration().generation(),
+            bytes,
+            Source::exclusiveOwnerCount},
+        f.quotas[7],
+        *f.device,
+        f.diagnostic);
+    require(f.diagnostic);
+    const auto pipelineIndex = inventory->sources().size();
+    require(Sources::appendOriginalTyped(inventory, pipelineSource, *f.device));
+    auto arenaCandidate = f.device->createOriginalDescriptorArena({"Pbr.Sampling", 1u, 9u});
+    assert(arenaCandidate);
+    auto arena = core::shareUnique(std::move(arenaCandidate));
+    const auto& layout = pipeline->originalLayoutOwner()->desc().descriptorLayouts.front();
+    auto set = f.device->allocateOriginalDescriptorSet(arena, {layout.name, layout});
+    assert(set);
+    std::array<OriginalCommandDescriptorSetElement, 9u> elements{};
+    for (std::size_t i = 0; i < elements.size(); ++i) {
+        auto& e = elements[i];
+        e.write.binding = std::uint32_t(i);
+        e.write.type = layout.bindings[i].type;
+        e.stages = i == 0u ? PipelineStage::VertexShader | PipelineStage::FragmentShader
+            : i == 1u      ? PipelineStage::VertexShader
+                           : PipelineStage::FragmentShader;
+        e.access = rhi::ResourceAccess::ShaderRead;
+        e.write.resourceState = ResourceState::ShaderRead;
+        e.sourceIndex = i < 3u ? i : i < 8u ? 4u + 2u * (i - 3u) : 13u;
+        if (i < 3u) {
+            const auto& source = std::get<std::shared_ptr<const OriginalCommandBufferLease>>(
+                inventory->sources()[e.sourceIndex]);
+            e.write.resource = source->resource();
+            e.write.resourceKind = DescriptorResourceKind::Buffer;
+            e.registrationGeneration =
+                source->originalObject()->originalResourceRegistration().generation();
+            e.write.bufferBindingRange = {2u, 0u, source->originalObject()->desc().sizeBytes};
+            e.bufferAccessBytes = e.write.bufferBindingRange.sizeBytes;
+        } else if (i < 8u) {
+            const auto& source = materialBinding.textures[i - 3u].view;
+            e.write.resource = source->resource();
+            e.write.resourceKind = DescriptorResourceKind::TextureView;
+            e.registrationGeneration =
+                source->originalObject()->originalResourceRegistration().generation();
+        } else {
+            e.write.resource = materialBinding.sampler->resource();
+            e.write.resourceKind = DescriptorResourceKind::Sampler;
+            e.write.resourceState = ResourceState::Undefined;
+            e.access = rhi::ResourceAccess::None;
+            e.registrationGeneration = materialBinding.sampler->originalObject()
+                                           ->originalResourceRegistration()
+                                           .generation();
+        }
+    }
+    OriginalGeneralDescriptorWriteRequest group;
+    group.contractVersion = 3u;
+    group.prototypeOptIn = true;
+    group.maxBindings = 9u;
+    group.maxRetainedOwnerSlots = OriginalGeneralDescriptorWriteContract::ownerSlots(9u, 3u);
+    group.maxCpuBytes.fill(bytes);
+    group.maxRetainedAllocationBytes = bytes;
+    group.sampledColor = {1u, true};
+    std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u> writeQuotas;
+    for (auto& q : writeQuotas)
+        q = core::makeShared<core::CpuMemoryQuota>(bytes);
+    const auto expectGroupFailure = [&](const char* expected) {
+        std::array<std::uint64_t, 3u> live;
+        for (std::size_t i = 0u; i < live.size(); ++i)
+            live[i] = writeQuotas[i]->liveBytes();
+        const auto* id = f.device->beginOriginalGeneralDescriptorWrite(
+            *set, pipeline, inventory, 0u, elements.data(), elements.size(), group, writeQuotas);
+        assert(id && std::string_view(id) == expected);
+        for (std::size_t i = 0u; i < live.size(); ++i)
+            assert(live[i] == writeQuotas[i]->liveBytes());
+    };
+    expectGroupFailure("RHI-ORDINARY-SAMPLED-COLOR-UPLOAD-COVERAGE");
+    std::array<std::shared_ptr<const OriginalTextureUploadPublication>, 9u> uploaded;
+    for (std::size_t i = 0u; i < 5u; ++i)
+        uploaded[i + 3u] = materialBinding.textures[i].publication->upload();
+    group.sampledUploads = uploaded;
+    expectGroupFailure("RHI-ORDINARY-SAMPLED-COLOR-UPLOAD-OWNER-CAPACITY");
+    for (const auto& upload : uploaded)
+        if (upload) {
+            const auto owners =
+                OriginalTextureUploadPublication::requiredOwners(*upload->originalProgram(), 1u);
+            assert(owners <= UINT32_MAX - group.maxRetainedOwnerSlots);
+            group.maxRetainedOwnerSlots += std::uint32_t(owners);
+        }
+    uploaded[8u] = uploaded[3u];
+    expectGroupFailure("RHI-ORDINARY-SAMPLED-COLOR-UPLOAD-NON-TEXTURE");
+    uploaded[8u].reset();
+    const auto originalUpload = uploaded[3u];
+    uploaded[3u] = uploaded[4u];
+    expectGroupFailure("RHI-TEXTURE-UPLOAD-PUBLICATION-VIEW-OWNER");
+    uploaded[3u] = originalUpload;
+    require(f.device->beginOriginalGeneralDescriptorWrite(
+        *set, pipeline, inventory, 0u, elements.data(), elements.size(), group, writeQuotas));
+    require(set->finishOriginalGeneralWrite());
+    OriginalCommandDescriptorSourceBudget sb{
+        5u, true, 9u, 9u, SetSource::finiteExclusiveRetainedOwnerCount, bytes};
+    sb.finitePipelineSourceIndex = pipelineIndex;
+    sb.finiteFootprintContractVersion = 2u;
+    sb.finiteFullBoundViewOptIn = true;
+    auto setSource = SetSource::prepareOriginal(set,
+        arena,
+        inventory,
+        elements.data(),
+        elements.size(),
+        sb,
+        f.quotas[7],
+        *f.device,
+        f.diagnostic);
+    require(f.diagnostic);
+    const auto descriptorIndex = inventory->sources().size();
+    require(Sources::appendOriginalTyped(inventory, setSource, *f.device));
+    auto iq = core::makeShared<core::CpuMemoryQuota>(bytes),
+         sq = core::makeShared<core::CpuMemoryQuota>(bytes),
+         rq = core::makeShared<core::CpuMemoryQuota>(bytes);
+    FrameGraph graph(*f.device);
+    OriginalFrameGraphExecution execution(graph, inventory, iq);
+    std::array<render_graph::TextureHandle, 2u> handles;
+    for (std::size_t i = 0; i < 2u; ++i) {
+        handles[i] = graph.importTextureRef(
+            {attachments[i], const_cast<GpuTexture*>(attachments[i]->originalObject())});
+        require(execution.bindAttachment(handles[i], attachmentViewIndices[i]));
+    }
+    const std::array descriptorIndices{descriptorIndex};
+    require(producer.contribute({execution,
+        *frame,
+        handles[0],
+        handles[1],
+        pipelineIndex,
+        descriptorIndices,
+        {.01f, .02f, .03f, 1.f}}));
+
+    struct Observer final : PassSubmissionObserver {
+        std::shared_ptr<const GpuFence> fence;
+
+        const char* validateSubmission(PassSubmissionToken) const noexcept override
+        {
+            return nullptr;
+        }
+
+        void onSubmitted(
+            PassSubmissionToken, const std::shared_ptr<const GpuFence>& f) noexcept override
+        {
+            fence = f;
+        }
+    } observer;
+
+    auto readbackHandle =
+        graph.importBufferRef({readback, const_cast<GpuBuffer*>(readback->originalObject())});
+    TextureToBufferCopyDesc copy;
+    copy.sourceTexture = attachments[0]->resource();
+    copy.destinationBuffer = readback->resource();
+    copy.extent = {width, height, 1u};
+    copy.textureSubresources = {0u, 1u, 0u, 1u, TextureAspect::Color};
+    copy.bytesPerRow = rowBytes;
+    copy.rowsPerImage = height;
+    execution.copy("Pbr.Readback", copy)
+        .read(handles[0], ResourceState::CopySrc)
+        .write(readbackHandle, ResourceState::CopyDst)
+        .onSubmitted(observer);
+    OriginalFrameGraphBudget gb;
+    gb.contractVersion = 1u;
+    gb.prototypeOptIn = true;
+    gb.maxCpuIntentBytes = bytes;
+    gb.inputs = {10u, true, 1u, 1u};
+    gb.states = {5u, true, 1u, 64u, 32u, 32u, 2048u, bytes};
+    auto& consumption = gb.states.descriptorConsumption;
+    consumption = {4u, true, 1u, 1u, true, true, 1u, elements.size()};
+    consumption.maxTextureAccesses = 5u;
+    consumption.generalShaderResourcesVersion = 2u;
+    consumption.generalShaderResourcesOptIn = true;
+    auto& render = gb.states.renderDescriptorUsage;
+    render = {4u, true, 1u, 1u, true, true, 64u, 1u, elements.size()};
+    render.maxTextureAccesses = 5u;
+    render.generalShaderResourcesVersion = 2u;
+    render.generalShaderResourcesOptIn = true;
+    auto& stream = gb.stream;
+    stream.contractVersion = 5u;
+    stream.prototypeOptIn = true;
+    stream.maxCommands = stream.maxDescriptors = stream.maxReferences = 64u;
+    stream.maxCopyElements = 1u;
+    stream.maxRenderPasses = 1u;
+    stream.maxAttachmentReferences = 2u;
+    stream.maxPipelineBinds = stream.maxDescriptorBinds = stream.maxConsumptions = 1u;
+    stream.maxImplicitAccesses = elements.size() * 2u; // One bind and one draw.
+    stream.maxRetainedOwners = 2048u;
+    stream.maxCpuMetadataBytes = bytes;
+    stream.descriptorConsumption = consumption;
+    stream.renderDescriptorUsage = render;
+    stream.stateSequence = {5u, true, 64u, 0u, 32u, 64u, stream.maxImplicitAccesses};
+    gb.preparation = request;
+    tests::RenderDocCaptureScope capture;
+    // Reject the old profile before any execution, then use the explicit /1 intent.
+    auto old = gb;
+    old.preparation.recording->sampledColor = {};
+    assert(execution.prepare(old, iq, sq, rq));
+    assert(!execution.program());
+    require(execution.prepare(gb, iq, sq, rq));
+    require(execution.cancel());
+    assert(!execution.program());
+    require(execution.prepare(gb, iq, sq, rq));
+    const std::array hotQuotas{iq, sq, rq};
+    require(test::CpuQuotaFactoryFixture::verifyHotNoAllocation(
+        hotQuotas, [&]() noexcept -> const char* {
+            try {
+                execution.execute();
+                return nullptr;
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "PBR execute: %s\n", e.what());
+                return "PBR-EXECUTE";
+            }
+        }));
+    assert(observer.fence);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (!observer.fence->isSignaled() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    assert(observer.fence->isSignaled());
+    capture.end();
+    const auto native = vulkanRhiNativePayload(*readback->originalObject());
+    core::pmr::String diagnostic;
+    assert(native->backendInvalidateMappedRead(0u, bd.sizeBytes, diagnostic));
+    const auto* data = static_cast<const std::byte*>(native->backendMappedData());
+    const auto linear = [](std::uint8_t x) {
+        const double s = double(x) / 255.;
+        return s <= .04045 ? s / 12.92 : std::pow((s + .055) / 1.055, 2.4);
+    };
+    const double metallic = (128. / 255.) * .5, ao = 160. / 255.;
+    const std::array<double, 4u> expected{
+        linear(128u) * .5 * (1. - metallic) * .2 * ao + linear(64u) * .4,
+        linear(64u) * .25 * (1. - metallic) * .3 * ao + linear(96u) * .3,
+        linear(192u) * .125 * (1. - metallic) * .4 * ao + linear(128u) * .2,
+        1.};
+    double worst = 0.;
+    for (std::size_t i = 0; i < width * height; ++i) {
+        std::array<std::uint16_t, 4u> value;
+        std::memcpy(value.data(), data + i * 8u, 8u);
+        for (std::size_t c = 0; c < 4u; ++c)
+            worst = std::max(worst, std::abs(double(core::halfToFloat(value[c])) - expected[c]));
+    }
+    std::printf(
+        "PBR_SAMPLING decoded-ready=5 completed-upload=5 sampled=5 srgb=2 linear=3 alphaMask=.4 maxHdrError=%.9g\n",
+        worst);
+    assert(worst < .002);
+    if (const auto* path = std::getenv("ARP_PBR_READBACK_PATH")) {
+        auto* output = std::fopen(path, "wb");
+        assert(output);
+        assert(std::fwrite(data, 1u, bd.sizeBytes, output) == bd.sizeBytes);
+        std::fclose(output);
+    }
+    // Unload prevents a new frame but the accepted immutable frame/publication
+    // keeps its original input, view and GPU owners until real completion.
+    assert(resources.unload(tests::ScenePbrFixture::textureIds[0]).success);
+    const auto retained = frame;
+    assert(producer.prepareFrame(resources,
+        core::Mat4::identity(),
+        lighting,
+        {ScenePbrView::Kind::Orthographic, {0.f, 0.f, 1.f}},
+        frame));
+    assert(frame == retained);
+    require(materialBinding.textures[0].publication->validate());
+}
+
 void verifyCloudSequenceNumeric(const tests::cloud::SequenceOracle& oracle,
     const std::array<GpuBuffer*, 16u>& buffers,
     const MixedCloudProgramData& mixed,
@@ -2293,6 +3437,7 @@ void verifyCloudSequenceNumeric(const tests::cloud::SequenceOracle& oracle,
     core::pmr::String id;
     float worstSample = 0.f, worstHdr = 0.f, historyDifference = 0.f;
     const CloudGpuSample *actualRaw = nullptr, *actualResolved = nullptr;
+    core::pmr::Vector<CloudGpuSample> decoded;
     for (unsigned pass = 0; pass < 2; ++pass) {
         const auto& expected = pass ? oracle.resolved : oracle.raw;
         const auto* object = pass ? mixed.resolved : mixed.raw;
@@ -2300,6 +3445,13 @@ void verifyCloudSequenceNumeric(const tests::cloud::SequenceOracle& oracle,
         assert(native->backendInvalidateMappedRead(0, object->desc().sizeBytes, id));
         const auto* actual = reinterpret_cast<const CloudGpuSample*>(
             static_cast<const std::byte*>(native->backendMappedData()) + mixed.sampleOffsets[pass]);
+        if (pass && oracle.reconstruction.contractVersion == 2u) {
+            const auto* packed = reinterpret_cast<const CloudGpuCompactSample*>(actual);
+            decoded.reserve(expected.size());
+            for (std::size_t i = 0u; i < expected.size(); ++i)
+                decoded.push_back(CloudSampleStorage::unpack(packed[i]));
+            actual = decoded.data();
+        }
         if (pass)
             actualResolved = actual;
         else
@@ -2417,6 +3569,21 @@ void verifyCloudSequenceNumeric(const tests::cloud::SequenceOracle& oracle,
             double(oracle.reconstruction.maxTransmittanceRange),
             oracle.eligible,
             oracle.refined);
+        if (oracle.sceneOpaque) {
+            std::fprintf(output,
+                ",\"sceneOpaqueVersion\":1,\"foregroundColor\":[%.9g,%.9g,%.9g,%.9g],\"sceneRasterViewProjection\":[",
+                double(oracle.foregroundColor[0]),
+                double(oracle.foregroundColor[1]),
+                double(oracle.foregroundColor[2]),
+                double(oracle.foregroundColor[3]));
+            for (std::size_t i = 0u; i < oracle.sceneRasterViewProjection.size(); ++i)
+                std::fprintf(
+                    output, "%s%.9g", i ? "," : "", double(oracle.sceneRasterViewProjection[i]));
+            std::fprintf(output, "],\"sceneOpaqueVertices\":[");
+            for (std::size_t i = 0u; i < oracle.sceneOpaqueVertices.size(); ++i)
+                std::fprintf(output, "%s%.9g", i ? "," : "", double(oracle.sceneOpaqueVertices[i]));
+            std::fprintf(output, "]");
+        }
         for (unsigned array = 0; array < 4; ++array) {
             const auto& rows = array == 0 ? oracle.raw
                 : array == 1              ? oracle.resolved
@@ -2503,7 +3670,8 @@ void verifyPreparedCloudGraph(Fixture& f,
     tests::cloud::QualityOracle* quality = nullptr,
     const char* densityDiagnostic = nullptr,
     renderer::cloud::VolumetricCloudFeature* feature = nullptr,
-    const renderer::cloud::CloudPreparedResourceCreateContext* featureResources = nullptr)
+    const renderer::cloud::CloudPreparedResourceCreateContext* featureResources = nullptr,
+    tests::cloud::SceneResourceFixture* sceneResource = nullptr)
 {
     using namespace render_graph;
     using namespace renderer::cloud;
@@ -2512,7 +3680,9 @@ void verifyPreparedCloudGraph(Fixture& f,
             std::fprintf(stderr, "prepared cloud graph: %s\n", id);
         assert(!id);
     };
-    const auto intentQuota = core::makeShared<core::CpuMemoryQuota>(bytes);
+    const bool passTiming = mixed.timingSource != SIZE_MAX;
+    const auto intentQuota = passTiming ? f.timingPool->originalInput()->originalMetadataQuota()
+                                        : core::makeShared<core::CpuMemoryQuota>(bytes);
     const auto stateQuota = core::makeShared<core::CpuMemoryQuota>(bytes);
     const auto recordingQuota = core::makeShared<core::CpuMemoryQuota>(bytes);
     FrameGraph graph(*f.device);
@@ -2543,24 +3713,26 @@ void verifyPreparedCloudGraph(Fixture& f,
             std::get<std::shared_ptr<const OriginalCommandBufferLease>>(inventory->sources()[14u]);
         bh[14u] = graph.importBufferRef({lease, buffers[14u]});
     }
-    auto producer = hasForeground
-        ? execution.graphics("Cloud.SceneProducer",
-              foreground.pipeline,
-              foreground.descriptors,
-              foreground.viewport,
-              {0u, 0u, textures[0]->desc().extent.width, textures[0]->desc().extent.height},
-              {3u, 1u, 0u, 0u})
-        : execution.clear("Cloud.SceneProducer");
-    producer
-        .writeAttachment(th[0],
-            ResourceState::ColorAttachment,
-            LoadOp::Clear,
-            StoreOp::Store,
-            {},
-            {.125f, .375f, .75f, .625f})
-        .writeAttachment(th[1], ResourceState::DepthAttachment, LoadOp::Clear, StoreOp::Store);
-    if (hasForeground)
-        producer.read(bh[14u], ResourceState::ShaderRead);
+    if (!foreground.scene) {
+        auto producer = hasForeground
+            ? execution.graphics("Cloud.SceneProducer",
+                  foreground.pipeline,
+                  foreground.descriptors,
+                  foreground.viewport,
+                  {0u, 0u, textures[0]->desc().extent.width, textures[0]->desc().extent.height},
+                  {3u, 1u, 0u, 0u})
+            : execution.clear("Cloud.SceneProducer");
+        producer
+            .writeAttachment(th[0],
+                ResourceState::ColorAttachment,
+                LoadOp::Clear,
+                StoreOp::Store,
+                {},
+                {.125f, .375f, .75f, .625f})
+            .writeAttachment(th[1], ResourceState::DepthAttachment, LoadOp::Clear, StoreOp::Store);
+        if (hasForeground)
+            producer.read(bh[14u], ResourceState::ShaderRead);
+    }
     CloudExecutionPlan plan;
     plan.extent = {parameters.dimensions[2], parameters.dimensions[3]};
     plan.sampleExtent = {parameters.dimensions[0], parameters.dimensions[1]};
@@ -2586,7 +3758,8 @@ void verifyPreparedCloudGraph(Fixture& f,
         {mixed.pipelines[0], mixed.pipelines[1], graphics},
         {mixed.sets[0], mixed.sets[1], graphicsSet}};
     if (history) {
-        context.contractVersion = spatial ? 3u : 2u;
+        context.contractVersion =
+            spatial ? (history->reconstructionPlan().sampleContractVersion == 2u ? 4u : 3u) : 2u;
         context.history = history;
         context.historyGeneration = history->token().generation;
         if (spatial) {
@@ -2636,7 +3809,142 @@ void verifyPreparedCloudGraph(Fixture& f,
         auto foreign = owned;
         foreign.pipelines[0] = foreground.pipeline;
         assert(!feature->contributeGraph(foreign, output).success);
-        contribution = feature->contributeGraph(owned, output);
+        if (foreground.scene) {
+            using namespace renderer;
+            auto& opaque = *foreground.scene;
+            SceneOpaqueCloudCompositionContext compositionContext{opaque.producer,
+                *opaque.frame,
+                *opaque.geometry,
+                opaque.queue,
+                opaque.bindings,
+                *feature,
+                owned,
+                foreground.pipeline,
+                foreground.descriptors,
+                {.125f, .375f, .75f, .625f}};
+            SceneOpaqueCloudComposition composition(compositionContext);
+            assert(std::string_view(composition.compose(graph, th[0], plan.extent))
+                == "SCENE-CLOUD-COMPOSITION-GRAPH");
+            assert(std::string_view(composition.compose(
+                       graph, th[2], {plan.extent.width + 1u, plan.extent.height}))
+                == "SCENE-CLOUD-COMPOSITION-EXTENT");
+            auto changedQueue = opaque.queue;
+            auto changedCloud = changedQueue.cloud();
+            changedCloud.layer.coverage += .01f;
+            changedQueue.setCloud(changedCloud);
+            SceneOpaqueCloudComposition layerMismatch({opaque.producer,
+                *opaque.frame,
+                *opaque.geometry,
+                changedQueue,
+                opaque.bindings,
+                *feature,
+                owned,
+                foreground.pipeline,
+                foreground.descriptors,
+                compositionContext.clear});
+            assert(std::string_view(layerMismatch.compose(graph, th[2], plan.extent))
+                == "SCENE-CLOUD-COMPOSITION-LAYER");
+            changedCloud = opaque.queue.cloud();
+            changedCloud.densityResource = "other-cloud";
+            changedQueue.setCloud(changedCloud);
+            SceneOpaqueCloudComposition bindingMismatch({opaque.producer,
+                *opaque.frame,
+                *opaque.geometry,
+                changedQueue,
+                opaque.bindings,
+                *feature,
+                owned,
+                foreground.pipeline,
+                foreground.descriptors,
+                compositionContext.clear});
+            assert(std::string_view(bindingMismatch.compose(graph, th[2], plan.extent))
+                == "SCENE-CLOUD-COMPOSITION-SCENE-BINDING");
+            changedQueue = opaque.queue;
+            changedQueue.addAnimation({opaque.data.item.objectId, nullptr, nullptr});
+            SceneOpaqueCloudComposition unsupported({opaque.producer,
+                *opaque.frame,
+                *opaque.geometry,
+                changedQueue,
+                opaque.bindings,
+                *feature,
+                owned,
+                foreground.pipeline,
+                foreground.descriptors,
+                compositionContext.clear});
+            assert(std::string_view(unsupported.compose(graph, th[2], plan.extent))
+                == "SCENE-CLOUD-COMPOSITION-UNSUPPORTED-SCENE");
+            auto changedContext = compositionContext;
+            changedContext.clear.r = SceneOpaqueProducer::maxLinearColor + 1.f;
+            SceneOpaqueCloudComposition invalidClear(changedContext);
+            assert(std::string_view(invalidClear.compose(graph, th[2], plan.extent))
+                == "SCENE-OPAQUE-CLEAR");
+            assert(feature->validateGraph(owned).success && feature->validateGraph(owned).success);
+            core::pmr::Vector<scene::SceneTraversalNode> nodes;
+            scene::SceneTraversalNode node;
+            node.objectId = opaque.data.item.objectId;
+            node.active = node.activeInHierarchy = true;
+            nodes.push_back(node);
+            auto snapshot = scene::SceneTraversalSnapshot::success(std::move(nodes));
+            core::pmr::Vector<scene::ResolvedCamera> cameras;
+            scene::ResolvedCamera camera;
+            camera.objectId = scene::GameObjectId::fromValue(2u);
+            camera.componentId = scene::ComponentId::fromValue(3u);
+            camera.visibleQueues = scene::RenderQueueMask::world2DAnd3D();
+            cameras.push_back(camera);
+            scene2d::Scene2DRenderQueue queue2D;
+            arp::ui::RenderQueue uiQueue;
+            RendererSceneRuntimeFrameInput input;
+            input.snapshot = &snapshot;
+            input.resolvedCameras = &cameras;
+            input.scene3DQueue = &opaque.queue;
+            input.scene2DQueue = &queue2D;
+            input.uiQueue = &uiQueue;
+            input.oneCompatibleWorldUiPassIntent = true;
+            RendererSceneRuntimeFrameBuilder builder({3u, 8u, 8u, 8u});
+            const auto built = builder.build(input);
+            assert(built.ok());
+            SceneRuntimeOpaqueCloudPayload payload;
+            payload.scene = {&snapshot,
+                &cameras,
+                &opaque.queue,
+                &queue2D,
+                &uiQueue,
+                &built.frame(),
+                true,
+                false,
+                false,
+                true};
+            payload.composition = &composition;
+            SceneRuntimeRenderPipeline pipeline;
+            assert(pipeline
+                    .create({*f.device,
+                        TextureFormat::Rgba16Float,
+                        TextureFormat::D32Float,
+                        plan.extent})
+                    .success);
+            RenderPipelineGraphCompositionContext request;
+            request.sceneEnabled = true;
+            request.request.pipelinePayload = &payload.scene;
+            request.request.pipelinePayloadContractName = kSceneRuntimePipelinePayloadContract;
+            request.request.pipelinePayloadContractVersion = kSceneRuntimePipelinePayloadVersion;
+            const auto legacy = pipeline.composeGraph(graph, th[2], request, {});
+            assert(!legacy.success && legacy.diagnostics == "SCENE-CLOUD-COMPOSITION-REQUIRED");
+            request.request.pipelinePayload = &payload;
+            request.request.pipelinePayloadContractName = kSceneRuntimeOpaqueCloudPayloadContract;
+            request.request.pipelinePayloadContractVersion = kSceneRuntimeOpaqueCloudPayloadVersion;
+            const auto result = pipeline.composeGraph(graph, th[2], request, {});
+            if (!result.success)
+                std::fprintf(stderr, "scene composition: %s\n", result.diagnostics.c_str());
+            assert(result.success && pipeline.lastSemanticRecord().physicalPassCount == 4u);
+            assert(!pipeline.composeGraph(graph, th[2], request, {}).success);
+            contribution = {};
+            output.color = th[2];
+            std::printf(
+                "SCENE_OPAQUE_STANDARD_CALLER frame=%u vertices=%zu UBO112/storage48 passes=4\n",
+                sequenceFrame,
+                opaque.geometry->vertices().size());
+        } else
+            contribution = feature->contributeGraph(owned, output);
         if (contribution.success) {
             CloudOutputs duplicate;
             assert(!feature->contributeGraph(owned, duplicate).success && !duplicate.color.id);
@@ -2696,8 +4004,9 @@ void verifyPreparedCloudGraph(Fixture& f,
         ownerCapacity,
         bytes};
     auto& consumption = budget.states.descriptorConsumption;
-    const auto shaderAccesses = (hasForeground ? 13u : 12u) + (spatial ? 3u : 0u);
-    const auto renderAccesses = hasForeground ? 5u : 4u;
+    const auto shaderAccesses =
+        (hasForeground ? 13u : 12u) + (spatial ? 3u : 0u) + (foreground.scene ? 1u : 0u);
+    const auto renderAccesses = (hasForeground ? 5u : 4u) + (foreground.scene ? 1u : 0u);
     // Every consumed shader resource and every literal render binding is
     // independently projected by the original state sequence.
     const auto implicitAccesses = shaderAccesses + renderAccesses;
@@ -2725,7 +4034,9 @@ void verifyPreparedCloudGraph(Fixture& f,
     stream.descriptorConsumption = consumption;
     stream.renderDescriptorUsage = render;
     stream.stateSequence = {5u, true, commandCapacity, 0u, 32u, 64u, implicitAccesses};
-    const auto textBytes = std::strlen("Cloud.SceneProducer") + std::strlen("Cloud.Composite")
+    const auto textBytes =
+        std::strlen(foreground.scene ? "SceneOpaque.HdrDepth" : "Cloud.SceneProducer")
+        + std::strlen("Cloud.Composite")
         + 2u * (textures[0]->desc().label.size() + textures[2]->desc().label.size())
         + textures[1]->desc().label.size();
     budget.preparation = {6u,
@@ -2735,9 +4046,84 @@ void verifyPreparedCloudGraph(Fixture& f,
         2u,
         OriginalRenderPassContentBudget{3u, true, 3u, 1u, 64u, 512u, 512u},
         OriginalRenderPassRecordingBudget{3u, true, 512u, 1024u}};
+    const auto previousTiming = f.device->latestGpuTiming().completedFrameSerial;
+    const auto timingScopes = [] {
+        return core::pmr::Vector<FrameGraph::GpuTimingPassScope>{{"Cloud.Raymarch", 101u, true},
+            {"Cloud.Temporal", 103u, true},
+            {"Cloud.Composite", 107u, false}};
+    };
+    if (passTiming) {
+        budget.contractVersion = 2u;
+        budget.inputs.contractVersion = 11u;
+        budget.inputs.maxQueryBindings = 6u;
+        budget.inputs.passTiming =
+            OriginalPassTimingBudget{1u, true, 1u, 6u, 3u, commandCapacity, 64u};
+        const auto& input = f.timingPool->originalInput();
+        budget.timing = OriginalFrameGraphTimingBudget{mixed.timingSource,
+            {1u,
+                true,
+                commandCapacity,
+                5u,
+                6u,
+                0u,
+                0u,
+                0u,
+                0u,
+                6u * input->scalarFields().count(),
+                6u * input->scopeIds().size(),
+                6u * input->label().size(),
+                bytes}};
+        budget.preparation.contractVersion = hasForeground ? 9u : 8u;
+        budget.preparation.content->contractVersion = hasForeground ? 6u : 5u;
+        budget.preparation.recording->contractVersion = hasForeground ? 6u : 5u;
+        budget.preparation.passTimingRetention =
+            CommandRetentionBudget{1u, true, 0u, 1u, 6u, 0u, bytes};
+        budget.preparation.passTimingRecordingQuota = recordingQuota;
+        budget.preparation.passTimingFrameSerial = previousTiming + 1u;
+        for (unsigned scenario = 0u; scenario < 7u; ++scenario) {
+            auto scopes = timingScopes();
+            if (!scenario)
+                scopes[0].passName = "Cloud.Missing";
+            else if (scenario == 1u)
+                scopes[0].scopeId = 0u;
+            else if (scenario == 2u)
+                scopes[1].scopeId = scopes[0].scopeId;
+            else if (scenario == 3u)
+                scopes[1].passName = scopes[0].passName;
+            else if (scenario == 4u)
+                scopes[0].callbackOwnsTimestamps = false;
+            else if (scenario == 5u)
+                scopes[0].passName = "Cloud.Readback";
+            else
+                scopes.pop_back();
+            graph.setGpuTimingPassScopes(std::move(scopes));
+            assert(execution.prepare(budget, intentQuota, stateQuota, recordingQuota));
+            assert(!execution.program());
+        }
+        graph.setGpuTimingPassScopes(timingScopes());
+        auto legacy = budget;
+        legacy.contractVersion = 1u;
+        assert(execution.prepare(legacy, intentQuota, stateQuota, recordingQuota));
+        auto shortPoints = budget;
+        --shortPoints.timing->points.maxQueryCommands;
+        assert(execution.prepare(shortPoints, intentQuota, stateQuota, recordingQuota));
+        auto foreign = budget;
+        foreign.timing->querySourceIndex = graphics;
+        assert(execution.prepare(foreign, intentQuota, stateQuota, recordingQuota));
+        std::puts(
+            "ORIGINAL_GRAPH_TIMING_NEGATIVES unknown duplicate incomplete transfer wrong-callback old-profile short-budget wrong-source PASS");
+    }
     if (hasForeground) {
         budget.preparation.recording->opaqueDepthGraphicsVersion = 1u;
         budget.preparation.recording->opaqueDepthGraphicsOptIn = true;
+        if (passTiming) {
+            auto oldTiming = budget;
+            oldTiming.preparation.contractVersion = 8u;
+            oldTiming.preparation.content->contractVersion = 5u;
+            oldTiming.preparation.recording->contractVersion = 5u;
+            assert(execution.prepare(oldTiming, intentQuota, stateQuota, recordingQuota));
+            assert(!execution.program());
+        }
         auto oldProfile = budget;
         oldProfile.preparation.recording->opaqueDepthGraphicsVersion = 0u;
         oldProfile.preparation.recording->opaqueDepthGraphicsOptIn = false;
@@ -2771,11 +4157,14 @@ void verifyPreparedCloudGraph(Fixture& f,
             capturePath += core::pmr::String(std::to_string(sequenceFrame).c_str());
         }
     tests::RenderDocCaptureScope capture(capturePath.empty() ? nullptr : capturePath.c_str());
+    if (passTiming)
+        assert(f.timingPool->reset().success);
     require(execution.prepare(budget, intentQuota, stateQuota, recordingQuota));
     assert(execution.program());
     assert(execution.prepare(budget, intentQuota, stateQuota, recordingQuota));
     std::shared_ptr<VulkanRhiTimelineSemaphorePayload> readerGate;
-    if (history && sequenceFrame == 1u && exerciseReaderGate) {
+    const bool gatedTiming = passTiming && !std::getenv("ARP_RENDERDOC_CAPTURE_PATH");
+    if ((history && sequenceFrame == 1u && exerciseReaderGate) || gatedTiming) {
         core::pmr::String id;
         readerGate = VulkanRhiTimelineSemaphorePayload::create(f.runtime, 0u, id);
         assert(readerGate);
@@ -2794,6 +4183,13 @@ void verifyPreparedCloudGraph(Fixture& f,
             return nullptr;
         }));
     assert(observer.fence && graph.lastExecutionSubmitted());
+    if (gatedTiming) {
+        assert(readerGate && !observer.fence->isSignaled());
+        assert(f.device->latestGpuTiming().completedFrameSerial == previousTiming);
+        assert(!f.timingPool->reset().success);
+        assert(readerGate->hostSignal(1u) == VK_SUCCESS);
+        readerGate.reset();
+    }
     if (feature) {
         assert(!feature->preparedToken().ownerId);
         assert(feature->validateSubmission(submittedToken));
@@ -2823,7 +4219,13 @@ void verifyPreparedCloudGraph(Fixture& f,
         next.ambientRadiance = {.1f, .2f, .3f};
         next.time = parameters.cameraTime.w + 1.f / 60.f;
         CloudPreparedFrameBuffers nextBuffers;
-        assert((feature ? feature->prepareFrame(next, nextBuffers) : history->prepareFrame(next))
+        if (sceneResource)
+            sceneResource->setLayer(next.layer);
+        assert(
+            (sceneResource ? feature->prepareSceneFrame(
+                                 sceneResource->queue, sceneResource->resources, next, nextBuffers)
+                    : feature ? feature->prepareFrame(next, nextBuffers)
+                              : history->prepareFrame(next))
                 .success);
         // The old writer is already complete, but this gated frame is still
         // reading that slot. Only the third slot may be selected for writing.
@@ -2842,8 +4244,28 @@ void verifyPreparedCloudGraph(Fixture& f,
     while (!observer.fence->isSignaled() && std::chrono::steady_clock::now() < deadline)
         std::this_thread::yield();
     assert(observer.fence->isSignaled());
-    retireCompletedVulkanRhiSubmittedCommands();
     capture.end();
+    if (passTiming) {
+        const auto sample = f.device->latestGpuTiming();
+        assert(sample.availability == GpuTimingAvailability::Available
+            && sample.completedFrameSerial == budget.preparation.passTimingFrameSerial
+            && sample.scopeCount == 3u);
+        const std::array<std::uint64_t, 3u> ids{101u, 103u, 107u};
+        for (std::size_t i = 0u; i < ids.size(); ++i) {
+            assert(sample.scopes[i].scopeId == ids[i] && std::isfinite(sample.scopes[i].elapsedMs)
+                && sample.scopes[i].elapsedMs >= 0.f);
+            std::printf("ORIGINAL_GRAPH_TIMING_SAMPLE frame=%llu scope=%llu ms=%.9f\n",
+                static_cast<unsigned long long>(sample.completedFrameSerial),
+                static_cast<unsigned long long>(ids[i]),
+                sample.scopes[i].elapsedMs);
+        }
+        assert(f.timingPool->reset().success);
+        std::printf(
+            "ORIGINAL_GRAPH_TIMING_NATIVE_PASS FrameGraph2 Inputs11 State5 Stream5 Preparation%u timestamps6 scopes3 L2-frame-correlation same-executor same-meter same-journal real-completion hot0 foreground=%u history=%u\n",
+            budget.preparation.contractVersion,
+            unsigned(hasForeground),
+            unsigned(sequence && parameters.previousCamera.w > 0));
+    }
     if (sequence) {
         verifyCloudSequenceNumeric(*sequence, buffers, mixed, sequenceFrame, quality);
         assert(history && history->idle());
@@ -2855,8 +4277,11 @@ void verifyPreparedCloudGraph(Fixture& f,
     const auto* data = static_cast<const std::byte*>(native->backendMappedData());
     const std::array background{.125f, .375f, .75f, .625f};
     CloudReference reference;
+    auto referenceLayer = tests::cloud::layer();
+    referenceLayer.coverage = parameters.periodsCoverage.w;
+    referenceLayer.extinction = parameters.shell.w;
     if (asset)
-        assert(reference.configure(*asset, tests::cloud::layer()).success);
+        assert(reference.configure(*asset, referenceLayer).success);
     std::array<const CloudGpuSample*, 2u> samples{};
     for (unsigned i = 0u; i < 2u; ++i) {
         auto* buffer = i ? mixed.resolved : mixed.raw;
@@ -2962,7 +4387,20 @@ void verifyPreparedCloudGraph(Fixture& f,
             oracle, "],\"foreground\":%s,\"opaqueDistances\":[", hasForeground ? "true" : "false");
         for (std::size_t i = 0u; i < expectedOpaqueDistances.size(); ++i)
             std::fprintf(oracle, "%s%.9g", i ? "," : "", double(expectedOpaqueDistances[i]));
-        std::fprintf(oracle, "]}\n");
+        std::fprintf(oracle,
+            "],\"sampleWidth\":%u,\"sampleHeight\":%u,\"historyUsed\":false,"
+            "\"viewSteps\":%u,\"lightSteps\":%u,\"orthographic\":%s,"
+            "\"coverage\":%.9g,\"extinction\":%.9g,\"camera\":[%.9g,%.9g,%.9g]}\n",
+            plan.sampleExtent.width,
+            plan.sampleExtent.height,
+            parameters.sampling[0],
+            parameters.sampling[1],
+            parameters.jitter.w > 0.f ? "true" : "false",
+            double(parameters.periodsCoverage.w),
+            double(parameters.shell.w),
+            double(parameters.cameraTime.x),
+            double(parameters.cameraTime.y),
+            double(parameters.cameraTime.z));
         std::fclose(oracle);
     }
     std::printf(
@@ -2977,7 +4415,7 @@ void verifyPreparedCloudGraph(Fixture& f,
     std::printf("ORDINARY_FEATURE_FOREGROUND covered=%u metadataMaxError=%.9g\n",
         foregroundPixels,
         double(worstOpaqueDistance));
-    assert(!asset || cloudy > 0u);
+    assert(!asset || (referenceLayer.coverage == 0.f ? cloudy == 0u : cloudy > 0u));
     assert(!hasForeground || backgroundCloudy > 0u);
     assert(graph.executionTrace().size() == 5u);
     bool refused = false;
@@ -3017,17 +4455,31 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
     CloudDensityProbe densityProbe = CloudDensityProbe::Valid,
     bool spatialMotion = false,
     bool rendererPipelines = false,
-    bool rendererSequence = false)
+    bool rendererSequence = false,
+    bool passTiming = false,
+    bool nativePassTiming = false,
+    bool rendererPassTiming = false,
+    bool hostDeviceBuffers = false,
+    bool compactHistory = false,
+    const char* referenceCaseName = nullptr)
 {
     using Sources = OriginalCommandResourceSources;
     using SetSource = OriginalCommandDescriptorSetSource;
     constexpr std::array lifecycleModes{0u, 1u, 2u, 5u, 4u};
+    constexpr std::array timingLifecycleModes{0u, 1u, 2u, 5u, 6u, 7u, 4u};
     constexpr unsigned historySlots = 3u, sequenceFrames = 11u, resizeFrame = 6u;
     const bool qualityRun = quality != CloudQualityFixture::Disabled;
     const bool integrationProbe = quality == CloudQualityFixture::MediumFullProbe;
     const bool spatial = quality == CloudQualityFixture::MediumSpatial;
-    const renderer::cloud::CloudReconstructionConfig reconstruction{1u, .025f, .025f};
+    const renderer::cloud::CloudReconstructionConfig reconstruction{
+        compactHistory ? 2u : 1u, .025f, .025f};
     const bool rejectDensity = densityProbe != CloudDensityProbe::Valid;
+    const bool sceneOpaque = std::getenv("ARP_CLOUD_SCENE_OPAQUE");
+#if defined(ARP_CLOUD_FRAME_GRAPH_TEST)
+    const auto* referenceCase =
+        referenceCaseName ? tests::cloud::ReferenceCases::find(referenceCaseName) : nullptr;
+    assert(!referenceCaseName || (referenceCase && featureGraph && !historySequence));
+#endif
     assert(
         !rendererSequence || (rendererPipelines && featureGraph && historySequence && foreground));
     const unsigned frameCount = rendererPipelines && !rendererSequence ? 1u
@@ -3042,7 +4494,8 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
         foreground,
         historySequence ? historySlots : 0u,
         spatial,
-        !rendererPipelines);
+        !rendererPipelines,
+        passTiming);
     core::CpuMemoryQuotaScope scope(f.quotas[9]);
     const auto require = [](const char* id) {
         if (id)
@@ -3060,6 +4513,34 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
     renderer::cloud::VolumetricCloudFeature preparedFeature;
     std::optional<assets::cloud::CloudAsset> preparedAsset;
     std::optional<renderer::cloud::CloudPreparedResourceCreateContext> preparedResources;
+    core::UniquePtr<tests::cloud::SceneResourceFixture> sceneResource;
+    if (const auto* mode = std::getenv("ARP_CLOUD_SCENE_RESOURCE_MODE")) {
+        assert((rendererSequence || referenceCase)
+            && (!std::strcmp(mode, "id") || !std::strcmp(mode, "alias")));
+        sceneResource = core::makeUnique<tests::cloud::SceneResourceFixture>(
+            !std::strcmp(mode, "id") ? renderer::cloud::CloudSceneReferenceMode::ResourceId
+                                     : renderer::cloud::CloudSceneReferenceMode::Alias);
+        if (const auto* path = std::getenv("ARP_CLOUD_ORACLE_PATH")) {
+            const auto fileName = core::pmr::String(path) + ".asset.bin";
+            auto* file = std::fopen(fileName.c_str(), "wb");
+            assert(file);
+            const auto& cells = sceneResource->binding->asset()->cells;
+            assert(
+                std::fwrite(cells.data(), sizeof(core::Vec4), cells.size(), file) == cells.size());
+            assert(std::fclose(file) == 0);
+        }
+    }
+    const auto prepareOwnedFrame = [&](const renderer::cloud::CloudGraphContext& context,
+                                       renderer::cloud::CloudPreparedFrameBuffers& buffers) {
+        if (!sceneResource)
+            return preparedFeature.prepareFrame(context, buffers);
+        sceneResource->setLayer(context.layer);
+        auto caller = context;
+        // The visible scene is authoritative; a caller layer cannot override it.
+        caller.layer.extinction = -1.f;
+        return preparedFeature.prepareSceneFrame(
+            sceneResource->queue, sceneResource->resources, caller, buffers);
+    };
     if (rendererPipelines) {
         using namespace renderer::cloud;
         CloudPreparedPipelineCreateContext c{*f.device};
@@ -3071,13 +4552,17 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
         c.resources.maxDescriptorSets = 9u;
         c.resources.maxDescriptorElements = spatial ? 45u : 36u;
         c.selection = {1u,
-            spatial ? CloudPreparedResolve::Reconstruction1 : CloudPreparedResolve::Temporal1,
+            compactHistory ? CloudPreparedResolve::Reconstruction2
+                : spatial  ? CloudPreparedResolve::Reconstruction1
+                           : CloudPreparedResolve::Temporal1,
             spatial ? reconstruction : CloudReconstructionConfig{}};
         c.publications = {ARP_ORIGINAL_CLOUD_RAYMARCH,
             ARP_ORIGINAL_CLOUD_TEMPORAL,
             ARP_ORIGINAL_CLOUD_MODULE,
             ARP_ORIGINAL_CLOUD_SPATIAL_RESOLVE,
-            ARP_ORIGINAL_CLOUD_SPATIAL_MODULE};
+            ARP_ORIGINAL_CLOUD_SPATIAL_MODULE,
+            ARP_ORIGINAL_CLOUD_COMPACT_RESOLVE,
+            ARP_ORIGINAL_CLOUD_COMPACT_MODULE};
         c.preparation = {6u,
             true,
             {1u, true, 2u, 1u, 3u, {1u, true, 2u, 0u, 0u, 0u, 256u, bytes}},
@@ -3125,14 +4610,16 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                     && !q.native->liveBytes() && !q.wrapper->liveBytes());
         };
         if (spatial) {
-            const auto selected = c.publications.spatialResolve;
-            c.publications.spatialResolve = c.publications.temporal;
+            auto& selectedPath =
+                compactHistory ? c.publications.compactResolve : c.publications.spatialResolve;
+            const auto selected = selectedPath;
+            selectedPath = c.publications.temporal;
             const auto calls = NativeProbe::ordinal;
             const auto rejected = preparedPipelines.create(c, text);
             assert(!rejected.success && text == "CLOUD-PREPARED-PIPELINE-RESOLVE-ABI"
                 && NativeProbe::ordinal == calls);
             assertReleased();
-            c.publications.spatialResolve = selected;
+            selectedPath = selected;
         }
         for (std::size_t i = 0u; i < c.quotas.size(); ++i) {
             c.quotas[i].owner->setLimitBytes(bytes - 1u);
@@ -3158,7 +4645,8 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
             NativeProbe::failAt = 0u;
         }
         preparedAsset = tests::cloud::asset();
-        preparedResources.emplace(CloudPreparedResourceCreateContext{*f.device, *preparedAsset});
+        preparedResources.emplace(CloudPreparedResourceCreateContext{
+            *f.device, sceneResource ? *sceneResource->binding->asset() : *preparedAsset});
         auto& resources = *preparedResources;
         resources.contractVersion = 1u;
         resources.prototypeOptIn = true;
@@ -3166,6 +4654,8 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
         resources.selection = c.selection;
         resources.resources = c.resources;
         resources.sampleMemory = MemoryUsage::CpuToGpu;
+        if (hostDeviceBuffers)
+            resources.hostVisibleDeviceLocal = {1u, true};
         resources.maxCpuOwnerBytes = resources.maxCpuInitializationBytes = bytes;
         resources.ownerQuota = core::makeShared<core::CpuMemoryQuota>(bytes);
         resources.initializationQuota = core::makeShared<core::CpuMemoryQuota>(bytes);
@@ -3178,20 +4668,48 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
         featureContext.prototypeOptIn = true;
         featureContext.maxCpuStateBytes = bytes;
         featureContext.stateQuota = core::makeShared<core::CpuMemoryQuota>(bytes);
-        const auto finalResult = preparedFeature.create(featureContext, text);
+        if (sceneResource) {
+            CloudPreparedResourceCreateContext foreign{*f.device, *preparedAsset};
+            CloudPreparedFeatureCreateContext wrongAsset{c, foreign};
+            const auto calls = NativeProbe::ordinal;
+            const auto rejected = preparedFeature.createScene(sceneResource->binding,
+                sceneResource->queue,
+                sceneResource->resources,
+                wrongAsset,
+                text);
+            assert(!rejected.success
+                && std::string_view(rejected.diagnostic) == "CLOUD-SCENE-FEATURE-ASSET");
+            assert(!preparedFeature.created() && calls == NativeProbe::ordinal);
+        }
+        const auto finalResult = sceneResource ? preparedFeature.createScene(sceneResource->binding,
+                                                     sceneResource->queue,
+                                                     sceneResource->resources,
+                                                     featureContext,
+                                                     text)
+                                               : preparedFeature.create(featureContext, text);
         if (!finalResult.success)
             std::fprintf(stderr,
                 "renderer cold pipelines final: %s (%s)\n",
                 finalResult.diagnostic,
                 text.c_str());
         assert(finalResult.success && text.empty());
+        if (sceneResource) {
+            CloudPreparedResourceCreateContext foreign{*f.device, *preparedAsset};
+            const auto* oldResources = preparedFeature.preparedResources();
+            const auto rejected = preparedFeature.resize(foreign);
+            assert(!rejected.success
+                && std::string_view(rejected.diagnostic) == "CLOUD-SCENE-FEATURE-ASSET");
+            assert(preparedFeature.preparedResources() == oldResources);
+        }
         graphics = preparedFeature.preparedPipelines()->composite();
         rayPipeline = preparedFeature.preparedPipelines()->raymarch();
         temporalPipeline = preparedFeature.preparedPipelines()->resolve();
         assert(!preparedFeature.create(featureContext, text).success);
         std::printf(
             "CLOUD_RENDERER_COLD_PIPELINES_PASS resolve=%s native-failure-prefixes=%u quota-prefixes=3\n",
-            spatial ? "Reconstruction/1" : "Temporal/1",
+            compactHistory ? "Reconstruction/2"
+                : spatial  ? "Reconstruction/1"
+                           : "Temporal/1",
             creationCalls);
     } else
 #endif
@@ -3230,6 +4748,7 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
     tests::cloud::SequenceOracle sequence;
     tests::cloud::QualityOracle qualityOracle;
     render_graph::PassSubmissionToken cancelledFeatureToken{}, previousFeatureToken{};
+    assert(!sceneOpaque || (rendererSequence && spatialMotion && !passTiming));
     std::shared_ptr<RenderPipeline> foregroundPipeline;
     if (foreground)
         foregroundPipeline = prepareForegroundPipeline(f, *extension);
@@ -3259,6 +4778,8 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
             desc.sizeBytes = offsets[index] + count;
             desc.usage = usage;
             desc.memory = MemoryUsage::CpuToGpu;
+            if (hostDeviceBuffers && (usage & ResourceUsage::StorageBuffer) != ResourceUsage::None)
+                desc.hostVisibleDeviceLocal = {1u, true};
             desc.initialState = state;
             auto object = f.device->createBuffer(desc);
             if (!object)
@@ -3313,7 +4834,7 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
         constants.jitter = {.5f, .5f, .5f, 0.f};
 #if defined(ARP_CLOUD_FRAME_GRAPH_TEST)
         if (cloudCase) {
-            cloudAsset = tests::cloud::asset();
+            cloudAsset = sceneResource ? *sceneResource->binding->asset() : tests::cloud::asset();
             if (cloudCase <= 3u) {
                 const auto profiles = assets::cloud::kCloudHeightProfileCount;
                 const auto shape = profiles
@@ -3333,17 +4854,29 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                     cloudAsset->cells[i] = {};
                 assert(assets::cloud::CloudAssetCooker::validate(*cloudAsset).success);
             }
-            const auto layer = tests::cloud::layer();
+            auto layer = tests::cloud::layer();
+            if (referenceCase) {
+                layer.coverage = referenceCase->coverage;
+                layer.extinction = referenceCase->extinction;
+            }
             const auto altitude = (cloudCase - 1u) % 3u;
             const core::Vec3 camera{39.f,
-                altitude == 0u       ? 10.f
+                referenceCase        ? referenceCase->altitude
+                    : altitude == 0u ? 10.f
                     : altitude == 1u ? 1600.f
                                      : 4000.f,
                 -57.f};
-            const auto view =
-                core::lookAt(camera, camera + core::Vec3{.25f, altitude == 2u ? -.6f : .6f, 1.f});
-            auto projection = core::perspective(
-                57.f, float(frameExtent.width) / frameExtent.height, 1.f, 20000.f);
+            const auto view = core::lookAt(camera,
+                camera
+                    + core::Vec3{.25f,
+                        referenceCase        ? referenceCase->viewElevation
+                            : altitude == 2u ? -.6f
+                                             : .6f,
+                        1.f});
+            auto projection = referenceCase && referenceCase->orthographic
+                ? core::orthographic(1600.f, 1200.f, 1.f, 20000.f)
+                : core::perspective(
+                      57.f, float(frameExtent.width) / frameExtent.height, 1.f, 20000.f);
             semantics::applyProjectionYConvention(projection.m.data(), f.device->backend());
             auto vp = core::multiply(projection, view);
             semantics::applyRenderTargetSamplingYConvention(vp.m.data(), f.device->backend());
@@ -3368,7 +4901,8 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                 layer.weatherPeriod, layer.shapePeriod, layer.detailPeriod, layer.coverage};
             constants.windErosion = {
                 layer.windVelocity.x, layer.windVelocity.y, layer.windVelocity.z, layer.erosion};
-            const auto sun = core::normalize(core::Vec3{1, 1, -.2f});
+            const auto sun =
+                core::normalize(referenceCase ? referenceCase->sun : core::Vec3{1, 1, -.2f});
             constants.sunDirection = {sun.x, sun.y, sun.z, 0};
             constants.sunRadiance = {2, 1.8f, 1.6f, 0};
             constants.ambientRadiance = {.1f, .2f, .3f, 0};
@@ -3383,6 +4917,20 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                 shape,
                 shape + constants.sampling[3] * constants.sampling[3] * constants.sampling[3]};
             constants.temporal = {0.f, 10.f, 10000.f, 0.f};
+            if (referenceCase) {
+                assert(frameExtent.width == tests::cloud::ReferenceCases::width
+                    && frameExtent.height == tests::cloud::ReferenceCases::height);
+                constants.sampling[0] = tests::cloud::ReferenceCases::viewSteps;
+                constants.sampling[1] = tests::cloud::ReferenceCases::lightSteps;
+                constants.jitter.w = referenceCase->orthographic ? 1.f : 0.f;
+                std::printf(
+                    "CLOUD_P03_REFERENCE case=%s full-resolution=%ux%u steps=%u/%u history=off\n",
+                    referenceCaseName,
+                    frameExtent.width,
+                    frameExtent.height,
+                    constants.sampling[0],
+                    constants.sampling[1]);
+            }
         }
 #endif
 #if defined(ARP_CLOUD_FRAME_GRAPH_TEST)
@@ -3467,6 +5015,8 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                             desc.usage = ResourceUsage::StorageBuffer;
                             desc.memory = MemoryUsage::CpuToGpu;
                             desc.initialState = ResourceState::ShaderWrite;
+                            if (hostDeviceBuffers)
+                                desc.hostVisibleDeviceLocal = {1u, true};
                             auto object = f.device->createBuffer(desc);
                             assert(object);
                             core::pmr::Vector<std::byte> zero(desc.sizeBytes);
@@ -3532,7 +5082,7 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
             renderer::cloud::CloudPreparedFrameBuffers preparedFrame;
             if (rendererSequence && (frame == 0u || frame == resizeFrame)) {
                 assert(preparedFeature.frameReady());
-                result = preparedFeature.prepareFrame(c, preparedFrame);
+                result = prepareOwnedFrame(c, preparedFrame);
                 require(result.success ? nullptr : result.diagnostic);
                 cancelledFeatureToken = preparedFeature.preparedToken();
                 const auto rejected = preparedFeature.resize(*preparedResources);
@@ -3544,8 +5094,8 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                 preparedFrame = {};
                 assert(preparedFeature.validateSubmission(cancelledFeatureToken));
             }
-            result = rendererPipelines ? preparedFeature.prepareFrame(c, preparedFrame)
-                                       : history->prepareFrame(c);
+            result =
+                rendererPipelines ? prepareOwnedFrame(c, preparedFrame) : history->prepareFrame(c);
             require(result.success ? nullptr : result.diagnostic);
             if (rendererSequence) {
                 previousFeatureToken = preparedFeature.preparedToken();
@@ -3553,7 +5103,25 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                     && previousFeatureToken.generation != cancelledFeatureToken.generation);
                 assert(preparedFeature.validateSubmission(cancelledFeatureToken));
                 renderer::cloud::CloudPreparedFrameBuffers duplicate;
-                assert(!preparedFeature.prepareFrame(c, duplicate).success && !duplicate.constants);
+                const auto bypass = preparedFeature.prepareFrame(c, duplicate);
+                assert(!bypass.success && !duplicate.constants);
+                if (sceneResource)
+                    assert(std::string_view(bypass.diagnostic)
+                        == "CLOUD-SCENE-FEATURE-PREPARE-REQUIRED");
+                if (sceneResource && frame + 1u == frameCount) {
+                    const auto token = preparedFeature.preparedToken();
+                    assert(
+                        sceneResource->resources.unload(sceneResource->desc.reference.id).success);
+                    const auto stale = preparedFeature.prepareSceneFrame(
+                        sceneResource->queue, sceneResource->resources, c, duplicate);
+                    assert(!stale.success
+                        && std::string_view(stale.diagnostic) == "CLOUD-SCENE-RESOURCE-NOT-READY");
+                    assert(!duplicate.constants
+                        && preparedFeature.preparedToken().generation == token.generation);
+                    std::printf(
+                        "CLOUD_SCENE_ACCEPTED_UNLOAD frame=%u token=retained next=refused\n",
+                        frame);
+                }
             }
             constants = history->pendingFrame().parameters;
             const bool expectedHistory = qualityRun && !spatialMotion
@@ -3711,7 +5279,16 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
             assert(allocation && !f.diagnostic
                 && !semantics::TextureUploadDestinationValidation::footprint(desc, footprint));
             auto object = f.device->createOriginalContentTexture(desc,
-                {4u, true, 1u, 1u, footprint, lifecycleModes.size(), bytes, 1u, allocation},
+                {4u,
+                    true,
+                    1u,
+                    1u,
+                    footprint,
+                    passTiming && nativePassTiming ? timingLifecycleModes.size()
+                                                   : lifecycleModes.size(),
+                    bytes,
+                    1u,
+                    allocation},
                 f.quotas[7],
                 f.diagnostic);
             assert(object);
@@ -3743,12 +5320,24 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
         admission.maxPassColorAttachments = 2u;
         admission.maxPassAttachmentReferences = 3u;
         if (featureGraph)
-            admission.maxLabelBytes = std::strlen("Cloud.SceneProducer")
+            admission.maxLabelBytes =
+                std::strlen(sceneOpaque ? "SceneOpaque.HdrDepth" : "Cloud.SceneProducer")
                 + std::strlen("Cloud.Composite")
                 + 2u * (textures[0]->desc().label.size() + textures[2]->desc().label.size())
                 + textures[1]->desc().label.size();
+#if defined(ARP_CLOUD_FRAME_GRAPH_TEST)
+        core::UniquePtr<SceneOpaqueNativeFrame> opaqueFrame;
+        if (sceneOpaque) {
+            opaqueFrame = core::makeUnique<SceneOpaqueNativeFrame>(
+                f, sequence, preparedFeature, *foregroundPipeline);
+            prefix.resize(18u);
+            prefix[16u] = opaqueFrame->frame->constants();
+            prefix[17u] = opaqueFrame->frame->geometry();
+        }
+#endif
         const auto pipelineCount = foreground ? 4u : 3u;
-        const auto bufferCount = (foreground ? 7u : 6u) + (spatial ? 1u : 0u);
+        const auto bufferCount = (foreground ? 7u : 6u) + (spatial ? 1u : 0u)
+            + (std::getenv("ARP_CLOUD_SCENE_OPAQUE") ? 2u : 0u);
         admission.maxGraphOwners = pipelineCount * Source::cpuOwnerSlots
             + bufferCount * OriginalCommandBufferLease::retainedOwnerCount
             + 3u * OriginalCommandTextureLease::retainedOwnerCount
@@ -3766,10 +5355,14 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
             pipelineCount;
         admission.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Descriptor)] =
             pipelineCount;
+        if (passTiming) {
+            admission.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Query)] = 1u;
+            admission.maxGraphOwners += OriginalCommandQueryPoolSource::cpuOwnerSlots;
+        }
         auto inventory = Sources::prepareColdOriginalTyped(prefix.data(),
             prefix.size(),
             admission,
-            {8u, true, 2u * pipelineCount},
+            {passTiming ? 9u : 8u, true, 2u * pipelineCount + std::uint32_t(passTiming)},
             f.quotas[7],
             f.diagnostic);
         require(f.diagnostic);
@@ -3798,6 +5391,7 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
         mixed.pipelines = {appendPipeline(rayPipeline), appendPipeline(temporalPipeline)};
 #if defined(ARP_CLOUD_FRAME_GRAPH_TEST)
         ForegroundGraphSources foregroundSources;
+        foregroundSources.scene = opaqueFrame.get();
         if (foreground) {
             foregroundSources.pipeline = appendPipeline(foregroundPipeline);
             foregroundSources.viewport = historySequence
@@ -3813,7 +5407,8 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
 #endif
         auto arenaCandidate = f.device->createOriginalDescriptorArena({"Original.Mixed.Cloud",
             pipelineCount,
-            (foreground ? 13u : 12u) + (spatial ? 3u : 0u)});
+            (foreground ? 13u : 12u) + (spatial ? 3u : 0u)
+                + (std::getenv("ARP_CLOUD_SCENE_OPAQUE") ? 1u : 0u)});
         assert(arenaCandidate);
         std::shared_ptr<DescriptorArena> arena;
         std::size_t graphicsSet = SIZE_MAX;
@@ -3880,6 +5475,9 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                 e.write.binding = layout.bindings[i].binding;
                 e.write.type = layout.bindings[i].type;
                 e.stages = compute ? PipelineStage::ComputeShader : PipelineStage::FragmentShader;
+                if (std::getenv("ARP_CLOUD_SCENE_OPAQUE") && !compute && resources.size() == 2u)
+                    e.stages = i == 0u ? PipelineStage::VertexShader | PipelineStage::FragmentShader
+                                       : PipelineStage::VertexShader;
                 e.access = e.write.type == DescriptorType::StorageBuffer
                     ? ResourceAccess::ShaderRead | ResourceAccess::ShaderWrite
                     : ResourceAccess::ShaderRead;
@@ -3902,10 +5500,12 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                     e.write.resourceKind = DescriptorResourceKind::Buffer;
                     e.registrationGeneration =
                         source->originalObject()->originalResourceRegistration().generation();
-                    e.write.bufferBindingRange = {
-                        2u, offsets[e.sourceIndex], lengths[e.sourceIndex]};
-                    e.bufferAccessOffset = offsets[e.sourceIndex];
-                    e.bufferAccessBytes = lengths[e.sourceIndex];
+                    e.write.bufferBindingRange = {2u,
+                        e.sourceIndex >= 16u ? 0u : offsets[e.sourceIndex],
+                        e.sourceIndex >= 16u ? source->originalObject()->desc().sizeBytes
+                                             : lengths[e.sourceIndex]};
+                    e.bufferAccessOffset = e.write.bufferBindingRange.offsetBytes;
+                    e.bufferAccessBytes = e.write.bufferBindingRange.sizeBytes;
                     if (e.sourceIndex == 10u && compute) {
                         if ((densityProbe == CloudDensityProbe::RayShort
                                 && pipelineIndex == mixed.pipelines[0])
@@ -3975,10 +5575,44 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                               true)};
         }
         mixed.sampleOffsets = {offsets[11u], offsets[1u]};
+        if (passTiming) {
+            using QuerySource = OriginalCommandQueryPoolSource;
+            const auto query = QuerySource::prepareOriginal(f.timingPool,
+                {1u,
+                    true,
+                    f.timingPool->originalResourceRegistration().generation(),
+                    bytes,
+                    QuerySource::cpuOwnerSlots},
+                f.quotas[7],
+                *f.device,
+                f.diagnostic);
+            require(f.diagnostic);
+            mixed.timingSource = inventory->sources().size();
+            require(Sources::appendOriginalTyped(inventory, query, *f.device));
+            if (!rendererPassTiming) {
+                for (const auto mode : timingLifecycleModes) {
+                    verifyOrdinaryCloudDraw(f,
+                        runtime,
+                        inventory,
+                        textures,
+                        graphicsIndex,
+                        graphicsSet,
+                        nativePassTiming ? mode : 0u,
+                        &mixed,
+                        false,
+                        false,
+                        nativePassTiming);
+                    if (!nativePassTiming)
+                        break;
+                }
+                return;
+            }
+        }
 #if defined(ARP_CLOUD_FRAME_GRAPH_TEST)
         if (foreground)
-            foregroundSources.descriptors =
-                publish(foregroundPipeline, foregroundSources.pipeline, {14u}, false);
+            foregroundSources.descriptors = sceneOpaque
+                ? publish(foregroundPipeline, foregroundSources.pipeline, {16u, 17u}, false)
+                : publish(foregroundPipeline, foregroundSources.pipeline, {14u}, false);
         if (featureGraph) {
             verifyPreparedCloudGraph(f,
                 inventory,
@@ -4000,7 +5634,8 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                         : "CLOUD-RECONSTRUCTION-GRAPH-RESOURCE-BINDING"
                               : nullptr,
                 rendererPipelines ? &preparedFeature : nullptr,
-                rendererPipelines ? &*preparedResources : nullptr);
+                rendererPipelines ? &*preparedResources : nullptr,
+                sceneResource.get());
             if (rejectDensity) {
                 require(
                     history->cancelPendingFrame().success ? nullptr : "CLOUD-DENSITY-PROBE-CANCEL");
@@ -4029,6 +5664,10 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
 #if defined(ARP_CLOUD_FRAME_GRAPH_TEST)
     if (rendererPipelines) {
         assert(preparedFeature.preparedHistory()->idle());
+        if (sceneResource)
+            std::printf("CLOUD_SCENE_ORDINARY_PASS frames=%u mode=%s source=visibleSceneQueue\n",
+                frameCount,
+                std::getenv("ARP_CLOUD_SCENE_RESOURCE_MODE"));
         slots = {};
         preparedFeature.release();
         assert(!preparedFeature.created() && !preparedResources->retainedLogicalBytes->used());
@@ -4038,7 +5677,9 @@ void verifyOrdinaryMixedCloud(const std::shared_ptr<VulkanRhiRuntime>& runtime,
         if (rendererSequence)
             std::printf(
                 "CLOUD_OWNED_HISTORY_PASS resolve=%s orthographic=%u frames=%u readerGate=%u\n",
-                spatial ? "Reconstruction/1" : "Temporal/1",
+                compactHistory ? "Reconstruction/2"
+                    : spatial  ? "Reconstruction/1"
+                               : "Temporal/1",
                 unsigned(orthographic),
                 frameCount,
                 unsigned(exerciseReaderGate));
@@ -4330,6 +5971,347 @@ void verifyComputePublication(
         static_cast<unsigned long long>(exact[2]));
 }
 
+#if defined(ARP_CLOUD_FRAME_GRAPH_TEST)
+class CookedAssetSlices final {
+    struct Parameters {
+        std::array<std::uint32_t, 4u> extentLayout;
+        core::Vec4 coordinates;
+        std::array<std::uint32_t, 4u> sampling;
+    };
+
+    static_assert(sizeof(Parameters) == 48u && offsetof(Parameters, coordinates) == 16u
+        && offsetof(Parameters, sampling) == 32u);
+
+    struct Completion final : render_graph::PassSubmissionObserver {
+        std::shared_ptr<const GpuFence> fence;
+
+        void onSubmitted(render_graph::PassSubmissionToken,
+            const std::shared_ptr<const GpuFence>& value) noexcept override
+        {
+            fence = value;
+        }
+    };
+
+    static void require(const char* id)
+    {
+        if (id)
+            std::fprintf(stderr, "cooked asset slice: %s\n", id);
+        assert(!id);
+    }
+
+    static void evidence(const char* name, const void* data, std::size_t bytes)
+    {
+        const auto* directory = std::getenv("ARP_CLOUD_SLICE_EVIDENCE_DIR");
+        if (!directory)
+            return;
+        const auto path = std::filesystem::path(directory) / name;
+        auto* file = std::fopen(path.string().c_str(), "wb");
+        assert(file && std::fwrite(data, 1u, bytes, file) == bytes);
+        assert(std::fclose(file) == 0);
+    }
+
+    static void slice(const std::shared_ptr<VulkanRhiRuntime>& runtime,
+        const assets::cloud::CloudAsset& asset,
+        unsigned kind)
+    {
+        using Sources = OriginalCommandResourceSources;
+        using Descriptor = OriginalCommandDescriptorSetSource;
+        using Pipeline = OriginalCommandComputePipelineSource;
+        using Buffer = OriginalCommandBufferLease;
+        const std::array dimensions{asset.source.weatherDimension,
+            asset.source.shapeDimension,
+            asset.source.detailDimension};
+        const auto dim = dimensions[kind];
+        const auto weatherCells = asset.source.weatherDimension * asset.source.weatherDimension;
+        const auto shapeCells =
+            asset.source.shapeDimension * asset.source.shapeDimension * asset.source.shapeDimension;
+        const std::array offsets{assets::cloud::kCloudHeightProfileCount,
+            assets::cloud::kCloudHeightProfileCount + weatherCells,
+            assets::cloud::kCloudHeightProfileCount + weatherCells + shapeCells};
+        // Explicit diagnostic sampling grid: two periods, negative coordinates,
+        // exact seam samples and half-cell spacing (interpolation as well as centers).
+        const auto side = 4u * dim + 1u;
+        const Parameters parameters{{side, side, offsets[kind], dim},
+            {-1.f, -1.f, 1.f / (2.f * dim), .375f},
+            {kind == 0u ? 1u : 0u, 0u, 0u, 0u}};
+        const auto count = std::size_t(side) * side;
+        core::pmr::Vector<core::Vec4> expected(count), initialized(count);
+        for (auto& value : initialized)
+            value = {NAN, NAN, NAN, NAN};
+        for (unsigned y = 0u; y < side; ++y)
+            for (unsigned x = 0u; x < side; ++x) {
+                const core::Vec3 uv{-1.f + x * parameters.coordinates.z,
+                    -1.f + y * parameters.coordinates.z,
+                    parameters.coordinates.w};
+                if (kind == 0u)
+                    expected[y * side + x] =
+                        assets::cloud::CloudAssetCooker::sampleWeather(asset, {uv.x, uv.y});
+                else
+                    expected[y * side + x] = {kind == 1u
+                            ? assets::cloud::CloudAssetCooker::sampleShape(asset, uv)
+                            : assets::cloud::CloudAssetCooker::sampleDetail(asset, uv),
+                        0.f,
+                        0.f,
+                        0.f};
+            }
+        ComputeFixture f(runtime, ARP_ORIGINAL_CLOUD_ASSET_SLICE, true);
+        core::CpuMemoryQuotaScope nativeOwnerScope(f.quotas[9]);
+        auto receipt = f.create();
+        require(f.diagnostic);
+        assert(receipt);
+        auto pipeline = OriginalRegisteredPipeline::shareAcceptedOriginal(
+            f.device->createOriginalArtifactComputePipeline(
+                receipt, {2u, true, bytes}, f.quotas[6]),
+            f.diagnostic);
+        require(f.diagnostic);
+        assert(pipeline);
+        auto pipelineSource = Pipeline::prepareOriginal(pipeline,
+            {2u,
+                true,
+                Pipeline::kind,
+                pipeline->originalResourceRegistration().generation(),
+                bytes,
+                Pipeline::exclusiveOwnerCount},
+            f.quotas[7],
+            *f.device,
+            f.diagnostic);
+        require(f.diagnostic);
+        assert(pipelineSource);
+        const std::array sizes{sizeof(parameters),
+            asset.cells.size() * sizeof(core::Vec4),
+            count * sizeof(core::Vec4)};
+        const std::array<const void*, 3u> initial{
+            &parameters, asset.cells.data(), initialized.data()};
+        std::array<GpuBuffer*, 3u> buffers{};
+        std::array<std::shared_ptr<const Buffer>, 3u> leases;
+        std::array<Sources::Source, 3u> prefix;
+        std::array<OriginalCommandDescriptorSetElement, 3u> elements;
+        const auto& layout = f.layout->desc().descriptorLayouts.front();
+        assert(layout.bindings.size() == 3u);
+        for (unsigned i = 0u; i < 3u; ++i) {
+            const auto& binding = layout.bindings[i];
+            assert(binding.binding == (i == 2u ? 3u : i));
+            BufferDesc desc;
+            desc.label = i == 0u ? "Cloud.AssetSlice.Parameters"
+                : i == 1u        ? "Cloud.AssetSlice.CookedCells"
+                                 : "Cloud.AssetSlice.Output";
+            desc.sizeBytes = sizes[i];
+            desc.memory = MemoryUsage::CpuToGpu;
+            desc.usage = i == 0u ? ResourceUsage::UniformBuffer : ResourceUsage::StorageBuffer;
+            desc.initialState = i == 2u ? ResourceState::ShaderWrite : ResourceState::ShaderRead;
+            auto buffer = f.device->createBuffer(desc);
+            buffers[i] = buffer.get();
+            assert(buffers[i] && f.device->writeBuffer(*buffers[i], initial[i], sizes[i]).success);
+            if (i == 2u)
+                buffers[i]->sealHostWrites();
+            else
+                buffers[i]->sealWrites();
+            leases[i] =
+                Buffer::prepareOriginal(buffer, {1u, true, 2u, bytes}, f.quotas[7], f.diagnostic);
+            require(f.diagnostic);
+            assert(leases[i]);
+            prefix[i] = leases[i];
+            auto& e = elements[i];
+            e.sourceIndex = i;
+            e.write.binding = binding.binding;
+            e.write.type = binding.type;
+            e.write.resource = leases[i]->resource();
+            e.write.resourceKind = DescriptorResourceKind::Buffer;
+            e.write.resourceState = desc.initialState;
+            e.write.bufferBindingRange = {2u, 0u, sizes[i]};
+            e.bufferAccessBytes = sizes[i];
+            e.registrationGeneration = buffers[i]->originalResourceRegistration().generation();
+            e.stages = PipelineStage::ComputeShader;
+            e.access = i == 2u ? ResourceAccess::ShaderRead | ResourceAccess::ShaderWrite
+                               : ResourceAccess::ShaderRead;
+        }
+        OriginalCommandAdmissionBudget admission;
+        admission.contractVersion = 1u;
+        admission.prototypeOptIn = true;
+        admission.maxCommands = admission.maxReferences = admission.maxInputDescriptors = 16u;
+        admission.maxStateObservations = admission.maxTextureRanges = 16u;
+        admission.maxLabelBytes = 128u;
+        admission.maxGraphOwners = 512u;
+        admission.maxCpuBytes.fill(bytes);
+        admission.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Buffer)] = 3u;
+        admission.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Pipeline)] = 1u;
+        admission.maxSourceOwners[static_cast<std::size_t>(CommandReferenceDomain::Descriptor)] =
+            1u;
+        auto inventory = Sources::prepareColdOriginalTyped(
+            prefix.data(), prefix.size(), admission, {8u, true, 2u}, f.quotas[7], f.diagnostic);
+        require(f.diagnostic);
+        assert(inventory);
+        require(Sources::appendOriginalTyped(inventory, pipelineSource, *f.device));
+        auto arena = core::shareUnique(
+            f.device->createOriginalDescriptorArena({"Cloud.AssetSlice", 1u, 3u}));
+        assert(arena);
+        auto descriptor = f.device->allocateOriginalDescriptorSet(arena, {layout.name, layout});
+        assert(descriptor);
+        OriginalGeneralDescriptorWriteRequest write;
+        write.contractVersion = 4u;
+        write.prototypeOptIn = true;
+        write.maxBindings = elements.size();
+        write.maxRetainedOwnerSlots = OriginalGeneralDescriptorWriteContract::ownerSlots(3u, 4u);
+        write.maxCpuBytes.fill(bytes);
+        write.maxRetainedAllocationBytes = bytes;
+        std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u> writerQuotas;
+        for (auto& quota : writerQuotas)
+            quota = core::makeShared<core::CpuMemoryQuota>(bytes);
+        require(f.device->beginOriginalGeneralDescriptorWrite(*descriptor,
+            pipeline,
+            inventory,
+            0u,
+            elements.data(),
+            elements.size(),
+            write,
+            writerQuotas));
+        require(descriptor->finishOriginalGeneralWrite());
+        OriginalCommandDescriptorSourceBudget descriptorBudget{
+            7u, true, 3u, 3u, Descriptor::finiteExclusiveRetainedOwnerCount, bytes};
+        descriptorBudget.finitePipelineSourceIndex = 3u;
+        descriptorBudget.finiteFootprintContractVersion = 2u;
+        descriptorBudget.finiteFullBoundViewOptIn = true;
+        auto source = Descriptor::prepareOriginal(descriptor,
+            arena,
+            inventory,
+            elements.data(),
+            elements.size(),
+            descriptorBudget,
+            f.quotas[7],
+            *f.device,
+            f.diagnostic);
+        require(f.diagnostic);
+        assert(source);
+        require(Sources::appendOriginalTyped(inventory, source, *f.device));
+        render_graph::FrameGraph graph(*f.device);
+        auto intentQuota = core::makeShared<core::CpuMemoryQuota>(bytes);
+        auto stateQuota = core::makeShared<core::CpuMemoryQuota>(bytes);
+        auto recordQuota = core::makeShared<core::CpuMemoryQuota>(bytes);
+        render_graph::OriginalFrameGraphExecution execution(graph, inventory, intentQuota);
+        Completion completion;
+        execution
+            .compute("Cloud.AssetSlice", 3u, 4u, {1u + (side - 1u) / 8u, 1u + (side - 1u) / 8u, 1u})
+            .read(graph.importBufferRef({leases[0], buffers[0]}), ResourceState::ShaderRead)
+            .read(graph.importBufferRef({leases[1], buffers[1]}), ResourceState::ShaderRead)
+            .write(graph.importBufferRef({leases[2], buffers[2]}), ResourceState::ShaderWrite)
+            .externalSideEffects()
+            .onSubmitted(completion);
+        render_graph::OriginalFrameGraphBudget budget;
+        budget.contractVersion = 1u;
+        budget.prototypeOptIn = true;
+        budget.maxCpuIntentBytes = bytes;
+        budget.inputs = {10u, true, 3u, 3u};
+        budget.states = {5u, true, 1u, 16u, 32u, 32u, 512u, bytes};
+        auto& consumption = budget.states.descriptorConsumption;
+        consumption = {4u, true, 1u, 1u, true, true, 1u, 3u};
+        consumption.generalShaderResourcesVersion = 2u;
+        consumption.generalShaderResourcesOptIn = true;
+        // State/5 and Stream/5 require the same complete render-binding
+        // profile even though this compute-only program consumes none.
+        auto& renderBindings = budget.states.renderDescriptorUsage;
+        renderBindings = {4u, true, 1u, 1u, true, true, 16u, 1u, 3u};
+        renderBindings.generalShaderResourcesVersion = 2u;
+        renderBindings.generalShaderResourcesOptIn = true;
+        auto& stream = budget.stream;
+        stream.contractVersion = 5u;
+        stream.prototypeOptIn = true;
+        stream.maxCommands = stream.maxDescriptors = stream.maxReferences = 16u;
+        stream.maxPipelineBinds = stream.maxDescriptorBinds = stream.maxConsumptions = 1u;
+        stream.maxImplicitAccesses = 6u;
+        stream.maxRetainedOwners = 512u;
+        stream.maxCpuMetadataBytes = bytes;
+        stream.descriptorConsumption = consumption;
+        stream.renderDescriptorUsage = renderBindings;
+        stream.stateSequence = {5u, true, 16u, 0u, 32u, 32u, 6u};
+        // Preparation/6 requires a nonzero render-pass storage ceiling even
+        // when this program contains only a compute pass; it creates no draw.
+        budget.preparation = {6u,
+            true,
+            {1u, true, 1u, 0u, 1u, {1u, true, 1u, 0u, 0u, 0u, 256u, bytes}},
+            7u,
+            2u,
+            OriginalRenderPassContentBudget{3u, true, 1u, 1u, 16u, 128u, 128u},
+            OriginalRenderPassRecordingBudget{3u, true, 128u, 256u}};
+        require(OriginalCommandStateAdmissionContract::validateIntent(budget.states));
+        require(OriginalCommandStreamContract::validateIntent(stream));
+        require(OriginalRenderPassPreparationContract::validate(budget.preparation));
+        require(execution.prepare(budget, intentQuota, stateQuota, recordQuota));
+        execution.execute();
+        f.device->waitIdle();
+        assert(completion.fence && completion.fence->isSignaled());
+        const auto payload = vulkanRhiNativePayload(*buffers[2]);
+        core::pmr::String readDiagnostics;
+        assert(payload && payload->backendInvalidateMappedRead(0u, sizes[2], readDiagnostics));
+        const auto* actual = static_cast<const core::Vec4*>(payload->backendMappedData());
+        assert(actual);
+        float error = 0.f, minimum = 1.f, maximum = 0.f;
+        const auto lanes = [](core::Vec4 value) {
+            return std::array{value.x, value.y, value.z, value.w};
+        };
+        for (std::size_t i = 0u; i < count; ++i) {
+            const auto a = lanes(actual[i]), e = lanes(expected[i]);
+            for (unsigned lane = 0u; lane < 4u; ++lane) {
+                assert(std::isfinite(a[lane]) && a[lane] >= 0.f && a[lane] <= 1.f);
+                error = std::max(error, std::fabs(a[lane] - e[lane]));
+            }
+            minimum = std::min(minimum, a[0]);
+            maximum = std::max(maximum, a[0]);
+        }
+        assert(error < .0001f && maximum - minimum > .01f);
+        for (unsigned y = 0u; y < side; ++y)
+            for (unsigned x = 0u; x <= 2u * dim; ++x) {
+                assert(lanes(actual[y * side + x]) == lanes(actual[y * side + x + 2u * dim]));
+                assert(lanes(actual[x * side + y]) == lanes(actual[(x + 2u * dim) * side + y]));
+            }
+        const auto stem = core::pmr::String(kind == 0u ? "weather"
+                : kind == 1u                           ? "shape"
+                                                       : "detail");
+        evidence((stem + ".parameters.bin").c_str(), &parameters, sizeof(parameters));
+        evidence((stem + ".expected.bin").c_str(), expected.data(), sizes[2]);
+        evidence((stem + ".actual.bin").c_str(), actual, sizes[2]);
+        std::printf(
+            "CLOUD_COOKED_SLICE_PASS kind=%s dimension=%u side=%u error=%.9g range=[%.9g,%.9g] exact-periodic-xy original-Program completion\n",
+            stem.c_str(),
+            dim,
+            side,
+            error,
+            minimum,
+            maximum);
+    }
+
+public:
+    static void run(const std::shared_ptr<VulkanRhiRuntime>& runtime, const char* path)
+    {
+        resource::ResourceManager resources;
+        resource::CloudAssetResourceDesc desc;
+        desc.reference = {resource::deriveResourceUuid("CloudAssetSlice/1", "density"),
+            "CloudAssetResource",
+            "cloud.slice",
+            "Prototype Complete",
+            "Cooked slice"};
+        desc.cookedPath = path;
+        desc.maxDocumentBytes = 4u * 1024u * 1024u;
+        desc.maxPayloadBytes = 1024u * 1024u;
+        const auto loaded = resources.load<resource::CloudAssetResource>({}, desc);
+        if (!loaded.success)
+            std::fprintf(stderr, "%s\n", loaded.diagnostics.c_str());
+        assert(loaded.success);
+        const auto ready = resources.find<resource::CloudAssetResource>(desc.reference.id);
+        assert(ready.ready() && ready.get()->asset());
+        const auto& asset = *ready.get()->asset();
+        // This bounded delivery fixture is the formal reference recipe, never
+        // a dimension-dependent production fallback or a synthetic replacement.
+        assert(asset.source.weatherDimension == 32u && asset.source.shapeDimension == 32u
+            && asset.source.detailDimension == 16u);
+        evidence("cooked-cells.bin", asset.cells.data(), asset.cells.size() * sizeof(core::Vec4));
+        tests::RenderDocCaptureScope capture;
+        for (unsigned kind = 0u; kind < 3u; ++kind)
+            slice(runtime, asset, kind);
+        capture.end();
+    }
+};
+#endif
+
 void verifyCompute(const std::shared_ptr<VulkanRhiRuntime>& runtime)
 {
     using S = OriginalCommandComputePipelineSource;
@@ -4489,6 +6471,53 @@ void verifyFeatureAdmission()
 int main(int argc, char** argv)
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0u);
+#if defined(ARP_CLOUD_FRAME_GRAPH_TEST)
+    if (argc == 3 && !std::strcmp(argv[1], "--reference-case")) {
+        const auto* selected = tests::cloud::ReferenceCases::find(argv[2]);
+        if (!selected) {
+            std::fprintf(stderr, "CLOUD-REFERENCE-CASE-UNKNOWN: %s\n", argv[2]);
+            return 2;
+        }
+        tests::VulkanHeadlessRuntime bootstrap(false, NativeProbe::resolve);
+        if (!bootstrap.runtime() || !bootstrap.runtime()->valid())
+            return 77;
+        verifyOrdinaryMixedCloud(bootstrap.runtime(),
+            false,
+            true,
+            true,
+            4u,
+            selected->foreground,
+            false,
+            false,
+            selected->orthographic,
+            CloudQualityFixture::Disabled,
+            CloudDensityProbe::Valid,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            argv[2]);
+        return 0;
+    }
+    if (argc == 2 && !std::strcmp(argv[1], "--pbr-sampling")) {
+        tests::VulkanHeadlessRuntime bootstrap(false, NativeProbe::resolve);
+        if (!bootstrap.runtime() || !bootstrap.runtime()->valid())
+            return 77;
+        verifyPbrSampling(bootstrap.runtime());
+        return 0;
+    }
+    if (argc == 3 && !std::strcmp(argv[1], "--cooked-asset-slices")) {
+        tests::VulkanHeadlessRuntime bootstrap(false, NativeProbe::resolve);
+        if (!bootstrap.runtime() || !bootstrap.runtime()->valid())
+            return 77;
+        CookedAssetSlices::run(bootstrap.runtime(), argv[2]);
+        return 0;
+    }
+#endif
     if (argc == 2
         && (!std::strcmp(argv[1], "--compute") || !std::strcmp(argv[1], "--compute-contract")
             || !std::strcmp(argv[1], "--compute-null-hidden-frame"))) {
@@ -4537,7 +6566,8 @@ int main(int argc, char** argv)
             || !std::strcmp(argv[1], "--feature-owned-history-ortho")
             || !std::strcmp(argv[1], "--feature-owned-history-capture")
             || !std::strcmp(argv[1], "--feature-owned-history-ortho-capture"))) {
-        const bool spatial = !std::strcmp(argv[2], "reconstruction");
+        const bool compact = !std::strcmp(argv[2], "compact");
+        const bool spatial = compact || !std::strcmp(argv[2], "reconstruction");
         assert(spatial || !std::strcmp(argv[2], "temporal"));
         const bool ortho = std::strstr(argv[1], "-ortho") != nullptr;
         // Capture the same cloud work without the injected queue delay:
@@ -4556,11 +6586,17 @@ int main(int argc, char** argv)
             CloudDensityProbe::Valid,
             spatial,
             true,
-            true);
+            true,
+            false,
+            false,
+            false,
+            false,
+            compact);
         return 0;
     }
     if (argc == 3 && !std::strcmp(argv[1], "--feature-cold-pipelines")) {
-        const bool spatial = !std::strcmp(argv[2], "reconstruction");
+        const bool compact = !std::strcmp(argv[2], "compact");
+        const bool spatial = compact || !std::strcmp(argv[2], "reconstruction");
         assert(spatial || !std::strcmp(argv[2], "temporal"));
         verifyOrdinaryMixedCloud(bootstrap.runtime(),
             false,
@@ -4574,7 +6610,13 @@ int main(int argc, char** argv)
             spatial ? CloudQualityFixture::MediumSpatial : CloudQualityFixture::Disabled,
             CloudDensityProbe::Valid,
             false,
-            true);
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            compact);
         return 0;
     }
     if (argc == 3 && !std::strcmp(argv[1], "--feature-density-range")) {
@@ -4667,7 +6709,75 @@ int main(int argc, char** argv)
         verifyOrdinaryMixedCloud(bootstrap.runtime(), false, true, true);
         return 0;
     }
+    if (argc == 2 && !std::strcmp(argv[1], "--frame-graph-pass-timing")) {
+        verifyOrdinaryMixedCloud(bootstrap.runtime(),
+            false,
+            true,
+            true,
+            0u,
+            false,
+            false,
+            false,
+            false,
+            CloudQualityFixture::Disabled,
+            CloudDensityProbe::Valid,
+            false,
+            false,
+            false,
+            true,
+            true,
+            true);
+        return 0;
+    }
+    if (argc == 3
+        && (!std::strcmp(argv[1], "--frame-graph-depth-timing")
+            || !std::strcmp(argv[1], "--frame-graph-depth-timing-host-device"))) {
+        const bool compact = !std::strcmp(argv[2], "compact");
+        const bool spatial = compact || !std::strcmp(argv[2], "reconstruction");
+        assert(spatial || !std::strcmp(argv[2], "temporal"));
+        verifyOrdinaryMixedCloud(bootstrap.runtime(),
+            false,
+            true,
+            true,
+            4u,
+            true,
+            true,
+            false,
+            false,
+            spatial ? CloudQualityFixture::MediumSpatial : CloudQualityFixture::Disabled,
+            CloudDensityProbe::Valid,
+            spatial,
+            compact,
+            compact,
+            true,
+            true,
+            true,
+            !std::strcmp(argv[1], "--frame-graph-depth-timing-host-device"),
+            compact);
+        return 0;
+    }
 #endif
+    if (argc == 2
+        && (!std::strcmp(argv[1], "--mixed-timing-program")
+            || !std::strcmp(argv[1], "--mixed-timing-native"))) {
+        verifyOrdinaryMixedCloud(bootstrap.runtime(),
+            false,
+            false,
+            false,
+            0u,
+            false,
+            false,
+            false,
+            false,
+            CloudQualityFixture::Disabled,
+            CloudDensityProbe::Valid,
+            false,
+            false,
+            false,
+            true,
+            !std::strcmp(argv[1], "--mixed-timing-native"));
+        return 0;
+    }
     if (argc == 2 && !std::strcmp(argv[1], "--mixed-device")) {
         verifyOrdinaryMixedCloud(bootstrap.runtime(), false, true);
         return 0;

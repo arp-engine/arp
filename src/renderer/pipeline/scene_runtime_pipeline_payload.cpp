@@ -32,6 +32,16 @@ bool contractMatches(const char* actual, const char* expected)
 SceneRuntimePipelinePayloadValidationResult validateSceneRuntimePipelinePayload(
     const CustomWorkloadPayloadRef& payload)
 {
+    if (const auto* cloud = sceneRuntimePbrCloudPayloadFrom(payload)) {
+        if (!cloud->composition)
+            return fail("SCENE-CLOUD-COMPOSITION-REQUIRED");
+        return validateSceneRuntimePipelinePayload(cloud->scene);
+    }
+    if (const auto* cloud = sceneRuntimeOpaqueCloudPayloadFrom(payload)) {
+        if (!cloud->composition)
+            return fail("SCENE-CLOUD-COMPOSITION-REQUIRED");
+        return validateSceneRuntimePipelinePayload(cloud->scene);
+    }
     if (payload.kind != CustomWorkloadPayloadKind::SceneDrawPlan) {
         return fail("SceneRuntimePipelinePayload requires a scene payload kind.");
     }
@@ -135,10 +145,32 @@ const SceneRuntimePipelinePayload* sceneRuntimePipelinePayloadFrom(
     if (!validation.success) {
         return nullptr;
     }
+    if (const auto* cloud = sceneRuntimePbrCloudPayloadFrom(section.payload()))
+        return &cloud->scene;
+    if (const auto* cloud = sceneRuntimeOpaqueCloudPayloadFrom(section.payload()))
+        return &cloud->scene;
     return customPayloadObjectAs<SceneRuntimePipelinePayload>(section.payload(),
         CustomWorkloadPayloadKind::SceneDrawPlan,
         kSceneRuntimePipelinePayloadContract,
         kSceneRuntimePipelinePayloadVersion);
+}
+
+const SceneRuntimeOpaqueCloudPayload* sceneRuntimeOpaqueCloudPayloadFrom(
+    const CustomWorkloadPayloadRef& ref)
+{
+    return customPayloadObjectAs<SceneRuntimeOpaqueCloudPayload>(ref,
+        CustomWorkloadPayloadKind::SceneDrawPlan,
+        kSceneRuntimeOpaqueCloudPayloadContract,
+        kSceneRuntimeOpaqueCloudPayloadVersion);
+}
+
+const SceneRuntimePbrCloudPayload* sceneRuntimePbrCloudPayloadFrom(
+    const CustomWorkloadPayloadRef& ref)
+{
+    return customPayloadObjectAs<SceneRuntimePbrCloudPayload>(ref,
+        CustomWorkloadPayloadKind::SceneDrawPlan,
+        kSceneRuntimePbrCloudPayloadContract,
+        kSceneRuntimePbrCloudPayloadVersion);
 }
 
 } // namespace arp::renderer

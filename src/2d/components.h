@@ -149,7 +149,7 @@ using SpriteRendererComponentEditorProperties = SpriteRendererComponentDesc;
 
 ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
-class SpriteRendererComponent final : public arp::scene::Component {
+class ARP_API SpriteRendererComponent final : public arp::scene::Component {
 public:
     const char* scriptTypeName() const override { return "SpriteRendererComponent"; }
 
@@ -196,7 +196,7 @@ private:
     SpriteRendererComponentDesc desc_;
 };
 
-class TileMapComponent final : public arp::scene::Component {
+class ARP_API TileMapComponent final : public arp::scene::Component {
 public:
     const char* scriptTypeName() const override { return "TileMapComponent"; }
 

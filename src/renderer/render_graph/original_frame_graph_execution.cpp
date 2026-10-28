@@ -54,9 +54,15 @@ template <class Source> std::size_t findSource(const Sources& sources, GpuResour
 
 void renderIntent(const Intent& intent, RenderPassContext& context)
 {
+    auto& pass = context.renderPass();
+    const auto& timing = intent.timing();
+    if (timing)
+        recorded(pass.writeTimestamp(
+            *source<OriginalCommandQueryPoolSource>(*intent.sources, timing->sourceIndex)
+                .originalObject(),
+            timing->beginQuery));
     if (intent.kind == Intent::Kind::Clear)
         return;
-    auto& pass = context.renderPass();
     recorded(pass.setPipeline(
         *source<OriginalCommandGraphicsPipelineSource>(*intent.sources, intent.pipeline)
             .originalObject()));
@@ -71,6 +77,11 @@ void renderIntent(const Intent& intent, RenderPassContext& context)
         intent.draw.instances,
         intent.draw.firstVertex,
         intent.draw.firstInstance));
+    if (timing)
+        recorded(pass.writeTimestamp(
+            *source<OriginalCommandQueryPoolSource>(*intent.sources, timing->sourceIndex)
+                .originalObject(),
+            timing->endQuery));
 }
 
 void computeIntent(const Intent& intent, RenderContext& context)
@@ -78,6 +89,12 @@ void computeIntent(const Intent& intent, RenderContext& context)
     auto pass = context.commands().beginComputePass({});
     if (!pass)
         throw core::DiagnosticError("RG-ORIGINAL-COMPUTE-BEGIN");
+    const auto& timing = intent.timing();
+    if (timing)
+        recorded(pass->writeTimestamp(
+            *source<OriginalCommandQueryPoolSource>(*intent.sources, timing->sourceIndex)
+                .originalObject(),
+            timing->beginQuery));
     recorded(pass->setPipeline(
         *source<OriginalCommandComputePipelineSource>(*intent.sources, intent.pipeline)
             .originalObject()));
@@ -87,6 +104,11 @@ void computeIntent(const Intent& intent, RenderContext& context)
         nullptr,
         0u));
     recorded(pass->dispatch(intent.groups.width, intent.groups.height, intent.groups.depth));
+    if (timing)
+        recorded(pass->writeTimestamp(
+            *source<OriginalCommandQueryPoolSource>(*intent.sources, timing->sourceIndex)
+                .originalObject(),
+            timing->endQuery));
     recorded(pass->end());
 }
 
@@ -107,7 +129,8 @@ public:
         : sources_(sources), commands_(&core::defaultCpuMemoryResource()),
           references_(&core::defaultCpuMemoryResource()),
           arguments_(&core::defaultCpuMemoryResource()),
-          descriptors_(&core::defaultCpuMemoryResource())
+          descriptors_(&core::defaultCpuMemoryResource()),
+          queryPoints_(&core::defaultCpuMemoryResource())
     {}
 
     template <class Value>
@@ -170,7 +193,8 @@ public:
     void pass(const Intent& intent,
         const RenderPassDesc* render,
         const RenderPassArgumentsBudget& argumentsBudget,
-        const std::shared_ptr<core::CpuMemoryQuota>& quota)
+        const std::shared_ptr<core::CpuMemoryQuota>& quota,
+        const std::optional<Intent::TimingBinding>& timing)
     {
         const bool graphics = intent.kind == Intent::Kind::Graphics;
         std::size_t begin;
@@ -196,6 +220,8 @@ public:
         } else
             begin = empty(
                 intent.kind == Intent::Kind::Compute ? K::BeginComputePass : K::BeginTransferPass);
+        if (timing)
+            timestamp(*timing, timing->beginQuery);
         if (intent.kind == Intent::Kind::Compute || graphics) {
             const auto pipelineKind = graphics ? K::BindGraphicsPipeline : K::BindComputePipeline;
             const auto descriptorKind =
@@ -248,6 +274,8 @@ public:
                              *sources_, intent.copy.destinationBuffer)}),
                     *copy});
         }
+        if (timing)
+            timestamp(*timing, timing->endQuery);
         empty(render                                   ? K::EndRenderPass
                 : intent.kind == Intent::Kind::Compute ? K::EndComputePass
                                                        : K::EndTransferPass);
@@ -283,8 +311,18 @@ public:
         require(id);
         auto scalars = OriginalCommandScalars::prepareOriginal(usage, arguments, intentQuota, id);
         require(id);
+        auto inputBudget = b.inputs;
+        if (b.timing) {
+            inputBudget.queryPoints = QueryCommandPoints::prepareOriginal(arguments,
+                queryPoints_.data(),
+                queryPoints_.size(),
+                b.timing->points,
+                intentQuota,
+                id);
+            require(id);
+        }
         auto inputs = OriginalCommandInputs::prepareOriginal(
-            scalars, descriptors_.data(), descriptors_.size(), b.inputs, intentQuota, id);
+            scalars, descriptors_.data(), descriptors_.size(), inputBudget, intentQuota, id);
         require(id);
         auto states = OriginalCommandResourceStates::prepareOriginal(
             inputs, device, b.states, stateQuota, id);
@@ -301,11 +339,29 @@ public:
     }
 
 private:
+    void timestamp(const Intent::TimingBinding& binding, std::uint32_t slot)
+    {
+        const auto& pool = *source<OriginalCommandQueryPoolSource>(*sources_, binding.sourceIndex)
+                                .originalObject();
+        const auto original = QueryPoolOriginalInputArguments::captureOriginal(
+            K::Timestamp, slot, pool.originalInput());
+        if (!original)
+            throw IntentFailure{"RG-ORIGINAL-TIMING-QUERY-ARGUMENTS"};
+        const auto ordinal = scalar(K::Timestamp,
+            *original->scalar().get<CommandScalarArguments::Query>(),
+            {binding.sourceIndex});
+        queryPoints_.push_back({ordinal, *original});
+        descriptors_.push_back({ordinal,
+            OriginalCommandQueryBinding{
+                binding.sourceIndex, pool.originalResourceRegistration().generation(), *original}});
+    }
+
     const std::shared_ptr<const Sources>& sources_;
     core::pmr::Vector<CommandUsage> commands_;
     core::pmr::Vector<OriginalCommandUsage::Reference> references_;
     core::pmr::Vector<CommandVariableArguments::Input> arguments_;
     core::pmr::Vector<OriginalCommandInputs::OriginalDescriptor> descriptors_;
+    core::pmr::Vector<QueryCommandPoints::Input> queryPoints_;
     std::uint64_t descriptorElements_ = 0u;
 };
 } // namespace
@@ -419,8 +475,8 @@ const char* OriginalFrameGraphExecution::prepare(const OriginalFrameGraphBudget&
     const std::shared_ptr<core::CpuMemoryQuota>& stateQuota,
     const std::shared_ptr<core::CpuMemoryQuota>& recordingQuota)
 {
-    if (b.contractVersion != 1u || !b.prototypeOptIn)
-        return "RG-ORIGINAL-PROFILE-OPT-IN";
+    if (const auto* id = validateBudget(b))
+        return id;
     if (!intentQuota || intentQuota != intentQuota_
         || intentQuota->limitBytes() != b.maxCpuIntentBytes)
         return "RG-ORIGINAL-INTENT-QUOTA";
@@ -433,9 +489,12 @@ const char* OriginalFrameGraphExecution::prepare(const OriginalFrameGraphBudget&
         return id;
     if ((id = Sources::validateRegisteredLifetime(sources_, graph_.device_)))
         return id;
-    if (!graph_.subgraphs_.empty() || !graph_.subpassGraphs_.empty()
-        || !graph_.gpuTimingPassScopes_.empty())
+    if (!graph_.subgraphs_.empty() || !graph_.subpassGraphs_.empty())
         return "RG-ORIGINAL-COMPOSITION-PROFILE";
+    if (!b.timing && !graph_.gpuTimingPassScopes_.empty())
+        return "RG-ORIGINAL-COMPOSITION-PROFILE";
+    if (b.timing && graph_.gpuTimingPassScopes_.empty())
+        return "RG-ORIGINAL-TIMING-SCOPES-REQUIRED";
     for (const auto& texture : graph_.textures_)
         if (!texture.imported || !texture.resolveTexture() || texture.transient || texture.placed)
             return "RG-ORIGINAL-TEXTURE-IMPORT";
@@ -447,6 +506,46 @@ const char* OriginalFrameGraphExecution::prepare(const OriginalFrameGraphBudget&
         auto preparedGraph = core::makeUnique<CompiledFrameGraph>(graph_.compile());
         if (!preparedGraph->aliasPlan().empty() || !preparedGraph->aliasHandoffs().empty())
             return "RG-ORIGINAL-ALIAS-PROFILE";
+        core::pmr::Vector<std::optional<Intent::TimingBinding>> timings(
+            graph_.passes_.size(), &core::defaultCpuMemoryResource());
+        if (b.timing) {
+            const auto& pool =
+                *source<OriginalCommandQueryPoolSource>(*sources_, b.timing->querySourceIndex)
+                     .originalObject();
+            const auto input = pool.originalInput();
+            if (!input || graph_.gpuTimingPassScopes_.size() != input->scopeIds().size())
+                return "RG-ORIGINAL-TIMING-SCOPE-COVERAGE";
+            for (const auto& requested : graph_.gpuTimingPassScopes_) {
+                std::size_t slot = SIZE_MAX, matchedPass = SIZE_MAX;
+                for (std::size_t i = 0u; i < input->scopeIds().size(); ++i)
+                    if (requested.scopeId && input->scopeIds()[i] == requested.scopeId)
+                        slot = i;
+                if (slot == SIZE_MAX)
+                    return "RG-ORIGINAL-TIMING-SCOPE-ID";
+                for (const auto index : preparedGraph->executionOrder()) {
+                    const auto& compiled = preparedGraph->passes()[index];
+                    if (compiled.name != requested.passName || compiled.culled)
+                        continue;
+                    if (matchedPass != SIZE_MAX)
+                        return "RG-ORIGINAL-TIMING-PASS-AMBIGUOUS";
+                    matchedPass = compiled.originalPassIndex;
+                }
+                if (matchedPass == SIZE_MAX || timings[matchedPass])
+                    return "RG-ORIGINAL-TIMING-PASS-MATCH";
+                const auto& intent = graph_.passes_[matchedPass].originalIntent;
+                if (!intent
+                    || (intent->kind != Intent::Kind::Compute
+                        && intent->kind != Intent::Kind::Graphics)
+                    || requested.callbackOwnsTimestamps != (intent->kind == Intent::Kind::Compute))
+                    return "RG-ORIGINAL-TIMING-PASS-KIND";
+                for (const auto& timing : timings)
+                    if (timing && timing->beginQuery == slot * 2u)
+                        return "RG-ORIGINAL-TIMING-SCOPE-DUPLICATE";
+                timings[matchedPass] = Intent::TimingBinding{b.timing->querySourceIndex,
+                    static_cast<std::uint32_t>(slot * 2u),
+                    static_cast<std::uint32_t>(slot * 2u + 1u)};
+            }
+        }
         IntentAssembler assembler(sources_);
         const auto barriers = [&](std::uint32_t pass) {
             for (const auto& batch : preparedGraph->passBarrierBatches())
@@ -480,10 +579,14 @@ const char* OriginalFrameGraphExecution::prepare(const OriginalFrameGraphBudget&
                 assembler.pass(*pass.originalIntent,
                     &descriptor,
                     b.preparation.storage.arguments,
-                    intentQuota);
+                    intentQuota,
+                    timings[compiled.originalPassIndex]);
             } else
-                assembler.pass(
-                    *pass.originalIntent, nullptr, b.preparation.storage.arguments, intentQuota);
+                assembler.pass(*pass.originalIntent,
+                    nullptr,
+                    b.preparation.storage.arguments,
+                    intentQuota,
+                    timings[compiled.originalPassIndex]);
         }
         barriers(UINT32_MAX);
         auto program = assembler.finish(graph_.device_, b, intentQuota, stateQuota, recordingQuota);
@@ -539,6 +642,9 @@ const char* OriginalFrameGraphExecution::prepare(const OriginalFrameGraphBudget&
             encoder.reset();
             return "RG-ORIGINAL-GRAPH-EPOCH";
         }
+        for (std::size_t i = 0u; i < graph_.passes_.size(); ++i)
+            if (graph_.passes_[i].originalIntent)
+                graph_.passes_[i].originalIntent->timing_ = timings[i];
         compiled_ = std::move(preparedGraph);
         program_ = std::move(program);
         encoder_ = std::move(encoder);
@@ -562,8 +668,11 @@ const char* OriginalFrameGraphExecution::cancel() noexcept
     compiled_.reset();
     completion_.reset();
     graphEpoch_ = {};
-    for (auto& pass : graph_.passes_)
+    for (auto& pass : graph_.passes_) {
         pass.originalRenderPass.reset();
+        if (pass.originalIntent)
+            pass.originalIntent->timing_.reset();
+    }
     return nullptr;
 }
 

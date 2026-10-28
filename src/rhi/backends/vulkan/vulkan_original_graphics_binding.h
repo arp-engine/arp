@@ -49,7 +49,8 @@ private:
         std::size_t,
         std::uint32_t,
         const rhi::OriginalCommandDescriptorSetElement&,
-        Observation&) noexcept;
+        Observation&,
+        rhi::semantics::OriginalOrdinarySampledColorContract::Intent) noexcept;
 };
 
 } // namespace arp::rhi_vulkan

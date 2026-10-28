@@ -769,7 +769,7 @@ public:
     explicit SubmissionRetirementCapacityFixture(const std::shared_ptr<VulkanRhiRuntime>& runtime)
         : copy_(runtime)
     {
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
         gate_ = VulkanRhiTimelineSemaphorePayload::create(runtime, 0u, copy_.diagnostic);
         assert(gate_);
         const auto source = vulkanRhiNativePayload(*copy_.source);
@@ -816,7 +816,7 @@ public:
         assert(competingSubmitInvoked_ && !submissionCapacityRace
             && gate_->hostSignal(1u) == VK_SUCCESS
             && vkQueueWaitIdle(copy_.runtime->graphicsQueue()) == VK_SUCCESS);
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*copy_.runtime);
         for (const auto& command : commands_)
             assert(command->submittedFenceCompleted());
         copy_.verify();
@@ -927,7 +927,7 @@ void ordinaryFinishedStorage(const std::shared_ptr<VulkanRhiRuntime>& runtime)
                 && f.source->state() == ResourceState::CopySrc);
             assert(payload->waitSubmittedFenceUntil(
                 std::chrono::steady_clock::now() + std::chrono::seconds(5), f.diagnostic));
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(*runtime);
         }
         commands.reset();
         assert(vulkanRhiBufferStateCommitted(*f.source)
@@ -1169,7 +1169,7 @@ void ordinaryColdPassStorage(const std::shared_ptr<VulkanRhiRuntime>& runtime)
             assert(submitVulkanRhiCommandBuffer(*commands).workAccepted);
             assert(payload->waitSubmittedFenceUntil(
                 std::chrono::steady_clock::now() + std::chrono::seconds(5), f.diagnostic));
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(*runtime);
         }
         commands.reset();
     }
@@ -1480,14 +1480,14 @@ void ordinaryOriginalProgramCustody(const std::shared_ptr<VulkanRhiRuntime>& run
             std::weak_ptr<VulkanRhiNativeCommandPayload> retained = native;
             finished.reset();
             native.reset();
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(*runtime);
             assert(!original.expired() && !inputOwner.expired() && !sourceOwner.expired()
                 && !retained.expired());
             assert(gate->hostSignal(1u) == VK_SUCCESS
                 && vkQueueWaitIdle(runtime->graphicsQueue()) == VK_SUCCESS);
             assert(!test::CpuQuotaFactoryFixture::verifyHotNoAllocation(
                 quotas, [&]() noexcept -> const char* {
-                    retireCompletedVulkanRhiSubmittedCommands();
+                    retireCompletedVulkanRhiSubmittedCommands(*runtime);
                     return nullptr;
                 }));
             assert(original.expired() && inputOwner.expired() && sourceOwner.expired()
@@ -1512,7 +1512,7 @@ void ordinaryOriginalProgramCustody(const std::shared_ptr<VulkanRhiRuntime>& run
             std::weak_ptr<VulkanRhiNativeCommandPayload> retained = native;
             finished.reset();
             native.reset();
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(*runtime);
             assert(!original.expired() && !sourceOwner.expired() && !retained.expired());
             assert(!waitIdleAndRetireVulkanRhiSubmittedCommands(runtime) && original.expired()
                 && inputOwner.expired() && sourceOwner.expired() && retained.expired());
@@ -1589,6 +1589,7 @@ void ordinaryUnadmittedDebugLabels(const std::shared_ptr<VulkanRhiRuntime>& runt
               "terminal finish and cancellation with exhausted quota allocation0 PASS");
 }
 
+template <bool Public = false>
 void ordinaryTextureUpload(const std::shared_ptr<VulkanRhiRuntime>& runtime)
 {
     using C = OriginalOrdinaryTextureUploadContract;
@@ -1598,7 +1599,7 @@ void ordinaryTextureUpload(const std::shared_ptr<VulkanRhiRuntime>& runtime)
     for (unsigned shape = 0u; shape < 3u; ++shape)
         for (unsigned mode = 0u; mode < 4u; ++mode) {
             CopyFixture f(runtime);
-            std::array<std::shared_ptr<core::CpuMemoryQuota>, 12u> q;
+            std::array<std::shared_ptr<core::CpuMemoryQuota>, 13u> q;
             for (auto& quota : q)
                 quota = core::makeShared<core::CpuMemoryQuota>(kMetadataBytes);
             const char* id = nullptr;
@@ -1606,6 +1607,9 @@ void ordinaryTextureUpload(const std::shared_ptr<VulkanRhiRuntime>& runtime)
             dd.runtime = runtime;
             dd.capabilityContract.backend = Backend::Vulkan;
             dd.memoryBudgetBytes = kMetadataBytes;
+            if constexpr (Public)
+                dd.uploadStagingBudget =
+                    semantics::UploadStagingBudgetV1{1u, 2048u, 2048u, 1u, 2048u, 256u};
             auto device = createVulkanRhiDevice(dd);
             assert(device
                 && !device->prepareOriginalDeviceLifetime(
@@ -1613,7 +1617,7 @@ void ordinaryTextureUpload(const std::shared_ptr<VulkanRhiRuntime>& runtime)
             assert(!device->prepareOriginalDeviceNativeResultLoss(
                 {1u, true, 1u, 2u, kMetadataBytes}, q[11]));
             assert(!device->prepareOriginalResourceRegistration(
-                {1u, true, 0u, 1u, 0u, 5u, kMetadataBytes}, q[1]));
+                {1u, true, 0u, 1u, Public ? 1u : 0u, Public ? 9u : 5u, kMetadataBytes}, q[1]));
             TextureDesc td;
             td.label = "Ordinary.Original.Upload.Target";
             td.extent = {2u, 2u, shape == 2u ? 2u : 1u};
@@ -1640,6 +1644,31 @@ void ordinaryTextureUpload(const std::shared_ptr<VulkanRhiRuntime>& runtime)
             auto lease = OriginalCommandTextureLease::prepareOriginal(
                 texture, {1u, true, 2u, kMetadataBytes}, q[4], id);
             assert(lease && !id);
+            std::shared_ptr<const OriginalCommandTextureViewSource> sampled;
+            if constexpr (Public) {
+                TextureViewDesc viewDesc;
+                viewDesc.format = td.format;
+                viewDesc.dimension = shape == 2u ? TextureViewDimension::Texture3D
+                    : shape == 1u                ? TextureViewDimension::Texture2DArray
+                                                 : TextureViewDimension::Texture2D;
+                viewDesc.usage = TextureUsage::Sampled;
+                viewDesc.aspect = TextureAspect::Color;
+                viewDesc.mipLevelCount = td.mipLevelCount;
+                viewDesc.arrayLayerCount = td.arrayLayerCount;
+                auto view = device->createTextureView(*object, viewDesc);
+                assert(view);
+                auto viewLease = OriginalCommandTextureViewLease::prepareOriginal(
+                    view, {1u, true, 2u, kMetadataBytes}, q[4], id);
+                sampled = OriginalCommandTextureViewSource::prepareOriginal(viewLease,
+                    lease,
+                    {1u,
+                        true,
+                        OriginalCommandTextureViewSource::completeRetainedOwnerCount,
+                        kMetadataBytes},
+                    q[4],
+                    id);
+                assert(sampled && !id);
+            }
             std::array<std::uint8_t, 40u> authored{};
             for (std::size_t i = 0u; i < sourceBytes; ++i)
                 authored[i] = static_cast<std::uint8_t>(i + 1u + shape * 40u);
@@ -1780,15 +1809,90 @@ void ordinaryTextureUpload(const std::shared_ptr<VulkanRhiRuntime>& runtime)
             wrong.commandIndex = 1u;
             assert(C::inspect(program, budget, &wrong, 1u));
             wrong.packing.reset();
-            auto pool = VulkanRhiStagingUploadPool::prepareCold(
-                {"Ordinary.Texture.ColdPool", 2048u, 1u, 256u, 2048u},
-                f.allocator,
-                {1u, true, {1u, 2048u, 2048u, 1u, 2048u, 256u}, 1u, kMetadataBytes},
-                q[10],
-                id);
-            assert(pool && !id);
+            core::UniquePtr<VulkanRhiStagingUploadPool> pool;
+            OriginalTextureUploadDeviceExtension* extension = nullptr;
+            OriginalTextureUploadPreparationRequest publicRequest{budget,
+                {1u,
+                    true,
+                    1u,
+                    OriginalTextureUploadPublication::requiredOwners(*program, 1u),
+                    kMetadataBytes}};
+            std::shared_ptr<const OriginalTextureUploadPublication> publication;
+            bool retainPublication = false;
+            const semantics::UploadStagingColdStorageBudget storageBudget{
+                1u, true, {1u, 2048u, 2048u, 1u, 2048u, 256u}, 1u, kMetadataBytes};
+            if constexpr (Public) {
+                extension = OriginalTextureUploadDeviceExtension::query(*device, publicRequest, id);
+                assert(extension && !id);
+                {
+                    auto refused = extension->prepareUploads(
+                        program, publicRequest, &binding, 1u, q[12], f.diagnostic);
+                    assert(!refused.encoder && refused.publications.empty());
+                    assert(f.diagnostic == "RHI-ORDINARY-TEXTURE-UPLOAD-COLD-POOL");
+                }
+                auto badStorage = storageBudget;
+                --badStorage.capacity.maxRequestBytes;
+                assert(extension->prepareStorage(badStorage, q[10]));
+                {
+                    core::CpuMemoryQuotaLease pressure(q[10], q[10]->limitBytes());
+                    assert(pressure.charged() && extension->prepareStorage(storageBudget, q[10]));
+                }
+                assert(inspectVulkanRhiNativeResourceStats(*device).nativeUploadStagingPoolPageCount
+                    == 0u);
+                assert(!extension->prepareStorage(storageBudget, q[10]));
+                assert(extension->prepareStorage(storageBudget, q[10]));
+                const char* threadDiagnostic = nullptr;
+                std::thread wrongThread([&] {
+                    threadDiagnostic = extension->prepareStorage(storageBudget, q[10]);
+                });
+                wrongThread.join();
+                assert(std::string_view(threadDiagnostic) == "RHI-TEXTURE-UPLOAD-DEVICE-THREAD");
+                auto badPublic = publicRequest;
+                --badPublic.publications.maxRetainedOwners;
+                auto refused = extension->prepareUploads(
+                    program, badPublic, &binding, 1u, q[12], f.diagnostic);
+                assert(!refused.encoder && refused.publications.empty());
+                refused = extension->prepareUploads(
+                    program, publicRequest, &binding, 1u, q[9], f.diagnostic);
+                assert(!refused.encoder && refused.publications.empty());
+            } else {
+                pool = VulkanRhiStagingUploadPool::prepareCold(
+                    {"Ordinary.Texture.ColdPool", 2048u, 1u, 256u, 2048u},
+                    f.allocator,
+                    storageBudget,
+                    q[10],
+                    id);
+                assert(pool && !id);
+            }
+            const auto sliceCount = [&] {
+                if constexpr (Public)
+                    return inspectVulkanRhiNativeResourceStats(*device)
+                        .nativeUploadStagingLiveSliceCount;
+                else
+                    return pool->stats().liveSliceCount;
+            };
+            const auto copyCount = [&] {
+                if constexpr (Public)
+                    return inspectVulkanRhiNativeResourceStats(*device)
+                        .nativeBufferToImageCopyRecordCount;
+                else
+                    return f.resources.stats().nativeBufferToImageCopyRecordCount;
+            };
             const auto capabilities = semantics::nativeBackendCapabilityContract(Backend::Vulkan);
             const auto factory = [&] {
+                if constexpr (Public) {
+                    auto prepared = extension->prepareUploads(
+                        program, publicRequest, &binding, 1u, q[12], f.diagnostic);
+                    assert(prepared.encoder || prepared.publications.empty());
+                    if (prepared.encoder) {
+                        assert(prepared.publications.size() == 1u);
+                        assert(OriginalTextureUploadPublication::validateOriginal(
+                            prepared.publications[0]));
+                        if (retainPublication)
+                            publication = prepared.publications[0];
+                    }
+                    return std::move(prepared.encoder);
+                }
                 return createVulkanRhiCommandEncoderWithColdTextureUploads(f.resources,
                     f.registry,
                     pool.get(),
@@ -1804,12 +1908,17 @@ void ordinaryTextureUpload(const std::shared_ptr<VulkanRhiRuntime>& runtime)
                 test::CpuQuotaFactoryFixture pressure(q[9]);
                 const auto peak = pressure.measure(factory);
                 pressure.verify(peak, factory);
-                assert(!pool->stats().liveSliceCount);
+                if constexpr (Public) {
+                    test::CpuQuotaFactoryFixture publicationPressure(q[12]);
+                    const auto publicationPeak = publicationPressure.measure(factory);
+                    publicationPressure.verify(publicationPeak, factory);
+                }
+                assert(!sliceCount());
                 for (unsigned negative = 0u; negative < 4u; ++negative) {
                     auto candidate = factory();
                     assert(candidate);
                     auto observer = vulkanRhiCommandPayload(*candidate);
-                    const auto calls = f.resources.stats().nativeBufferToImageCopyRecordCount;
+                    const auto calls = copyCount();
                     auto invalid = upload;
                     --invalid.pixelDataSize;
                     core::UniquePtr<TransferPassEncoder> pass;
@@ -1832,22 +1941,31 @@ void ordinaryTextureUpload(const std::shared_ptr<VulkanRhiRuntime>& runtime)
                             }
                             return nullptr;
                         }));
-                    assert(f.resources.stats().nativeBufferToImageCopyRecordCount
-                        == calls + (negative == 2u ? 2u : 0u));
+                    assert(copyCount() == calls + (negative == 2u ? 2u : 0u));
                     pass.reset();
                     candidate.reset();
                     assert(vulkanRhiTextureStateCommitted(*object)
                         && object->state() == ResourceState::Undefined
                         && object->observeOriginalContent()->state()
                             == Content::State::Uninitialized
-                        && !pool->stats().liveSliceCount);
+                        && !sliceCount());
                     assert(!observer->submit(f.diagnostic));
                 }
             }
+            retainPublication = true;
             auto encoder = factory();
             if (!encoder)
                 std::fprintf(stderr, "ordinary upload encoder: %s\n", f.diagnostic.c_str());
-            assert(encoder && pool->stats().liveSliceCount == 1u);
+            assert(encoder && sliceCount() == 1u);
+            if constexpr (Public) {
+                assert(publication && publication->originalProgram().get() == program.get()
+                    && core::SharedOwnerProjection::sameOwner(
+                        publication->originalProgram(), program)
+                    && publication->originalPacking().get() == packing.get()
+                    && core::SharedOwnerProjection::sameOwner(
+                        publication->originalPacking(), packing)
+                    && publication->commandIndex() == binding.commandIndex);
+            }
             auto native = vulkanRhiCommandPayload(*encoder);
             if (shape == 0u && mode == 0u) {
                 core::MutationJournal foreign;
@@ -1857,7 +1975,7 @@ void ordinaryTextureUpload(const std::shared_ptr<VulkanRhiRuntime>& runtime)
                     && vulkanRhiTextureStateCommitted(*object)
                     && object->state() == ResourceState::Undefined);
             }
-            const auto copies = f.resources.stats().nativeBufferToImageCopyRecordCount;
+            const auto copies = copyCount();
             core::UniquePtr<TransferPassEncoder> transfer;
             core::UniquePtr<CommandBuffer> finished;
             assert(!test::CpuQuotaFactoryFixture::verifyHotNoAllocation(
@@ -1872,8 +1990,8 @@ void ordinaryTextureUpload(const std::shared_ptr<VulkanRhiRuntime>& runtime)
                     assert(!mode || finished);
                     return nullptr;
                 }));
-            assert(f.resources.stats().nativeBufferToImageCopyRecordCount == copies + 2u
-                && !object->observeOriginalContent() && !vulkanRhiTextureStateCommitted(*object));
+            assert(copyCount() == copies + 2u && !object->observeOriginalContent()
+                && !vulkanRhiTextureStateCommitted(*object));
             transfer.reset();
             encoder.reset();
             std::weak_ptr<const OriginalCommandStreamProgram> retainedProgram = program;
@@ -1890,8 +2008,19 @@ void ordinaryTextureUpload(const std::shared_ptr<VulkanRhiRuntime>& runtime)
                     && vulkanRhiTextureStateCommitted(*object)
                     && object->observeOriginalContent()->state() == Content::State::Uninitialized
                     && object->validateOriginalContent(fresh)); // rollback changes revision
-                assert(pool->stats().liveSliceCount == 0u);
+                assert(sliceCount() == 0u);
             } else if (mode == 2u) {
+                if constexpr (Public) {
+                    bool refused = false;
+                    const auto calls = queueSubmitCalls;
+                    std::thread submitter([&] {
+                        core::pmr::String diagnostic;
+                        refused = !native->submit(diagnostic)
+                            && diagnostic == "RHI-TEXTURE-UPLOAD-PUBLICATION-THREAD";
+                    });
+                    submitter.join();
+                    assert(refused && queueSubmitCalls == calls);
+                }
                 assert(!acceptRecordedCommandOwnership(*finished));
                 auto gate = VulkanRhiTimelineSemaphorePayload::create(runtime, 0u, f.diagnostic);
                 assert(gate);
@@ -1903,7 +2032,7 @@ void ordinaryTextureUpload(const std::shared_ptr<VulkanRhiRuntime>& runtime)
                     && !native->submittedFenceCompleted()
                     && !acceptRecordedCommandOwnership(*finished)
                     && !object->observeOriginalContent() && !vulkanRhiTextureStateCommitted(*object)
-                    && pool->stats().liveSliceCount == 1u);
+                    && sliceCount() == 1u);
                 assert(!test::CpuQuotaFactoryFixture::verifyHotNoAllocation(
                     q, [&]() noexcept -> const char* {
                         const auto submitted = submitVulkanRhiCommandBuffer(*finished, {gate, 1u});
@@ -1912,36 +2041,56 @@ void ordinaryTextureUpload(const std::shared_ptr<VulkanRhiRuntime>& runtime)
                         return nullptr;
                     }));
                 assert(!object->observeOriginalContent() && !vulkanRhiTextureStateCommitted(*object)
-                    && pool->stats().liveSliceCount == 1u && !native->submittedFenceCompleted());
+                    && sliceCount() == 1u && !native->submittedFenceCompleted());
                 finished.reset();
                 assert(gate->hostSignal(1u) == VK_SUCCESS
                     && vkQueueWaitIdle(runtime->graphicsQueue()) == VK_SUCCESS);
                 assert(!test::CpuQuotaFactoryFixture::verifyHotNoAllocation(
                     q, [&]() noexcept -> const char* {
                         assert(native->submittedFenceCompleted());
-                        retireCompletedVulkanRhiSubmittedCommands();
+                        retireCompletedVulkanRhiSubmittedCommands(*runtime);
                         return nullptr;
                     }));
                 const auto completed = object->observeOriginalContent();
                 assert(completed && completed->state() == Content::State::Completed
                     && completed->contentGeneration() && vulkanRhiTextureStateCommitted(*object)
-                    && object->state() == ResourceState::ShaderRead
-                    && pool->stats().liveSliceCount == 0u);
+                    && object->state() == ResourceState::ShaderRead && sliceCount() == 0u);
             } else {
                 failSubmit = true;
                 const auto submitted = submitVulkanRhiCommandBuffer(*finished);
                 assert(!submitted.success && !submitted.workAccepted);
                 finished.reset();
                 assert(!object->observeOriginalContent() && !vulkanRhiTextureStateCommitted(*object)
-                    && pool->stats().liveSliceCount == 1u && !native->submittedFenceCompleted());
+                    && sliceCount() == 1u && !native->submittedFenceCompleted());
                 assert(!waitIdleAndRetireVulkanRhiSubmittedCommands(runtime));
-                assert(!object->observeOriginalContent() && pool->stats().liveSliceCount == 0u);
+                assert(!object->observeOriginalContent() && sliceCount() == 0u);
             }
             std::printf(
                 "ordinary texture upload shape=%u mode=%u: two genuine mip copies, same journal, completion publication PASS\n",
                 shape,
                 mode);
+            if constexpr (Public) {
+                assert((OriginalTextureUploadPublication::validateOriginal(publication) == nullptr)
+                    == (mode == 2u));
+                assert((publication->validateView(sampled) == nullptr) == (mode == 2u));
+                if (mode == 2u) {
+                    std::shared_ptr<const OriginalTextureUploadPublication> forged(
+                        publication.get(), [](const OriginalTextureUploadPublication*) {});
+                    assert(
+                        std::string_view(OriginalTextureUploadPublication::validateOriginal(forged))
+                        == "RHI-TEXTURE-UPLOAD-PUBLICATION-OWNER");
+                    const char* wrongThreadResult = nullptr;
+                    std::thread observer([&] {
+                        wrongThreadResult = publication->validate();
+                    });
+                    observer.join();
+                    assert(std::string_view(wrongThreadResult)
+                        == "RHI-TEXTURE-UPLOAD-PUBLICATION-THREAD");
+                    assert(publication->validateView({}));
+                }
+            }
             native.reset();
+            publication.reset();
             assert(retainedProgram.expired() && retainedPacking.expired());
         }
 }
@@ -2264,7 +2413,7 @@ void originalTexturePoolInitialization(const std::shared_ptr<VulkanRhiRuntime>& 
     assert(destination->backendInvalidateMappedRead(0u, expected.size(), f.diagnostic)
         && !std::memcmp(destination->backendMappedData(), expected.data(), expected.size()));
     command.reset();
-    retireCompletedVulkanRhiSubmittedCommands();
+    retireCompletedVulkanRhiSubmittedCommands(*runtime);
     std::puts(
         "original texture pool initialization: exact Inputs/Source ordinal, two mips/768 packed bytes, "
         "two same-page offsets, frozen caller input, exhausted quotas/null PMR allocation0, "
@@ -2430,7 +2579,7 @@ void coldStagingPool(const std::shared_ptr<VulkanRhiRuntime>& runtime)
     });
     f.verify();
     command.reset();
-    retireCompletedVulkanRhiSubmittedCommands();
+    retireCompletedVulkanRhiSubmittedCommands(*runtime);
     first = {};
     second = {};
     pool.reset();
@@ -2619,7 +2768,7 @@ void ordinaryRecordingStorage(const std::shared_ptr<VulkanRhiRuntime>& runtime)
             assert(submitVulkanRhiCommandBuffer(*commands).workAccepted);
             assert(native->waitSubmittedFenceUntil(
                 std::chrono::steady_clock::now() + std::chrono::seconds(5), t.f.diagnostic));
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(*runtime);
             const auto destination = vulkanRhiNativePayload(*t.destination);
             assert(
                 destination->backendInvalidateMappedRead(0u, sizeof(t.f.expected), t.f.diagnostic));
@@ -2864,7 +3013,7 @@ void recordingBudget(const std::shared_ptr<VulkanRhiRuntime>& runtime)
     assert(c->waitUntil(std::chrono::steady_clock::now() + std::chrono::seconds(5), f.diagnostic));
     f.verify();
     c.reset();
-    retireCompletedVulkanRhiSubmittedCommands();
+    retireCompletedVulkanRhiSubmittedCommands(*runtime);
     assert(!f.quota->liveBytes());
     std::puts(
         "recording budget: real buffer copy/dependency exact, short, repeated, cancellation PASS");
@@ -2897,7 +3046,7 @@ void rejection(const std::shared_ptr<VulkanRhiRuntime>& runtime)
         assert(command->waitUntil(
             std::chrono::steady_clock::now() + std::chrono::seconds(5), f.diagnostic));
         f.verify(false);
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
         command.reset();
         assert(!f.quota->liveBytes());
     }
@@ -3009,7 +3158,7 @@ void completion(const std::shared_ptr<VulkanRhiRuntime>& runtime, bool dropWrapp
     failFenceObservation = false;
     if (dropWrapper)
         command.reset();
-    retireCompletedVulkanRhiSubmittedCommands();
+    retireCompletedVulkanRhiSubmittedCommands(*runtime);
     assert(!source.expired() && f.quota->liveBytes());
     assert(gate->hostSignal(1u) == VK_SUCCESS);
     if (command) {
@@ -3020,7 +3169,7 @@ void completion(const std::shared_ptr<VulkanRhiRuntime>& runtime, bool dropWrapp
     } else {
         assert(!waitIdleAndRetireVulkanRhiSubmittedCommands(runtime));
     }
-    retireCompletedVulkanRhiSubmittedCommands();
+    retireCompletedVulkanRhiSubmittedCommands(*runtime);
     assert(source.expired());
     f.verify();
     command.reset();
@@ -3064,7 +3213,7 @@ void cancellationAndFailures(const std::shared_ptr<VulkanRhiRuntime>& runtime)
         && command->retentionStorage()->state() == Storage::State::Submitted);
     assert(!command->completed() && !uncertain.expired());
     command.reset();
-    retireCompletedVulkanRhiSubmittedCommands();
+    retireCompletedVulkanRhiSubmittedCommands(*runtime);
     assert(!uncertain.expired() && f.quota->liveBytes());
     assert(!waitIdleAndRetireVulkanRhiSubmittedCommands(runtime));
     assert(uncertain.expired() && !f.quota->liveBytes());
@@ -3591,7 +3740,7 @@ void textureCompletion(const std::shared_ptr<VulkanRhiRuntime>& runtime,
         assert(!vulkanRhiTextureStateCommitted(*t.texture)
             && !vulkanRhiBufferStateCommitted(*f.destination));
         command.reset();
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
         assert(f.quota->liveBytes());
         if (preparedClear)
             assert((clearNativeLive == std::array<unsigned, 3u>{1u, 1u, 1u}));
@@ -3616,7 +3765,7 @@ void textureCompletion(const std::shared_ptr<VulkanRhiRuntime>& runtime,
         f.destination.reset();
         if (dropWrapper)
             command.reset();
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
         assert(!image.expired() && f.quota->liveBytes());
         if (preparedClear)
             assert((clearNativeLive == std::array<unsigned, 3u>{1u, 1u, 1u}));
@@ -3927,7 +4076,7 @@ void timestampNative(const std::shared_ptr<VulkanRhiRuntime>& runtime)
         if (dropCaller) {
             pool.reset();
             command.reset();
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(*runtime);
         }
         assert(!retained.expired());
         assert(gate->hostSignal(1u) == VK_SUCCESS);
@@ -3944,7 +4093,7 @@ void timestampNative(const std::shared_ptr<VulkanRhiRuntime>& runtime)
             assert(pool->executionStatus().state == QueryExecutionState::NotRecorded);
         }
         command.reset();
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
     }
     assert(retained.expired() && queryLivePools == baseline);
     std::printf("native timestamp: host reset, exact/short CPU=%llu, missing APIs/create failure, "
@@ -4053,7 +4202,7 @@ void querySlotsNative(const std::shared_ptr<VulkanRhiRuntime>& runtime)
             return nullptr;
         }));
     command.reset();
-    retireCompletedVulkanRhiSubmittedCommands();
+    retireCompletedVulkanRhiSubmittedCommands(*runtime);
     for (const bool timeline : {false, true}) {
         command = createVulkanRhiNativeCommandPayload(resources, diagnostic);
         assert(command && command->recordTimestamp(*owner, 0u, diagnostic)
@@ -4124,6 +4273,8 @@ void timestampDisabled()
 
 void timestampCompletion(const std::shared_ptr<VulkanRhiRuntime>& runtime)
 {
+    tests::VulkanHeadlessRuntime independent;
+    assert(independent.runtime());
     auto quota = core::makeShared<core::CpuMemoryQuota>(kMetadataBytes);
     VulkanRhiNativeResourceAllocator resources(runtime);
     core::pmr::String diagnostic;
@@ -4177,7 +4328,10 @@ void timestampCompletion(const std::shared_ptr<VulkanRhiRuntime>& runtime)
                     assert(sample.scopes[i].scopeId == ids[i]
                         && std::isfinite(sample.scopes[i].elapsedMs)
                         && sample.scopes[i].elapsedMs >= 0.0f);
-                const auto published = latestVulkanRhiGpuTimingSample();
+                const auto isolated = latestVulkanRhiGpuTimingSample(*independent.runtime());
+                assert(isolated.availability == GpuTimingAvailability::Pending
+                    && isolated.completedFrameSerial == 0u && isolated.scopeCount == 0u);
+                const auto published = latestVulkanRhiGpuTimingSample(*runtime);
                 const auto prefix = names < GpuTimingSample::kMaxScopes ? 1u : 0u;
                 assert(published.completedFrameSerial == serial
                     && published.scopeCount == names + prefix);
@@ -4195,7 +4349,7 @@ void timestampCompletion(const std::shared_ptr<VulkanRhiRuntime>& runtime)
             && payload->completedTimingSample(*runtime, serial).availability
                 == GpuTimingAvailability::Pending);
         command.reset();
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
         std::printf("timestamp completed scope cache: names=%u cold CPU=%llu, exact/short and "
                     "zero-allocation retirement/publication PASS\n",
             names,
@@ -4222,7 +4376,7 @@ void timestampCompletion(const std::shared_ptr<VulkanRhiRuntime>& runtime)
                 == (i ? GpuTimingAvailability::Available : GpuTimingAvailability::Pending)
             && observedQueryReads == i + 1u);
         command.reset();
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
     }
     assert(pool->reset().success);
     // No internal profiling pool: a named result must not acquire a stale
@@ -4240,7 +4394,7 @@ void timestampCompletion(const std::shared_ptr<VulkanRhiRuntime>& runtime)
             && command->waitSubmittedFenceUntil(
                 std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
         const auto sample = payload->completedTimingSample(*runtime, serial);
-        const auto published = latestVulkanRhiGpuTimingSample();
+        const auto published = latestVulkanRhiGpuTimingSample(*runtime);
         if (refuse) {
             assert(sample.availability == GpuTimingAvailability::DiagnosticFailure
                 && sample.scopeCount == 0u && published.completedFrameSerial == 301u
@@ -4252,7 +4406,7 @@ void timestampCompletion(const std::shared_ptr<VulkanRhiRuntime>& runtime)
         }
         assert(pool->reset().success);
         command.reset();
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
     }
     {
         // An injected queue error proves neither execution nor initialization.
@@ -4273,7 +4427,7 @@ void timestampCompletion(const std::shared_ptr<VulkanRhiRuntime>& runtime)
         assert(!waitIdleAndRetireVulkanRhiSubmittedCommands(runtime) && observedQueryReads == reads
             && payload->completedTimingSample(*runtime, 400u).availability
                 == GpuTimingAvailability::DiagnosticFailure
-            && latestVulkanRhiGpuTimingSample().completedFrameSerial == 301u
+            && latestVulkanRhiGpuTimingSample(*runtime).completedFrameSerial == 301u
             && pool->executionStatus().state == QueryExecutionState::DiagnosticFailure
             && pool->reset().success);
     }
@@ -4497,7 +4651,7 @@ void originalMixedQueryJournalNative(const std::shared_ptr<VulkanRhiRuntime>& ru
                 && buffer->state() == ResourceState::CopyDst
                 && native->waitSubmittedFenceUntil(
                     std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(*runtime);
             assert(observedQueryReads == reads + 2u
                 && payload->completedTimingSample(*runtime, 800u + mode).availability
                     == GpuTimingAvailability::Available);
@@ -4516,7 +4670,7 @@ void originalMixedQueryJournalNative(const std::shared_ptr<VulkanRhiRuntime>& ru
                 encoder.reset();
                 finished.reset();
                 native.reset();
-                retireCompletedVulkanRhiSubmittedCommands();
+                retireCompletedVulkanRhiSubmittedCommands(*runtime);
                 assert(!retained.expired() && observedQueryReads == reads);
                 assert(gate->hostSignal(1u) == VK_SUCCESS
                     && vkQueueWaitIdle(runtime->graphicsQueue()) == VK_SUCCESS);
@@ -4524,7 +4678,7 @@ void originalMixedQueryJournalNative(const std::shared_ptr<VulkanRhiRuntime>& ru
                 assert(native->waitSubmittedFenceUntil(
                     std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
             }
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(*runtime);
             assert(observedQueryReads == reads + 2u
                 && payload->completedTimingSample(*runtime, 800u + mode).availability
                     == GpuTimingAvailability::Available);
@@ -4549,7 +4703,7 @@ void originalMixedQueryJournalNative(const std::shared_ptr<VulkanRhiRuntime>& ru
             encoder.reset();
             finished.reset();
             native.reset();
-            retireCompletedVulkanRhiSubmittedCommands();
+            retireCompletedVulkanRhiSubmittedCommands(*runtime);
             assert(!retained.expired() && observedQueryReads == reads);
             assert(!waitIdleAndRetireVulkanRhiSubmittedCommands(runtime) && retained.expired()
                 && !vulkanRhiBufferStateAvailable(*buffer, nullptr)
@@ -4968,7 +5122,7 @@ void originalQuerySourceNative(const std::shared_ptr<VulkanRhiRuntime>& runtime,
         if (verifyProfiling) {
             timingReader = std::thread([&] {
                 do {
-                    const auto sample = latestVulkanRhiGpuTimingSample();
+                    const auto sample = latestVulkanRhiGpuTimingSample(*runtime);
                     if (sample.availability != GpuTimingAvailability::Pending) {
                         const auto serial = sample.completedFrameSerial;
                         if (serial == 711u || serial == 712u || serial == 713u) {
@@ -5095,7 +5249,7 @@ void originalQuerySourceNative(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                         hotQuotas, [&]() noexcept -> const char* {
                             core::CpuMemoryQuotaScope scope(recordingQuota);
                             assert(native->submittedFenceCompleted());
-                            const auto published = latestVulkanRhiGpuTimingSample();
+                            const auto published = latestVulkanRhiGpuTimingSample(*runtime);
                             assert(!native->internalTimingDiagnostic()
                                 && published.availability == GpuTimingAvailability::Available
                                 && published.completedFrameSerial == 704u
@@ -5107,7 +5261,7 @@ void originalQuerySourceNative(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                     assert(native->waitSubmittedFenceUntil(
                         std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
                 }
-                retireCompletedVulkanRhiSubmittedCommands();
+                retireCompletedVulkanRhiSubmittedCommands(*runtime);
                 assert(acceptRecordedCommandOwnership(
                     *finished)); // Alias remains alive after completion.
                 assert(observedQueryReads == reads + 2u);
@@ -5126,7 +5280,7 @@ void originalQuerySourceNative(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                 native.reset();
                 assert(!retained.expired() && gate->hostSignal(1u) == VK_SUCCESS
                     && vkQueueWaitIdle(runtime->graphicsQueue()) == VK_SUCCESS);
-                retireCompletedVulkanRhiSubmittedCommands();
+                retireCompletedVulkanRhiSubmittedCommands(*runtime);
                 assert(retained.expired() && observedQueryReads == reads + 2u);
             } else if (mode == 6u || mode == 7u) {
                 auto gate = mode == 7u
@@ -5144,7 +5298,7 @@ void originalQuerySourceNative(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                 encoder.reset();
                 finished.reset();
                 native.reset();
-                retireCompletedVulkanRhiSubmittedCommands();
+                retireCompletedVulkanRhiSubmittedCommands(*runtime);
                 assert(!retained.expired() && observedQueryReads == reads);
                 assert(!waitIdleAndRetireVulkanRhiSubmittedCommands(runtime) && retained.expired()
                     && observedQueryReads == reads
@@ -5161,8 +5315,8 @@ void originalQuerySourceNative(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                 assert(submitVulkanRhiCommandBuffer(*finished).workAccepted
                     && native->waitSubmittedFenceUntil(
                         std::chrono::steady_clock::now() + std::chrono::seconds(5), diagnostic));
-                retireCompletedVulkanRhiSubmittedCommands();
-                const auto published = latestVulkanRhiGpuTimingSample();
+                retireCompletedVulkanRhiSubmittedCommands(*runtime);
+                const auto published = latestVulkanRhiGpuTimingSample(*runtime);
                 assert(published.availability == GpuTimingAvailability::Available
                     && published.completedFrameSerial == 716u && published.scopeCount == 2u);
             } else if (mode >= 11u) {
@@ -5176,7 +5330,7 @@ void originalQuerySourceNative(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                     hotQuotas, [&]() noexcept -> const char* {
                         core::CpuMemoryQuotaScope scope(recordingQuota);
                         assert(native->submittedFenceCompleted());
-                        const auto published = latestVulkanRhiGpuTimingSample();
+                        const auto published = latestVulkanRhiGpuTimingSample(*runtime);
                         assert(native->internalTimingDiagnostic()
                             && published.availability == GpuTimingAvailability::DiagnosticFailure
                             && published.completedFrameSerial == 700u + mode
@@ -5185,8 +5339,8 @@ void originalQuerySourceNative(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                     }));
                 missingQueryProcedure = nullptr;
                 refuseObservedQueryResult = refuseInternalQueryResult = false;
-                retireCompletedVulkanRhiSubmittedCommands();
-                const auto published = latestVulkanRhiGpuTimingSample();
+                retireCompletedVulkanRhiSubmittedCommands(*runtime);
+                const auto published = latestVulkanRhiGpuTimingSample(*runtime);
                 assert(published.completedFrameSerial == 700u + mode
                     && published.availability == GpuTimingAvailability::DiagnosticFailure);
             } else {
@@ -5201,13 +5355,13 @@ void originalQuerySourceNative(const std::shared_ptr<VulkanRhiRuntime>& runtime,
                     && payload->matchesSlot(*committedFirst)
                     && payload->matchesSlot(*committedSecond));
             }
-            const auto beforeRelease = latestVulkanRhiGpuTimingSample();
+            const auto beforeRelease = latestVulkanRhiGpuTimingSample(*runtime);
             pass.reset();
             encoder.reset();
             finished.reset();
             native.reset();
             if (verifyProfiling && (mode == 4u || mode == 5u || mode >= 11u)) {
-                const auto afterRelease = latestVulkanRhiGpuTimingSample();
+                const auto afterRelease = latestVulkanRhiGpuTimingSample(*runtime);
                 assert(afterRelease.completedFrameSerial == beforeRelease.completedFrameSerial
                     && afterRelease.availability == beforeRelease.availability
                     && afterRelease.scopeCount == beforeRelease.scopeCount
@@ -5621,7 +5775,7 @@ void originalQueryCreationNative(const std::shared_ptr<VulkanRhiRuntime>& runtim
                 if (command)
                     assert(command->submittedFenceCompleted());
                 else
-                    retireCompletedVulkanRhiSubmittedCommands();
+                    retireCompletedVulkanRhiSubmittedCommands(*runtime);
                 if (owner) {
                     assert(!VulkanRhiQueryPool::validateOriginal(owner, *runtime));
                     const auto sample = owner->payload()->completedTimingSample(*runtime, 501u);
@@ -5632,7 +5786,7 @@ void originalQueryCreationNative(const std::shared_ptr<VulkanRhiRuntime>& runtim
                 return nullptr;
             }));
         command.reset();
-        retireCompletedVulkanRhiSubmittedCommands();
+        retireCompletedVulkanRhiSubmittedCommands(*runtime);
     }
     assert(retainedWrapper.expired() && retainedPayload.expired() && retainedInput.expired()
         && queryLivePools == baseline);
@@ -5666,43 +5820,49 @@ int main(int argc, char** argv)
     tests::RenderDocCaptureScope capture;
     if (argc == 2 && std::string_view(argv[1]) == "--ordinary-texture-upload") {
         ordinaryTextureUpload(native.runtime());
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
+        capture.end();
+        return 0;
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--public-texture-upload") {
+        ordinaryTextureUpload<true>(native.runtime());
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--original-program-custody") {
         ordinaryOriginalProgramCustody(native.runtime());
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--staging-pool-registered") {
         originalTexturePoolInitialization<true>(native.runtime());
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--staging-pool-initialization") {
         originalTexturePoolInitialization(native.runtime());
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--staging-pool") {
         coldStagingPool(native.runtime());
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--staging-journal") {
         coldStagingJournal(native.runtime());
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--ordinary-debug-labels") {
         ordinaryUnadmittedDebugLabels(native.runtime());
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
@@ -5710,7 +5870,7 @@ int main(int argc, char** argv)
         if (!native.runtime()->timestampQueriesEnabled())
             return 77;
         querySlotsNative(native.runtime());
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
@@ -5731,7 +5891,7 @@ int main(int argc, char** argv)
             std::string_view(argv[1]) == "--query-mixed-journal",
             std::string_view(argv[1]) == "--query-submit-rollback",
             std::string_view(argv[1]) == "--query-profiling");
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
@@ -5742,7 +5902,7 @@ int main(int argc, char** argv)
         }
         timestampDisabled();
         timestampNative(native.runtime());
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
@@ -5750,7 +5910,7 @@ int main(int argc, char** argv)
         if (!native.runtime()->timestampQueriesEnabled())
             return 77;
         timestampCompletion(native.runtime());
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
@@ -5758,26 +5918,26 @@ int main(int argc, char** argv)
         if (!native.runtime()->timestampQueriesEnabled())
             return 77;
         originalQueryCreationNative(native.runtime());
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
     ordinaryFinishedStorage(native.runtime());
     if (argc == 2 && std::string_view(argv[1]) == "--ordinary-finish") {
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
     ordinaryColdPassStorage(native.runtime());
     if (argc == 2 && std::string_view(argv[1]) == "--ordinary-passes") {
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
     ordinaryRecordingStorage(native.runtime());
     nativeRecordingStorage(native.runtime());
     if (argc == 2 && std::string_view(argv[1]) == "--ordinary-storage") {
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         capture.end();
         return 0;
     }
@@ -5798,7 +5958,7 @@ int main(int argc, char** argv)
         textureCompletion(native.runtime(), format, false, true);
     }
     if (onlyClear || (argc == 2 && std::string_view(argv[1]) == "--texture")) {
-        drainVulkanRhiSubmittedCommandsForShutdown();
+        drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
         return 0;
     }
     recordingBudget(native.runtime());
@@ -5808,7 +5968,7 @@ int main(int argc, char** argv)
     cancellationAndFailures(native.runtime());
     stateTransactions(native.runtime(), false);
     stateTransactions(native.runtime(), true);
-    drainVulkanRhiSubmittedCommandsForShutdown();
+    drainVulkanRhiSubmittedCommandsForShutdown(*native.runtime());
     capture.end();
     return 0;
 }

@@ -1,5 +1,6 @@
 #include "rhi/backends/metal/metal_backend_objects.h"
 
+#include "rhi/frontend/buffer_placement.h"
 #include "rhi/frontend/pipeline_state_copy.h"
 #include "rhi/gpu_common.h"
 
@@ -466,6 +467,11 @@ arp::core::UniquePtr<rhi::GpuBuffer> createMetalRhiBuffer(rhi::GpuResourceId id,
     std::shared_ptr<MetalRhiResourceRegistry> registry,
     std::shared_ptr<MetalRhiNativeBufferPayload> preparedPayload)
 {
+    if (const auto* id =
+            rhi::HostVisibleDeviceLocalBufferContract::validate(desc, rhi::Backend::Metal, false)) {
+        rhi::RhiErrorHandler::get().report(rhi::RhiSeverity::Error, id);
+        return {};
+    }
     if (!validMetalBufferDesc(desc)) {
         // Metal memoryless storage is a texture-only attachment concept. A
         // transient buffer must not be silently created with private/shared

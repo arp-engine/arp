@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ARP Editor · WebGL</title>
+<style>
+*{box-sizing:border-box} body{margin:0;background:#202329;color:#ddd;font:13px system-ui}
+header{display:flex;align-items:center;gap:8px;min-height:44px;padding:6px 12px;flex-wrap:wrap}
+strong{margin-right:12px;color:#d8e8ff} button{background:#393f49;color:#eee;border:1px solid #59606c;border-radius:3px;padding:5px 10px;cursor:pointer}
+button:disabled{opacity:.4;cursor:wait} #status{margin-left:auto;max-width:50vw} #error{color:#ffb6ac;white-space:pre-wrap;padding:0 12px}
+canvas{display:block;width:100vw;height:calc(100vh - 96px);min-height:360px;outline:none}
+footer{padding:8px 12px;color:#b8bdc6;font-size:12px} input{display:none}
+</style></head>
+<body><header><strong>ARP Editor / WebGL</strong>
+<button data-action="save-scene">Save scene</button><button data-action="reopen">Reopen scene</button><button data-action="save-project">Save project</button>
+<button id="import">Import workspace</button><button data-action="export">Export workspace</button>
+<span id="status">Loading engine, fonts and UI…</span></header>
+<div id="error" role="alert"></div>
+<canvas id="canvas" width="1440" height="810" tabindex="0"></canvas>
+<footer>Prototype · Saves use a temporary browser workspace. Export a YAML archive before refreshing. Desktop Play / REST and 3D GPU preview are unavailable.</footer>
+<input id="archive" type="file" accept=".yaml,.yml">
+<script>
+var Module = {
+  canvas: document.getElementById('canvas'),
+  onEditorState(state) {
+    document.getElementById('status').textContent = (state.dirty || state.scriptDirty ? '● Unsaved workspace · ' : '') + state.message;
+    document.querySelectorAll('header button').forEach(b => b.disabled = state.busy);
+  },
+  onEditorError(message) {document.getElementById('error').textContent = message;},
+  onAbort(message) {this.onEditorError('Engine stopped: ' + message);},
+  downloadWorkspace(text) {
+    const url = URL.createObjectURL(new Blob([text], {type:'application/yaml'}));
+    const a = document.createElement('a'); a.href=url; a.download='arp-workspace.yaml'; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+};
+window.editorAction = (name, value='') => Module.ccall('editor_action','number',['string','string'],[name,value]);
+window.addEventListener('error', event => {Module.editorError=event.message;Module.onEditorError(event.message);});
+window.addEventListener('unhandledrejection', event => {Module.editorError=String(event.reason);Module.onEditorError(Module.editorError);});
+document.querySelectorAll('[data-action]').forEach(b => b.onclick = () => {
+  if (!editorAction(b.dataset.action)) Module.onEditorError('Action rejected. Check unsaved changes and Editor Output.');
+});
+document.getElementById('import').onclick = () => document.getElementById('archive').click();
+document.getElementById('archive').onchange = async event => {
+  const file = event.target.files[0]; if (!file) return;
+  if (file.size > 48*1024*1024) {Module.onEditorError('Workspace archive exceeds 48 MiB'); return;}
+  if (!Module.ccall('editor_import_workspace','number',['string'],[await file.text()]))
+    Module.onEditorError('Import rejected. Save changes first; only arp.editor.workspace/v1 archives are accepted.');
+  event.target.value='';
+};
+const canvas = Module.canvas;
+canvas.addEventListener('pointerdown', () => canvas.focus());
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('pagehide', () => {Module.editorPageAvailable=false;});
+window.addEventListener('pageshow', () => {Module.editorPageAvailable=true;});
+canvas.addEventListener('wheel', e => e.preventDefault(), {passive:false});
+canvas.addEventListener('keydown', e => {if(e.ctrlKey || ['Tab','Backspace',' ','ArrowUp','ArrowDown'].includes(e.key)) e.preventDefault();});
+window.addEventListener('beforeunload', e => {if(Module.editorState?.dirty || Module.editorState?.scriptDirty){e.preventDefault(); e.returnValue='';}});
+if (!crossOriginIsolated) Module.onEditorError('Serve with COOP/COEP headers: python scripts/serve_editor_web.py');
+if (new URLSearchParams(location.search).has('smoke')) {
+  const script=document.createElement('script'); script.src='editor_webgl_smoke.js'; document.head.appendChild(script);
+}
+if (new URLSearchParams(location.search).has('capture')) {
+  const script=document.createElement('script'); script.src='editor_webgl_capture.js'; document.head.appendChild(script);
+}
+if (new URLSearchParams(location.search).has('negative')) {
+  document.write('<script src="editor_webgl_negative.js"><\/script>');
+}
+</script>
+{{{ SCRIPT }}}
+</body></html>

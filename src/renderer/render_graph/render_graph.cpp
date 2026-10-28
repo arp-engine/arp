@@ -7,6 +7,7 @@
 #include "renderer/render_graph/frame_graph_compiler.h"
 #include "renderer/render_graph/frame_graph_executor.h"
 #include "renderer/render_graph/transient_resource_allocator.h"
+#include "rhi/frontend/original_texture_upload_device.h"
 #include "rhi/frontend/resource_access_usage.h"
 #include "rhi/frontend/resource_cache_accounting.h"
 #include "rhi/gpu_capabilities.h"
@@ -678,6 +679,32 @@ TextureHandle FrameGraph::importTextureRef(std::shared_ptr<rhi::GpuTexture> text
     record.imported = true;
     record.placed = false;
     textures_.push_back(std::move(record));
+    return handle;
+}
+
+TextureHandle FrameGraph::importCompletedSampledTexture(
+    const std::shared_ptr<const rhi::OriginalTextureUploadPublication>& upload,
+    const std::shared_ptr<const rhi::OriginalCommandTextureViewSource>& view,
+    rhi::PipelineStage stages)
+{
+    if (const auto* id = rhi::OriginalTextureUploadPublication::validateOriginal(upload))
+        throw core::DiagnosticError(id);
+    if (const auto* id = upload->validateView(view))
+        throw core::DiagnosticError(id);
+    if (const auto* id = upload->validateReadVisibility(stages))
+        throw core::DiagnosticError(id);
+    const auto& parent = view->originalParentLease();
+    const auto handle =
+        importTextureRef({parent, const_cast<rhi::GpuTexture*>(parent->originalObject())});
+    auto& record = textureRecord(handle);
+    if (record.completedSampledUpload
+        && (!core::SharedOwnerProjection::sameOwner(record.completedSampledUpload, upload)
+            || !core::SharedOwnerProjection::sameOwner(record.completedSampledView, view)))
+        throw core::DiagnosticError("RG-COMPLETED-SAMPLED-IMPORT-OWNER");
+    invalidateCompiledRetirementSource();
+    record.completedSampledUpload = upload;
+    record.completedSampledView = view;
+    record.completedSampledStages = record.completedSampledStages | stages;
     return handle;
 }
 
@@ -2153,7 +2180,9 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
             (kind == ResourceKind::Texture ? textureHistory : bufferHistory).at(handle);
         const auto& all = (kind == ResourceKind::Texture ? textureAllUses : bufferAllUses)[handle];
         const bool firstUse = seenResources.emplace(kind, handle).second;
-        if (firstUse || previous.state != next.state
+        const bool completedRead = kind == ResourceKind::Texture
+            && graph.textureRecord(TextureHandle{handle}).completedSampledUpload;
+        if ((firstUse && !completedRead) || previous.state != next.state
             || rhi::semantics::resourceAccessWrites(previous.access)
             || rhi::semantics::resourceAccessWrites(next.access)) {
             auto barrier = kind == ResourceKind::Texture
@@ -2371,6 +2400,8 @@ void FrameGraphExecutor::executeImpl(const CompiledFrameGraph& compiled,
     bool preparedTrace)
 {
     core::CpuWorkMeasurementScope recordMeasurement(measurements ? &measurements->record : nullptr);
+    if (const auto* id = graph_.sharedImportSourceDiagnostic())
+        throw core::DiagnosticError(id);
     if (const auto* id = graph_.compiledRetirementExecutionDiagnostic(compiled))
         throw core::DiagnosticError(id);
     const bool cpuDiag = std::getenv("ARP_FRAME_GRAPH_CPU_DIAG") != nullptr;
@@ -2383,24 +2414,29 @@ void FrameGraphExecutor::executeImpl(const CompiledFrameGraph& compiled,
 
     auto& commands = *commandEncoder;
     std::pmr::vector<rhi::semantics::GpuTimingScopeRequest> timingRequests;
-    for (const auto& requested : graph_.gpuTimingPassScopes_) {
-        if (requested.scopeId == 0u)
-            continue;
-        for (const auto compiledPassIndex : compiled.executionOrder()) {
-            const auto& compiledPass = compiled.passes()[compiledPassIndex];
-            const auto& passRecord = graph_.passes_[compiledPass.originalPassIndex];
-            if (!compiledPass.culled
-                && ((compiledPass.kind == PassKind::Graphics
-                        && (passRecord.renderPassCallback || passRecord.subpassGroup))
-                    || (compiledPass.kind == PassKind::Compute && requested.callbackOwnsTimestamps))
-                && compiledPass.name == requested.passName) {
-                if (timingRequests.size() < rhi::GpuTimingSample::kMaxScopes - 1u) {
-                    timingRequests.push_back({requested.scopeId, requested.passName, false});
+    // Original prepared execution has already projected its exact scopes into
+    // the canonical Program and callbacks. Do not create a second timing plan
+    // or allocate timing requests while recording that prepared stream.
+    if (!preparedTrace)
+        for (const auto& requested : graph_.gpuTimingPassScopes_) {
+            if (requested.scopeId == 0u)
+                continue;
+            for (const auto compiledPassIndex : compiled.executionOrder()) {
+                const auto& compiledPass = compiled.passes()[compiledPassIndex];
+                const auto& passRecord = graph_.passes_[compiledPass.originalPassIndex];
+                if (!compiledPass.culled
+                    && ((compiledPass.kind == PassKind::Graphics
+                            && (passRecord.renderPassCallback || passRecord.subpassGroup))
+                        || (compiledPass.kind == PassKind::Compute
+                            && requested.callbackOwnsTimestamps))
+                    && compiledPass.name == requested.passName) {
+                    if (timingRequests.size() < rhi::GpuTimingSample::kMaxScopes - 1u) {
+                        timingRequests.push_back({requested.scopeId, requested.passName, false});
+                    }
+                    break;
                 }
-                break;
             }
         }
-    }
     const auto timingPlan = preparedTrace
         ? rhi::semantics::GpuTimingLoweringPlan{}
         : rhi::semantics::lowerGpuTimingScopes(

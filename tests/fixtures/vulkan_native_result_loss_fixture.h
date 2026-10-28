@@ -1,4 +1,5 @@
 #pragma once
+#include "device_idle_failure_fixture.h"
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
 #include "rhi/backends/vulkan/vulkan_original_device_native_loss.h"
 #include "tests/fixtures/cpu_quota_factory_fixture.h"
@@ -147,10 +148,10 @@ public:
         // Negative VkResult injection after real driver idle. This proves the
         // result consumer and terminal identity, not actual hardware device loss.
         inject(base.runtime->logicalDevice());
+        tests::DeviceIdleFailureFixture::verify(*device, "RHI-VULKAN-IDLE-COMPLETION-DEVICE-LOST");
         assert(!CpuQuotaFactoryFixture::verifyHotNoAllocation(
             std::array{domain, source, foreignDomain, foreignSource},
             [&]() noexcept -> const char* {
-                device->waitIdle();
                 expect(observation->diagnostic(), "RHI-ORIGINAL-DEVICE-LIFETIME-NATIVE-LOST");
                 assert(!otherObservation->diagnostic());
                 return nullptr;

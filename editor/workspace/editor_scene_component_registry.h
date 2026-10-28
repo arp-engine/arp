@@ -20,6 +20,10 @@ struct EditorSceneComponentFactoryContext {
     core::SharedPtr<physics2d::PhysicsWorld2D> physicsWorld2D;
     bool schemaOnly = false;
     core::SharedCallback<core::SharedPtr<physics2d::PhysicsWorld2D>()> physicsWorld2DProvider;
+    // Optional exact transaction lookup, scoped to this factory call. Ordinary
+    // factories continue to inspect the live owner.
+    core::SharedCallback<scene::Component*(scene::GameObjectId, std::string_view)>
+        componentResolver;
 };
 
 // Only factories with isolated authoring construction may enter exact history.

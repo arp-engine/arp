@@ -7,6 +7,7 @@
 #include "editor/project/project_manifest.h"
 #include "editor/project/project_metadata.h"
 #include "editor/workspace/editor_scene_authoring_codec.h"
+#include "editor/workspace/editor_scene_file_format.h"
 #include "editor/workspace/script_document_session.h"
 
 #include <algorithm>
@@ -234,7 +235,10 @@ bool EditorRecoveryCodec::validate(
             || !count(scene.boundTarget, budget.maxPathBytes)
             || !count(scene.savedContentHash, 71u))
             return fail(diagnostic, "EDITOR-RECOVERY-SCENE-LIMIT");
-        if (!EditorSceneAuthoringCodec::validateStructure(scene.yaml, diagnostic))
+        const auto sceneVersion = EditorSceneFileFormat::version(scene.yaml);
+        if (sceneVersion == EditorSceneScriptCodec::contractVersion && !value.project)
+            return fail(diagnostic, "EDITOR-RECOVERY-SCRIPT-PROJECT-REQUIRED");
+        if (!EditorSceneFileFormat::validateStructure(scene.yaml, diagnostic))
             return false;
         const bool bound = !scene.path.empty();
         if (bound != !scene.boundTarget.empty() || bound != !scene.savedContentHash.empty()
@@ -247,9 +251,12 @@ bool EditorRecoveryCodec::validate(
         // A saved hash describes the decoded live document, not wire YAML
         // spelling. Resource-ready candidate preparation must check it against
         // the restored baseline; this codec only validates its schema.
-        if (bound
-            && !EditorSceneAuthoringCodec::validateStructure(scene.savedFileBytes, diagnostic))
-            return false;
+        if (bound) {
+            if (EditorSceneFileFormat::version(scene.savedFileBytes) != sceneVersion)
+                return fail(diagnostic, "EDITOR-RECOVERY-SCENE-FORMAT-MISMATCH");
+            if (!EditorSceneFileFormat::validateStructure(scene.savedFileBytes, diagnostic))
+                return false;
+        }
         for (std::size_t i = 0; i < value.scripts.size(); ++i) {
             const auto& script = value.scripts[i];
             if (!relativePath(script.path, budget.maxPathBytes)

@@ -1,4 +1,4 @@
-#include "rhi/semantics/webgpu_runtime_telemetry.h"
+#include "rhi/frontend/webgpu_runtime_telemetry.h"
 
 #include "core/diagnostics/diagnostic_builder.h"
 #include "core/memory/cpu_allocator.h"

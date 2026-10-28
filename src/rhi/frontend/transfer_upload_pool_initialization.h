@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rhi/frontend/command_transfer_validation.h"
+#include "rhi/semantics/transfer_upload_lowering.h"
 
 namespace arp::rhi {
 
@@ -39,35 +40,8 @@ public:
     {
         if (const auto* id = validate(budget))
             return {false, false, false, id};
-        switch (backend) {
-        case Backend::Null:
-            return {true,
-                false,
-                false,
-                "RHI-TEXTURE-POOL-INITIALIZATION-NULL-VALIDATOR",
-                budget.contractVersion == 2u};
-        case Backend::Vulkan:
-            return {false, true, false, nullptr, budget.contractVersion == 2u};
-        case Backend::Metal:
-            return {false,
-                false,
-                false,
-                "RHI-TEXTURE-POOL-INITIALIZATION-METAL-PAYLOAD-MISSING",
-                budget.contractVersion == 2u};
-        case Backend::WebGPU:
-            return {false,
-                false,
-                false,
-                "RHI-TEXTURE-POOL-INITIALIZATION-WEBGPU-PAYLOAD-MISSING",
-                budget.contractVersion == 2u};
-        case Backend::WebGL:
-            return {false,
-                false,
-                false,
-                "RHI-TEXTURE-POOL-INITIALIZATION-WEBGL-UNSUPPORTED",
-                budget.contractVersion == 2u};
-        }
-        return {};
+        return semantics::TransferUploadLowering::poolInitialization<Decision>(
+            backend, budget.contractVersion == 2u);
     }
 
     static const char* inspect(const std::shared_ptr<const OriginalCommandInputs>& inputs,

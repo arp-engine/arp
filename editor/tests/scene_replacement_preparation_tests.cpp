@@ -78,9 +78,13 @@ void replacement()
             live.addComponent("RigidBody2DComponent"));
         auto* retiredBody = dynamic_cast<physics2d::RigidBody2DComponent*>(
             candidate.addComponent("RigidBody2DComponent"));
-        assert(incomingBody && incomingBody->handle() && incomingBody->world() == world.get()
-            && retiredBody && retiredBody->handle() && retiredBody->world() == world.get()
-            && world->telemetry().bodies == 2 && resourceCalls == 2 && physicsCalls == 2);
+        // Passive documents retain the correct service owner and descriptors,
+        // but the approved Authoring mode must never create simulation bodies.
+        assert(incomingBody && !incomingBody->handle() && incomingBody->world() == world.get()
+            && incomingBody->usage() == physics2d::ComponentUsage::Authoring && retiredBody
+            && !retiredBody->handle() && retiredBody->world() == world.get()
+            && retiredBody->usage() == physics2d::ComponentUsage::Authoring
+            && world->telemetry().bodies == 0 && resourceCalls == 2 && physicsCalls == 2);
         assert(candidate.resourceManagerProvider()() == &resources
             && candidate.physicsWorld2DProvider()() == world);
         assert(live.addComponent("AudioSourceComponent")
@@ -89,7 +93,7 @@ void replacement()
             "PASS commit core allocations=0, callback deallocations=%llu, no provider/factory invocation or component destruction\n",
             static_cast<unsigned long long>(after.deallocationCount - before.deallocationCount));
     }
-    assert(destroyed == 1 && world->telemetry().bodies == 1);
+    assert(destroyed == 1 && world->telemetry().bodies == 0);
     // The incoming factory must survive the original candidate and its token.
     assert(live.addComponent("CameraComponent"));
     std::puts(

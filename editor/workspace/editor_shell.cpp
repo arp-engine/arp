@@ -241,7 +241,11 @@ void EditorEnumDropdown::onSelectionChanged(std::uint32_t, std::uint32_t selecte
         return;
     }
     if (source_ == "scene_component_add") {
-        if (selected < options_.size() && !options_[selected].commandValue.empty())
+        if (selected < options_.size()
+            && EditorScriptInspector::handles(options_[selected].commandValue)) {
+            const auto source = options_[selected].commandValue;
+            (void)shell_.submitCommand(ActivateControlCommand(source));
+        } else if (selected < options_.size() && !options_[selected].commandValue.empty())
             (void)shell_.submitCommand(AddSceneComponentCommand(std::string_view(
                 options_[selected].commandValue.data(), options_[selected].commandValue.size())));
         return;
@@ -290,13 +294,19 @@ ui::UiResult EditorEnumDropdown::applyInteraction(
 
 void EditorEnumDropdown::openMenu()
 {
-    const bool inspector =
-        source_ == "scene_component_add" || core::startsWith(source_, "scene_property_");
+    const bool inspector = source_ == "scene_component_add"
+        || core::startsWith(source_, "scene_property_") || EditorScriptInspector::handles(source_);
     try {
 
         if (!shell_.acceptsInspectorInput(source_, widgetId()) || !runtime()
             || !optionWidgets_.empty())
             return;
+        if (source_ == "scene_component_add") {
+            shell_.scriptInspector_.addMenuOptions(shell_, options_);
+            visibleRows_ = options_.size() > EditorSceneDocument::componentCatalog().size()
+                ? EditorEnumPopupLayout::inspectorMaxRows
+                : 0;
+        }
         const auto* widget = runtime()->canvas().findWidget(widgetId());
         if (!widget || !widget->parentId().valid())
             return;
@@ -468,6 +478,10 @@ void EditorEnumDropdown::openMenu()
         if (!inspector)
             throw;
         shell_.failSceneInspector(failure.diagnostic);
+    } catch (const std::exception&) {
+        if (!inspector)
+            throw;
+        shell_.failSceneInspector("EDITOR-INSPECTOR-POPUP-PREPARATION-FAILED");
     }
 }
 
@@ -506,6 +520,15 @@ void EditorEnumDropdown::closeMenu()
 void EditorEnumDropdown::choose(std::uint32_t selected)
 {
     if (selected < options_.size()) {
+        // Script rows are transient popup identities, not static Dropdown
+        // descriptor indices. Dispatch after closing without mutating its value.
+        if (source_ == "scene_component_add"
+            && EditorScriptInspector::handles(options_[selected].commandValue)) {
+            const auto source = options_[selected].commandValue;
+            closeMenu();
+            (void)shell_.submitCommand(ActivateControlCommand(source));
+            return;
+        }
         closeMenu();
         (void)setValue(ui::UiControlValue::fromIndex(selected), ui::UiNotifyPolicy::Notify);
     }
@@ -1854,7 +1877,8 @@ bool EditorShell::acceptsInspectorInput(std::string_view source, ui::WidgetId wi
         || source.substr(0, 22) == "scene_reference_focus_"
         || source.substr(0, 22) == "scene_resource_locate_"
         || source.substr(0, 23) == "scene_component_toggle_"
-        || source.substr(0, 23) == "scene_component_remove_";
+        || source.substr(0, 23) == "scene_component_remove_"
+        || EditorScriptInspector::handles(source);
     if (!dynamic && source != "scene_name" && source != "scene_active"
         && source != "scene_component_add")
         return true;
@@ -1866,7 +1890,8 @@ bool EditorShell::acceptsInspectorInput(std::string_view source, ui::WidgetId wi
         return false;
     const bool write = source == "scene_name" || source == "scene_active"
         || source == "scene_component_add" || source.substr(0, 15) == "scene_property_"
-        || source.substr(0, 23) == "scene_component_remove_";
+        || source.substr(0, 23) == "scene_component_remove_"
+        || EditorScriptInspector::handles(source);
     if (write && !sceneObjectEditable(sceneDocument_.selectedObject(), source == "scene_active"))
         return false;
     return !dynamic || !widget.valid()
@@ -1966,6 +1991,10 @@ void EditorShell::clearSceneInspectorWidgets()
 
 void EditorShell::refreshSceneInspector()
 {
+    // A nested typed field command refreshes synchronously. Keep its caller's
+    // draft alive until the command receipt has returned and publication ends.
+    if (scriptInspector_.applying())
+        return;
     const auto selected = sceneDocument_.selectedObject();
     if (sceneInspectorReferenceFailureOwner_ != selected
         || !sceneInspectorReferenceFailureTicket_.sameCurrentEpoch(sceneDocument_.ownerTicket()))
@@ -2008,6 +2037,10 @@ void EditorShell::refreshSceneInspector()
         failSceneInspector(failure.diagnostic);
     } catch (const std::bad_alloc&) {
         failSceneInspector("EDITOR-INSPECTOR-ALLOCATION-FAILED");
+    } catch (const core::YamlContractError&) {
+        failSceneInspector("EDITOR-INSPECTOR-SCRIPT-YAML");
+    } catch (const std::exception&) {
+        failSceneInspector("EDITOR-INSPECTOR-SCRIPT-PREPARATION");
     }
     if (sceneInspectorState_ == InspectorState::Failed) {
         // removeSubtree needs scratch memory. On persistent exhaustion retain
@@ -2087,21 +2120,36 @@ void EditorShell::refreshSceneInspectorHeader()
         multiple ? core::pmr::String("Selection properties") : std::move(header));
 }
 
+ui::UiControlRuntimeResult EditorShell::createInspectorControl(
+    ui::UiControlDesc desc, ui::WidgetId parent)
+{
+    if (sceneInspectorWidgetIds_.size() == kSceneInspectorDynamicWidgetCapacity)
+        throw InspectorBuildFailure{"EDITOR-INSPECTOR-WIDGET-BUDGET"};
+    auto result = runtime().createControl(std::move(desc), parent);
+    if (!result.ok())
+        throw InspectorBuildFailure{"EDITOR-INSPECTOR-CONTROL-CREATE"};
+    sceneInspectorWidgetIds_.push_back(result.widgetId());
+    return result;
+}
+
+ui::UiControlRuntimeResult EditorShell::createInspectorControl(
+    core::UniquePtr<ui::Control> control, ui::UiControlDesc desc, ui::WidgetId parent)
+{
+    if (sceneInspectorWidgetIds_.size() == kSceneInspectorDynamicWidgetCapacity)
+        throw InspectorBuildFailure{"EDITOR-INSPECTOR-WIDGET-BUDGET"};
+    auto result = runtime().createControl(std::move(control), std::move(desc), parent);
+    if (!result.ok())
+        throw InspectorBuildFailure{"EDITOR-INSPECTOR-CONTROL-CREATE"};
+    sceneInspectorWidgetIds_.push_back(result.widgetId());
+    return result;
+}
+
 void EditorShell::rebuildSceneInspector()
 {
     const auto* object = sceneDocument_.scene().findObject(sceneDocument_.selectedObject());
+    scriptInspector_.prepare(*this);
     clearSceneInspectorWidgets();
     sceneInspectorWidgetIds_.reserve(kSceneInspectorDynamicWidgetCapacity);
-    // Track publication before source-map allocation so cleanup retains every ID.
-    const auto createInspectorControl = [&](auto&&... args) {
-        if (sceneInspectorWidgetIds_.size() == kSceneInspectorDynamicWidgetCapacity)
-            throw InspectorBuildFailure{"EDITOR-INSPECTOR-WIDGET-BUDGET"};
-        auto result = runtime().createControl(std::forward<decltype(args)>(args)...);
-        if (!result.ok())
-            throw InspectorBuildFailure{"EDITOR-INSPECTOR-CONTROL-CREATE"};
-        sceneInspectorWidgetIds_.push_back(result.widgetId());
-        return result;
-    };
     if (!sceneViewportAdditionalSelection_.empty()) {
         const auto snapshot = inspectorSelectionSnapshot();
         float rowY = 101.0f;
@@ -3039,15 +3087,19 @@ void EditorShell::rebuildSceneInspector()
         }
         rowY += 23.0f;
     }
+    scriptInspector_.append(*this, rowY);
     finishSceneInspectorLayout(rowY, true);
 }
 
 void EditorShell::finishSceneInspectorLayout(float rowY, bool add)
 {
     const float componentAddY = rowY + 8.0f;
+    const auto* panel = runtime().canvas().findWidget(id("inspector_content"));
+    if (!panel || panel->desc().localRect.width <= 12.0f)
+        throw InspectorBuildFailure{"EDITOR-INSPECTOR-CONTENT-WIDTH"};
     if (auto* addComponent = runtime().canvas().findWidget(id("scene_component_add")))
-        addComponent->setLocalRect(
-            ui::LayoutRect::fromOriginSize(6.0f, componentAddY, 336.0f, 28.0f));
+        addComponent->setLocalRect(ui::LayoutRect::fromOriginSize(
+            6.0f, componentAddY, panel->desc().localRect.width - 12.0f, 28.0f));
     if (auto* content = runtime().canvas().findWidget(id("inspector_content"))) {
         inspectorContentHeight_ = std::max(420.0f, add ? componentAddY + 36.0f : rowY);
         auto contentRect = content->desc().localRect;

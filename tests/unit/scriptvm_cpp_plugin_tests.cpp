@@ -1,3 +1,4 @@
+#include "core/math/math.h"
 #include "scriptvm/plugin/cpp_plugin_importer.h"
 #if ARP_CPP_PLUGIN_DIFFERENTIAL_TEST
 #include "scriptvm/interpreter/eval.h"
@@ -121,6 +122,10 @@ int main()
     arp::scriptvm::CppPluginImporter repeatedImporter(repeatedImporterDesc);
     const auto repeatedExports = repeatedImporter.loadModule(
         arp::core::pmr::String("cpp_math", &arp::core::defaultCpuMemoryResource()));
+    if (repeatedExports != exports)
+        std::fprintf(stderr,
+            "cpp_math repeated load failed: %s\n",
+            repeatedImporter.lastDiagnostics().c_str());
     REQUIRE(repeatedExports == exports);
 
     const auto missing = registry.loadModule(
@@ -182,6 +187,12 @@ int main()
     arp::scriptvm::CppPluginImporter domainImporter(std::move(domainDesc));
     arp::scriptvm::ModuleRegistry domainRegistry;
     domainRegistry.setCppPluginImporter(&domainImporter);
+    // GeneratedSchemaReuse/1 accepts an identical host declaration. A real
+    // incompatible host edit must still reject before any replacement.
+    auto* conflictingHost = arp::reflection::class_of<arp::core::Vec2>();
+    const auto originalField = conflictingHost->get_field("x");
+    REQUIRE(originalField.is_property());
+    conflictingHost->def("x", arp::reflection::object(101));
     const auto domainCore = domainRegistry.loadModule(
         arp::core::pmr::String("arp_core", &arp::core::defaultCpuMemoryResource()));
     REQUIRE(domainCore == nullptr);
@@ -190,6 +201,13 @@ int main()
         std::fprintf(stderr, "unexpected arp_core rejection: %s\n", domainDiagnostic.c_str());
         return 1;
     }
+    REQUIRE(conflictingHost->get_field("x").cast<int>() == 101);
+    conflictingHost->def("x", originalField);
+    const auto acceptedCore = domainRegistry.loadModule(
+        arp::core::pmr::String("arp_core", &arp::core::defaultCpuMemoryResource()));
+    REQUIRE(acceptedCore != nullptr);
+    REQUIRE(arp::reflection::class_of<arp::core::Vec2>() == conflictingHost);
+    REQUIRE(conflictingHost->get_field("x").is_property());
 #endif
 
     // The same immutable contract can be checked before AOT execution. This

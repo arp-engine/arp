@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><link rel="icon" href="data:,"><title>ARP Volumetric Cloud</title>
+<style>body{margin:0;background:#182129}canvas{display:block;width:640px;height:360px}</style>
+<canvas id="canvas" width="128" height="96"></canvas>
+<script>
+const query=new URLSearchParams(location.search);
+const messages=[],nativeErrors=[],scopeDiagnostics=[];
+let sent=false;
+const originalPopErrorScope=GPUDevice.prototype.popErrorScope;
+GPUDevice.prototype.popErrorScope=function(){return originalPopErrorScope.call(this).then(error=>{
+  if(error)scopeDiagnostics.push(error.message);
+  return error;
+});};
+async function finish(code) {
+  if(sent)return;sent=true;
+  await new Promise(r=>setTimeout(r,100));
+  nativeErrors.push(...(Module.webGpuUncapturedErrors||[]));
+  const result={success:code===0&&!nativeErrors.length,messages,nativeErrors,
+    diagnostic:code===0?'':'CLOUD-BROWSER-EXIT-'+code,productionReady:false,scopeDiagnostics};
+  try {result.readback=await window.cloudProbeResult;result.image=await window.cloudImageResult;}catch(e){result.success=false;result.diagnostic=String(e);}
+  if(result.success&&query.has('capture')&&(!result.readback||!result.image)){result.success=false;result.diagnostic='CLOUD-READBACK-MISSING';}
+  document.body.dataset.cloudResult=JSON.stringify(result);
+  await fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(result)});
+}
+var Module={canvas:document.getElementById('canvas'),
+  arguments:['--backend','webgpu','--frames','4','--width','128','--height','96','--quality','reference','--asset','cloud-reference.cooked.yaml',...(query.has('ordinary')?[]:['--prototype-frozen-batch']), '--reference-case',query.get('case')||'below'],
+  print:s=>{messages.push(String(s));console.log(s);},
+  printErr:s=>{nativeErrors.push(String(s));console.error(s);},
+  onExit:finish,onAbort:s=>{nativeErrors.push(String(s));finish(1);}};
+window.addEventListener('error',e=>{nativeErrors.push(e.message);finish(1);});
+window.addEventListener('unhandledrejection',e=>{nativeErrors.push(String(e.reason));finish(1);});
+if(query.get('captureGate')==='1') {
+  Module.preRun=[function(){
+    addRunDependency('cloud-renderdoc-gate');
+    (async()=>{
+      while(!Module.preinitializedWebGPUDevice)await new Promise(r=>requestAnimationFrame(r));
+      await fetch('/ready',{method:'POST'});
+      while(!(await fetch('/armed',{cache:'no-store'})).ok)await new Promise(r=>requestAnimationFrame(r));
+      removeRunDependency('cloud-renderdoc-gate');
+    })().catch(e=>{nativeErrors.push(String(e));finish(1);});
+  }];
+}
+
+// Acceptance-only copies of the engine's first submitted cloud slot.
+if(query.has('capture')) {
+  const buffers=[],textures=[],groups=new WeakMap(),passes=new WeakMap(),writes=new WeakMap();
+  let device=null,selected=null,copied=false;
+  const createBuffer=GPUDevice.prototype.createBuffer;
+  GPUDevice.prototype.createBuffer=function(d){const b=createBuffer.call(this,d);buffers.push(b);device=this;return b;};
+  const createTexture=GPUDevice.prototype.createTexture;
+  GPUDevice.prototype.createTexture=function(d){const t=createTexture.call(this,d);textures.push(t);return t;};
+  const write=GPUQueue.prototype.writeBuffer;
+  GPUQueue.prototype.writeBuffer=function(b,o,data,offset,size){
+    if(b.label==='Cloud.Constants'&&o===0){
+      const bytes=ArrayBuffer.isView(data)?new Uint8Array(data.buffer,data.byteOffset,data.byteLength):new Uint8Array(data);
+      const unit=ArrayBuffer.isView(data)?data.BYTES_PER_ELEMENT:1;
+      writes.set(b,bytes.slice((offset||0)*unit,(offset||0)*unit+368));
+    }
+    return write.apply(this,arguments);
+  };
+  const createGroup=GPUDevice.prototype.createBindGroup;
+  GPUDevice.prototype.createBindGroup=function(d){const g=createGroup.call(this,d);groups.set(g,d.entries);return g;};
+  const setGroup=GPUComputePassEncoder.prototype.setBindGroup;
+  GPUComputePassEncoder.prototype.setBindGroup=function(i,g,...args){if(i===0)passes.set(this,groups.get(g));return setGroup.call(this,i,g,...args);};
+  const dispatch=GPUComputePassEncoder.prototype.dispatchWorkgroups;
+  GPUComputePassEncoder.prototype.dispatchWorkgroups=function(...args){
+    const entries=passes.get(this);
+    if(!selected&&entries){const b=entries.find(e=>e.binding===0)?.resource.buffer;
+      const constants=buffers.filter(b=>b.label==='Cloud.Constants');
+      const index=constants.indexOf(b);
+      if(index>=0)selected={constants:writes.get(b),raw:buffers.filter(b=>b.label==='Cloud.Raw')[index],
+        resolved:buffers.filter(b=>b.label==='Cloud.Resolved')[index],hdr:textures.filter(t=>t.label==='Cloud.HdrComposite')[index]};
+    }
+    return dispatch.apply(this,args);
+  };
+  const submit=GPUQueue.prototype.submit;
+  GPUQueue.prototype.submit=function(commands){
+    submit.call(this,commands);
+    if(selected&&!copied){copied=true;
+      const d=selected,width=d.hdr.width,height=d.hdr.height,row=Math.ceil(width*8/256)*256;
+      const encoder=device.createCommandEncoder({label:'Cloud visual acceptance readback'});
+      const copies=[d.raw,d.resolved].map(b=>{const staging=device.createBuffer({size:b.size,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ});encoder.copyBufferToBuffer(b,0,staging,0,b.size);return staging;});
+      const hdr=device.createBuffer({size:row*height,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ});
+      encoder.copyTextureToBuffer({texture:d.hdr},{buffer:hdr,bytesPerRow:row},{width,height});copies.push(hdr);
+      submit.call(this,[encoder.finish()]);
+      const base64=bytes=>{let str='';for(let i=0;i<bytes.length;i+=16384)str+=String.fromCharCode(...bytes.subarray(i,i+16384));return btoa(str);};
+      window.cloudProbeResult=(async()=>{
+        const bytes=await Promise.all(copies.map(async b=>{await b.mapAsync(GPUMapMode.READ);const data=new Uint8Array(b.getMappedRange()).slice();b.unmap();b.destroy();return data;}));
+        return {width,height,rowPitch:row,constants:base64(d.constants),raw:base64(bytes[0]),resolved:base64(bytes[1]),hdr:base64(bytes[2])};
+      })();
+      window.cloudImageResult=window.cloudProbeResult.then(r=>{
+        const pixels=new Uint8ClampedArray(width*height*4),data=Uint8Array.from(atob(r.hdr),c=>c.charCodeAt(0));const words=new Uint16Array(data.buffer);
+        const half=h=>{const sign=h&32768?-1:1,e=(h>>10)&31,m=h&1023;return sign*(e===0?2**(-14)*(m/1024):e===31?(m?NaN:Infinity):2**(e-15)*(1+m/1024));};
+        const display=x=>{const l=x/(1+x);return Math.round(255*(l<=.0031308?12.92*l:1.055*l**(1/2.4)-.055));};
+        let minimum=Infinity,maximum=-Infinity;
+        for(let y=0;y<height;++y)for(let x=0;x<width;++x){const source=(y*row+x*8)/2,target=(y*width+x)*4;for(let c=0;c<3;++c){const v=half(words[source+c]);if(!Number.isFinite(v)||v<0)throw Error('CLOUD-HDR-NONFINITE');pixels[target+c]=display(v);minimum=Math.min(minimum,v);maximum=Math.max(maximum,v);}pixels[target+3]=255;}
+        const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;canvas.getContext('2d').putImageData(new ImageData(pixels,width,height),0,0);
+        return {width,height,minimum,maximum,png:canvas.toDataURL('image/png')};
+      });
+    }
+  };
+}
+</script><script src="arp_volumetric_cloud.js"></script></html>

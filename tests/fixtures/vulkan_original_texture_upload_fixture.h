@@ -1,6 +1,7 @@
 #pragma once
 #include "bindless_package_request_fixture.h"
 #include "cpu_quota_factory_fixture.h"
+#include "device_idle_failure_fixture.h"
 #include "original_command_upload_stream_builder_fixture.h"
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
 #include "rhi/backends/vulkan/vulkan_native_commands.h"
@@ -505,11 +506,13 @@ private:
                             diagnostic));
                         assert(!weakSeal.expired());
                         Negative::omitIdleEntrypoint = true;
-                        device->waitIdle();
+                        tests::DeviceIdleFailureFixture::verify(
+                            *device, "RHI-VULKAN-IDLE-COMPLETION-ENTRYPOINT");
                         Negative::omitIdleEntrypoint = false;
                         assert(!weakSeal.expired());
                         Negative::uncertainIdleResult = true;
-                        device->waitIdle();
+                        tests::DeviceIdleFailureFixture::verify(
+                            *device, "RHI-VULKAN-IDLE-COMPLETION-FAILED");
                         Negative::uncertainIdleResult = false;
                         assert(!weakSeal.expired());
                         assert(!CpuQuotaFactoryFixture::verifyHotNoAllocation(
@@ -530,7 +533,7 @@ private:
                                     : diagnostic.c_str();
                             }));
                     }
-                    retireCompletedVulkanRhiSubmittedCommands();
+                    retireCompletedVulkanRhiSubmittedCommands(*device);
                     if (terminal < 2u) {
                         auto completed = object->observeOriginalContent();
                         assert(completed);

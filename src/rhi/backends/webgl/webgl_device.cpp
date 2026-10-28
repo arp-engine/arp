@@ -147,6 +147,7 @@ semantics::WebGlExecutionTelemetryReport WebGlDevice::executionTelemetry() const
 void WebGlDevice::waitIdle()
 {
     diagnostic_ = "RHI-WEBGL1-GPU-COMPLETION-UNAVAILABLE";
+    throw core::DiagnosticError(diagnostic_);
 }
 
 semantics::WebGlCpuRetirementReport WebGlDevice::retireCpu(

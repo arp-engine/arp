@@ -1,5 +1,8 @@
 #include "renderer/pipeline/scene_runtime_render_pipeline.h"
 
+#include "3d/scene_3d_render_queue.h"
+#include "renderer/pipeline/scene_opaque_cloud_composition.h"
+#include "renderer/pipeline/scene_pbr_cloud_composition.h"
 #include "renderer/pipeline/scene_runtime_pipeline_payload.h"
 
 #include <utility>
@@ -134,8 +137,38 @@ RendererResult SceneRuntimeRenderPipeline::composeGraph(render_graph::FrameGraph
         return {false, validation.diagnostics};
     }
 
-    const auto* payload =
-        static_cast<const SceneRuntimePipelinePayload*>(context.request.pipelinePayload);
+    const auto* cloudPayload = sceneRuntimeOpaqueCloudPayloadFrom(payloadRefFrom(context.request));
+    const auto* pbrCloudPayload = sceneRuntimePbrCloudPayloadFrom(payloadRefFrom(context.request));
+    const auto* payload = pbrCloudPayload ? &pbrCloudPayload->scene
+        : cloudPayload
+        ? &cloudPayload->scene
+        : static_cast<const SceneRuntimePipelinePayload*>(context.request.pipelinePayload);
+    if (cloudPayload || pbrCloudPayload) {
+        const auto* queue = pbrCloudPayload ? &pbrCloudPayload->composition->queue()
+                                            : &cloudPayload->composition->queue();
+        if (frameFeatures.debugOverlay || desc_.colorFormat != rhi::TextureFormat::Rgba16Float
+            || desc_.depthFormat != rhi::TextureFormat::D32Float || payload->scene3DQueue != queue)
+            return fail("SCENE-CLOUD-COMPOSITION-PIPELINE");
+        for (const auto& queue : payload->rendererFrame->queueRecords())
+            if (queue.kind != RendererSceneRuntimeQueueKind::Scene3D && queue.drawItemCount)
+                return fail("SCENE-CLOUD-COMPOSITION-UNSUPPORTED-QUEUE");
+        const auto* id = pbrCloudPayload
+            ? pbrCloudPayload->composition->compose(graph, backbuffer, desc_.extent)
+            : cloudPayload->composition->compose(graph, backbuffer, desc_.extent);
+        if (id)
+            return fail(id);
+        lastSemanticRecord_ = {};
+        lastSemanticRecord_.passName =
+            pbrCloudPayload ? "ScenePbr.HdrDepth" : "SceneOpaque.HdrDepth";
+        lastSemanticRecord_.physicalPassCount =
+            pbrCloudPayload ? pbrCloudPayload->composition->rasterPassCount() + 3u : 4u;
+        if (const auto* queue =
+                findQueue(*payload->rendererFrame, RendererSceneRuntimeQueueKind::Scene3D))
+            appendQueueSemantic(lastSemanticRecord_, *queue);
+        return {true, {}};
+    }
+    if (payload->scene3DQueue->hasCloud())
+        return fail("SCENE-CLOUD-COMPOSITION-REQUIRED");
     if (payload->requiresMultiplePhysicalPasses && !hasExplicitMultiPassContract(*payload)) {
         return fail(
             "SceneRuntimeRenderPipeline rejected multi-pass requirements without explicit attachment, postprocess, or offscreen metadata.");

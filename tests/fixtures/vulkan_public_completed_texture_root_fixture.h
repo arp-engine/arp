@@ -171,7 +171,7 @@ public:
                         while (root->originalSnapshot()->originalSubmissionBudgetOwner()->used()) {
                             if (execution)
                                 execution->pollCompletion();
-                            retireCompletedVulkanRhiSubmittedCommands();
+                            retireCompletedVulkanRhiSubmittedCommands(*device);
                             if (publicTerminal == 5u
                                 && built->tx->status()
                                     == OriginalCommandStateTransaction::Status::Invalidated) {

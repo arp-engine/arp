@@ -10,7 +10,7 @@ namespace arp::tests::cloud {
 inline assets::cloud::CloudAsset asset()
 {
     assets::cloud::CloudCookDesc d;
-    d.algorithmVersion = assets::cloud::kCloudCookAlgorithmVersion;
+    d.algorithmVersion = assets::cloud::kCloudLegacyCookAlgorithmVersion;
     d.seed = 137u;
     d.weatherDimension = d.shapeDimension = 8u;
     d.detailDimension = 4u;

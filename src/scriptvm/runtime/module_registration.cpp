@@ -163,12 +163,19 @@ const core::pmr::Vector<ModuleObjectBinding>& ModuleRegistration::objects() cons
     return objects_;
 }
 
-void ModuleRegistration::remapReflectionTypes(
+bool ModuleRegistration::remapReflectionTypes(
     const arp::reflection::RegistrationTransaction& transaction)
 {
     for (auto& binding : types_) {
         binding.classInfo = transaction.publicationClass(binding.classInfo);
     }
+    for (auto& binding : reflectionCallables_) {
+        binding.contract.functionIdentity =
+            transaction.publicationFunctionIdentity(binding.contract.functionIdentity);
+        if (!binding.contract.valid())
+            return false;
+    }
+    return true;
 }
 
 } // namespace arp::scriptvm

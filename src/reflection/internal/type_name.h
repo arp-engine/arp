@@ -1,54 +1,44 @@
 #pragma once
 
-// Type name extraction via __PRETTY_FUNCTION__.
-//
-// The original used compiler-specific string-slicing on __PRETTY_FUNCTION__:
-//   GCC/Clang: "const char* arp::reflection::detail::f() [with T = TYPE]"
-//   MSVC:      "const char *__cdecl arp::reflection::detail::f<T>(void) noexcept"
-// We keep the same approach but change the namespace in the signature prefix/suffix
-// to match arp::reflection.
-
-#include "core/api.h"
-
-#include <cstddef>
-#include <cstring>
 #include <string_view>
 
 namespace arp::reflection::detail {
 
-#if defined(_MSC_VER)
-constexpr std::size_t skipAtBegin = sizeof("const char *__cdecl arp::reflection::detail::f<") - 2;
-constexpr std::size_t skipAtEnd = sizeof(">(void) noexcept") - 2;
-#elif defined(__GNUC__) || defined(__clang__)
-constexpr std::size_t skipAtBegin =
-    sizeof("const char* arp::reflection::detail::f() [with T = ") - 2;
-constexpr std::size_t skipAtEnd = sizeof("]") - 2;
-#else
-#error "Don't know how to extract type signature for this compiler!"
-#endif
-
-inline const char* extractTypeSignature(const char* signature) noexcept
+// NativeTypeSignature/1: extract the compiler's declared T binding, never a
+// byte offset derived from another function name or another compiler's form.
+// Reflected public names remain explicitly registered by their owning modules.
+template <typename T> constexpr const char* typeSignatureFn() noexcept
 {
-    return &signature[skipAtBegin];
+#if defined(_MSC_VER)
+    return __FUNCSIG__;
+#elif defined(__GNUC__) || defined(__clang__)
+    return __PRETTY_FUNCTION__;
+#else
+#error "REFLECTION-NATIVE-TYPE-SIGNATURE: unsupported compiler"
+#endif
 }
 
-template <typename T> inline const char* typeSignatureFn() noexcept
+template <typename T> constexpr std::string_view getTypeName() noexcept
 {
-    return extractTypeSignature(
+    constexpr std::string_view signature(typeSignatureFn<T>());
 #if defined(_MSC_VER)
-        __FUNCSIG__
-#elif defined(__GNUC__) || defined(__clang__)
-        __PRETTY_FUNCTION__
-#else
-#error "Unsupported compiler"
+    constexpr std::string_view prefix = "typeSignatureFn<";
+    constexpr std::string_view suffix = ">(void) noexcept";
+#elif defined(__clang__)
+    constexpr std::string_view prefix = "[T = ";
+    constexpr std::string_view suffix = "]";
+#elif defined(__GNUC__)
+    constexpr std::string_view prefix = "[with T = ";
+    constexpr std::string_view suffix = "]";
 #endif
-    );
-}
-
-template <typename T> inline std::string_view getTypeName() noexcept
-{
-    const char* s = typeSignatureFn<T>();
-    return std::string_view(s, std::char_traits<char>::length(s) - skipAtEnd);
+    constexpr auto marker = signature.find(prefix);
+    constexpr auto end = signature.rfind(suffix);
+    static_assert(marker != std::string_view::npos && end != std::string_view::npos,
+        "REFLECTION-NATIVE-TYPE-SIGNATURE: unsupported signature form");
+    constexpr auto begin = marker + prefix.size();
+    static_assert(end > begin && end + suffix.size() == signature.size(),
+        "REFLECTION-NATIVE-TYPE-SIGNATURE: invalid type binding");
+    return signature.substr(begin, end - begin);
 }
 
 } // namespace arp::reflection::detail

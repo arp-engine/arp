@@ -1,6 +1,8 @@
 #include "reflection/native_reference.h"
 #include "reflection/reflection.h"
+#include "reflection/registration_type_binding.h"
 
+#include <array>
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -177,6 +179,12 @@ struct TransactionSemanticType {
 
 void verifiesCanonicalRegistrationTypeContracts()
 {
+    static_assert(detail::getTypeName<int>() == "int");
+    static_assert(detail::getTypeName<std::array<float, 16>>() == "std::array<float, 16>");
+    static_assert(detail::getTypeName<std::array<std::array<float, 2>, 3>>()
+        == "std::array<std::array<float, 2>, 3>");
+    assert(registrationTypeContract(type_of<std::array<float, 16>>())
+        == text("std::array<float, 16>"));
     arp::core::pmr::Map<arp::core::pmr::String, arp::core::pmr::String> reflectedNames{
         &arp::core::defaultCpuMemoryResource()};
     reflectedNames.emplace(text("Example"), text("ReflectedExample"));
@@ -195,6 +203,256 @@ void verifiesCanonicalRegistrationTypeContracts()
     assert(registrationTypeContract(type_of<arp::core::pmr::String>()) == text("str"));
     assert(registrationTypeContract(type_of<hlist>()) == text("list"));
     assert(registrationTypeContract(type_of<hdict>()) == text("dict"));
+}
+
+struct NativeBindingUnregistered {
+    int value = 0;
+};
+
+void verifiesCompiledNativeTypeBindings()
+{
+    using Vector = arp::core::pmr::Vector<std::int32_t>;
+    RegistrationTransaction transaction("compiled-native-bindings");
+    arp::core::pmr::String expected32{&arp::core::defaultCpuMemoryResource()};
+    arp::core::pmr::String expectedSize{&arp::core::defaultCpuMemoryResource()};
+    {
+        RegistrationScope scope(transaction);
+        assert(bindRegistrationNativeType<std::int32_t>("std::int32_t"));
+        assert(bindRegistrationNativeType<std::size_t>("std::size_t"));
+        assert(bindRegistrationNativeType<Vector>("arp::core::pmr::Vector<std::int32_t>"));
+        assert(bindRegistrationNativeType<std::vector<std::int32_t>>("std::vector<std::int32_t>"));
+        assert(bindRegistrationNativeType<NativeBindingUnregistered>("NativeBindingUnregistered"));
+        expected32 = registrationTypeContract(type_of<std::int32_t>());
+        expectedSize = registrationTypeContract(type_of<std::size_t>());
+    }
+    auto receipt = transaction.receipt();
+    assert(receipt.nativeTypeBindings.at(text("std::int32_t")) == expected32);
+    assert(receipt.nativeTypeBindings.at(text("std::size_t")) == expectedSize);
+    const auto pmr = text("arp::core::pmr::Vector<std::int32_t>");
+    assert(receipt.nativeTypeBindings.at(pmr)
+        != receipt.nativeTypeBindings.at(text("std::vector<std::int32_t>")));
+    assert(canonicalRegistrationTypeContract(
+               "const arp::core::pmr::Vector<std::int32_t>&", receipt.nativeTypeBindings)
+        == text("const ") + receipt.nativeTypeBindings.at(pmr) + text("&"));
+    const auto fingerprint = receipt.fingerprint();
+    receipt.nativeTypeBindings.at(text("std::int32_t")) = "wrong-type";
+    assert(receipt.fingerprint() != fingerprint);
+    assert(transaction.setOwner(arp::core::makeShared<int>(1)));
+    arp::core::pmr::String diagnostics{&arp::core::defaultCpuMemoryResource()};
+    assert(!transaction.commit(receipt, diagnostics));
+    assert(diagnostics.find("undeclared referenced class") != arp::core::pmr::String::npos);
+    assert(
+        db::rawInstance().find_class(detail::getTypeName<NativeBindingUnregistered>()) == nullptr);
+
+    RegistrationTransaction duplicate("duplicate-native-bindings");
+    {
+        RegistrationScope scope(duplicate);
+        assert(bindRegistrationNativeType<int>("int"));
+        assert(!bindRegistrationNativeType<int>("int"));
+    }
+    assert(!duplicate.valid());
+    assert(duplicate.diagnostics().find("duplicated") != arp::core::pmr::String::npos);
+}
+
+struct NativeCompletionBase {
+    int value = 3;
+    NativeCompletionBase* link = nullptr;
+};
+
+struct NativeCompletionDerived : NativeCompletionBase {
+    int extra = 5;
+};
+
+void verifiesNativeReferenceCompletion()
+{
+    NativeCompletionDerived host;
+    NativeCompletionBase base;
+    auto native = object::native_reference(&host);
+    auto baseNative = object::native_reference(&base);
+    const auto* identity = native.class_();
+    const auto* baseIdentity = baseNative.class_();
+    const auto* pointerType = type_of<NativeCompletionDerived*>();
+    assert(identity->get_all_fields().empty());
+    {
+        RegistrationTransaction rollback("native-completion-rollback");
+        {
+            RegistrationScope scope(rollback);
+            registration::class_<NativeCompletionDerived>("DiscardedNativeCompletion")
+                .property("extra", &NativeCompletionDerived::extra);
+        }
+        assert(native.class_() == identity && identity->get_all_fields().empty());
+        assert(rollback.setOwner(arp::core::makeShared<int>(2)));
+        RegistrationReceipt receipt;
+        arp::core::pmr::String diagnostic{&arp::core::defaultCpuMemoryResource()};
+        assert(!rollback.commit("wrong-receipt", receipt, diagnostic));
+        assert(diagnostic.find("receipt changed") != arp::core::pmr::String::npos);
+    }
+    assert(identity->get_all_fields().empty());
+    assert(db::rawInstance().find_class("DiscardedNativeCompletion") == nullptr);
+    {
+        RegistrationTransaction complete("native-completion-commit");
+        {
+            RegistrationScope scope(complete);
+            registration::class_<NativeCompletionBase>("CompletedNativeBase")
+                .property("value", &NativeCompletionBase::value)
+                .property("link", &NativeCompletionBase::link);
+            registration::class_<NativeCompletionDerived>("CompletedNativeDerived")
+                .inherit<NativeCompletionBase>()
+                .property("extra", &NativeCompletionDerived::extra);
+        }
+        const auto expected = complete.receipt().fingerprint();
+        assert(complete.setOwner(arp::core::makeShared<int>(3)));
+        RegistrationReceipt receipt;
+        arp::core::pmr::String diagnostic{&arp::core::defaultCpuMemoryResource()};
+        assert(complete.commit(expected, receipt, diagnostic));
+    }
+    assert(native.class_() == identity && baseNative.class_() == baseIdentity);
+    assert(type_of<NativeCompletionDerived*>() == pointerType);
+    assert(identity->name() == "CompletedNativeDerived");
+    assert(identity->bases().front() == baseIdentity);
+    const auto link = baseIdentity->get_field("link").cast<property>();
+    assert(link.indirect_class() == baseIdentity);
+    native.set("value", object(17));
+    native.set("extra", object(19));
+    assert(host.value == 17 && host.extra == 19);
+    assert(native.cast<NativeCompletionDerived*>() == &host);
+    assert(native.cast<NativeCompletionBase*>() == static_cast<NativeCompletionBase*>(&host));
+    RegistrationTransaction duplicate("native-completion-duplicate");
+    {
+        RegistrationScope scope(duplicate);
+        registration::class_<NativeCompletionDerived>("CompletedNativeDerived");
+    }
+    assert(!duplicate.valid());
+    assert(duplicate.diagnostics().find("cannot replace an existing class")
+        != arp::core::pmr::String::npos);
+
+    RegistrationTransaction support("native-storage-support");
+    support.requireDeclaredContracts();
+    {
+        RegistrationScope scope(support);
+        assert((bindRegistrationNativeType<std::array<std::uint16_t, 13>>("StorageArray")));
+        assert(bindRegistrationNativeType<arp::core::pmr::Vector<std::uint16_t>>("StorageVector"));
+    }
+    assert(support.setOwner(arp::core::makeShared<int>(4)));
+    RegistrationReceipt receipt;
+    arp::core::pmr::String diagnostic{&arp::core::defaultCpuMemoryResource()};
+    assert(support.commit(receipt, diagnostic));
+    assert(!receipt.nativeSupportTypes.empty());
+}
+
+struct GeneratedReuseValue {
+    int value = 7;
+
+    int get() const { return value; }
+};
+
+void verifiesGeneratedSchemaReuse()
+{
+    const auto source = text("sha256:") + arp::core::pmr::String(64u, 'a');
+    const auto otherSource = text("sha256:") + arp::core::pmr::String(64u, 'b');
+    const auto nativeName = detail::getTypeName<GeneratedReuseValue>();
+    auto host = registration::class_<GeneratedReuseValue>("GeneratedReuseValue")
+                    .construct<>()
+                    .property("value", &GeneratedReuseValue::value)
+                    .method("get", &GeneratedReuseValue::get);
+    assert(declareGeneratedRegistrationClassContract("class:GeneratedReuseValue",
+        "schema/1",
+        host.info(),
+        source,
+        RegistrationOwnership::Value,
+        RegistrationLifecycle::Value,
+        ""));
+    auto* identity = host.info();
+    const auto* callback = identity->get_field("get").cast<function>().identity();
+    auto attempt = [&](NameView digest, bool extra, bool success) {
+        RegistrationTransaction transaction("generated-schema-reuse");
+        transaction.requireDeclaredContracts();
+        {
+            RegistrationScope scope(transaction);
+            assert(prepareGeneratedRegistrationClass(nativeName, "schema/1", digest));
+            auto cls = registration::class_<GeneratedReuseValue>("GeneratedReuseValue");
+            if (cls.info()) {
+                cls.construct<>()
+                    .property("value", &GeneratedReuseValue::value)
+                    .method("get", &GeneratedReuseValue::get);
+                if (extra)
+                    cls.property("undeclared", &GeneratedReuseValue::value);
+                assert(declareGeneratedRegistrationClassContract("class:GeneratedReuseValue",
+                    "schema/1",
+                    cls.info(),
+                    digest,
+                    RegistrationOwnership::Value,
+                    RegistrationLifecycle::Value,
+                    ""));
+                assert(transaction.publicationClass(cls.info()) == identity);
+                assert(transaction.publicationFunctionIdentity(
+                           cls.info()->get_field("get").cast<function>().identity())
+                    == callback);
+            }
+        }
+        assert(transaction.setOwner(arp::core::makeShared<int>(5)) || !transaction.valid());
+        RegistrationReceipt receipt;
+        arp::core::pmr::String diagnostic{&arp::core::defaultCpuMemoryResource()};
+        assert(transaction.commit(receipt, diagnostic) == success);
+        if (success) {
+            auto changed = receipt;
+            changed.classes.front().generatedSource = otherSource;
+            assert(changed.fingerprint() != receipt.fingerprint());
+        }
+        assert(class_of<GeneratedReuseValue>() == identity);
+        assert(identity->get_field("get").cast<function>().identity() == callback);
+        assert(identity->get_field("undeclared").is_undefined());
+    };
+    attempt(otherSource, false, false);
+    attempt(source, true, false);
+    attempt(source, false, true);
+    identity->def("host_mutation", object(1));
+    attempt(source, false, false);
+}
+
+struct GeneratedNativeBase {};
+
+struct GeneratedNativeDerived : GeneratedNativeBase {};
+
+void verifiesGeneratedNativeDependencyIdentity()
+{
+    const auto source = text("sha256:") + arp::core::pmr::String(64u, 'c');
+    auto derived = registration::class_<GeneratedNativeDerived>("GeneratedNativeDerived")
+                       .inherit<GeneratedNativeBase>();
+    assert(declareGeneratedRegistrationClassContract("class:GeneratedNativeDerived",
+        "schema/1",
+        derived.info(),
+        source,
+        RegistrationOwnership::Value,
+        RegistrationLifecycle::Value,
+        ""));
+    auto* base = class_of<GeneratedNativeBase>();
+    registration::class_<GeneratedNativeBase>("NamedGeneratedBase");
+    assert(base->name() == "NamedGeneratedBase");
+    RegistrationTransaction transaction("generated-native-dependency");
+    transaction.requireDeclaredContracts();
+    {
+        RegistrationScope scope(transaction);
+        assert(prepareGeneratedRegistrationClass(
+            detail::getTypeName<GeneratedNativeDerived>(), "schema/1", source));
+        auto staged = registration::class_<GeneratedNativeDerived>("GeneratedNativeDerived")
+                          .inherit<GeneratedNativeBase>();
+        assert(staged.info());
+        assert(declareGeneratedRegistrationClassContract("class:GeneratedNativeDerived",
+            "schema/1",
+            staged.info(),
+            source,
+            RegistrationOwnership::Value,
+            RegistrationLifecycle::Value,
+            ""));
+    }
+    assert(transaction.setOwner(arp::core::makeShared<int>(6)));
+    RegistrationReceipt receipt;
+    arp::core::pmr::String diagnostic{&arp::core::defaultCpuMemoryResource()};
+    assert(transaction.commit(receipt, diagnostic));
+    assert(class_of<GeneratedNativeDerived>() == derived.info());
+    assert(derived.info()->bases().front() == base);
+    assert(base->name() == "NamedGeneratedBase");
 }
 
 void verifiesRegistrationTransactions()
@@ -603,6 +861,10 @@ int main()
         assert(arp::core::defaultCpuAllocator().stats().allocationCount == before);
     }
     verifiesCanonicalRegistrationTypeContracts();
+    verifiesCompiledNativeTypeBindings();
+    verifiesNativeReferenceCompletion();
+    verifiesGeneratedSchemaReuse();
+    verifiesGeneratedNativeDependencyIdentity();
     verifiesRegistrationTransactions();
     registerReflectedListTypes();
 

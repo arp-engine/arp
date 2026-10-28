@@ -271,13 +271,13 @@ def check_generated_artifacts(
                 for item in data.get("classes", [])}
             engine_components = (
                 "MeshComponent", "TerrainComponent", "LightComponent",
-                "CameraComponent", "ColliderComponent")
+                "CameraComponent", "ColliderComponent", "VolumetricCloudComponent")
             value_types = (
                 "Bounds3D", "TerrainMetadata", "LightComponentDesc",
                 "ColliderComponentDesc", "ColliderShapeDesc", "RigidBodyDesc",
                 "CameraAspectPolicy", "ViewportRect", "RenderQueueMask",
                 "CameraClearIntent", "CameraComponentDesc", "CameraDiagnostic",
-                "ResolvedCamera")
+                "ResolvedCamera", "CloudLayerDesc", "CloudDesc")
             for name in engine_components:
                 component = classes.get(name)
                 if component is None:

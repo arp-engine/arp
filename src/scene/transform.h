@@ -7,7 +7,7 @@ namespace arp::scene {
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)
 
-struct Transform {
+struct ARP_API Transform {
     APROP(Serialize, Editor)
     arp::core::Vec3 translation{0.0f, 0.0f, 0.0f};
     APROP(Serialize, Editor)
@@ -24,8 +24,8 @@ struct Transform {
 };
 
 AFUNC()
-Transform composeTransforms(const Transform& parentWorld, const Transform& local);
+ARP_API Transform composeTransforms(const Transform& parentWorld, const Transform& local);
 AFUNC()
-Transform deriveLocalTransform(const Transform& parentWorld, const Transform& desiredWorld);
+ARP_API Transform deriveLocalTransform(const Transform& parentWorld, const Transform& desiredWorld);
 
 } // namespace arp::scene

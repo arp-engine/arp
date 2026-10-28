@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/api.h"
 #include "reflection/object.h"
 #include "reflection/reflection_macros.h"
 #include "scene/ids.h"
@@ -43,7 +44,7 @@ struct ComponentEditorProperties {
 
 ACLASS(Name = "Component", Ownership = Engine, Lifecycle = Explicit)
 
-class Component {
+class ARP_API Component {
 public:
     virtual ~Component();
 

@@ -197,6 +197,13 @@ public:
         return RendererResult{
             false, "render pipeline does not support the requested graph postprocess pass"};
     }
+
+    // Slot-independent mutable inputs must be ready before requesting a native
+    // drawable: its acquisition may itself depend on previous GPU/present work.
+    // This polls actual input-owner completion; it never waits or proves WSI
+    // completion. Default declares no such shared input requirement. Private
+    // per-slot inputs remain governed by frameInputsReady after acquisition.
+    virtual bool sharedFrameInputsReady() const { return true; }
 };
 
 } // namespace arp::renderer

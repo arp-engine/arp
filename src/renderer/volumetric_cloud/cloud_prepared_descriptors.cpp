@@ -94,7 +94,7 @@ CloudResult CloudPreparedDescriptors::describe(
     if (const auto result = CloudPreparedPipelines::validateSelection(c.resources.selection());
         !result.success)
         return result;
-    const bool spatial = c.resources.selection().resolve == CloudPreparedResolve::Reconstruction1;
+    const bool spatial = c.resources.selection().isReconstruction();
     if (bool(frame.reconstructionConstants) != spatial
         || (!spatial && c.locations.reconstructionConstants != SIZE_MAX))
         return CloudResult::failure("CLOUD-PREPARED-DESCRIPTORS-POLICY");
@@ -178,7 +178,7 @@ CloudResult CloudPreparedDescriptors::publish(
             describe({c.device, c.resources, c.inventory, c.locations}, declarations);
         !result.success)
         return result;
-    const bool spatial = c.resources.selection().resolve == CloudPreparedResolve::Reconstruction1;
+    const bool spatial = c.resources.selection().isReconstruction();
     std::shared_ptr<const ComputePipeline> ray, resolve;
     std::shared_ptr<const RenderPipeline> composite;
     for (const auto* id :

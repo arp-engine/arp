@@ -21,7 +21,8 @@ public:
               desc.sizeBytes,
               desc.usage,
               desc.memory,
-              desc.initialState},
+              desc.initialState,
+              desc.hostVisibleDeviceLocal},
           device_(device),
           candidate_(core::makeShared<WebGpuNativeBufferPayload>(desc.initialState))
     {

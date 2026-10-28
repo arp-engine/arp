@@ -24,6 +24,8 @@ public:
 
     // Caller supplies an actual prepared domain registry. No filesystem import
     // resolver, guessed engine bindings, source concatenation or script execution.
+    // root is canonical; borrowed domain services must outlive all prepared
+    // sessions/components. Retaining exports does not retain their Scene owner.
     static bool prepare(const std::filesystem::path& root,
         const ProjectManifest&,
         scriptvm::ModuleRegistry&,
@@ -35,6 +37,9 @@ public:
     const core::pmr::Vector<ProjectInputBinding>& sources() const noexcept { return sources_; }
 
     scriptvm::ScriptComponentModule* find(const scriptvm::ScriptComponentIdentity&) const noexcept;
+    // Retained declaration comparison only; source freshness is a separate cold
+    // admission. Reuse the Project codec for every module and budget field.
+    bool matchesManifest(const ProjectManifest&) const;
     bool verifySources(const std::filesystem::path& root, core::pmr::String& diagnostic) const;
 
 private:

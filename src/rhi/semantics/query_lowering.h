@@ -26,6 +26,45 @@ struct OriginalQueryCreationFacts {
 
 class QueryLowering final {
 public:
+    // MixedPassTimingRecording/1 requires Preparation8 or independently opted-in
+    // Preparation9 (timing plus opaque-depth subdomain), canonical Inputs11,
+    // one ordinary Program/meter/journal, real same-device slots and completion.
+    // This does not promote the pair-only projection or query-only recording.
+    static constexpr const char* mixedPassTimingRecording(Backend backend) noexcept
+    {
+        switch (backend) {
+        case Backend::Vulkan:
+            return nullptr;
+        case Backend::Null:
+            return "RHI-MIXED-PASS-TIMING-VALIDATOR-ONLY";
+        case Backend::Metal:
+        case Backend::WebGPU:
+            return "RHI-MIXED-PASS-TIMING-NATIVE-PAYLOAD-UNAVAILABLE";
+        case Backend::WebGL:
+            return "RHI-WEBGL1-QUERY-UNSUPPORTED";
+        }
+        return "RHI-MIXED-PASS-TIMING-BACKEND";
+    }
+
+    // OriginalPassTiming/1 authenticates pair placement only. Mixed native
+    // recording must join the original Program and its sole journal first.
+    template <class Result>
+    static constexpr Result OriginalPassTiming_lowering(Backend backend) noexcept
+    {
+        switch (backend) {
+        case Backend::Null:
+            return {true, true, false, "RHI-PASS-TIMING-VALIDATOR-ONLY"};
+        case Backend::Vulkan:
+            return {false, true, false, "RHI-PASS-TIMING-NATIVE-JOIN-UNAVAILABLE"};
+        case Backend::Metal:
+        case Backend::WebGPU:
+            return {false, true, false, "RHI-PASS-TIMING-NATIVE-PAYLOAD-UNAVAILABLE"};
+        case Backend::WebGL:
+            return {false, false, false, "RHI-WEBGL1-QUERY-UNSUPPORTED"};
+        }
+        return {};
+    }
+
     struct OriginalRecording {
         bool validatorOnly = false, privateRecordingAvailable = false;
         const char* diagnostic = "RHI-ORIGINAL-QUERY-RECORDING-BACKEND";

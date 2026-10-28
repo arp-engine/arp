@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rhi/frontend/descriptor_general_binding_validation.h"
+#include "rhi/semantics/ordinary_sampled_color.h"
 
 namespace arp::rhi {
 
@@ -135,6 +136,7 @@ public:
     struct Request {
         std::uint32_t contractVersion = 0u;
         bool prototypeOptIn = false;
+        semantics::OriginalOrdinarySampledColorContract::Intent sampledColor;
     };
 
     struct Decision {
@@ -145,6 +147,11 @@ public:
 
     static constexpr const char* validate(Request request) noexcept
     {
+        if (const auto* id =
+                semantics::OriginalOrdinarySampledColorContract::validate(request.sampledColor))
+            return id;
+        if (!request.sampledColor.empty() && request.contractVersion != 1u)
+            return "RHI-ORDINARY-SAMPLED-COLOR-INSPECTION-PROFILE";
         if (request.contractVersion != 1u && request.contractVersion != 2u)
             return "RHI-GRAPHICS-BINDING-INSPECTION-VERSION";
         return request.prototypeOptIn ? nullptr : "RHI-GRAPHICS-BINDING-INSPECTION-OPT-IN";
@@ -154,6 +161,16 @@ public:
     {
         if (const auto* id = validate(request))
             return {CapabilityMode::DiagnosticFailure, false, false, false, id};
+        if (!request.sampledColor.empty()) {
+            const auto decision = semantics::OriginalOrdinarySampledColorContract::lowering(
+                backend, request.sampledColor);
+            if (!decision.nativeAvailable)
+                return {CapabilityMode::DiagnosticFailure,
+                    decision.validatorOnly,
+                    false,
+                    false,
+                    decision.diagnostic};
+        }
         return semantics::DescriptorLowering::OriginalGraphicsBindingInspection_lowering<Decision>(
             backend);
     }
@@ -217,9 +234,18 @@ public:
         return nullptr;
     }
 
-    static const char* validateTexture(
-        const TextureDesc& parent, const TextureViewDesc& view, bool depth) noexcept
+    static const char* validateTexture(const TextureDesc& parent,
+        const TextureViewDesc& view,
+        bool depth,
+        semantics::OriginalOrdinarySampledColorContract::Intent sampledColor = {}) noexcept
     {
+        if (const auto* id =
+                semantics::OriginalOrdinarySampledColorContract::validate(sampledColor))
+            return id;
+        if (!sampledColor.empty())
+            return depth
+                ? "RHI-ORDINARY-SAMPLED-COLOR-DEPTH-PROFILE"
+                : semantics::OriginalOrdinarySampledColorContract::validateView(parent, view);
         if (parent.sampleCount != 1u || parent.extent.depth != 1u || view.format != parent.format
             || view.dimension != TextureViewDimension::Texture2D || view.arrayLayerCount != 1u
             || (depth

@@ -155,7 +155,11 @@ core::UniquePtr<scene::Component> createScreenCanvas(EditorSceneComponentFactory
 
 core::UniquePtr<scene::Component> createSpriteAnimation(EditorSceneComponentFactoryContext& context)
 {
-    if (!context.owner.getComponent<scene2d::SpriteRendererComponent>())
+    const auto* renderer = context.componentResolver
+        ? dynamic_cast<scene2d::SpriteRendererComponent*>(
+              context.componentResolver(context.owner.id(), "SpriteRendererComponent"))
+        : context.owner.getComponent<scene2d::SpriteRendererComponent>();
+    if (!renderer)
         return nullptr;
     if (context.resourceManagerProvider)
         return core::makeUnique<scene2d::SpriteAnimationComponent>(
@@ -192,7 +196,10 @@ core::UniquePtr<scene::Component> createCollider2D(EditorSceneComponentFactoryCo
 {
     physics2d::ShapeDesc desc;
     desc.radius = 0.5f;
-    auto* body = context.owner.getComponent<physics2d::RigidBody2DComponent>();
+    auto* body = context.componentResolver
+        ? dynamic_cast<physics2d::RigidBody2DComponent*>(
+              context.componentResolver(context.owner.id(), "RigidBody2DComponent"))
+        : context.owner.getComponent<physics2d::RigidBody2DComponent>();
     if (!context.schemaOnly
         && (!body || body->usage() != physics2d::ComponentUsage::Authoring
             || body->world() != context.physicsWorld2D.get()))

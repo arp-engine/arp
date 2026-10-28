@@ -375,7 +375,11 @@ public:
         assert(!Contract::validateBudget({}));
         assert(!Contract::validateBudget({2u, true, 1u}));
         is(Contract::validateBudget({0u, true, 1u}), "RHI-ORIGINAL-INPUTS-VERSION");
-        is(Contract::validateBudget({10u, true, 1u}), "RHI-ORIGINAL-INPUTS-VERSION");
+        is(Contract::validateBudget({12u, true, 1u}), "RHI-ORIGINAL-INPUTS-VERSION");
+        is(Contract::validateBudget({10u, true, 1u}), "RHI-ORIGINAL-INPUTS-GENERAL-FINITE-SCHEMA");
+        rhi::OriginalCommandInputsBudget synchronous{10u, true, 1u};
+        synchronous.maxDescriptorBindings = 1u;
+        assert(!Contract::validateBudget(synchronous));
         is(Contract::validateBudget({9u, true, 1u}), "RHI-ORIGINAL-QUERY-POSITIONAL-BUDGET");
         is(Contract::validateBudget({8u, true, 1u}), "RHI-ORIGINAL-GEOMETRY-INPUT-BUDGET");
         is(Contract::validateBudget({7u, true, 1u}), "RHI-ORIGINAL-GEOMETRY-INPUT-BUDGET");

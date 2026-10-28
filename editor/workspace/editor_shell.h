@@ -19,6 +19,7 @@
 #include "editor/workspace/editor_scene_view_state.h"
 #include "editor/workspace/editor_script_file_panel.h"
 #include "editor/workspace/editor_script_input_state.h"
+#include "editor/workspace/editor_script_inspector.h"
 #include "editor/workspace/editor_terrain_browser.h"
 #include "editor/workspace/editor_terrain_build.h"
 #include "editor/workspace/game_preview_model.h"
@@ -251,6 +252,15 @@ public:
 
     std::size_t openScriptCount() const { return scriptDocuments_.size(); }
 
+    bool hasUnsavedScripts() const
+    {
+        return std::any_of(scriptDocuments_.documents().begin(),
+            scriptDocuments_.documents().end(),
+            [](const auto& document) {
+                return document.dirty();
+            });
+    }
+
     void setCodeColumnWidth(float advance)
     {
         if (advance > 0.0f)
@@ -327,6 +337,8 @@ public:
     ui::UiControlRuntime& runtime() { return loaded_.runtime(); }
 
     const ui::UiControlRuntime& runtime() const { return loaded_.runtime(); }
+
+    const ui::UiDocument& uiDocument() const { return loaded_.document(); }
 
     ui::WidgetId id(const core::pmr::String& source) const
     {
@@ -427,6 +439,7 @@ private:
     friend class EditorScenePanel;
     friend class EditorSceneTransformPanel;
     friend class EditorScriptFilePanel;
+    friend class EditorScriptInspector;
     friend class EditorExitPanel;
     friend class EditorModalSession;
     static constexpr std::size_t kMaxSceneHistoryEntries = 256u;
@@ -490,6 +503,10 @@ private:
     EditorCommandOutcome destroySceneObjectWithHistory();
     EditorCommandOutcome addSceneComponentWithHistory(const AddSceneComponentCommand&);
     EditorCommandOutcome removeSceneComponentWithHistory(const RemoveSceneComponentCommand&);
+    void requireSceneScriptContext() const;
+    EditorCommandOutcome addSceneScriptComponentWithHistory(const AddSceneScriptComponentCommand&);
+    EditorCommandOutcome setSceneScriptFieldsWithHistory(const SetSceneScriptFieldsCommand&);
+    EditorCommandOutcome applyScriptFieldHistory(const SceneHistoryEntry&, bool undo);
     EditorCommandOutcome applyPresenceHistory(const SceneHistoryEntry&, bool undo);
     void publishPreparedSceneHistory(core::pmr::Vector<SceneHistoryEntry>& preparedUndo,
         core::pmr::Vector<SceneHistoryEntry>& retiredRedo,
@@ -536,6 +553,9 @@ private:
     core::pmr::Vector<SceneInspectorProperty> sceneInspectorProperties(scene::GameObjectId) const;
     EditorSceneInspectorSelection::Snapshot inspectorSelectionSnapshot() const;
     void rebuildSceneInspector();
+    ui::UiControlRuntimeResult createInspectorControl(ui::UiControlDesc, ui::WidgetId);
+    ui::UiControlRuntimeResult createInspectorControl(
+        core::UniquePtr<ui::Control>, ui::UiControlDesc, ui::WidgetId);
     void refreshSceneInspectorHeader();
     void finishSceneInspectorLayout(float rowY, bool add);
     void clearSceneInspectorWidgets();
@@ -582,6 +602,12 @@ private:
     bool publishProject(EditorProjectResources&& resources, ProjectBrowserModel&& browser);
     void appendProjectSnapshot(EditorStateSnapshot& snapshot) const;
     void pollScenePersistence();
+    bool observeSceneHash(core::pmr::String&, core::pmr::String&) const;
+    EditorCommandOutcome completeScenePersistence(std::uint64_t taskId);
+    bool sceneFileContextCurrent(const std::filesystem::path&,
+        std::string_view projectModel,
+        std::string_view manifestBytes,
+        core::pmr::String& diagnostic) const;
     EditorCommandOutcome scenePersistenceTaskSnapshot(std::uint64_t taskId) const;
     EditorCommandOutcome beginScenePersistence(bool loading,
         std::string_view relativePath,
@@ -660,6 +686,7 @@ private:
     std::optional<core::io::AtomicFileResult> projectSaveResult_;
     std::optional<ProjectManifest> projectSaveManifest_;
     core::pmr::String projectSaveSnapshot_;
+    std::uint32_t sceneAuthoringVersion_ = EditorSceneAuthoringCodec::contractVersion;
     core::pmr::String savedSceneHash_;
     core::pmr::String activeScenePath_;
     std::filesystem::path savedSceneFileTarget_;
@@ -683,6 +710,12 @@ private:
         ScenePersistenceTaskStatus status = ScenePersistenceTaskStatus::Unknown;
         bool loading = false;
         bool checkingFile = false;
+        bool committed = false;
+        std::uint32_t version = EditorSceneAuthoringCodec::contractVersion;
+        core::LifetimeEpoch::Ticket owner;
+        std::filesystem::path projectRoot;
+        core::pmr::String projectModel, manifestBytes;
+
         std::uint64_t documentEpoch = 0;
         core::pmr::String contentHash;
         core::pmr::String relativePath;
@@ -741,6 +774,7 @@ private:
     EditorSceneViewPointer sceneViewPointer_;
     bool platformPointerConsumed_ = false;
     core::pmr::Vector<ui::WidgetId> sceneInspectorWidgetIds_{&core::defaultCpuMemoryResource()};
+    EditorScriptInspector scriptInspector_;
     core::pmr::Vector<ui::WidgetId> staticInspectorWidgetIds_{&core::defaultCpuMemoryResource()};
 
     struct CollapsedInspectorComponent {
@@ -810,6 +844,7 @@ private:
             Property,
             ComponentPresence,
             ObjectPresence,
+            ScriptFields,
             Name,
             Active
         };
@@ -828,6 +863,7 @@ private:
         bool afterActive = true;
         core::SharedPtr<const EditorScenePresence::Component> componentSnapshot;
         core::SharedPtr<const EditorScenePresence::Subtree> subtree;
+        core::SharedPtr<const EditorScriptComponentState> beforeScriptFields, afterScriptFields;
         bool objectPresentBefore = false, objectPresentAfter = false;
         std::uint64_t selectionBefore = 0, selectionAfter = 0;
         core::pmr::Vector<scene::GameObjectId> additionalSelectionBefore, additionalSelectionAfter;

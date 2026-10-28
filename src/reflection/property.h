@@ -93,6 +93,7 @@ public:
     }
 
 private:
+    friend class db;
     const typeinfo* type_ = nullptr;
     std::uint8_t hints_ = 0;
     core::pmr::String name_{&core::defaultCpuMemoryResource()};

@@ -74,6 +74,7 @@ CloudResult CloudFrameParameters::build(const CloudGraphContext& c,
     if (!std::isfinite(c.projectionJitter.x) || !std::isfinite(c.projectionJitter.y))
         return CloudResult::failure("CLOUD-CAMERA-JITTER");
     auto vp = core::multiply(c.projection, c.view);
+    const auto rasterViewProjection = vp;
     rhi::semantics::applyRenderTargetSamplingYConvention(vp.m.data(), backend);
     const auto inv = core::inverse(vp);
     if (!validInverse(vp, inv))
@@ -92,6 +93,8 @@ CloudResult CloudFrameParameters::build(const CloudGraphContext& c,
             * (2.0f * d.planetRadius + d.baseAltitude + d.thickness)))
         return CloudResult::failure("CLOUD-CAMERA-SHELL-RANGE");
     auto& p = output.parameters;
+    output.rasterViewProjection = rasterViewProjection;
+    output.layer = c.layer;
     p = {};
     p.inverseViewProjection = inv;
     p.cameraTime = {c.cameraPosition.x, c.cameraPosition.y, c.cameraPosition.z, c.time};

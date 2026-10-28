@@ -71,6 +71,8 @@ public:
 
         const std::filesystem::path& sceneTarget() const noexcept { return sceneTarget_; }
 
+        std::uint32_t sceneAuthoringVersion() const noexcept { return sceneAuthoringVersion_; }
+
         const core::pmr::String& sceneSavedHash() const noexcept { return sceneSavedHash_; }
 
         const core::pmr::Vector<std::uint8_t>& sceneSavedBytes() const noexcept
@@ -89,6 +91,7 @@ public:
         core::pmr::String projectSavedBytes_;
         core::pmr::String scenePath_;
         std::filesystem::path sceneTarget_;
+        std::uint32_t sceneAuthoringVersion_ = EditorSceneAuthoringCodec::contractVersion;
         core::pmr::String sceneSavedHash_;
         core::pmr::Vector<std::uint8_t> sceneSavedBytes_;
         std::size_t activeScriptIndex_ = ScriptDocumentSession::noActiveDocument;

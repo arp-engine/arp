@@ -113,6 +113,8 @@ def usage() -> string:
     output = output + "          scene.reparent <objectId> <parentId> <childIndex>\n"
     output = output + "          scene.component.add <objectId> <type> [properties-json]\n"
     output = output + "          scene.component.remove <objectId> <componentId>\n"
+    output = output + "          scene.script.add <objectId> <resourceId> <scriptType> <moduleSchemaVersion> <enabled> <fields-yaml>\n"
+    output = output + "          scene.script.fields.set <objectId> <componentId> <resourceId> <scriptType> <moduleSchemaVersion> <enabled> <fields-yaml>\n"
     output = output + "          scene.component.property.set <objectId> <componentId> <property> <kind> <value-json>\n"
     output = output + "          scene.undo | scene.redo\n"
     output = output + "          script.replace <documentId> <text> | script.save <documentId>\n"
@@ -385,6 +387,28 @@ def main(args: [string], configured_url: string, configured_token: string) -> st
         if positional_count == 4:
             body = body + ",\"properties\":" + third
         body = body + "}"
+    elif command == "scene.script.add":
+        if positional_count != 7:
+            return cli_result("2", "error: scene.script.add requires objectId, resourceId, scriptType, moduleSchemaVersion, enabled and complete fields-yaml\n")
+        if not positive_json_id(first) or not positive_json_id(fourth):
+            return cli_result("2", "error: objectId and moduleSchemaVersion require positive unsigned decimal tokens\n")
+        if fifth != "true" and fifth != "false":
+            return cli_result("2", "error: enabled must be true or false\n")
+        body = "{\"schemaVersion\":1,\"command\":\"scene.script.add\",\"objectId\":" + first + ",\"resourceId\":" + json_string(second)
+        body = body + ",\"scriptType\":" + json_string(third) + ",\"moduleSchemaVersion\":" + fourth + ",\"enabled\":" + fifth
+        body = body + ",\"fieldsYaml\":" + json_string(sixth) + "}"
+    elif command == "scene.script.fields.set":
+        if positional_count != 8:
+            return cli_result("2", "error: scene.script.fields.set requires objectId, componentId, resourceId, scriptType, moduleSchemaVersion, enabled and complete fields-yaml\n")
+        if not positive_json_id(first) or not positive_json_id(second) or not positive_json_id(fifth):
+            return cli_result("2", "error: object/component IDs and moduleSchemaVersion require positive unsigned decimal tokens\n")
+        if sixth != "true" and sixth != "false":
+            return cli_result("2", "error: enabled must be true or false\n")
+        # Preserve exact integer tokens and YAML bytes. The server owns schema,
+        # byte budgets, complete-field decoding, references and atomic history.
+        body = "{\"schemaVersion\":1,\"command\":\"scene.script.fields.set\",\"objectId\":" + first + ",\"componentId\":" + second
+        body = body + ",\"resourceId\":" + json_string(third) + ",\"scriptType\":" + json_string(fourth) + ",\"moduleSchemaVersion\":" + fifth
+        body = body + ",\"enabled\":" + sixth + ",\"fieldsYaml\":" + json_string(seventh) + "}"
     elif command == "scene.component.remove":
         if positional_count != 3:
             return cli_result("2", "error: scene.component.remove requires objectId and componentId\n")

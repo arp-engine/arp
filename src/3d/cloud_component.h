@@ -1,6 +1,7 @@
 #pragma once
 
 #include "3d/cloud_types.h"
+#include "core/api.h"
 #include "scene/component.h"
 
 namespace arp::scene3d {
@@ -18,7 +19,7 @@ struct CloudDesc {
 // planet frame or silently change physical units.
 ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
-class VolumetricCloudComponent final : public scene::Component {
+class ARP_API VolumetricCloudComponent final : public scene::Component {
 public:
     const char* scriptTypeName() const override { return "VolumetricCloudComponent"; }
 

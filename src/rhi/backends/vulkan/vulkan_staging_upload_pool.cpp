@@ -133,6 +133,29 @@ bool VulkanRhiStagingUploadPool::coldStoragePrepared() const noexcept
     return coldStorage_ && ledger_->slices.coldStoragePrepared();
 }
 
+bool VulkanRhiStagingUploadPool::overlapsColdCpuQuota(
+    const core::CpuMemoryQuota* quota) const noexcept
+{
+    return quota && coldStoragePrepared()
+        && core::inspectCpuAllocationCharge(ledger_.get()).quota == quota;
+}
+
+const char* VulkanRhiStagingUploadPool::prepareColdStorage(
+    const rhi::semantics::UploadStagingColdStorageBudget& budget,
+    const std::shared_ptr<core::CpuMemoryQuota>& quota) noexcept
+{
+    if (coldStorage_ || !pages_.empty() || memoryResource_ != &core::defaultCpuMemoryResource())
+        return "RHI-STAGING-COLD-STORAGE-NOT-FRESH";
+    const char* diagnostic = nullptr;
+    auto candidate = prepareCold(desc_, allocator_, budget, quota, diagnostic);
+    if (!candidate)
+        return diagnostic;
+    ledger_.swap(candidate->ledger_);
+    pages_.swap(candidate->pages_);
+    coldStorage_ = true;
+    return nullptr;
+}
+
 VulkanRhiStagingUploadSlice VulkanRhiStagingUploadPool::allocate(
     const VulkanRhiStagingUploadRequest& request)
 {

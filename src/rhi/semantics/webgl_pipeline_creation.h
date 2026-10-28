@@ -1,5 +1,5 @@
 #pragma once
-#include "rhi/frontend/command_draw_validation.h"
+#include "rhi/frontend/vertex_input_validation.h"
 #include "rhi/semantics/webgl_program_creation.h"
 #include "rhi/semantics/webgl_runtime_profile.h"
 
@@ -59,8 +59,8 @@ public:
             || (static_cast<std::uint32_t>(c.writeMask) & ~std::uint32_t{15}))
             return "RHI-WEBGL1-PIPELINE-BLEND-STATE";
         for (const auto& stream : d.vertexBuffers) {
-            VertexInputConsumptionContract::Stream inspected{};
-            if (const auto* id = VertexInputConsumptionContract::inspectStream(stream, inspected))
+            VertexInputStreamInspection inspected{};
+            if (const auto* id = VertexInputValidation::inspectStream(stream, inspected))
                 return id;
             // ES2 vertexAttribPointer: float alignment and maximum byte stride
             // are specified constraints, not guessed device limits.

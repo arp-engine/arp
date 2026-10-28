@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/api.h"
 #include "core/math/math.h"
 #include "scene/component.h"
 #include "scene/render_extract.h"
@@ -57,7 +58,7 @@ bool validFogTransform(const scene::Transform& transform) noexcept;
 
 ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
-class VolumetricFogComponent final : public scene::Component {
+class ARP_API VolumetricFogComponent final : public scene::Component {
 public:
     const char* scriptTypeName() const override { return "VolumetricFogComponent"; }
 
@@ -90,7 +91,7 @@ private:
 
 ACLASS(Ownership = Engine, Lifecycle = Explicit)
 
-class LocalFogVolumeComponent final : public scene::Component {
+class ARP_API LocalFogVolumeComponent final : public scene::Component {
 public:
     const char* scriptTypeName() const override { return "LocalFogVolumeComponent"; }
 

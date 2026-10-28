@@ -157,5 +157,13 @@ public:
             if (frustum.intersectsAabbMinMax(bounds_[i].minimum, bounds_[i].maximum))
                 sink(i, bounds_[i]);
     }
+
+    // The same prepared bounds without a visibility predicate. Shadow-view
+    // LOD may use every existing caster while cascade culling stays disabled.
+    template <class Sink> void forEachBounds(Sink&& sink) const
+    {
+        for (std::size_t i = 0; i < bounds_.size(); ++i)
+            sink(i, bounds_[i]);
+    }
 };
 } // namespace arp::renderer

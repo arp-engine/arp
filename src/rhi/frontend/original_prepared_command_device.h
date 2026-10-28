@@ -20,7 +20,9 @@ public:
         if (const auto* diagnostic = OriginalRenderPassPreparationContract::validate(request))
             return diagnostic;
         return request.contractVersion == 6u || request.contractVersion == 7u
-            ? nullptr : "RHI-ORIGINAL-PREPARED-EXTENSION-PROFILE";
+                || OriginalRenderPassPreparationContract::hasPassTiming(request)
+            ? nullptr
+            : "RHI-ORIGINAL-PREPARED-EXTENSION-PROFILE";
     }
 
     static OriginalPreparedCommandDeviceExtension* query(GpuDevice& device,

@@ -185,7 +185,7 @@ class BrowserProgressJournal:
 
 class BrowserContractRunner:
     def __init__(self, browser, directory, entry, output, timeout_seconds, capture_progress=False,
-                 disable_background_timer_throttling=False):
+                 disable_background_timer_throttling=False, cross_origin_isolated=False):
         if timeout_seconds <= 0:
             raise ValueError("BROWSER-CONTRACT-TIMEOUT-BUDGET")
         self.browser = str(browser)
@@ -197,6 +197,7 @@ class BrowserContractRunner:
         if type(disable_background_timer_throttling) is not bool:
             raise ValueError("BROWSER-CONTRACT-TIMER-POLICY")
         self.disable_background_timer_throttling = disable_background_timer_throttling
+        self.cross_origin_isolated = cross_origin_isolated
 
     def browser_command(self, profile, url):
         # Launch syntax only; backend capability still comes from the real page.
@@ -218,7 +219,13 @@ class BrowserContractRunner:
         started = time.monotonic()
         output = self.output
         capture_progress = self.capture_progress
+        cross_origin_isolated = self.cross_origin_isolated
         class Handler(http.server.SimpleHTTPRequestHandler):
+            def end_headers(self):
+                if cross_origin_isolated:
+                    self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+                    self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
+                super().end_headers()
             def log_message(self, *unused):
                 pass
             def do_POST(self):

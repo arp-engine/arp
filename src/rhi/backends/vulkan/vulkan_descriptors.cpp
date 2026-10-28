@@ -11,6 +11,8 @@
 #include "rhi/frontend/descriptor_resource_validation.h"
 #include "rhi/frontend/descriptor_set_validation.h"
 #include "rhi/frontend/descriptor_state_copy.h"
+#include "rhi/frontend/ordinary_sampled_color.h"
+#include "rhi/frontend/original_texture_upload_device.h"
 #include "rhi/frontend/resource_leases.h"
 #include "rhi/semantics/bindless_original_preparation_lowering.h"
 
@@ -251,6 +253,8 @@ class VulkanRhiDescriptorSet final : public rhi::DescriptorSet {
             VulkanOriginalGraphicsBindingInspection::Observation native;
             VkImageView view = VK_NULL_HANDLE;
             VkDescriptorImageInfo image{};
+            rhi::OriginalOrdinarySampledColorRead::Snapshot sampledColorRead;
+            std::shared_ptr<const rhi::OriginalTextureUploadPublication> sampledUpload;
         };
 
         explicit OriginalSynchronousPublication(std::shared_ptr<VulkanRhiRuntime> runtime)
@@ -275,6 +279,7 @@ class VulkanRhiDescriptorSet final : public rhi::DescriptorSet {
         core::pmr::Vector<VkWriteDescriptorSet> writes{&core::defaultCpuMemoryResource()};
         std::uint64_t revision = 0u;
         std::uint32_t set = 0u, contractVersion = 0u;
+        rhi::semantics::OriginalOrdinarySampledColorContract::Intent sampledColor;
         bool committed = false;
     };
 
@@ -310,6 +315,12 @@ public:
     std::uint32_t originalGeneralContentContractVersion() const noexcept override
     {
         return hasOriginalGeneralContent() ? originalSynchronous_->contractVersion : 0u;
+    }
+
+    std::uint32_t originalSampledColorContractVersion() const noexcept override
+    {
+        return hasOriginalGeneralContent() ? originalSynchronous_->sampledColor.contractVersion
+                                           : 0u;
     }
 
     const char* originalScopedContentDiagnostic() const noexcept override
@@ -367,6 +378,12 @@ public:
             rhi::OriginalCommandGraphicsPipelineSource>;
         if (const auto* id = rhi::OriginalGeneralDescriptorWriteContract::validate(request))
             return id;
+        if (!request.sampledColor.empty()) {
+            const auto decision = rhi::semantics::OriginalOrdinarySampledColorContract::lowering(
+                device.backend(), request.sampledColor);
+            if (!decision.nativeAvailable)
+                return decision.diagnostic;
+        }
         if (request.contractVersion != (compute ? 4u : 3u) || !pipeline || originalSynchronous_
             || !count || count != layout_.bindings.size() || count > request.maxBindings
             || !elements || !arena || nativePayload_.use_count() != 1u
@@ -413,6 +430,10 @@ public:
             {"vkUpdateDescriptorSets", "vkCreateImageView", "vkDestroyImageView"})
             if (!runtime->getDeviceProcAddr(name))
                 return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-ENTRYPOINT";
+        if (!request.sampledColor.empty() && request.sampledUploads.size() != count)
+            return "RHI-ORDINARY-SAMPLED-COLOR-UPLOAD-COVERAGE";
+        auto retainedOwners = rhi::OriginalGeneralDescriptorWriteContract::ownerSlots(
+            request.maxBindings, request.contractVersion);
         // Admit the complete group before allocating or creating the first view.
         for (std::size_t i = 0u; i < count; ++i) {
             const auto* binding = findBinding(layout_, elements[i].write.binding);
@@ -432,15 +453,42 @@ public:
                 if (elements[j].write.binding == elements[i].write.binding)
                     return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-DUPLICATE";
             VulkanOriginalGraphicsBindingInspection::Observation observed;
-            if (const auto* id =
-                    VulkanOriginalGraphicsBindingInspection::inspect({compute ? 2u : 1u, true},
-                        device,
-                        sources,
-                        pipelineIndex,
-                        set,
-                        elements[i],
-                        observed))
+            if (const auto* id = VulkanOriginalGraphicsBindingInspection::inspect(
+                    {compute ? 2u : 1u, true, request.sampledColor},
+                    device,
+                    sources,
+                    pipelineIndex,
+                    set,
+                    elements[i],
+                    observed))
                 return id;
+            if (!request.sampledColor.empty()) {
+                const auto owner = Dependencies::capture(*sources, elements[i].sourceIndex);
+                if (!owner)
+                    return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-RESOURCE-SOURCE";
+                if (const auto* view =
+                        std::get_if<std::shared_ptr<const rhi::OriginalCommandTextureViewSource>>(
+                            &*owner)) {
+                    const auto& upload = request.sampledUploads[i];
+                    if (const auto* id =
+                            rhi::OriginalTextureUploadPublication::validateOriginal(upload))
+                        return id;
+                    if (const auto* id = upload->validateView(*view))
+                        return id;
+                    if (const auto* id = upload->validateReadVisibility(elements[i].stages))
+                        return id;
+                    const auto owners = rhi::OriginalTextureUploadPublication::requiredOwners(
+                        *upload->originalProgram(), 1u);
+                    if (owners > request.maxRetainedOwnerSlots - retainedOwners)
+                        return "RHI-ORDINARY-SAMPLED-COLOR-UPLOAD-OWNER-CAPACITY";
+                    retainedOwners += owners;
+                    rhi::OriginalOrdinarySampledColorRead::Snapshot completed;
+                    if (const auto* id =
+                            rhi::OriginalOrdinarySampledColorRead::capture(**view, completed))
+                        return id;
+                } else if (request.sampledUploads[i])
+                    return "RHI-ORDINARY-SAMPLED-COLOR-UPLOAD-NON-TEXTURE";
+            }
         }
         try {
             core::CpuMemoryQuotaScope ownerScope(quotas[0]);
@@ -453,6 +501,7 @@ public:
             candidate->revision = contentRevision();
             candidate->set = set;
             candidate->contractVersion = request.contractVersion;
+            candidate->sampledColor = request.sampledColor;
             {
                 core::CpuMemoryQuotaScope bindingScope(quotas[1]);
                 candidate->bindings.reserve(count);
@@ -468,15 +517,24 @@ public:
                     return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-RESOURCE-SOURCE";
                 candidate->bindings.push_back({elements[i], *owner});
                 auto& binding = candidate->bindings.back();
-                if (const auto* id =
-                        VulkanOriginalGraphicsBindingInspection::inspect({compute ? 2u : 1u, true},
-                            device,
-                            sources,
-                            pipelineIndex,
-                            set,
-                            elements[i],
-                            binding.native))
+                if (const auto* id = VulkanOriginalGraphicsBindingInspection::inspect(
+                        {compute ? 2u : 1u, true, request.sampledColor},
+                        device,
+                        sources,
+                        pipelineIndex,
+                        set,
+                        elements[i],
+                        binding.native))
                     return id;
+                if (!request.sampledColor.empty()) {
+                    binding.sampledUpload = request.sampledUploads[i];
+                    if (const auto* view = std::get_if<
+                            std::shared_ptr<const rhi::OriginalCommandTextureViewSource>>(
+                            &binding.owner))
+                        if (const auto* id = rhi::OriginalOrdinarySampledColorRead::capture(
+                                **view, binding.sampledColorRead))
+                            return id;
+                }
                 const auto bytes = std::visit(
                     [](const auto& source) -> std::uint64_t {
                         using T = std::remove_const_t<
@@ -1044,6 +1102,22 @@ private:
                 || publication.quotas[i]->limitBytes() != publication.quotaLimits[i])
                 return "RHI-SYNCHRONOUS-GRAPHICS-WRITE-QUOTA";
         for (const auto& binding : publication.bindings) {
+            if (!publication.sampledColor.empty())
+                if (const auto* view =
+                        std::get_if<std::shared_ptr<const rhi::OriginalCommandTextureViewSource>>(
+                            &binding.owner)) {
+                    if (const auto* id = rhi::OriginalTextureUploadPublication::validateOriginal(
+                            binding.sampledUpload))
+                        return id;
+                    if (const auto* id = binding.sampledUpload->validateView(*view))
+                        return id;
+                    if (const auto* id =
+                            binding.sampledUpload->validateReadVisibility(binding.element.stages))
+                        return id;
+                    if (const auto* id = rhi::OriginalOrdinarySampledColorRead::validate(
+                            **view, binding.sampledColorRead))
+                        return id;
+                }
             if (binding.element.write.type == rhi::DescriptorType::StorageBuffer) {
                 const auto* buffer =
                     std::get_if<std::shared_ptr<const rhi::OriginalCommandBufferLease>>(

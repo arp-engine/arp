@@ -12,7 +12,8 @@
 //                          emscripten_sleep.
 //   Input               -> key/mouse/wheel DOM callbacks are translated
 //                          through the neutral WindowKey table. Status:
-//                          Prototype (not yet browser-validated).
+//                          Prototype (Editor WebGL pointer/ASCII path validated;
+//                          full IME and platform input coverage remain open).
 //   Vulkan              -> none: the web GPU path is WebGPU through the
 //                          canvas; createVulkanSurface fails closed invalid
 //                          and requiredVulkanInstanceExtensions is empty.
@@ -26,6 +27,7 @@
 
 #if defined(__EMSCRIPTEN__)
 
+#include <cstdio>
 #include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
 #include <utility>
@@ -45,6 +47,7 @@ struct WindowSystemState {
     float lastPointerX = 0.0f;
     float lastPointerY = 0.0f;
     bool hasLastPointer = false;
+    bool pointerMappingFailed = false;
     std::uint64_t nextWindowId = kCanvasWindowId;
     WindowEventBatch queued;
 };
@@ -116,10 +119,38 @@ WindowMouseButton mouseButtonFromDom(unsigned short button)
     }
 }
 
-void queueDomPointerMove(WindowSystemState& state, long canvasX, long canvasY)
+// clang-format off
+EM_JS(int, windowCanvasClientPosition, (int clientX, int clientY, float* output), {
+    const canvas = Module.canvas;
+    if (!canvas || !canvas.isConnected) return 0;
+    const rect = canvas.getBoundingClientRect();
+    if (![rect.left, rect.top, rect.width, rect.height].every(Number.isFinite)
+        || rect.width <= 0 || rect.height <= 0) return 0;
+    HEAPF32[output >> 2] = clientX - rect.left;
+    HEAPF32[(output >> 2) + 1] = clientY - rect.top;
+    return 1;
+});
+// clang-format on
+
+bool queueDomPointerMove(WindowSystemState& state, const EmscriptenMouseEvent& event)
 {
-    const float x = static_cast<float>(canvasX);
-    const float y = static_cast<float>(canvasY);
+    // SDK 4.x no longer populates canvasX/Y. Window callbacks retain releases
+    // outside the canvas; translate client coordinates using its actual rect.
+    float position[2];
+    if (!windowCanvasClientPosition(event.clientX, event.clientY, position)) {
+        if (!state.pointerMappingFailed) {
+            std::fputs("PLATFORM-WEB-INPUT-CANVAS-UNAVAILABLE\n", stderr);
+            WindowInputEvent cancel;
+            cancel.kind = WindowInputEvent::Kind::FocusLost;
+            cancel.windowId = kCanvasWindowId;
+            queueInputEvent(state, std::move(cancel));
+        }
+        state.pointerMappingFailed = true;
+        state.hasLastPointer = false;
+        return false;
+    }
+    state.pointerMappingFailed = false;
+    const float x = position[0], y = position[1];
     const float dx = state.hasLastPointer ? x - state.lastPointerX : 0.0f;
     const float dy = state.hasLastPointer ? y - state.lastPointerY : 0.0f;
     state.lastPointerX = x;
@@ -139,12 +170,14 @@ void queueDomPointerMove(WindowSystemState& state, long canvasX, long canvasY)
     move.dx = dx;
     move.dy = dy;
     queueInputEvent(state, std::move(move));
+    return true;
 }
 
 EM_BOOL handleMouseButton(int eventType, const EmscriptenMouseEvent* event, void* userData)
 {
     auto& state = callbackState(userData);
-    queueDomPointerMove(state, event->canvasX, event->canvasY);
+    if (!queueDomPointerMove(state, *event))
+        return EM_FALSE;
     WindowInputEvent input;
     input.kind = eventType == EMSCRIPTEN_EVENT_MOUSEDOWN ? WindowInputEvent::Kind::MouseButtonDown
                                                          : WindowInputEvent::Kind::MouseButtonUp;
@@ -161,7 +194,7 @@ EM_BOOL handleMouseMove(int eventType, const EmscriptenMouseEvent* event, void* 
 {
     (void)eventType;
     auto& state = callbackState(userData);
-    queueDomPointerMove(state, event->canvasX, event->canvasY);
+    (void)queueDomPointerMove(state, *event);
     return EM_FALSE;
 }
 
@@ -169,7 +202,8 @@ EM_BOOL handleWheel(int eventType, const EmscriptenWheelEvent* event, void* user
 {
     (void)eventType;
     auto& state = callbackState(userData);
-    queueDomPointerMove(state, event->mouse.canvasX, event->mouse.canvasY);
+    if (!queueDomPointerMove(state, event->mouse))
+        return EM_FALSE;
     WindowInputEvent wheel;
     wheel.kind = WindowInputEvent::Kind::MouseWheel;
     wheel.x = state.lastPointerX;

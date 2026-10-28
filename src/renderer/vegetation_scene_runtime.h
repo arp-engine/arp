@@ -7,6 +7,7 @@
 #include "core/math/frustum.h"
 #include "core/runtime/work_service.h"
 #include "renderer/foliage_deformation_envelope.h"
+#include "renderer/mesh/immutable_mesh_upload.h"
 #include "renderer/runtime/gpu_resource_retire_queue.h"
 #include "renderer/terrain_vegetation_runtime.h"
 #include "rhi/gpu_device.h"
@@ -39,6 +40,7 @@ public:
     };
 
     struct Model {
+        core::UniquePtr<ImmutableMeshUpload> immutableUpload;
         core::UniquePtr<rhi::GpuBuffer> vertices, indices;
         core::pmr::Vector<Section> sections{&core::defaultCpuMemoryResource()};
         core::pmr::Vector<SceneCluster> sceneClusters{&core::defaultCpuMemoryResource()};
@@ -78,6 +80,42 @@ public:
     bool initialize(const std::filesystem::path& manifest,
         rhi::GpuDevice& device,
         core::pmr::String& diagnostics);
+
+    // All limits are aggregate for this scene, including copy command count.
+    // Model count additionally bounds ticket/command/fence ownership. Source
+    // generation is supplied by the caller's hash-verified resource identity.
+    struct PrototypeResidencyBudget {
+        ImmutableMeshUpload::Budget total;
+        std::uint32_t maxModels = 0;
+        std::uint64_t sourceGeneration = 0;
+    };
+
+    struct PrototypeUploadStats {
+        std::uint64_t destinationBytes = 0, metadataBytes = 0;
+        std::uint32_t models = 0, copyCommands = 0;
+    };
+
+    bool initialize(const std::filesystem::path& manifest,
+        rhi::GpuDevice& device,
+        core::pmr::String& diagnostics,
+        const PrototypeResidencyBudget& budget);
+    // Cold operation, once, after ALL models and consumer bindings validate.
+    // A partial submission failure retains all tickets until drain/loss.
+    bool submitPrototypeUploads(core::pmr::String& diagnostics);
+    // Render-owner observations; no IO, wait, or allocation. Every consuming
+    // pipeline must gate on this predicate, not merely ready().
+    bool prototypeGeometryReady() const;
+    std::size_t reapPrototypeUploads();
+    bool prototypeUploadsRequireDrain() const noexcept;
+    std::uint64_t retainedPrototypeUploadBytes() const noexcept;
+
+    const PrototypeUploadStats& prototypeUploadStats() const noexcept
+    {
+        return prototypeUploadStats_;
+    }
+
+    bool clearAfterDeviceDrain(const rhi::semantics::ShutdownDrainReport& report);
+    void clearAfterDeviceLoss();
     bool update(rhi::GpuDevice& device,
         core::Vec3 camera,
         const core::Frustum& frustum,
@@ -97,7 +135,9 @@ public:
         std::uint64_t serial,
         core::pmr::String& diagnostics,
         const View& view);
-    void clear(); // only after GPU drain; also joins the IO worker
+    // Only after GPU drain; also joins the IO worker. Accepted prototype upload
+    // ownership additionally requires explicit clearAfterDeviceDrain/Loss.
+    void clear();
 
     bool ready() const noexcept { return ready_; }
 
@@ -124,6 +164,10 @@ public:
     auto retirementStats() const { return retired_.stats(); }
 
 private:
+    bool initializeImpl(const std::filesystem::path& manifest,
+        rhi::GpuDevice& device,
+        core::pmr::String& diagnostics,
+        const PrototypeResidencyBudget* budget);
     enum class PageState { Unloaded, Loading, Loaded, Failed };
 
     struct Placement {
@@ -171,5 +215,8 @@ private:
     float time_ = 0, transitionSeconds_ = 0;
     core::LodTransitionBudget transitionBudget_;
     bool ready_ = false;
+    bool prototypeResidencyEnabled_ = false, prototypeSubmissionAttempted_ = false;
+    bool prototypeSubmissionSucceeded_ = false;
+    PrototypeUploadStats prototypeUploadStats_;
 };
 } // namespace arp::renderer
