@@ -21,6 +21,8 @@
 
 <a id="english"></a>
 
+![ARP Engine runtime and editor showcase](assets/arp-showcase.png)
+
 [English](#english) | [简体中文](#简体中文)
 
 ## Why AI Native
