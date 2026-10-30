@@ -7,6 +7,7 @@
 #include "core/io/filesystem_path.h"
 #include "core/io/staged_directory.h"
 #include "resource/asset_package_payload.h"
+#include "resource/resource_source_io.h"
 #include "resource/terrain_asset_resource.h"
 #include "resource/vegetation_catalog_cooked.h"
 
@@ -33,12 +34,20 @@ std::size_t constrained(std::size_t declared, std::size_t caller)
     return caller ? std::min(declared, caller) : declared;
 }
 
-std::filesystem::path contained(const std::filesystem::path& root, const core::pmr::String& path)
+std::filesystem::path contained(const std::filesystem::path& root,
+    const core::pmr::String& path,
+    const AssetPackageSourceContext* sources = nullptr)
 {
     require(safePath(path), "PACKAGE-CLOSURE-UNSAFE-PATH");
+    if (sources) {
+        std::filesystem::path output;
+        require(resolveResourceSourcePath(root, path, sources->origin, output),
+            "PACKAGE-CLOSURE-UNSAFE-PATH");
+        return output;
+    }
     std::error_code error;
     const auto resolved =
-        std::filesystem::canonical(root / std::filesystem::path(path.c_str()), error);
+        std::filesystem::canonical(root / std::filesystem::u8path(path.begin(), path.end()), error);
     require(!error && core::FilePath::contains(root, resolved),
         "PACKAGE-CLOSURE-PATH-ESCAPE-OR-MISSING");
     return resolved;
@@ -73,7 +82,8 @@ bool discoverFiles(const std::filesystem::path& root,
     AssetPackageClosureResult& result,
     std::size_t maxFiles,
     core::pmr::UnorderedSet<core::pmr::String>& required,
-    core::SharedPtr<const AssetPackageCodecRegistry> codecs)
+    core::SharedPtr<const AssetPackageCodecRegistry> codecs,
+    const AssetPackageSourceContext* sources = nullptr)
 {
     const auto addFile = [&](core::pmr::String path) {
         require(safePath(path), "PACKAGE-CLOSURE-UNSAFE-PATH");
@@ -96,7 +106,9 @@ bool discoverFiles(const std::filesystem::path& root,
         require(found != result.package.entries.end() && found->resourceType == type,
             "PACKAGE-CLOSURE-DEPENDENCY-MISSING-OR-TYPE");
     };
-    AssetPackagePayloadInspector payloads(codecs, root);
+    AssetPackagePayloadInspector payloads = sources
+        ? AssetPackagePayloadInspector(codecs, root, *sources)
+        : AssetPackagePayloadInspector(codecs, root);
     std::size_t codecDecodedBytes = 0;
     for (const auto& entry : result.package.entries) {
         require(entry.status == "Contract Complete", "PACKAGE-CLOSURE-RESOURCE-STATUS");
@@ -121,15 +133,16 @@ bool discoverFiles(const std::filesystem::path& root,
         const auto envelope = Yaml::parseSingleDocument(entry.envelopeYaml);
         const auto& fields = Yaml::required(Yaml::required(envelope, "payload"), "fields");
         const auto path = Yaml::text(fields, "manifestPath");
-        const auto manifest = root / std::filesystem::path(path.c_str());
-        contained(root, path);
+        const auto manifest = contained(root, path, sources);
         const ResourceReference reference{
             entry.resourceId, entry.resourceType, entry.alias, entry.status, {}};
         core::pmr::Vector<ResourceFileReadIntent> intents{&core::defaultCpuMemoryResource()};
-        ResourceLoadContext context;
+        ResourceLoadContext context = sources ? sources->resources : ResourceLoadContext{};
         context.maxDecodedBytes = result.maxDecodedBytes;
         if (entry.resourceType == TerrainAssetResource::resourceTypeName()) {
-            const auto terrain = TerrainAssetResource(reference, manifest).inspectManifest(context);
+            const auto terrain = TerrainAssetResource(
+                reference, manifest, sources ? sources->origin : ResourceFileOrigin{})
+                                     .inspectManifest(context);
             if (!terrain.success) {
                 result.diagnostics = terrain.diagnostics;
                 return false;
@@ -144,8 +157,8 @@ bool discoverFiles(const std::filesystem::path& root,
             }
             intents = terrain.files;
         } else if (entry.resourceType == kVegetationCatalogCookedContract.type) {
-            const auto catalog =
-                VegetationCatalogCookedCodec().inspect(reference, manifest, context);
+            const auto catalog = VegetationCatalogCookedCodec().inspect(
+                reference, manifest, context, sources ? sources->origin : ResourceFileOrigin{});
             if (!catalog.success) {
                 result.diagnostics = catalog.diagnostics;
                 return false;
@@ -158,97 +171,206 @@ bool discoverFiles(const std::filesystem::path& root,
             return false;
         }
         for (const auto& intent : intents)
-            addFile(core::FilePath::utf8(
-                std::filesystem::path(intent.path.c_str()).lexically_relative(root)));
+            addFile(
+                core::FilePath::utf8(std::filesystem::u8path(intent.path.begin(), intent.path.end())
+                        .lexically_relative(root)));
     }
     return true;
 }
+
+struct ClosureDeclaration {
+    Yaml::Node index;
+    core::pmr::Vector<AssetPackageClosureFile> files{&core::defaultCpuMemoryResource()};
+    std::size_t maxFiles = 0;
+    std::size_t maxDecodedBytes = 0;
+};
+
+ClosureDeclaration parseClosureDeclaration(const InternalAssetPackageDesc& package,
+    core::StringView text,
+    const AssetPackageClosureBudget& limits,
+    std::size_t callerDecodedBytes)
+{
+    ClosureDeclaration declaration;
+    auto index = Yaml::parseSingleDocument(text);
+    Yaml::onlyKeys(index,
+        {"type",
+            "contractVersion",
+            "status",
+            "maxResources",
+            "maxFiles",
+            "maxFileBytes",
+            "maxTotalFileBytes",
+            "maxDecodedBytes",
+            "files"});
+    require(Yaml::text(index, "type") == "AssetPackageClosure"
+            && Yaml::text(index, "contractVersion") == "resource.package.closure/v1"
+            && Yaml::text(index, "status") == "Contract Complete"
+            && package.status == "Contract Complete",
+        "PACKAGE-CLOSURE-CONTRACT");
+    const auto resources = Yaml::uint64(Yaml::required(index, "maxResources"));
+    auto maxFiles = Yaml::uint64(Yaml::required(index, "maxFiles"));
+    auto maxFile = Yaml::uint64(Yaml::required(index, "maxFileBytes"));
+    auto maxTotal = Yaml::uint64(Yaml::required(index, "maxTotalFileBytes"));
+    const auto decoded = Yaml::uint64(Yaml::required(index, "maxDecodedBytes"));
+    require(resources && resources <= AssetPackageClosureService::maxResources
+            && package.entries.size() <= resources && maxFiles && maxFiles <= SIZE_MAX && maxFile
+            && maxFile <= SIZE_MAX && maxTotal && maxTotal <= SIZE_MAX && decoded
+            && decoded <= SIZE_MAX,
+        "PACKAGE-CLOSURE-BUDGET");
+    require(package.entries.size()
+            <= constrained(AssetPackageClosureService::maxResources, limits.maxResources),
+        "PACKAGE-CLOSURE-BUDGET");
+    maxFiles = constrained(static_cast<std::size_t>(maxFiles), limits.maxFiles);
+    maxFile = constrained(static_cast<std::size_t>(maxFile), limits.maxFileBytes);
+    maxTotal = constrained(static_cast<std::size_t>(maxTotal), limits.maxTotalFileBytes);
+    declaration.maxDecodedBytes =
+        constrained(static_cast<std::size_t>(decoded), limits.maxDecodedBytes);
+    declaration.maxDecodedBytes = constrained(declaration.maxDecodedBytes, callerDecodedBytes);
+    const auto& files = Yaml::sequence(index, "files");
+    require(files.size() <= maxFiles, "PACKAGE-CLOSURE-FILE-COUNT");
+
+    std::size_t total = 0;
+    for (const auto& node : files) {
+        Yaml::onlyKeys(node, {"path", "byteCount", "contentHash"});
+        AssetPackageClosureFile file;
+        file.path = Yaml::text(node, "path");
+        const auto bytes = Yaml::uint64(Yaml::required(node, "byteCount"));
+        file.contentHash = Yaml::hex64(node, "contentHash");
+        require(safePath(file.path) && bytes <= maxFile && total <= maxTotal
+                && bytes <= maxTotal - total,
+            "PACKAGE-CLOSURE-FILE-BUDGET");
+        require(declaration.files.empty() || declaration.files.back().path < file.path,
+            "PACKAGE-CLOSURE-FILE-SET-OR-ORDER");
+        require(file.path != "manifest.arpkg.yaml" && file.path != package.closurePath,
+            "PACKAGE-CLOSURE-METADATA-COLLISION");
+        for (const auto& entry : package.entries)
+            require(file.path != entry.envelopePath, "PACKAGE-CLOSURE-METADATA-COLLISION");
+        file.byteCount = static_cast<std::size_t>(bytes);
+        total += file.byteCount;
+        declaration.files.push_back(std::move(file));
+    }
+    declaration.maxFiles = static_cast<std::size_t>(maxFiles);
+    declaration.index = std::move(index);
+    return declaration;
+}
+
 } // namespace
 
 AssetPackageClosureResult AssetPackageClosureService::inspect(
     const std::filesystem::path& directory, const AssetPackageClosureBudget& limits) const
 {
+    return inspectImpl(directory, limits, nullptr);
+}
+
+AssetPackageClosureResult AssetPackageClosureService::inspectSources(
+    const std::filesystem::path& directory,
+    const AssetPackageSourceContext& sources,
+    const AssetPackageClosureBudget& limits) const
+{
+    if (!sources.resources.requirePreloadedSources || !sources.resources.sources)
+        return {false, "PACKAGE-IO-SOURCE-CONFIG"};
+    return inspectImpl(directory, limits, &sources);
+}
+
+AssetPackageReadPlan AssetPackageClosureService::planSourceReads(
+    const std::filesystem::path& directory,
+    const AssetPackageSourceContext& sources,
+    const AssetPackageClosureBudget& limits) const
+{
+    AssetPackageReadPlan result;
+    try {
+        auto package = InternalAssetPackageReader().readSources(
+            directory, sources, maxMetadataBytes, constrained(maxResources, limits.maxResources));
+        if (!package.success) {
+            result.diagnostics = std::move(package.diagnostics);
+            return result;
+        }
+        require(!package.package.closurePath.empty(), "PACKAGE-CLOSURE-DECLARATION-REQUIRED");
+        const auto path = contained(directory, package.package.closurePath, &sources);
+        const auto text = readResourceText(
+            core::FilePath::utf8(path), sources.resources, maxMetadataBytes, &sources.origin);
+        if (!text.success) {
+            result.diagnostics = text.diagnostics;
+            return result;
+        }
+        auto declaration = parseClosureDeclaration(
+            package.package, text.text, limits, sources.resources.maxDecodedBytes);
+        for (const auto& file : declaration.files) {
+            const auto sourcePath = contained(directory, file.path, &sources);
+            if (!appendResourceReadIntent(core::FilePath::utf8(sourcePath),
+                    std::max<std::size_t>(1, file.byteCount),
+                    result.reads,
+                    result.diagnostics,
+                    sources.origin))
+                return result;
+        }
+        result.success = true;
+    } catch (const core::YamlContractError& error) {
+        result.diagnostics = error.diagnostic;
+    }
+    return result;
+}
+
+AssetPackageClosureResult AssetPackageClosureService::inspectImpl(
+    const std::filesystem::path& directory,
+    const AssetPackageClosureBudget& limits,
+    const AssetPackageSourceContext* sources) const
+{
     AssetPackageClosureResult result;
     try {
         require(!codecs_ || codecs_->frozen(), "PACKAGE-CODEC-REGISTRY-NOT-FROZEN");
-        const auto package = InternalAssetPackageReader().read(
-            directory, maxMetadataBytes, constrained(maxResources, limits.maxResources));
+        const auto package = sources
+            ? InternalAssetPackageReader().readSources(directory,
+                  *sources,
+                  maxMetadataBytes,
+                  constrained(maxResources, limits.maxResources))
+            : InternalAssetPackageReader().read(
+                  directory, maxMetadataBytes, constrained(maxResources, limits.maxResources));
         if (!package.success) {
             result.diagnostics = package.diagnostics;
             return result;
         }
         result.package = package.package;
         require(!result.package.closurePath.empty(), "PACKAGE-CLOSURE-DECLARATION-REQUIRED");
-        const auto root = std::filesystem::canonical(directory);
-        const auto indexFile =
-            core::readTextFile(contained(root, result.package.closurePath), maxMetadataBytes);
+        const auto root = sources ? directory : std::filesystem::canonical(directory);
+        const auto indexPath = contained(root, result.package.closurePath, sources);
+        const auto indexFile = sources ? readResourceText(core::FilePath::utf8(indexPath),
+                                             sources->resources,
+                                             maxMetadataBytes,
+                                             &sources->origin)
+                                       : core::readTextFile(indexPath, maxMetadataBytes);
         require(indexFile.success, "PACKAGE-CLOSURE-INDEX-READ");
-        auto index = Yaml::parseSingleDocument(indexFile.text);
-        Yaml::onlyKeys(index,
-            {"type",
-                "contractVersion",
-                "status",
-                "maxResources",
-                "maxFiles",
-                "maxFileBytes",
-                "maxTotalFileBytes",
-                "maxDecodedBytes",
-                "files"});
-        require(Yaml::text(index, "type") == "AssetPackageClosure"
-                && Yaml::text(index, "contractVersion") == "resource.package.closure/v1"
-                && Yaml::text(index, "status") == "Contract Complete"
-                && result.package.status == "Contract Complete",
-            "PACKAGE-CLOSURE-CONTRACT");
-        const auto resources = Yaml::uint64(Yaml::required(index, "maxResources"));
-        auto maxFiles = Yaml::uint64(Yaml::required(index, "maxFiles"));
-        auto maxFile = Yaml::uint64(Yaml::required(index, "maxFileBytes"));
-        auto maxTotal = Yaml::uint64(Yaml::required(index, "maxTotalFileBytes"));
-        const auto decoded = Yaml::uint64(Yaml::required(index, "maxDecodedBytes"));
-        require(resources && resources <= maxResources && result.package.entries.size() <= resources
-                && maxFiles && maxFiles <= SIZE_MAX && maxFile && maxFile <= SIZE_MAX && maxTotal
-                && maxTotal <= SIZE_MAX && decoded && decoded <= SIZE_MAX,
-            "PACKAGE-CLOSURE-BUDGET");
-        require(result.package.entries.size() <= constrained(maxResources, limits.maxResources),
-            "PACKAGE-CLOSURE-BUDGET");
-        maxFiles = constrained(static_cast<std::size_t>(maxFiles), limits.maxFiles);
-        maxFile = constrained(static_cast<std::size_t>(maxFile), limits.maxFileBytes);
-        maxTotal = constrained(static_cast<std::size_t>(maxTotal), limits.maxTotalFileBytes);
-        result.maxDecodedBytes =
-            constrained(static_cast<std::size_t>(decoded), limits.maxDecodedBytes);
-        const auto& files = Yaml::sequence(index, "files");
-        require(files.size() <= maxFiles, "PACKAGE-CLOSURE-FILE-COUNT");
+        auto declaration = parseClosureDeclaration(result.package,
+            indexFile.text,
+            limits,
+            sources ? sources->resources.maxDecodedBytes : 0);
+        result.maxDecodedBytes = declaration.maxDecodedBytes;
         core::pmr::UnorderedSet<core::pmr::String> required{&core::defaultCpuMemoryResource()};
-        if (!discoverFiles(root, result, maxFiles, required, codecs_))
+        if (!discoverFiles(root, result, declaration.maxFiles, required, codecs_, sources))
             return result;
-        std::size_t total = 0u;
-        for (const auto& node : files) {
-            Yaml::onlyKeys(node, {"path", "byteCount", "contentHash"});
-            AssetPackageClosureFile file;
-            file.path = Yaml::text(node, "path");
-            const auto bytes = Yaml::uint64(Yaml::required(node, "byteCount"));
-            file.contentHash = Yaml::hex64(node, "contentHash");
-            require(bytes <= maxFile && total <= maxTotal && bytes <= maxTotal - total,
-                "PACKAGE-CLOSURE-FILE-BUDGET");
-            require(required.find(file.path) != required.end()
-                    && (result.files.empty() || result.files.back().path < file.path),
-                "PACKAGE-CLOSURE-FILE-SET-OR-ORDER");
-            file.byteCount = static_cast<std::size_t>(bytes);
-            total += file.byteCount;
-            const auto resolved = contained(root, file.path);
-            require(resolved != contained(root, core::pmr::String("manifest.arpkg.yaml"))
-                    && resolved != contained(root, result.package.closurePath),
+        for (auto& file : declaration.files) {
+            require(
+                required.find(file.path) != required.end(), "PACKAGE-CLOSURE-FILE-SET-OR-ORDER");
+            const auto resolved = contained(root, file.path, sources);
+            require(resolved != contained(root, core::pmr::String("manifest.arpkg.yaml"), sources)
+                    && resolved != contained(root, result.package.closurePath, sources),
                 "PACKAGE-CLOSURE-METADATA-COLLISION");
             for (const auto& entry : result.package.entries)
-                require(resolved != contained(root, entry.envelopePath),
+                require(resolved != contained(root, entry.envelopePath, sources),
                     "PACKAGE-CLOSURE-METADATA-COLLISION");
-            const auto content = core::readBinaryFile(resolved, file.byteCount);
+            const auto content = sources ? readResourceSource(core::FilePath::utf8(resolved),
+                                               sources->resources,
+                                               std::max<std::size_t>(1, file.byteCount),
+                                               true,
+                                               &sources->origin)
+                                         : core::readBinaryFile(resolved, file.byteCount);
             require(content.success && content.bytes.size() == file.byteCount
                     && hashBytes(content.bytes) == file.contentHash,
                 "PACKAGE-CLOSURE-FILE-HASH-OR-SIZE");
             result.files.push_back(std::move(file));
         }
         require(result.files.size() == required.size(), "PACKAGE-CLOSURE-FILE-MISSING");
-        result.indexYaml = Yaml::serialize(index);
+        result.indexYaml = Yaml::serialize(declaration.index);
         result.success = true;
     } catch (const core::YamlContractError& error) {
         result.diagnostics = error.diagnostic;

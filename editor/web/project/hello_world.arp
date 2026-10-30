@@ -1,0 +1,10 @@
+from arp_scene import GameObject
+
+
+# Shows the greeting as the owner's name when a runtime starts this component.
+# Passive authoring keeps the message editable without executing user code.
+class HelloWorld(ScriptComponent):
+    message: string
+
+    def on_start(self):
+        self.game_object.set_object_name(self.message)

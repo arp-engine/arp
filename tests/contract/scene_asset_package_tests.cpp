@@ -2,11 +2,15 @@
 #include "3d/components.h"
 #include "3d/scene_component_persistence.h"
 #include "core/io/file_io.h"
+#include "core/io/memory_file_backend.h"
+#include "core/io/mounted_file_backend.h"
 #include "resource/asset_package_closure.h"
+#include "resource/internal_asset_package_loader.h"
 #include "resource/prefab_asset_resources.h"
 #include "scene/scene_asset_package.h"
 #include "scene/scene_asset_resource.h"
 #include "scene/scene_component_persistence.h"
+#include "tests/fixtures/unified_io_fixture.h"
 
 #include <cassert>
 #include <cstdio>
@@ -39,9 +43,10 @@ void write(const std::filesystem::path& path, const core::pmr::String& text)
 
 class Fixture final {
 public:
-    explicit Fixture(bool smoke)
+    explicit Fixture(bool smoke, const char* sourceCase = nullptr)
         : root(std::filesystem::current_path()
-              / (smoke ? "scene-package-smoke" : "scene-package-contract")),
+              / (sourceCase ? sourceCase
+                            : (smoke ? "scene-package-smoke" : "scene-package-contract"))),
           factory(core::makeShared<scene::SceneComponentFactory>()),
           registry(core::makeShared<resource::AssetPackageCodecRegistry>(2))
     {
@@ -361,6 +366,133 @@ void contracts(Fixture& f)
         "PASS scene package contracts, Camera/Mesh/Light/Sky round-trip, closure and rejection");
 }
 
+void sourceContracts(Fixture& f, bool report = true, bool closed = true)
+{
+    using namespace resource;
+    using namespace core::io;
+    const auto logicalRoot = std::filesystem::path("acquired-scene-source");
+    check(!std::filesystem::exists(logicalRoot));
+    for (bool prefab : {false, true}) {
+        auto document = Y::parseSingleDocument(f.yaml);
+        if (prefab)
+            document["type"] = "arp.scene-prefab";
+        const auto yaml = Y::serialize(document);
+        auto p = f.package(f.entry(sceneId, prefab ? "ScenePrefabResource" : "SceneAssetResource"));
+        if (closed)
+            p.closurePath = "closure.yaml";
+        f.store(p, yaml);
+        if (closed) {
+            const auto closure = AssetPackageClosureService(f.registry)
+                                     .prepareIndex(p, f.root, {4, 4, 65536, 65536, 65536});
+            check(closure.success, closure.diagnostics);
+        }
+        auto memory = core::makeShared<MemoryFileBackend>(
+            MemoryFileBackendDesc{8, 4 * 65536, 2, 2 * 65536, 1024});
+        check(memory->registerDirectory("acquired-scene-source") == FileIoStatus::Success);
+        core::pmr::Vector<core::pmr::String> paths{
+            "manifest.arpkg.yaml", p.entries.front().envelopePath, "scene.yaml"};
+        if (closed)
+            paths.push_back("closure.yaml");
+        for (const auto& relative : paths) {
+            auto bytes = core::readBinaryFile(
+                f.root / std::filesystem::u8path(relative.begin(), relative.end()), 65536);
+            check(bytes.success, bytes.diagnostics);
+            const auto path = core::FilePath::utf8(
+                logicalRoot / std::filesystem::u8path(relative.begin(), relative.end()));
+            check(memory->registerFile(path, bytes.bytes.data(), bytes.bytes.size())
+                == FileIoStatus::Success);
+        }
+        auto router =
+            core::makeShared<MountedFileBackend>(MountedFileBackendDesc{1, 2, 2 * 65536, 32, 1024});
+        const auto mount = router->mount("scene", memory);
+        check(bool(mount));
+        core::runtime::CompletionQueue queue({4});
+        FileService service(queue, *router);
+        ResourceSourceSet acquired;
+        for (const auto& relative : paths) {
+            FileReadRequest request;
+            request.contractVersion = 1;
+            request.pathScope = FilePathScope::MountedResource;
+            request.mount = mount;
+            request.path = core::FilePath::utf8(
+                logicalRoot / std::filesystem::u8path(relative.begin(), relative.end()));
+            request.maxBytes = 65536;
+            unified_io_fixture::Probe<FileReadResult> probe;
+            check(service.read(request, {decltype(probe)::complete, &probe})
+                == FileIoStatus::Accepted);
+            unified_io_fixture::wait(queue, [&] {
+                return probe.calls == 1;
+            });
+            check(probe.result.status == FileIoStatus::Success);
+            ResourceSourceBuffer source;
+            source.path = request.path;
+            source.bytes = std::move(probe.result.bytes);
+            source.pathScope = request.pathScope;
+            source.mount = mount;
+            source.version = probe.result.version;
+            check(acquired.add(std::move(source)));
+        }
+        AssetPackageSourceContext context;
+        context.resources = {{}, &acquired, true, 65536};
+        context.origin = {FilePathScope::MountedResource, mount};
+        ResourceManager manager;
+        const auto loaded =
+            InternalAssetPackageReader().loadSources(logicalRoot, manager, context, f.registry);
+        check(loaded.success, loaded.diagnostics);
+        if (prefab)
+            check(manager.find<scene::ScenePrefabResource>(sceneId).get()->yaml() == yaml);
+        else
+            f.roundtrip(manager);
+        if (closed) {
+            const auto checked =
+                AssetPackageClosureService(f.registry).inspectSources(logicalRoot, context);
+            check(checked.success, checked.diagnostics);
+        }
+        ResourceManager asynchronous;
+        AssetPackageLoadRequest request;
+        request.directory = logicalRoot;
+        request.origin = {FilePathScope::MountedResource, mount};
+        request.codecs = f.registry;
+        request.budget = {65536, 4, 8, 65536, 262144, 65536};
+
+        struct Completion {
+            unsigned calls = 0;
+            AssetPackageLoadResult result;
+        } completion;
+
+        check(InternalAssetPackageLoader(asynchronous, service, queue)
+                  .submit(std::move(request),
+                      {[](void* context, AssetPackageLoadResult result) {
+                           auto& completion = *static_cast<Completion*>(context);
+                           ++completion.calls;
+                           completion.result = std::move(result);
+                       },
+                          &completion})
+            == FileIoStatus::Accepted);
+        check(completion.calls == 0);
+        unified_io_fixture::wait(queue, [&] {
+            return completion.calls == 1;
+        });
+        check(completion.result.resource.success, completion.result.resource.diagnostics);
+        check(completion.result.telemetry.committed && completion.result.telemetry.plans >= 3);
+        if (prefab)
+            check(asynchronous.find<scene::ScenePrefabResource>(sceneId).get()->yaml() == yaml);
+        else
+            f.roundtrip(asynchronous);
+        context.origin = {};
+        ResourceManager wrongOrigin;
+        check(!InternalAssetPackageReader()
+                .loadSources(logicalRoot, wrongOrigin, context, f.registry)
+                .success);
+        check(!wrongOrigin.recordSnapshot(sceneId));
+        service.shutdown();
+        router->shutdown();
+        check(queue.pending() == 0 && queue.reserved() == 0);
+    }
+    if (report)
+        std::puts("PASS Scene/ScenePrefab source-only package, closure and Passive inspection");
+}
+
 void smoke(Fixture& f)
 {
     const auto p = f.package(f.entry());
@@ -391,10 +523,29 @@ void smoke(Fixture& f)
 }
 } // namespace
 
-int main(int argc, char**)
+int main(int argc, char** argv)
 {
-    Fixture f(argc > 1);
-    if (argc > 1)
+    const auto argument = argc > 1 ? std::string_view(argv[1]) : std::string_view{};
+    Fixture f(argc > 1,
+        argument == "--source-smoke"  ? "scene-package-source-smoke"
+            : argument == "--sources" ? "scene-package-sources"
+                                      : nullptr);
+    if (argument == "--source-smoke") {
+        for (unsigned i = 0; i < 20; ++i)
+            sourceContracts(f, false);
+        const auto before = core::defaultCpuAllocator().stats();
+        for (unsigned i = 0; i < 20; ++i)
+            sourceContracts(f, false);
+        const auto after = core::defaultCpuAllocator().stats();
+        check(before.liveBytes == after.liveBytes
+            && before.allocationCount - before.deallocationCount
+                == after.allocationCount - after.deallocationCount);
+        std::puts(
+            "PASS Scene/ScenePrefab source-only CPU smoke: 20 ordinary cycles; core live bytes/count delta=0");
+    } else if (argument == "--sources") {
+        sourceContracts(f);
+        sourceContracts(f, true, false);
+    } else if (argc > 1)
         smoke(f);
     else
         contracts(f);

@@ -31,7 +31,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -110,13 +109,6 @@ rhi::OriginalFiniteDescriptorWriteContract::Facts originalDescriptorGroupMethods
 }
 
 #if defined(ARP_RHI_WEBGPU_NATIVE_RESOURCES_HAS_NATIVE)
-std::pmr::string readTextFile(const std::pmr::string& path)
-{
-    std::ifstream file(path.c_str(), std::ios::binary);
-    std::ostringstream stream;
-    stream << file.rdbuf();
-    return arp::core::toPmrString(stream.str());
-}
 
 bool browserWebGpuEnvironmentAvailable()
 {
@@ -1983,10 +1975,12 @@ std::shared_ptr<WebGpuNativeShaderModulePayload> createWebGpuNativeShaderModuleP
 #if defined(ARP_RHI_WEBGPU_NATIVE_RESOURCES_HAS_NATIVE)
     if (!browserWebGpuEnvironmentAvailable() || package.artifacts.wgslPath.empty())
         return {};
-    const auto source = readTextFile(package.artifacts.wgslPath);
-    return emitWebGpuNativeShaderModule(package.label,
-        core::StringView(source.data(), source.size()),
-        WebGpuNativeShaderModulePayload::ConstructionKey{});
+    rhi::GeneratedShaderTargetInput input;
+    if (!rhi::selectGeneratedShaderPackageTarget(package, shader::TargetBackend::Wgsl, input)
+            .success)
+        return {};
+    return emitWebGpuNativeShaderModule(
+        package.label, input.text, WebGpuNativeShaderModulePayload::ConstructionKey{});
 #else
     (void)package;
     return {};

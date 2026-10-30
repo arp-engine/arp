@@ -3,6 +3,7 @@
 #include "core/api.h"
 #include "core/memory/cpu_allocator.h"
 #include "resource/resource_manager.h"
+#include "rhi/frontend/ordered_graphics_execution.h"
 #include "rhi/gpu_device.h"
 
 #include <cstddef>
@@ -54,7 +55,8 @@ struct EditorSceneViewportTextureCacheResult {
 // Destroy after submitted work using these bindings completes and before the device.
 class EditorSceneViewportTextureCache final {
 public:
-    explicit EditorSceneViewportTextureCache(EditorSceneViewportTextureCacheBudget budget);
+    explicit EditorSceneViewportTextureCache(EditorSceneViewportTextureCacheBudget budget,
+        std::shared_ptr<rhi::OriginalOrderedGraphicsExecution> execution = {});
     EditorSceneViewportTextureCache(const EditorSceneViewportTextureCache&) = delete;
     EditorSceneViewportTextureCache& operator=(const EditorSceneViewportTextureCache&) = delete;
 
@@ -65,7 +67,14 @@ public:
         EditorSceneViewportTextureColorSpace colorSpace);
 
     // Caller must complete all device work before releasing borrowed bindings.
-    void clearAfterDeviceIdle()
+    void clearAfterDeviceIdle() { clearResources(); }
+
+    std::size_t residentTextureCount() const noexcept;
+    std::uint64_t residentDecodedBytes() const noexcept;
+    const char* clearAfterOrderedIssue();
+
+private:
+    void clearResources()
     {
         entries_.clear();
         ownerDevice_ = nullptr;
@@ -74,10 +83,6 @@ public:
         residentDecodedBytes_ = 0u;
     }
 
-    std::size_t residentTextureCount() const noexcept;
-    std::uint64_t residentDecodedBytes() const noexcept;
-
-private:
     struct Entry {
         core::pmr::String resourceId{&core::defaultCpuMemoryResource()};
         resource::ResourceGeneration generation = 0;
@@ -88,6 +93,7 @@ private:
     };
 
     EditorSceneViewportTextureCacheBudget budget_;
+    std::shared_ptr<rhi::OriginalOrderedGraphicsExecution> execution_;
     const rhi::GpuDevice* ownerDevice_ = nullptr;
     const resource::ResourceManager* ownerResources_ = nullptr;
     core::UniquePtr<rhi::GpuSampler> sampler_;

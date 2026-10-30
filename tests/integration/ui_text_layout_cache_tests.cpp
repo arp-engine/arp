@@ -1,4 +1,5 @@
 #include "renderer/ui/ui_text_layout.h"
+#include "tests/fixtures/ui_prepared_fonts.h"
 
 #include <cassert>
 
@@ -26,7 +27,7 @@ arp::renderer::ui::TextLayoutKey layoutKey(const char* value)
 
 void repeated_layout_requests_hit_cache()
 {
-    arp::renderer::ui::TextLayoutCache cache;
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
 
     auto first = cache.resolve(layoutKey("Score"));
     auto second = cache.resolve(layoutKey("Score"));
@@ -42,7 +43,7 @@ void repeated_layout_requests_hit_cache()
 
 void style_width_and_text_changes_produce_distinct_runs()
 {
-    arp::renderer::ui::TextLayoutCache cache;
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
 
     auto base = cache.resolve(layoutKey("Score"));
     auto styleKey = layoutKey("Score");
@@ -62,7 +63,7 @@ void style_width_and_text_changes_produce_distinct_runs()
 
 void font_metrics_drive_advance_without_clipping_cell_width()
 {
-    arp::renderer::ui::TextLayoutCache cache;
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
 
     auto result = cache.resolve(layoutKey("PIKA"));
 
@@ -76,7 +77,7 @@ void font_metrics_drive_advance_without_clipping_cell_width()
 
 void unsupported_text_layout_semantics_fail_deterministically()
 {
-    arp::renderer::ui::TextLayoutCache cache;
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
 
     auto missingFont = layoutKey("Score");
     missingFont.fontToken.clear();
@@ -108,7 +109,8 @@ void unsupported_text_layout_semantics_fail_deterministically()
     auto rtlFailure = cache.resolve(rtl);
     assert(!rtlFailure.ok());
     assert(rtlFailure.diagnostics()
-        == text("UI text layout shaping supports only declared Latin script at this stage."));
+        == text(
+            "UI text layout shaping supports only declared Latin and Han scripts at this stage."));
 
     auto clippedSingleLine = layoutKey("This text is too wide");
     clippedSingleLine.maxWidthPx = 12u;
@@ -119,7 +121,7 @@ void unsupported_text_layout_semantics_fail_deterministically()
 
 void utf8_latin_requires_explicit_capability_and_decodes_to_codepoints()
 {
-    arp::renderer::ui::TextLayoutCache cache;
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
 
     auto cafe = layoutKey(u8"Caf\xC3\xA9");
     auto unsupported = cache.resolve(cafe);
@@ -136,7 +138,7 @@ void utf8_latin_requires_explicit_capability_and_decodes_to_codepoints()
 
 void combining_marks_and_complex_scripts_fail_deterministically()
 {
-    arp::renderer::ui::TextLayoutCache cache;
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
     cache.setShapingCapability(arp::renderer::ui::TextShapingCapability::BasicLatinUtf8);
 
     auto combining = layoutKey(u8"e\xCC\x81");
@@ -150,7 +152,8 @@ void combining_marks_and_complex_scripts_fail_deterministically()
     auto hanFailure = cache.resolve(han);
     assert(!hanFailure.ok());
     assert(hanFailure.diagnostics()
-        == text("UI text layout shaping supports only declared Latin script at this stage."));
+        == text(
+            "UI text layout fallback chain exhausted for font token: font.ui.body; last diagnostic: UI font does not contain the requested glyph"));
 }
 
 } // namespace

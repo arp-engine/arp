@@ -85,20 +85,20 @@ bool oneOf(std::string_view s, std::initializer_list<std::string_view> values)
 
 Index readIndex(const ResourceReference& reference,
     const std::filesystem::path& manifest,
-    const ResourceLoadContext& context)
+    const ResourceLoadContext& context,
+    ResourceFileOrigin origin)
 {
     Index index;
     auto& result = index.result;
     const auto path = core::FilePath::utf8(manifest);
     const auto file =
-        readResourceSource(path, context, VegetationCatalogCookedCodec::maxManifestBytes);
+        readResourceText(path, context, VegetationCatalogCookedCodec::maxManifestBytes, &origin);
     if (!file.success) {
         result.diagnostics = file.diagnostics;
         return index;
     }
     try {
-        auto root = Yaml::parseSingleDocument(
-            {reinterpret_cast<const char*>(file.bytes.data()), file.bytes.size()});
+        auto root = Yaml::parseSingleDocument(file.text);
         Yaml::onlyKeys(root,
             {"type",
                 "contractVersion",
@@ -134,17 +134,18 @@ Index readIndex(const ResourceReference& reference,
         const auto parsed = std::from_chars(hash.data(), hash.data() + hash.size(), index.hash);
         require(
             !hash.empty() && parsed.ec == std::errc{} && parsed.ptr == hash.data() + hash.size());
-        index.blockPath =
-            core::FilePath::utf8(manifest.parent_path() / std::filesystem::path(relative.c_str()));
-        if (!context.requirePreloadedSources) {
+        index.blockPath = core::FilePath::utf8(
+            manifest.parent_path() / std::filesystem::u8path(relative.begin(), relative.end()));
+        if (!context.requirePreloadedSources
+            && origin.pathScope == core::io::FilePathScope::HostFilesystem) {
             std::error_code error;
             const auto base = std::filesystem::canonical(manifest.parent_path().empty()
                     ? std::filesystem::path(".")
                     : manifest.parent_path(),
                 error);
             require(!error);
-            const auto resolved =
-                std::filesystem::canonical(std::filesystem::path(index.blockPath.c_str()), error);
+            const auto resolved = std::filesystem::canonical(
+                std::filesystem::u8path(index.blockPath.begin(), index.blockPath.end()), error);
             if (error || !core::FilePath::contains(base, resolved)) {
                 result.diagnostics = "VEGETATION-COOKED-BLOCK-PATH";
                 return index;
@@ -242,10 +243,14 @@ Index readIndex(const ResourceReference& reference,
         core::StableHash64 fingerprint;
         fingerprint.appendString(Yaml::serialize(root));
         result.contentFingerprint = fingerprint.value();
-        appendResourceReadIntent(
-            path, VegetationCatalogCookedCodec::maxManifestBytes, result.files, result.diagnostics);
-        appendResourceReadIntent(
-            index.blockPath, result.decodedBytes, result.files, result.diagnostics);
+        if (!appendResourceReadIntent(path,
+                VegetationCatalogCookedCodec::maxManifestBytes,
+                result.files,
+                result.diagnostics,
+                origin)
+            || !appendResourceReadIntent(
+                index.blockPath, result.decodedBytes, result.files, result.diagnostics, origin))
+            return index;
         result.success = true;
     } catch (...) {
         result.diagnostics = "VEGETATION-COOKED-MANIFEST-INVALID";
@@ -289,7 +294,16 @@ VegetationCatalogCookedResult VegetationCatalogCookedCodec::inspect(
     const std::filesystem::path& manifest,
     const ResourceLoadContext& context) const
 {
-    return readIndex(reference, manifest, context).result;
+    return inspect(reference, manifest, context, {});
+}
+
+VegetationCatalogCookedResult VegetationCatalogCookedCodec::inspect(
+    const ResourceReference& reference,
+    const std::filesystem::path& manifest,
+    const ResourceLoadContext& context,
+    ResourceFileOrigin origin) const
+{
+    return readIndex(reference, manifest, context, origin).result;
 }
 
 VegetationCatalogCookedResult VegetationCatalogCookedCodec::decode(
@@ -297,12 +311,21 @@ VegetationCatalogCookedResult VegetationCatalogCookedCodec::decode(
     const std::filesystem::path& manifest,
     const ResourceLoadContext& context) const
 {
-    auto index = readIndex(reference, manifest, context);
+    return decode(reference, manifest, context, {});
+}
+
+VegetationCatalogCookedResult VegetationCatalogCookedCodec::decode(
+    const ResourceReference& reference,
+    const std::filesystem::path& manifest,
+    const ResourceLoadContext& context,
+    ResourceFileOrigin origin) const
+{
+    auto index = readIndex(reference, manifest, context, origin);
     auto& result = index.result;
     if (!result.success)
         return std::move(result);
     result.success = false;
-    auto block = readResourceSource(index.blockPath, context, result.decodedBytes);
+    auto block = readResourceSource(index.blockPath, context, result.decodedBytes, false, &origin);
     if (!block.success) {
         result.diagnostics = block.diagnostics;
         return std::move(result);

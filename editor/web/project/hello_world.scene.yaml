@@ -1,0 +1,31 @@
+# Explicit v4 authoring document for ScriptComponent attachment via CLI.
+type: arp.editor-scene
+contractVersion: 4
+runtimeSceneId: 87e7d408-08fb-47d0-ae19-b322df4f48b2
+selected: 2
+root:
+  id: 1
+  transformId: 1
+  name: HelloWorld demo
+  active: true
+  parent: 0
+  childIndex: 0
+  transformEnabled: true
+  transform:
+    translation: {type: Vec3, fields: {x: 0.0, y: 0.0, z: 0.0}}
+    rotation: {type: Quat, fields: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}
+    scale: {type: Vec3, fields: {x: 1.0, y: 1.0, z: 1.0}}
+  components: []
+objects:
+  - id: 2
+    transformId: 2
+    name: HelloWorld
+    active: true
+    parent: 1
+    childIndex: 0
+    transformEnabled: true
+    transform:
+      translation: {type: Vec3, fields: {x: 0.0, y: 0.0, z: 0.0}}
+      rotation: {type: Quat, fields: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}
+      scale: {type: Vec3, fields: {x: 1.0, y: 1.0, z: 1.0}}
+    components: []

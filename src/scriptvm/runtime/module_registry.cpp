@@ -12,6 +12,13 @@ namespace arp::scriptvm {
 
 // --- ModuleRegistry ---
 
+std::shared_ptr<ModuleExports> ModuleRegistry::findLoadedModule(
+    const core::pmr::String& name) const noexcept
+{
+    const auto found = sourceCache_.find(name);
+    return found == sourceCache_.end() ? nullptr : found->second;
+}
+
 std::shared_ptr<ModuleExports> ModuleRegistry::loadModule(const core::pmr::String& name)
 {
     lastDiagnostics_.clear();
@@ -30,45 +37,70 @@ std::shared_ptr<ModuleExports> ModuleRegistry::loadModule(const core::pmr::Strin
         }
     }
 
-    // Resolve via source resolver first, then the explicit C++ plugin importer.
-    std::shared_ptr<ModuleExports> exports;
-    if (sourceResolver_) {
-        resolving_.push_back(name);
+    resolving_.push_back(name);
+
+    struct ResolutionScope {
+        core::pmr::Vector<core::pmr::String>& resolving;
+
+        ~ResolutionScope() { resolving.pop_back(); }
+    } scope{resolving_};
+
+    const auto consume = [&](ModuleResolution result) {
+        if (result.status == ModuleResolutionStatus::Absent && !result.exports
+            && result.diagnostic.empty())
+            return result;
+        if (result.status == ModuleResolutionStatus::Ready && result.exports
+            && result.diagnostic.empty()) {
+            sourceCache_[name] = result.exports;
+            lastDiagnostics_.clear();
+            return result;
+        }
+        if (result.status == ModuleResolutionStatus::Failed && !result.exports) {
+            lastDiagnostics_ = result.diagnostic.empty()
+                ? core::pmr::String("ARP-SCRIPT-MODULE-SOURCE-FAILED")
+                : std::move(result.diagnostic);
+        } else {
+            lastDiagnostics_ = "ARP-SCRIPT-MODULE-RESOLUTION-CONTRACT";
+        }
+        return ModuleResolution{ModuleResolutionStatus::Failed, {}, {}};
+    };
+    if (declaredSourceResolver_ || sourceResolver_) {
+        ModuleResolution resolution;
         try {
-            exports = sourceResolver_(name);
+            if (declaredSourceResolver_)
+                resolution = declaredSourceResolver_(name);
+            else {
+                resolution.exports = sourceResolver_(name);
+                resolution.status = resolution.exports ? ModuleResolutionStatus::Ready
+                                                       : ModuleResolutionStatus::Absent;
+            }
         } catch (const std::bad_alloc&) {
-            resolving_.pop_back();
             throw;
         } catch (...) {
-            lastDiagnostics_ = "source module resolver threw";
-            exports.reset();
+            lastDiagnostics_ = "ARP-SCRIPT-MODULE-RESOLVER-THREW";
+            return nullptr;
         }
-        resolving_.pop_back();
+        resolution = consume(std::move(resolution));
+        if (resolution.status != ModuleResolutionStatus::Absent)
+            return resolution.exports;
     }
-
-    if (exports)
-        sourceCache_[name] = exports;
-
-    if (exports)
+    if (cppPluginImporter_) {
+        auto resolution = consume(cppPluginImporter_->resolveModule(name));
+        if (resolution.status != ModuleResolutionStatus::Absent)
+            return resolution.exports;
+    }
+    if (staticCatalog_) {
+        auto exports = staticCatalog_->load(name, pluginServices_, lastDiagnostics_);
+        if (exports) {
+            sourceCache_[name] = exports;
+            lastDiagnostics_.clear();
+        } else if (lastDiagnostics_.empty()) {
+            lastDiagnostics_ = "ARP-SCRIPT-MODULE-UNDECLARED";
+        }
         return exports;
-
-    if (cppPluginImporter_ != nullptr) {
-        exports = cppPluginImporter_->loadModule(name);
-        if (exports)
-            sourceCache_[name] = exports;
-        else
-            lastDiagnostics_ = cppPluginImporter_->lastDiagnostics();
     }
-
-    if (staticCatalog_ != nullptr) {
-        exports = staticCatalog_->load(name, pluginServices_, lastDiagnostics_);
-        if (exports)
-            sourceCache_[name] = exports;
-        if (exports)
-            return exports;
-    }
-
-    return exports;
+    lastDiagnostics_ = "ARP-SCRIPT-MODULE-UNDECLARED";
+    return nullptr;
 }
 
 core::pmr::Vector<core::pmr::String> ModuleRegistry::queryExports(const core::pmr::String& name)

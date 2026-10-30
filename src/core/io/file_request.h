@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/container/generation_pool.h"
+#include "core/io/file_version.h"
 #include "core/memory/cpu_allocator.h"
 #include "core/runtime/cancellation_token.h"
 
@@ -50,6 +52,14 @@ struct FileReadRequest {
     FilePartialReadPolicy partialPolicy = FilePartialReadPolicy::DenyPartial;
     FileRequestPriority priority = FileRequestPriority::Normal;
     runtime::CancellationToken cancellation;
+    // Version0 preserves existing callers. Version1 requires an explicit,
+    // finite positive byte budget; both versions enforce any supplied bound.
+    std::uint64_t maxBytes = UINT64_MAX;
+    std::uint32_t contractVersion = 0;
+    // Routed requests bind a particular mount generation, not its display name.
+    core::PoolHandle mount;
+    FileVersionToken expectedVersion;
+    std::uint64_t maxVersionBytes = 0;
 };
 
 } // namespace arp::core::io

@@ -74,6 +74,7 @@ struct WorkServiceDesc {
     // creating native threads. Inline work executes synchronously and posts
     // its completion through the normal CompletionQueue.
     bool inlineExecution = false;
+    bool enabled = true;
 };
 
 struct WorkSubmitResult {
@@ -110,6 +111,7 @@ public:
     ~WorkService();
 
     bool valid() const noexcept;
+    bool closed() const noexcept;
     WorkServiceStatus status() const noexcept;
     std::size_t workerCount() const noexcept;
 
@@ -120,23 +122,25 @@ public:
     WorkServiceTelemetry telemetry() const noexcept;
 
 private:
+    struct CompletionState {
+        WorkCompleteFn complete = nullptr;
+        void* completeUserData = nullptr;
+        WorkResult result;
+        CompletionReservation reservation;
+    };
+
     struct Task {
         WorkTaskHandle handle;
         WorkItem item;
         std::chrono::steady_clock::time_point enqueueTime{};
         bool cancelled = false;
-    };
-
-    struct CompletionState {
-        WorkCompleteFn complete = nullptr;
-        void* completeUserData = nullptr;
-        WorkResult result;
+        core::UniquePtr<CompletionState> completion;
     };
 
     static void deliverCompletion(void* userData) noexcept;
 
     void workerLoop() noexcept;
-    void postCompletion(const Task& task, WorkStatus status) noexcept;
+    void postCompletion(Task task, WorkStatus status) noexcept;
     WorkServiceStatus validateDesc(const WorkServiceDesc& desc) const noexcept;
 
     WorkServiceDesc desc_;

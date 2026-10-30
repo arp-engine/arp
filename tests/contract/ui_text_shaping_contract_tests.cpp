@@ -1,5 +1,6 @@
 #include "renderer/ui/ui_glyph_atlas.h"
 #include "renderer/ui/ui_text_layout.h"
+#include "tests/fixtures/ui_prepared_fonts.h"
 
 #include <cassert>
 
@@ -39,7 +40,7 @@ arp::renderer::ui::GlyphKey glyphKey(std::uint32_t glyphId)
 // Contract audit: ASCII text produces one shaped glyph per codepoint.
 void ascii_text_shapes_to_one_glyph_per_codepoint()
 {
-    arp::renderer::ui::TextLayoutCache cache;
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
     cache.setShapingCapability(arp::renderer::ui::TextShapingCapability::BasicLatinUtf8);
 
     auto result = cache.resolve(layoutKey("Score"));
@@ -53,7 +54,7 @@ void ascii_text_shapes_to_one_glyph_per_codepoint()
 // Contract audit: UTF-8 Latin text decodes to codepoints and requires explicit capability.
 void utf8_latin_decodes_codepoints_and_requires_capability()
 {
-    arp::renderer::ui::TextLayoutCache cache;
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
 
     auto cafe = layoutKey(u8"Caf\xC3\xA9");
     auto unsupported = cache.resolve(cafe);
@@ -71,7 +72,7 @@ void utf8_latin_decodes_codepoints_and_requires_capability()
 // Contract audit: Invalid UTF-8 is rejected with deterministic diagnostics.
 void invalid_utf8_rejected_with_deterministic_diagnostics()
 {
-    arp::renderer::ui::TextLayoutCache cache;
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
     cache.setShapingCapability(arp::renderer::ui::TextShapingCapability::BasicLatinUtf8);
 
     auto invalidLead = layoutKey("\xFF");
@@ -88,7 +89,7 @@ void invalid_utf8_rejected_with_deterministic_diagnostics()
 // Contract audit: Combining marks are rejected until complex shaping support exists.
 void combining_marks_rejected_deterministically()
 {
-    arp::renderer::ui::TextLayoutCache cache;
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
     cache.setShapingCapability(arp::renderer::ui::TextShapingCapability::BasicLatinUtf8);
 
     auto combining = layoutKey(u8"e\xCC\x81");
@@ -101,7 +102,7 @@ void combining_marks_rejected_deterministically()
 // Contract audit: Unsupported scripts and RTL emit deterministic diagnostics.
 void unsupported_scripts_and_rtl_emit_deterministic_diagnostics()
 {
-    arp::renderer::ui::TextLayoutCache cache;
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
 
     auto rtl = layoutKey("abc");
     rtl.direction = arp::renderer::ui::TextDirection::RightToLeft;
@@ -109,71 +110,32 @@ void unsupported_scripts_and_rtl_emit_deterministic_diagnostics()
     auto rtlResult = cache.resolve(rtl);
     assert(!rtlResult.ok());
     assert(rtlResult.diagnostics()
-        == text("UI text layout shaping supports only declared Latin script at this stage."));
+        == text(
+            "UI text layout shaping supports only declared Latin and Han scripts at this stage."));
 
     auto han = layoutKey(u8"\xE4\xBD\xA0");
     han.script = arp::renderer::ui::TextScript::Han;
     auto hanResult = cache.resolve(han);
     assert(!hanResult.ok());
     assert(hanResult.diagnostics()
-        == text("UI text layout shaping supports only declared Latin script at this stage."));
+        == text("UI text layout requires explicit UTF-8 shaping capability for non-ASCII text."));
 }
 
-// Contract audit: Missing glyph in primary font must consult the fallback chain.
-// This test will fail (RED) because TextLayoutCache does not implement fallback
-// chain traversal; it silently fails with a FreeType error for the primary font
-// instead of trying the declared fallback.
+// A corrupt primary snapshot may only use its explicitly declared prepared fallback.
 void missing_glyph_traverses_fallback_chain()
 {
-    arp::core::pmr::Vector<arp::ui::UiFontFaceDesc> faces{&arp::core::defaultCpuMemoryResource()};
-
-    arp::ui::UiFontFaceDesc primary;
-    primary.tokenId = text("font.ui.body");
-    primary.family = text("Primary");
-    primary.sourcePath = "assets/pika/ui/fonts/nonexistent.ttf";
+    auto primary = arp::tests::preparedUiFontFace("font.ui.body");
+    arp::tests::setCorruptUiFontSource(primary);
     primary.fallbackChain.push_back(text("font.ui.fallback"));
-    primary.supportedScripts.push_back(text("Latin"));
-    primary.sizePx = 16u;
+    arp::core::pmr::Vector<arp::ui::UiFontFaceDesc> faces;
     faces.push_back(std::move(primary));
-
-    // Fallback face with no sourcePath; the default-font path should be consulted.
-    arp::ui::UiFontFaceDesc fallback;
-    fallback.tokenId = text("font.ui.fallback");
-    fallback.family = text("Fallback");
-    fallback.supportedScripts.push_back(text("Latin"));
-    fallback.sizePx = 16u;
-    faces.push_back(std::move(fallback));
-
-    arp::renderer::ui::TextLayoutCache cache;
-    cache.setFontFaces(faces);
-    cache.setShapingCapability(arp::renderer::ui::TextShapingCapability::BasicLatinUtf8);
-
-    auto key = layoutKey("A");
-    key.fontToken = text("font.ui.body");
-    auto result = cache.resolve(key);
-
-    // Expected contract: the primary font cannot load, so the fallback chain
-    // should be consulted. Either the fallback succeeds (ok), or the diagnostic
-    // must explicitly mention that the fallback chain was exhausted.
-    //
-    // Current behavior: TextLayoutCache matches the exact fontToken,
-    // rasterizes with the primary face, and returns the raw FreeType
-    // missing-file diagnostic without ever consulting the fallbackChain.
-    //
-    // RED failure mode: result.ok() == false and the diagnostic does NOT
-    // mention fallback exhaustion.
-    if (!result.ok()) {
-        const bool mentionsFallback =
-            result.diagnostics().find(text("fallback")) != arp::core::pmr::String::npos;
-        assert(mentionsFallback
-            && "UI text layout must consult the fallback chain when the primary font fails;"
-               " failing with a raw FreeType diagnostic without fallback traversal is a contract gap.");
-    }
+    faces.push_back(arp::tests::preparedUiFontFace("font.ui.fallback"));
+    arp::renderer::ui::TextLayoutCache cache(faces);
+    const auto result = cache.resolve(layoutKey("A"));
+    assert(result.ok() && result.run().glyphQuads.size() == 1);
+    assert(result.run().glyphQuads[0].glyph.fontToken == "font.ui.fallback");
 }
 
-// Contract audit: An empty fallback chain must fail deterministically when the
-// primary font cannot satisfy the glyph, instead of silently selecting a system
-// font or returning an invisible glyph.
 void empty_fallback_chain_fails_deterministically()
 {
     arp::core::pmr::Vector<arp::ui::UiFontFaceDesc> faces{&arp::core::defaultCpuMemoryResource()};
@@ -182,12 +144,13 @@ void empty_fallback_chain_fails_deterministically()
     primary.tokenId = text("font.ui.body");
     primary.family = text("Primary");
     primary.sourcePath = "assets/pika/ui/fonts/nonexistent.ttf";
+    arp::tests::setCorruptUiFontSource(primary);
     primary.supportedScripts.push_back(text("Latin"));
     primary.sizePx = 16u;
     // No fallbackChain entries.
     faces.push_back(std::move(primary));
 
-    arp::renderer::ui::TextLayoutCache cache;
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
     cache.setFontFaces(faces);
     cache.setShapingCapability(arp::renderer::ui::TextShapingCapability::BasicLatinUtf8);
 
@@ -213,7 +176,7 @@ void empty_fallback_chain_fails_deterministically()
 // mode each produce a distinct cached run.
 void shaping_cache_keys_distinguish_all_contract_inputs()
 {
-    arp::renderer::ui::TextLayoutCache cache;
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
     cache.setShapingCapability(arp::renderer::ui::TextShapingCapability::BasicLatinUtf8);
 
     auto base = cache.resolve(layoutKey("Score"));
@@ -326,8 +289,8 @@ int main()
     invalid_utf8_rejected_with_deterministic_diagnostics();
     combining_marks_rejected_deterministically();
     unsupported_scripts_and_rtl_emit_deterministic_diagnostics();
-    missing_glyph_traverses_fallback_chain();       // RED: fails until fallback implemented
-    empty_fallback_chain_fails_deterministically(); // RED: fails until fallback implemented
+    missing_glyph_traverses_fallback_chain();
+    empty_fallback_chain_fails_deterministically();
     shaping_cache_keys_distinguish_all_contract_inputs();
     glyph_atlas_page_budget_exhaustion_is_deterministic();
     glyph_upload_schedule_is_deterministic_across_frames();

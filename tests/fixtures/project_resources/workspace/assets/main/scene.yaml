@@ -1,0 +1,177 @@
+contractVersion: 2
+name: "Project source resources"
+objects:
+  -
+    components:
+      -
+        configuration: null
+        enabled: true
+        fields:
+          aspectPolicy:
+            fields:
+              aspectRatio: 1.0
+              kind: 1
+            type: "CameraAspectPolicy"
+          clearColor:
+            fields:
+              w: 1.0
+              x: 0.0
+              y: 0.0
+              z: 0.0
+            type: "Vec4"
+          colorLoadOp: 0
+          farPlane: 1000.0
+          nearPlane: 0.10000000149011612
+          orthographicHeight: 16.0
+          priority: 0
+          projection: 0
+          verticalFovDegrees: 60.0
+          viewHandedness: 0
+          viewport:
+            fields:
+              height: 1.0
+              width: 1.0
+              x: 0.0
+              y: 0.0
+            type: "ViewportRect"
+          visible2D: false
+          visible3D: true
+        schemaVersion: 1
+        type: "arp.camera/1"
+    id: 1
+    parent: 0
+    properties:
+      active: true
+      name: "Camera3D"
+    transform:
+      rotation:
+        fields:
+          w: 1.0
+          x: 0.0
+          y: 0.0
+          z: 0.0
+        type: "Quat"
+      scale:
+        fields:
+          x: 1.0
+          y: 1.0
+          z: 1.0
+        type: "Vec3"
+      translation:
+        fields:
+          x: 0.0
+          y: 0.0
+          z: 0.0
+        type: "Vec3"
+  -
+    components:
+      -
+        configuration: null
+        enabled: true
+        fields:
+          castShadow: false
+          color:
+            fields:
+              x: 1.0
+              y: 1.0
+              z: 1.0
+            type: "Vec3"
+          decay: 2.0
+          direction:
+            fields:
+              x: 0.0
+              y: 1.0
+              z: 0.0
+            type: "Vec3"
+          intensity: 1.0
+          range: 0.0
+          spotConeAngle: 0.78539800643920898
+          spotPenumbra: 0.20000000298023224
+          type: 0
+        schemaVersion: 1
+        type: "arp.light/1"
+    id: 2
+    parent: 0
+    properties:
+      active: true
+      name: "DirectionalLight"
+    transform:
+      rotation:
+        fields:
+          w: 1.0
+          x: 0.0
+          y: 0.0
+          z: 0.0
+        type: "Quat"
+      scale:
+        fields:
+          x: 1.0
+          y: 1.0
+          z: 1.0
+        type: "Vec3"
+      translation:
+        fields:
+          x: 0.0
+          y: 0.0
+          z: 0.0
+        type: "Vec3"
+  -
+    components:
+      -
+        configuration: null
+        enabled: true
+        fields:
+          domeRadius: 560.0
+          horizon:
+            fields:
+              x: 0.81999999284744263
+              y: 0.85000002384185791
+              z: 0.87999999523162842
+            type: "Vec3"
+          sunColor:
+            fields:
+              x: 0.92000001668930054
+              y: 0.89999997615814209
+              z: 0.85000002384185791
+            type: "Vec3"
+          sunDirection:
+            fields:
+              x: 90.0
+              y: 140.0
+              z: 30.0
+            type: "Vec3"
+          zenith:
+            fields:
+              x: 0.34999999403953552
+              y: 0.4699999988079071
+              z: 0.60000002384185791
+            type: "Vec3"
+        schemaVersion: 1
+        type: "arp.sky/1"
+    id: 3
+    parent: 0
+    properties:
+      active: true
+      name: "Sky"
+    transform:
+      rotation:
+        fields:
+          w: 1.0
+          x: 0.0
+          y: 0.0
+          z: 0.0
+        type: "Quat"
+      scale:
+        fields:
+          x: 1.0
+          y: 1.0
+          z: 1.0
+        type: "Vec3"
+      translation:
+        fields:
+          x: 0.0
+          y: 0.0
+          z: 0.0
+        type: "Vec3"
+resourceId: "00000000-0000-4000-8000-000000000097"
+type: "arp.scene-asset"

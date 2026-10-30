@@ -20,7 +20,7 @@ def main():
         if not source.is_file():source=Path('C:/mingw64/bin')/dll
         if not source.is_file():raise SystemExit('Unresolved DLL: '+dll)
         dependencies.append(source)
-    shaderNames=['scene_2d_sprites'+suffix for suffix in ('.slang','.spv','.metal','.wgsl','.reflection.yaml')]
+    shaderNames=['scene_2d_sprites'+suffix for suffix in ('.slang','.spv','.metal','.wgsl','.reflection.yaml','.artifact-set.yaml')]
     for name in shaderNames:
         if not (build/'shaders'/name).is_file():raise SystemExit('Missing shader artifact: '+name)
     out.mkdir(parents=True);shutil.copy2(exe,out/exe.name)

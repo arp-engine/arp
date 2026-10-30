@@ -149,6 +149,13 @@ public:
                 return extension;
             return profile.admitFormat({1, desc.format, WebGlFormatRole::DepthStencilTexture, 1});
         }
+        if (desc.format == TextureFormat::Rgba8UnormSrgb) {
+            WebGlGraphicsRequirements required;
+            required.srgbTextures = true;
+            const auto extension = profile.admit(required, optIn);
+            if (!extension.compatible)
+                return extension;
+        }
         // Each requested role consumes its own queried format facts.
         for (const auto role :
             {WebGlFormatRole::Texture2DSampled, WebGlFormatRole::Texture2DColorAttachment}) {

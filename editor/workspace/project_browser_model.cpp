@@ -2,6 +2,7 @@
 
 #include "core/io/filesystem_path.h"
 #include "core/text/string_utils.h"
+#include "editor/project/project_directory_session.h"
 
 #include <algorithm>
 #include <new>
@@ -27,8 +28,11 @@ bool lessIgnoringCase(const core::pmr::String& lhs, const core::pmr::String& rhs
 
 void ProjectBrowserModel::setRoot(std::filesystem::path root)
 {
-    root_ = std::move(root);
-    currentDirectory_ = root_;
+    auto current = root;
+    root_.swap(root);
+    currentDirectory_.swap(current);
+    source_.reset();
+    sourceHistoryBudget_ = 0;
     backHistory_.clear();
     forwardHistory_.clear();
     entries_.clear();
@@ -37,6 +41,8 @@ void ProjectBrowserModel::setRoot(std::filesystem::path root)
 
 bool ProjectBrowserModel::refresh(std::size_t entryBudget)
 {
+    if (source_)
+        return false;
     entries_.clear();
     visibleEntries_.clear();
     std::error_code error;
@@ -85,6 +91,8 @@ const char* ProjectBrowserModel::prepareReveal(const std::filesystem::path& file
     std::size_t& visibleIndex) const noexcept
 {
     constexpr std::size_t maxEntries = 4096;
+    if (source_)
+        return "EDITOR-RESOURCE-NAVIGATION-ASYNC-SOURCE-REQUIRED";
     try {
         std::error_code error;
         const auto canonical = std::filesystem::canonical(file, error);
@@ -125,11 +133,15 @@ void ProjectBrowserModel::swap(ProjectBrowserModel& other) noexcept
     backHistory_.swap(other.backHistory_);
     forwardHistory_.swap(other.forwardHistory_);
     search_.swap(other.search_);
+    source_.swap(other.source_);
+    std::swap(sourceHistoryBudget_, other.sourceHistoryBudget_);
 }
 
 ProjectBrowserModel::NavigationResult ProjectBrowserModel::navigate(
     const std::filesystem::path& path, bool remember)
 {
+    if (source_)
+        return NavigationResult::Rejected;
     std::error_code error;
     const auto candidate = std::filesystem::weakly_canonical(
         path.is_absolute() ? path : currentDirectory_ / path, error);
@@ -154,6 +166,8 @@ ProjectBrowserModel::NavigationResult ProjectBrowserModel::navigateResolved(
 
 bool ProjectBrowserModel::back()
 {
+    if (source_)
+        return false;
     if (backHistory_.empty())
         return false;
     const auto candidate = backHistory_.back();
@@ -167,6 +181,8 @@ bool ProjectBrowserModel::back()
 
 bool ProjectBrowserModel::forward()
 {
+    if (source_)
+        return false;
     if (forwardHistory_.empty())
         return false;
     const auto candidate = forwardHistory_.back();
@@ -176,6 +192,121 @@ bool ProjectBrowserModel::forward()
     forwardHistory_.pop_back();
     backHistory_.push_back(previous);
     return true;
+}
+
+bool ProjectBrowserModel::sourceTarget(SourceNavigation intent,
+    std::string_view relative,
+    core::pmr::String& destination) const noexcept
+{
+    if (!source_)
+        return false;
+    try {
+        core::pmr::String target{&core::defaultCpuMemoryResource()};
+        if (intent == SourceNavigation::Navigate) {
+            if (!relative.empty() && !ProjectInputSnapshot::validLogicalPath(relative))
+                return false;
+            target = relative;
+        } else {
+            if (!relative.empty())
+                return false;
+            const auto* path = intent == SourceNavigation::Refresh          ? &currentDirectory_
+                : intent == SourceNavigation::Back && !backHistory_.empty() ? &backHistory_.back()
+                : intent == SourceNavigation::Forward && !forwardHistory_.empty()
+                ? &forwardHistory_.back()
+                : nullptr;
+            if (!path)
+                return false;
+            target = core::FilePath::utf8(path->lexically_relative(root_));
+            if (target == ".")
+                target.clear();
+        }
+        destination.swap(target);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+const char* ProjectBrowserModel::prepareSources(
+    core::SharedPtr<const ProjectDirectorySnapshot> snapshot,
+    core::io::FileService& files,
+    std::uint64_t epoch,
+    SourceNavigation intent,
+    ProjectBrowserModel& destination,
+    std::size_t maxHistoryEntries) const noexcept
+{
+    try {
+        const char* issue = nullptr;
+        if (!snapshot || !snapshot->validate(files, epoch, issue))
+            return issue ? issue : "EDITOR-BROWSER-SOURCE-NOT-PREPARED";
+        if (!maxHistoryEntries || maxHistoryEntries > ProjectDirectoryBudget{}.maxEntries)
+            return "EDITOR-BROWSER-SOURCE-HISTORY-BUDGET";
+        const auto root = std::filesystem::u8path(snapshot->project()->location().root);
+        auto current = root;
+        if (!snapshot->directory().empty())
+            current /= std::filesystem::u8path(snapshot->directory());
+        if (source_) {
+            if (snapshot->project() != source_->project()
+                || maxHistoryEntries != sourceHistoryBudget_)
+                return "EDITOR-BROWSER-SOURCE-OWNER-CHANGED";
+        } else if (!root_.empty() || !currentDirectory_.empty() || !entries_.empty()
+            || intent != SourceNavigation::Navigate)
+            return "EDITOR-BROWSER-SOURCE-INITIAL-STATE";
+        auto candidate = *this;
+        candidate.source_ = snapshot;
+        candidate.sourceHistoryBudget_ = maxHistoryEntries;
+        if (source_) {
+            if (intent != SourceNavigation::Navigate) {
+                core::pmr::String expected;
+                if (!sourceTarget(intent, {}, expected) || expected != snapshot->directory())
+                    return "EDITOR-BROWSER-SOURCE-TARGET-CHANGED";
+            }
+            if (intent == SourceNavigation::Back) {
+                if (candidate.forwardHistory_.size() >= maxHistoryEntries)
+                    return "EDITOR-BROWSER-SOURCE-HISTORY-BUDGET";
+                candidate.backHistory_.pop_back();
+                candidate.forwardHistory_.push_back(currentDirectory_);
+            } else if (intent == SourceNavigation::Forward) {
+                if (candidate.backHistory_.size() >= maxHistoryEntries)
+                    return "EDITOR-BROWSER-SOURCE-HISTORY-BUDGET";
+                candidate.forwardHistory_.pop_back();
+                candidate.backHistory_.push_back(currentDirectory_);
+            } else if (intent == SourceNavigation::Navigate && current != currentDirectory_) {
+                if (candidate.backHistory_.size() >= maxHistoryEntries)
+                    return "EDITOR-BROWSER-SOURCE-HISTORY-BUDGET";
+                candidate.backHistory_.push_back(currentDirectory_);
+                candidate.forwardHistory_.clear();
+            }
+        }
+        candidate.root_ = root;
+        candidate.currentDirectory_ = std::move(current);
+        candidate.entries_.clear();
+        candidate.entries_.reserve(snapshot->entries().size());
+        for (const auto& entry : snapshot->entries()) {
+            // Links remain part of the acquired receipt but are not navigable.
+            if (entry.metadata.kind == core::io::FileEntryKind::Link)
+                continue;
+            candidate.entries_.push_back(
+                {candidate.currentDirectory_ / std::filesystem::u8path(entry.name),
+                    entry.name,
+                    entry.metadata.kind == core::io::FileEntryKind::Directory});
+        }
+        std::sort(candidate.entries_.begin(),
+            candidate.entries_.end(),
+            [](const Entry& a, const Entry& b) {
+                return a.directory != b.directory ? a.directory > b.directory
+                                                  : lessIgnoringCase(a.name, b.name);
+            });
+        candidate.setSearch(search_);
+        if (!snapshot->validate(files, epoch, issue))
+            return issue;
+        destination.swap(candidate);
+        return nullptr;
+    } catch (const std::bad_alloc&) {
+        return "EDITOR-BROWSER-SOURCE-ALLOCATION";
+    } catch (...) {
+        return "EDITOR-BROWSER-SOURCE-PREPARATION";
+    }
 }
 
 void ProjectBrowserModel::setSearch(const core::pmr::String& query)

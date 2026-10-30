@@ -2,6 +2,7 @@
 
 #include "editor/viewport/editor_scene_viewport_resource_resolver.h"
 #include "renderer/mesh/mesh_gpu_buffer.h"
+#include "rhi/frontend/ordered_graphics_execution.h"
 #include "rhi/gpu_device.h"
 
 namespace arp::editor {
@@ -51,7 +52,14 @@ public:
         const EditorSceneViewportResolvedItem& item);
 
     // Caller must complete all device work before releasing borrowed bindings.
-    void clearAfterDeviceIdle()
+    void clearAfterDeviceIdle() { clearResources(); }
+
+    std::size_t residentMeshCount() const noexcept;
+    std::uint64_t residentGeometryBytes() const noexcept;
+    const char* clearAfterOrderedIssue(const rhi::OriginalOrderedGraphicsExecution&);
+
+private:
+    void clearResources()
     {
         entries_.clear();
         ownerDevice_ = nullptr;
@@ -59,10 +67,6 @@ public:
         residentGeometryBytes_ = 0u;
     }
 
-    std::size_t residentMeshCount() const noexcept;
-    std::uint64_t residentGeometryBytes() const noexcept;
-
-private:
     struct Entry {
         core::pmr::String previewId;
         resource::ResourceGeneration previewGeneration = 0;

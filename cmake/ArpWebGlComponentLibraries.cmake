@@ -14,13 +14,38 @@ function(arp_add_webgl_component_libraries)
     set(arp_component_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/..")
     set(ARP_THIRD_PARTY_DIR "${arp_component_root}/3rd")
     include("${arp_component_root}/cmake/ArpMimalloc.cmake")
-    add_library(arp_core STATIC
+    add_library(arp_core_foundation STATIC
+        "${arp_component_root}/src/core/text/text_decoder.cpp"
         "${arp_component_root}/src/core/memory/cpu_allocator.cpp"
-        "${arp_component_root}/src/core/io/file_io.cpp"
+        "${arp_component_root}/src/core/runtime/completion_queue.cpp"
+        "${arp_component_root}/src/core/runtime/work_service.cpp"
         "${arp_component_root}/src/core/hash/sha256.cpp"
-        "${arp_component_root}/src/core/encoding/base64.cpp")
+        "${arp_component_root}/src/core/encoding/base64.cpp"
+    )
+    target_include_directories(arp_core_foundation PUBLIC "${arp_component_root}/src")
+    target_link_libraries(arp_core_foundation PUBLIC arp_mimalloc)
+    target_compile_features(arp_core_foundation PUBLIC cxx_std_17)
+    target_compile_definitions(arp_core_foundation PUBLIC ARP_STATIC_LINK=1)
+    target_compile_options(arp_core_foundation PUBLIC -fexceptions)
+    target_link_options(arp_core_foundation PUBLIC -fexceptions)
+    include("${arp_component_root}/cmake/ArpNetworkHttpTransport.cmake")
+    arp_add_network_http_transport("${arp_component_root}")
+    add_library(arp_core STATIC
+        "${arp_component_root}/src/core/io/file_io.cpp"
+        "${arp_component_root}/src/core/io/blocking_file_reader.cpp"
+        "${arp_component_root}/src/core/io/file_service.cpp"
+        "${arp_component_root}/src/core/io/thread_pool_file_backend.cpp"
+        "${arp_component_root}/src/core/io/memory_file_backend.cpp"
+        "${arp_component_root}/src/core/io/mounted_file_backend.cpp"
+        "${arp_component_root}/src/core/io/file_query_contract.cpp"
+        "${arp_component_root}/src/core/io/http_file_contract.cpp"
+        "${arp_component_root}/src/core/io/http_file_backend.cpp"
+        "${arp_component_root}/src/core/io/native_directory_file_backend.cpp"
+        "${arp_component_root}/src/core/io/detail/native_directory_access.cpp"
+        "${arp_component_root}/src/core/runtime/async_runtime.cpp"
+    )
     target_include_directories(arp_core PUBLIC "${arp_component_root}/src")
-    target_link_libraries(arp_core PUBLIC arp_mimalloc)
+    target_link_libraries(arp_core PUBLIC arp_core_foundation arp_network_http_transport)
     target_compile_features(arp_core PUBLIC cxx_std_17)
     target_compile_definitions(arp_core PUBLIC ARP_STATIC_LINK=1)
     target_compile_options(arp_core PUBLIC -fexceptions)
@@ -35,6 +60,7 @@ function(arp_add_webgl_component_libraries)
         "${arp_component_root}/src/rhi/conformance/storage_mrt_workload.cpp"
         "${arp_component_root}/src/rhi/frontend/resource_identity.cpp"
         "${arp_component_root}/src/rhi/frontend/pipeline_package_reflection.cpp"
+        "${arp_component_root}/src/rhi/frontend/generated_shader_package_input.cpp"
         "${arp_component_root}/src/rhi/frontend/descriptor_descriptors.cpp"
         "${arp_component_root}/src/rhi/frontend/pipeline_cache.cpp"
         "${arp_component_root}/src/rhi/frontend/descriptor_cache.cpp"

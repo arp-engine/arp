@@ -27,7 +27,8 @@ public:
         std::filesystem::path pluginRoot,
         std::filesystem::path cacheRoot,
         std::filesystem::path hostLibrary,
-        ScriptAotToolchain aotToolchain = {});
+        ScriptAotToolchain aotToolchain = {},
+        std::filesystem::path sourceModuleRoot = {});
 
     ScriptRunResult runFile(const std::filesystem::path& scriptPath,
         const core::pmr::Vector<scriptvm::Value>& args = {});
@@ -46,6 +47,7 @@ private:
     std::filesystem::path pluginRoot_;
     std::filesystem::path cacheRoot_;
     std::filesystem::path hostLibrary_;
+    std::filesystem::path sourceModuleRoot_;
     ScriptAotToolchain aotToolchain_;
 #if !defined(ARP_SCRIPT_AOT_ONLY_TOOL)
     core::UniquePtr<scriptvm::CppPluginImporter> pluginImporter_;

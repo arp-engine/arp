@@ -37,6 +37,8 @@ public:
         std::shared_ptr<scriptvm::ModuleExports> exports;
         {
             scriptvm::CppPluginImporterDesc desc;
+            // Existing multi-domain discovery remains an explicit Legacy smoke.
+            desc.sourceProfile = scriptvm::CppPluginSourceProfile::LegacyDiscoveryV1;
             desc.sourceRoot = std::filesystem::path(ARP_CLOUD_PLUGIN_SOURCE) / "modules";
             desc.includeRoot = std::filesystem::path(ARP_CLOUD_PLUGIN_SOURCE) / "src";
             desc.additionalIncludeRoots.emplace_back(ARP_CLOUD_PLUGIN_FKYAML);

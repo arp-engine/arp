@@ -81,6 +81,45 @@ def shader_artifact_file_roles(prefix, out_dir, wgsl_diagnostic=None, metal_diag
     return files
 
 
+def publish_generated_shader_artifact_set(prefix, out_dir, metadata):
+    """Publish exact compiler bytes and explicit original reflection-path bindings."""
+    import yaml
+    names = {"source": f"{prefix}.slang", "spirv": f"{prefix}.spv",
+             "metal": f"{prefix}.metal", "wgsl": f"{prefix}.wgsl",
+             "reflection": f"{prefix}.reflection.yaml"}
+    bindings = {"source": metadata["sourcePath"], **metadata["targets"]}
+    failures = {
+        "metal": {"SHADER-METAL-RUNTIME-LENGTH-UNSUPPORTED": "SHADER-METAL-RUNTIME-LENGTH-UNSUPPORTED"},
+        "wgsl": {
+            "SHADER-WGSL-BUFFER-ARRAY-UNSUPPORTED": "SHADER-WGSL-BUFFER-ARRAY-UNSUPPORTED",
+            "SHADER-WGSL-BUFFER-ARRAY-ABI-UNAVAILABLE": "SHADER-WGSL-BUFFER-ARRAY-ABI-UNAVAILABLE",
+            "SHADER-WGSL-GRAPHICS-ATOMIC-UNSUPPORTED": "SHADER-WGSL-GRAPHICS-ATOMIC-UNSUPPORTED",
+            "WGSL compilation failed": "SHADER-GENERATED-WGSL-UNAVAILABLE",
+        },
+    }
+    files = {}
+    for role, name in names.items():
+        path = os.path.join(out_dir, name)
+        if role in ("metal", "wgsl") and bindings[role] is None:
+            reason = metadata["metalBindingSpaceUnavailableReason" if role == "metal"
+                              else "webGpuBindingSpaceUnavailableReason"]
+            if reason not in failures[role] or os.path.exists(path):
+                raise RuntimeError("SHADER-GENERATED-TARGET-UNAVAILABLE-CONTRACT")
+            files[role] = {"status": "DiagnosticFailure", "diagnosticId": failures[role][reason],
+                           "reason": reason}
+        else:
+            with open(path, "rb") as source:
+                data = source.read()
+            if not data:
+                raise RuntimeError("SHADER-GENERATED-FILE-EMPTY")
+            files[role] = {"path": name, "sha256": hashlib.sha256(data).hexdigest()}
+    publication = {"type": "GeneratedShaderArtifactSet", "contractVersion": 1,
+                   "matrixLayout": "row-major", "files": files, "reflectionBindings": bindings}
+    path = os.path.join(out_dir, f"{prefix}.artifact-set.yaml")
+    write_utf8_no_bom(path, yaml.safe_dump(publication, sort_keys=False, allow_unicode=True))
+    return path
+
+
 def publish_graphics_module_artifact(prefix, out_dir, child_publications, metal_diagnostic=None):
     """Original combined bytes with explicit sealed per-stage provenance only."""
     import yaml
@@ -3203,6 +3242,8 @@ def write_shader_reflection(source_path, module_name, spirv_path, metal_path, wg
     with open(output_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(yaml_text)
 
+    return metadata
+
 
 
 # ── shader source definitions ──────────────────────────────────────────────
@@ -4049,7 +4090,7 @@ def main():
         write_utf8_no_bom(runtime_source_path, source_text)
 
         # Generate reflection YAML (with member-level layout when codegen ran).
-        write_shader_reflection(
+        generated_metadata = write_shader_reflection(
             runtime_source_path, module_name, spirv_out, metal_out if metal_ok else None,
             wgsl_out if wgsl_ok else None, refl_out,
             push_contract,
@@ -4067,6 +4108,7 @@ def main():
                                 single_entry=bool(args.single_entry), metal_unavailable_reason=metal_unavailable_reason,
                                 selected_push_inactive=selected_push_inactive,
                                 push_stage_evidence=push_stage_evidence)
+        publish_generated_shader_artifact_set(prefix, out_dir, generated_metadata)
         if args.single_entry:
             if not wgsl_ok and not (buffer_array_diagnostic_allowed or graphics_atomic_diagnostic_allowed):
                 raise RuntimeError("SHADER-ENTRY-WGSL-UNAVAILABLE")

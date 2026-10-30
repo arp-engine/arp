@@ -110,6 +110,7 @@ struct VegetationCatalogResourceLoadDesc {
     core::pmr::String alias{&core::defaultCpuMemoryResource()};
     core::pmr::String status{&core::defaultCpuMemoryResource()};
     VegetationCatalogInput input = VegetationCatalogInput::LegacySourceCatalog;
+    ResourceFileOrigin sourceOrigin;
 };
 
 struct VegetationCatalogResource : public ResourceBase {
@@ -129,6 +130,10 @@ struct VegetationCatalogResource : public ResourceBase {
     ResourceLoadResult load(
         ResourceManager& resourceManager, const ResourceLoadContext& context) override;
     bool collectFileReadIntents(ResourceManager& manager,
+        core::pmr::Vector<ResourceFileReadIntent>& intents,
+        core::pmr::String& diagnostics) const override;
+    bool planFileReadIntents(ResourceManager& manager,
+        const ResourceLoadContext& context,
         core::pmr::Vector<ResourceFileReadIntent>& intents,
         core::pmr::String& diagnostics) const override;
     std::size_t processedByteCount() const noexcept override;

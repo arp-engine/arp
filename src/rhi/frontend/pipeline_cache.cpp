@@ -34,6 +34,9 @@ semantics::CacheBudgetStats PipelineCache::budgetStats() const noexcept
 
 RenderPipeline* PipelineCache::acquireRenderPipeline(const RenderPipelineDesc& desc)
 {
+    if (desc.shaderPackage
+        && !validateGeneratedShaderPackageInput(*desc.shaderPackage, false).success)
+        return nullptr;
     const auto key = stableRenderPipelineStateKey(desc);
     auto it = renderCache_.find(key);
     if (it != renderCache_.end()) {
@@ -63,6 +66,9 @@ RenderPipeline* PipelineCache::acquireRenderPipeline(const RenderPipelineDesc& d
 
 ComputePipeline* PipelineCache::acquireComputePipeline(const ComputePipelineDesc& desc)
 {
+    if (desc.shaderPackage
+        && !validateGeneratedShaderPackageInput(*desc.shaderPackage, false).success)
+        return nullptr;
     const auto key = stableComputePipelineStateKey(desc);
     auto it = computeCache_.find(key);
     if (it != computeCache_.end()) {

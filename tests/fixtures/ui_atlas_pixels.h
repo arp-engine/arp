@@ -1,0 +1,125 @@
+#pragma once
+
+#include "core/memory/cpu_allocator.h"
+
+#include <cstdint>
+
+namespace arp::tests {
+
+// Explicit 32x16 RGBA8 test image, every pixel (12,34,56,255).
+inline constexpr std::uint8_t uiAtlasPngBytes[] = {
+    0x89,
+    0x50,
+    0x4e,
+    0x47,
+    0x0d,
+    0x0a,
+    0x1a,
+    0x0a,
+    0x00,
+    0x00,
+    0x00,
+    0x0d,
+    0x49,
+    0x48,
+    0x44,
+    0x52,
+    0x00,
+    0x00,
+    0x00,
+    0x20,
+    0x00,
+    0x00,
+    0x00,
+    0x10,
+    0x08,
+    0x06,
+    0x00,
+    0x00,
+    0x00,
+    0x77,
+    0x00,
+    0x7d,
+    0x59,
+    0x00,
+    0x00,
+    0x00,
+    0x23,
+    0x49,
+    0x44,
+    0x41,
+    0x54,
+    0x78,
+    0xda,
+    0x63,
+    0xe0,
+    0x51,
+    0xb2,
+    0xf8,
+    0x3f,
+    0x90,
+    0x98,
+    0x61,
+    0xd4,
+    0x01,
+    0xa3,
+    0x0e,
+    0x18,
+    0x75,
+    0xc0,
+    0xa8,
+    0x03,
+    0x46,
+    0x1d,
+    0x30,
+    0xea,
+    0x80,
+    0x51,
+    0x07,
+    0x0c,
+    0xb4,
+    0x03,
+    0x00,
+    0x11,
+    0x94,
+    0xca,
+    0x1f,
+    0xf2,
+    0x5e,
+    0x02,
+    0x7a,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x49,
+    0x45,
+    0x4e,
+    0x44,
+    0xae,
+    0x42,
+    0x60,
+    0x82,
+};
+inline constexpr std::size_t uiAtlasRgbaBytes = 32 * 16 * 4;
+
+inline core::pmr::Vector<std::uint8_t> uiAtlasTgaBytes()
+{
+    // TGA v1: uncompressed true-color BGRA, 32x16, top origin, eight alpha bits.
+    core::pmr::Vector<std::uint8_t> bytes(
+        18 + uiAtlasRgbaBytes, 0, &core::defaultCpuMemoryResource());
+    bytes[2] = 2;
+    bytes[12] = 32;
+    bytes[14] = 16;
+    bytes[16] = 32;
+    bytes[17] = 0x28;
+    for (std::size_t i = 18; i < bytes.size(); i += 4) {
+        bytes[i] = 56;
+        bytes[i + 1] = 34;
+        bytes[i + 2] = 12;
+        bytes[i + 3] = 255;
+    }
+    return bytes;
+}
+
+} // namespace arp::tests

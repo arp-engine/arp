@@ -239,10 +239,16 @@ arp_reflection_generate(
         "${CMAKE_CURRENT_SOURCE_DIR}/src/3d/authoring_components.h")
 
 add_executable(arp_scene_asset_package_tests tests/contract/scene_asset_package_tests.cpp)
-target_include_directories(arp_scene_asset_package_tests PRIVATE src)
+target_include_directories(arp_scene_asset_package_tests PRIVATE . src)
 target_compile_options(arp_scene_asset_package_tests PRIVATE -UNDEBUG)
 target_link_libraries(arp_scene_asset_package_tests PRIVATE arp_scene3d_assets
     ${arp_scene_2d_resource_link_libs})
 arp_add_mingw_static_runtime(arp_scene_asset_package_tests)
 add_test(NAME arp_scene_asset_package_tests COMMAND arp_scene_asset_package_tests)
 add_test(NAME arp_scene_asset_package_smoke COMMAND arp_scene_asset_package_tests --smoke)
+add_test(NAME arp_scene_asset_package_source_tests COMMAND arp_scene_asset_package_tests --sources)
+add_test(NAME arp_scene_asset_package_source_smoke COMMAND arp_scene_asset_package_tests --source-smoke)
+set_tests_properties(arp_scene_asset_package_source_tests PROPERTIES
+    TIMEOUT 60 LABELS "scene;resource;io")
+set_tests_properties(arp_scene_asset_package_source_smoke PROPERTIES
+    TIMEOUT 60 LABELS "scene;resource;io;smoke")

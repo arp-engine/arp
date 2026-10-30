@@ -1,240 +1,136 @@
-#include "core/memory/cpu_allocator.h"
 #include "core/runtime/async_runtime.h"
-#include "resource/resource_manager.h"
+#include "resource/resource_graph_executor.h"
+#include "tests/fixtures/ui_metadata_fixture.h"
+#include "tests/fixtures/unified_io_fixture.h"
 #include "ui/ui_atlas_metadata_resource.h"
 
 #include <cassert>
-#include <chrono>
-#include <filesystem>
-#include <fstream>
+#include <cstdio>
 #include <thread>
 
 namespace {
+using namespace arp;
+constexpr const char* id = "6cf0e0f0-d372-42eb-9e7c-78c5ba8eae1a";
+constexpr std::size_t bytesBudget = 16u * 1024u;
 
-arp::core::pmr::String text(const char* value)
-{
-    return arp::core::pmr::String(value, &arp::core::defaultCpuMemoryResource());
-}
+// The former Pika fixture referenced deleted source assets. This is an explicit
+// bounded host fixture, shared with the current metadata source contract tests.
+class MetadataFixture final {
+public:
+    MetadataFixture() { workspace.write("atlas.arpui", tests::uiMetadataAtlasFixture()); }
 
-std::filesystem::path projectRoot()
-{
-    auto current = std::filesystem::current_path();
-    while (!current.empty()) {
-        if (std::filesystem::exists(current / "assets" / "pika" / "ui" / "pika_ui_atlas.arpui")) {
-            return current;
-        }
-        const auto parent = current.parent_path();
-        if (parent == current) {
-            break;
-        }
-        current = parent;
+    ui::UiAtlasMetadataResourceLoadDesc descriptor() const
+    {
+        ui::UiAtlasMetadataResourceLoadDesc desc;
+        desc.resourceId = id;
+        desc.alias = "ui/test/atlas";
+        desc.status = "Contract Complete";
+        desc.atlasMetadataPath = workspace.root / "atlas.arpui";
+        desc.expectedAtlasResourceId = "texture/test.atlas";
+        desc.maxMetadataBytes = bytesBudget;
+        return desc;
     }
-    return std::filesystem::current_path();
-}
 
-arp::ui::UiAtlasMetadataResourceLoadDesc pikaAtlasDesc()
-{
-    const auto root = projectRoot();
-    arp::ui::UiAtlasMetadataResourceLoadDesc desc;
-    desc.resourceId = text("6cf0e0f0-d372-42eb-9e7c-78c5ba8eae1a");
-    desc.alias = text("ui/pika/atlas/metadata");
-    desc.status = text("Contract Complete");
-    desc.atlasMetadataPath = root / "assets" / "pika" / "ui" / "pika_ui_atlas.arpui";
-    desc.expectedAtlasResourceId = text("texture/pika_ui_atlas");
-    return desc;
-}
-
-struct AsyncProbe {
-    arp::resource::ResourceLoadResult result;
-    bool called = false;
+    unified_io_fixture::Workspace workspace;
 };
 
-void recordAsyncLoad(void* userData, arp::resource::ResourceLoadResult result)
+void check(const resource::ResourceManager& manager)
 {
-    auto* probe = static_cast<AsyncProbe*>(userData);
-    probe->result = result;
-    probe->called = true;
-}
-
-void atlas_metadata_resource_loads_explicit_yaml_contract_through_resource_manager()
-{
-    arp::resource::ResourceManager manager;
-    const auto loaded = arp::ui::loadUiAtlasMetadataResource(manager, pikaAtlasDesc());
-    assert(loaded.success);
-    assert(loaded.resource.resourceType == text("UiAtlasMetadataResource"));
-
-    const auto handle =
-        manager.findByAlias<arp::ui::UiAtlasMetadataResource>(text("ui/pika/atlas/metadata"));
-    assert(handle.ready());
-    assert(handle.get() != nullptr);
-    assert(handle.get()->data != nullptr);
-
+    const auto handle = manager.findByAlias<ui::UiAtlasMetadataResource>("ui/test/atlas");
+    assert(handle.ready() && handle.get()->data);
     const auto& data = *handle.get()->data;
-    assert(data.atlasId == text("pika.ui.atlas"));
-    assert(data.resourceId == text("texture/pika_ui_atlas"));
-    assert(data.sourcePath.generic_string() == "assets/pika/ui/textures/pika_ui_atlas.png");
-    assert(data.width == 224.0f);
-    assert(data.height == 96.0f);
-    assert(data.srgb);
-    assert(data.slices.size() == 3u);
-    assert(data.fontFaces.size() == 4u);
-    assert(data.glyphPolicy == text("hybrid"));
-    assert(data.pagePolicy == text("singleTexture"));
-    assert(data.fontFaces[0].fallbackChain.size() == 3u);
-    assert(data.fontFaces[0].fallbackChain[0] == text("font.ui.hud.title"));
-    assert(data.fontFaces[0].supportedScripts.size() == 1u);
-    assert(data.fontFaces[0].supportedScripts[0] == text("Latin"));
-    assert(data.fontFaces[0].charset == text("pika.visible.ascii"));
+    assert(data.atlasId == "test.atlas" && data.resourceId == "texture/test.atlas");
+    assert(data.sourcePath == "images/atlas.png" && data.srgb);
+    assert(data.width == 32 && data.height == 16 && data.slices.size() == 1);
+    assert(data.fontFaces.size() == 1 && data.fontFaces[0].fallbackChain[0] == "font.test");
+    assert(data.fontFaces[0].supportedScripts[0] == "Latin");
+    assert(data.glyphPolicy == "hybrid" && data.pagePolicy == "singleTexture");
 }
 
-void atlas_metadata_resource_loads_through_generic_async_resource_interface()
+void loadContracts()
 {
-    arp::core::runtime::AsyncRuntimeDesc runtimeDesc;
-    runtimeDesc.completionQueueCapacity = 4u;
-    runtimeDesc.workerCount = 1u;
-    runtimeDesc.workQueueCapacity = 2u;
-    runtimeDesc.completionBudget = 2u;
-    arp::core::runtime::AsyncRuntime runtime(runtimeDesc);
-    arp::resource::ResourceManager manager;
+    MetadataFixture fixture;
+    resource::ResourceManager sync;
+    const auto loaded = ui::loadUiAtlasMetadataResource(sync, fixture.descriptor());
+    if (!loaded.success)
+        std::fprintf(stderr, "Host metadata fixture: %s\n", loaded.diagnostics.c_str());
+    assert(loaded.success);
+    check(sync);
 
-    AsyncProbe probe;
-    const auto submitted =
-        manager.loadAsync<arp::ui::UiAtlasMetadataResource>(runtime.workService(),
-            arp::resource::ResourceAsyncLoadCompletion{&recordAsyncLoad, &probe},
-            arp::resource::ResourceLoadContext{},
-            pikaAtlasDesc());
-    assert(submitted == arp::core::runtime::WorkServiceStatus::Accepted);
-    for (int i = 0; i < 100 && !probe.called; ++i) {
-        runtime.dispatch();
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    core::runtime::AsyncRuntimeDesc config;
+    config.completionQueueCapacity = config.completionBudget = 4;
+    config.workerCount = 1;
+    config.workQueueCapacity = 2;
+    core::runtime::AsyncRuntime runtime(config);
+    resource::ResourceManager async;
+
+    struct Probe {
+        std::thread::id owner = std::this_thread::get_id();
+        unsigned calls = 0;
+        resource::ResourceGraphExecutionResult result;
+    } probe;
+
+    assert(async.loadAsync<ui::UiAtlasMetadataResource>(runtime,
+               resource::ResourceGraphExecutionBudget{1, 1, bytesBudget, bytesBudget, 4},
+               resource::ResourceGraphExecutionCompletion{
+                   [](void* context, resource::ResourceGraphExecutionResult result) {
+                       auto& p = *static_cast<Probe*>(context);
+                       assert(std::this_thread::get_id() == p.owner);
+                       ++p.calls;
+                       p.result = std::move(result);
+                   },
+                   &probe},
+               {},
+               fixture.descriptor())
+        == resource::ResourceGraphSubmitStatus::Accepted);
+    assert(probe.calls == 0 && !async.recordSnapshot(id));
+    unified_io_fixture::wait(runtime.completionQueue(), [&] {
+        return probe.calls != 0;
+    });
+    if (!probe.result.resource.success)
+        std::fprintf(stderr,
+            "Async host metadata: %s / %s\n",
+            probe.result.resource.diagnostics.c_str(),
+            probe.result.diagnosticId ? probe.result.diagnosticId : "none");
+    assert(probe.calls == 1 && probe.result.resource.success);
+    assert(probe.result.telemetry.submittedFileReads == 1);
+    check(async);
+    assert(async.recordSnapshot(id)->contentHash == sync.recordSnapshot(id)->contentHash);
+    assert(async.recordSnapshot(id)->dependencies.empty());
+    runtime.shutdown(core::runtime::AsyncRuntimeShutdownPolicy::Drain);
+    assert(runtime.completionQueue().pending() == 0 && runtime.completionQueue().reserved() == 0);
+}
+
+void rejectedInputs()
+{
+    MetadataFixture fixture;
+    for (unsigned scenario = 0; scenario < 3; ++scenario) {
+        auto desc = fixture.descriptor();
+        if (scenario == 0)
+            desc.expectedAtlasResourceId = "texture/undeclared";
+        if (scenario == 1)
+            desc.atlasMetadataPath = fixture.workspace.root / "missing.arpui";
+        if (scenario == 2) {
+            core::pmr::String text = tests::uiMetadataAtlasFixture();
+            constexpr core::StringView fallback = "    fallbackChain: [font.test]\n";
+            const auto at = text.find(fallback);
+            assert(at != core::pmr::String::npos);
+            text.erase(at, fallback.size());
+            fixture.workspace.write("atlas.arpui", text);
+        }
+        resource::ResourceManager manager;
+        const auto rejected = ui::loadUiAtlasMetadataResource(manager, desc);
+        assert(!rejected.success && !rejected.diagnostics.empty());
+        assert(!manager.find<ui::UiAtlasMetadataResource>(id).ready());
+        if (scenario == 2)
+            assert(rejected.diagnostics.find("fallbackChain") != core::pmr::String::npos);
     }
-    assert(probe.called);
-    assert(probe.result.success);
-    assert(manager.findByAlias<arp::ui::UiAtlasMetadataResource>(text("ui/pika/atlas/metadata"))
-            .ready());
-    runtime.shutdown(arp::core::runtime::AsyncRuntimeShutdownPolicy::Drain);
 }
-
-void atlas_metadata_sync_and_async_typed_load_paths_match()
-{
-    arp::resource::ResourceManager syncManager;
-    const auto syncLoaded = syncManager.load<arp::ui::UiAtlasMetadataResource>(
-        arp::resource::ResourceLoadContext{}, pikaAtlasDesc());
-    assert(syncLoaded.success);
-    const auto* syncRecord = syncManager.recordSnapshot(syncLoaded.resourceId);
-    assert(syncRecord != nullptr);
-    assert(syncRecord->alias == text("ui/pika/atlas/metadata"));
-    assert(syncRecord->type == text("UiAtlasMetadataResource"));
-    assert(syncRecord->dependencies.empty());
-    assert(syncManager.findByAlias<arp::ui::UiAtlasMetadataResource>(text("ui/pika/atlas/metadata"))
-            .ready());
-
-    arp::core::runtime::AsyncRuntimeDesc runtimeDesc;
-    runtimeDesc.completionQueueCapacity = 4u;
-    runtimeDesc.workerCount = 1u;
-    runtimeDesc.workQueueCapacity = 2u;
-    runtimeDesc.completionBudget = 2u;
-    arp::core::runtime::AsyncRuntime runtime(runtimeDesc);
-    arp::resource::ResourceManager asyncManager;
-
-    AsyncProbe probe;
-    const auto submitted =
-        asyncManager.loadAsync<arp::ui::UiAtlasMetadataResource>(runtime.workService(),
-            arp::resource::ResourceAsyncLoadCompletion{&recordAsyncLoad, &probe},
-            arp::resource::ResourceLoadContext{},
-            pikaAtlasDesc());
-    assert(submitted == arp::core::runtime::WorkServiceStatus::Accepted);
-    for (int i = 0; i < 100 && !probe.called; ++i) {
-        runtime.dispatch();
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    assert(probe.called);
-    assert(probe.result.success);
-    const auto* asyncRecord = asyncManager.recordSnapshot(probe.result.resourceId);
-    assert(asyncRecord != nullptr);
-    assert(asyncRecord->alias == syncRecord->alias);
-    assert(asyncRecord->type == syncRecord->type);
-    assert(asyncRecord->dependencies.size() == syncRecord->dependencies.size());
-    assert(
-        asyncManager.findByAlias<arp::ui::UiAtlasMetadataResource>(text("ui/pika/atlas/metadata"))
-            .ready());
-    runtime.shutdown(arp::core::runtime::AsyncRuntimeShutdownPolicy::Drain);
-}
-
-void atlas_metadata_resource_rejects_contract_mismatch_and_missing_file()
-{
-    arp::resource::ResourceManager mismatchManager;
-    auto mismatch = pikaAtlasDesc();
-    mismatch.expectedAtlasResourceId = text("texture/not_declared_by_theme");
-    const auto rejected = arp::ui::loadUiAtlasMetadataResource(mismatchManager, mismatch);
-    assert(!rejected.success);
-    assert(rejected.diagnostics.find("UI atlas metadata resourceId does not match")
-        != arp::core::pmr::String::npos);
-
-    arp::resource::ResourceManager missingManager;
-    auto missing = pikaAtlasDesc();
-    missing.atlasMetadataPath = projectRoot() / "assets" / "pika" / "ui" / "missing_atlas.arpui";
-    const auto missingResult = arp::ui::loadUiAtlasMetadataResource(missingManager, missing);
-    assert(!missingResult.success);
-    assert(missingResult.diagnostics.find("UI atlas metadata file is missing")
-        != arp::core::pmr::String::npos);
-}
-
-void atlas_metadata_resource_rejects_missing_font_fallback_metadata()
-{
-    const auto root = projectRoot();
-    const auto tempPath = root / "artifacts" / "tmp" / "ui_atlas_missing_fallback_test.arpui";
-    std::filesystem::create_directories(tempPath.parent_path());
-    std::ofstream output(tempPath, std::ios::binary);
-    output << "type: \"ui.atlas\"\n"
-           << "contractVersion: \"ui.atlas/v2\"\n"
-           << "status: \"Contract Complete\"\n"
-           << "atlasId: \"test.ui.atlas\"\n"
-           << "resourceId: \"texture/test_ui_atlas\"\n"
-           << "baseImageAtlas:\n"
-           << "  sourcePath: \"assets/pika/ui/textures/pika_ui_atlas.png\"\n"
-           << "  width: 64\n"
-           << "  height: 64\n"
-           << "  colorSpace: \"srgb\"\n"
-           << "fontFaces:\n"
-           << "  - tokenId: \"font.ui.body\"\n"
-           << "    family: \"Arial\"\n"
-           << "    sourcePath: \"C:/Windows/Fonts/arial.ttf\"\n"
-           << "    weight: 500\n"
-           << "    lineHeightPx: 22\n"
-           << "    supportedScripts:\n"
-           << "      - \"Latin\"\n"
-           << "    charset: \"ascii\"\n"
-           << "glyphPolicy:\n"
-           << "  mode: \"hybrid\"\n"
-           << "pagePolicy:\n"
-           << "  mode: \"singleTexture\"\n"
-           << "slices:\n"
-           << "  - sliceId: \"panel\"\n"
-           << "    rect:\n"
-           << "      x: 0\n"
-           << "      y: 0\n"
-           << "      width: 16\n"
-           << "      height: 16\n";
-    output.close();
-
-    arp::resource::ResourceManager manager;
-    auto desc = pikaAtlasDesc();
-    desc.atlasMetadataPath = tempPath;
-    desc.expectedAtlasResourceId = text("texture/test_ui_atlas");
-    const auto loaded = arp::ui::loadUiAtlasMetadataResource(manager, desc);
-    assert(!loaded.success);
-    assert(loaded.diagnostics.find("fallbackChain") != arp::core::pmr::String::npos);
-}
-
 } // namespace
 
 int main()
 {
-    atlas_metadata_resource_loads_explicit_yaml_contract_through_resource_manager();
-    atlas_metadata_resource_loads_through_generic_async_resource_interface();
-    atlas_metadata_sync_and_async_typed_load_paths_match();
-    atlas_metadata_resource_rejects_contract_mismatch_and_missing_file();
-    atlas_metadata_resource_rejects_missing_font_fallback_metadata();
-    return 0;
+    loadContracts();
+    rejectedInputs();
+    std::puts("Native metadata source: sync/async owner admission and content identity PASS");
 }

@@ -117,11 +117,11 @@ std::shared_ptr<const SingleEntryShaderArtifact> SingleEntryShaderArtifact::load
                 throw Rejection{id};
         core::CpuMemoryQuotaScope scope(quota);
         auto result = core::makeUnique<SingleEntryShaderArtifact>(ConstructionKey{}, budget);
-        ShaderArtifactInput input(budget.maxFileBytes, budget.maxTotalBytes);
+        ShaderArtifactInput input(budget.maxFileBytes, budget.maxTotalBytes, budget.source);
         result->publication_ = input.read(publication);
         result->identity_ = core::Sha256::digest(text(result->publication_));
         const auto publicationText = text(result->publication_);
-        const auto root = Y::Node::deserialize(publicationText.begin(), publicationText.end());
+        const auto root = shaderArtifactYaml(publicationText);
         const auto version = Y::uint32(root, "contractVersion");
         require(Y::text(root, "type") == "SingleEntryShaderArtifact" && version >= 1u
                 && version <= 5u && root.size() == (version >= 3u ? 7u : 6u)
@@ -150,8 +150,7 @@ std::shared_ptr<const SingleEntryShaderArtifact> SingleEntryShaderArtifact::load
             input);
         result->inputBytes_ = input.consumed();
         const auto reflectionBytes = text(result->files_[4].bytes);
-        const auto reflectionNode =
-            Y::Node::deserialize(reflectionBytes.begin(), reflectionBytes.end());
+        const auto reflectionNode = shaderArtifactYaml(reflectionBytes);
         if (unavailableMetal)
             ShaderArtifactReflectionContract::validateUnavailableMetalRuntimeLength(reflectionNode);
         const auto& entries = Y::sequence(reflectionNode, "entryPoints");

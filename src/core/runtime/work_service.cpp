@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <utility>
 
 namespace arp::core::runtime {
@@ -36,6 +37,12 @@ bool WorkService::valid() const noexcept
     return status_ == WorkServiceStatus::Accepted;
 }
 
+bool WorkService::closed() const noexcept
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return closed_;
+}
+
 WorkServiceStatus WorkService::status() const noexcept
 {
     return status_;
@@ -49,6 +56,7 @@ std::size_t WorkService::workerCount() const noexcept
 WorkSubmitResult WorkService::submit(WorkItem item)
 {
     Task inlineTask{};
+    WorkTaskHandle acceptedHandle;
     bool runInline = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -69,8 +77,24 @@ WorkSubmitResult WorkService::submit(WorkItem item)
             return {WorkServiceStatus::Cancelled, {}};
         }
 
+        auto reservation = desc_.completionQueue->reserve();
+        if (!reservation.valid()) {
+            ++telemetry_.rejected;
+            return {reservation.status() == CompletionStatus::QueueFull
+                    ? WorkServiceStatus::QueueFull
+                    : WorkServiceStatus::ServiceClosed,
+                {}};
+        }
+        auto completion = core::makeUnique<CompletionState>();
+        completion->complete = item.complete;
+        completion->completeUserData = item.completeUserData;
+        completion->reservation = std::move(reservation);
+
         const WorkTaskHandle handle{nextId_++};
-        inlineTask = Task{handle, item, std::chrono::steady_clock::now(), false};
+        acceptedHandle = handle;
+        completion->result.handle = handle;
+        inlineTask =
+            Task{handle, item, std::chrono::steady_clock::now(), false, std::move(completion)};
         if (desc_.inlineExecution) {
             runInline = true;
         } else {
@@ -78,7 +102,7 @@ WorkSubmitResult WorkService::submit(WorkItem item)
                 ++telemetry_.rejected;
                 return {WorkServiceStatus::QueueFull, {}};
             }
-            tasks_.push_back(inlineTask);
+            tasks_.push_back(std::move(inlineTask));
             telemetry_.maxQueueDepth = std::max<std::uint64_t>(
                 telemetry_.maxQueueDepth, static_cast<std::uint64_t>(tasks_.size()));
             wake_.notify_one();
@@ -93,16 +117,22 @@ WorkSubmitResult WorkService::submit(WorkItem item)
                 std::lock_guard<std::mutex> lock(mutex_);
                 ++telemetry_.started;
             }
-            status = inlineTask.item.execute(inlineTask.item.executeUserData);
+            try {
+                status = inlineTask.item.execute(inlineTask.item.executeUserData);
+            } catch (...) {
+                status = WorkStatus::Failed;
+            }
             if (inlineTask.item.cancellation.cancelled() && status == WorkStatus::Completed) {
                 status = WorkStatus::Cancelled;
                 std::lock_guard<std::mutex> lock(mutex_);
                 ++telemetry_.lateCancellationCompletions;
             }
         }
-        postCompletion(inlineTask, status);
+        const auto handle = inlineTask.handle;
+        postCompletion(std::move(inlineTask), status);
+        return {WorkServiceStatus::Accepted, handle};
     }
-    return {WorkServiceStatus::Accepted, inlineTask.handle};
+    return {WorkServiceStatus::Accepted, acceptedHandle};
 }
 
 WorkCancelResult WorkService::cancelPending(WorkTaskHandle handle)
@@ -175,7 +205,7 @@ void WorkService::workerLoop() noexcept
             if (tasks_.empty()) {
                 return;
             }
-            task = tasks_.front();
+            task = std::move(tasks_.front());
             tasks_.pop_front();
             const auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - task.enqueueTime);
@@ -189,18 +219,22 @@ void WorkService::workerLoop() noexcept
 
         WorkStatus status = WorkStatus::Cancelled;
         if (!task.cancelled && !task.item.cancellation.cancelled()) {
-            status = task.item.execute(task.item.executeUserData);
+            try {
+                status = task.item.execute(task.item.executeUserData);
+            } catch (...) {
+                status = WorkStatus::Failed;
+            }
             if (task.item.cancellation.cancelled() && status == WorkStatus::Completed) {
                 status = WorkStatus::Cancelled;
                 std::lock_guard<std::mutex> lock(mutex_);
                 ++telemetry_.lateCancellationCompletions;
             }
         }
-        postCompletion(task, status);
+        postCompletion(std::move(task), status);
     }
 }
 
-void WorkService::postCompletion(const Task& task, WorkStatus status) noexcept
+void WorkService::postCompletion(Task task, WorkStatus status) noexcept
 {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -213,23 +247,25 @@ void WorkService::postCompletion(const Task& task, WorkStatus status) noexcept
         }
     }
 
-    auto completion = core::makeUnique<CompletionState>();
-    completion->complete = task.item.complete;
-    completion->completeUserData = task.item.completeUserData;
-    completion->result = WorkResult{task.handle, status};
+    auto completion = std::move(task.completion);
+    completion->result.status = status;
     auto* raw = completion.get();
-    const auto post = desc_.completionQueue->post(CompletionCallback{&deliverCompletion, raw});
+    const auto post = desc_.completionQueue->postReserved(
+        std::move(completion->reservation), CompletionCallback{&deliverCompletion, raw});
     if (post.accepted()) {
         completion.release();
         return;
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    ++telemetry_.rejected;
+    // The token was acquired from this queue before acceptance. Losing it is
+    // an internal invariant violation, never a recoverable dropped callback.
+    std::terminate();
 }
 
 WorkServiceStatus WorkService::validateDesc(const WorkServiceDesc& desc) const noexcept
 {
+    if (!desc.enabled)
+        return WorkServiceStatus::ServiceClosed;
     if (desc.completionQueue == nullptr) {
         return WorkServiceStatus::InvalidCompletionQueue;
     }

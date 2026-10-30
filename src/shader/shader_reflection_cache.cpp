@@ -1,11 +1,11 @@
 #include "shader/shader_reflection_cache.h"
 
+#include "core/io/file_io.h"
 #include "core/memory/cpu_allocator.h"
+#include "core/text/text_decoder.h"
 
 #include <charconv>
 #include <fkYAML/node.hpp>
-#include <fstream>
-#include <sstream>
 
 namespace arp::shader {
 
@@ -380,10 +380,22 @@ ShaderReflectionCacheLoadResult ShaderReflectionCache::loadFromYaml(const std::p
         result.diagnostics = "reflection yaml is empty";
         return result;
     }
+    core::TextDecodeDesc desc;
+    desc.bom = core::TextBomPolicy::Strip;
+    desc.nul = core::TextNulPolicy::Reject;
+    desc.maxOutputBytes = yaml.size();
+    const auto decoded = core::TextDecoder::decode(yaml, desc);
+    if (decoded.status == core::TextDecodeStatus::AllocationFailed)
+        throw std::bad_alloc();
+    if (decoded.status != core::TextDecodeStatus::Success) {
+        result.diagnostics = decoded.diagnosticId;
+        return result;
+    }
 
     YamlNode root;
     try {
-        root = YamlNode::deserialize(yaml.data(), yaml.data() + yaml.size());
+        root =
+            YamlNode::deserialize(decoded.text.data(), decoded.text.data() + decoded.text.size());
     } catch (const std::exception& err) {
         result.diagnostics = "reflection yaml parse failed: ";
         result.diagnostics += core::pmr::String(err.what(), &core::defaultCpuMemoryResource());
@@ -509,17 +521,15 @@ ShaderReflectionCacheLoadResult ShaderReflectionCache::loadFromYaml(const std::p
 
 ShaderReflectionCacheLoadResult ShaderReflectionCache::loadFromFile(const std::pmr::string& path)
 {
-    std::ifstream file(path.c_str(), std::ios::binary);
-    if (!file) {
+    const auto file = core::readTextFile(std::filesystem::u8path(path.begin(), path.end()));
+    if (!file.success) {
         ShaderReflectionCacheLoadResult result;
         result.diagnostics = "reflection file could not be opened: ";
         result.diagnostics += path;
         return result;
     }
 
-    std::ostringstream stream;
-    stream << file.rdbuf();
-    return loadFromYaml(arp::core::toPmrString(stream.str()));
+    return loadFromYaml(file.text);
 }
 
 } // namespace arp::shader

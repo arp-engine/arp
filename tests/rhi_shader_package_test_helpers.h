@@ -1,5 +1,6 @@
 #pragma once
 
+#include "fixtures/generated_shader_package_fixture.h"
 #include "rhi/gpu_pipeline.h"
 
 #include <cassert>
@@ -48,7 +49,7 @@ inline void addFloat4PushConstantMembers(
     }
 }
 
-inline ShaderPackageDesc makePushContractShaderPackage()
+inline ShaderPackageDesc makePushContractShaderPackage(bool preparedInput = false)
 {
     ShaderPackageDesc package;
     package.label = "CommandValidationShaderPackage";
@@ -78,6 +79,8 @@ inline ShaderPackageDesc makePushContractShaderPackage()
     package.reflection.metalGpuCountedIndirectStatus = "Unavailable";
     package.reflection.metalTessellationStatus = "Unavailable";
     addFloat4PushConstantMembers(package.reflection, 8u);
+    if (preparedInput)
+        GeneratedShaderPackageFixture::prepare(package, "rhi_push_contract.artifact-set.yaml");
     return package;
 }
 

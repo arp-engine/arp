@@ -2,15 +2,22 @@
 #include "core/io/filesystem_path.h"
 #include "editor/ingress/editor_platform_input_router.h"
 #include "editor/ingress/platform_input_adapter.h"
+#include "editor/remote/editor_remote_protocol.h"
 #include "editor/ui/editor_ui_assets.h"
+#include "editor/validation/editor_viewport_resource_smoke.h"
+#include "editor/viewport/editor_scene_viewport_composite.h"
+#include "editor/viewport/editor_scene_viewport_frame_builder.h"
+#include "editor/viewport/editor_scene_viewport_ordered_renderer.h"
 #include "editor/web/browser_rendering.h"
 #include "editor/web/browser_workspace.h"
 #include "editor/workspace/editor_shell.h"
 #include "input/input.h"
 #include "platform/window.h"
 #include "renderer/gui/gui_ordered_renderer.h"
+#include "tests/fixtures/ordered_graphics_catalog_fixture.h"
 
 #include <array>
+#include <cmath>
 #include <emscripten.h>
 #include <emscripten/html5.h>
 
@@ -33,6 +40,10 @@ EM_JS(void, editorDownload, (const char* text), {
     if (Module.downloadWorkspace) Module.downloadWorkspace(Module.editorLastExport);
 });
 EM_JS(int, editorPageAvailable, (), { return Module.editorPageAvailable === false ? 0 : 1; });
+EM_JS(int, editorViewportValidationRequested, (), {
+    return new URLSearchParams(location.search).has('viewport-smoke') ? 1 : 0;
+});
+EM_JS(void, editorCatalogValidationPassed, (), { Module.editorCatalogValidated = true; });
 // clang-format on
 
 namespace arp::editor {
@@ -49,16 +60,32 @@ public:
     void tick();
     bool action(core::StringView, core::StringView);
     bool importWorkspace(core::StringView);
+    const char* remoteRequest(core::StringView method,
+        core::StringView path,
+        core::StringView body,
+        core::StringView session,
+        core::StringView accept,
+        core::StringView protocolVersion);
+
+    int remoteStatus() const noexcept { return remoteStatus_; }
+
+    rhi::MemoryStats gpuMemory() const { return system_.memoryStats(); }
 
     const char* scriptText() const { return shell_->scriptText().c_str(); }
 
     core::ArrayView<std::shared_ptr<rhi::RenderPipeline>> pipelines() const noexcept override
     {
-        return pipelines_;
+        if (!viewportVisible_)
+            return {&pipelines_[3], 1};
+        return viewport_.hasGeometry() || viewport_.hasSprites()
+            ? core::ArrayView<std::shared_ptr<rhi::RenderPipeline>>(pipelines_)
+            : core::ArrayView<std::shared_ptr<rhi::RenderPipeline>>(&pipelines_[2], 2);
     }
 
     void build(render_graph::FrameGraph& graph, render_graph::TextureHandle target) override
     {
+        if (viewportVisible_)
+            viewport_.addPasses(graph, shell_->sceneViewportCamera(), viewportSky_);
         core::requireSuccessfulResult(gui_->addPass(graph,
                                           target,
                                           commands_,
@@ -85,7 +112,10 @@ private:
     std::optional<BrowserWorkspace::Staged> staged_, workspace_;
     std::optional<EditorUiAssets> assets_;
     platform::RenderSystem system_;
-    std::array<std::shared_ptr<rhi::RenderPipeline>, 1> pipelines_;
+    std::array<std::shared_ptr<rhi::RenderPipeline>, 4> pipelines_;
+    EditorSceneViewportOrderedRenderer viewport_;
+    EditorSceneViewportSky viewportSky_;
+    bool viewportVisible_ = false;
     core::UniquePtr<renderer::GuiOrderedRenderer> gui_;
     core::pmr::Vector<renderer::ui::UiDrawCommand> commands_;
     core::pmr::String message_{"Virtual workspace: download an export to keep your work"};
@@ -93,9 +123,56 @@ private:
     std::uint64_t exportTaskId_ = 0, candidateTaskId_ = 0;
     int width_ = 1440, height_ = 810;
     bool exportPending_ = false;
+    core::UniquePtr<EditorRemoteProtocol> remote_;
+    core::pmr::String remoteSession_, remoteResponse_;
+    int remoteStatus_ = 503;
 };
 
 core::UniquePtr<BrowserEditor> app;
+
+const char* BrowserEditor::remoteRequest(core::StringView method,
+    core::StringView path,
+    core::StringView body,
+    core::StringView session,
+    core::StringView accept,
+    core::StringView protocolVersion)
+{
+    // Only the browser owner thread invokes this synchronous adapter. The same
+    // protocol owns parsing, idempotency and dispatch for desktop and Web.
+    remoteStatus_ = 503;
+    remoteResponse_ = R"({"error":"web_workspace_busy"})";
+    if (candidate_ || exportPending_)
+        return remoteResponse_.c_str();
+    if (session.size() < 32 || session.size() > 256
+        || body.size() > EditorRemoteProtocol::maxRequestBytes
+        || (method != "GET" && method != "POST")
+        || (path != "/api/v1/commands" && path != "/api/v1/discovery" && path != "/mcp")) {
+        remoteStatus_ = 400;
+        remoteResponse_ = R"({"error":"web_bridge_invalid_request"})";
+        return remoteResponse_.c_str();
+    }
+    if (remoteSession_ != session) {
+        auto protocol = core::makeUnique<EditorRemoteProtocol>(session);
+        remoteSession_ = session;
+        remote_ = std::move(protocol);
+    }
+    network::http::Request request;
+    request.set_method(method == "GET" ? network::http::Method::Get : network::http::Method::Post);
+    request.set_target(path);
+    request.set_content_type(network::http::ContentType::Json);
+    core::pmr::String authorization("Bearer ");
+    authorization += session;
+    request.add_header("Authorization", authorization);
+    if (!accept.empty())
+        request.add_header("Accept", accept);
+    if (!protocolVersion.empty())
+        request.add_header("MCP-Protocol-Version", protocolVersion);
+    request.set_body_text(body);
+    const auto response = remote_->handle(request, *shell_);
+    remoteResponse_ = response.body_text();
+    remoteStatus_ = response.status().value();
+    return remoteResponse_.c_str();
+}
 
 core::UniquePtr<EditorShell> BrowserEditor::loadShell(const std::filesystem::path& root)
 {
@@ -108,8 +185,7 @@ core::UniquePtr<EditorShell> BrowserEditor::loadShell(const std::filesystem::pat
     if (shell->submitCommand(ActivateControlCommand("workspace_3D")).status
         != EditorResponseStatus::Completed)
         throw core::DiagnosticError("EDITOR-WEB-WORKSPACE-INITIALIZATION");
-    shell->reportViewportDiagnostic(
-        "ARP-EDITOR-WEBGL-VIEWPORT-UNAVAILABLE: scene GPU mapping is not yet admitted");
+
     return shell;
 }
 
@@ -124,6 +200,12 @@ void BrowserEditor::create()
     if (!window_.valid())
         throw core::DiagnosticError("EDITOR-WEB-WINDOW-CREATE");
     shell_ = loadShell("/workspace/default");
+    if (editorViewportValidationRequested()) {
+        core::pmr::String diagnostic;
+        if (!validation::installViewportSmokeScene(
+                *shell_, diagnostic, "/app/tests/fixtures/scene_2d/"))
+            throw core::DiagnosticError(diagnostic);
+    }
     auto authored = shell_->drawCommands();
     if (!authored.ok())
         throw core::DiagnosticError(authored.diagnostics());
@@ -134,9 +216,25 @@ void BrowserEditor::create()
     if (!system_.valid())
         throw core::DiagnosticError(system_.diagnostics());
     core::pmr::String diagnostic;
-    pipelines_[0] = BrowserRendering::pipeline(system_, diagnostic);
-    if (!pipelines_[0])
-        throw core::DiagnosticError(diagnostic);
+    pipelines_[3] = BrowserRendering::pipeline(system_, diagnostic);
+    pipelines_[2] = BrowserRendering::environmentPipeline(system_, diagnostic);
+    pipelines_[1] = BrowserRendering::spritePipeline(system_, diagnostic);
+    shader::ShaderReflection pbrReflection;
+    pipelines_[0] = BrowserRendering::pbrPipeline(system_, pbrReflection, diagnostic);
+    for (const auto& pipeline : pipelines_)
+        if (!pipeline)
+            throw core::DiagnosticError(diagnostic);
+    if (editorViewportValidationRequested()) {
+        tests::OrderedGraphicsCatalogFixture::run(
+            *system_.gpuDevice(), *system_.orderedGraphicsExecution(), pipelines_);
+        editorCatalogValidationPassed();
+    }
+    viewport_.create(*system_.gpuDevice(),
+        pipelines_[2],
+        pipelines_[0],
+        system_.orderedGraphicsExecution(),
+        pbrReflection,
+        pipelines_[1]);
     gui_ = core::makeUnique<renderer::GuiOrderedRenderer>(*system_.gpuDevice());
     auto quota = core::makeShared<core::CpuMemoryQuota>(16 * BrowserRendering::MiB);
     core::requireSuccessfulResult(gui_->create({2,
@@ -146,8 +244,8 @@ void BrowserEditor::create()
                                       quota->limitBytes(),
                                       quota,
                                       system_.orderedGraphicsExecution(),
-                                      pipelines_[0],
-                                      pipelines_[0]->shaderReflection().sourceSha256,
+                                      pipelines_[3],
+                                      pipelines_[3]->shaderReflection().sourceSha256,
                                       {1, false, false}}),
         "EDITOR-WEB-GUI");
     auto white = core::shareUnique(system_.gpuDevice()->createTexture({"web.solid",
@@ -329,7 +427,7 @@ void BrowserEditor::tick()
             message_.c_str());
         return;
     }
-    auto authored = shell_->drawCommands();
+    auto authored = shell_->drawCommands(kEditorSceneViewportTextureId);
     if (!authored.ok())
         throw core::DiagnosticError(authored.diagnostics());
     auto& atlas = assets_->atlas();
@@ -366,6 +464,46 @@ void BrowserEditor::tick()
         c.clipRect.width *= sx;
         c.clipRect.y *= sy;
         c.clipRect.height *= sy;
+    }
+    viewportVisible_ = false;
+    for (const auto& c : commands_) {
+        if (c.kind != renderer::ui::UiDrawCommandKind::Image
+            || c.textureResourceId != kEditorSceneViewportTextureId)
+            continue;
+        if (!std::isfinite(c.rect.width) || !std::isfinite(c.rect.height) || c.rect.width <= 0
+            || c.rect.height <= 0 || c.rect.width > BrowserRendering::maxViewportExtent
+            || c.rect.height > BrowserRendering::maxViewportExtent)
+            throw core::DiagnosticError("EDITOR-WEB-VIEWPORT-EXTENT-BUDGET");
+        const rhi::Extent2D extent{
+            std::uint32_t(std::ceil(c.rect.width)), std::uint32_t(std::ceil(c.rect.height))};
+        viewport_.resize(*system_.gpuDevice(),
+            *gui_,
+            extent,
+            system_.orderedGraphicsCapabilities().attachmentSampleFlipY);
+        const auto snapshot = shell_->sceneDocument().scene().extractTraversalSnapshot(
+            scene::SceneTraversalOptions{BrowserRendering::maxSceneObjects});
+        const char* diagnostic = nullptr;
+        const auto visible = shell_->visibleSceneSnapshot(snapshot, diagnostic);
+        if (!visible)
+            throw core::DiagnosticError(diagnostic);
+        const auto frame = buildEditorSceneViewportFrame(shell_->sceneDocument().scene(),
+            snapshot,
+            shell_->stateVersion(),
+            extent.width,
+            extent.height,
+            {0, 0, extent.width, extent.height},
+            &shell_->projectResources(),
+            BrowserRendering::maxSceneObjects,
+            &*visible);
+        if (!frame.valid()
+            && frame.validation.diagnostic != EditorSceneViewportDiagnostic::MissingCamera)
+            shell_->reportViewportDiagnostic(
+                editorSceneViewportDiagnosticCode(frame.validation.diagnostic));
+        viewport_.prepareGeometry(*shell_, frame.frame);
+        viewport_.prepareSprites(*shell_, *visible, extent);
+        viewportSky_ = frame.frame.sky;
+        viewportVisible_ = true;
+        break;
     }
     const auto report = system_.renderOrderedFrame(*this);
     if (!report.success)
@@ -432,6 +570,26 @@ extern "C" EMSCRIPTEN_KEEPALIVE const char* editor_script_text()
     return arp::editor::app ? arp::editor::app->scriptText() : "";
 }
 
+extern "C" EMSCRIPTEN_KEEPALIVE const char* editor_remote_request(const char* method,
+    const char* path,
+    const char* body,
+    const char* session,
+    const char* accept,
+    const char* protocolVersion)
+try {
+    return arp::editor::app
+        ? arp::editor::app->remoteRequest(method, path, body, session, accept, protocolVersion)
+        : R"({"error":"editor_not_ready"})";
+} catch (const std::exception&) {
+    // A request failure must not stop rendering or expose credentials.
+    return R"({"error":"web_bridge_request_failed"})";
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int editor_remote_status()
+{
+    return arp::editor::app ? arp::editor::app->remoteStatus() : 503;
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE double editor_core_live_bytes()
 {
     return static_cast<double>(arp::core::defaultCpuAllocator().stats().liveBytes);
@@ -441,6 +599,16 @@ extern "C" EMSCRIPTEN_KEEPALIVE double editor_core_live_allocations()
 {
     const auto stats = arp::core::defaultCpuAllocator().stats();
     return static_cast<double>(stats.allocationCount - stats.deallocationCount);
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE double editor_gpu_logical_bytes()
+{
+    return arp::editor::app ? double(arp::editor::app->gpuMemory().allocatedBytes) : 0;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE double editor_gpu_live_resources()
+{
+    return arp::editor::app ? double(arp::editor::app->gpuMemory().liveResourceCount) : 0;
 }
 
 int main()

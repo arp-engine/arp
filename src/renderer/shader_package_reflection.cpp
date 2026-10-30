@@ -1,9 +1,9 @@
 #include "renderer/shader_package_reflection.h"
 
+#include "core/io/filesystem_path.h"
 #include "rhi/gpu_pipeline.h"
-#include "shader/shader_pipeline_reflection_validator.h"
-#include "shader/shader_reflection_cache.h"
 
+#include <algorithm>
 #include <cstdio>
 
 namespace arp::renderer {
@@ -29,50 +29,111 @@ rhi::ShaderStage rhiStageFor(shader::ShaderStage stage)
 
 } // namespace
 
-bool hydrateShaderPackageReflectionFromArtifact(rhi::ShaderPackageDesc& package)
+bool hydrateShaderPackageReflectionFromArtifact(rhi::ShaderPackageDesc& package,
+    const ShaderPackagePreparationDesc& desc,
+    core::pmr::String& diagnostic)
 {
     package.generatedReflectionHydrated = false;
-    if (package.artifacts.reflectionPath.empty()) {
-        return false;
-    }
-    const auto cached =
-        shader::ShaderReflectionCache::loadFromFile(package.artifacts.reflectionPath);
-    if (!cached.success) {
-        std::fprintf(stderr,
-            "[shader-reflection] load failed path='%s': %s\n",
-            package.artifacts.reflectionPath.c_str(),
-            cached.diagnostics.c_str());
-        return false;
-    }
-    const auto artifactValidation =
-        shader::ShaderPipelineReflectionValidator::validateGeneratedArtifact(cached.module,
-            package.slangModulePath,
-            package.artifacts.spirvPath,
-            package.artifacts.mslPath,
-            package.artifacts.wgslPath);
-    if (!artifactValidation.success) {
-        std::fprintf(stderr,
-            "[shader-reflection] artifact validation failed source='%s': %s\n",
-            package.slangModulePath.c_str(),
-            artifactValidation.diagnostics.c_str());
-        return false;
-    }
-
-    rhi::copyArtifactOwnedShaderReflection(package.reflection, cached.module.reflection);
-    for (auto& entrypoint : package.entrypoints) {
-        for (const auto& reflected : cached.module.reflection.entryPoints) {
-            if (reflected.name == entrypoint.entryPoint
-                && rhiStageFor(reflected.stage) == entrypoint.stage) {
-                entrypoint.computeWorkgroupSizeX = reflected.computeWorkgroupSizeX;
-                entrypoint.computeWorkgroupSizeY = reflected.computeWorkgroupSizeY;
-                entrypoint.computeWorkgroupSizeZ = reflected.computeWorkgroupSizeZ;
-                entrypoint.writesRenderTargetArrayIndex = reflected.writesRenderTargetArrayIndex;
-                break;
-            }
+    diagnostic.clear();
+    try {
+        if (desc.prepared && desc.budget.source) {
+            diagnostic = "RHI-GENERATED-PACKAGE-SOURCE-AMBIGUOUS";
+            return false;
         }
+        auto prepared = desc.prepared;
+        if (!prepared) {
+            auto quota = core::makeShared<core::CpuMemoryQuota>(desc.budget.maxCpuMetadataBytes);
+            prepared = shader::GeneratedShaderArtifactSet::load(
+                desc.publication, desc.budget, quota, diagnostic);
+            if (!prepared)
+                return false;
+        }
+        const auto publication = core::FilePath::utf8(desc.publication);
+        if (!package.artifacts.publicationPath.empty()
+            && core::FilePath::utf8(
+                   std::filesystem::u8path(package.artifacts.publicationPath.begin(),
+                       package.artifacts.publicationPath.end()))
+                != publication) {
+            diagnostic = "RHI-GENERATED-PACKAGE-PUBLICATION-MISMATCH";
+            return false;
+        }
+        const auto binding =
+            rhi::validateGeneratedShaderPackageSource(package, prepared, publication);
+        if (!binding.success) {
+            diagnostic = binding.diagnostics;
+            return false;
+        }
+        const auto& reflection = prepared->module().reflection;
+        for (auto& entrypoint : package.entrypoints) {
+            const auto found = std::find_if(reflection.entryPoints.begin(),
+                reflection.entryPoints.end(),
+                [&](const auto& reflected) {
+                    return reflected.name == entrypoint.entryPoint
+                        && rhiStageFor(reflected.stage) == entrypoint.stage;
+                });
+            if (found == reflection.entryPoints.end()) {
+                diagnostic = "RHI-GENERATED-PACKAGE-ENTRY-ABI";
+                return false;
+            }
+            entrypoint.computeWorkgroupSizeX = found->computeWorkgroupSizeX;
+            entrypoint.computeWorkgroupSizeY = found->computeWorkgroupSizeY;
+            entrypoint.computeWorkgroupSizeZ = found->computeWorkgroupSizeZ;
+            entrypoint.writesRenderTargetArrayIndex = found->writesRenderTargetArrayIndex;
+        }
+        rhi::copyArtifactOwnedShaderReflection(package.reflection, reflection);
+        package.artifacts.publicationPath = publication;
+        package.generatedArtifactSet = std::move(prepared);
+        package.generatedReflectionHydrated = true;
+        return true;
+    } catch (const std::bad_alloc&) {
+        diagnostic = "RHI-GENERATED-PACKAGE-ALLOCATION";
+    } catch (const std::exception&) {
+        diagnostic = "RHI-GENERATED-PACKAGE-PREPARATION";
     }
-    package.generatedReflectionHydrated = true;
-    return true;
+    return false;
+}
+
+bool hydrateShaderPackageReflectionFromArtifact(
+    rhi::ShaderPackageDesc& package, core::pmr::String& diagnostic)
+{
+    // ConventionalGenerated/1 is an explicit cold compiler-output profile.
+    // Supplied immutable input always wins; neither backend nor draw code calls this.
+    ShaderPackagePreparationDesc desc;
+    desc.prepared = package.generatedArtifactSet;
+    if (!package.artifacts.publicationPath.empty())
+        desc.publication = std::filesystem::u8path(
+            package.artifacts.publicationPath.begin(), package.artifacts.publicationPath.end());
+    else {
+        constexpr std::string_view suffix = ".reflection.yaml";
+        const std::string_view reflection = package.artifacts.reflectionPath;
+        if (reflection.size() <= suffix.size()
+            || reflection.substr(reflection.size() - suffix.size()) != suffix) {
+            package.generatedReflectionHydrated = false;
+            diagnostic = "RHI-GENERATED-PACKAGE-PUBLICATION";
+            return false;
+        }
+        core::pmr::String publication(reflection.substr(0, reflection.size() - suffix.size()),
+            &core::defaultCpuMemoryResource());
+        publication += ".artifact-set.yaml";
+        desc.publication = std::filesystem::u8path(publication.begin(), publication.end());
+    }
+    // ConventionalGenerated/1 finite cold admission limits, also configurable
+    // through the explicit overload: 16MiB/file, 64MiB total/CPU, 4096 bindings,
+    // 64 reflected entries. These are budgets, never semantic fallback values.
+    desc.budget = {16u * 1024u * 1024u, 64u * 1024u * 1024u, 64u * 1024u * 1024u, 4096u, 64u};
+    return hydrateShaderPackageReflectionFromArtifact(package, desc, diagnostic);
+}
+
+bool hydrateShaderPackageReflectionFromArtifact(rhi::ShaderPackageDesc& package)
+{
+    core::pmr::String diagnostic{&core::defaultCpuMemoryResource()};
+    if (hydrateShaderPackageReflectionFromArtifact(package, diagnostic))
+        return true;
+    std::fprintf(stderr,
+        "[shader-reflection] prepare failed path='%s': %s\n",
+        package.artifacts.reflectionPath.c_str(),
+        diagnostic.c_str());
+    return false;
 }
 
 } // namespace arp::renderer

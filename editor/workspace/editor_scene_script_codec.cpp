@@ -43,18 +43,31 @@ void checkIdentity(std::uint64_t value)
     require(value && value <= std::uint64_t(INT64_MAX), "EDITOR-SCENE-V4-IDENTITY");
 }
 
-enum class SourceVerification { RetainedObservation, DiskAdmission };
+enum class SourceVerification { RetainedObservation, ColdAdmission };
 
 void verifyProject(const EditorScriptComponentCatalog& catalog,
     const EditorSceneScriptInputs& input,
-    SourceVerification sources = SourceVerification::DiskAdmission)
+    SourceVerification sources = SourceVerification::ColdAdmission)
 {
     require(catalog.modules().matchesManifest(input.project),
         "EDITOR-SCENE-V4-PROJECT-MODULE-CONFLICT");
     core::pmr::String diagnostic;
-    if (sources == SourceVerification::DiskAdmission
-        && !catalog.modules().verifySources(input.projectRoot, diagnostic))
-        throw std::invalid_argument(diagnostic.c_str());
+    if (sources == SourceVerification::ColdAdmission) {
+        if (input.sources) {
+            const char* issue = nullptr;
+            const bool valid = input.sources->validate(issue);
+            require(valid, issue ? issue : "PROJECT-SOURCE-CONTEXT");
+            require(input.projectRoot
+                    == std::filesystem::u8path(input.sources->snapshot->location().root),
+                "EDITOR-SCRIPT-SOURCE-ROOT");
+            if (!catalog.modules().verifySources(*input.sources->snapshot,
+                    *input.sources->files,
+                    input.sources->epoch,
+                    diagnostic))
+                throw std::invalid_argument(diagnostic.c_str());
+        } else if (!catalog.modules().verifySources(input.projectRoot, diagnostic))
+            throw std::invalid_argument(diagnostic.c_str());
+    }
 }
 
 Node writeScript(const State& state)
@@ -379,7 +392,7 @@ static bool encodeSnapshot(const EditorSceneDocument& document,
     const EditorSceneScriptInputs& input,
     core::pmr::String& yaml,
     core::pmr::String& diagnostic,
-    SourceVerification sources = SourceVerification::DiskAdmission)
+    SourceVerification sources = SourceVerification::ColdAdmission)
 {
     diagnostic.clear();
     try {
@@ -477,7 +490,7 @@ bool EditorSceneScriptCodec::contentHash(const EditorSceneDocument& document,
     core::pmr::String& hash,
     core::pmr::String& diagnostic)
 {
-    return snapshotHash(document, input, hash, diagnostic, SourceVerification::DiskAdmission);
+    return snapshotHash(document, input, hash, diagnostic, SourceVerification::ColdAdmission);
 }
 
 bool EditorSceneScriptCodec::observeContentHash(const EditorSceneDocument& document,
@@ -553,8 +566,12 @@ bool EditorSceneScriptCodec::prepare(std::string_view yaml,
                 || (runtimeId.is_string() && !Y::text(runtimeId).empty()
                     && candidate->setRuntimeSceneId(Y::text(runtimeId))),
             "EDITOR-SCENE-V4-RUNTIME-IDENTITY");
-        if (!candidate->prepareScriptAuthoring(
-                input.projectRoot, input.project, input.modules, diagnostic))
+        const bool scriptsPrepared = input.sources
+            ? candidate->prepareScriptAuthoringSources(
+                  *input.sources, input.project, input.modules, diagnostic)
+            : candidate->prepareScriptAuthoring(
+                  input.projectRoot, input.project, input.modules, diagnostic);
+        if (!scriptsPrepared)
             return false;
         applyObject(candidate->scene(), root);
         {

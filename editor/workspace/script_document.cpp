@@ -170,6 +170,12 @@ EditorCommandOutcome EditorShell::closeScriptDocument(std::uint64_t documentId, 
 
 bool EditorShell::openScriptFile(const std::filesystem::path& path)
 {
+    if (projectBrowser_.sourceSnapshot()) {
+        return submitCommand(OpenScriptCommand{core::FilePath::utf8(
+                                 path.lexically_relative(projectBrowser_.root()))})
+                   .status
+            == EditorResponseStatus::Completed;
+    }
     auto message = "Opened " + core::FilePath::utf8(path.filename());
     core::pmr::String workspace("Script", presentationState_.workspace_.get_allocator());
     const auto result = scriptDocuments_.openFile(projectBrowser_.root(), path);
@@ -191,6 +197,25 @@ bool EditorShell::openScriptFile(const std::filesystem::path& path)
     else
         feedback("Script open failed: choose an .arp file inside res://");
     return false;
+}
+
+void EditorShell::appendScriptSnapshot(EditorStateSnapshot& snapshot) const
+{
+    snapshot.workspace = presentationState_.workspace();
+    snapshot.scene = presentationState_.scene();
+    snapshot.selection = presentationState_.selection();
+    snapshot.activeDocumentId = scriptDocuments_.activeId();
+    snapshot.openDocumentCount = static_cast<std::uint32_t>(
+        std::min<std::size_t>(scriptDocuments_.size(), std::numeric_limits<std::uint32_t>::max()));
+    snapshot.hasActiveDocument = scriptDocuments_.active() != nullptr;
+    snapshot.scriptDirty = scriptDocuments_.active() && scriptDocuments_.active()->dirty();
+    snapshot.scriptPresentationFailed = scriptPresentationFailed_;
+    if (const auto* document = scriptDocuments_.active()) {
+        snapshot.scriptText = document->text;
+        const auto relative = document->path.lexically_relative(projectBrowser_.root());
+        if (!relative.empty() && !relative.is_absolute())
+            snapshot.scriptRelativePath = core::FilePath::utf8(relative);
+    }
 }
 
 bool EditorShell::saveScript()
@@ -236,6 +261,8 @@ EditorCommandOutcome EditorShell::saveScriptDocument()
 
 EditorCommandOutcome EditorShell::reloadScriptDocument(bool discardChanges)
 {
+    if (projectBrowser_.sourceSnapshot())
+        return reloadSourceScript(discardChanges);
     try {
         core::pmr::String message(
             "Reloaded script from disk; local history cleared.", &core::defaultCpuMemoryResource());

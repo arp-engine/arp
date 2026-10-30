@@ -21,6 +21,7 @@ struct EditorSceneViewportSessionConfig {
     std::uint32_t maxSnapshotObjects = 0u;
     std::uint32_t maxDrawCalls = 0u;
     std::uint32_t budgetVersion = 0u;
+    EditorSceneViewportSurfaceProfile surfaceProfile;
 };
 
 inline constexpr EditorSceneViewportSessionConfig kEditorSceneViewportSmokeSessionConfig{

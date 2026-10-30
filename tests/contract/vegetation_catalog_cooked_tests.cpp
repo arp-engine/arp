@@ -14,6 +14,9 @@
 #include "resource/terrain_asset_resource.h"
 #include "resource/vegetation_catalog_build_service.h"
 #include "resource/vegetation_catalog_cooked.h"
+#include "tests/fixtures/cooked_vegetation_fixture.h"
+#include "tests/fixtures/package_async_fixture.h"
+#include "tests/fixtures/package_source_fixture.h"
 #include "tests/fixtures/static_glb_geometry.h"
 
 #include <algorithm>
@@ -45,39 +48,7 @@ class Fixture final {
 public:
     static VegetationCatalogResourceData catalog()
     {
-        VegetationCatalogResourceData data;
-        data.templateConfig.hasEnvironmentAssets = true;
-        data.templateConfig.grassCardCount = 1u;
-        VegetationCatalogAssetEntry asset;
-        asset.id = "grass-a";
-        asset.source = "explicit-provenance-without-host-file.glb";
-        asset.role = "ground_cover";
-        asset.category = "ground_cover";
-        asset.heightClass = "low";
-        asset.templateCategory = vegetation::TemplateCategory::FoliageGrass;
-        asset.templateId = 1u;
-        asset.materials.push_back({7u, materialId});
-        data.assets.push_back(std::move(asset));
-        vegetation::VegetationTemplate mesh;
-        mesh.id = 1u;
-        mesh.category = vegetation::TemplateCategory::FoliageGrass;
-        mesh.vertices.resize(3u);
-        mesh.vertices[0].position[0] = 1.25f;
-        mesh.vertices[1].position[1] = 2.5f;
-        mesh.vertices[2].position[2] = -0.75f;
-        for (auto& vertex : mesh.vertices) {
-            vertex.normal[1] = 1.0f;
-            vertex.tangent[0] = vertex.tangent[3] = 1.0f;
-            vertex.primaryBend = 0.25f;
-            vertex.flutter = 0.5f;
-            vertex.stiffness = 0.75f;
-        }
-        mesh.indices = {0u, 1u, 2u};
-        mesh.sections.push_back({0u, 3u, 7u});
-        mesh.materialIndex = 7u;
-        mesh.baseColor[0] = 0.125f;
-        data.templates.push_back(std::move(mesh));
-        return data;
+        return tests::CookedVegetationFixture::catalog();
     }
 
     static core::UniquePtr<VegetationCatalogResource> resource(const std::filesystem::path& path)
@@ -1312,12 +1283,16 @@ void testCodec(const std::filesystem::path& root)
     for (const auto& intent : decoded.files) {
         ResourceSourceBuffer source;
         source.path = intent.path;
+        source.pathScope = intent.pathScope;
+        source.mount = intent.mount;
         source.bytes = core::readBinaryFile(std::filesystem::path(intent.path.c_str())).bytes;
         assert(sources.add(std::move(source)));
     }
     ResourceSourceSet manifestOnly;
     ResourceSourceBuffer source;
     source.path = decoded.files[0].path;
+    source.pathScope = decoded.files[0].pathScope;
+    source.mount = decoded.files[0].mount;
     source.bytes = core::readBinaryFile(manifest).bytes;
     assert(manifestOnly.add(std::move(source)));
     std::filesystem::rename(cooked, root / "hidden");
@@ -1473,6 +1448,87 @@ void testMaterialClosure(const std::filesystem::path& root)
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::string_view(argv[1]) == "--async-contracts") {
+        unified_io_fixture::Workspace workspace;
+        const auto root = workspace.root / "snapshot";
+        ClosureFixture::write(root);
+        tests::PackageAsyncFixture::contracts(root);
+#if defined(_WIN32)
+        tests::PackageAsyncFixture::run(
+            core::makeShared<core::io::NativeDirectoryFileBackend>(workspace.descriptor()), true);
+#endif
+        return 0;
+    }
+    if (argc == 3 && std::string_view(argv[1]) == "--async-http") {
+        for (const auto action : {tests::PackageAsyncFixture::Action::CancelAfterRead,
+                 tests::PackageAsyncFixture::Action::Remount,
+                 tests::PackageAsyncFixture::Action::Shutdown})
+            tests::PackageAsyncFixture::run(
+                tests::PackageAsyncFixture::http(argv[2]), false, action);
+        for (unsigned i = 0; i < 20; ++i)
+            tests::PackageAsyncFixture::run(tests::PackageAsyncFixture::http(argv[2]), true);
+        const auto before = core::defaultCpuAllocator().stats();
+        for (unsigned i = 0; i < 20; ++i)
+            tests::PackageAsyncFixture::run(tests::PackageAsyncFixture::http(argv[2]), true);
+        const auto after = core::defaultCpuAllocator().stats();
+        assert(before.liveBytes == after.liveBytes);
+        assert(before.allocationCount - before.deallocationCount
+            == after.allocationCount - after.deallocationCount);
+        std::puts(
+            "Async package real HTTP with no native file list, 20 ordinary cycles core live bytes/count delta 0 PASS");
+        return 0;
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--source-contracts") {
+        using Source = tests::PackageSourceFixture;
+        Source::codecContracts();
+        unified_io_fixture::Workspace workspace;
+        const auto sourceRoot = workspace.root / "snapshot";
+        ClosureFixture::write(sourceRoot);
+        for (const auto mutation : {Source::Mutation::None,
+                 Source::Mutation::Missing,
+                 Source::Mutation::Corrupt,
+                 Source::Mutation::BadUtf8,
+                 Source::Mutation::UnknownVersion,
+                 Source::Mutation::WrongOrigin,
+                 Source::Mutation::UnclosedCorrupt})
+            Source::load(sourceRoot, Source::Backend::Memory, mutation);
+#if defined(_WIN32)
+        Source::load(sourceRoot, Source::Backend::Native);
+#endif
+        for (unsigned i = 0; i < 20; ++i)
+            Source::load(sourceRoot, Source::Backend::Memory);
+        const auto before = core::defaultCpuAllocator().stats();
+        for (unsigned i = 0; i < 20; ++i)
+            Source::load(sourceRoot, Source::Backend::Memory);
+        const auto after = core::defaultCpuAllocator().stats();
+        assert(before.liveBytes == after.liveBytes);
+        assert(before.allocationCount - before.deallocationCount
+            == after.allocationCount - after.deallocationCount);
+        std::puts(
+            "Package source-only native/memory, failed atomic candidate, 20 ordinary cycles: core live bytes/count delta 0 PASS");
+        return 0;
+    }
+    if (argc == 4 && std::string_view(argv[1]) == "--source-http") {
+        using Source = tests::PackageSourceFixture;
+        for (unsigned i = 0; i < 20; ++i)
+            Source::load(std::filesystem::u8path(argv[2]),
+                Source::Backend::Http,
+                Source::Mutation::None,
+                argv[3]);
+        const auto before = core::defaultCpuAllocator().stats();
+        for (unsigned i = 0; i < 20; ++i)
+            Source::load(std::filesystem::u8path(argv[2]),
+                Source::Backend::Http,
+                Source::Mutation::None,
+                argv[3]);
+        const auto after = core::defaultCpuAllocator().stats();
+        assert(before.liveBytes == after.liveBytes);
+        assert(before.allocationCount - before.deallocationCount
+            == after.allocationCount - after.deallocationCount);
+        std::puts(
+            "Package source-only real engine HTTP, 20 ordinary cycles: core live bytes/count delta 0 PASS");
+        return 0;
+    }
     if (argc == 3) {
         if (std::string_view(argv[1]) == "--cook")
             Fixture::writePackage(argv[2]);

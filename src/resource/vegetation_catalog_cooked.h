@@ -27,9 +27,17 @@ public:
     VegetationCatalogCookedResult inspect(const ResourceReference& reference,
         const std::filesystem::path& manifest,
         const ResourceLoadContext& context = {}) const;
+    VegetationCatalogCookedResult inspect(const ResourceReference& reference,
+        const std::filesystem::path& manifest,
+        const ResourceLoadContext& context,
+        ResourceFileOrigin origin) const;
     VegetationCatalogCookedResult decode(const ResourceReference& reference,
         const std::filesystem::path& manifest,
         const ResourceLoadContext& context = {}) const;
+    VegetationCatalogCookedResult decode(const ResourceReference& reference,
+        const std::filesystem::path& manifest,
+        const ResourceLoadContext& context,
+        ResourceFileOrigin origin) const;
     // Persists assets/templates and validates the one-LOD template config.
     // Legacy catalog/source/import/validation aggregates are outside this schema.
     VegetationCatalogCookedResult write(const ResourceReference& reference,

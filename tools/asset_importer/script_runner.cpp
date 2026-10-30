@@ -10,6 +10,7 @@
 #include "scriptvm/plugin/aot_dynamic_package.h"
 #include "scriptvm/runtime/module_registry.h"
 #include "scriptvm/runtime/semantic_runtime.h"
+#include "tools/asset_importer/script_plugin_sources.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -319,9 +320,12 @@ ScriptToolRunner::ScriptToolRunner(std::filesystem::path projectRoot,
     std::filesystem::path pluginRoot,
     std::filesystem::path cacheRoot,
     std::filesystem::path hostLibrary,
-    ScriptAotToolchain aotToolchain)
+    ScriptAotToolchain aotToolchain,
+    std::filesystem::path sourceModuleRoot)
     : projectRoot_(std::move(projectRoot)), pluginRoot_(std::move(pluginRoot)),
       cacheRoot_(std::move(cacheRoot)), hostLibrary_(std::move(hostLibrary)),
+      sourceModuleRoot_(sourceModuleRoot.empty() ? projectRoot_ / "tools" / "unity_import"
+                                                 : std::move(sourceModuleRoot)),
       aotToolchain_(std::move(aotToolchain))
 {
 #if defined(ARP_SCRIPT_AOTC_PATH)
@@ -377,6 +381,7 @@ ScriptRunResult ScriptToolRunner::runPackageFunction(const std::filesystem::path
         return result;
     }
     scriptvm::CppPluginImporterDesc pluginDesc;
+    configureScriptToolPluginSources(pluginDesc);
     pluginDesc.sourceRoot =
         std::filesystem::exists(pluginRoot_) ? pluginRoot_ : projectRoot_ / "modules";
     pluginDesc.cacheRoot = cacheRoot_;
@@ -456,6 +461,7 @@ ScriptRunResult ScriptToolRunner::runFileFunction(const std::filesystem::path& s
         return result;
     }
     scriptvm::CppPluginImporterDesc pluginDesc;
+    configureScriptToolPluginSources(pluginDesc);
     pluginDesc.sourceRoot =
         std::filesystem::exists(pluginRoot_) ? pluginRoot_ : projectRoot_ / "modules";
     pluginDesc.cacheRoot = cacheRoot_;
@@ -751,12 +757,16 @@ ScriptToolRunner::ScriptToolRunner(std::filesystem::path projectRoot,
     std::filesystem::path pluginRoot,
     std::filesystem::path cacheRoot,
     std::filesystem::path hostLibrary,
-    ScriptAotToolchain aotToolchain)
+    ScriptAotToolchain aotToolchain,
+    std::filesystem::path sourceModuleRoot)
     : projectRoot_(std::move(projectRoot)), pluginRoot_(std::move(pluginRoot)),
       cacheRoot_(std::move(cacheRoot)), hostLibrary_(std::move(hostLibrary)),
+      sourceModuleRoot_(sourceModuleRoot.empty() ? projectRoot_ / "tools" / "unity_import"
+                                                 : std::move(sourceModuleRoot)),
       aotToolchain_(std::move(aotToolchain))
 {
     scriptvm::CppPluginImporterDesc pluginDesc;
+    configureScriptToolPluginSources(pluginDesc);
     pluginDesc.sourceRoot =
         std::filesystem::exists(pluginRoot_) ? pluginRoot_ : projectRoot_ / "modules";
     pluginDesc.cacheRoot = cacheRoot_;
@@ -791,13 +801,11 @@ ScriptRunResult ScriptToolRunner::runFileFunction(const std::filesystem::path& s
     auto& pluginImporter = *pluginImporter_;
     scriptvm::ModuleRegistry modules;
     modules.setCppPluginImporter(&pluginImporter);
-    const auto sourceModuleRoot = projectRoot_ / "tools" / "unity_import";
+    const auto sourceModuleRoot = sourceModuleRoot_;
     core::pmr::String sourceModuleDiagnostics{&core::defaultCpuMemoryResource()};
-    modules.setSourceResolver([sourceModuleRoot,
-                                  &modules,
-                                  &sourceModuleDiagnostics,
-                                  &pluginImporter](const core::pmr::String& moduleName)
-                                  -> std::shared_ptr<scriptvm::ModuleExports> {
+    auto sourceResolver =
+        [sourceModuleRoot, &modules, &sourceModuleDiagnostics, &pluginImporter](
+            const core::pmr::String& moduleName) -> std::shared_ptr<scriptvm::ModuleExports> {
         sourceModuleDiagnostics.clear();
         const auto fail = [&](const char* message) -> std::shared_ptr<scriptvm::ModuleExports> {
             sourceModuleDiagnostics = message;
@@ -939,7 +947,19 @@ ScriptRunResult ScriptToolRunner::runFileFunction(const std::filesystem::path& s
         }
         exports->nativeLifetime = lifetime;
         return exports;
-    });
+    };
+    modules.setDeclaredSourceResolver(
+        [resolver = std::move(sourceResolver), &sourceModuleDiagnostics](
+            const core::pmr::String& name) -> scriptvm::ModuleResolution {
+            auto exports = resolver(name);
+            if (exports)
+                return {scriptvm::ModuleResolutionStatus::Ready, std::move(exports), {}};
+            if (!sourceModuleDiagnostics.empty())
+                return {scriptvm::ModuleResolutionStatus::Failed, {}, sourceModuleDiagnostics};
+            // This tool's existing filename-based discovery is still inventoried
+            // for M6; only its explicit failure result is migrated here.
+            return {};
+        });
 
     auto parsed =
         scriptvm::parseSource(source.text, core::toPmrString(scriptPath.generic_string()));

@@ -1,10 +1,7 @@
 #pragma once
 
-#include "core/api.h"
-#include "core/memory/cpu_allocator.h"
-
-#include <cstdint>
-#include <filesystem>
+#include "ui/ui_font.h"
+#include "ui/ui_font_source.h"
 
 #if ARP_HAS_FREETYPE
 #include <ft2build.h>
@@ -13,21 +10,17 @@
 
 namespace arp::ui {
 
-/// Caches FreeType FT_Library + FT_Face handles + on-disk font bytes, keyed by
-/// the font source path. Without this cache, UiFontTextRasterizer re-inits
-/// FreeType, re-reads the .ttf file from disk, and re-parses the face on
-/// *every* rasterize() call (twice per call, due to the validation step) -
-/// which is the root cause of the ~2.5s stutter when TextLayoutCache misses.
-///
-/// Thread safety: NOT thread-safe. Callers must use it from a single thread
-/// (the logic/main thread). The FT_Face handles are kept alive for the
-/// lifetime of the cache, so repeated rasterize() calls only pay the cost of
-/// FT_Load_Char (the actual glyph rasterization), not FT_Init_FreeType +
-/// readFontBytes + FT_New_Memory_Face + FT_Done_Face.
+struct UiFontFaceCacheDesc {
+    std::size_t maxFaces = 32;
+    std::size_t maxResidentSourceBytes = 64u * 1024u * 1024u;
+};
+
+// Owner-thread cache. Prepared sources key provenance and content; path-only
+// calls capture a HostFilesystem snapshot once until clear().
 class ARP_API UiFontFaceCache final {
 public:
     struct CachedFace {
-        arp::core::pmr::Vector<std::uint8_t> fontBytes{&arp::core::defaultCpuMemoryResource()};
+        core::SharedPtr<const UiFontSource> source;
 #if ARP_HAS_FREETYPE
         FT_Library library = nullptr;
         FT_Face face = nullptr;
@@ -36,46 +29,44 @@ public:
         void* face = nullptr;
 #endif
         std::uint32_t currentSizePx = 0;
+        CachedFace() = default;
+        ~CachedFace();
+        CachedFace(const CachedFace&) = delete;
+        CachedFace& operator=(const CachedFace&) = delete;
     };
 
-    UiFontFaceCache() = default;
-    ~UiFontFaceCache();
-
-    // Movable but not copyable: the FT_Face/FT_Library handles are unique
-    // resources. Move transfers ownership; the source is left empty.
+    explicit UiFontFaceCache(UiFontFaceCacheDesc desc = {});
+    ~UiFontFaceCache() = default;
     UiFontFaceCache(UiFontFaceCache&& other) noexcept;
     UiFontFaceCache& operator=(UiFontFaceCache&& other) noexcept;
     UiFontFaceCache(const UiFontFaceCache&) = delete;
     UiFontFaceCache& operator=(const UiFontFaceCache&) = delete;
 
-    /// Acquire a cached (or newly-created) FT_Face for the given source path.
-    /// On first call for a path: reads the font file, inits FreeType, creates
-    /// the face, and caches it. On subsequent calls: returns the cached face,
-    /// only calling FT_Set_Pixel_Sizes if sizePx changed.
-    /// Returns nullptr on failure (with diagnostics populated).
-    const CachedFace* acquire(const std::filesystem::path& sourcePath,
-        std::uint32_t sizePx,
-        arp::core::pmr::String& diagnostics);
-
-    /// Resolve the FreeType kerning adjustment for a Unicode codepoint pair.
-    /// Returns false only when the face or pair cannot be queried.
-    bool kerningX(const std::filesystem::path& sourcePath,
+    const CachedFace* acquire(const UiFontFaceDesc& desc, core::pmr::String& diagnostic);
+    const CachedFace* acquire(
+        const std::filesystem::path& path, std::uint32_t sizePx, core::pmr::String& diagnostic);
+    bool kerningX(const UiFontFaceDesc& desc,
+        std::uint32_t leftCodepoint,
+        std::uint32_t rightCodepoint,
+        float& adjustmentX,
+        core::pmr::String& diagnostic);
+    bool kerningX(const std::filesystem::path& path,
         std::uint32_t sizePx,
         std::uint32_t leftCodepoint,
         std::uint32_t rightCodepoint,
         float& adjustmentX,
-        arp::core::pmr::String& diagnostics);
+        core::pmr::String& diagnostic);
 
-    /// Release all cached faces and font bytes.
-    void clear();
+    void clear() noexcept;
+
+    std::size_t size() const noexcept { return entries_.size(); }
+
+    std::size_t residentSourceBytes() const noexcept { return residentSourceBytes_; }
 
 private:
-    struct Entry {
-        std::filesystem::path path;
-        CachedFace face;
-    };
-
-    arp::core::pmr::Vector<Entry> entries_{&arp::core::defaultCpuMemoryResource()};
+    UiFontFaceCacheDesc desc_;
+    core::pmr::Vector<core::UniquePtr<CachedFace>> entries_{&core::defaultCpuMemoryResource()};
+    std::size_t residentSourceBytes_ = 0;
 };
 
 } // namespace arp::ui

@@ -2,6 +2,7 @@
 
 #include "scriptvm/aot/aot_codegen_v5.h"
 #include "scriptvm/aot/aot_manifest_runtime.h"
+#include "scriptvm/plugin/script_source_snapshot.h"
 
 #include <filesystem>
 
@@ -61,6 +62,12 @@ struct ScriptAotPackageBuildResult {
 class ARP_API ScriptAotCompiler final {
 public:
     DirectNativeGeneratedModuleV5 compileModule(const ScriptAotPackageDefinition& package,
+        const core::pmr::String& moduleId,
+        const ScriptSourceSnapshot& sources,
+        const core::pmr::String& packageIdentity,
+        const core::pmr::String& generatedHeader) const;
+    // Source compatibility only: no implicit file IO or unbounded source input.
+    DirectNativeGeneratedModuleV5 compileModule(const ScriptAotPackageDefinition& package,
         const ScriptAotPackageModuleInput& module,
         const core::pmr::String& packageIdentity,
         const core::pmr::String& generatedHeader) const;
@@ -68,8 +75,19 @@ public:
 
 class ARP_API ScriptAotPackageBuilder final {
 public:
+    static ScriptAotPackageLoadResult load(const core::io::FileReadRequest& binding,
+        core::io::FileReadResult source,
+        std::uint64_t maxTextBytes);
+    static ScriptAotPackageLoadResult load(
+        const std::filesystem::path& manifestPath, std::uint64_t maxManifestBytes);
     static ScriptAotPackageLoadResult load(const std::filesystem::path& manifestPath);
     static ScriptResult validate(const ScriptAotPackageDefinition& package);
+    static ScriptResult captureHostSources(
+        const ScriptAotPackageDefinition& package, ScriptSourceSnapshot& sources);
+    ScriptAotPackageBuildResult build(const ScriptAotPackageDefinition& package,
+        const ScriptSourceSnapshot& sources,
+        const std::filesystem::path& outputDirectory) const;
+    // Source compatibility only; use an explicitly prepared snapshot above.
     ScriptAotPackageBuildResult build(const ScriptAotPackageDefinition& package,
         const std::filesystem::path& outputDirectory) const;
 };

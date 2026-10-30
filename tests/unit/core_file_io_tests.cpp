@@ -62,6 +62,27 @@ void missingFileReportsDiagnostics()
     assert(!binary.diagnostics.empty());
 }
 
+void preservesRawTextAndEnforcesBudget()
+{
+    const auto path = testRoot() / "raw.txt";
+    const char raw[] = {'\xef', '\xbb', '\xbf', 'a', '\r', '\n', '\0', '\xff'};
+    writeBytes(path, raw, sizeof(raw));
+    const auto text = arp::core::readTextFile(path, sizeof(raw));
+    const auto binary = arp::core::readBinaryFile(path, sizeof(raw));
+    assert(text.success && binary.success);
+    assert(text.text.size() == sizeof(raw) && binary.bytes.size() == sizeof(raw));
+    for (std::size_t i = 0; i < sizeof(raw); ++i) {
+        assert(static_cast<unsigned char>(text.text[i]) == static_cast<unsigned char>(raw[i]));
+        assert(binary.bytes[i] == static_cast<unsigned char>(raw[i]));
+    }
+    const auto deniedText = arp::core::readTextFile(path, sizeof(raw) - 1);
+    const auto deniedBinary = arp::core::readBinaryFile(path, sizeof(raw) - 1);
+    assert(!deniedText.success && deniedText.text.empty());
+    assert(!deniedBinary.success && deniedBinary.bytes.empty());
+    assert(deniedText.diagnostics.find("text file exceeds byte budget: ") == 0);
+    assert(deniedBinary.diagnostics.find("binary file exceeds byte budget: ") == 0);
+}
+
 } // namespace
 
 int main()
@@ -69,5 +90,6 @@ int main()
     readsTextAndEmptyFiles();
     readsBinaryBytes();
     missingFileReportsDiagnostics();
+    preservesRawTextAndEnforcesBudget();
     return 0;
 }

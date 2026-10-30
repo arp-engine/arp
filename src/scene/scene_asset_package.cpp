@@ -2,6 +2,7 @@
 
 #include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
+#include "resource/resource_source_io.h"
 #include "resource/serialization_reference_resolver.h"
 #include "scene/scene_asset_resource.h"
 
@@ -37,8 +38,9 @@ struct InspectedReference {
     std::uint32_t ordinal = 0;
 };
 
-DocumentBinding binding(
-    const resource::InternalAssetPackageEntry& entry, const std::filesystem::path& directory)
+DocumentBinding binding(const resource::InternalAssetPackageEntry& entry,
+    const std::filesystem::path& directory,
+    const resource::AssetPackageSourceContext* sources = nullptr)
 {
     const auto envelope = Y::parseSingleDocument(entry.envelopeYaml);
     require(Y::text(envelope, "resourceId") == entry.resourceId
@@ -54,16 +56,25 @@ DocumentBinding binding(
     b.relative = Y::text(payload, "documentPath");
     const auto bytes = Y::uint64(Y::required(payload, "maxDocumentBytes"));
     b.objects = Y::uint32(payload, "maxObjects");
-    require(bytes && bytes <= SIZE_MAX && b.objects, "ARP-SCENE-PACKAGE-BUDGET");
+    require(bytes && bytes < SIZE_MAX && b.objects, "ARP-SCENE-PACKAGE-BUDGET");
     b.bytes = static_cast<std::size_t>(bytes);
     require(b.relative.find('\0') == core::pmr::String::npos
             && core::FilePath::isSafeRelativePath(b.relative),
         "ARP-SCENE-PACKAGE-DOCUMENT-PATH");
+    if (sources) {
+        std::filesystem::path path;
+        require(sources->resources.requirePreloadedSources && sources->resources.sources
+                && resource::resolveResourceSourcePath(
+                    directory, b.relative, sources->origin, path),
+            "ARP-SCENE-PACKAGE-SOURCE-CONFIG-OR-PATH");
+        b.absolute = core::FilePath::utf8(path);
+        return b;
+    }
     std::error_code error;
     const auto root = std::filesystem::canonical(directory, error);
     require(!error, "ARP-SCENE-PACKAGE-ROOT");
-    const auto path =
-        std::filesystem::canonical(root / std::filesystem::path(b.relative.c_str()), error);
+    const auto path = std::filesystem::canonical(
+        root / std::filesystem::u8path(b.relative.begin(), b.relative.end()), error);
     require(!error && core::FilePath::contains(root, path)
             && std::filesystem::is_regular_file(path, error) && !error,
         "ARP-SCENE-PACKAGE-DOCUMENT-PATH");
@@ -217,15 +228,48 @@ public:
         return prefab_ ? "ScenePrefabResource" : "SceneAssetResource";
     }
 
+    bool planSourceReads(const resource::InternalAssetPackageEntry& entry,
+        const std::filesystem::path& root,
+        const resource::AssetPackageSourceContext& sources,
+        core::pmr::Vector<resource::ResourceFileReadIntent>& reads,
+        core::pmr::String& diagnostic) const override
+    {
+        try {
+            const auto b = binding(entry, root, &sources);
+            return resource::appendResourceReadIntent(
+                b.absolute, b.bytes, reads, diagnostic, sources.origin);
+        } catch (const core::YamlContractError& error) {
+            diagnostic = error.diagnostic;
+            return false;
+        }
+    }
+
     resource::AssetPackagePayloadIndex inspect(const resource::InternalAssetPackageEntry& entry,
         const std::filesystem::path& root) const override
+    {
+        return inspectImpl(entry, root, nullptr);
+    }
+
+    resource::AssetPackagePayloadIndex inspectSources(
+        const resource::InternalAssetPackageEntry& entry,
+        const std::filesystem::path& root,
+        const resource::AssetPackageSourceContext& sources) const override
+    {
+        return inspectImpl(entry, root, &sources);
+    }
+
+    resource::AssetPackagePayloadIndex inspectImpl(const resource::InternalAssetPackageEntry& entry,
+        const std::filesystem::path& root,
+        const resource::AssetPackageSourceContext* sources) const
     {
         resource::AssetPackagePayloadIndex result;
         try {
             require(entry.resourceType == resourceType(), "ARP-SCENE-PACKAGE-RESOURCE-TYPE");
-            const auto b = binding(entry, root);
-            const auto source =
-                core::readTextFile(std::filesystem::path(b.absolute.c_str()), b.bytes);
+            const auto b = binding(entry, root, sources);
+            const resource::ResourceLoadContext host;
+            const auto origin = sources ? sources->origin : resource::ResourceFileOrigin{};
+            const auto source = resource::readResourceText(
+                b.absolute, sources ? sources->resources : host, b.bytes, &origin);
             require(source.success, "ARP-SCENE-PACKAGE-DOCUMENT-READ-OR-BUDGET");
             const auto document = Y::parseSingleDocument(source.text);
             require(SceneDocumentResource::validateDocument(document,
@@ -313,18 +357,37 @@ public:
         const std::filesystem::path& root,
         core::pmr::String& diagnostic) const override
     {
-        const auto checked = inspect(entry, root);
+        return prepareImpl(entry, root, nullptr, diagnostic);
+    }
+
+    core::UniquePtr<resource::ResourceBase> prepareSources(
+        const resource::InternalAssetPackageEntry& entry,
+        const std::filesystem::path& root,
+        const resource::AssetPackageSourceContext& sources,
+        core::pmr::String& diagnostic) const override
+    {
+        return prepareImpl(entry, root, &sources, diagnostic);
+    }
+
+    core::UniquePtr<resource::ResourceBase> prepareImpl(
+        const resource::InternalAssetPackageEntry& entry,
+        const std::filesystem::path& root,
+        const resource::AssetPackageSourceContext* sources,
+        core::pmr::String& diagnostic) const
+    {
+        const auto checked = inspectImpl(entry, root, sources);
         if (!checked.success) {
             diagnostic = checked.diagnostics;
             return {};
         }
         try {
-            const auto b = binding(entry, root);
+            const auto b = binding(entry, root, sources);
+            const auto origin = sources ? sources->origin : resource::ResourceFileOrigin{};
             if (prefab_)
                 return core::makeUnique<ScenePrefabResource>(
-                    entry.resourceId, b.absolute, b.bytes, b.objects);
+                    entry.resourceId, b.absolute, b.bytes, b.objects, origin);
             return core::makeUnique<SceneAssetResource>(
-                entry.resourceId, b.absolute, b.bytes, b.objects);
+                entry.resourceId, b.absolute, b.bytes, b.objects, origin);
         } catch (...) {
             diagnostic = "ARP-SCENE-PACKAGE-PREPARE";
             return {};

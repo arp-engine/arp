@@ -1,194 +1,173 @@
 #include "ui/ui_font_face_cache.h"
 
-#include <algorithm>
-#include <fstream>
+#include "core/io/filesystem_path.h"
+#include "ui/detail/ui_freetype_memory.h"
+
+#include <limits>
+#include <utility>
+
+#if ARP_HAS_FREETYPE
+#include FT_MODULE_H
+#endif
 
 namespace arp::ui {
 
-namespace {
-
-arp::core::pmr::String text(const char* value)
+UiFontFaceCache::CachedFace::~CachedFace()
 {
-    return arp::core::pmr::String(value, &arp::core::defaultCpuMemoryResource());
+#if ARP_HAS_FREETYPE
+    if (face)
+        FT_Done_Face(face);
+    if (library)
+        FT_Done_Library(library);
+#endif
 }
 
-arp::core::pmr::Vector<std::uint8_t> readFontBytes(const std::filesystem::path& path)
+UiFontFaceCache::UiFontFaceCache(UiFontFaceCacheDesc desc) : desc_(desc)
 {
-    arp::core::pmr::Vector<std::uint8_t> bytes(&arp::core::defaultCpuMemoryResource());
-    std::ifstream input(path, std::ios::binary);
-    if (!input.good()) {
-        return bytes;
-    }
-    input.seekg(0, std::ios::end);
-    const auto size = input.tellg();
-    if (size <= 0) {
-        return bytes;
-    }
-    input.seekg(0, std::ios::beg);
-    bytes.resize(static_cast<std::size_t>(size));
-    input.read(reinterpret_cast<char*>(bytes.data()), size);
-    if (!input.good()) {
-        bytes.clear();
-    }
-    return bytes;
-}
-
-// Resolve a relative font sourcePath by walking up from the current working
-// directory looking for a project root (a directory containing CMakeLists.txt).
-std::filesystem::path resolveFontSourcePath(const std::filesystem::path& declaredPath)
-{
-    if (declaredPath.empty() || declaredPath.is_absolute()) {
-        return declaredPath;
-    }
-    std::error_code ec;
-    if (std::filesystem::exists(declaredPath, ec)) {
-        return declaredPath;
-    }
-    auto current = std::filesystem::current_path(ec);
-    if (ec) {
-        return declaredPath;
-    }
-    for (;;) {
-        if (std::filesystem::exists(current / "CMakeLists.txt", ec)) {
-            const auto resolved = current / declaredPath;
-            if (std::filesystem::exists(resolved, ec)) {
-                return resolved;
-            }
-        }
-        if (!current.has_parent_path() || current == current.parent_path()) {
-            break;
-        }
-        current = current.parent_path();
-    }
-    return declaredPath;
-}
-
-} // namespace
-
-UiFontFaceCache::~UiFontFaceCache()
-{
-    clear();
+    if (desc_.maxFaces && desc_.maxFaces != SIZE_MAX)
+        entries_.reserve(desc_.maxFaces);
 }
 
 UiFontFaceCache::UiFontFaceCache(UiFontFaceCache&& other) noexcept
-    : entries_(std::move(other.entries_))
+    : desc_(other.desc_), entries_(std::move(other.entries_)),
+      residentSourceBytes_(std::exchange(other.residentSourceBytes_, 0))
 {}
 
 UiFontFaceCache& UiFontFaceCache::operator=(UiFontFaceCache&& other) noexcept
 {
     if (this != &other) {
         clear();
+        desc_ = other.desc_;
         entries_ = std::move(other.entries_);
+        residentSourceBytes_ = std::exchange(other.residentSourceBytes_, 0);
     }
     return *this;
 }
 
-const UiFontFaceCache::CachedFace* UiFontFaceCache::acquire(const std::filesystem::path& sourcePath,
-    std::uint32_t sizePx,
-    arp::core::pmr::String& diagnostics)
+const UiFontFaceCache::CachedFace* UiFontFaceCache::acquire(
+    const std::filesystem::path& path, std::uint32_t sizePx, core::pmr::String& diagnostic)
 {
-    const auto resolvedPath = resolveFontSourcePath(sourcePath);
+    UiFontFaceDesc desc;
+    desc.sourcePath = path;
+    desc.sizePx = sizePx;
+    return acquire(desc, diagnostic);
+}
 
-    // Linear search for existing entry (typical cache size: 1-5 fonts).
-    for (auto& entry : entries_) {
-        if (entry.path == resolvedPath) {
-#if ARP_HAS_FREETYPE
-            if (entry.face.currentSizePx != sizePx) {
-                if (FT_Set_Pixel_Sizes(entry.face.face, 0, sizePx) != 0) {
-                    diagnostics = text("FreeType failed to set UI font pixel size (cached)");
-                    return nullptr;
-                }
-                entry.face.currentSizePx = sizePx;
-            }
-#else
-            diagnostics = text("FreeType backend is not available");
-            return nullptr;
-#endif
-            return &entry.face;
-        }
+const UiFontFaceCache::CachedFace* UiFontFaceCache::acquire(
+    const UiFontFaceDesc& desc, core::pmr::String& diagnostic)
+{
+    diagnostic.clear();
+    if (!desc_.maxFaces || desc_.maxFaces == SIZE_MAX || !desc_.maxResidentSourceBytes
+        || desc_.maxResidentSourceBytes == SIZE_MAX || !desc.sizePx || !desc.maxSourceBytes
+        || desc.maxSourceBytes == SIZE_MAX) {
+        diagnostic = "UI-FONT-CACHE-BUDGET-OR-SIZE";
+        return nullptr;
     }
-
 #if !ARP_HAS_FREETYPE
-    diagnostics = text("FreeType backend is not available");
+    diagnostic = "UI-FONT-FREETYPE-UNAVAILABLE";
     return nullptr;
 #else
-    // Create new entry: read font bytes, init FreeType, create face.
-    auto bytes = readFontBytes(resolvedPath);
-    if (bytes.empty()) {
-        auto message = text("UI font source file is empty or unreadable: ");
-        message += resolvedPath.generic_string().c_str();
-        diagnostics = std::move(message);
+    auto source = desc.source;
+    // The legacy host-path surface captures exactly once per cache lifetime.
+    if (!source) {
+        const auto path = core::FilePath::utf8(desc.sourcePath);
+        for (const auto& entry : entries_)
+            if (entry->source->desc().pathScope == core::io::FilePathScope::HostFilesystem
+                && entry->source->desc().path == path) {
+                source = entry->source;
+                break;
+            }
+    }
+    if (desc.source || !source)
+        source = acquireUiFontSource(desc, diagnostic);
+    if (!source)
+        return nullptr;
+    if (source->bytes().size() > desc.maxSourceBytes) {
+        diagnostic = "UI-FONT-SOURCE-BUDGET";
         return nullptr;
     }
-
-    Entry entry;
-    entry.path = resolvedPath;
-    entry.face.fontBytes = std::move(bytes);
-
-    if (FT_Init_FreeType(&entry.face.library) != 0 || entry.face.library == nullptr) {
-        diagnostics = text("FreeType failed to initialize for cached UI font face");
+    for (const auto& entry : entries_)
+        if (entry->source->matches(*source)) {
+            if (entry->currentSizePx != desc.sizePx) {
+                if (FT_Set_Pixel_Sizes(entry->face, 0, desc.sizePx)) {
+                    diagnostic = "UI-FONT-CACHE-PIXEL-SIZE";
+                    return nullptr;
+                }
+                entry->currentSizePx = desc.sizePx;
+            }
+            return entry.get();
+        }
+    if (entries_.size() >= desc_.maxFaces
+        || source->bytes().size() > desc_.maxResidentSourceBytes - residentSourceBytes_) {
+        diagnostic = "UI-FONT-CACHE-CAPACITY";
         return nullptr;
     }
-
-    const auto faceLoaded = FT_New_Memory_Face(entry.face.library,
-        entry.face.fontBytes.data(),
-        static_cast<FT_Long>(entry.face.fontBytes.size()),
-        0,
-        &entry.face.face);
-    if (faceLoaded != 0 || entry.face.face == nullptr) {
-        FT_Done_FreeType(entry.face.library);
-        entry.face.library = nullptr;
-        diagnostics = text("FreeType failed to load cached UI font face");
+    if (source->bytes().size() > static_cast<std::size_t>(std::numeric_limits<FT_Long>::max())) {
+        diagnostic = "UI-FONT-CACHE-ADDRESS-RANGE";
         return nullptr;
     }
-
-    if (FT_Set_Pixel_Sizes(entry.face.face, 0, sizePx) != 0) {
-        FT_Done_Face(entry.face.face);
-        FT_Done_FreeType(entry.face.library);
-        entry.face.face = nullptr;
-        entry.face.library = nullptr;
-        diagnostics = text("FreeType failed to set UI font pixel size (cached)");
+    auto entry = core::makeUnique<CachedFace>();
+    entry->source = std::move(source);
+    if (!detail::initializeFreeTypeLibrary(entry->library)) {
+        diagnostic = "UI-FONT-CACHE-LIBRARY";
         return nullptr;
     }
-    entry.face.currentSizePx = sizePx;
-
+    const auto bytes = entry->source->bytes();
+    if (FT_New_Memory_Face(
+            entry->library, bytes.data(), static_cast<FT_Long>(bytes.size()), 0, &entry->face)
+        || !entry->face) {
+        diagnostic = "UI-FONT-CACHE-FACE";
+        return nullptr;
+    }
+    if (FT_Set_Pixel_Sizes(entry->face, 0, desc.sizePx)) {
+        diagnostic = "UI-FONT-CACHE-PIXEL-SIZE";
+        return nullptr;
+    }
+    entry->currentSizePx = desc.sizePx;
+    const auto byteCount = bytes.size();
     entries_.push_back(std::move(entry));
-    return &entries_.back().face;
+    residentSourceBytes_ += byteCount;
+    return entries_.back().get();
 #endif
 }
 
-bool UiFontFaceCache::kerningX(const std::filesystem::path& sourcePath,
+bool UiFontFaceCache::kerningX(const std::filesystem::path& path,
     std::uint32_t sizePx,
     std::uint32_t leftCodepoint,
     std::uint32_t rightCodepoint,
     float& adjustmentX,
-    arp::core::pmr::String& diagnostics)
+    core::pmr::String& diagnostic)
 {
-    adjustmentX = 0.0f;
+    UiFontFaceDesc desc;
+    desc.sourcePath = path;
+    desc.sizePx = sizePx;
+    return kerningX(desc, leftCodepoint, rightCodepoint, adjustmentX, diagnostic);
+}
+
+bool UiFontFaceCache::kerningX(const UiFontFaceDesc& desc,
+    std::uint32_t leftCodepoint,
+    std::uint32_t rightCodepoint,
+    float& adjustmentX,
+    core::pmr::String& diagnostic)
+{
+    adjustmentX = 0;
+    const auto* cached = acquire(desc, diagnostic);
+    if (!cached)
+        return false;
 #if !ARP_HAS_FREETYPE
-    (void)sourcePath;
-    (void)sizePx;
-    (void)leftCodepoint;
-    (void)rightCodepoint;
-    diagnostics = text("FreeType backend is not available");
     return false;
 #else
-    const auto* cached = acquire(sourcePath, sizePx, diagnostics);
-    if (cached == nullptr) {
-        return false;
-    }
-    if (!FT_HAS_KERNING(cached->face)) {
+    if (!FT_HAS_KERNING(cached->face))
         return true;
-    }
-    const auto leftGlyph = FT_Get_Char_Index(cached->face, static_cast<FT_ULong>(leftCodepoint));
-    const auto rightGlyph = FT_Get_Char_Index(cached->face, static_cast<FT_ULong>(rightCodepoint));
-    if (leftGlyph == 0u || rightGlyph == 0u) {
-        diagnostics = text("FreeType kerning pair references a missing UI glyph");
+    const auto left = FT_Get_Char_Index(cached->face, static_cast<FT_ULong>(leftCodepoint));
+    const auto right = FT_Get_Char_Index(cached->face, static_cast<FT_ULong>(rightCodepoint));
+    if (!left || !right) {
+        diagnostic = "UI-FONT-KERNING-MISSING-GLYPH";
         return false;
     }
     FT_Vector adjustment{};
-    if (FT_Get_Kerning(cached->face, leftGlyph, rightGlyph, FT_KERNING_DEFAULT, &adjustment) != 0) {
-        diagnostics = text("FreeType failed to query UI glyph kerning");
+    if (FT_Get_Kerning(cached->face, left, right, FT_KERNING_DEFAULT, &adjustment)) {
+        diagnostic = "UI-FONT-KERNING-QUERY";
         return false;
     }
     adjustmentX = static_cast<float>(adjustment.x) / 64.0f;
@@ -196,21 +175,10 @@ bool UiFontFaceCache::kerningX(const std::filesystem::path& sourcePath,
 #endif
 }
 
-void UiFontFaceCache::clear()
+void UiFontFaceCache::clear() noexcept
 {
-#if ARP_HAS_FREETYPE
-    for (auto& entry : entries_) {
-        if (entry.face.face != nullptr) {
-            FT_Done_Face(entry.face.face);
-            entry.face.face = nullptr;
-        }
-        if (entry.face.library != nullptr) {
-            FT_Done_FreeType(entry.face.library);
-            entry.face.library = nullptr;
-        }
-    }
-#endif
     entries_.clear();
+    residentSourceBytes_ = 0;
 }
 
 } // namespace arp::ui

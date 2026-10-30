@@ -3,11 +3,20 @@
 #include "core/memory/cpu_allocator.h"
 #include "core/ownership/lifetime_epoch.h"
 #include "core/ownership/monotonic_id_sequence.h"
+#include "core/text/text_decoder.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <string_view>
+
+namespace arp::editor {
+class ProjectSourceSnapshot;
+}
+
+namespace arp::core::io {
+class FileService;
+}
 
 namespace arp::editor {
 class ScriptDocumentSession final {
@@ -26,6 +35,10 @@ public:
 
     // Shared file-to-editing-buffer conversion; exact disk bytes remain separate.
     static core::pmr::String normalizeNewlines(std::string_view contents);
+    // Strip the UTF-8 BOM marker and normalize newlines. Live file input rejects
+    // NUL; recovery's existing opaque baseline schema explicitly preserves it.
+    static core::pmr::String normalizeFileBytes(
+        std::string_view contents, core::TextNulPolicy nul = core::TextNulPolicy::Reject);
     static bool isScriptPath(const std::filesystem::path& path);
 
     struct Edit {
@@ -49,6 +62,9 @@ public:
         std::size_t scrollLine = 0;
         core::pmr::Vector<Edit> undo{&core::defaultCpuMemoryResource()};
         core::pmr::Vector<Edit> redo{&core::defaultCpuMemoryResource()};
+        // A one-file immutable receipt binds logical paths to a mount/epoch.
+        // Native save/reload must never interpret these paths as host paths.
+        core::SharedPtr<const ProjectSourceSnapshot> sourceSnapshot;
 
         bool dirty() const noexcept { return text != savedText; }
     };
@@ -81,6 +97,37 @@ public:
     enum class EditResult { Applied, Unchanged, Rejected };
 
     static constexpr std::size_t noActiveDocument = std::numeric_limits<std::size_t>::max();
+
+    struct ReloadBudget {
+        std::size_t maxHistoryEntries = 4096;
+        std::size_t maxHistoryBytes = 8u * maxScriptBytes;
+    };
+
+    // Private observation of the exact target, including direct mutable writes
+    // which do not advance the session ticket. Abandoning it changes nothing.
+    class PreparedReload final {
+    public:
+        PreparedReload() = default;
+        PreparedReload(const PreparedReload&) = delete;
+        PreparedReload& operator=(const PreparedReload&) = delete;
+
+        std::uint64_t documentId() const noexcept { return original_.id; }
+
+    private:
+        friend class ScriptDocumentSession;
+        Document original_;
+        core::LifetimeEpoch::Ticket owner_;
+        bool consumed_ = false;
+    };
+
+    core::UniquePtr<PreparedReload> prepareReload(std::uint64_t documentId,
+        bool discardChanges,
+        ReloadBudget budget,
+        const char*& diagnostic) const;
+    // Candidate comes from prepareSourceFile; enclosing owner validates source
+    // freshness and permissions. Performs no allocation/IO; swaps
+    // retired buffers into candidate and retains the existing document identity.
+    bool commitSourceReload(PreparedReload&, Document& candidate) noexcept;
 
     enum class RecoveryCommitResult {
         Ready,
@@ -148,6 +195,12 @@ public:
     bool erase(std::size_t index);
     FileResult openFile(
         const std::filesystem::path& projectRoot, const std::filesystem::path& path);
+    static bool prepareSourceFile(core::SharedPtr<const ProjectSourceSnapshot>,
+        std::string_view relative,
+        core::io::FileService&,
+        std::uint64_t epoch,
+        core::UniquePtr<Document>& destination,
+        const char*& diagnostic);
     // Prepare saved baselines before disk replacement; successful publication
     // does not allocate. The existing disk preflight is not a cross-process CAS.
     FileResult saveActiveFile(const std::filesystem::path& projectRoot);
@@ -171,6 +224,15 @@ public:
     std::uint64_t activeId() const noexcept;
 
 private:
+    static bool sameDocument(const Document&, const Document&) noexcept;
+    static bool compatibleAllocators(const Document&, const Document&) noexcept;
+    static void swapDocumentContents(Document&, Document&) noexcept;
+    static core::TextDecodeResult decodeFileBytes(
+        std::string_view, core::TextNulPolicy nul = core::TextNulPolicy::Reject);
+    static bool prepareFileContents(const std::filesystem::path&,
+        std::string_view raw,
+        core::UniquePtr<Document>& destination,
+        const char*& diagnostic);
     const char* validateRecoveredDocuments(
         const core::pmr::Vector<Document>& prepared, std::size_t activeIndex) const;
     core::pmr::Vector<Document> documents_{&core::defaultCpuMemoryResource()};

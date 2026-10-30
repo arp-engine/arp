@@ -21,6 +21,7 @@ struct SingleEntryShaderLoadBudget {
     const TargetBufferMemoryLoadRequest* targetMemory = nullptr;
     const RuntimeLengthOperationLoadRequest* runtimeLength = nullptr;
     const NativeBufferMemoryLoadRequest* nativeMemory = nullptr;
+    const ShaderArtifactSource* source = nullptr;
 };
 
 // Startup-only immutable identity; no pipeline/execution authorization.

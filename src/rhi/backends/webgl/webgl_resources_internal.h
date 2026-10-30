@@ -84,7 +84,7 @@ public:
 
     semantics::WebGlExtensionOptIn executionOptIn() const noexcept
     {
-        return {1, extensionDecision.native};
+        return {request.extensions.contractVersion, extensionDecision.native};
     }
 
     std::shared_ptr<core::CpuMemoryQuota> metadataQuota, uploadQuota;

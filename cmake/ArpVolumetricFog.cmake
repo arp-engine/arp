@@ -29,6 +29,7 @@ foreach(fog_shader IN LISTS fog_shader_names)
     endif()
     set(fog_reflection "${fog_shader_dir}/${fog_shader}.reflection.yaml")
     add_custom_command(OUTPUT "${fog_reflection}"
+        BYPRODUCTS "${fog_shader_dir}/${fog_shader}.artifact-set.yaml"
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
             --module "${fog_shader}" --out-dir "${fog_shader_dir}" ${fog_shader_compiler_args}
         DEPENDS "shaders/${fog_source_dir}/${fog_shader}.slang" shaders/common/volumetric_fog.slang

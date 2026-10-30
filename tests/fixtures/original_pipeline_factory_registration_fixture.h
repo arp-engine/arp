@@ -188,7 +188,7 @@ public:
         const auto allocation = core::inspectCpuAllocationContaining(unique.get());
         auto layout = core::shareUnique(std::move(unique));
         assert(layout->sharedOwnerMatches(layout));
-        auto package = rhi::test::makePushContractShaderPackage();
+        auto package = rhi::test::makePushContractShaderPackage(true);
         rhi::RenderPipelineDesc graphics;
         graphics.layout = layout.get();
         graphics.shaderPackage = &package;

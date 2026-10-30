@@ -78,6 +78,8 @@ int main()
         {0, 0, DescriptorType::UniformBuffer, ShaderStage::Vertex});
     shaderPackage.reflection.descriptorBindings.push_back(
         {1, 0, DescriptorType::SampledTexture, ShaderStage::Fragment});
+    test::GeneratedShaderPackageFixture::prepare(
+        shaderPackage, "rhi_pipeline_contract.artifact-set.yaml");
     assert(validateShaderPackage(shaderPackage).success);
 
     // InputAttachment reflection must carry the logical FrameGraph attachment
@@ -842,7 +844,8 @@ int main()
     missingMslPipelineDesc.shaderPackage = &missingMslArtifact;
     const auto missingMslReport = device->validateRenderPipeline(missingMslPipelineDesc);
     assert(!missingMslReport.success);
-    assert(missingMslReport.diagnostics.find("MSL") != std::pmr::string::npos);
+    // Prepared packages reject a changed role before backend MSL admission.
+    assert(missingMslReport.diagnostics == "RHI-GENERATED-PACKAGE-ROLE-BINDING");
 
     auto oversizedShaderPackage = shaderPackage;
     oversizedShaderPackage.reflection.pushConstantByteCount = 4096;
@@ -850,7 +853,7 @@ int main()
     oversizedShaderPipelineDesc.shaderPackage = &oversizedShaderPackage;
     const auto oversizedShaderReport = device->validateRenderPipeline(oversizedShaderPipelineDesc);
     assert(!oversizedShaderReport.success);
-    assert(oversizedShaderReport.diagnostics.find("push-constant") != std::pmr::string::npos);
+    assert(oversizedShaderReport.diagnostics == "RHI-GENERATED-PACKAGE-REFLECTION-MISMATCH");
 
     DescriptorLayoutDesc mismatchedFrameLayout = frameLayout;
     mismatchedFrameLayout.bindings[0].type = DescriptorType::StorageBuffer;

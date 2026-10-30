@@ -15,6 +15,7 @@ struct NullHiddenFrameSmokeConfig {
     Extent2D extent{320, 180};
     TextureFormat format = TextureFormat::Bgra8Unorm;
     std::uint32_t frameCount = 2;
+    const ShaderPackageDesc* shaderPackage = nullptr;
 };
 
 struct NullHiddenFrameSmokeFrameReport {

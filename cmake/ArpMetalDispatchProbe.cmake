@@ -18,7 +18,7 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE)
         list(APPEND dispatch_probe_tools "${SPIRV_REFLECT_EXECUTABLE}")
         list(APPEND dispatch_probe_args --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}")
     endif()
-    foreach(extension slang spv metal wgsl reflection.yaml)
+    foreach(extension slang spv metal wgsl reflection.yaml artifact-set.yaml)
         list(APPEND dispatch_probe_payloads "${dispatch_probe_dir}/compute_dispatch_grid_probe.${extension}")
     endforeach()
     add_custom_command(OUTPUT "${dispatch_probe_entry}"

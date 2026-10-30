@@ -25,14 +25,14 @@ private:
 
     friend class CancellationSource;
 
-    explicit CancellationToken(State* state) noexcept : state_(state) {}
+    explicit CancellationToken(core::SharedPtr<State> state) noexcept : state_(std::move(state)) {}
 
-    State* state_ = nullptr;
+    core::SharedPtr<State> state_;
 };
 
 class ARP_API CancellationSource final {
 public:
-    CancellationSource() : state_(core::makeUnique<CancellationToken::State>()) {}
+    CancellationSource() : state_(core::makeShared<CancellationToken::State>()) {}
 
     CancellationSource(const CancellationSource&) = delete;
     CancellationSource& operator=(const CancellationSource&) = delete;
@@ -40,12 +40,12 @@ public:
     CancellationSource& operator=(CancellationSource&&) = delete;
     ~CancellationSource() = default;
 
-    CancellationToken token() const noexcept { return CancellationToken(state_.get()); }
+    CancellationToken token() const noexcept { return CancellationToken(state_); }
 
     void cancel() noexcept { state_->cancelled.store(true, std::memory_order_release); }
 
 private:
-    core::UniquePtr<CancellationToken::State> state_;
+    core::SharedPtr<CancellationToken::State> state_;
 };
 
 } // namespace arp::core::runtime

@@ -2,6 +2,7 @@
 #include "renderer/ui/ui_draw_plan.h"
 #include "renderer/ui/ui_text_atlas.h"
 #include "tests/fixtures/ui_document_fixture.h"
+#include "tests/fixtures/ui_prepared_fonts.h"
 #include "ui/ui_document.h"
 
 #include <cassert>
@@ -216,7 +217,9 @@ void renderer_ui_text_atlas_lowers_text_to_cached_textured_quads()
     imageAtlas.extent = {4u, 4u};
     imageAtlas.rgba8.resize(4u * 4u * 4u, 255u);
 
+    const auto font = arp::tests::preparedUiFontFace("body");
     arp::renderer::ui::UiTextAtlasBuildDesc buildDesc;
+    buildDesc.fontFace = &font;
     buildDesc.baseAtlas = std::move(imageAtlas);
     buildDesc.commands = &commands;
     buildDesc.maxWidth = 320u;

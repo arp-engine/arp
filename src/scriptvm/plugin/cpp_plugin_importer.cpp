@@ -1,7 +1,7 @@
 #include "scriptvm/plugin/cpp_plugin_importer.h"
 
 #include "core/hash/sha256.h"
-#include "core/io/file_io.h"
+#include "core/io/filesystem_path.h"
 #include "core/system/process_identity_lock.h"
 #include "core/system/process_runner.h"
 #include "core/text/number_format.h"
@@ -10,6 +10,7 @@
 #include "reflection/registration_transaction.h"
 #include "scriptvm/plugin/compiler_toolchain_layout.h"
 #include "scriptvm/plugin/cpp_plugin_api.h"
+#include "scriptvm/plugin/detail/cpp_plugin_source_reader.h"
 #include "scriptvm/plugin/immutable_build_input_snapshot.h"
 
 #include <algorithm>
@@ -66,15 +67,22 @@ core::pmr::String pathDiagnostic(const char* prefix, const std::filesystem::path
     return result;
 }
 
-void appendBoundedProcessLog(core::pmr::String& diagnostics, const std::filesystem::path& logPath)
+void appendBoundedProcessLog(core::pmr::String& diagnostics,
+    const std::filesystem::path& logPath,
+    const PluginHostTextBudget& budget)
 {
-    const auto log = core::readTextFile(logPath);
-    if (!log.success || log.text.empty())
+    const auto log = PluginHostTextReader(budget).diagnostic(logPath);
+    if (!log.success) {
+        diagnostics += "\n[process log unavailable: ";
+        diagnostics += log.diagnosticId;
+        diagnostics += "]";
         return;
-    constexpr std::size_t kMaxProcessLogBytes = 8192u;
+    }
+    if (log.text.empty())
+        return;
     diagnostics += "\n";
-    diagnostics.append(log.text.data(), (std::min)(kMaxProcessLogBytes, log.text.size()));
-    if (log.text.size() > kMaxProcessLogBytes)
+    diagnostics += log.text;
+    if (log.truncated)
         diagnostics += "\n[process log truncated]";
 }
 
@@ -508,19 +516,14 @@ bool readReflectionNameSet(const YamlNode& root,
     return true;
 }
 
-bool reflectionMetadataMatchesRuntimeReceipt(const std::filesystem::path& metadataPath,
+bool reflectionMetadataMatchesRuntimeReceipt(const core::pmr::String& metadata,
     const ModuleRegistration& module,
     const arp::reflection::RegistrationReceipt& receipt,
     core::pmr::String& diagnostics)
 {
-    const auto read = core::readTextFile(metadataPath);
-    if (!read.success) {
-        diagnostics = read.diagnostics;
-        return false;
-    }
     YamlNode root;
     try {
-        root = YamlNode::deserialize(read.text.data(), read.text.data() + read.text.size());
+        root = YamlNode::deserialize(metadata.data(), metadata.data() + metadata.size());
     } catch (const std::exception& error) {
         diagnostics = "generated reflection metadata parse failed: ";
         diagnostics += error.what();
@@ -1281,12 +1284,13 @@ bool publishIdentityMarker(const std::filesystem::path& marker,
 }
 
 bool markerMatches(const std::filesystem::path& marker,
+    const PluginHostTextBudget& budget,
     const std::filesystem::path& artifact,
     std::string_view identity,
     const std::filesystem::path& companionA = {},
     const std::filesystem::path& companionB = {})
 {
-    const auto read = core::readTextFile(marker);
+    const auto read = PluginHostTextReader(budget).read(marker, PluginHostTextKind::Metadata);
     if (!read.success)
         return false;
     const auto expected = identityMarkerText(identity, artifact, companionA, companionB);
@@ -1368,8 +1372,9 @@ core::pmr::String digestName(const core::pmr::String& manifest,
     const core::pmr::String& hostLinkInputVersion,
     const core::pmr::Vector<std::filesystem::path>& additionalIncludeRoots,
     const core::pmr::String& reflectionModule,
-    const core::pmr::Vector<core::pmr::String>& reflectionHeaders,
+    const core::pmr::Vector<core::StringView>& reflectionHeaders,
     const core::pmr::String& reflectionCodegenVersion,
+    const core::pmr::String& sourceBindingIdentity,
     bool moduleDirectoryLayout)
 {
     core::ImmutableBuildInputContract input;
@@ -1377,7 +1382,8 @@ core::pmr::String digestName(const core::pmr::String& manifest,
     const auto add = [&](std::string_view key, std::string_view value) {
         return input.add(key, value, diagnostics);
     };
-    if (!add("manifest", manifest) || !add("source", source))
+    if (!add("manifest", manifest) || !add("source", source)
+        || !add("source-binding", sourceBindingIdentity))
         return {};
     const auto resolvedCompiler = resolveCommandPath(compiler);
     const std::filesystem::path compilerPath =
@@ -1572,24 +1578,6 @@ bool appendDirectoryContract(
     return true;
 }
 
-core::pmr::String reflectionRegistryFingerprint(const std::filesystem::path& metadataPath)
-{
-    const auto metadata = core::readTextFile(metadataPath);
-    if (!metadata.success) {
-        return {};
-    }
-    const auto digest =
-        core::Sha256::digest(core::StringView(metadata.text.data(), metadata.text.size()));
-    static constexpr char digits[] = "0123456789abcdef";
-    core::pmr::String result("sha256:", &core::defaultCpuMemoryResource());
-    result.reserve(7u + digest.size() * 2u);
-    for (const auto byte : digest) {
-        result.push_back(digits[(byte >> 4u) & 0x0fu]);
-        result.push_back(digits[byte & 0x0fu]);
-    }
-    return result;
-}
-
 std::filesystem::path dynamicLibraryPath(
     const std::filesystem::path& directory, std::string_view moduleName, std::string_view digest)
 {
@@ -1676,6 +1664,10 @@ bool parseManifest(const std::filesystem::path& path,
 
     out.module = yamlString(*module);
     out.source = yamlString(*source);
+    if (!detail::CppPluginSourceReader::safeRelative(std::filesystem::u8path(out.source))) {
+        diagnostics = pathDiagnostic("ARP-CPP-PLUGIN-SOURCE-PATH: ", path);
+        return false;
+    }
     out.entry = yamlString(*entry);
     out.reflectionModule = out.module;
     if (!validFlatIdentifier(std::string_view(out.module.data(), out.module.size()))
@@ -1755,8 +1747,8 @@ bool parseManifest(const std::filesystem::path& path,
                 return false;
             }
             const auto value = yamlString(includeDir);
-            const std::filesystem::path includePath(value.c_str());
-            if (includePath.empty() || hasParentTraversal(includePath)) {
+            const auto includePath = std::filesystem::u8path(value);
+            if (!detail::CppPluginSourceReader::safeRelative(includePath)) {
                 diagnostics = pathDiagnostic(
                     "C++ plugin includeDirs cannot escape the manifest directory: ", path);
                 return false;
@@ -1790,8 +1782,8 @@ bool parseManifest(const std::filesystem::path& path,
                 return false;
             }
             const auto value = yamlString(header);
-            const std::filesystem::path headerPath(value.c_str());
-            if (headerPath.empty() || headerPath.is_absolute() || hasParentTraversal(headerPath)) {
+            const auto headerPath = std::filesystem::u8path(value);
+            if (!detail::CppPluginSourceReader::safeRelative(headerPath)) {
                 diagnostics = pathDiagnostic(
                     "C++ plugin reflectionHeaders cannot escape the manifest directory: ", path);
                 return false;
@@ -1907,6 +1899,94 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
         return nullptr;
     }
 
+    const bool legacyDiscovery =
+        impl_->desc.sourceProfile == CppPluginSourceProfile::LegacyDiscoveryV1;
+    if (!PluginHostTextReader::validBudget(impl_->desc.hostTextBudget)) {
+        impl_->lastDiagnostic = "ARP-PLUGIN-HOST-TEXT-CONFIG";
+        return nullptr;
+    }
+    if (!legacyDiscovery
+        && impl_->desc.sourceProfile != CppPluginSourceProfile::ExplicitBindingsV1) {
+        impl_->lastDiagnostic = "ARP-CPP-PLUGIN-SOURCE-PROFILE";
+        return nullptr;
+    }
+    if (!validFlatIdentifier(moduleName)) {
+        impl_->lastDiagnostic = "ARP-CPP-PLUGIN-MODULE: import names must be flat identifiers";
+        return nullptr;
+    }
+    const CppPluginSourceBinding* selectedBinding = nullptr;
+    if (!legacyDiscovery) {
+        for (const auto& binding : impl_->desc.sourceBindings)
+            if (binding.module == moduleName) {
+                if (selectedBinding) {
+                    impl_->lastDiagnostic = "ARP-CPP-PLUGIN-BINDING-DUPLICATE";
+                    return nullptr;
+                }
+                selectedBinding = &binding;
+            }
+        if (!selectedBinding) {
+            impl_->lastDiagnostic = "ARP-CPP-PLUGIN-UNDECLARED";
+            return nullptr;
+        }
+        if (!detail::CppPluginSourceReader::safeRelative(selectedBinding->manifest)) {
+            impl_->lastDiagnostic = "ARP-CPP-PLUGIN-MANIFEST-BINDING";
+            return nullptr;
+        }
+        for (std::size_t i = 0; i < selectedBinding->headers.size(); ++i) {
+            const auto& header = selectedBinding->headers[i];
+            if (!detail::CppPluginSourceReader::safeRelative(
+                    std::filesystem::u8path(header.authoredPath))
+                || !detail::CppPluginSourceReader::safeRelative(header.relativePath)
+                || (header.root != CppPluginHeaderRoot::ManifestDirectory
+                    && header.root != CppPluginHeaderRoot::IncludeRoot)) {
+                impl_->lastDiagnostic = "ARP-CPP-PLUGIN-HEADER-BINDING";
+                return nullptr;
+            }
+            for (std::size_t j = 0; j < i; ++j)
+                if (selectedBinding->headers[j].authoredPath == header.authoredPath) {
+                    impl_->lastDiagnostic = "ARP-CPP-PLUGIN-HEADER-DUPLICATE";
+                    return nullptr;
+                }
+        }
+        if (!ScriptSourceSnapshot::validBudget(impl_->desc.sourceBudget)) {
+            impl_->lastDiagnostic = "ARP-CPP-PLUGIN-SOURCE-BUDGET";
+            return nullptr;
+        }
+    } else if (!impl_->desc.sourceBindings.empty()) {
+        impl_->lastDiagnostic = "ARP-CPP-PLUGIN-LEGACY-BINDINGS-CONFLICT";
+        return nullptr;
+    }
+    detail::CppPluginSourceReader sourceReader(impl_->desc);
+    core::ImmutableBuildInputContract bindingContract;
+    core::pmr::String bindingDiagnostic;
+    if (!bindingContract.add("profile",
+            legacyDiscovery ? "LegacyDiscovery/1" : "ExplicitBindings/1",
+            bindingDiagnostic)) {
+        impl_->lastDiagnostic = bindingDiagnostic;
+        return nullptr;
+    }
+    if (selectedBinding) {
+        if (!bindingContract.add(
+                "manifest", core::FilePath::utf8(selectedBinding->manifest), bindingDiagnostic)) {
+            impl_->lastDiagnostic = bindingDiagnostic;
+            return nullptr;
+        }
+        for (std::size_t i = 0; i < selectedBinding->headers.size(); ++i) {
+            const auto& header = selectedBinding->headers[i];
+            core::pmr::String key("header-");
+            core::appendUnsigned(key, i);
+            if (!bindingContract.add(key + "/authored", header.authoredPath, bindingDiagnostic)
+                || !bindingContract.add(key + "/root",
+                    header.root == CppPluginHeaderRoot::ManifestDirectory ? "manifest" : "include",
+                    bindingDiagnostic)
+                || !bindingContract.add(
+                    key + "/path", core::FilePath::utf8(header.relativePath), bindingDiagnostic)) {
+                impl_->lastDiagnostic = bindingDiagnostic;
+                return nullptr;
+            }
+        }
+    }
+    const auto sourceBindingIdentity = bindingContract.fingerprint();
     const core::pmr::String moduleNameText(
         moduleName.data(), moduleName.size(), &core::defaultCpuMemoryResource());
     const auto moduleDirectory = impl_->desc.sourceRoot / moduleNameText;
@@ -1918,13 +1998,14 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
     const auto legacyManifestPath = impl_->desc.moduleDirectoryLayout
         ? moduleDirectory / legacyFileName
         : impl_->desc.sourceRoot / legacyFileName;
-    auto manifestPath = primaryManifestPath;
-    auto manifestRead = core::readTextFile(manifestPath);
-    if (!manifestRead.success) {
+    auto manifestPath =
+        selectedBinding ? impl_->desc.sourceRoot / selectedBinding->manifest : primaryManifestPath;
+    auto manifestRead = sourceReader.read(manifestPath);
+    if (!manifestRead.success && legacyDiscovery) {
         manifestPath = legacyManifestPath;
-        manifestRead = core::readTextFile(manifestPath);
+        manifestRead = sourceReader.read(manifestPath);
     }
-    if (!manifestRead.success) {
+    if (!manifestRead.success && legacyDiscovery) {
         // Existing repositories may use a descriptive filename such as
         // \`arp.scene_module.arpplugin\` while the manifest module identifier
         // remains the required flat \`arp_scene\`. Resolve that filename from
@@ -1936,29 +2017,29 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
                 || candidateEntry.path().extension() != ".arpplugin") {
                 continue;
             }
-            const auto candidateRead = core::readTextFile(candidateEntry.path());
+            auto candidateRead = sourceReader.read(candidateEntry.path());
             if (!candidateRead.success) {
                 continue;
             }
             ParsedManifest candidateManifest;
             core::pmr::String candidateDiagnostics(&core::defaultCpuMemoryResource());
             if (parseManifest(candidateEntry.path(),
-                    candidateRead.text,
+                    candidateRead.text(),
                     candidateManifest,
                     candidateDiagnostics)
                 && candidateManifest.module == moduleName) {
                 manifestPath = candidateEntry.path();
-                manifestRead = candidateRead;
+                manifestRead = std::move(candidateRead);
                 break;
             }
         }
     }
     if (!manifestRead.success) {
-        impl_->lastDiagnostic = manifestRead.diagnostics;
+        impl_->lastDiagnostic = manifestRead.diagnostics();
         return nullptr;
     }
     ParsedManifest manifest;
-    if (!parseManifest(manifestPath, manifestRead.text, manifest, impl_->lastDiagnostic)) {
+    if (!parseManifest(manifestPath, manifestRead.text(), manifest, impl_->lastDiagnostic)) {
         return nullptr;
     }
     if (manifest.module != moduleName) {
@@ -1967,7 +2048,7 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
         return nullptr;
     }
 
-    const std::filesystem::path sourceRelative(manifest.source.c_str());
+    const auto sourceRelative = std::filesystem::u8path(manifest.source);
     if (sourceRelative.empty() || sourceRelative.is_absolute()
         || hasParentTraversal(sourceRelative)) {
         impl_->lastDiagnostic = pathDiagnostic(
@@ -1976,9 +2057,9 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
         return nullptr;
     }
     const auto sourcePath = manifestPath.parent_path() / sourceRelative;
-    const auto sourceRead = core::readTextFile(sourcePath);
+    const auto sourceRead = sourceReader.read(sourcePath);
     if (!sourceRead.success) {
-        impl_->lastDiagnostic = sourceRead.diagnostics;
+        impl_->lastDiagnostic = sourceRead.diagnostics();
         return nullptr;
     }
     if (manifest.reflectionHeaders.empty()) {
@@ -1987,9 +2068,23 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
             manifestPath);
         return nullptr;
     }
-    core::pmr::Vector<core::pmr::String> reflectionHeaderSources{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<core::StringView> reflectionHeaderSources;
+    core::pmr::Vector<core::UniquePtr<detail::CppPluginSourceRead>> reflectionHeaderReads;
+    if (selectedBinding && selectedBinding->headers.size() != manifest.reflectionHeaders.size()) {
+        impl_->lastDiagnostic = "ARP-CPP-PLUGIN-HEADER-COVERAGE";
+        return nullptr;
+    }
     const auto resolveReflectionHeader = [&](const core::pmr::String& header) {
-        const std::filesystem::path relative(header.c_str());
+        if (selectedBinding) {
+            for (const auto& binding : selectedBinding->headers)
+                if (binding.authoredPath == header)
+                    return (binding.root == CppPluginHeaderRoot::ManifestDirectory
+                                   ? manifestPath.parent_path()
+                                   : impl_->desc.includeRoot)
+                        / binding.relativePath;
+            return std::filesystem::path{};
+        }
+        const auto relative = std::filesystem::u8path(header);
         const auto manifestRelative = manifestPath.parent_path() / relative;
         if (std::filesystem::exists(manifestRelative)) {
             return manifestRelative;
@@ -2007,12 +2102,22 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
     };
     for (const auto& header : manifest.reflectionHeaders) {
         const auto headerPath = resolveReflectionHeader(header);
-        const auto headerRead = core::readTextFile(headerPath);
-        if (!headerRead.success) {
-            impl_->lastDiagnostic = headerRead.diagnostics;
+        if (headerPath.empty()) {
+            impl_->lastDiagnostic = "ARP-CPP-PLUGIN-HEADER-COVERAGE";
             return nullptr;
         }
-        reflectionHeaderSources.push_back(headerRead.text);
+        auto headerRead =
+            core::makeUnique<detail::CppPluginSourceRead>(sourceReader.read(headerPath));
+        if (!headerRead->success) {
+            impl_->lastDiagnostic = headerRead->diagnostics();
+            return nullptr;
+        }
+        reflectionHeaderSources.push_back(headerRead->text());
+        reflectionHeaderReads.push_back(std::move(headerRead));
+    }
+    if (!sourceReader.canReplayInputs()) {
+        impl_->lastDiagnostic = "ARP-CPP-PLUGIN-SOURCE-BUDGET";
+        return nullptr;
     }
     if (impl_->desc.compilerCommand.empty()) {
         impl_->lastDiagnostic = "C++ plugin compilerCommand is empty";
@@ -2040,8 +2145,8 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
         impl_->lastDiagnostic = "C++ plugin host library or deterministic link input is missing";
         return nullptr;
     }
-    const auto preliminaryDigest = digestName(manifestRead.text,
-        sourceRead.text,
+    const auto preliminaryDigest = digestName(manifestRead.text(),
+        sourceRead.text(),
         impl_->desc.compilerCommand,
         impl_->desc.includeRoot,
         preliminaryHostHash,
@@ -2050,7 +2155,8 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
         manifest.reflectionModule,
         reflectionHeaderSources,
         fileVersionFingerprint(reflectionCodegen),
-        impl_->desc.moduleDirectoryLayout);
+        sourceBindingIdentity,
+        legacyDiscovery && impl_->desc.moduleDirectoryLayout);
     if (preliminaryDigest.empty()) {
         impl_->lastDiagnostic =
             "C++ plugin cache identity could not be materialized from declared inputs";
@@ -2157,8 +2263,8 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
 
     const auto snapshotManifestPath = snapshotModuleRoot / manifestPath.filename();
     const auto snapshotSourcePath = snapshotModuleRoot / sourceRelative;
-    const auto snapshotManifestRead = core::readTextFile(snapshotManifestPath);
-    const auto snapshotSourceRead = core::readTextFile(snapshotSourcePath);
+    const auto snapshotManifestRead = sourceReader.read(snapshotManifestPath);
+    const auto snapshotSourceRead = sourceReader.read(snapshotSourcePath);
     if (!snapshotManifestRead.success || !snapshotSourceRead.success) {
         impl_->lastDiagnostic = "C++ plugin immutable snapshot is missing manifest or source";
         return nullptr;
@@ -2172,18 +2278,20 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
             return snapshotIncludeRoot / includeRelative;
         return std::filesystem::path{};
     };
-    core::pmr::Vector<core::pmr::String> snapshotHeaderSources{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<core::StringView> snapshotHeaderSources;
+    core::pmr::Vector<core::UniquePtr<detail::CppPluginSourceRead>> snapshotHeaderReads;
     core::pmr::Vector<std::filesystem::path> snapshotHeaderPaths{&core::defaultCpuMemoryResource()};
     for (const auto& header : manifest.reflectionHeaders) {
         const auto path = snapshotPathFor(resolveReflectionHeader(header));
-        const auto read = core::readTextFile(path);
-        if (path.empty() || !read.success) {
+        auto read = core::makeUnique<detail::CppPluginSourceRead>(sourceReader.read(path));
+        if (path.empty() || !read->success) {
             impl_->lastDiagnostic =
                 "C++ plugin reflection header is outside the immutable snapshot";
             return nullptr;
         }
         snapshotHeaderPaths.push_back(path);
-        snapshotHeaderSources.push_back(read.text);
+        snapshotHeaderSources.push_back(read->text());
+        snapshotHeaderReads.push_back(std::move(read));
     }
     const auto snapshotCompilerPath = compilerSnapshot.compilerExecutable;
     const auto snapshotCompilerPathText = snapshotCompilerPath.generic_string();
@@ -2196,8 +2304,8 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
 #else
     const auto& snapshotHostLinkInput = hostLinkInput;
 #endif
-    const auto snapshotInputDigest = digestName(snapshotManifestRead.text,
-        snapshotSourceRead.text,
+    const auto snapshotInputDigest = digestName(snapshotManifestRead.text(),
+        snapshotSourceRead.text(),
         snapshotCompilerCommand,
         snapshotIncludeRoot,
         fileVersionFingerprint(impl_->desc.hostLibrary),
@@ -2206,7 +2314,8 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
         manifest.reflectionModule,
         snapshotHeaderSources,
         fileVersionFingerprint(snapshotCodegen),
-        impl_->desc.moduleDirectoryLayout);
+        sourceBindingIdentity,
+        legacyDiscovery && impl_->desc.moduleDirectoryLayout);
     if (snapshotInputDigest.empty() || snapshotInputDigest != preliminaryDigest) {
         return retryConsistency(
             "C++ plugin inputs did not stabilize within the consistency policy");
@@ -2236,6 +2345,7 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
     completionMarker += ".complete";
     const bool artifactReady = nonEmptyRegularFile(outputPath)
         && markerMatches(completionMarker,
+            impl_->desc.hostTextBudget,
             outputPath,
             std::string_view(digest.data(), digest.size()),
             generatedReflectionPath,
@@ -2278,19 +2388,23 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
                 impl_->lastDiagnostic += "; runner=";
                 impl_->lastDiagnostic += process.diagnostic;
             }
-            appendBoundedProcessLog(impl_->lastDiagnostic, reflectionLogFile);
+            appendBoundedProcessLog(
+                impl_->lastDiagnostic, reflectionLogFile, impl_->desc.hostTextBudget);
             return nullptr;
         }
     }
 
     core::pmr::String reflectionHash(
         manifest.reflectionRegistryHash, &core::defaultCpuMemoryResource());
+    PluginHostTextResult reflectionMetadata;
     if (!manifest.reflectionHeaders.empty()) {
         const auto& metadataInput = artifactReady ? reflectionMetaPath : stagedReflectionMetaPath;
-        reflectionHash = reflectionRegistryFingerprint(metadataInput);
-        if (reflectionHash.empty()) {
-            impl_->lastDiagnostic = pathDiagnostic(
-                "generated C++ plugin reflection metadata is missing: ", reflectionMetaPath);
+        reflectionMetadata = PluginHostTextReader(impl_->desc.hostTextBudget)
+                                 .read(metadataInput, PluginHostTextKind::Metadata);
+        if (!reflectionMetadata.success) {
+            impl_->lastDiagnostic = reflectionMetadata.diagnosticId;
+            impl_->lastDiagnostic += " generated C++ plugin reflection metadata rejected: ";
+            impl_->lastDiagnostic += core::FilePath::utf8(metadataInput);
             return nullptr;
         }
     }
@@ -2331,7 +2445,7 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
             addProcessArgument(request, argument);
         }
         for (const auto& includeDir : manifest.includeDirs) {
-            const auto includePath = snapshotModuleRoot / includeDir.c_str();
+            const auto includePath = snapshotModuleRoot / std::filesystem::u8path(includeDir);
             core::pmr::String argument("-I", &core::defaultCpuMemoryResource());
             argument += includePath.generic_string().c_str();
             addProcessArgument(request, argument);
@@ -2359,7 +2473,7 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
                 impl_->lastDiagnostic += "; runner=";
                 impl_->lastDiagnostic += process.diagnostic;
             }
-            appendBoundedProcessLog(impl_->lastDiagnostic, logPath);
+            appendBoundedProcessLog(impl_->lastDiagnostic, logPath, impl_->desc.hostTextBudget);
             return nullptr;
         }
     }
@@ -2523,7 +2637,7 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
     {
         arp::reflection::RegistrationScope validationScope(reflectionTransaction);
         if (!manifest.reflectionHeaders.empty()
-            && !reflectionMetadataMatchesRuntimeReceipt(reflectionMetaPath,
+            && !reflectionMetadataMatchesRuntimeReceipt(reflectionMetadata.text,
                 *registrar.reflectionModule(),
                 runtimeReceipt,
                 impl_->lastDiagnostic)) {
@@ -2584,6 +2698,30 @@ std::shared_ptr<ModuleExports> CppPluginImporter::loadModule(const core::pmr::St
     }
     impl_->modules.merge(pending);
     return exports;
+}
+
+CppPluginSourceProfile CppPluginImporter::sourceProfile() const noexcept
+{
+    return impl_->desc.sourceProfile;
+}
+
+ModuleResolution CppPluginImporter::resolveModule(const core::pmr::String& moduleName)
+{
+    std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+    if (impl_->desc.sourceProfile == CppPluginSourceProfile::ExplicitBindingsV1
+        && validFlatIdentifier(moduleName)) {
+        bool declared = false;
+        for (const auto& binding : impl_->desc.sourceBindings)
+            declared = declared || binding.module == moduleName;
+        if (!declared) {
+            impl_->lastDiagnostic.clear();
+            return {};
+        }
+    }
+    auto exports = loadModule(moduleName);
+    if (exports)
+        return {ModuleResolutionStatus::Ready, std::move(exports), {}};
+    return {ModuleResolutionStatus::Failed, {}, impl_->lastDiagnostic};
 }
 
 const core::pmr::String& CppPluginImporter::lastDiagnostics() const

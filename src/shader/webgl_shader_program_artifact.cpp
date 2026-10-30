@@ -23,7 +23,7 @@ void schema(const Y::Node& n, std::size_t count)
 Y::Node parse(const core::ByteBuffer& bytes)
 {
     auto s = shaderArtifactText(bytes);
-    return Y::Node::deserialize(s.begin(), s.end());
+    return shaderArtifactYaml(s);
 }
 
 core::pmr::String indexed(core::StringView prefix, std::uint32_t index)
@@ -110,10 +110,13 @@ public:
         }
     }
 
-    void validateSubset() const
+    void validateSubset(bool fragmentDepth = false, bool discard = false) const
     {
         each([&](const I& i) {
             switch (i.opcode()) {
+            case 252:
+                need(discard, "SHADER-WEBGL1-OPCODE-UNSUPPORTED");
+                break;
             case 0:
             case 2:
             case 3:
@@ -239,7 +242,8 @@ public:
             if (i.opcode() == 71) {
                 const auto d = i.operand(1), v = i.operand(2);
                 need(d != 13 && d != 14 && d != 16, "SHADER-WEBGL1-INTERPOLATION-UNSUPPORTED");
-                need(d != 11 || v == 0 || v == 17, "SHADER-WEBGL1-BUILTIN-UNSUPPORTED");
+                need(d != 11 || v == 0 || v == 17 || (fragmentDepth && v == 22),
+                    "SHADER-WEBGL1-BUILTIN-UNSUPPORTED");
             }
             if (i.opcode() == 59) {
                 auto s = i.operand(2);
@@ -275,7 +279,8 @@ public:
             if ((i.opcode() == 12 || i.opcode() >= 41) && i.opcode() != 43 && i.opcode() != 56
                 && i.opcode() != 62 && i.opcode() != 71 && i.opcode() != 72 && i.opcode() != 247
                 && i.opcode() != 248 && i.opcode() != 249 && i.opcode() != 250 && i.opcode() != 253
-                && i.opcode() != 254 && i.opcode() != 317 && i.opcode() != 330) {
+                && i.opcode() != 252 && i.opcode() != 254 && i.opcode() != 317
+                && i.opcode() != 330) {
                 I t;
                 if (view_.definition(i.operand(0), result, t)) {
                     if (t.opcode() == 23)
@@ -533,8 +538,8 @@ WebGlShaderTarget loadTarget(const ShaderArtifactFiles::File& publication,
     const auto root = parse(publication.bytes);
     schema(root, 21);
     need(Y::text(root, "type") == "WebGlShaderTargetArtifact"
-            && Y::uint32(root, "contractVersion") == 1 && Y::text(root, "target") == "glsl-es-100"
-            && Y::text(root, "status") == "Available"
+            && (Y::uint32(root, "contractVersion") == 1 || Y::uint32(root, "contractVersion") == 2)
+            && Y::text(root, "target") == "glsl-es-100" && Y::text(root, "status") == "Available"
             && Y::text(root, "stage") == (vertex ? "Vertex" : "Fragment")
             && Y::text(root, "matrixLayout") == "SlangRowMajorTransposedLogicalMatrix/1"
             && Y::text(root, "coordinates") == "WebGlShaderCoordinates/1"
@@ -585,7 +590,21 @@ WebGlShaderTarget loadTarget(const ShaderArtifactFiles::File& publication,
         "SHADER-WEBGL1-SLANG-IDENTITY");
     const auto& binary = target.original->bytes(ShaderArtifactRole::Spirv);
     BinaryAbi abi(binary);
-    abi.validateSubset();
+    bool fragmentDepth = false;
+    bool discard = false;
+    abi.each([&](const I& i) {
+        fragmentDepth |= i.opcode() == 71 && i.operand(1) == 11 && i.operand(2) == 22;
+        discard |= i.opcode() == 252;
+    });
+    need((Y::uint32(root, "contractVersion") == 2) == (fragmentDepth || discard)
+            && (!(fragmentDepth || discard) || !vertex),
+        "SHADER-WEBGL1-TARGET-CONTRACT");
+    abi.validateSubset(fragmentDepth, discard);
+    need(!fragmentDepth
+            || (text.find("#extension GL_EXT_frag_depth : require") != core::StringView::npos
+                && text.find("gl_FragDepthEXT =") != core::StringView::npos
+                && text.find("gl_FragDepth =") == core::StringView::npos),
+        "SHADER-WEBGL1-FRAGMENT-DEPTH-LOWERING");
     abi.interfaces(target, vertex, budget.maxInterfaces);
     abi.pairs(target, budget.original.maxBindings);
     validateInterface(root, target);
@@ -607,7 +626,8 @@ WebGlShaderTarget loadTarget(const ShaderArtifactFiles::File& publication,
         "SHADER-WEBGL1-UNIFORM-VECTOR-COUNT");
     for (const auto& e : Y::sequence(root, "requiredExtensions")) {
         auto name = Y::text(e);
-        need(name == "GL_OES_standard_derivatives" || name == "GL_EXT_shader_texture_lod",
+        need(name == "GL_OES_standard_derivatives" || name == "GL_EXT_shader_texture_lod"
+                || name == "GL_EXT_frag_depth",
             "SHADER-WEBGL1-EXTENSION-UNSUPPORTED");
         need(std::find(target.extensions.begin(), target.extensions.end(), name)
                 == target.extensions.end(),
@@ -627,7 +647,8 @@ WebGlShaderTarget loadTarget(const ShaderArtifactFiles::File& publication,
             });
     };
     need(declares("GL_OES_standard_derivatives") == derivatives
-            && declares("GL_EXT_shader_texture_lod") == lod,
+            && declares("GL_EXT_shader_texture_lod") == lod
+            && declares("GL_EXT_frag_depth") == fragmentDepth,
         "SHADER-WEBGL1-EXTENSION-BINARY-MISMATCH");
     return target;
 }
@@ -649,7 +670,8 @@ std::shared_ptr<const WebGlShaderProgramArtifact> WebGlShaderProgramArtifact::lo
             "SHADER-WEBGL1-CPU-QUOTA");
         core::CpuMemoryQuotaScope scope(quota);
         auto program = core::makeUnique<WebGlShaderProgramArtifact>(ConstructionKey{});
-        ShaderArtifactInput input(budget.original.maxFileBytes, budget.original.maxTotalBytes);
+        ShaderArtifactInput input(
+            budget.original.maxFileBytes, budget.original.maxTotalBytes, budget.original.source);
         auto bytes = input.read(path);
         const auto root = parse(bytes);
         schema(root, 6);
@@ -744,7 +766,8 @@ const char* WebGlShaderProgramArtifact::assess(const WebGlShaderLimits& f) const
     for (const auto& stage : stages_)
         for (const auto& ext : stage.extensions)
             if ((ext == "GL_OES_standard_derivatives" && !f.derivatives)
-                || (ext == "GL_EXT_shader_texture_lod" && !f.textureLod))
+                || (ext == "GL_EXT_shader_texture_lod" && !f.textureLod)
+                || (ext == "GL_EXT_frag_depth" && !f.fragmentDepth))
                 return "SHADER-WEBGL1-REQUIRED-EXTENSION";
     return nullptr;
 }

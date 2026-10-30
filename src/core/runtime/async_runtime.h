@@ -24,6 +24,7 @@ enum class AsyncRuntimeDiagnostic : std::uint8_t {
     MissingWorkBackend,
     MissingFileBackend,
     MissingNetworkValidationSurface,
+    AmbiguousFileBackend,
 };
 
 enum class AsyncRuntimeSubmitStatus : std::uint8_t {
@@ -46,6 +47,9 @@ struct AsyncRuntimeDesc {
     bool enableWork = true;
     bool enableThreadPoolFileBackend = true;
     bool enableExternalNetworkValidation = true;
+    // Set enableThreadPoolFileBackend=false when injecting. The runtime owns
+    // shutdown of this producer; other shared owners only extend its lifetime.
+    core::SharedPtr<io::ManagedFileBackend> fileBackend;
 };
 
 struct AsyncRuntimeTelemetry {
@@ -89,6 +93,7 @@ private:
     CompletionQueue completions_;
     WorkService work_;
     io::ThreadPoolFallbackFileBackend fileBackend_;
+    io::NullFileBackend nullFileBackend_;
     io::FileService fileService_;
     std::uint64_t dispatchCalls_ = 0;
     AsyncRuntimeStatus status_ = AsyncRuntimeStatus::Running;

@@ -572,12 +572,18 @@ TerrainAssetIoResult TerrainAssetWriter::write(
 
 TerrainAssetResource::TerrainAssetResource(
     ResourceReference reference, std::filesystem::path manifestPath)
-    : ResourceBase(std::move(reference)), manifestPath_(std::move(manifestPath))
+    : TerrainAssetResource(std::move(reference), std::move(manifestPath), {})
+{}
+
+TerrainAssetResource::TerrainAssetResource(
+    ResourceReference reference, std::filesystem::path manifestPath, ResourceFileOrigin origin)
+    : ResourceBase(std::move(reference)), manifestPath_(std::move(manifestPath)),
+      sourceOrigin_(origin)
 {}
 
 TerrainAssetResource::TerrainAssetResource(const TerrainAssetResource& other)
-    : ResourceBase(other), manifestPath_(other.manifestPath_), bounds_(other.bounds_),
-      tileCountX_(other.tileCountX_), tileCountZ_(other.tileCountZ_),
+    : ResourceBase(other), manifestPath_(other.manifestPath_), sourceOrigin_(other.sourceOrigin_),
+      bounds_(other.bounds_), tileCountX_(other.tileCountX_), tileCountZ_(other.tileCountZ_),
       samplesPerEdge_(other.samplesPerEdge_), tileWorldSize_(other.tileWorldSize_),
       hasSurfaceWeights_(other.hasSurfaceWeights_), hasVegetation_(other.hasVegetation_),
       generation_(other.generation_), heightRange_(other.heightRange_),
@@ -591,15 +597,14 @@ TerrainAssetManifestIndex TerrainAssetResource::inspectManifest(
     TerrainAssetManifestIndex result;
     constexpr std::size_t manifestBudget = 1024u * 1024u;
     const auto manifestPath = core::FilePath::utf8(manifestPath_);
-    const auto file = readResourceSource(manifestPath, context, manifestBudget);
+    const auto file = readResourceText(manifestPath, context, manifestBudget, &sourceOrigin_);
     if (!file.success) {
         result.diagnostics = file.diagnostics;
         return result;
     }
     try {
         using Yaml = core::YamlContract;
-        const auto root = Yaml::parseSingleDocument(
-            core::StringView(reinterpret_cast<const char*>(file.bytes.data()), file.bytes.size()));
+        const auto root = Yaml::parseSingleDocument(file.text);
         const auto version = Yaml::text(root, "contractVersion");
         if (Yaml::text(root, "type") != resourceTypeName()
             || Yaml::text(root, "resourceId") != reference().id
@@ -663,7 +668,9 @@ TerrainAssetManifestIndex TerrainAssetResource::inspectManifest(
         }
         for (const auto& layer : layers)
             addDependency(Yaml::text(layer, "materialResourceId"), "terrain/material-layer");
-        appendResourceReadIntent(manifestPath, manifestBudget, result.files, result.diagnostics);
+        if (!appendResourceReadIntent(
+                manifestPath, manifestBudget, result.files, result.diagnostics, sourceOrigin_))
+            return result;
         const auto countX = Yaml::uint32(root, "tileCountX"),
                    countZ = Yaml::uint32(root, "tileCountZ");
         const auto samples = Yaml::uint32(root, "samplesPerEdge");
@@ -727,9 +734,10 @@ TerrainAssetManifestIndex TerrainAssetResource::inspectManifest(
                     return result;
                 }
                 decoded += static_cast<std::size_t>(bytes);
-                const auto fullPath = core::FilePath::utf8(
-                    manifestPath_.parent_path() / std::filesystem::path(path.c_str()));
-                if (!context.requirePreloadedSources) {
+                const auto fullPath = core::FilePath::utf8(manifestPath_.parent_path()
+                    / std::filesystem::u8path(path.begin(), path.end()));
+                if (!context.requirePreloadedSources
+                    && sourceOrigin_.pathScope == core::io::FilePathScope::HostFilesystem) {
                     std::error_code pathError;
                     const auto rootPath = std::filesystem::weakly_canonical(
                         manifestPath_.has_parent_path() ? manifestPath_.parent_path()
@@ -740,7 +748,7 @@ TerrainAssetManifestIndex TerrainAssetResource::inspectManifest(
                         return result;
                     }
                     const auto blockPath = std::filesystem::weakly_canonical(
-                        std::filesystem::path(fullPath.c_str()), pathError);
+                        std::filesystem::u8path(fullPath.begin(), fullPath.end()), pathError);
                     if (pathError || !core::FilePath::contains(rootPath, blockPath)) {
                         result.diagnostics = "TERRAIN-BLOCK-PATH-ESCAPE";
                         return result;
@@ -750,10 +758,12 @@ TerrainAssetManifestIndex TerrainAssetResource::inspectManifest(
                 if (std::none_of(result.files.begin(), result.files.end(), [&](const auto& intent) {
                         return intent.path == fullPath;
                     })) {
-                    appendResourceReadIntent(fullPath,
-                        std::max<std::size_t>(1u, bytes),
-                        result.files,
-                        result.diagnostics);
+                    if (!appendResourceReadIntent(fullPath,
+                            std::max<std::size_t>(1u, bytes),
+                            result.files,
+                            result.diagnostics,
+                            sourceOrigin_))
+                        return result;
                 }
             }
         }
@@ -768,6 +778,8 @@ bool TerrainAssetResource::collectFileReadIntents(ResourceManager&,
     core::pmr::Vector<ResourceFileReadIntent>& intents,
     core::pmr::String& diagnostics) const
 {
+    // Explicit synchronous inspection remains available to existing cold callers.
+    // ResourceGraph uses planFileReadIntents and never enters this host IO path.
     auto index = inspectManifest();
     diagnostics = std::move(index.diagnostics);
     if (!index.success)
@@ -775,6 +787,26 @@ bool TerrainAssetResource::collectFileReadIntents(ResourceManager&,
     intents.insert(intents.end(),
         std::make_move_iterator(index.files.begin()),
         std::make_move_iterator(index.files.end()));
+    return true;
+}
+
+bool TerrainAssetResource::planFileReadIntents(ResourceManager&,
+    const ResourceLoadContext& context,
+    core::pmr::Vector<ResourceFileReadIntent>& intents,
+    core::pmr::String& diagnostics) const
+{
+    if (!context.sources || !context.sources->find(core::FilePath::utf8(manifestPath_)))
+        return appendResourceReadIntent(core::FilePath::utf8(manifestPath_),
+            1024u * 1024u,
+            intents,
+            diagnostics,
+            sourceOrigin_);
+    // Parse exactly the acquired manifest, never a second filesystem version.
+    auto index = inspectManifest(context);
+    diagnostics = std::move(index.diagnostics);
+    if (!index.success)
+        return false;
+    intents = std::move(index.files);
     return true;
 }
 
@@ -881,8 +913,8 @@ ResourceLoadResult TerrainAssetResource::decode(
         surfaceSnapshot_.reset();
     }
     constexpr std::size_t manifestBudget = 1024u * 1024u;
-    const auto manifestFile =
-        readResourceSource(text(manifestPath_.generic_string().c_str()), context, manifestBudget);
+    const auto manifestFile = readResourceText(
+        core::FilePath::utf8(manifestPath_), context, manifestBudget, &sourceOrigin_);
     if (!manifestFile.success) {
         return {false,
             ResourceState::Failed,
@@ -892,8 +924,7 @@ ResourceLoadResult TerrainAssetResource::decode(
     }
     YamlNode root;
     try {
-        root = core::YamlContract::parseSingleDocument(core::StringView(
-            reinterpret_cast<const char*>(manifestFile.bytes.data()), manifestFile.bytes.size()));
+        root = core::YamlContract::parseSingleDocument(manifestFile.text);
     } catch (const std::exception& error) {
         auto diagnostics = text("TerrainAsset manifest YAML parse failed: ");
         diagnostics += error.what();
@@ -1104,11 +1135,13 @@ ResourceLoadResult TerrainAssetResource::decode(
                         || desc.byteCount > context.maxDecodedBytes - decodedBytes))) {
                 return false;
             }
-            const auto path = rootDirectory / std::filesystem::path(desc.path.c_str());
-            const auto file = readResourceSource(text(path.generic_string().c_str()),
+            const auto path =
+                rootDirectory / std::filesystem::u8path(desc.path.begin(), desc.path.end());
+            const auto file = readResourceSource(core::FilePath::utf8(path),
                 context,
                 byteLimit,
-                expected == TerrainAssetBinaryFormat::StaticVegetationV1);
+                expected == TerrainAssetBinaryFormat::StaticVegetationV1,
+                &sourceOrigin_);
             if (!file.success || file.bytes.size() != desc.byteCount
                 || hashBytes(file.bytes.data(), file.bytes.size()) != desc.contentHash) {
                 return false;

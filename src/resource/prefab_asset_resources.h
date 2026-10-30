@@ -271,10 +271,24 @@ struct PrefabRuntimePayloadLoadResult {
     arp::assets::AnimatedMeshAsset asset;
     animation::AnimatorControllerAsset controllerAsset;
     bool hasCompleteControllerData = false;
+    // Logical decoded storage: container elements plus owned string bytes.
+    std::size_t decodedBytes = 0;
     arp::core::pmr::String defaultStateName{&arp::core::defaultCpuMemoryResource()};
     arp::core::pmr::Vector<PrefabRuntimeStateBinding> stateBindings{
         &arp::core::defaultCpuMemoryResource()};
     arp::core::pmr::String diagnostics{&arp::core::defaultCpuMemoryResource()};
+};
+
+// Source-only adapter for the existing runtime blob format. It never opens a
+// host path; callers acquire the explicitly planned blob through FileService.
+class ARP_API PrefabRuntimePayloadSourceReader final {
+public:
+    AssetPackageReadPlan planSourceReads(const InternalAssetPackageEntry& entry,
+        const std::filesystem::path& root,
+        ResourceFileOrigin origin) const;
+    PrefabRuntimePayloadLoadResult readSources(const InternalAssetPackageEntry& entry,
+        const std::filesystem::path& root,
+        const AssetPackageSourceContext& sources) const;
 };
 
 ARP_API PrefabRuntimePayloadWriteResult writePrefabRuntimePayload(

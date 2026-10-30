@@ -27,6 +27,8 @@ struct WebGlFormatFacts {
     bool packedFramebufferComplete = false;
     WebGlFormatQueryOutcome depthTexture = WebGlFormatQueryOutcome::NotQueried;
     bool depthTextureFramebufferComplete = false;
+    WebGlFormatQueryOutcome srgbTexture = WebGlFormatQueryOutcome::NotQueried;
+    bool srgbClientUploadAccepted = false;
 };
 
 enum class WebGlFormatRole : std::uint8_t {
@@ -48,7 +50,7 @@ class WebGlFormatContract final {
 public:
     static const char* validate(const WebGlFormatFacts& facts) noexcept
     {
-        if (facts.contractVersion != 1u)
+        if (facts.contractVersion != 1u && facts.contractVersion != 2u)
             return "RHI-WEBGL1-FORMAT-FACTS-VERSION";
         bool missing = false;
         const char* failure = nullptr;
@@ -90,6 +92,22 @@ public:
         if (facts.depthTexture == WebGlFormatQueryOutcome::NotQueried
             && facts.depthTextureFramebufferComplete)
             return "RHI-WEBGL1-FORMAT-PROBE-INVALID";
+        switch (facts.srgbTexture) {
+        case WebGlFormatQueryOutcome::NotQueried:
+        case WebGlFormatQueryOutcome::Observed:
+        case WebGlFormatQueryOutcome::NativeFailure:
+        case WebGlFormatQueryOutcome::OutOfMemory:
+        case WebGlFormatQueryOutcome::ContextLost:
+            break;
+        default:
+            return "RHI-WEBGL1-FORMAT-PROBE-INVALID";
+        }
+        if ((facts.srgbClientUploadAccepted
+                && facts.srgbTexture != WebGlFormatQueryOutcome::Observed)
+            || (facts.contractVersion == 1u
+                && (facts.srgbClientUploadAccepted
+                    || facts.srgbTexture != WebGlFormatQueryOutcome::NotQueried)))
+            return "RHI-WEBGL1-FORMAT-PROBE-INVALID";
         if (failure)
             return failure;
         if (missing)
@@ -126,6 +144,12 @@ public:
             && facts.rgba8ClientUploadAccepted
             && (request.role != WebGlFormatRole::Texture2DColorAttachment
                 || facts.rgba8FramebufferComplete))
+            return nullptr;
+        if (request.format == TextureFormat::Rgba8UnormSrgb && facts.contractVersion == 2u
+            && facts.srgbTexture == WebGlFormatQueryOutcome::Observed
+            && facts.srgbClientUploadAccepted
+            && (request.role == WebGlFormatRole::Texture2DClientUpload
+                || request.role == WebGlFormatRole::Texture2DSampled))
             return nullptr;
         if (request.format == TextureFormat::Depth24Stencil8
             && request.role == WebGlFormatRole::DepthStencilRenderbuffer

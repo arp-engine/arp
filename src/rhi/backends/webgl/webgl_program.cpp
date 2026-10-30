@@ -16,9 +16,12 @@ const char* WebGlResourceDomain::shaderAdmission(
     if (const auto* id = artifact.assess(runtime->shaderLimits()))
         return id;
     for (const auto* stage : {&artifact.vertex(), &artifact.fragment()})
-        for (const auto& extension : stage->extensions)
+        for (const auto& extension : stage->extensions) {
             if (extension == "GL_OES_standard_derivatives" && !extensionDecision.native.derivatives)
                 return "RHI-WEBGL1-EXTENSION-EXECUTION-DERIVATIVES-CLOSED";
+            if (extension == "GL_EXT_frag_depth" && !extensionDecision.native.fragmentDepth)
+                return "RHI-WEBGL1-EXTENSION-EXECUTION-FRAGMENT-DEPTH-CLOSED";
+        }
     return nullptr;
 }
 

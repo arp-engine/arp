@@ -9,6 +9,7 @@ struct WebGlShaderLimits {
                   combinedTextures = 0;
     bool vertexHighpFloat = false, fragmentHighpFloat = false, vertexHighpInt = false,
          fragmentHighpInt = false, derivatives = false, textureLod = false;
+    bool fragmentDepth = false;
 };
 
 } // namespace arp::shader

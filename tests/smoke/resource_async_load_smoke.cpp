@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -47,7 +48,10 @@ int main()
     constexpr const char* resourceId = "8ccdb6c4-91ec-4260-b456-57f3f93c32fd";
     arp::reflection::registration::class_<AsyncSmokeResource>("AsyncSmokeResource")
         .construct<>()
-        .property("name", &AsyncSmokeResource::name);
+        .property("name",
+            &AsyncSmokeResource::name,
+            {},
+            static_cast<std::uint8_t>(arp::reflection::PropertyHint::Serialize));
 
     arp::core::pmr::String payload("type: AsyncSmokeResource\n"
                                    "fields:\n"
@@ -102,8 +106,15 @@ int main()
     }
 
     assert(probe.called);
+    if (!probe.result.success)
+        std::fprintf(stderr, "async resource failure: %s\n", probe.result.diagnostics.c_str());
     assert(probe.result.success);
-    assert(manager.find<AsyncSmokeResource>(resourceId).ready());
+    // Legacy envelope admission retains reflection ownership explicitly.
+    const auto* admitted = manager.recordSnapshot(resourceId);
+    assert(admitted && admitted->state == arp::resource::ResourceState::Ready);
+    const auto* resource = admitted->value.ptr<AsyncSmokeResource>();
+    assert(resource && resource->name == "SmokeAsync");
+    assert(!manager.find<AsyncSmokeResource>(resourceId).ready());
     assert(runtime.telemetry().fileService.submitted == 1);
 
     runtime.shutdown(arp::core::runtime::AsyncRuntimeShutdownPolicy::Drain);

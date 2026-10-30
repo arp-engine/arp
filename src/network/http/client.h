@@ -55,6 +55,10 @@ public:
     bool success() const noexcept;
     DiagnosticCode diagnostic() const noexcept;
     DiagnosticCode set_uri(StringView uri);
+    // A resolver may bind an explicit IPv4 endpoint without changing the URI,
+    // Host header or TLS server name. Changing the URI clears this binding.
+    DiagnosticCode set_connection_endpoint(const endpoint& remote) noexcept;
+    const endpoint* connection_endpoint() const noexcept;
     void set_method(Method method) noexcept;
     DiagnosticCode add_header(StringView name, StringView value);
     DiagnosticCode set_content_type(ContentType type);
@@ -71,6 +75,8 @@ private:
     DiagnosticCode rebuild_from_uri();
 
     Uri uri_;
+    endpoint connection_endpoint_;
+    bool has_connection_endpoint_ = false;
     Request message_;
     tls::TlsConfig tls_config_;
     core::pmr::String host_header_;
@@ -91,6 +97,13 @@ public:
 
     template <typename HeadersHandler, typename BodyHandler, typename CompleteHandler>
     void async_stream(const ClientRequest& request,
+        HeadersHandler&& on_headers,
+        BodyHandler&& on_body,
+        CompleteHandler&& on_complete);
+
+    template <typename HeadersHandler, typename BodyHandler, typename CompleteHandler>
+    void async_stream(const ClientRequest& request,
+        SessionConfig config,
         HeadersHandler&& on_headers,
         BodyHandler&& on_body,
         CompleteHandler&& on_complete);
@@ -204,11 +217,12 @@ template <typename HeadersHandler, typename BodyHandler, typename CompleteHandle
 struct ClientStreamState {
     ClientStreamState(io_context* context,
         const ClientRequest& clientRequest,
-        HeadersHandler&& headers,
-        BodyHandler&& body,
-        CompleteHandler&& complete)
+        HeadersHandler headers,
+        BodyHandler body,
+        CompleteHandler complete,
+        SessionConfig config)
         : request(clientRequest), on_headers(std::move(headers)), on_body(std::move(body)),
-          on_complete(std::move(complete)), socket(context)
+          on_complete(std::move(complete)), socket(context), session(config)
     {}
 
     ClientRequest request;
@@ -223,12 +237,13 @@ template <typename HeadersHandler, typename BodyHandler, typename CompleteHandle
 struct ClientTlsStreamState {
     ClientTlsStreamState(io_context* context,
         const ClientRequest& clientRequest,
-        HeadersHandler&& headers,
-        BodyHandler&& body,
-        CompleteHandler&& complete)
+        HeadersHandler headers,
+        BodyHandler body,
+        CompleteHandler complete,
+        SessionConfig config)
         : request(clientRequest), on_headers(std::move(headers)), on_body(std::move(body)),
           on_complete(std::move(complete)), socket(context), tls_context(request.tls_config()),
-          tls_stream(tls_context), tls_adapter(&socket, &tls_stream)
+          tls_stream(tls_context), tls_adapter(&socket, &tls_stream), session(config)
     {}
 
     ClientRequest request;
@@ -285,6 +300,20 @@ void Client::async_stream(const ClientRequest& request,
     BodyHandler&& on_body,
     CompleteHandler&& on_complete)
 {
+    async_stream(request,
+        SessionConfig{},
+        std::forward<HeadersHandler>(on_headers),
+        std::forward<BodyHandler>(on_body),
+        std::forward<CompleteHandler>(on_complete));
+}
+
+template <typename HeadersHandler, typename BodyHandler, typename CompleteHandler>
+void Client::async_stream(const ClientRequest& request,
+    SessionConfig config,
+    HeadersHandler&& on_headers,
+    BodyHandler&& on_body,
+    CompleteHandler&& on_complete)
+{
     if (!request.success()) {
         std::forward<CompleteHandler>(on_complete)(
             detail::clientStatusFromDiagnostic(request.diagnostic()));
@@ -312,7 +341,9 @@ void Client::async_stream(const ClientRequest& request,
         return;
     }
 
-    endpoint remote(request.uri().host(), request.uri().port());
+    const endpoint remote = request.connection_endpoint()
+        ? *request.connection_endpoint()
+        : endpoint(request.uri().host(), request.uri().port());
     if (!remote.is_valid()) {
         std::forward<CompleteHandler>(on_complete)(
             detail::clientStatusFromDiagnostic(DiagnosticCode::malformed_uri));
@@ -327,7 +358,8 @@ void Client::async_stream(const ClientRequest& request,
             request,
             std::forward<HeadersHandler>(on_headers),
             std::forward<BodyHandler>(on_body),
-            std::forward<CompleteHandler>(on_complete));
+            std::forward<CompleteHandler>(on_complete),
+            config);
 
         error_code ec;
         if (state->socket.open(ec) != 0) {
@@ -365,10 +397,10 @@ void Client::async_stream(const ClientRequest& request,
                     state->session.async_read_response_stream(
                         state->socket,
                         [state](const Response& response) {
-                            state->on_headers(response);
+                            return state->on_headers(response);
                         },
                         [state](StringView chunk) {
-                            state->on_body(chunk);
+                            return state->on_body(chunk);
                         },
                         [state](const SessionStatus& readStatus) {
                             state->on_complete(detail::clientStatusFromSession(readStatus));
@@ -385,7 +417,8 @@ void Client::async_stream(const ClientRequest& request,
         request,
         std::forward<HeadersHandler>(on_headers),
         std::forward<BodyHandler>(on_body),
-        std::forward<CompleteHandler>(on_complete));
+        std::forward<CompleteHandler>(on_complete),
+        config);
 
     if (!state->tls_context.status().success()) {
         state->on_complete(detail::clientStatusFromTlsStatus(state->tls_context.status()));
@@ -436,10 +469,10 @@ void Client::async_stream(const ClientRequest& request,
                         state->session.async_read_response_stream(
                             state->tls_adapter,
                             [state](const Response& response) {
-                                state->on_headers(response);
+                                return state->on_headers(response);
                             },
                             [state](StringView chunk) {
-                                state->on_body(chunk);
+                                return state->on_body(chunk);
                             },
                             [state](const SessionStatus& readStatus) {
                                 state->on_complete(detail::clientStatusFromSessionAndTls(

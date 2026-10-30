@@ -1,3 +1,4 @@
+#include "../fixtures/generated_shader_package_fixture.h"
 #include "../fixtures/original_command_sampler_custody_fixture.h"
 #include "../fixtures/original_command_typed_source_contract_fixture.h"
 #include "../fixtures/original_descriptor_native_identity_fixture.h"
@@ -82,12 +83,25 @@ int main()
     assert(device);
     arp::test::OriginalWholeDescriptorWriteFixture::verifyValidator(*device);
 
+    ShaderPackageDesc smokePackage;
+    smokePackage.slangModulePath = "null_hidden_frame_smoke.slang";
+    smokePackage.artifacts = {"null_hidden_frame_smoke.spv",
+        "null_hidden_frame_smoke.metal",
+        "null_hidden_frame_smoke.wgsl",
+        "null_hidden_frame_smoke.reflection.yaml"};
+    smokePackage.entrypoints = {{smokePackage.slangModulePath, "vsMain", ShaderStage::Vertex},
+        {smokePackage.slangModulePath, "fsMain", ShaderStage::Fragment}};
+    smokePackage.reflection.descriptorBindings = {
+        {0, 0, DescriptorType::UniformBuffer, ShaderStage::Vertex | ShaderStage::Fragment}};
+    test::GeneratedShaderPackageFixture::prepare(
+        smokePackage, "null_hidden_frame_smoke.artifact-set.yaml");
     NullHiddenFrameSmokeRunner runner(*device);
     const auto report = runner.run({
         "NullHiddenFrameSmoke",
         {320, 180},
         TextureFormat::Bgra8Unorm,
         2u,
+        &smokePackage,
     });
 
     if (!report.success) {

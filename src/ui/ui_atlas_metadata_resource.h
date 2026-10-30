@@ -42,6 +42,8 @@ struct UiAtlasMetadataResourceLoadDesc {
     arp::core::pmr::String alias{&arp::core::defaultCpuMemoryResource()};
     arp::core::pmr::String status{&arp::core::defaultCpuMemoryResource()};
     arp::core::pmr::String expectedAtlasResourceId{&arp::core::defaultCpuMemoryResource()};
+    std::size_t maxMetadataBytes = 1024u * 1024u;
+    arp::resource::ResourceFileOrigin origin;
 };
 
 struct UiAtlasMetadataResource : public arp::resource::ResourceBase {
@@ -60,6 +62,7 @@ struct UiAtlasMetadataResource : public arp::resource::ResourceBase {
 
     arp::resource::ResourceLoadResult load(arp::resource::ResourceManager& resourceManager,
         const arp::resource::ResourceLoadContext& context) override;
+    void appendContentFingerprint(core::StableHash64& hash) const noexcept override;
     bool collectFileReadIntents(arp::resource::ResourceManager& resourceManager,
         arp::core::pmr::Vector<arp::resource::ResourceFileReadIntent>& intents,
         arp::core::pmr::String& diagnostics) const override;

@@ -2,6 +2,7 @@
 #include "core/runtime/async_runtime.h"
 #include "reflection/reflection.h"
 #include "resource/prefab_asset_resources.h"
+#include "resource/resource_graph_executor.h"
 #include "resource/resource_manager.h"
 
 #include <cassert>
@@ -456,10 +457,15 @@ int main()
         arp::core::runtime::AsyncRuntime runtime(runtimeDesc);
         arp::resource::ResourceManager manager;
         GraphProbe probe;
-        const auto submitted = manager.loadGraphAsync(runtime.workService(),
+        const auto submitted = manager.loadGraphAsync(runtime,
             validGraphRequest(),
-            arp::resource::ResourceAsyncLoadCompletion{&recordGraphLoad, &probe});
-        assert(submitted == arp::core::runtime::WorkServiceStatus::Accepted);
+            arp::resource::ResourceGraphExecutionBudget{2, 1, 1, 1, 2},
+            arp::resource::ResourceGraphExecutionCompletion{
+                [](void* user, arp::resource::ResourceGraphExecutionResult result) {
+                    recordGraphLoad(user, std::move(result.resource));
+                },
+                &probe});
+        assert(submitted == arp::resource::ResourceGraphSubmitStatus::Accepted);
         for (int i = 0; i < 100 && !probe.called; ++i) {
             runtime.dispatch();
             std::this_thread::sleep_for(std::chrono::milliseconds(1));

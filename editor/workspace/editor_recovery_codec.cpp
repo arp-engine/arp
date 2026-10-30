@@ -270,7 +270,8 @@ bool EditorRecoveryCodec::validate(
             if (script.cursor > script.text.size() || script.anchor > script.text.size()
                 || script.scrollLine > INT64_MAX
                 || (script.newline != "\n" && script.newline != "\r\n")
-                || ScriptDocumentSession::normalizeNewlines(script.savedFileBytes)
+                || ScriptDocumentSession::normalizeFileBytes(
+                       script.savedFileBytes, core::TextNulPolicy::Preserve)
                     != script.savedText
                 || script.newline
                     != (script.savedFileBytes.find("\r\n") != core::pmr::String::npos ? "\r\n"

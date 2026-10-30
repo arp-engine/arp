@@ -1,0 +1,15 @@
+format: ArpInternalAssetPackage
+version: 1
+name: EditorScene/1
+status: Contract Complete
+closure:
+  contractVersion: "resource.package.closure/v1"
+  path: "closure.yaml"
+entries:
+  - resourceId: 00000000-0000-4000-8000-000000000097
+    resourceType: SceneAssetResource
+    alias: 
+    envelopePath: resources/scene.arpres.yaml
+    status: Contract Complete
+    contentHash: 3623867726
+    dependencies: []

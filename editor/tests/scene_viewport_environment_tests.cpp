@@ -73,6 +73,20 @@ int main()
     assert(!environment.initialize(*device, missing, diagnostics));
     assert(diagnostics == "ARP-EDITOR-ENVIRONMENT-ARTIFACT-INVALID");
 
+    for (const auto profile : {editor::EditorSceneViewportSurfaceProfile{},
+             editor::EditorSceneViewportSurfaceProfile::baseline()}) {
+        assert(profile.valid());
+        const auto pipeline = editor::buildEditorSceneViewportEnvironmentPipeline(source, profile);
+        assert(pipeline.colorFormat == profile.color && pipeline.depthFormat == profile.depth);
+        assert(pipeline.vertexBuffers.size() == 1 && pipeline.vertexBuffers[0].strideBytes == 8);
+        assert(pipeline.vertexBuffers[0].attributes.size() == 1);
+        assert(pipeline.depthStencil.depthTestEnabled && !pipeline.depthStencil.depthWriteEnabled);
+        assert(rhi::validateRenderPipelineState(pipeline).success);
+    }
+    assert((!editor::EditorSceneViewportSurfaceProfile{
+        rhi::TextureFormat::Rgba8Unorm, rhi::TextureFormat::D32Float}
+            .valid()));
+
     editor::EditorSceneViewportCamera camera;
     assert(camera.position().y > 0.0f);
     const auto checkRays = [&](float aspect) {

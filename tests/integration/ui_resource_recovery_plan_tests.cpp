@@ -1,6 +1,7 @@
 #include "core/memory/cpu_allocator.h"
 #include "renderer/ui/ui_atlas_runtime.h"
 #include "renderer/ui/ui_glyph_atlas.h"
+#include "tests/fixtures/ui_prepared_fonts.h"
 
 #include <cassert>
 #include <cstdint>
@@ -15,7 +16,9 @@ arp::renderer::ui::UnifiedUiAtlasRuntime makeTestRuntime()
     baseAtlas.rgba8.resize(256u * 128u * 4u, 255u);
     baseAtlas.srgb = true;
 
+    const auto fonts = arp::tests::preparedUiFontFaces("default");
     arp::renderer::ui::UnifiedUiAtlasRuntimeBuildDesc desc;
+    desc.fontFaces = &fonts;
     desc.baseAtlas = std::move(baseAtlas);
     desc.maxWidth = 256u;
     desc.maxHeight = 256u;
@@ -156,7 +159,8 @@ void recovery_plan_succeeds_within_retention_budget()
 
     // Set a generous budget that accommodates the test atlas.
     arp::renderer::ui::UiResourceRecoveryRetentionPolicy policy;
-    policy.maxRecoveryDataBytes = 256u * 128u * 4u + 1024u;
+    policy.maxRecoveryDataBytes = 256u * 128u * 4u + 1024u
+        + runtime.makeRecoveryPlan().fontFaces->front().source->bytes().size();
 
     const auto result = runtime.makeRecoveryPlan(policy);
     assert(result.ok());

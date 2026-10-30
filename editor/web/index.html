@@ -13,10 +13,11 @@ footer{padding:8px 12px;color:#b8bdc6;font-size:12px} input{display:none}
 <body><header><strong>ARP Editor / WebGL</strong>
 <button data-action="save-scene">Save scene</button><button data-action="reopen">Reopen scene</button><button data-action="save-project">Save project</button>
 <button id="import">Import workspace</button><button data-action="export">Export workspace</button>
+<button id="cli">Connect CLI</button>
 <span id="status">Loading engine, fonts and UI…</span></header>
 <div id="error" role="alert"></div>
 <canvas id="canvas" width="1440" height="810" tabindex="0"></canvas>
-<footer>Prototype · Saves use a temporary browser workspace. Export a YAML archive before refreshing. Desktop Play / REST and 3D GPU preview are unavailable.</footer>
+<footer>Prototype · Export a YAML archive before refreshing. Connect CLI uses the local --remote server. Play and 3D GPU preview are unavailable.</footer>
 <input id="archive" type="file" accept=".yaml,.yml">
 <script>
 var Module = {
@@ -24,6 +25,7 @@ var Module = {
   onEditorState(state) {
     document.getElementById('status').textContent = (state.dirty || state.scriptDirty ? '● Unsaved workspace · ' : '') + state.message;
     document.querySelectorAll('header button').forEach(b => b.disabled = state.busy);
+    window.editorCliBridge?.onEditorReady(state);
   },
   onEditorError(message) {document.getElementById('error').textContent = message;},
   onAbort(message) {this.onEditorError('Engine stopped: ' + message);},
@@ -65,6 +67,10 @@ if (new URLSearchParams(location.search).has('capture')) {
 if (new URLSearchParams(location.search).has('negative')) {
   document.write('<script src="editor_webgl_negative.js"><\/script>');
 }
+if (new URLSearchParams(location.search).has('cli-smoke')) {
+  const script=document.createElement('script'); script.src='editor_webgl_cli_smoke.js'; document.head.appendChild(script);
+}
 </script>
+<script src="editor_cli_bridge.js"></script>
 {{{ SCRIPT }}}
 </body></html>

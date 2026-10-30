@@ -304,11 +304,11 @@ std::shared_ptr<const GraphicsShaderModuleArtifact> GraphicsShaderModuleArtifact
             "SHADER-MODULE-RUNTIME-LENGTH-REQUEST");
         core::CpuMemoryQuotaScope scope(quota);
         auto result = core::makeUnique<GraphicsShaderModuleArtifact>(ConstructionKey{}, budget);
-        ShaderArtifactInput input(budget.maxFileBytes, budget.maxTotalInputBytes);
+        ShaderArtifactInput input(budget.maxFileBytes, budget.maxTotalInputBytes, budget.source);
         result->publication_ = input.read(path);
         result->identity_ = core::Sha256::digest(shaderArtifactText(result->publication_));
         const auto source = shaderArtifactText(result->publication_);
-        const auto root = Y::Node::deserialize(source.begin(), source.end());
+        const auto root = shaderArtifactYaml(source);
         const auto version = Y::uint32(root, "contractVersion");
         const bool unavailableMetal = version == 2u;
         requireShaderArtifact(Y::text(root, "type") == "GraphicsShaderModuleArtifact"
@@ -321,7 +321,7 @@ std::shared_ptr<const GraphicsShaderModuleArtifact> GraphicsShaderModuleArtifact
             Y::required(root, "files"), path.parent_path(), unavailableMetal ? 3u : 1u, input);
         const auto reflectionText =
             shaderArtifactText(result->bytes(ShaderArtifactRole::Reflection));
-        const auto reflection = Y::Node::deserialize(reflectionText.begin(), reflectionText.end());
+        const auto reflection = shaderArtifactYaml(reflectionText);
         if (unavailableMetal)
             ShaderArtifactReflectionContract::validateUnavailableMetalRuntimeLength(reflection);
         requireShaderArtifact(core::Sha256::matchesHexDigest(
@@ -378,7 +378,8 @@ std::shared_ptr<const GraphicsShaderModuleArtifact> GraphicsShaderModuleArtifact
                 budget.runtimeLength
                     ? (i == 0u ? &budget.runtimeLength->vertex : &budget.runtimeLength->fragment)
                     : nullptr,
-                budget.nativeMemory[i]};
+                budget.nativeMemory[i],
+                budget.source};
             core::pmr::String childDiagnostic{&core::defaultCpuMemoryResource()};
             auto child = SingleEntryShaderArtifact::load(path.parent_path() / references[i].c_str(),
                 childBudget,
@@ -390,8 +391,7 @@ std::shared_ptr<const GraphicsShaderModuleArtifact> GraphicsShaderModuleArtifact
                 "SHADER-MODULE-ORIGINAL-CHILD-OWNER");
             if (unavailableMetal) {
                 const auto childRoot =
-                    Y::Node::deserialize(shaderArtifactText(child->publicationBytes()).begin(),
-                        shaderArtifactText(child->publicationBytes()).end());
+                    shaderArtifactYaml(shaderArtifactText(child->publicationBytes()));
                 requireShaderArtifact(Y::uint32(childRoot, "contractVersion") == 5u,
                     "SHADER-MODULE-RUNTIME-LENGTH-CHILD-VERSION");
             }

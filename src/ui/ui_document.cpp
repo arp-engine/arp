@@ -2,6 +2,8 @@
 
 #include "core/hash/stable_hash.h"
 #include "core/io/file_io.h"
+#include "resource/resource_source_io.h"
+#include "ui/detail/ui_content_fingerprint.h"
 
 #include <algorithm>
 #include <cassert>
@@ -21,6 +23,39 @@ using YamlNode = fkyaml::node;
 
 constexpr const char* kArpuiResourceType = "UiDocumentResource";
 constexpr const char* kArpuiEnvelopePath = "resources/ui-document.arpres.yaml";
+
+// Shared cold acquisition for document and authoring IR. Prepared contexts are
+// authoritative; readResourceText rejects missing/foreign sources without IO.
+core::TextFileReadResult readDocumentText(const std::filesystem::path& path,
+    const core::pmr::String& supplied,
+    bool provided,
+    std::size_t budget,
+    const resource::ResourceLoadContext& context,
+    resource::ResourceFileOrigin origin)
+{
+    core::TextFileReadResult result;
+    if (!budget || budget == SIZE_MAX) {
+        result.diagnostics = "UI-DOCUMENT-SOURCE-BUDGET";
+        return result;
+    }
+    if (!provided && supplied.empty()) {
+        return resource::readResourceText(core::FilePath::utf8(path), context, budget, &origin);
+    }
+    if (supplied.size() > budget) {
+        result.diagnostics = "UI-DOCUMENT-SOURCE-BUDGET";
+        return result;
+    }
+    core::TextDecodeDesc decode;
+    decode.bom = core::TextBomPolicy::Strip;
+    decode.nul = core::TextNulPolicy::Reject;
+    decode.maxOutputBytes = budget;
+    auto decoded = core::TextDecoder::decode({supplied.data(), supplied.size()}, decode);
+    result.success = decoded.status == core::TextDecodeStatus::Success;
+    result.text = std::move(decoded.text);
+    if (!result.success)
+        result.diagnostics = decoded.diagnosticId;
+    return result;
+}
 
 arp::core::pmr::String diagnosticText(const char* value)
 {
@@ -1143,66 +1178,76 @@ Document::Document(DocumentDesc desc)
 
 std::uint64_t UiDocument::stableHash() const
 {
-    arp::core::StableHash64 hash;
-    hash.appendString(desc_.canvas.canvasId);
-    hash.appendString(desc_.canvas.contractVersion);
-    hash.appendFloat(desc_.canvas.width);
-    hash.appendFloat(desc_.canvas.height);
-    hash.appendFloat(desc_.canvas.designDpi);
-    hash.appendU64(desc_.nodes.size());
+    core::StableHash64 hash;
+    appendContentFingerprint(hash);
+    return hash.value() == 0u ? 1u : hash.value();
+}
+
+void UiDocument::appendContentFingerprint(core::StableHash64& hasher) const noexcept
+{
+    detail::UiContentFingerprint hash(hasher);
+    hash.text("UiDocumentContent/2");
+    hash.text(desc_.canvas.canvasId);
+    hash.text(desc_.canvas.contractVersion);
+    hash.scalar(desc_.canvas.width);
+    hash.scalar(desc_.canvas.height);
+    hash.scalar(desc_.canvas.designDpi);
+    hash.number(desc_.canvas.hasExplicitSize);
+    hash.number(desc_.canvas.hasExplicitDpi);
+    hash.number(desc_.nodes.size());
     for (const auto& node : desc_.nodes) {
-        hash.appendU64(node.nodeId.value());
-        hash.appendU64(node.parentNodeId.value());
-        hash.appendString(node.sourceId);
-        hash.appendU64(static_cast<std::uint64_t>(node.controlType));
-        hash.appendFloat(node.layout.x);
-        hash.appendFloat(node.layout.y);
-        hash.appendFloat(node.layout.width);
-        hash.appendFloat(node.layout.height);
-        hash.appendU64(static_cast<std::uint64_t>(node.layoutMode));
-        hash.appendU64(static_cast<std::uint64_t>(node.stackLayout.direction));
-        hash.appendFloat(node.stackLayout.spacing);
-        hash.appendFloat(node.stackLayout.padding.left);
-        hash.appendFloat(node.stackLayout.padding.top);
-        hash.appendFloat(node.stackLayout.padding.right);
-        hash.appendFloat(node.stackLayout.padding.bottom);
-        hash.appendU64(static_cast<std::uint64_t>(node.layoutParticipation));
-        hash.appendString(node.styleId);
-        hash.appendString(node.text);
-        hash.appendU64(node.maxTextBytes);
-        hash.appendString(node.stateId);
-        hash.appendString(node.eventRole);
-        hash.appendString(node.psdLayerBinding.sourceLayerId);
-        hash.appendU64(node.resourceBindings.size());
+        hash.number(node.nodeId.value());
+        hash.number(node.parentNodeId.value());
+        hash.text(node.sourceId);
+        hash.number(static_cast<std::uint64_t>(node.controlType));
+        hash.scalar(node.layout.x);
+        hash.scalar(node.layout.y);
+        hash.scalar(node.layout.width);
+        hash.scalar(node.layout.height);
+        hash.number(static_cast<std::uint64_t>(node.layoutMode));
+        hash.number(static_cast<std::uint64_t>(node.stackLayout.direction));
+        hash.scalar(node.stackLayout.spacing);
+        hash.scalar(node.stackLayout.padding.left);
+        hash.scalar(node.stackLayout.padding.top);
+        hash.scalar(node.stackLayout.padding.right);
+        hash.scalar(node.stackLayout.padding.bottom);
+        hash.number(static_cast<std::uint64_t>(node.layoutParticipation));
+        hash.text(node.styleId);
+        hash.text(node.fontToken);
+        hash.text(node.text);
+        hash.number(node.maxTextBytes);
+        hash.text(node.stateId);
+        hash.text(node.eventRole);
+        hash.text(node.psdLayerBinding.sourceLayerId);
+        hash.number(node.resourceBindings.size());
         for (const auto& binding : node.resourceBindings) {
-            hash.appendString(binding.role);
-            hash.appendString(binding.resourceId);
-            hash.appendU64(binding.required ? 1u : 0u);
+            hash.text(binding.role);
+            hash.text(binding.resourceId);
+            hash.number(binding.required ? 1u : 0u);
         }
     }
-    hash.appendU64(desc_.textures.size());
+    hash.number(desc_.textures.size());
     for (const auto& texture : desc_.textures) {
-        hash.appendString(texture.resourceId);
-        hash.appendString(texture.sourceLayerId);
-        hash.appendString(texture.atlasId);
-        hash.appendFloat(texture.sourceRect.x);
-        hash.appendFloat(texture.sourceRect.y);
-        hash.appendFloat(texture.sourceRect.width);
-        hash.appendFloat(texture.sourceRect.height);
-        hash.appendFloat(texture.pivot.x);
-        hash.appendFloat(texture.pivot.y);
-        hash.appendFloat(texture.nineSlice.left);
-        hash.appendFloat(texture.nineSlice.top);
-        hash.appendFloat(texture.nineSlice.right);
-        hash.appendFloat(texture.nineSlice.bottom);
-        hash.appendU64(static_cast<std::uint64_t>(texture.alphaMode));
-        hash.appendU64(texture.srgb ? 1u : 0u);
-        hash.appendU64(texture.hasExplicitSrgb ? 1u : 0u);
-        hash.appendU64(static_cast<std::uint64_t>(texture.mipIntent));
-        hash.appendU64(static_cast<std::uint64_t>(texture.compressionIntent));
-        hash.appendU64(static_cast<std::uint64_t>(texture.samplerIntent));
+        hash.text(texture.resourceId);
+        hash.text(texture.sourceLayerId);
+        hash.text(texture.atlasId);
+        hash.scalar(texture.sourceRect.x);
+        hash.scalar(texture.sourceRect.y);
+        hash.scalar(texture.sourceRect.width);
+        hash.scalar(texture.sourceRect.height);
+        hash.scalar(texture.pivot.x);
+        hash.scalar(texture.pivot.y);
+        hash.scalar(texture.nineSlice.left);
+        hash.scalar(texture.nineSlice.top);
+        hash.scalar(texture.nineSlice.right);
+        hash.scalar(texture.nineSlice.bottom);
+        hash.number(static_cast<std::uint64_t>(texture.alphaMode));
+        hash.number(texture.srgb ? 1u : 0u);
+        hash.number(texture.hasExplicitSrgb ? 1u : 0u);
+        hash.number(static_cast<std::uint64_t>(texture.mipIntent));
+        hash.number(static_cast<std::uint64_t>(texture.compressionIntent));
+        hash.number(static_cast<std::uint64_t>(texture.samplerIntent));
     }
-    return hash.value() == 0u ? 1u : hash.value();
 }
 
 UiDocumentValidationResult UiDocumentValidationResult::success()
@@ -1526,19 +1571,15 @@ WidgetId UiArpuiRuntimeLoadResult::widgetIdForSourceNodeId(
 
 UiArpuiRuntimeLoadResult UiArpuiRuntimeLoader::load(const UiArpuiRuntimeLoadDesc& desc) const
 {
-    if (!desc.sourceYaml.empty()) {
-        if (looksLikeJsonDocument(desc.sourceYaml)) {
-            return UiArpuiRuntimeLoadResult::failure(UiDiagnosticCode::RuntimeLoadFailed,
-                diagnosticText(
-                    ".arpui runtime loader accepts YAML only; JSON .arpui assets are not supported."));
-        }
-        return loadArpuiYamlText(desc.sourceYaml, desc.factories, desc.maxWidgetCount);
-    }
-    const auto read =
-        desc.path.empty() ? arp::core::TextFileReadResult{} : arp::core::readTextFile(desc.path);
+    const auto read = readDocumentText(desc.path,
+        desc.sourceYaml,
+        desc.sourceYamlProvided,
+        desc.maxDocumentBytes,
+        desc.sourceContext,
+        desc.origin);
     if (!read.success) {
-        return UiArpuiRuntimeLoadResult::failure(UiDiagnosticCode::RuntimeLoadFailed,
-            diagnosticText(".arpui runtime loader failed to read the requested file"));
+        return UiArpuiRuntimeLoadResult::failure(
+            UiDiagnosticCode::RuntimeLoadFailed, read.diagnostics);
     }
     if (looksLikeJsonDocument(read.text)) {
         return UiArpuiRuntimeLoadResult::failure(UiDiagnosticCode::RuntimeLoadFailed,
@@ -1565,11 +1606,14 @@ UiArpuiIrBuildResult UiArpuiIrBuildResult::failure(
 
 UiArpuiIrBuildResult UiArpuiIrBuilder::build(const UiArpuiIrBuildDesc& desc) const
 {
-    const auto read =
-        desc.path.empty() ? arp::core::TextFileReadResult{} : arp::core::readTextFile(desc.path);
+    const auto read = readDocumentText(desc.path,
+        desc.sourceYaml,
+        desc.sourceYamlProvided,
+        desc.maxDocumentBytes,
+        desc.sourceContext,
+        desc.origin);
     if (!read.success) {
-        return UiArpuiIrBuildResult::failure(UiDiagnosticCode::RuntimeLoadFailed,
-            diagnosticText("arpui IR builder failed to read the requested file"));
+        return UiArpuiIrBuildResult::failure(UiDiagnosticCode::RuntimeLoadFailed, read.diagnostics);
     }
 
     arp::core::pmr::String diagnostics(&arp::core::defaultCpuMemoryResource());
@@ -1645,6 +1689,10 @@ UiArpuiIrBuildResult UiArpuiIrBuilder::build(const UiArpuiIrBuildDesc& desc) con
     }
 
     auto documentYaml = buildUiDocumentV1YamlFromDesc(documentDesc);
+    if (documentYaml.size() > desc.maxDocumentBytes) {
+        return UiArpuiIrBuildResult::failure(
+            UiDiagnosticCode::RuntimeLoadFailed, diagnosticText("UI-DOCUMENT-GENERATED-BUDGET"));
+    }
 
     const auto loaded = loadArpuiYamlText(documentYaml);
     if (!loaded.ok()) {
@@ -1853,7 +1901,17 @@ UiArpuiResourcePackageBuildResult UiArpuiResourcePackageBuilder::build(
 UiArpuiRuntimeLoadResult UiArpuiPackageRuntimeLoader::load(
     const UiArpuiPackageRuntimeLoadDesc& desc) const
 {
-    const auto read = arp::resource::InternalAssetPackageReader().read(desc.packageDirectory);
+    if (!desc.maxMetadataBytes || desc.maxMetadataBytes == SIZE_MAX || !desc.maxResources
+        || desc.maxResources == SIZE_MAX || !desc.maxDocumentBytes
+        || desc.maxDocumentBytes == SIZE_MAX) {
+        return UiArpuiRuntimeLoadResult::failure(
+            UiDiagnosticCode::RuntimeLoadFailed, diagnosticText("UI-DOCUMENT-SOURCE-BUDGET"));
+    }
+    const auto read = desc.sources
+        ? arp::resource::InternalAssetPackageReader().readSources(
+              desc.packageDirectory, *desc.sources, desc.maxMetadataBytes, desc.maxResources)
+        : arp::resource::InternalAssetPackageReader().read(
+              desc.packageDirectory, desc.maxMetadataBytes, desc.maxResources);
     if (!read.success) {
         return UiArpuiRuntimeLoadResult::failure(
             UiDiagnosticCode::RuntimeLoadFailed, read.diagnostics);
@@ -1883,6 +1941,12 @@ UiArpuiRuntimeLoadResult UiArpuiPackageRuntimeLoader::load(
     if (!extractArpuiDocumentYamlFromEnvelope(entry->envelopeYaml, documentYaml, diagnostics)) {
         return UiArpuiRuntimeLoadResult::failure(UiDiagnosticCode::RuntimeLoadFailed, diagnostics);
     }
+    auto decoded = readDocumentText({}, documentYaml, true, desc.maxDocumentBytes, {}, {});
+    if (!decoded.success) {
+        return UiArpuiRuntimeLoadResult::failure(
+            UiDiagnosticCode::RuntimeLoadFailed, decoded.diagnostics);
+    }
+    documentYaml = std::move(decoded.text);
     if (!validateArpuiPackageDocument(documentYaml, entry->dependencies, diagnostics)) {
         return UiArpuiRuntimeLoadResult::failure(UiDiagnosticCode::RuntimeLoadFailed, diagnostics);
     }
@@ -1917,13 +1981,26 @@ DocumentComponentMountResult DocumentComponentMounter::mount(DocumentComponent& 
     }
 
     UiArpuiRuntimeLoadDesc loadDesc;
-    loadDesc.path = std::filesystem::path(core::toStdString(desc.documentSource));
+    loadDesc.path = std::filesystem::u8path(desc.documentSource.begin(), desc.documentSource.end());
     auto loaded = UiArpuiRuntimeLoader().load(loadDesc);
+    return mount(component, loaded);
+}
+
+DocumentComponentMountResult DocumentComponentMounter::mount(
+    DocumentComponent& component, const UiArpuiRuntimeLoadResult& loaded) const
+{
+    const auto& desc = component.desc();
+    if (desc.documentSource.empty() || desc.inputRoute.empty() || desc.renderRoute.empty())
+        return DocumentComponentMountResult::failure(UiDiagnosticCode::RuntimeLoadFailed,
+            diagnosticText("UI-DOCUMENT-SOURCE-AND-ROUTES-REQUIRED"));
     if (!loaded.ok()) {
         return DocumentComponentMountResult::failure(loaded.diagnostic().code,
             arp::core::pmr::String(
                 loaded.diagnostic().message.c_str(), &arp::core::defaultCpuMemoryResource()));
     }
+    if (!loaded.hasRuntime())
+        return DocumentComponentMountResult::failure(
+            UiDiagnosticCode::RuntimeLoadFailed, diagnosticText("UI-DOCUMENT-RUNTIME-REQUIRED"));
 
     const auto layout = loaded.runtime().canvas().resolveLayout();
     if (!layout.ok()) {
@@ -2010,6 +2087,20 @@ const char* controlTypeName(UiControlType controlType)
     case UiControlType::Unknown:
     default:
         return "Unknown";
+    }
+}
+
+void UiTheme::appendContentFingerprint(core::StableHash64& hasher) const noexcept
+{
+    detail::UiContentFingerprint hash(hasher);
+    hash.text("UiThemeContent/1");
+    hash.text(themeId_);
+    hash.number(tokens_.size());
+    for (const auto& token : tokens_) {
+        hash.text(token.id);
+        hash.number(static_cast<std::uint64_t>(token.value.kind));
+        hash.color(token.value.color);
+        hash.text(token.value.text);
     }
 }
 

@@ -8,6 +8,7 @@
 #include "resource/asset_package_payload.h"
 #include "resource/prefab_asset_resources.h"
 #include "resource/resource_graph_plan.h"
+#include "resource/resource_source_io.h"
 #include "resource/terrain_asset_resource.h"
 #include "resource/vegetation_catalog_cooked.h"
 
@@ -522,7 +523,18 @@ bool readTextFile(const std::filesystem::path& path,
         diagnostics += makeString(path.generic_string());
         return false;
     }
-    out = read.text;
+    core::TextDecodeDesc desc;
+    desc.bom = core::TextBomPolicy::Strip;
+    desc.nul = core::TextNulPolicy::Reject;
+    // The legacy zero-limit host entry retains its read budget semantics. Text
+    // conversion itself is bounded by these already acquired original bytes.
+    desc.maxOutputBytes = read.text.size();
+    auto decoded = core::TextDecoder::decode(read.text, desc);
+    if (decoded.status != core::TextDecodeStatus::Success) {
+        diagnostics = decoded.diagnosticId;
+        return false;
+    }
+    out = std::move(decoded.text);
     return true;
 }
 
@@ -736,27 +748,214 @@ InternalAssetPackageValidationResult InternalAssetPackageWriter::write(
 }
 
 InternalAssetPackageValidationResult InternalAssetPackageReader::read(
-    const std::filesystem::path& packageDirectory,
+    const std::filesystem::path& directory,
     std::size_t maxMetadataBytes,
     std::size_t maxResources) const
+{
+    return readImpl(directory, maxMetadataBytes, maxResources, nullptr);
+}
+
+InternalAssetPackageValidationResult InternalAssetPackageReader::readSources(
+    const std::filesystem::path& directory,
+    const AssetPackageSourceContext& sources,
+    std::size_t maxMetadataBytes,
+    std::size_t maxResources) const
+{
+    if (!sources.resources.requirePreloadedSources || !sources.resources.sources
+        || !maxMetadataBytes || maxMetadataBytes == SIZE_MAX || !maxResources
+        || maxResources == SIZE_MAX)
+        return {false, "PACKAGE-IO-SOURCE-CONFIG", {}};
+    return readImpl(directory, maxMetadataBytes, maxResources, &sources);
+}
+
+AssetPackageReadPlan InternalAssetPackageReader::planSourceReads(
+    const std::filesystem::path& directory,
+    const AssetPackageSourceContext& sources,
+    const AssetPackageReadBudget& budget,
+    core::SharedPtr<const AssetPackageCodecRegistry> codecs) const
+{
+    AssetPackageReadPlan result;
+    if (!sources.resources.requirePreloadedSources || !sources.resources.sources
+        || (codecs && !codecs->frozen())) {
+        result.diagnostics = "PACKAGE-IO-SOURCE-CONFIG-OR-CODECS";
+        return result;
+    }
+    for (auto value : {budget.maxMetadataBytes,
+             budget.maxResources,
+             budget.maxFileReads,
+             budget.maxFileBytes,
+             budget.maxTotalBytes,
+             budget.maxDecodedBytes})
+        if (!value || value == SIZE_MAX) {
+            result.diagnostics = "PACKAGE-IO-BUDGET-REQUIRED";
+            return result;
+        }
+    std::filesystem::path manifest;
+    if (!resolveResourceSourcePath(directory, "manifest.arpkg.yaml", sources.origin, manifest)) {
+        result.diagnostics = "PACKAGE-IO-UNSAFE-ROOT";
+        return result;
+    }
+    const auto manifestPath = core::FilePath::utf8(manifest);
+    const auto add = [&](core::StringView relative, std::size_t bytes) {
+        std::filesystem::path path;
+        if (!resolveResourceSourcePath(directory, relative, sources.origin, path)) {
+            result.diagnostics = "PACKAGE-IO-UNSAFE-BINDING";
+            return false;
+        }
+        return appendResourceReadIntent(
+            core::FilePath::utf8(path), bytes, result.reads, result.diagnostics, sources.origin);
+    };
+    if (!add("manifest.arpkg.yaml", budget.maxMetadataBytes))
+        return result;
+    if (!sources.resources.sources->find(manifestPath)) {
+        result.success = true;
+        return result;
+    }
+    auto text =
+        readResourceText(manifestPath, sources.resources, budget.maxMetadataBytes, &sources.origin);
+    InternalAssetPackageDesc metadata;
+    if (!text.success
+        || !parseManifest(text.text, metadata, result.diagnostics, budget.maxResources)) {
+        if (!text.success)
+            result.diagnostics = std::move(text.diagnostics);
+        return result;
+    }
+    bool missing = false;
+    for (const auto& entry : metadata.entries) {
+        if (!add(entry.envelopePath, budget.maxMetadataBytes))
+            return result;
+        missing |= !sources.resources.sources->find(result.reads.back().path);
+    }
+    if (!metadata.closurePath.empty()) {
+        if (!add(metadata.closurePath, budget.maxMetadataBytes))
+            return result;
+        missing |= !sources.resources.sources->find(result.reads.back().path);
+    }
+    if (missing) {
+        result.success = true;
+        return result;
+    }
+    auto validated = readSources(directory, sources, budget.maxMetadataBytes, budget.maxResources);
+    if (!validated.success) {
+        result.diagnostics = std::move(validated.diagnostics);
+        return result;
+    }
+    if (!metadata.closurePath.empty()) {
+        auto closure = AssetPackageClosureService(codecs).planSourceReads(directory,
+            sources,
+            {budget.maxResources,
+                budget.maxFileReads,
+                budget.maxFileBytes,
+                budget.maxTotalBytes,
+                budget.maxDecodedBytes});
+        if (!closure.success) {
+            result.diagnostics = std::move(closure.diagnostics);
+            return result;
+        }
+        for (auto& read : closure.reads)
+            result.reads.push_back(std::move(read));
+    } else
+        for (const auto& entry : validated.package.entries) {
+            if (codecs && codecs->find(entry.resourceType)) {
+                if (!codecs->find(entry.resourceType)
+                        ->planSourceReads(
+                            entry, directory, sources, result.reads, result.diagnostics))
+                    return result;
+            } else if (entry.resourceType == PrefabRuntimePayloadResource::resourceTypeName()) {
+                auto blob = PrefabRuntimePayloadSourceReader().planSourceReads(
+                    entry, directory, sources.origin);
+                if (!blob.success) {
+                    result.diagnostics = std::move(blob.diagnostics);
+                    return result;
+                }
+                for (auto& read : blob.reads)
+                    result.reads.push_back(std::move(read));
+            } else if (isManifestAsset(entry.resourceType)) {
+                core::pmr::String relative;
+                if (!parseTypedAssetManifestPath(entry.envelopeYaml, relative, result.diagnostics))
+                    return result;
+                std::filesystem::path path;
+                if (!resolveResourceSourcePath(directory, relative, sources.origin, path)) {
+                    result.diagnostics = "PACKAGE-IO-UNSAFE-BINDING";
+                    return result;
+                }
+                const auto full = core::FilePath::utf8(path);
+                if (!sources.resources.sources->find(full)) {
+                    if (!appendResourceReadIntent(full,
+                            budget.maxMetadataBytes,
+                            result.reads,
+                            result.diagnostics,
+                            sources.origin))
+                        return result;
+                    continue;
+                }
+                const ResourceReference reference{
+                    entry.resourceId, entry.resourceType, entry.alias, entry.status, {}};
+                if (entry.resourceType == kVegetationCatalogCookedContract.type) {
+                    auto index = VegetationCatalogCookedCodec().inspect(
+                        reference, path, sources.resources, sources.origin);
+                    if (!index.success) {
+                        result.diagnostics = std::move(index.diagnostics);
+                        return result;
+                    }
+                    for (auto& read : index.files)
+                        result.reads.push_back(std::move(read));
+                } else {
+                    auto index = TerrainAssetResource(reference, path, sources.origin)
+                                     .inspectManifest(sources.resources);
+                    if (!index.success) {
+                        result.diagnostics = std::move(index.diagnostics);
+                        return result;
+                    }
+                    for (auto& read : index.files)
+                        result.reads.push_back(std::move(read));
+                }
+            }
+        }
+    result.success = true;
+    return result;
+}
+
+InternalAssetPackageValidationResult InternalAssetPackageReader::readImpl(
+    const std::filesystem::path& packageDirectory,
+    std::size_t maxMetadataBytes,
+    std::size_t maxResources,
+    const AssetPackageSourceContext* sources) const
 {
     InternalAssetPackageValidationResult result;
     core::pmr::String diagnostics(&core::defaultCpuMemoryResource());
     core::pmr::String manifest(&core::defaultCpuMemoryResource());
     std::error_code pathError;
-    const auto canonicalPackage = std::filesystem::canonical(packageDirectory, pathError);
-    if (pathError || !std::filesystem::is_directory(canonicalPackage, pathError) || pathError) {
-        result.diagnostics = makeDiagnostic("asset package path is not a readable directory");
+    auto canonicalPackage = packageDirectory;
+    auto canonicalManifest = packageDirectory / "manifest.arpkg.yaml";
+    if (!sources) {
+        canonicalPackage = std::filesystem::canonical(packageDirectory, pathError);
+        if (pathError || !std::filesystem::is_directory(canonicalPackage, pathError) || pathError) {
+            result.diagnostics = makeDiagnostic("asset package path is not a readable directory");
+            return result;
+        }
+        canonicalManifest =
+            std::filesystem::canonical(canonicalPackage / "manifest.arpkg.yaml", pathError);
+        if (pathError || !core::FilePath::contains(canonicalPackage, canonicalManifest)) {
+            result.diagnostics =
+                makeDiagnostic("asset package manifest resolves outside package directory");
+            return result;
+        }
+    } else if (!resolveResourceSourcePath(
+                   packageDirectory, "manifest.arpkg.yaml", sources->origin, canonicalManifest)) {
+        result.diagnostics = "PACKAGE-IO-UNSAFE-ROOT";
         return result;
     }
-    const auto canonicalManifest =
-        std::filesystem::canonical(canonicalPackage / "manifest.arpkg.yaml", pathError);
-    if (pathError || !core::FilePath::contains(canonicalPackage, canonicalManifest)) {
-        result.diagnostics =
-            makeDiagnostic("asset package manifest resolves outside package directory");
-        return result;
-    }
-    if (!readTextFile(canonicalManifest, manifest, diagnostics, maxMetadataBytes)) {
+    const auto readDocument = [&](const std::filesystem::path& path, core::pmr::String& output) {
+        if (!sources)
+            return readTextFile(path, output, diagnostics, maxMetadataBytes);
+        auto read = readResourceText(
+            core::FilePath::utf8(path), sources->resources, maxMetadataBytes, &sources->origin);
+        output = std::move(read.text);
+        diagnostics = std::move(read.diagnostics);
+        return read.success;
+    };
+    if (!readDocument(canonicalManifest, manifest)) {
         result.diagnostics = diagnostics;
         return result;
     }
@@ -774,23 +973,26 @@ InternalAssetPackageValidationResult InternalAssetPackageReader::read(
         const auto relativePath = std::filesystem::u8path(
             entry.envelopePath.data(), entry.envelopePath.data() + entry.envelopePath.size());
         const auto unresolvedEnvelopePath = canonicalPackage / relativePath;
-        const bool envelopeExists = std::filesystem::exists(unresolvedEnvelopePath, pathError);
-        if (!pathError && !envelopeExists) {
-            result.diagnostics = makeDiagnostic("missing envelope file: ", entry.envelopePath);
-            return result;
+        auto envelopePath = unresolvedEnvelopePath;
+        if (!sources) {
+            const bool envelopeExists = std::filesystem::exists(unresolvedEnvelopePath, pathError);
+            if (!pathError && !envelopeExists) {
+                result.diagnostics = makeDiagnostic("missing envelope file: ", entry.envelopePath);
+                return result;
+            }
+            if (pathError) {
+                result.diagnostics =
+                    makeDiagnostic("cannot inspect package envelope path: ", entry.envelopePath);
+                return result;
+            }
+            envelopePath = std::filesystem::canonical(unresolvedEnvelopePath, pathError);
+            if (pathError || !core::FilePath::contains(canonicalPackage, envelopePath)) {
+                result.diagnostics = makeDiagnostic(
+                    "package envelope resolves outside package directory: ", entry.envelopePath);
+                return result;
+            }
         }
-        if (pathError) {
-            result.diagnostics =
-                makeDiagnostic("cannot inspect package envelope path: ", entry.envelopePath);
-            return result;
-        }
-        const auto envelopePath = std::filesystem::canonical(unresolvedEnvelopePath, pathError);
-        if (pathError || !core::FilePath::contains(canonicalPackage, envelopePath)) {
-            result.diagnostics = makeDiagnostic(
-                "package envelope resolves outside package directory: ", entry.envelopePath);
-            return result;
-        }
-        if (!readTextFile(envelopePath, entry.envelopeYaml, diagnostics, maxMetadataBytes)) {
+        if (!readDocument(envelopePath, entry.envelopeYaml)) {
             result.diagnostics = diagnostics;
             return result;
         }
@@ -851,11 +1053,37 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
     core::SharedPtr<const AssetPackageCodecRegistry> codecs,
     ResourceLoadPolicy policy) const
 {
+    return loadImpl(packageDirectory, manager, std::move(codecs), policy, nullptr);
+}
+
+ResourceLoadResult InternalAssetPackageReader::loadSources(const std::filesystem::path& directory,
+    ResourceManager& manager,
+    const AssetPackageSourceContext& sources,
+    core::SharedPtr<const AssetPackageCodecRegistry> codecs) const
+{
+    if (!sources.resources.requirePreloadedSources || !sources.resources.sources)
+        return {false, ResourceState::Failed, {}, {}, "PACKAGE-IO-SOURCE-CONFIG"};
+    if (!sources.resources.maxDecodedBytes || sources.resources.maxDecodedBytes == SIZE_MAX)
+        return {false, ResourceState::Failed, {}, {}, "PACKAGE-IO-DECODE-BUDGET"};
+    return loadImpl(directory, manager, std::move(codecs), sources.resources.policy, &sources);
+}
+
+ResourceLoadResult InternalAssetPackageReader::loadImpl(
+    const std::filesystem::path& packageDirectory,
+    ResourceManager& manager,
+    core::SharedPtr<const AssetPackageCodecRegistry> codecs,
+    ResourceLoadPolicy policy,
+    const AssetPackageSourceContext* sources) const
+{
     if (codecs && !codecs->frozen())
         return {false, ResourceState::Failed, {}, {}, "PACKAGE-CODEC-REGISTRY-NOT-FROZEN"};
-    auto readResult = read(packageDirectory,
-        AssetPackageClosureService::maxMetadataBytes,
-        AssetPackageClosureService::maxResources);
+    auto readResult = sources ? readSources(packageDirectory,
+                                    *sources,
+                                    AssetPackageClosureService::maxMetadataBytes,
+                                    AssetPackageClosureService::maxResources)
+                              : read(packageDirectory,
+                                    AssetPackageClosureService::maxMetadataBytes,
+                                    AssetPackageClosureService::maxResources);
     if (!readResult.success) {
         return ResourceLoadResult{
             false,
@@ -866,9 +1094,11 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
         };
     }
 
-    ResourceLoadContext loadContext{policy};
+    ResourceLoadContext loadContext = sources ? sources->resources : ResourceLoadContext{policy};
     if (!readResult.package.closurePath.empty()) {
-        const auto closure = AssetPackageClosureService(codecs).inspect(packageDirectory);
+        const auto closure = sources
+            ? AssetPackageClosureService(codecs).inspectSources(packageDirectory, *sources)
+            : AssetPackageClosureService(codecs).inspect(packageDirectory);
         if (!closure.success)
             return {false, ResourceState::Failed, {}, {}, closure.diagnostics};
         loadContext.maxDecodedBytes = closure.maxDecodedBytes;
@@ -876,8 +1106,39 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
         if (callerBudget != 0u)
             loadContext.maxDecodedBytes = std::min(loadContext.maxDecodedBytes, callerBudget);
     }
+    if (sources) {
+        registerPrefabAssetReflection();
+        const auto managerLimit = manager.telemetry().budget.maxDecodedBytes;
+        if (managerLimit)
+            loadContext.maxDecodedBytes = std::min(loadContext.maxDecodedBytes, managerLimit);
+        for (const auto& entry : readResult.package.entries) {
+            if (entry.resourceType != PrefabResource::resourceTypeName())
+                continue;
+            core::pmr::String diagnostic;
+            const auto typed = createPrefabResourceFromEnvelope(entry.envelopeYaml, diagnostic);
+            const auto* prefab = dynamic_cast<const PrefabResource*>(typed.get());
+            if (!prefab)
+                return {
+                    false, ResourceState::Failed, entry.resourceId, entry.resourceType, diagnostic};
+            std::size_t runtimeBindings = 0;
+            bool matches = false;
+            for (const auto& binding : entry.dependencies)
+                if (binding.usage == "runtime-payload") {
+                    ++runtimeBindings;
+                    matches = binding.id == prefab->runtimePayloadId;
+                }
+            if (runtimeBindings > 1
+                || (!prefab->runtimePayloadId.empty() && (runtimeBindings != 1 || !matches))
+                || (prefab->runtimePayloadId.empty() && runtimeBindings))
+                return {false,
+                    ResourceState::Failed,
+                    entry.resourceId,
+                    entry.resourceType,
+                    "PACKAGE-PREFAB-RUNTIME-BINDING-MISMATCH"};
+        }
+    }
 
-    const bool atomicTypedPackage = !readResult.package.closurePath.empty()
+    const bool atomicTypedPackage = sources || !readResult.package.closurePath.empty()
         || std::any_of(readResult.package.entries.begin(),
             readResult.package.entries.end(),
             [&](const auto& entry) {
@@ -905,8 +1166,11 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
 
     // Payload references are authoritative even when an envelope omits them.
     // Discover and type-check them before any package resource is admitted.
+    std::size_t preparedCodecDecodedBytes = 0;
     if (atomicTypedPackage) {
-        AssetPackagePayloadInspector inspector(codecs, packageDirectory);
+        AssetPackagePayloadInspector inspector = sources
+            ? AssetPackagePayloadInspector(codecs, packageDirectory, *sources)
+            : AssetPackagePayloadInspector(codecs, packageDirectory);
         std::size_t codecDecodedBytes = 0;
         const auto decodeLimit = loadContext.maxDecodedBytes
             ? loadContext.maxDecodedBytes
@@ -954,6 +1218,7 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
                     entry.dependencies.push_back(dependency.binding);
             }
         }
+        preparedCodecDecodedBytes = codecDecodedBytes;
     }
 
     ResourceGraphRequest ordering;
@@ -971,21 +1236,34 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
                     entry.resourceType,
                     diagnostics};
             std::error_code error;
-            const auto packageRoot = std::filesystem::canonical(packageDirectory, error);
-            if (error)
-                return {false,
-                    ResourceState::Failed,
-                    entry.resourceId,
-                    entry.resourceType,
-                    makeDiagnostic("TERRAIN-PACKAGE-ROOT")};
-            const auto resolvedManifest = std::filesystem::canonical(
-                packageRoot / std::filesystem::path(manifestPath.c_str()), error);
-            if (error || !core::FilePath::contains(packageRoot, resolvedManifest))
-                return {false,
-                    ResourceState::Failed,
-                    entry.resourceId,
-                    entry.resourceType,
-                    makeDiagnostic("TERRAIN-PACKAGE-MANIFEST-PATH-ESCAPE")};
+            auto packageRoot = packageDirectory;
+            std::filesystem::path resolvedManifest;
+            if (sources) {
+                if (!resolveResourceSourcePath(
+                        packageDirectory, manifestPath, sources->origin, resolvedManifest))
+                    return {false,
+                        ResourceState::Failed,
+                        entry.resourceId,
+                        entry.resourceType,
+                        "TERRAIN-PACKAGE-MANIFEST-PATH-ESCAPE"};
+            } else {
+                packageRoot = std::filesystem::canonical(packageDirectory, error);
+                if (error)
+                    return {false,
+                        ResourceState::Failed,
+                        entry.resourceId,
+                        entry.resourceType,
+                        "TERRAIN-PACKAGE-ROOT"};
+                resolvedManifest = std::filesystem::canonical(
+                    packageRoot / std::filesystem::u8path(manifestPath.begin(), manifestPath.end()),
+                    error);
+                if (error || !core::FilePath::contains(packageRoot, resolvedManifest))
+                    return {false,
+                        ResourceState::Failed,
+                        entry.resourceId,
+                        entry.resourceType,
+                        "TERRAIN-PACKAGE-MANIFEST-PATH-ESCAPE"};
+            }
 
             struct ManifestDependencies final {
                 bool success;
@@ -995,14 +1273,17 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
 
             const auto index = [&]() -> ManifestDependencies {
                 if (entry.resourceType == kVegetationCatalogCookedContract.type) {
-                    auto cooked = VegetationCatalogCookedCodec().inspect(
-                        reference, resolvedManifest, loadContext);
+                    auto cooked = VegetationCatalogCookedCodec().inspect(reference,
+                        resolvedManifest,
+                        loadContext,
+                        sources ? sources->origin : ResourceFileOrigin{});
                     return {cooked.success,
                         std::move(cooked.diagnostics),
                         std::move(cooked.dependencies)};
                 }
-                const auto terrain =
-                    TerrainAssetResource(reference, resolvedManifest).inspectManifest(loadContext);
+                const auto terrain = TerrainAssetResource(
+                    reference, resolvedManifest, sources ? sources->origin : ResourceFileOrigin{})
+                                         .inspectManifest(loadContext);
                 return {terrain.success, terrain.diagnostics, terrain.dependencies};
             }();
             if (!index.success)
@@ -1052,6 +1333,61 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
         return {false, ResourceState::Failed, plan.resourceId, plan.resourceType, plan.diagnostics};
     ResourceLoadResult last;
     core::pmr::Vector<core::UniquePtr<ResourceBase>> prepared{&core::defaultCpuMemoryResource()};
+
+    struct PreparedPrefabRuntime {
+        core::SharedPtr<const assets::AnimatedMeshAsset> asset;
+        core::SharedPtr<const animation::AnimatorControllerAsset> controller;
+        core::pmr::String diagnostic;
+    };
+
+    core::pmr::UnorderedMap<core::pmr::String, PreparedPrefabRuntime> prefabRuntimes;
+    std::size_t prefabDecodedBytes = preparedCodecDecodedBytes;
+    const auto prepareRuntime =
+        [&](const core::pmr::String& payloadId,
+            const InternalAssetPackageEntry* prefab) -> PreparedPrefabRuntime& {
+        auto [cached, inserted] = prefabRuntimes.try_emplace(payloadId);
+        auto& value = cached->second;
+        if (!inserted)
+            return value;
+        PrefabRuntimePayloadLoadResult decoded;
+        if (sources) {
+            const auto payload = std::find_if(readResult.package.entries.begin(),
+                readResult.package.entries.end(),
+                [&](const auto& e) {
+                    return e.resourceId == payloadId
+                        && e.resourceType == PrefabRuntimePayloadResource::resourceTypeName();
+                });
+            if (payload == readResult.package.entries.end()) {
+                value.diagnostic = "PACKAGE-PREFAB-PAYLOAD-MISSING";
+                return value;
+            }
+            if (prefabDecodedBytes >= loadContext.maxDecodedBytes) {
+                value.diagnostic = "PACKAGE-PREFAB-DECODED-BUDGET";
+                return value;
+            }
+            auto context = *sources;
+            context.resources.maxDecodedBytes = loadContext.maxDecodedBytes - prefabDecodedBytes;
+            decoded =
+                PrefabRuntimePayloadSourceReader().readSources(*payload, packageDirectory, context);
+        } else if (prefab)
+            decoded = loadPrefabRuntimePayloadByResourceIdFromPackage(
+                packageDirectory, prefab->resourceId);
+        else {
+            value.diagnostic = "PACKAGE-PREFAB-PAYLOAD-OWNER-MISSING";
+            return value;
+        }
+        if (!decoded.success || !decoded.hasCompleteControllerData) {
+            value.diagnostic = decoded.diagnostics.empty()
+                ? core::pmr::String("runtime payload lacks complete controller data")
+                : std::move(decoded.diagnostics);
+            return value;
+        }
+        prefabDecodedBytes += decoded.decodedBytes;
+        value.asset = core::makeShared<assets::AnimatedMeshAsset>(std::move(decoded.asset));
+        value.controller = core::makeShared<animation::AnimatorControllerAsset>(
+            std::move(decoded.controllerAsset));
+        return value;
+    };
     for (const auto entryIndex : plan.order) {
         if (entryIndex >= packageNodeCount)
             continue;
@@ -1060,8 +1396,11 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
             core::pmr::String diagnostic{&core::defaultCpuMemoryResource()};
             core::UniquePtr<ResourceBase> typed;
             try {
-                typed =
-                    codecs->find(entry.resourceType)->prepare(entry, packageDirectory, diagnostic);
+                typed = sources
+                    ? codecs->find(entry.resourceType)
+                          ->prepareSources(entry, packageDirectory, *sources, diagnostic)
+                    : codecs->find(entry.resourceType)
+                          ->prepare(entry, packageDirectory, diagnostic);
             } catch (...) {
                 diagnostic = "PACKAGE-CODEC-PREPARATION-FAILED";
             }
@@ -1093,7 +1432,8 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
             }
             ResourceReference reference{
                 entry.resourceId, entry.resourceType, entry.alias, entry.status, {}};
-            const auto manifest = packageDirectory / std::filesystem::path(manifestPath.c_str());
+            const auto manifest = packageDirectory
+                / std::filesystem::u8path(manifestPath.begin(), manifestPath.end());
             core::UniquePtr<ResourceBase> typed;
             if (entry.resourceType == kVegetationCatalogCookedContract.type) {
                 VegetationCatalogResourceLoadDesc desc;
@@ -1102,9 +1442,12 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
                 desc.status = entry.status;
                 desc.catalogPath = manifest;
                 desc.input = VegetationCatalogInput::Cooked;
+                desc.sourceOrigin = sources ? sources->origin : ResourceFileOrigin{};
                 typed = core::makeUnique<VegetationCatalogResource>(std::move(desc));
             } else
-                typed = core::makeUnique<TerrainAssetResource>(std::move(reference), manifest);
+                typed = core::makeUnique<TerrainAssetResource>(std::move(reference),
+                    manifest,
+                    sources ? sources->origin : ResourceFileOrigin{});
             typed->configureMetadata(typed->reference(), entry.dependencies);
             if (atomicTypedPackage) {
                 prepared.push_back(std::move(typed));
@@ -1160,24 +1503,18 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
                                    })
                             != candidate.dependencies.end();
                     });
-                if (prefabEntry != readResult.package.entries.end()) {
-                    const auto decoded = loadPrefabRuntimePayloadByResourceIdFromPackage(
-                        packageDirectory, prefabEntry->resourceId);
-                    if (!decoded.success || !decoded.hasCompleteControllerData) {
-                        return ResourceLoadResult{false,
+                if (prefabEntry != readResult.package.entries.end() || sources) {
+                    const auto& decoded = prepareRuntime(entry.resourceId,
+                        prefabEntry != readResult.package.entries.end() ? &*prefabEntry : nullptr);
+                    if (!decoded.asset || !decoded.controller)
+                        return {false,
                             ResourceState::Failed,
                             entry.resourceId,
                             entry.resourceType,
-                            decoded.diagnostics.empty()
-                                ? makeDiagnostic("runtime payload lacks complete controller data")
-                                : decoded.diagnostics};
-                    }
+                            decoded.diagnostic};
                     auto* runtimeResource = static_cast<PrefabRuntimePayloadResource*>(typed.get());
-                    runtimeResource->runtimeAsset =
-                        core::makeShared<assets::AnimatedMeshAsset>(decoded.asset);
-                    runtimeResource->controllerAsset =
-                        core::makeShared<animation::AnimatorControllerAsset>(
-                            decoded.controllerAsset);
+                    runtimeResource->runtimeAsset = decoded.asset;
+                    runtimeResource->controllerAsset = decoded.controller;
                 }
             } else if (entry.resourceType == AnimatorControllerResource::resourceTypeName()) {
                 const auto prefabEntry = std::find_if(readResult.package.entries.begin(),
@@ -1203,22 +1540,21 @@ ResourceLoadResult InternalAssetPackageReader::load(const std::filesystem::path&
                         return referencesController && referencesRuntime;
                     });
                 if (prefabEntry != readResult.package.entries.end()) {
-                    const auto decoded = loadPrefabRuntimePayloadByResourceIdFromPackage(
-                        packageDirectory, prefabEntry->resourceId);
-                    if (!decoded.success || !decoded.hasCompleteControllerData) {
-                        return ResourceLoadResult{false,
+                    const auto runtime = std::find_if(prefabEntry->dependencies.begin(),
+                        prefabEntry->dependencies.end(),
+                        [](const auto& d) {
+                            return d.usage == "runtime-payload";
+                        });
+                    const auto& decoded = prepareRuntime(runtime->id, &*prefabEntry);
+                    if (!decoded.asset || !decoded.controller)
+                        return {false,
                             ResourceState::Failed,
                             entry.resourceId,
                             entry.resourceType,
-                            decoded.diagnostics.empty()
-                                ? makeDiagnostic("animator controller payload is unavailable")
-                                : decoded.diagnostics};
-                    }
+                            decoded.diagnostic};
                     auto* controllerResource =
                         static_cast<AnimatorControllerResource*>(typed.get());
-                    controllerResource->controllerAsset =
-                        core::makeShared<animation::AnimatorControllerAsset>(
-                            decoded.controllerAsset);
+                    controllerResource->controllerAsset = decoded.controller;
                 }
             }
             typed->configureMetadata(

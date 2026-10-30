@@ -1,8 +1,9 @@
 /* Failure injection at the real browser API/file boundary, never GPU authority. */
 const negativeCase=new URLSearchParams(location.search).get('negative');
-if(negativeCase==='derivatives'){
+if(negativeCase==='derivatives'||negativeCase==='fragment-depth'||negativeCase==='srgb'){
   const getExtension=WebGLRenderingContext.prototype.getExtension;
-  WebGLRenderingContext.prototype.getExtension=function(name){return name==='OES_standard_derivatives'?null:getExtension.call(this,name);};
+  const denied=negativeCase==='derivatives'?'OES_standard_derivatives':negativeCase==='srgb'?'EXT_sRGB':'EXT_frag_depth';
+  WebGLRenderingContext.prototype.getExtension=function(name){return name===denied?null:getExtension.call(this,name);};
 }
 if(negativeCase==='shader'){
   Module.preRun=Module.preRun||[];
@@ -45,7 +46,7 @@ if(negativeCase==='shader'){
     }else{
       await wait(()=>!!Module.editorError);
       result.diagnostic=Module.editorError;
-      result.success=!Module.editorState?.frames && (negativeCase==='derivatives'
+      result.success=!Module.editorState?.frames && (negativeCase==='derivatives'||negativeCase==='fragment-depth'||negativeCase==='srgb'
         ?result.diagnostic.startsWith('RHI-WEBGL1-EXTENSION-'):result.diagnostic.includes('SHADER-'));
     }
   }catch(error){result.error=String(error);}

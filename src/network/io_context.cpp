@@ -63,11 +63,26 @@ void io_context::dispatch()
     }
 }
 
+std::size_t io_context::pending_completions() const noexcept
+{
+    std::lock_guard lock(complete_mutex_);
+    return complete_queue_.size();
+}
+
+bool io_context::wait_for_completion(std::chrono::milliseconds timeout) noexcept
+{
+    std::unique_lock lock(complete_mutex_);
+    return complete_ready_.wait_for(lock, timeout, [this] {
+        return !complete_queue_.empty();
+    });
+}
+
 void io_context::shutdown()
 {
     if (service_ != nullptr) {
         service_->close();
     }
+    complete_ready_.notify_all();
 }
 
 void io_context::cancel_and_close(socket_t fd, core::Callback<void(const error_code&)> callback)

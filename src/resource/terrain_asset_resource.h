@@ -158,11 +158,17 @@ public:
 
     TerrainAssetResource() = default;
     TerrainAssetResource(ResourceReference reference, std::filesystem::path manifestPath);
+    TerrainAssetResource(
+        ResourceReference reference, std::filesystem::path manifestPath, ResourceFileOrigin origin);
     TerrainAssetResource(const TerrainAssetResource& other);
 
     ResourceLoadResult load(ResourceManager& manager, const ResourceLoadContext& context) override;
     TerrainAssetManifestIndex inspectManifest(const ResourceLoadContext& context = {}) const;
     bool collectFileReadIntents(ResourceManager& manager,
+        core::pmr::Vector<ResourceFileReadIntent>& intents,
+        core::pmr::String& diagnostics) const override;
+    bool planFileReadIntents(ResourceManager& manager,
+        const ResourceLoadContext& context,
         core::pmr::Vector<ResourceFileReadIntent>& intents,
         core::pmr::String& diagnostics) const override;
     std::size_t processedByteCount() const noexcept override;
@@ -234,6 +240,7 @@ private:
     };
 
     std::filesystem::path manifestPath_;
+    ResourceFileOrigin sourceOrigin_;
     terrain::TerrainBounds bounds_;
     std::uint32_t tileCountX_ = 0u;
     std::uint32_t tileCountZ_ = 0u;

@@ -41,6 +41,9 @@ struct UiDocumentResourceLoadDesc {
     arp::core::pmr::String resourceId{&arp::core::defaultCpuMemoryResource()};
     arp::core::pmr::String alias{&arp::core::defaultCpuMemoryResource()};
     arp::core::pmr::String status{&arp::core::defaultCpuMemoryResource()};
+    // Preserve the previous graph read cap; callers may select a smaller finite cap.
+    std::size_t maxDocumentBytes = 4u * 1024u * 1024u;
+    arp::resource::ResourceFileOrigin origin;
 };
 
 struct UiDocumentResource : public arp::resource::ResourceBase {
@@ -59,6 +62,7 @@ struct UiDocumentResource : public arp::resource::ResourceBase {
 
     arp::resource::ResourceLoadResult load(arp::resource::ResourceManager& resourceManager,
         const arp::resource::ResourceLoadContext& context) override;
+    void appendContentFingerprint(core::StableHash64& hash) const noexcept override;
     bool collectFileReadIntents(arp::resource::ResourceManager& resourceManager,
         arp::core::pmr::Vector<arp::resource::ResourceFileReadIntent>& intents,
         arp::core::pmr::String& diagnostics) const override;

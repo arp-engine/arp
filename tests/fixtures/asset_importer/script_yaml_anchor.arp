@@ -2,6 +2,15 @@ import io
 import yaml
 
 def main(input: string, projectRoot: string) -> int:
+    var propertyParsed: yaml.YamlParseResult = yaml.parse("&named {value: 1}\n")
+    if not propertyParsed.success:
+        raise propertyParsed.diagnostics
+    var propertyDocument: yaml.YamlDocument = yaml.document_at(propertyParsed, 0)
+    if propertyDocument.anchor != "named":
+        raise "anchor getter is a reflected property"
+    propertyDocument.set_anchor("renamed")
+    if propertyDocument.anchor != "renamed":
+        raise "anchor property did not observe setter"
     var read: io.IoTextResult = io.read_text(input)
     if not read.success:
         raise read.diagnostics

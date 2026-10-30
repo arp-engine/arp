@@ -107,7 +107,7 @@ rhi::ShaderPackageDesc makeShaderPackage(const RendererRhiProductionFramePathDes
 {
     rhi::ShaderPackageDesc shaderPackage;
     shaderPackage.label = desc.label + "ShaderPackage";
-    shaderPackage.slangModulePath = "shaders/samples/clear.slang";
+    shaderPackage.slangModulePath = shaderArtifactPath(desc, "shaders/clear.slang");
     shaderPackage.entrypoints.push_back({
         shaderPackage.slangModulePath,
         "vertexMain",

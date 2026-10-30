@@ -1,8 +1,6 @@
 #include "editor/viewport/editor_scene_viewport_shader_package.h"
 
 #include "renderer/shader_package_reflection.h"
-#include "shader/shader_pipeline_reflection_validator.h"
-#include "shader/shader_reflection_cache.h"
 
 namespace arp::editor {
 namespace {
@@ -48,35 +46,6 @@ EditorSceneViewportShaderPackageResult loadEditorSceneViewportShaderPackage(
         return result;
     }
 
-    const auto loaded =
-        shader::ShaderReflectionCache::loadFromFile(core::pmr::String(artifacts.reflectionPath));
-    if (!loaded.success) {
-        result.diagnostic = EditorSceneViewportShaderPackageDiagnostic::ReflectionLoadFailed;
-        return result;
-    }
-    const auto identity =
-        shader::ShaderPipelineReflectionValidator::validateGeneratedArtifact(loaded.module,
-            core::pmr::String(artifacts.sourcePath),
-            core::pmr::String(artifacts.spirvPath),
-            core::pmr::String(artifacts.mslPath),
-            core::pmr::String(artifacts.wgslPath));
-    if (!identity.success) {
-        result.diagnostic = EditorSceneViewportShaderPackageDiagnostic::ArtifactIdentityInvalid;
-        return result;
-    }
-    if (!hasExactGraphicsEntryPoints(loaded.module.reflection)) {
-        result.diagnostic = EditorSceneViewportShaderPackageDiagnostic::EntryPointMismatch;
-        return result;
-    }
-    result.shaderReflection = loaded.module.reflection;
-
-    result.pipelineContract = buildEditorSceneViewportPipelineContract(
-        loaded.module.reflection, artifacts.sourcePath, colorFormat, depthFormat, sampleCount);
-    if (!result.pipelineContract.valid()) {
-        result.diagnostic = EditorSceneViewportShaderPackageDiagnostic::PipelineContractInvalid;
-        return result;
-    }
-
     auto& package = result.package;
     package.label = "ARP Editor Scene Viewport PBR";
     package.slangModulePath = artifacts.sourcePath;
@@ -84,23 +53,40 @@ EditorSceneViewportShaderPackageResult loadEditorSceneViewportShaderPackage(
     package.artifacts.mslPath = artifacts.mslPath;
     package.artifacts.wgslPath = artifacts.wgslPath;
     package.artifacts.reflectionPath = artifacts.reflectionPath;
-    package.reflection = result.pipelineContract.shaderReflection;
     package.entrypoints.push_back(
         {package.slangModulePath, "vertexMain", rhi::ShaderStage::Vertex});
     package.entrypoints.push_back(
         {package.slangModulePath, "fragmentMain", rhi::ShaderStage::Fragment});
-    if (!renderer::hydrateShaderPackageReflectionFromArtifact(package)) {
-        result.diagnostic = EditorSceneViewportShaderPackageDiagnostic::PackageHydrationFailed;
+    core::pmr::String diagnostic;
+    if (!renderer::hydrateShaderPackageReflectionFromArtifact(package, diagnostic)) {
+        result.diagnostic = diagnostic == "RHI-GENERATED-PACKAGE-ENTRY-ABI"
+            ? EditorSceneViewportShaderPackageDiagnostic::EntryPointMismatch
+            : EditorSceneViewportShaderPackageDiagnostic::ArtifactIdentityInvalid;
         return result;
     }
+    const auto& reflected = package.generatedArtifactSet->module().reflection;
+    if (!hasExactGraphicsEntryPoints(reflected)) {
+        result.diagnostic = EditorSceneViewportShaderPackageDiagnostic::EntryPointMismatch;
+        return result;
+    }
+    result.shaderReflection = reflected;
+    result.pipelineContract = buildEditorSceneViewportPipelineContract(
+        reflected, artifacts.sourcePath, colorFormat, depthFormat, sampleCount);
+    if (!result.pipelineContract.valid()) {
+        result.diagnostic = EditorSceneViewportShaderPackageDiagnostic::PipelineContractInvalid;
+        return result;
+    }
+    package.reflection = result.pipelineContract.shaderReflection;
+    // The contract authors logical descriptors; generated ABI remains owned
+    // by the same immutable input that will be consumed by the backend.
+    rhi::copyArtifactOwnedShaderReflection(package.reflection, reflected);
     if (!rhi::validateShaderPackage(package).success) {
         package.generatedReflectionHydrated = false;
         result.diagnostic = EditorSceneViewportShaderPackageDiagnostic::PackageInvalid;
         return result;
     }
-    if (package.reflection.sourceSha256 != loaded.module.reflection.sourceSha256
-        || package.reflection.reflectionContractVersion
-            != loaded.module.reflection.reflectionContractVersion) {
+    if (package.reflection.sourceSha256 != reflected.sourceSha256
+        || package.reflection.reflectionContractVersion != reflected.reflectionContractVersion) {
         package.generatedReflectionHydrated = false;
         result.diagnostic = EditorSceneViewportShaderPackageDiagnostic::PackageHydrationFailed;
     }

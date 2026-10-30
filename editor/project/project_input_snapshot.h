@@ -25,9 +25,19 @@ struct ProjectInputBudget {
 class ProjectInputSnapshot final {
 public:
     explicit ProjectInputSnapshot(std::filesystem::path root, ProjectInputBudget budget = {});
+    static bool validBudget(ProjectInputBudget budget) noexcept;
+    static bool validLogicalPath(std::string_view relative);
+    // Original acquired bytes under a strict project-relative key. No filesystem
+    // observation, text decoding or origin authorization occurs here; the owner
+    // must validate its IO binding/mount generation before recording the result.
+    bool recordLogical(
+        std::string_view relative, std::string_view bytes, core::pmr::String& diagnostic);
     bool record(
         const std::filesystem::path& file, std::string_view bytes, core::pmr::String& diagnostic);
     bool read(const std::filesystem::path& file, core::pmr::String& diagnostic);
+    // Match Text/1 UTF-8/BOM Strip/NUL Reject output while hashing original bytes.
+    bool recordDecodedText(
+        const std::filesystem::path&, std::string_view expected, core::pmr::String& diagnostic);
     bool verify(core::pmr::String& diagnostic) const;
 
     const core::pmr::Vector<ProjectInputBinding>& bindings() const noexcept { return bindings_; }

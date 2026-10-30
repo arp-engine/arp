@@ -1,6 +1,8 @@
 #include "core/io/file_io.h"
 #include "modules/yaml/yaml_module.h"
 #include "scriptvm/plugin/cpp_plugin_importer.h"
+#include "tests/fixtures/unified_io_fixture.h"
+#include "tools/asset_importer/script_plugin_sources.h"
 #include "tools/asset_importer/script_runner.h"
 
 #include <cassert>
@@ -116,6 +118,7 @@ int main(int argc, char** argv)
         : executablePath.parent_path() / "arp_engine.dll";
 
     arp::scriptvm::CppPluginImporterDesc desc;
+    arp::tools::asset_importer::configureScriptToolPluginSources(desc);
     desc.sourceRoot = root / "modules";
     desc.cacheRoot = std::filesystem::temp_directory_path() / "arp_asset_importer_script_unit";
     desc.includeRoot = root / "src";
@@ -675,6 +678,11 @@ int main(int argc, char** argv)
         return 1;
     }
     reportArgs[0] = arp::scriptvm::makeString(materialPath.generic_string());
+    // Symbolic GUIDs in this fixture exercise a metadata-only report. The
+    // engine repository's assets/ directory is Assets/ on Windows; it must
+    // not accidentally select Unity-project texture resolution for this case.
+    unified_io_fixture::Workspace metadataReportWorkspace;
+    reportArgs[1] = arp::scriptvm::makeString(metadataReportWorkspace.root.generic_string());
     const auto materialReportResult = runner.runFileFunction(
         root / "tests" / "fixtures" / "asset_importer" / "script_unity_import.arp",
         "export",

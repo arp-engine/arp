@@ -1,9 +1,13 @@
+#include "core/io/memory_file_backend.h"
+#include "core/io/mounted_file_backend.h"
 #include "core/runtime/async_runtime.h"
 #include "reflection/reflection.h"
+#include "resource/resource_graph_executor.h"
 #include "resource/resource_manager.h"
 
 #include <cassert>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -69,7 +73,10 @@ int main()
 {
     arp::reflection::registration::class_<AsyncContractMaterial>("AsyncContractMaterial")
         .construct<>()
-        .property("name", &AsyncContractMaterial::name);
+        .property("name",
+            &AsyncContractMaterial::name,
+            {},
+            static_cast<std::uint8_t>(arp::reflection::PropertyHint::Serialize));
 
     arp::core::runtime::AsyncRuntimeDesc desc;
     desc.completionQueueCapacity = 8;
@@ -136,26 +143,122 @@ int main()
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     assert(loadProbe.called);
+    if (!loadProbe.result.success)
+        std::fprintf(stderr, "async resource failure: %s\n", loadProbe.result.diagnostics.c_str());
     assert(loadProbe.result.success);
-    assert(manager.find<AsyncContractMaterial>("cdbbd56b-640f-4201-9915-5b6d974b2a8e").ready());
+    // This legacy envelope owns a reflected payload, not a native ResourceBase.
+    const auto* admitted = manager.recordSnapshot("cdbbd56b-640f-4201-9915-5b6d974b2a8e");
+    assert(admitted && admitted->state == arp::resource::ResourceState::Ready);
+    const auto* material = admitted->value.ptr<AsyncContractMaterial>();
+    assert(material && material->name == "AsyncRock");
+    assert(!manager.find<AsyncContractMaterial>("cdbbd56b-640f-4201-9915-5b6d974b2a8e").ready());
     assert(runtime.telemetry().fileService.submitted >= 2);
+
+    auto bounded = file;
+    bounded.contractVersion = 1;
+    bounded.maxBytes = 1;
+    Probe budgetProbe;
+    assert(manager.loadEnvelopeFileAsync(
+               runtime.fileService(), {bounded, {}}, {recordLoad, &budgetProbe})
+        == arp::core::io::FileIoStatus::Accepted);
+    for (int i = 0; i < 100 && !budgetProbe.called; ++i) {
+        runtime.dispatch();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(budgetProbe.called && !budgetProbe.result.success);
+    assert(budgetProbe.result.diagnostics.find("BudgetExceeded") != arp::core::pmr::String::npos);
+    assert(manager.stateOf("cdbbd56b-640f-4201-9915-5b6d974b2a8e")
+        == arp::resource::ResourceState::Ready);
+
+    {
+        const auto generation = manager.generationOf("cdbbd56b-640f-4201-9915-5b6d974b2a8e");
+        auto invalidUtf8 = envelope;
+        invalidUtf8 += static_cast<char>(0xFF);
+        auto memory = arp::core::makeShared<arp::core::io::MemoryFileBackend>(
+            arp::core::io::MemoryFileBackendDesc{1, invalidUtf8.size(), 1, invalidUtf8.size(), 64});
+        assert(memory->registerFile("bad-envelope.yaml",
+                   reinterpret_cast<const std::uint8_t*>(invalidUtf8.data()),
+                   invalidUtf8.size())
+            == arp::core::io::FileIoStatus::Success);
+        arp::core::runtime::CompletionQueue queue({1});
+        arp::core::io::FileService service(queue, *memory);
+        auto read = bounded;
+        read.pathScope = arp::core::io::FilePathScope::MountedResource;
+        read.path = "bad-envelope.yaml";
+        read.maxBytes = invalidUtf8.size();
+        Probe invalidText;
+        assert(manager.loadEnvelopeFileAsync(service, {read, {}}, {recordLoad, &invalidText})
+            == arp::core::io::FileIoStatus::Accepted);
+        queue.dispatch(1);
+        assert(invalidText.called && !invalidText.result.success);
+        assert(invalidText.result.diagnostics.find("TEXT-INVALID-UTF8")
+            != arp::core::pmr::String::npos);
+        assert(manager.generationOf("cdbbd56b-640f-4201-9915-5b6d974b2a8e") == generation);
+        assert(manager.recordSnapshot("cdbbd56b-640f-4201-9915-5b6d974b2a8e")->state
+            == arp::resource::ResourceState::Ready);
+    }
+
+    {
+        auto memory = arp::core::makeShared<arp::core::io::MemoryFileBackend>(
+            arp::core::io::MemoryFileBackendDesc{1, envelope.size(), 1, envelope.size(), 64});
+        assert(memory->registerFile("material.arpres.yaml",
+                   reinterpret_cast<const std::uint8_t*>(envelope.data()),
+                   envelope.size())
+            == arp::core::io::FileIoStatus::Success);
+        auto mounts = arp::core::makeShared<arp::core::io::MountedFileBackend>(
+            arp::core::io::MountedFileBackendDesc{1, 1, envelope.size(), 16, 64});
+        const auto mount = mounts->mount("workspace", memory);
+        assert(mount);
+        arp::core::runtime::AsyncRuntimeDesc mountedDesc;
+        mountedDesc.completionQueueCapacity = 1;
+        mountedDesc.completionBudget = 1;
+        mountedDesc.enableWork = false;
+        mountedDesc.enableThreadPoolFileBackend = false;
+        mountedDesc.fileBackend = mounts;
+        arp::core::runtime::AsyncRuntime mountedRuntime(mountedDesc);
+        arp::resource::ResourceManager staleManager;
+        auto mountedRead = bounded;
+        mountedRead.pathScope = arp::core::io::FilePathScope::MountedResource;
+        mountedRead.path = "material.arpres.yaml";
+        mountedRead.maxBytes = envelope.size();
+        mountedRead.mount = mount;
+        Probe staleProbe;
+        assert(staleManager.loadEnvelopeFileAsync(
+                   mountedRuntime.fileService(), {mountedRead, {}}, {recordLoad, &staleProbe})
+            == arp::core::io::FileIoStatus::Accepted);
+        assert(mounts->unmount(mount));
+        mountedRuntime.dispatch();
+        assert(staleProbe.called && !staleProbe.result.success);
+        assert(staleProbe.result.diagnostics.find("StaleLocation") != arp::core::pmr::String::npos);
+        assert(staleManager.recordSnapshot("cdbbd56b-640f-4201-9915-5b6d974b2a8e") == nullptr);
+        mountedRuntime.shutdown();
+    }
 
     Probe typedProbe;
     arp::resource::ResourceReference typedRef;
     typedRef.id = text("8822d04b-2435-43ca-8625-fdf2c35576d1");
     typedRef.type = text("AsyncContractResource");
     typedRef.alias = text("async.contract.resource");
+    typedRef.status = text("Contract Complete");
     assert(typedRef.valid());
-    assert(manager.loadAsync<AsyncContractResource>(runtime.workService(),
-               arp::resource::ResourceAsyncLoadCompletion{&recordLoad, &typedProbe},
+    assert(manager.loadAsync<AsyncContractResource>(runtime,
+               arp::resource::ResourceGraphExecutionBudget{1, 1, 1, 1, 2},
+               arp::resource::ResourceGraphExecutionCompletion{
+                   [](void* user, arp::resource::ResourceGraphExecutionResult result) {
+                       recordLoad(user, std::move(result.resource));
+                   },
+                   &typedProbe},
                arp::resource::ResourceLoadContext{},
                typedRef)
-        == arp::core::runtime::WorkServiceStatus::Accepted);
+        == arp::resource::ResourceGraphSubmitStatus::Accepted);
     for (int i = 0; i < 100 && !typedProbe.called; ++i) {
         runtime.dispatch();
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     assert(typedProbe.called);
+    if (!typedProbe.result.success)
+        std::fprintf(
+            stderr, "typed async resource failure: %s\n", typedProbe.result.diagnostics.c_str());
     assert(typedProbe.result.success);
     assert(manager.stateOf("8822d04b-2435-43ca-8625-fdf2c35576d1")
         == arp::resource::ResourceState::Ready);

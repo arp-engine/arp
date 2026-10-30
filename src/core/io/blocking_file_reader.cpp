@@ -1,5 +1,7 @@
 #include "core/io/blocking_file_reader.h"
 
+#include "core/io/file_read_contract.h"
+
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -24,6 +26,11 @@ FileReadResult failure(FileIoStatus status, const char* text)
 
 FileReadResult validate(const FileReadRequest& request)
 {
+    const auto contract = FileReadContract::validate(request);
+    if (contract.diagnostic)
+        return failure(contract.status, contract.diagnostic);
+    if (request.expectedVersion.kind != FileVersionKind::None)
+        return failure(FileIoStatus::Unsupported, "IO-READ-HOST-VERSION-UNSUPPORTED");
     if (request.pathScope != FilePathScope::HostFilesystem) {
         return failure(FileIoStatus::InvalidPathScope,
             "blocking file reader requires HostFilesystem path scope");
@@ -36,7 +43,9 @@ FileReadResult validate(const FileReadRequest& request)
         return failure(
             FileIoStatus::InvalidRange, "exact range file read requires size greater than zero");
     }
-    return {};
+    FileReadResult result;
+    result.backendKind = FileBackendKind::ThreadPoolFallbackFileBackend;
+    return result;
 }
 
 } // namespace
@@ -48,33 +57,26 @@ FileReadResult BlockingFileReader::read(const FileReadRequest& request) const
         return validation;
     }
 
-    const std::filesystem::path path(core::toStdString(request.path));
+    const auto path = std::filesystem::u8path(request.path.begin(), request.path.end());
     std::error_code fsError;
     const auto fileSize = std::filesystem::file_size(path, fsError);
     if (fsError) {
         return failure(FileIoStatus::MissingFile, "file stat failed or file is missing");
     }
 
-    std::uint64_t offset = 0;
-    std::uint64_t size = fileSize;
-    if (request.range.mode == FileReadRangeMode::ExactRange) {
-        offset = request.range.offset;
-        size = request.range.size;
-        if (offset > fileSize) {
-            return failure(FileIoStatus::InvalidRange, "file read offset is beyond file size");
-        }
-        if (size > fileSize - offset) {
-            if (request.partialPolicy == FilePartialReadPolicy::DenyPartial) {
-                return failure(
-                    FileIoStatus::PartialReadDenied, "file read range exceeds file size");
-            }
-            size = fileSize - offset;
-        }
-    }
+    const auto range = FileReadContract::resolveRange(request, fileSize);
+    if (range.diagnostic)
+        return failure(range.status, range.diagnostic);
+    const auto offset = range.offset;
+    const auto size = range.size;
 
     if (size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
         return failure(FileIoStatus::InvalidRange, "file read size exceeds addressable memory");
     }
+
+    if (offset > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max())
+        || size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max()))
+        return failure(FileIoStatus::InvalidRange, "IO-READ-STREAM-RANGE");
 
     std::ifstream file(path, std::ios::binary);
     if (!file) {
@@ -103,6 +105,11 @@ FileReadResult BlockingFileReader::read(const FileReadRequest& request) const
         }
     }
     return result;
+}
+
+FileReadResult BlockingFileReader::validateRead(const FileReadRequest& request) const
+{
+    return validate(request);
 }
 
 } // namespace arp::core::io

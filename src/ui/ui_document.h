@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/hash/stable_hash.h"
 #include "core/memory/cpu_allocator.h"
 #include "resource/internal_asset_package.h"
 #include "ui/ui.h"
@@ -182,7 +183,9 @@ public:
         return desc_.textures;
     }
 
+    // UiDocumentContent/2: build-local cache identity, not a persistent asset ID.
     std::uint64_t stableHash() const;
+    void appendContentFingerprint(core::StableHash64& hash) const noexcept;
 
 private:
     UiDocumentDesc desc_;
@@ -387,6 +390,11 @@ struct UiArpuiRuntimeLoadDesc {
     const UiControlFactoryRegistry* factories = nullptr;
     // Zero derives the exact static document size; specify spare capacity for mutations.
     size_t maxWidgetCount = 0;
+    // Explicitly supplied empty text must fail parsing, never reopen path.
+    bool sourceYamlProvided = false;
+    std::size_t maxDocumentBytes = 4u * 1024u * 1024u;
+    arp::resource::ResourceLoadContext sourceContext;
+    arp::resource::ResourceFileOrigin origin;
 };
 
 struct UiRuntimeNodeBinding {
@@ -412,6 +420,8 @@ public:
 
     const UiDocument& document() const { return document_; }
 
+    bool hasRuntime() const noexcept { return runtime_ != nullptr; }
+
     UiControlRuntime& runtime() { return *runtime_; }
 
     const UiControlRuntime& runtime() const { return *runtime_; }
@@ -432,6 +442,11 @@ public:
 
 struct UiArpuiIrBuildDesc {
     std::filesystem::path path;
+    arp::core::pmr::String sourceYaml{&arp::core::defaultCpuMemoryResource()};
+    bool sourceYamlProvided = false;
+    std::size_t maxDocumentBytes = 4u * 1024u * 1024u;
+    arp::resource::ResourceLoadContext sourceContext;
+    arp::resource::ResourceFileOrigin origin;
 };
 
 class UiArpuiIrBuildResult final {
@@ -485,6 +500,10 @@ struct UiArpuiPackageRuntimeLoadDesc {
     arp::core::pmr::String resourceId{&arp::core::defaultCpuMemoryResource()};
     const UiControlFactoryRegistry* factories = nullptr;
     size_t maxWidgetCount = 0;
+    std::size_t maxMetadataBytes = 4u * 1024u * 1024u;
+    std::size_t maxResources = 1024u;
+    std::size_t maxDocumentBytes = 4u * 1024u * 1024u;
+    const arp::resource::AssetPackageSourceContext* sources = nullptr;
 };
 
 class UiArpuiPackageRuntimeLoader final {
@@ -511,6 +530,9 @@ private:
 class DocumentComponentMounter final {
 public:
     DocumentComponentMountResult mount(DocumentComponent& component) const;
+    // Reuse an already parsed runtime without reopening the document source.
+    DocumentComponentMountResult mount(
+        DocumentComponent& component, const UiArpuiRuntimeLoadResult& loaded) const;
 };
 
 enum class UiThemeTokenValueKind {
@@ -541,6 +563,7 @@ public:
 
     void addToken(UiThemeToken token);
     const UiThemeToken* findToken(const arp::core::pmr::String& tokenId) const;
+    void appendContentFingerprint(core::StableHash64& hash) const noexcept;
 
 private:
     arp::core::pmr::String themeId_{&arp::core::defaultCpuMemoryResource()};

@@ -70,6 +70,7 @@ foreach(cloud_shader cloud_raymarch cloud_temporal cloud_composite cloud_demo_pr
     set(cloud_reflection "${cloud_shader_dir}/${cloud_shader}.reflection.yaml")
     add_custom_command(OUTPUT "${cloud_reflection}"
         BYPRODUCTS "${cloud_shader_dir}/${cloud_shader}.spv"
+            "${cloud_shader_dir}/${cloud_shader}.artifact-set.yaml"
             "${cloud_shader_dir}/${cloud_shader}.metal"
             "${cloud_shader_dir}/${cloud_shader}.wgsl"
             "${cloud_shader_dir}/${cloud_shader}.slang"
@@ -409,6 +410,7 @@ if(NOT CMAKE_CROSSCOMPILING)
 endif()
 
 add_custom_command(OUTPUT "${cloud_shader_dir}/cloud_foreground.reflection.yaml"
+    BYPRODUCTS "${cloud_shader_dir}/cloud_foreground.artifact-set.yaml"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
         --fixture cloud_foreground --out-dir "${cloud_shader_dir}" ${cloud_shader_compiler_args}
     DEPENDS tests/fixtures/cloud_foreground.slang scripts/compile_shaders.py VERBATIM)

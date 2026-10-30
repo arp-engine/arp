@@ -1,6 +1,8 @@
+#include "editor/viewport/editor_scene_viewport_sprite_contract.h"
 #include "editor/viewport/editor_scene_viewport_sprite_pass_contract.h"
 #include "editor/viewport/editor_scene_viewport_sprite_projection.h"
 #include "editor/viewport/editor_scene_viewport_tilemap_visibility.h"
+#include "shader/shader_reflection_cache.h"
 
 #include <cassert>
 #include <limits>
@@ -12,6 +14,25 @@ int main()
     using namespace arp::editor;
     namespace core = arp::core;
     namespace scene2d = arp::scene2d;
+
+    const auto reflection =
+        arp::shader::ShaderReflectionCache::loadFromFile(ARP_EDITOR_SPRITE_REFLECTION);
+    assert(reflection.success
+        && validateEditorSceneViewportSpriteReflection(reflection.module.reflection));
+    auto invalid = reflection.module.reflection;
+    invalid.vertexAttributes.pop_back();
+    assert(!validateEditorSceneViewportSpriteReflection(invalid));
+    for (const auto profile :
+        {EditorSceneViewportSurfaceProfile{}, EditorSceneViewportSurfaceProfile::baseline()}) {
+        const auto pipeline =
+            buildEditorSceneViewportSpritePipeline("editor/viewport_sprite.slang", profile);
+        assert(pipeline.vertexBuffers.size() == 2);
+        assert(pipeline.vertexBuffers[0].inputRate == arp::rhi::VertexInputRate::Instance);
+        assert(pipeline.vertexBuffers[1].inputRate == arp::rhi::VertexInputRate::Vertex);
+        assert(pipeline.vertexBuffers[1].attributes[0].shaderLocation == 6);
+        assert(pipeline.vertexBuffers[1].strideBytes == sizeof(core::Vec2));
+        assert(arp::rhi::validateRenderPipelineState(pipeline).success);
+    }
 
     constexpr EditorSceneViewportSpritePassBudget budget{128u, 16u, 1024u * 1024u};
     EditorSceneViewportSpritePassDemand demand;

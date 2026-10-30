@@ -22,6 +22,11 @@ class OriginalPipelineFullDefinitionFixture final {
 
     static void is(const char* actual, const char* expected)
     {
+        if (!actual || std::string_view(actual) != expected)
+            std::fprintf(stderr,
+                "pipeline definition expected %s got %s\n",
+                expected,
+                actual ? actual : "null");
         assert(actual && std::string_view(actual) == expected);
     }
 
@@ -180,7 +185,7 @@ public:
         package.artifacts.reflectionPath = "missing-original-full-definition.reflection.yaml";
         assert(!factory());
         is(original->lastOriginalResourceRegistrationDiagnostic().data(),
-            "RHI-ORIGINAL-PIPELINE-FACTORY-FAILED");
+            "RHI-ORIGINAL-TYPED-SHADER-DECLARATION");
         assert(metadata->liveBytes() == baseline);
         package.artifacts.reflectionPath = reflectionPath;
         auto pipeline = factory();
@@ -259,7 +264,7 @@ public:
 
     static void verifyHost()
     {
-        auto package = rhi::test::makePushContractShaderPackage();
+        auto package = rhi::test::makePushContractShaderPackage(true);
         rhi::PipelineLayoutDesc layoutDesc;
         layoutDesc.pushConstantRanges.push_back(
             {rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment | rhi::ShaderStage::Compute,

@@ -44,6 +44,8 @@ def main() -> int:
 
     plugin_build = modules.get("arp_scriptvm_plugin_build")
     if plugin_build is None or set(plugin_build.srcs) != {
+            "src/scriptvm/plugin/plugin_host_text_reader.cpp",
+            "src/scriptvm/plugin/script_source_snapshot.cpp",
             "src/scriptvm/plugin/compiler_toolchain_layout.cpp",
             "src/scriptvm/plugin/immutable_build_input_snapshot.cpp"}:
         fail("plugin build support is not owned by scriptvm/plugin")

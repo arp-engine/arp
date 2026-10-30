@@ -22,9 +22,8 @@ struct UiFontSetResourceData {
 };
 
 struct UiFontSetResourceLoadDesc {
-    // Optional explicit root for relative font source paths declared by the
-    // atlas metadata. When set, the resolved face paths are owned by the
-    // resource and no cwd/project-root discovery is performed downstream.
+    // Empty mounted root denotes the mount root. Empty host root preserves the
+    // declared relative path; core IO opens that literal path without discovery.
     std::filesystem::path sourceRoot;
     arp::core::pmr::String resourceId{&arp::core::defaultCpuMemoryResource()};
     arp::core::pmr::String alias{&arp::core::defaultCpuMemoryResource()};
@@ -32,6 +31,10 @@ struct UiFontSetResourceLoadDesc {
     arp::core::pmr::String atlasMetadataAlias{&arp::core::defaultCpuMemoryResource()};
     arp::core::pmr::String requiredGlyphPolicy{&arp::core::defaultCpuMemoryResource()};
     arp::core::pmr::String requiredPagePolicy{&arp::core::defaultCpuMemoryResource()};
+    std::size_t maxFaces = 32;
+    std::size_t maxFontBytes = 64u * 1024u * 1024u;
+    std::size_t maxTotalSourceBytes = 64u * 1024u * 1024u;
+    arp::resource::ResourceFileOrigin origin;
 };
 
 struct UiFontSetResource : public arp::resource::ResourceBase {
@@ -50,6 +53,10 @@ struct UiFontSetResource : public arp::resource::ResourceBase {
 
     arp::resource::ResourceLoadResult load(arp::resource::ResourceManager& resourceManager,
         const arp::resource::ResourceLoadContext& context) override;
+    void appendContentFingerprint(core::StableHash64& hash) const noexcept override;
+    bool collectFileReadIntents(arp::resource::ResourceManager& resourceManager,
+        core::pmr::Vector<arp::resource::ResourceFileReadIntent>& intents,
+        core::pmr::String& diagnostic) const override;
 
     std::shared_ptr<UiFontSetResourceData> data;
     UiFontSetResourceLoadDesc loadDesc;

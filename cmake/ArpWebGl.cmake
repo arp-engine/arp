@@ -547,6 +547,27 @@ function(arp_add_webgl_shader_program_tests)
         COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/contract/scene2d_shader_publication_test.py"
             --directory "${program_dir}" --reflect "${webgl1_spirv_reflect_tool}"
             --module gui_bitmap --push-bytes 64 --vertex-entry vertexMain)
+    set(fragment_program "${program_dir}/environment/editor_viewport_environment.webgl-program.yaml")
+    add_custom_command(OUTPUT "${fragment_program}"
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${webgl1_spirv_reflect_tool}"
+            --module editor_viewport_environment --graphics-module --glsl-es-100
+            --spirv-cross-library "${ARP_SPIRV_CROSS_LIBRARY}" --out-dir "${program_dir}/environment"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/editor/viewport_environment.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/webgl_shader_artifact.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/spirv_cross_api.py"
+        VERBATIM)
+    add_custom_target(arp_webgl_fragment_shader_artifacts DEPENDS "${fragment_program}")
+    add_executable(arp_webgl_fragment_shader_tests tests/contract/webgl_fragment_shader_tests.cpp)
+    target_link_libraries(arp_webgl_fragment_shader_tests PRIVATE arp_shader)
+    target_compile_definitions(arp_webgl_fragment_shader_tests PRIVATE ARP_WEBGL_FRAGMENT_PROGRAM="${fragment_program}")
+    target_compile_options(arp_webgl_fragment_shader_tests PRIVATE -UNDEBUG)
+    arp_add_mingw_static_runtime(arp_webgl_fragment_shader_tests)
+    add_dependencies(arp_webgl_fragment_shader_tests arp_webgl_fragment_shader_artifacts)
+    add_test(NAME arp_webgl_fragment_shader_tests COMMAND arp_webgl_fragment_shader_tests)
+    add_test(NAME arp_webgl_fragment_shader_negative_tests
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/contract/webgl_fragment_shader_negative_tests.py"
+            --exe "$<TARGET_FILE:arp_webgl_fragment_shader_tests>" --directory "${program_dir}/environment")
     add_executable(arp_webgl_shader_program_tests tests/contract/webgl_shader_program_tests.cpp)
     target_link_libraries(arp_webgl_shader_program_tests PRIVATE arp_shader)
     target_compile_definitions(arp_webgl_shader_program_tests PRIVATE ARP_WEBGL_PROGRAM_DIR="${program_dir}")
@@ -785,6 +806,21 @@ else()
 endif()
 add_executable(arp_rhi_webgl_profile_contract_tests
     tests/contract/rhi_webgl_profile_contract_tests.cpp)
+add_executable(arp_rhi_webgl_fragment_depth_tests tests/contract/rhi_webgl_fragment_depth_tests.cpp)
+target_include_directories(arp_rhi_webgl_fragment_depth_tests PRIVATE src)
+target_link_libraries(arp_rhi_webgl_fragment_depth_tests PRIVATE arp_core)
+target_compile_options(arp_rhi_webgl_fragment_depth_tests PRIVATE -UNDEBUG)
+add_test(NAME arp_rhi_webgl_fragment_depth_tests COMMAND arp_rhi_webgl_fragment_depth_tests)
+add_executable(arp_ordered_graphics_catalog_tests tests/contract/ordered_graphics_catalog_tests.cpp)
+target_include_directories(arp_ordered_graphics_catalog_tests PRIVATE src)
+target_link_libraries(arp_ordered_graphics_catalog_tests PRIVATE arp_core)
+target_compile_options(arp_ordered_graphics_catalog_tests PRIVATE -UNDEBUG)
+add_test(NAME arp_ordered_graphics_catalog_tests COMMAND arp_ordered_graphics_catalog_tests)
+add_executable(arp_rhi_webgl_srgb_tests tests/contract/rhi_webgl_srgb_tests.cpp)
+target_include_directories(arp_rhi_webgl_srgb_tests PRIVATE src)
+target_link_libraries(arp_rhi_webgl_srgb_tests PRIVATE arp_core)
+target_compile_options(arp_rhi_webgl_srgb_tests PRIVATE -UNDEBUG)
+add_test(NAME arp_rhi_webgl_srgb_tests COMMAND arp_rhi_webgl_srgb_tests)
 
 add_executable(arp_rhi_conformance_clear_workload_tests
     tests/contract/rhi_conformance_clear_workload_tests.cpp)

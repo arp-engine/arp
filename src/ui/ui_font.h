@@ -8,6 +8,8 @@
 
 namespace arp::ui {
 
+class UiFontSource;
+
 enum class UiFontDiagnosticCode {
     None,
     InvalidFontMetadata,
@@ -39,6 +41,8 @@ struct UiFontFaceDesc {
     /// Rasterization mode: "alpha" (default, full-coverage AlphaMask at
     /// sizePx) or "sdf" (Signed Distance Field for explicitly scalable text).
     arp::core::pmr::String renderMode{"alpha", &arp::core::defaultCpuMemoryResource()};
+    core::SharedPtr<const UiFontSource> source;
+    std::size_t maxSourceBytes = 64u * 1024u * 1024u;
 };
 
 struct UiFontFace {
@@ -110,13 +114,11 @@ class ARP_API UiFontFaceCache;
 
 class ARP_API UiFontTextRasterizer final {
 public:
-    /// Construct a stateless rasterizer (legacy path: re-inits FreeType every
-    /// call). Existing tests and standalone callers use this default.
+    /// Uncached requests own a temporary FreeType face through extraction.
     UiFontTextRasterizer() = default;
 
     /// Construct a rasterizer backed by a persistent FT_Face cache. When
-    /// cache is non-null, rasterize() skips FT_Init/FT_Done and re-reads of
-    /// the font file, reducing miss cost from ~12ms to ~0.1ms per glyph.
+    /// cache is non-null, rasterize() reuses the face and its byte owner.
     explicit UiFontTextRasterizer(UiFontFaceCache& cache) : cache_(&cache) {}
 
     UiFontRasterizeResult rasterize(const UiFontRasterizeDesc& desc) const;

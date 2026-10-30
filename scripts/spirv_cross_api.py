@@ -68,6 +68,7 @@ class SpirvCrossCompiler:
             "compiler_options_set_uint": (C.c_int, [V, C.c_int, U]),
             "compiler_install_compiler_options": (C.c_int, [V, V]),
             "compiler_compile": (C.c_int, [V, P(T)]),
+            "compiler_require_extension": (C.c_int, [V, T]),
             "compiler_create_shader_resources": (C.c_int, [V, P(V)]),
             "resources_get_resource_list_for_type": (C.c_int, [V, C.c_int, P(P(Resource)), P(S)]),
             "compiler_set_name": (None, [V, U, T]),

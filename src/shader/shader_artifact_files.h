@@ -3,6 +3,7 @@
 #include "core/hash/sha256.h"
 #include "core/io/artifact_path.h"
 #include "core/io/file_io.h"
+#include "core/text/text_decoder.h"
 
 #include <array>
 #include <filesystem>
@@ -25,17 +26,57 @@ inline core::StringView shaderArtifactText(const core::ByteBuffer& bytes) noexce
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
 
+// Validate text without changing the raw bytes used for publication/hash
+// identity. The acquisition ledger already bounds this exact input span.
+inline core::YamlContract::Node shaderArtifactYaml(core::StringView bytes)
+{
+    core::TextDecodeDesc desc;
+    desc.bom = core::TextBomPolicy::Strip;
+    desc.nul = core::TextNulPolicy::Reject;
+    desc.maxOutputBytes = bytes.size();
+    const auto decoded = core::TextDecoder::decode(bytes, desc);
+    if (decoded.status == core::TextDecodeStatus::AllocationFailed)
+        throw std::bad_alloc();
+    requireShaderArtifact(decoded.status == core::TextDecodeStatus::Success, decoded.diagnosticId);
+    return core::YamlContract::parseSingleDocument(decoded.text);
+}
+
+struct ShaderArtifactSourceResult {
+    core::ByteBuffer bytes{&core::defaultCpuMemoryResource()};
+    const char* diagnostic = nullptr;
+};
+
+// Pure, already-acquired bytes. Implementations must not perform IO, switch
+// origins or manufacture missing files. The source outlives the load call.
+class ShaderArtifactSource {
+public:
+    virtual ~ShaderArtifactSource() = default;
+    virtual ShaderArtifactSourceResult read(
+        const std::filesystem::path& path, std::uint64_t maxBytes) const = 0;
+};
+
 // One consumed-byte ledger, shared by module roles and delegated entry loads.
 class ShaderArtifactInput final {
 public:
-    ShaderArtifactInput(std::uint64_t maxFileBytes, std::uint64_t maxTotalBytes) noexcept
-        : maxFileBytes_(maxFileBytes), maxTotalBytes_(maxTotalBytes)
+    ShaderArtifactInput(std::uint64_t maxFileBytes,
+        std::uint64_t maxTotalBytes,
+        const ShaderArtifactSource* source = nullptr) noexcept
+        : maxFileBytes_(maxFileBytes), maxTotalBytes_(maxTotalBytes), source_(source)
     {}
 
     core::ByteBuffer read(const std::filesystem::path& path)
     {
         requireShaderArtifact(remaining() != 0u, "SHADER-ENTRY-INPUT-BUDGET");
-        auto file = core::readBinaryFile(path, std::min(maxFileBytes_, remaining()));
+        const auto limit = std::min(maxFileBytes_, remaining());
+        if (source_) {
+            auto file = source_->read(path, limit);
+            requireShaderArtifact(!file.diagnostic, file.diagnostic);
+            requireShaderArtifact(
+                !file.bytes.empty() && file.bytes.size() <= limit, "SHADER-ENTRY-FILE-READ-FAILED");
+            consumed_ += file.bytes.size();
+            return std::move(file.bytes);
+        }
+        auto file = core::readBinaryFile(path, limit);
         requireShaderArtifact(file.success && !file.bytes.empty(), "SHADER-ENTRY-FILE-READ-FAILED");
         consumed_ += file.bytes.size();
         return std::move(file.bytes);
@@ -54,6 +95,7 @@ public:
 private:
     const std::uint64_t maxFileBytes_, maxTotalBytes_;
     std::uint64_t consumed_ = 0u;
+    const ShaderArtifactSource* source_ = nullptr;
 };
 
 // Shared strict role/path/hash loading. Diagnostic IDs deliberately preserve

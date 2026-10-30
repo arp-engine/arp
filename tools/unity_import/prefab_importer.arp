@@ -28,7 +28,7 @@ class UnityPrefabImporter(Importer):
         return name == unity_import_common.UNITY_FILE_ID_FIELD or name == unity_import_common.UNITY_TYPE_FIELD
 
     def document_id(self, document: yaml.YamlDocument, path: string) -> int:
-        var anchor: string = document.anchor()
+        var anchor: string = document.anchor
         if anchor == "":
             var metadata: yaml.YamlDocument = document.get(
                 unity_import_common.UNITY_FILE_ID_FIELD)

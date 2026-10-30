@@ -5,6 +5,7 @@
 #include "rhi/frontend/pipeline_push_constant_abi_identity.h"
 #include "rhi/frontend/pipeline_single_entry_input.h"
 #include "rhi/semantics/bindless_pipeline_interface.h"
+#include "shader/generated_shader_artifact_set.h"
 #include "shader/shader_pipeline_reflection_validator.h"
 #include "shader/shader_reflection_cache.h"
 
@@ -205,38 +206,13 @@ WebGpuBindingSpaceLoweringLoadResult lowerWebGpuBindingSpaceReflection(
 WebGpuBindingSpaceLoweringLoadResult loadWebGpuBindingSpaceLowering(
     const rhi::ShaderPackageDesc& package)
 {
-    WebGpuBindingSpaceLoweringLoadResult result;
-    if (package.artifacts.reflectionPath.empty()) {
-        result.diagnostics = "WebGPU lowering requires a generated reflection artifact path";
+    const auto input = rhi::validateGeneratedShaderPackageInput(package);
+    if (!input.success) {
+        WebGpuBindingSpaceLoweringLoadResult result;
+        result.diagnostics = input.diagnostics;
         return result;
     }
-    const auto cached =
-        shader::ShaderReflectionCache::loadFromFile(package.artifacts.reflectionPath);
-    if (!cached.success) {
-        result.diagnostics = "WebGPU lowering could not load reflection artifact";
-        if (!package.label.empty()) {
-            result.diagnostics += " for package '";
-            result.diagnostics += package.label;
-            result.diagnostics += "'";
-        }
-        result.diagnostics += " (reflectionPath='";
-        result.diagnostics += package.artifacts.reflectionPath;
-        result.diagnostics += "'): ";
-        result.diagnostics += cached.diagnostics;
-        return result;
-    }
-    const auto artifactIdentityValidation =
-        shader::ShaderPipelineReflectionValidator::validateGeneratedArtifact(cached.module,
-            package.slangModulePath,
-            package.artifacts.spirvPath,
-            package.artifacts.mslPath,
-            package.artifacts.wgslPath);
-    if (!artifactIdentityValidation.success) {
-        result.diagnostics = "WebGPU reflection artifact identity validation failed: ";
-        result.diagnostics += artifactIdentityValidation.diagnostics;
-        return result;
-    }
-    return lowerWebGpuBindingSpaceReflection(package, cached.module);
+    return lowerWebGpuBindingSpaceReflection(package, package.generatedArtifactSet->module());
 }
 
 WebGpuBindingSpaceLoweringLoadResult loadOriginalWebGpuBindingSpaceLowering(

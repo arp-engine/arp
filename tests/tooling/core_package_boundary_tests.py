@@ -36,7 +36,12 @@ class CorePackageBoundaryTests(unittest.TestCase):
     def test_core_cannot_depend_on_engine_domains(self):
         for path in (ROOT / 'src/core').rglob('*'):
             if path.suffix in SOURCE_SUFFIXES:
-                self.assertEqual(upward_dependencies(path.read_text(encoding='utf-8-sig')), [], str(path))
+                dependencies = upward_dependencies(path.read_text(encoding='utf-8-sig'))
+                allowed = {'network/http/byte_read_transport.h', 'network/http/fetch_byte_transfer.h'}
+                if path == ROOT / 'src/core/io/http_file_backend.cpp':
+                    self.assertEqual(set(dependencies), allowed)
+                else:
+                    self.assertEqual(dependencies, [], str(path))
 
     def test_scanner_rejects_domain_dependencies(self):
         for domain in ('rhi', 'renderer', 'reflection', 'scriptvm', 'assets', 'scene'):
@@ -51,7 +56,27 @@ class CorePackageBoundaryTests(unittest.TestCase):
             self.assertTrue(name.startswith('src/core/'), name)
             self.assertTrue((ROOT / name).is_file(), name)
         for links in re.findall(r'target_link_libraries\(arp_core\s+([^)]*)\)', text):
-            self.assertEqual(links.split(), ['PUBLIC', 'arp_mimalloc'])
+            self.assertEqual(links.split(), ['PUBLIC', 'arp_core_foundation', 'arp_network_http_transport'])
+
+    def test_fileservice_and_network_dependency_direction(self):
+        self.assertFalse((ROOT / 'src/core/fileservice').exists())
+        self.assertTrue((ROOT / 'src/core/io/file_service.h').is_file())
+        self.assertTrue((ROOT / 'src/core/io/file_backend.h').is_file())
+        for path in (ROOT / 'src/network').rglob('*'):
+            if path.suffix in SOURCE_SUFFIXES:
+                self.assertNotIn('core/io/file_service.h', path.read_text(encoding='utf-8-sig'), str(path))
+                self.assertNotIn('core/io/file_backend.h', path.read_text(encoding='utf-8-sig'), str(path))
+        spec = importlib.util.spec_from_file_location('arp_build_graph', ROOT / 'build.py')
+        build = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build)
+        modules = build._auto_discover_modules()
+        self.assertEqual(modules['arp_core_foundation'].deps, ['arp_mimalloc'])
+        self.assertEqual(modules['arp_network_http_transport'].deps, ['arp_core_foundation'])
+        self.assertEqual(modules['arp_core'].deps, ['arp_core_foundation', 'arp_network_http_transport'])
+        self.assertNotIn('arp_core', modules['arp_network'].deps)
+        self.assertTrue(all((ROOT / name).is_file() for name in modules['arp_network_http_transport'].srcs))
+        self.assertTrue(all(not name.startswith('src/core/io/') and '/runtime/async_runtime.cpp' not in name
+                            for name in modules['arp_core_foundation'].srcs))
 
     def test_build_discovery_preserves_foundation_ownership(self):
         spec = importlib.util.spec_from_file_location('arp_build_discovery', ROOT / 'build.py')
@@ -64,6 +89,11 @@ class CorePackageBoundaryTests(unittest.TestCase):
         self.assertTrue(all(name.startswith('src/scriptvm/plugin/')
                             for name in modules['arp_scriptvm_plugin_build'].srcs))
         self.assertEqual(modules['arp_scriptvm_plugin_build'].deps, ['arp_core'])
+        self.assertEqual(set(modules['arp_ui_font'].srcs), {
+            'src/ui/ui_font.cpp', 'src/ui/ui_font_face_cache.cpp',
+            'src/ui/ui_font_source.cpp', 'src/ui/detail/ui_freetype_memory.cpp',
+        })
+        self.assertTrue(set(modules['arp_ui_font'].srcs).isdisjoint(modules['arp_ui_runtime'].srcs))
         self.assertIn('arp_scriptvm_plugin_build', modules['arp_scriptvm_runtime'].deps)
         self.assertTrue(all(name.startswith('src/pcg/') for name in modules['arp_pcg'].srcs))
 

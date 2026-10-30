@@ -61,7 +61,7 @@ public:
             diagnostic = "RHI-ORDERED-GRAPHICS-SUBMISSION-BUDGET";
             return {};
         }
-        if ((request.contractVersion != 3 && request.contractVersion != 4)
+        if ((request.contractVersion < 3 || request.contractVersion > 5)
             || (diagnostic = semantics::PreparedGraphicsCommandsContract::validate(request))) {
             if (!diagnostic)
                 diagnostic = "RHI-ORDERED-GRAPHICS-COMMAND-VERSION";

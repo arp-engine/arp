@@ -27,6 +27,7 @@ class EditorSceneScriptBindings;
 class EditorScriptComponentCatalog;
 struct EditorScriptBindingBudget;
 struct ProjectManifest;
+struct ProjectSourceContext;
 
 struct SceneHierarchyEntry {
     scene::GameObjectId objectId;
@@ -89,6 +90,12 @@ public:
     EditorSceneDocument(EditorSceneDocument&&);
     EditorSceneDocument& operator=(EditorSceneDocument&&);
     bool prepareScriptAuthoring(const std::filesystem::path&,
+        const ProjectManifest&,
+        EditorScriptBindingBudget,
+        core::pmr::String& diagnostic);
+    // Explicit mounted input; the source host outlives this document and retired
+    // binding/catalog owners. No native path fallback or user code execution.
+    bool prepareScriptAuthoringSources(const ProjectSourceContext&,
         const ProjectManifest&,
         EditorScriptBindingBudget,
         core::pmr::String& diagnostic);
@@ -204,6 +211,11 @@ public:
     scene::Scene::ComponentFactory identityRestorationFactory(ComponentResolver = {}) const;
 
 private:
+    bool prepareScriptAuthoringUsing(const std::filesystem::path&,
+        const ProjectManifest&,
+        EditorScriptBindingBudget,
+        core::pmr::String& diagnostic,
+        const ProjectSourceContext*);
     scene::Scene::ComponentFactory makeComponentFactory(ComponentResolver = {}) const;
     // Owned indirection preserves the document's existing move availability.
     core::UniquePtr<core::LifetimeEpoch> ownerEpoch_ = core::makeUnique<core::LifetimeEpoch>();

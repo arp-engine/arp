@@ -5,6 +5,8 @@
 #include "scene/main_scene_registry.h"
 #include "scriptvm/plugin/plugin_runtime_scope.h"
 
+#include <optional>
+
 namespace arp::editor {
 
 struct EditorScriptBindingBudget {
@@ -23,13 +25,15 @@ private:
         core::SharedPtr<scene::MainSceneRegistry>,
         core::SharedPtr<EditorSceneServiceSession>,
         EditorScriptBindingBudget,
-        core::pmr::String& diagnostic);
+        core::pmr::String& diagnostic,
+        const ProjectSourceContext* sources = nullptr);
     bool matches(const scene::Scene&,
         const core::SharedPtr<EditorSceneServiceSession>&,
         const core::SharedPtr<scene::MainSceneRegistry>&) const noexcept;
     bool verifySources(core::pmr::String& diagnostic) const;
 
     std::filesystem::path root_;
+    std::optional<ProjectSourceContext> sources_;
     core::SharedPtr<EditorSceneServiceSession> services_;
     core::LifetimeEpoch::Ticket serviceEpoch_;
     // Preserve the exact native world even if a service session later changes.

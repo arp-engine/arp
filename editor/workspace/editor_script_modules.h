@@ -1,7 +1,9 @@
 #pragma once
 
+#include "core/concurrency/callback.h"
 #include "editor/project/project_input_snapshot.h"
 #include "editor/project/project_manifest.h"
+#include "editor/project/project_source_session.h"
 #include "scene/script_component_persistence.h"
 
 namespace arp::editor {
@@ -32,6 +34,14 @@ public:
         core::SharedPtr<const EditorScriptModules>& destination,
         core::pmr::String& diagnostic);
 
+    static bool prepareSources(const ProjectSourceSnapshot&,
+        core::io::FileService&,
+        std::uint64_t currentEpoch,
+        const ProjectManifest&,
+        scriptvm::ModuleRegistry&,
+        core::SharedPtr<const EditorScriptModules>& destination,
+        core::pmr::String& diagnostic);
+
     const core::pmr::Vector<Entry>& entries() const noexcept { return entries_; }
 
     const core::pmr::Vector<ProjectInputBinding>& sources() const noexcept { return sources_; }
@@ -41,10 +51,26 @@ public:
     // admission. Reuse the Project codec for every module and budget field.
     bool matchesManifest(const ProjectManifest&) const;
     bool verifySources(const std::filesystem::path& root, core::pmr::String& diagnostic) const;
+    bool verifySources(const ProjectSourceSnapshot&,
+        core::io::FileService&,
+        std::uint64_t currentEpoch,
+        core::pmr::String& diagnostic) const;
 
 private:
+    using SourceReader = core::Callback<bool(
+        const ProjectScriptModule&, core::pmr::String&, ProjectInputSnapshot&, core::pmr::String&)>;
+    using SourceVerifier = core::Callback<bool(core::pmr::String&)>;
+    static bool prepareUsing(const ProjectManifest&,
+        scriptvm::ModuleRegistry&,
+        core::SharedPtr<const EditorScriptModules>&,
+        core::pmr::String&,
+        ProjectInputSnapshot&,
+        SourceReader&,
+        SourceVerifier&,
+        const ProjectSourceLocation*);
     core::pmr::Vector<Entry> entries_;
     core::pmr::Vector<ProjectInputBinding> sources_;
+    std::optional<ProjectSourceLocation> sourceLocation_;
 };
 
 } // namespace arp::editor

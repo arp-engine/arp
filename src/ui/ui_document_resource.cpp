@@ -1,7 +1,9 @@
 #include "ui/ui_document_resource.h"
 
 #include "reflection/reflection.h"
+#include "resource/resource_source_io.h"
 #include "scene/scene.h"
+#include "ui/detail/ui_content_fingerprint.h"
 
 #include <charconv>
 #include <filesystem>
@@ -54,10 +56,7 @@ void appendIndentedBlock(
 
 arp::core::pmr::String pathToText(const std::filesystem::path& path)
 {
-    using StringAllocator = arp::core::pmr::String::allocator_type;
-    return path.generic_string<char, std::char_traits<char>, StringAllocator>(StringAllocator{
-        &arp::core::defaultCpuMemoryResource(),
-    });
+    return arp::core::FilePath::utf8(path);
 }
 
 arp::core::pmr::String payloadYaml(
@@ -129,6 +128,32 @@ void registerUiDocumentResourceReflection()
 
 } // namespace
 
+void UiDocumentResource::appendContentFingerprint(core::StableHash64& hasher) const noexcept
+{
+    detail::UiContentFingerprint hash(hasher);
+    hash.resource(*this, kUiDocumentResourceContract);
+    hash.number(data != nullptr);
+    if (!data)
+        return;
+    hash.path(data->sourcePath);
+    hash.text(data->documentContract);
+    data->document.appendContentFingerprint(hasher);
+    hash.number(data->drawPlan.recordCount());
+    for (const auto& record : data->drawPlan.records())
+        hash.draw(record);
+    hash.number(data->bindings.size());
+    for (const auto& binding : data->bindings) {
+        hash.text(binding.sourceId);
+        hash.number(binding.widgetId.value());
+        hash.rect(binding.rect);
+        hash.text(binding.eventRole);
+        hash.text(binding.text);
+        hash.number(binding.order);
+        hash.number(binding.visible);
+        hash.number(binding.enabled);
+    }
+}
+
 arp::resource::ResourceLoadResult UiDocumentResource::load(
     arp::resource::ResourceManager& resourceManager,
     const arp::resource::ResourceLoadContext& context)
@@ -148,32 +173,26 @@ arp::resource::ResourceLoadResult UiDocumentResource::load(
             documentResourceText("UI document resource requires documentContract ui.document/v1.");
         return result;
     }
-    std::error_code error;
-    if (!std::filesystem::exists(desc.documentPath, error)) {
-        result.diagnostics = documentResourceText("UI document resource source file is missing: ");
-        result.diagnostics += desc.documentPath.generic_string().c_str();
+    arp::core::pmr::Vector<arp::resource::ResourceFileReadIntent> intents;
+    if (!collectFileReadIntents(resourceManager, intents, result.diagnostics))
+        return result;
+    auto source = arp::resource::readResourceText(
+        intents.front().path, context, desc.maxDocumentBytes, &desc.origin);
+    if (!source.success) {
+        result.diagnostics = std::move(source.diagnostics);
+        return result;
+    }
+    // An empty acquired document must never select the loader's local-file entry.
+    if (source.text.empty()) {
+        result.diagnostics = "UI-DOCUMENT-SOURCE-EMPTY";
         return result;
     }
 
     UiArpuiRuntimeLoadDesc loadDesc;
     loadDesc.path = desc.documentPath;
-    if (context.sources != nullptr) {
-        const auto sourcePath = pathToText(desc.documentPath);
-        const auto* source = context.sources->find(sourcePath);
-        if (source != nullptr) {
-            loadDesc.sourceYaml.assign(
-                reinterpret_cast<const char*>(source->bytes.data()), source->bytes.size());
-        } else if (context.requirePreloadedSources) {
-            result.diagnostics =
-                documentResourceText("UI document resource requires preloaded source: ");
-            result.diagnostics += sourcePath;
-            return result;
-        }
-    } else if (context.requirePreloadedSources) {
-        result.diagnostics =
-            documentResourceText("UI document resource requires preloaded source set.");
-        return result;
-    }
+    loadDesc.sourceYaml = std::move(source.text);
+    loadDesc.sourceYamlProvided = true;
+    loadDesc.maxDocumentBytes = desc.maxDocumentBytes;
     auto loaded = UiArpuiRuntimeLoader().load(loadDesc);
     if (!loaded.ok()) {
         result.diagnostics = loaded.diagnostic().message;
@@ -199,7 +218,7 @@ arp::resource::ResourceLoadResult UiDocumentResource::load(
         return result;
     }
     auto& component = uiObject.addComponent<DocumentComponent>(componentDesc);
-    const auto mounted = DocumentComponentMounter().mount(component);
+    const auto mounted = DocumentComponentMounter().mount(component, loaded);
     if (!mounted.ok()) {
         result.diagnostics = mounted.diagnostic().message;
         return result;
@@ -238,16 +257,13 @@ bool UiDocumentResource::collectFileReadIntents(arp::resource::ResourceManager&,
     arp::core::pmr::Vector<arp::resource::ResourceFileReadIntent>& intents,
     arp::core::pmr::String& diagnostics) const
 {
-    if (loadDesc.documentPath.empty()) {
-        diagnostics = documentResourceText("UI document resource requires source path.");
+    if (!arp::resource::appendResourceReadIntent(pathToText(loadDesc.documentPath),
+            loadDesc.maxDocumentBytes,
+            intents,
+            diagnostics,
+            loadDesc.origin))
         return false;
-    }
-    arp::resource::ResourceFileReadIntent intent;
-    intent.pathScope = arp::core::io::FilePathScope::HostFilesystem;
-    intent.path = pathToText(loadDesc.documentPath);
-    intent.role = documentResourceText("ui.document.yaml");
-    intent.maxBytes = 4u * 1024u * 1024u;
-    intents.push_back(std::move(intent));
+    intents.back().role = documentResourceText("ui.document.yaml");
     return true;
 }
 

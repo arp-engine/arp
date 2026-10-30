@@ -1,9 +1,12 @@
 #include "editor/workspace/script_document_session.h"
 
+#include "core/diagnostics/diagnostic_error.h"
 #include "core/io/atomic_file_service.h"
 #include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
 #include "core/text/string_utils.h"
+#include "core/text/text_decoder.h"
+#include "editor/project/project_source_session.h"
 
 #include <algorithm>
 #include <system_error>
@@ -34,6 +37,25 @@ core::pmr::String ScriptDocumentSession::normalizeNewlines(std::string_view cont
     return normalized;
 }
 
+core::TextDecodeResult ScriptDocumentSession::decodeFileBytes(
+    std::string_view raw, core::TextNulPolicy nul)
+{
+    core::TextDecodeDesc text;
+    text.bom = core::TextBomPolicy::Strip;
+    text.nul = nul;
+    text.maxOutputBytes = maxScriptBytes;
+    return core::TextDecoder::decode(raw, text);
+}
+
+core::pmr::String ScriptDocumentSession::normalizeFileBytes(
+    std::string_view raw, core::TextNulPolicy nul)
+{
+    const auto decoded = decodeFileBytes(raw, nul);
+    if (decoded.status != core::TextDecodeStatus::Success)
+        throw core::DiagnosticError(decoded.diagnosticId);
+    return normalizeNewlines(decoded.text);
+}
+
 bool ScriptDocumentSession::setActiveIndex(std::size_t index) noexcept
 {
     if (index >= documents_.size())
@@ -58,6 +80,120 @@ std::size_t ScriptDocumentSession::append(Document document)
     return documents_.size() - 1;
 }
 
+bool ScriptDocumentSession::sameDocument(const Document& a, const Document& b) noexcept
+{
+    const auto sameHistory = [](const auto& lhs, const auto& rhs) {
+        if (lhs.size() != rhs.size())
+            return false;
+        for (std::size_t i = 0; i < lhs.size(); ++i) {
+            const auto& x = lhs[i];
+            const auto& y = rhs[i];
+            if (x.removed != y.removed || x.inserted != y.inserted || x.offset != y.offset
+                || x.cursorBefore != y.cursorBefore || x.anchorBefore != y.anchorBefore
+                || x.cursorAfter != y.cursorAfter || x.anchorAfter != y.anchorAfter)
+                return false;
+        }
+        return true;
+    };
+    return a.id == b.id && a.path == b.path && a.text == b.text && a.savedText == b.savedText
+        && a.savedFileBytes == b.savedFileBytes && a.newline == b.newline && a.cursor == b.cursor
+        && a.anchor == b.anchor && a.scrollLine == b.scrollLine
+        && a.sourceSnapshot == b.sourceSnapshot && sameHistory(a.undo, b.undo)
+        && sameHistory(a.redo, b.redo);
+}
+
+bool ScriptDocumentSession::compatibleAllocators(const Document& a, const Document& b) noexcept
+{
+    return a.text.get_allocator() == b.text.get_allocator()
+        && a.savedText.get_allocator() == b.savedText.get_allocator()
+        && a.savedFileBytes.get_allocator() == b.savedFileBytes.get_allocator()
+        && a.newline.get_allocator() == b.newline.get_allocator()
+        && a.undo.get_allocator() == b.undo.get_allocator()
+        && a.redo.get_allocator() == b.redo.get_allocator();
+}
+
+void ScriptDocumentSession::swapDocumentContents(Document& a, Document& b) noexcept
+{
+    // Identity is intentionally excluded. Callers validate allocator equality
+    // before this commit; PMR move assignment would be a fallible operation.
+    a.path.swap(b.path);
+    a.text.swap(b.text);
+    a.savedText.swap(b.savedText);
+    a.savedFileBytes.swap(b.savedFileBytes);
+    a.newline.swap(b.newline);
+    std::swap(a.cursor, b.cursor);
+    std::swap(a.anchor, b.anchor);
+    std::swap(a.scrollLine, b.scrollLine);
+    a.undo.swap(b.undo);
+    a.redo.swap(b.redo);
+    a.sourceSnapshot.swap(b.sourceSnapshot);
+}
+
+core::UniquePtr<ScriptDocumentSession::PreparedReload> ScriptDocumentSession::prepareReload(
+    std::uint64_t documentId,
+    bool discardChanges,
+    ReloadBudget budget,
+    const char*& diagnostic) const
+{
+    diagnostic = "EDITOR-SCRIPT-RELOAD-TARGET";
+    const auto* document = active();
+    if (!documentId || !document || document->id != documentId || !stateEpoch_.ticket().isCurrent())
+        return {};
+    diagnostic = "EDITOR-SCRIPT-UNSAVED";
+    if (document->dirty() && !discardChanges)
+        return {};
+    diagnostic = "EDITOR-SCRIPT-RELOAD-BUDGET";
+    if (!budget.maxHistoryEntries || budget.maxHistoryEntries > ReloadBudget{}.maxHistoryEntries
+        || !budget.maxHistoryBytes || budget.maxHistoryBytes > ReloadBudget{}.maxHistoryBytes
+        || document->text.size() > maxScriptBytes || document->savedText.size() > maxScriptBytes
+        || document->savedFileBytes.size() > maxScriptBytes
+        || document->undo.size() > budget.maxHistoryEntries
+        || document->redo.size() > budget.maxHistoryEntries - document->undo.size())
+        return {};
+    std::size_t bytes = 0;
+    for (const auto* history : {&document->undo, &document->redo}) {
+        for (const auto& edit : *history) {
+            for (const auto& text :
+                {std::string_view(edit.removed), std::string_view(edit.inserted)}) {
+                if (text.size() > budget.maxHistoryBytes - bytes)
+                    return {};
+                bytes += text.size();
+            }
+        }
+    }
+    try {
+        auto result = core::makeUnique<PreparedReload>();
+        result->original_ = *document;
+        result->owner_ = stateEpoch_.ticket();
+        diagnostic = nullptr;
+        return result;
+    } catch (...) {
+        diagnostic = "EDITOR-SCRIPT-RELOAD-PREPARATION";
+        return {};
+    }
+}
+
+bool ScriptDocumentSession::commitSourceReload(
+    PreparedReload& prepared, Document& candidate) noexcept
+{
+    auto* document = active();
+    if (prepared.consumed_ || !prepared.owner_.sameCurrentEpoch(stateEpoch_.ticket()) || !document
+        || !sameDocument(*document, prepared.original_)
+        || !compatibleAllocators(*document, candidate) || candidate.id
+        || candidate.path != document->path || !candidate.sourceSnapshot
+        || !document->sourceSnapshot || candidate.cursor || candidate.anchor || candidate.scrollLine
+        || !candidate.undo.empty() || !candidate.redo.empty() || candidate.dirty())
+        return false;
+    const auto& before = document->sourceSnapshot->location();
+    const auto& after = candidate.sourceSnapshot->location();
+    if (!(before.mount == after.mount) || before.root != after.root || before.epoch != after.epoch)
+        return false;
+    swapDocumentContents(*document, candidate);
+    prepared.consumed_ = true;
+    stateEpoch_.advance();
+    return true;
+}
+
 const char* ScriptDocumentSession::validateRecoveredDocuments(
     const core::pmr::Vector<Document>& prepared, std::size_t activeIndex) const
 {
@@ -75,15 +211,16 @@ const char* ScriptDocumentSession::validateRecoveredDocuments(
             || document.undo.get_allocator().resource() != allocator
             || document.redo.get_allocator().resource() != allocator)
             return "EDITOR-SCRIPT-RECOVERY-ALLOCATOR-OR-ALIAS";
-        if (document.id != 0 || !document.undo.empty() || !document.redo.empty()
-            || !document.path.is_absolute() || document.path != document.path.lexically_normal()
-            || !isScriptPath(document.path) || document.text.size() > maxScriptBytes
-            || document.savedText.size() > maxScriptBytes
+        if (document.id != 0 || document.sourceSnapshot || !document.undo.empty()
+            || !document.redo.empty() || !document.path.is_absolute()
+            || document.path != document.path.lexically_normal() || !isScriptPath(document.path)
+            || document.text.size() > maxScriptBytes || document.savedText.size() > maxScriptBytes
             || document.savedFileBytes.size() > maxScriptBytes
             || document.cursor > document.text.size() || document.anchor > document.text.size()
             || (document.newline != "\n" && document.newline != "\r\n")
             || document.text.find('\r') != core::pmr::String::npos
-            || document.savedText != normalizeNewlines(document.savedFileBytes))
+            || document.savedText
+                != normalizeFileBytes(document.savedFileBytes, core::TextNulPolicy::Preserve))
             return "EDITOR-SCRIPT-RECOVERY-DOCUMENT";
         for (std::size_t previous = 0; previous < index; ++previous)
             if (prepared[previous].path == document.path)
@@ -226,21 +363,88 @@ ScriptDocumentSession::FileResult ScriptDocumentSession::openFile(
         return {FileResultCode::ReadFailed};
     if (size > maxScriptBytes)
         return {FileResultCode::TooLarge};
-    auto read = core::readTextFile(resolved, maxScriptBytes);
+    auto read = core::readBinaryFile(resolved, maxScriptBytes);
     if (!read.success)
         return {FileResultCode::ReadFailed};
-    auto contents = std::move(read.text);
-
-    Document document;
-    document.path = resolved;
-    document.newline = contents.find("\r\n") != core::pmr::String::npos ? "\r\n" : "\n";
-    document.text = normalizeNewlines(contents);
-    document.savedText = document.text;
-    document.savedFileBytes = std::move(contents);
-    const auto index = append(std::move(document));
+    core::UniquePtr<Document> document;
+    const char* diagnostic = nullptr;
+    if (!prepareFileContents(resolved,
+            {read.bytes.empty() ? "" : reinterpret_cast<const char*>(read.bytes.data()),
+                read.bytes.size()},
+            document,
+            diagnostic))
+        return {FileResultCode::ReadFailed};
+    const auto index = append(std::move(*document));
     if (index == noActiveDocument)
         return {FileResultCode::IdentityExhausted};
     return {FileResultCode::Opened, index};
+}
+
+bool ScriptDocumentSession::prepareFileContents(const std::filesystem::path& path,
+    std::string_view raw,
+    core::UniquePtr<Document>& destination,
+    const char*& diagnostic)
+{
+    diagnostic = nullptr;
+    if (!isScriptPath(path) || raw.size() > maxScriptBytes) {
+        diagnostic = "EDITOR-SCRIPT-PATH-OR-BYTE-LIMIT";
+        return false;
+    }
+    try {
+        // A UTF-8 BOM is encoding metadata, not a glyph or an editable character.
+        auto decoded = decodeFileBytes(raw);
+        if (decoded.status != core::TextDecodeStatus::Success) {
+            diagnostic = decoded.diagnosticId;
+            return false;
+        }
+        auto candidate = core::makeUnique<Document>();
+        candidate->path = path;
+        candidate->newline = raw.find("\r\n") != std::string_view::npos ? "\r\n" : "\n";
+        candidate->text = normalizeNewlines(decoded.text);
+        candidate->savedText = candidate->text;
+        candidate->savedFileBytes.assign(raw.data(), raw.size());
+        destination = std::move(candidate);
+        return true;
+    } catch (const std::bad_alloc&) {
+        diagnostic = "EDITOR-SCRIPT-INPUT-ALLOCATION";
+        return false;
+    }
+}
+
+bool ScriptDocumentSession::prepareSourceFile(core::SharedPtr<const ProjectSourceSnapshot> snapshot,
+    std::string_view relative,
+    core::io::FileService& files,
+    std::uint64_t epoch,
+    core::UniquePtr<Document>& destination,
+    const char*& diagnostic)
+{
+    diagnostic = nullptr;
+    if (!snapshot || snapshot->size() != 1 || !snapshot->validate(files, epoch, diagnostic)) {
+        if (!diagnostic)
+            diagnostic = "EDITOR-SCRIPT-SOURCE-SCOPE";
+        return false;
+    }
+    const auto* entry = snapshot->find(relative);
+    if (!entry) {
+        diagnostic = "EDITOR-SCRIPT-SOURCE-NOT-ACQUIRED";
+        return false;
+    }
+    try {
+        core::UniquePtr<Document> candidate;
+        const auto& raw = entry->receipt.bytes;
+        if (!prepareFileContents(std::filesystem::u8path(entry->binding.path),
+                {raw.empty() ? "" : reinterpret_cast<const char*>(raw.data()), raw.size()},
+                candidate,
+                diagnostic)
+            || !snapshot->validate(files, epoch, diagnostic))
+            return false;
+        candidate->sourceSnapshot = std::move(snapshot);
+        destination = std::move(candidate);
+        return true;
+    } catch (const std::bad_alloc&) {
+        diagnostic = "EDITOR-SCRIPT-INPUT-ALLOCATION";
+        return false;
+    }
 }
 
 ScriptDocumentSession::FileResult ScriptDocumentSession::saveActiveFile(
@@ -249,6 +453,8 @@ ScriptDocumentSession::FileResult ScriptDocumentSession::saveActiveFile(
     auto* document = active();
     if (!document)
         return {FileResultCode::NoActiveDocument};
+    if (document->sourceSnapshot)
+        return {FileResultCode::InvalidPath};
     std::error_code error;
     const auto root = std::filesystem::weakly_canonical(projectRoot, error);
     const auto resolved = std::filesystem::weakly_canonical(document->path, error);
@@ -265,18 +471,28 @@ ScriptDocumentSession::FileResult ScriptDocumentSession::saveActiveFile(
     if (!document->dirty())
         return {FileResultCode::Saved, activeIndex_};
 
+    const auto baseline = decodeFileBytes(document->savedFileBytes, core::TextNulPolicy::Preserve);
+    if (baseline.status != core::TextDecodeStatus::Success)
+        return {FileResultCode::WriteFailed};
+    constexpr std::string_view utf8Bom = "\xef\xbb\xbf";
+    const auto prefixBytes = baseline.hadBom ? utf8Bom.size() : 0;
     core::pmr::String encoded(document->savedFileBytes.get_allocator());
     const auto extra = document->newline == "\r\n"
         ? static_cast<std::size_t>(std::count(document->text.begin(), document->text.end(), '\n'))
         : 0u;
-    if (document->text.size() > maxScriptBytes || extra > maxScriptBytes - document->text.size())
+    if (document->text.size() > maxScriptBytes || extra > maxScriptBytes - document->text.size()
+        || prefixBytes > maxScriptBytes - document->text.size() - extra)
         return {FileResultCode::TooLarge};
-    encoded.reserve(document->text.size() + extra);
+    encoded.reserve(document->text.size() + extra + prefixBytes);
+    if (prefixBytes)
+        encoded.append(utf8Bom.data(), utf8Bom.size());
     for (char value : document->text) {
         if (value == '\n' && extra)
             encoded.push_back('\r');
         encoded.push_back(value);
     }
+    if (decodeFileBytes(encoded).status != core::TextDecodeStatus::Success)
+        return {FileResultCode::WriteFailed};
     // Both baselines must be ready before the irreversible disk replacement.
     core::pmr::String savedText(document->text, document->savedText.get_allocator());
     core::pmr::Vector<std::uint8_t> bytes(encoded.begin(), encoded.end());
@@ -295,6 +511,8 @@ ScriptDocumentSession::FileResult ScriptDocumentSession::reloadActiveFile(
     auto* document = active();
     if (!document)
         return {FileResultCode::NoActiveDocument};
+    if (document->sourceSnapshot)
+        return {FileResultCode::InvalidPath};
     if (document->dirty() && !discardChanges)
         return {FileResultCode::UnsavedChanges};
     // Reuse canonical path checks, bounded reads and newline decoding without
@@ -311,7 +529,9 @@ ScriptDocumentSession::FileResult ScriptDocumentSession::reloadActiveFile(
         && document->newline == restored.newline && document->cursor == 0 && document->anchor == 0
         && document->scrollLine == 0 && document->undo.empty() && document->redo.empty())
         return {FileResultCode::Opened, activeIndex_};
-    *document = std::move(restored);
+    if (!compatibleAllocators(*document, restored))
+        return {FileResultCode::ReadFailed};
+    swapDocumentContents(*document, restored);
     stateEpoch_.advance();
     return {FileResultCode::Opened, activeIndex_};
 }

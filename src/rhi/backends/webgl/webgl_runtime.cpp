@@ -154,10 +154,10 @@ EM_JS(GLenum, packedAttachment, (), {
     // clang-format on
 });
 
-WebGlFormatFacts queryFormats(bool depthTextureEnabled)
+WebGlFormatFacts queryFormats(bool depthTextureEnabled, bool srgbEnabled)
 {
     WebGlFormatFacts facts;
-    facts.contractVersion = 1;
+    facts.contractVersion = 2;
     const auto outcome = [](GLenum error) {
         if (emscripten_is_webgl_context_lost(emscripten_webgl_get_current_context()))
             return WebGlFormatQueryOutcome::ContextLost;
@@ -241,6 +241,36 @@ WebGlFormatFacts queryFormats(bool depthTextureEnabled)
     if (framebuffer) {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, packedAttachment(), GL_RENDERBUFFER, 0);
+    }
+    if (srgbEnabled) {
+        GLuint srgb = 0;
+        glGenTextures(1, &srgb);
+        glBindTexture(GL_TEXTURE_2D, srgb);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D,
+            0,
+            GL_SRGB_ALPHA_EXT,
+            1,
+            1,
+            0,
+            GL_SRGB_ALPHA_EXT,
+            GL_UNSIGNED_BYTE,
+            nullptr);
+        facts.srgbTexture = outcome(glGetError());
+        if (!srgb)
+            facts.srgbTexture = WebGlFormatQueryOutcome::NativeFailure;
+        if (facts.srgbTexture == WebGlFormatQueryOutcome::Observed) {
+            const std::array<GLubyte, 4> pixel{128, 128, 128, 255};
+            glTexSubImage2D(
+                GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_SRGB_ALPHA_EXT, GL_UNSIGNED_BYTE, pixel.data());
+            facts.srgbClientUploadAccepted =
+                outcome(glGetError()) == WebGlFormatQueryOutcome::Observed;
+        }
+        if (srgb)
+            glDeleteTextures(1, &srgb);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
@@ -388,12 +418,16 @@ const char* collect(WebGlRuntime::Impl& runtime, const WebGlContextOwnershipRequ
         "ANGLE_instanced_arrays",
         "OES_vertex_array_object",
         "WEBGL_depth_texture",
-        "OES_standard_derivatives"};
+        "OES_standard_derivatives",
+        "EXT_frag_depth",
+        "EXT_sRGB"};
     constexpr std::array extensionFields{&WebGlRuntimeExtensions::uint32Indices,
         &WebGlRuntimeExtensions::instancing,
         &WebGlRuntimeExtensions::vertexArrayObjects,
         &WebGlRuntimeExtensions::depthTextures,
-        &WebGlRuntimeExtensions::derivatives};
+        &WebGlRuntimeExtensions::derivatives,
+        &WebGlRuntimeExtensions::fragmentDepth,
+        &WebGlRuntimeExtensions::srgbTextures};
     for (std::size_t i = 0; i < extensionNames.size(); ++i) {
         const auto member = extensionFields[i];
         probe.extensions.*member = extensionAvailable(extensionNames[i]) != 0;
@@ -411,10 +445,12 @@ const char* collect(WebGlRuntime::Impl& runtime, const WebGlContextOwnershipRequ
             || !emscripten_webgl_enable_extension(runtime.context, "EXT_shader_texture_lod")))
         return "RHI-WEBGL1-EXTENSION-UNAVAILABLE";
     probe.extensionsQueried = true;
+    probe.fragmentDepthQueryVersion = 1;
     runtime.shaderTextureLodEnabled = request.shaderTextureLodOptIn;
     if (glGetError() != GL_NO_ERROR)
         return "RHI-WEBGL1-CONTEXT-PROBE-NATIVE-ERROR";
-    probe.formats = queryFormats(probe.enabledExtensions.depthTextures);
+    probe.formats =
+        queryFormats(probe.enabledExtensions.depthTextures, probe.enabledExtensions.srgbTextures);
     probe.contextLost = emscripten_is_webgl_context_lost(runtime.context);
     auto next = core::makeShared<WebGlRuntimeProfile>(WebGlRuntimeProfile::fromProbe(probe));
     if (const auto* id = next->diagnostic())
@@ -803,6 +839,7 @@ shader::WebGlShaderLimits WebGlRuntime::shaderLimits() const noexcept
     result.fragmentHighpInt = intHigh(impl_->probe.precision.fragment);
     result.derivatives = impl_->probe.enabledExtensions.derivatives;
     result.textureLod = impl_->shaderTextureLodEnabled;
+    result.fragmentDepth = impl_->probe.enabledExtensions.fragmentDepth;
     return result;
 }
 

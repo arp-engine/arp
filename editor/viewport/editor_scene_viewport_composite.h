@@ -2,6 +2,7 @@
 
 #include "core/api.h"
 #include "core/memory/cpu_allocator.h"
+#include "editor/viewport/editor_scene_viewport_surface_profile.h"
 #include "renderer/gui/gui_rhi_draw_commands.h"
 #include "rhi/gpu_device.h"
 
@@ -17,7 +18,9 @@ public:
 
     // Owns all sampled color target resources used by the UI descriptor. The
     // owner must outlive recorded work and may only be recreated after queue idle.
-    bool create(rhi::GpuDevice& device, rhi::Extent2D extent);
+    bool create(rhi::GpuDevice& device,
+        rhi::Extent2D extent,
+        EditorSceneViewportSurfaceProfile profile = {});
     bool valid() const noexcept;
 
     rhi::GpuTexture* colorTarget() noexcept { return colorTarget_.get(); }

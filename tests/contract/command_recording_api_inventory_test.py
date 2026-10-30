@@ -3765,12 +3765,32 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         memory=lowering.split("WebGpuBindingSpaceLoweringLoadResult loadOriginalWebGpuBindingSpaceLowering(",1)[1].split("WebGpuBindingSpaceLoweringLoadResult loadBindless",1)[0]
         self.assertIn("selectTarget(input,rhi::Backend::WebGPU)",memory)
         self.assertIn("lowerWebGpuBindingSpaceReflection(input->package(),input->artifact()->module())",memory)
-        self.assertIn("lowerWebGpuBindingSpaceReflection(package,cached.module)",lowering)
+        self.assertIn("lowerWebGpuBindingSpaceReflection(package,package.generatedArtifactSet->module())",lowering)
         for forbidden in ["loadFromFile", "loadFromYaml", "readTextFile"]: self.assertNotIn(forbidden,memory)
+
         fixture=CppSource((self.ROOT / "tests/fixtures/original_single_entry_pipeline_input_fixture.h").read_text(encoding="utf-8-sig"))
         for token in ["pressure.measure", "pressure.verify", "verifyHotNoAllocation", "verifyFileLowering", "sameOwner", "consumption-native-closed"]:
             self.assertIn(token,fixture)
         self.assertIn("&& originalArtifactMemoryInputPassed &&",CppSource((self.ROOT / "tests/fixtures/bindless_webgpu_rhi_runner.html").read_text(encoding="utf-8-sig")))
+
+    def test_ordinary_generated_shader_consumers_never_reopen_files(self):
+        paths = [
+            "src/rhi/backends/null/null_pipelines.cpp",
+            "src/rhi/backends/vulkan/vulkan_pipeline.cpp",
+            "src/rhi/backends/vulkan/vulkan_native_pipelines.cpp",
+            "src/rhi/backends/metal/metal_backend_pipelines.cpp",
+            "src/rhi/backends/metal/metal_native_pipelines.mm",
+            "src/rhi/backends/webgpu/webgpu_binding_space_lowering.cpp",
+            "src/rhi/backends/webgpu/webgpu_native_resources.cpp",
+        ]
+        for path in paths:
+            source = self.read_source(path)
+            for forbidden in ["loadFromFile", "readBinaryFile", "readTextFile", "std::ifstream", "std::fstream"]:
+                self.assertNotIn(forbidden, source, path)
+        for path in ["src/rhi/backends/vulkan/vulkan_native_pipelines.cpp",
+                     "src/rhi/backends/metal/metal_native_pipelines.mm",
+                     "src/rhi/backends/webgpu/webgpu_native_resources.cpp"]:
+            self.assertIn("selectGeneratedShaderPackageTarget", self.read_source(path))
 
     def test_original_artifact_compute_consumption_uses_shared_native_emitters(self):
         source=self.read_source("src/rhi/backends/webgpu/webgpu_native_resources.cpp")

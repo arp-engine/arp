@@ -6,10 +6,12 @@
 #include "editor/viewport/editor_scene_transform_frame.h"
 #include "editor/viewport/editor_scene_transform_settings.h"
 #include "editor/viewport/editor_scene_transform_snap.h"
+#include "editor/workspace/editor_project_io_task.h"
 #include "editor/workspace/editor_scene_export.h"
 #include "editor/workspace/editor_scene_inspector.h"
 #include "editor/workspace/editor_scene_inspector_selection.h"
 #include "editor/workspace/editor_scene_reference_assignment.h"
+#include "editor/workspace/project_browser_model.h"
 
 #include <atomic>
 #include <cstddef>
@@ -404,6 +406,11 @@ struct SaveScriptCommand {
     std::uint64_t documentId = 0;
 };
 
+struct OpenScriptCommand {
+    // Explicit path relative to the active project, never a mount handle.
+    core::pmr::String relativePath{&core::defaultCpuMemoryResource()};
+};
+
 // Explicit disposal of one document; never writes or deletes the source file.
 struct CloseScriptCommand {
     std::uint64_t documentId = 0;
@@ -431,6 +438,21 @@ struct CreateProjectCommand {
 struct OpenProjectCommand {
     core::pmr::String root;
     bool discardChanges = false;
+    // Explicit configured source alias. Empty selects the existing native path.
+    core::pmr::String source{&core::defaultCpuMemoryResource()};
+};
+
+struct AdvanceProjectIoCommand {
+    std::uint64_t taskId = 0;
+};
+
+struct CancelProjectIoCommand {
+    std::uint64_t taskId = 0;
+};
+
+struct NavigateProjectSourceCommand {
+    ProjectBrowserModel::SourceNavigation intent = ProjectBrowserModel::SourceNavigation::Navigate;
+    core::pmr::String directory{&core::defaultCpuMemoryResource()};
 };
 
 struct CloseProjectCommand {
@@ -610,11 +632,15 @@ using EditorCommandPayload = std::variant<BuildTerrainResourceCommand,
     RedoScriptCommand,
     ReplaceScriptTextCommand,
     SaveScriptCommand,
+    OpenScriptCommand,
     CloseScriptCommand,
     ReloadScriptCommand,
     RequestEditorExitCommand,
     CreateProjectCommand,
     OpenProjectCommand,
+    AdvanceProjectIoCommand,
+    CancelProjectIoCommand,
+    NavigateProjectSourceCommand,
     CloseProjectCommand,
     SaveProjectCommand,
     CompleteProjectSaveCommand,
@@ -707,6 +733,12 @@ struct EditorStateSnapshot {
     core::pmr::String projectEntryScene;
     core::pmr::String projectRoot;
     core::pmr::String projectDiagnostic;
+    core::pmr::String projectSource{&core::defaultCpuMemoryResource()};
+    core::pmr::String availableProjectSource{&core::defaultCpuMemoryResource()};
+    core::pmr::String projectDirectory{&core::defaultCpuMemoryResource()};
+    std::uint64_t projectIoTaskId = 0;
+    ProjectIoStatus projectIoTaskStatus = ProjectIoStatus::Unknown;
+    core::pmr::String projectIoDiagnostic{&core::defaultCpuMemoryResource()};
 
     core::pmr::String workspace{&core::defaultCpuMemoryResource()};
     core::pmr::String scene{&core::defaultCpuMemoryResource()};

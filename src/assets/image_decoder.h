@@ -16,12 +16,12 @@ struct DecodedImage {
     uint32_t height = 0;
     bool srgb = true;
     bool alpha = false;
-    std::pmr::vector<uint8_t> rgba8;
+    core::pmr::Vector<uint8_t> rgba8{&core::defaultCpuMemoryResource()};
 };
 
 struct ImageDecodeResult {
     bool success = false;
-    std::pmr::string diagnostics;
+    core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
     DecodedImage image;
 };
 

@@ -21,7 +21,6 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <fstream>
 #include <iostream>
 #include <limits>
 #include <sstream>
@@ -752,23 +751,6 @@ std::pmr::string vkFailure(const char* operation, VkResult result)
     message += " failed: ";
     core::appendUnsigned(message, static_cast<int>(result));
     return message;
-}
-
-std::pmr::vector<std::uint32_t> readSpirvWords(const std::pmr::string& path)
-{
-    std::ifstream file(path.c_str(), std::ios::binary | std::ios::ate);
-    if (!file) {
-        return {};
-    }
-    const auto byteSize = file.tellg();
-    if (byteSize <= 0 || static_cast<std::uint64_t>(byteSize) % sizeof(std::uint32_t) != 0) {
-        return {};
-    }
-    std::pmr::vector<std::uint32_t> words(
-        static_cast<std::size_t>(byteSize) / sizeof(std::uint32_t));
-    file.seekg(0);
-    file.read(reinterpret_cast<char*>(words.data()), static_cast<std::streamsize>(byteSize));
-    return words;
 }
 
 VkFormat formatFor(rhi::TextureFormat format)
@@ -1798,7 +1780,15 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
 {
     if (!connected() || !desc.layout || !desc.shaderPackage || runtime_->syntheticRuntime())
         return createRenderPipelineFromBytes(desc, nullptr, 0, nullptr, 0);
-    const auto words = readSpirvWords(desc.shaderPackage->artifacts.spirvPath);
+    rhi::GeneratedShaderTargetInput input;
+    const auto selected = rhi::selectGeneratedShaderPackageTarget(
+        *desc.shaderPackage, shader::TargetBackend::SpirV, input);
+    if (!selected.success) {
+        VulkanRhiNativeResourceResult result;
+        result.diagnostics = selected.diagnostics;
+        return result;
+    }
+    const auto& words = *input.spirvWords;
     return createRenderPipelineFromBytes(
         desc, words.data(), words.size(), words.data(), words.size());
 }
@@ -2297,7 +2287,14 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createComputePip
         result.success = true;
         return result;
     }
-    const auto words = readSpirvWords(desc.shaderPackage->artifacts.spirvPath);
+    rhi::GeneratedShaderTargetInput input;
+    const auto selected = rhi::selectGeneratedShaderPackageTarget(
+        *desc.shaderPackage, shader::TargetBackend::SpirV, input);
+    if (!selected.success) {
+        result.diagnostics = selected.diagnostics;
+        return result;
+    }
+    const auto& words = *input.spirvWords;
     return createComputePipelineFromBytes(desc, words.data(), words.size());
 }
 

@@ -146,7 +146,9 @@ io_service::~io_service()
 
 void io_service::run()
 {
-    quit_ = false;
+    // Shutdown is terminal, including a close that races thread startup.
+    if (quit_)
+        return;
     worker_id_ = std::this_thread::get_id();
     interrupter_->create_descriptors();
     if (interrupter_->event().fd != INVALID_SOCKET) {

@@ -219,6 +219,12 @@ public:
     EditorResponse submitCommand(EditorCommandEnvelope command);
 
     void pollTasks();
+    // Cold host binding, never a native handle in a command or remote payload.
+    // The service/queue outlive this Shell and all accepted callbacks.
+    bool bindProjectSourceFiles(core::io::FileService&,
+        core::PoolHandle mount,
+        std::string_view alias,
+        EditorProjectIoBudget = {});
 
     bool terrainBuildPending() const noexcept { return terrainBuild_.pending(); }
 
@@ -482,7 +488,10 @@ private:
     void applyGamePreviewState(bool running, bool starting, const core::pmr::String& status);
     EditorCommandOutcome applyScriptHistory(std::uint64_t documentId, bool undo);
     EditorCommandOutcome saveScriptDocument();
+    EditorCommandOutcome openScriptDocument(const OpenScriptCommand&);
+    void appendScriptSnapshot(EditorStateSnapshot&) const;
     EditorCommandOutcome reloadScriptDocument(bool discardChanges);
+    EditorCommandOutcome reloadSourceScript(bool discardChanges);
     EditorCommandOutcome applySceneHistory(bool undo);
     EditorCommandOutcome applySceneBatchHistory(bool undo);
     EditorCommandOutcome transformSceneSelection(const TransformSceneSelectionCommand&);
@@ -562,6 +571,13 @@ private:
     void synchronizeInspectorAvailability() noexcept;
     void failSceneInspector(const char* diagnostic) noexcept;
     EditorCommandOutcome openProject(const OpenProjectCommand& command);
+    EditorCommandOutcome openSourceProject(const OpenProjectCommand&);
+    EditorCommandOutcome acceptProjectIoTask(
+        core::UniquePtr<EditorProjectIoTask>, std::uint64_t id);
+    EditorCommandOutcome navigateSourceProject(const NavigateProjectSourceCommand&);
+    EditorCommandOutcome advanceProjectIo(std::uint64_t taskId);
+    EditorCommandOutcome cancelProjectIo(std::uint64_t taskId);
+    bool projectIoPending() const noexcept;
     EditorCommandOutcome createProject(const CreateProjectCommand& command);
     EditorCommandOutcome closeProject(bool discardChanges);
     EditorCommandOutcome requestEditorExit(bool discardChanges);
@@ -587,8 +603,8 @@ private:
 
     bool authoringUiBlocked() const
     {
-        return projectPanel_.active() || scenePanel_.active() || scriptFilePanel_.active()
-            || exitPanel_.active() || sceneTransformPanel_.active()
+        return projectIoPending() || projectPanel_.active() || scenePanel_.active()
+            || scriptFilePanel_.active() || exitPanel_.active() || sceneTransformPanel_.active()
             || presentationState_.menuOpen();
     }
 
@@ -677,6 +693,19 @@ private:
         &core::defaultCpuMemoryResource()};
     std::size_t sceneHierarchyScrollOffset_ = 0u;
     EditorProjectResources projectResources_;
+    core::io::FileService* projectSourceFiles_ = nullptr;
+    core::PoolHandle projectSourceMount_;
+    core::pmr::String projectSourceAlias_{&core::defaultCpuMemoryResource()};
+    EditorProjectIoBudget projectIoBudget_;
+    core::UniquePtr<EditorProjectIoTask> projectIo_;
+    core::MonotonicIdSequence projectIoIds_;
+    std::uint64_t projectIoTaskId_ = 0;
+    std::uint64_t projectIoSceneEpoch_ = 0;
+    std::uint64_t projectIoResourceRevision_ = 0;
+    core::LifetimeEpoch::Ticket projectIoScripts_;
+    core::pmr::String projectIoSceneHash_{&core::defaultCpuMemoryResource()};
+    ProjectBrowserModel::SourceNavigation projectIoNavigation_ =
+        ProjectBrowserModel::SourceNavigation::Navigate;
     core::SharedPtr<EditorSceneServiceSession> sceneServiceSession_;
     std::optional<ProjectManifest> projectManifest_;
     bool projectManifestDirty_ = false;

@@ -35,6 +35,7 @@ struct GraphicsShaderModuleLoadBudget {
     // Independently authored selected VS/FS declarations; null preserves the
     // existing creation profile without native member-memory proof.
     std::array<const NativeBufferMemoryLoadRequest*, 2u> nativeMemory{};
+    const ShaderArtifactSource* source = nullptr;
 };
 
 // Startup-only original combined bytes and selected-entry provenance. This

@@ -1,13 +1,14 @@
 #include "ui/ui_theme_resource.h"
 
 #include "reflection/reflection.h"
+#include "resource/resource_source_io.h"
+#include "ui/detail/ui_content_fingerprint.h"
 
 #include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <exception>
 #include <fkYAML/node.hpp>
-#include <fstream>
 #include <system_error>
 #include <utility>
 
@@ -24,10 +25,7 @@ arp::core::pmr::String themeResourceText(const char* value)
 
 arp::core::pmr::String pathToText(const std::filesystem::path& path)
 {
-    using StringAllocator = arp::core::pmr::String::allocator_type;
-    return path.generic_string<char, std::char_traits<char>, StringAllocator>(StringAllocator{
-        &arp::core::defaultCpuMemoryResource(),
-    });
+    return arp::core::FilePath::utf8(path);
 }
 
 const YamlNode* findMappingValue(const YamlNode& mapping, const char* key)
@@ -96,53 +94,6 @@ bool validResourceStatus(const arp::core::pmr::String& status)
         },
         "UI theme or atlas metadata resource")
         .success;
-}
-
-bool readTextFile(const std::filesystem::path& path,
-    const char* label,
-    const arp::resource::ResourceLoadContext& context,
-    arp::core::pmr::String& out,
-    arp::core::pmr::String& diagnostics)
-{
-    const auto pathText = pathToText(path);
-    if (context.sources != nullptr) {
-        const auto* source = context.sources->find(pathText);
-        if (source != nullptr) {
-            out.assign(reinterpret_cast<const char*>(source->bytes.data()), source->bytes.size());
-            if (out.empty()) {
-                diagnostics = themeResourceText(label);
-                diagnostics += " preloaded source is empty: ";
-                diagnostics += pathText;
-                return false;
-            }
-            return true;
-        }
-    }
-    if (context.requirePreloadedSources) {
-        diagnostics = themeResourceText(label);
-        diagnostics += " requires preloaded source: ";
-        diagnostics += pathText;
-        return false;
-    }
-    std::ifstream input(path, std::ios::binary);
-    if (!input.good()) {
-        diagnostics = themeResourceText(label);
-        diagnostics += " file is missing: ";
-        diagnostics += path.generic_string().c_str();
-        return false;
-    }
-    out.clear();
-    char ch = '\0';
-    while (input.get(ch)) {
-        out.push_back(ch);
-    }
-    if (out.empty()) {
-        diagnostics = themeResourceText(label);
-        diagnostics += " file is empty: ";
-        diagnostics += path.generic_string().c_str();
-        return false;
-    }
-    return true;
 }
 
 bool parseYamlText(const arp::core::pmr::String& source,
@@ -217,14 +168,9 @@ std::filesystem::path resolveAtlasMetadataPath(const UiThemeResourceLoadDesc& de
     }
     expectedAtlasResourceId = yamlString(*resourceId);
 
-    if (!desc.atlasMetadataPath.empty()) {
-        return desc.atlasMetadataPath;
-    }
-    auto resolved = std::filesystem::path(yamlString(*metadataPath).c_str());
-    if (resolved.is_absolute()) {
-        return resolved;
-    }
-    return desc.themePath.parent_path() / resolved.filename();
+    if (desc.atlasMetadataPath.empty())
+        diagnostics = "UI-THEME-ATLAS-PATH-REQUIRED";
+    return desc.atlasMetadataPath;
 }
 
 bool parseThemeYaml(const UiThemeResourceLoadDesc& desc,
@@ -276,7 +222,7 @@ bool parseThemeYaml(const UiThemeResourceLoadDesc& desc,
         }
         font.tokenId = yamlString(*tokenId);
         font.family = yamlString(*family);
-        font.sourcePath = std::filesystem::path(yamlString(*sourcePath).c_str());
+        font.sourcePath = std::filesystem::u8path(yamlString(*sourcePath));
         out.theme.addToken({font.tokenId, UiThemeTokenValue::fromText(font.family)});
         out.fonts.push_back(std::move(font));
     }
@@ -398,7 +344,7 @@ bool parseAtlasYaml(const YamlNode& root,
     }
     out.atlasId = yamlString(*atlasId);
     out.resourceId = atlasResourceId;
-    out.sourcePath = std::filesystem::path(yamlString(*sourcePath).c_str());
+    out.sourcePath = std::filesystem::u8path(yamlString(*sourcePath));
     out.srgb = colorSpaceValue == "srgb";
 
     const auto* fontFaces = findMappingValue(root, "fontFaces");
@@ -428,7 +374,7 @@ bool parseAtlasYaml(const YamlNode& root,
         }
         face.tokenId = yamlString(*tokenId);
         face.family = yamlString(*family);
-        face.sourcePath = std::filesystem::path(yamlString(*faceSourcePath).c_str());
+        face.sourcePath = std::filesystem::u8path(yamlString(*faceSourcePath));
         if (!yamlStringSequence(*fallbackChain, face.fallbackChain) || face.fallbackChain.empty()) {
             diagnostics = themeResourceText(
                 "UI atlas metadata fontFaces fallbackChain must be a non-empty string sequence.");
@@ -705,6 +651,59 @@ void registerUiThemeResourceReflection()
 
 } // namespace
 
+void UiAtlasMetadataResource::appendContentFingerprint(core::StableHash64& hasher) const noexcept
+{
+    detail::UiContentFingerprint hash(hasher);
+    hash.resource(*this, kUiAtlasResourceContract);
+    hash.number(data != nullptr);
+    if (!data)
+        return;
+    hash.text(data->atlasId);
+    hash.text(data->resourceId);
+    hash.path(data->sourcePath);
+    hash.scalar(data->width);
+    hash.scalar(data->height);
+    hash.number(data->srgb);
+    hash.text(data->glyphPolicy);
+    hash.text(data->pagePolicy);
+    hash.number(data->slices.size());
+    for (const auto& slice : data->slices) {
+        hash.text(slice.sliceId);
+        hash.scalar(slice.x);
+        hash.scalar(slice.y);
+        hash.scalar(slice.width);
+        hash.scalar(slice.height);
+    }
+    hash.number(data->fontFaces.size());
+    for (const auto& font : data->fontFaces)
+        hash.font(font);
+}
+
+void UiThemeResource::appendContentFingerprint(core::StableHash64& hasher) const noexcept
+{
+    detail::UiContentFingerprint hash(hasher);
+    hash.resource(*this, kUiThemeResourceContract);
+    hash.number(data != nullptr);
+    if (!data)
+        return;
+    data->theme.appendContentFingerprint(hasher);
+    hash.number(data->fonts.size());
+    for (const auto& font : data->fonts)
+        hash.font(font);
+    hash.dictionary(data->styleColors, [&](const auto& color) {
+        hash.color(color);
+    });
+    hash.dictionary(data->styleFonts, [&](const auto& font) {
+        hash.text(font);
+    });
+    hash.text(data->atlasResourceId);
+    hash.text(data->atlasMetadataAlias);
+    hash.path(data->atlasSourcePath);
+    hash.scalar(data->atlasWidth);
+    hash.scalar(data->atlasHeight);
+    hash.number(data->atlasSrgb);
+}
+
 arp::resource::ResourceLoadResult UiAtlasMetadataResource::load(
     arp::resource::ResourceManager& resourceManager,
     const arp::resource::ResourceLoadContext& context)
@@ -721,16 +720,17 @@ arp::resource::ResourceLoadResult UiAtlasMetadataResource::load(
         return result;
     }
 
-    arp::core::pmr::String atlasSource(&arp::core::defaultCpuMemoryResource());
-    if (!readTextFile(desc.atlasMetadataPath,
-            "UI atlas metadata",
-            context,
-            atlasSource,
-            result.diagnostics)) {
+    arp::core::pmr::Vector<arp::resource::ResourceFileReadIntent> intents;
+    if (!collectFileReadIntents(resourceManager, intents, result.diagnostics))
+        return result;
+    auto source = arp::resource::readResourceText(
+        intents.front().path, context, desc.maxMetadataBytes, &desc.origin);
+    if (!source.success) {
+        result.diagnostics = std::move(source.diagnostics);
         return result;
     }
     YamlNode atlasRoot;
-    if (!parseYamlText(atlasSource, "UI atlas metadata", atlasRoot, result.diagnostics)) {
+    if (!parseYamlText(source.text, "UI atlas metadata", atlasRoot, result.diagnostics)) {
         return result;
     }
 
@@ -746,16 +746,13 @@ bool UiAtlasMetadataResource::collectFileReadIntents(arp::resource::ResourceMana
     arp::core::pmr::Vector<arp::resource::ResourceFileReadIntent>& intents,
     arp::core::pmr::String& diagnostics) const
 {
-    if (loadDesc.atlasMetadataPath.empty()) {
-        diagnostics = themeResourceText("UI atlas metadata resource requires source path.");
+    if (!arp::resource::appendResourceReadIntent(pathToText(loadDesc.atlasMetadataPath),
+            loadDesc.maxMetadataBytes,
+            intents,
+            diagnostics,
+            loadDesc.origin))
         return false;
-    }
-    arp::resource::ResourceFileReadIntent intent;
-    intent.pathScope = arp::core::io::FilePathScope::HostFilesystem;
-    intent.path = pathToText(loadDesc.atlasMetadataPath);
-    intent.role = themeResourceText("ui.atlas.metadata.yaml");
-    intent.maxBytes = 1024u * 1024u;
-    intents.push_back(std::move(intent));
+    intents.back().role = themeResourceText("ui.atlas.metadata.yaml");
     return true;
 }
 
@@ -788,12 +785,17 @@ arp::resource::ResourceLoadResult UiThemeResource::load(
         return result;
     }
 
-    arp::core::pmr::String themeSource(&arp::core::defaultCpuMemoryResource());
-    if (!readTextFile(desc.themePath, "UI theme", context, themeSource, result.diagnostics)) {
+    arp::core::pmr::Vector<arp::resource::ResourceFileReadIntent> intents;
+    if (!collectFileReadIntents(resourceManager, intents, result.diagnostics))
+        return result;
+    auto source = arp::resource::readResourceText(
+        intents.front().path, context, desc.maxThemeBytes, &desc.origin);
+    if (!source.success) {
+        result.diagnostics = std::move(source.diagnostics);
         return result;
     }
     YamlNode themeRoot;
-    if (!parseYamlText(themeSource, "UI theme", themeRoot, result.diagnostics)) {
+    if (!parseYamlText(source.text, "UI theme", themeRoot, result.diagnostics)) {
         return result;
     }
 
@@ -822,6 +824,13 @@ arp::resource::ResourceLoadResult UiThemeResource::load(
         return result;
     }
     const auto& atlas = *atlasHandle.get()->data;
+    const auto& atlasDesc = atlasHandle.get()->loadDesc;
+    if (atlasMetadataPath != atlasDesc.atlasMetadataPath
+        || desc.atlasMetadataOrigin.pathScope != atlasDesc.origin.pathScope
+        || !(desc.atlasMetadataOrigin.mount == atlasDesc.origin.mount)) {
+        result.diagnostics = "UI-THEME-ATLAS-LOCATION-MISMATCH";
+        return result;
+    }
     if (atlas.resourceId != expectedAtlasResourceId) {
         result.diagnostics =
             themeResourceText("UI theme atlas resourceId does not match admitted atlas metadata.");
@@ -850,19 +859,13 @@ bool UiThemeResource::collectFileReadIntents(arp::resource::ResourceManager&,
             themeResourceText("UI theme resource requires theme and atlas metadata paths.");
         return false;
     }
-    arp::resource::ResourceFileReadIntent theme;
-    theme.pathScope = arp::core::io::FilePathScope::HostFilesystem;
-    theme.path = pathToText(loadDesc.themePath);
-    theme.role = themeResourceText("ui.theme.yaml");
-    theme.maxBytes = 1024u * 1024u;
-    intents.push_back(std::move(theme));
-
-    arp::resource::ResourceFileReadIntent atlas;
-    atlas.pathScope = arp::core::io::FilePathScope::HostFilesystem;
-    atlas.path = pathToText(loadDesc.atlasMetadataPath);
-    atlas.role = themeResourceText("ui.atlas.metadata.yaml");
-    atlas.maxBytes = 1024u * 1024u;
-    intents.push_back(std::move(atlas));
+    if (!arp::resource::appendResourceReadIntent(pathToText(loadDesc.themePath),
+            loadDesc.maxThemeBytes,
+            intents,
+            diagnostics,
+            loadDesc.origin))
+        return false;
+    intents.back().role = themeResourceText("ui.theme.yaml");
     return true;
 }
 

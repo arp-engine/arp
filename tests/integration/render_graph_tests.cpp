@@ -231,7 +231,7 @@ void test_depth_only_shadow_render_pass_records_explicit_attachment_contract()
 {
     auto device = arp::rhi::createNullDevice();
     arp::render_graph::FrameGraph graph(*device);
-    auto shader = arp::rhi::test::makePushContractShaderPackage();
+    auto shader = arp::rhi::test::makePushContractShaderPackage(true);
     arp::rhi::PipelineLayoutDesc layoutDesc;
     layoutDesc.pushConstantRanges.push_back(
         {arp::rhi::ShaderStage::Vertex | arp::rhi::ShaderStage::Fragment, 0u, 128u});

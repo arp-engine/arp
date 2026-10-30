@@ -6,6 +6,7 @@ function(arp_add_shader_library target core_target yaml_target)
         "${shader_root}/shader/shader_compiler.cpp"
         "${shader_root}/shader/shader_pipeline_reflection_validator.cpp"
         "${shader_root}/shader/shader_reflection_cache.cpp"
+        "${shader_root}/shader/generated_shader_artifact_set.cpp"
         "${shader_root}/shader/single_entry_shader_artifact.cpp"
         "${shader_root}/shader/webgl_shader_program_artifact.cpp"
         "${shader_root}/shader/original_depth_table_expansion_artifact.cpp"

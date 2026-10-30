@@ -1,4 +1,5 @@
 #include "renderer/ui/ui_atlas_runtime.h"
+#include "tests/fixtures/ui_prepared_fonts.h"
 
 #include <cassert>
 #include <cmath>
@@ -27,8 +28,7 @@ std::filesystem::path projectRoot()
 {
     auto current = std::filesystem::current_path();
     while (!current.empty()) {
-        if (std::filesystem::exists(
-                current / "games" / "pika" / "app" / "visible_character_runtime.cpp")) {
+        if (std::filesystem::exists(current / "editor" / "ui" / "editor_ui_assets.cpp")) {
             return current;
         }
         const auto parent = current.parent_path();
@@ -59,7 +59,9 @@ void unified_ui_atlas_runtime_lowers_text_to_glyph_quads()
         &arp::core::defaultCpuMemoryResource()};
     commands.push_back(std::move(textCommand));
 
+    auto fonts = arp::tests::preparedUiFontFaces("font.ui.body");
     arp::renderer::ui::UnifiedUiAtlasRuntimeBuildDesc desc;
+    desc.fontFaces = &fonts;
     desc.baseAtlas = std::move(baseAtlas);
     desc.commands = &commands;
     desc.maxWidth = 256u;
@@ -113,7 +115,9 @@ void glyph_cells_do_not_clip_wide_uppercase_letters()
         &arp::core::defaultCpuMemoryResource()};
     commands.push_back(std::move(textCommand));
 
+    auto fonts = arp::tests::preparedUiFontFaces("font.ui.body");
     arp::renderer::ui::UnifiedUiAtlasRuntimeBuildDesc desc;
+    desc.fontFaces = &fonts;
     desc.baseAtlas = std::move(baseAtlas);
     desc.commands = &commands;
     desc.maxWidth = 512u;
@@ -155,7 +159,9 @@ void glyph_quads_are_clipped_to_command_clip_rect()
         &arp::core::defaultCpuMemoryResource()};
     commands.push_back(std::move(textCommand));
 
+    auto fonts = arp::tests::preparedUiFontFaces("font.ui.body");
     arp::renderer::ui::UnifiedUiAtlasRuntimeBuildDesc desc;
+    desc.fontFaces = &fonts;
     desc.baseAtlas = std::move(baseAtlas);
     desc.commands = &commands;
     desc.maxWidth = 512u;
@@ -201,6 +207,7 @@ arp::core::pmr::Vector<arp::ui::UiFontFaceDesc> pikaFontFaces()
     hudTitle.weight = 700u;
     hudTitle.lineHeightPx = 22u;
     fonts.push_back(std::move(hudTitle));
+    arp::tests::prepareHostUiFontFaces(fonts);
     return fonts;
 }
 
@@ -698,12 +705,11 @@ void telemetry_tracks_hits_misses_unsupported_script_and_upload_completion()
 
 void pika_visible_runtime_uses_atlas_runtime_service()
 {
-    const auto source =
-        readFile(projectRoot() / "games" / "pika" / "app" / "visible_character_runtime.cpp");
+    const auto source = readFile(projectRoot() / "editor" / "ui" / "editor_ui_assets.cpp");
     const auto runtimeSource =
         readFile(projectRoot() / "src" / "renderer" / "ui" / "ui_atlas_runtime.h");
     assert(source.find("UnifiedUiAtlasRuntime::build") != std::string::npos);
-    assert(source.find("atlasRuntimeDesc.fontFaces = &data->theme.fonts") != std::string::npos);
+    assert(source.find("atlasDesc.fontFaces = &fonts") != std::string::npos);
     assert(source.find("UiTextAtlasBuilder().build") == std::string::npos);
     assert(source.find("UiTextAtlasBuildDesc textAtlasDesc") == std::string::npos);
     assert(runtimeSource.find("renderer/ui/ui_text_layout.h") != std::string::npos);

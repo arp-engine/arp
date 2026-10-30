@@ -34,6 +34,34 @@ def main():
         else:
             assert stage['uniformVectors']==7
             assert stage['requiredExtensions']==[]
-    print('PASS: GuiUnified 64-byte ABI, SPIR-V/MSL/WGSL/ES100 and explicit derivatives')
+    environment = root / 'environment'
+    reflection = load(environment / 'editor_viewport_environment.reflection.yaml')
+    assert reflection['pushConstantSizeBytes'] == 176
+    assert reflection['pushConstantStages'] == 'FS'
+    program = load(environment / 'editor_viewport_environment.webgl-program.yaml')
+    fragment = load(environment / program['targets'][1]['path'])
+    assert fragment['contractVersion'] == 2
+    assert fragment['requiredExtensions'] == ['GL_EXT_frag_depth', 'GL_OES_standard_derivatives']
+    glsl = (environment / program['targets'][1]['path']).parent / fragment['glsl']['path']
+    text = glsl.read_text(encoding='utf8')
+    assert '#extension GL_EXT_frag_depth : require' in text
+    assert 'gl_FragDepthEXT =' in text and 'gl_FragDepth =' not in text
+    assert 'discard;' in text
+    for suffix in ('spv', 'metal', 'wgsl'):
+        assert (environment / ('editor_viewport_environment.' + suffix)).stat().st_size > 0
+    sprite = root / 'sprite'
+    reflection = load(sprite / 'editor_viewport_sprite.reflection.yaml')
+    assert reflection['pushConstantSizeBytes'] == 0
+    assert len(reflection['vertexAttributes']) == 7
+    assert reflection['vertexAttributes'][-1]['name'] == 'corner'
+    source = (sprite / 'editor_viewport_sprite.slang').read_text(encoding='utf8')
+    assert 'SV_VertexID' not in source and 'float2 corner : TEXCOORD6' in source
+    program = load(sprite / 'editor_viewport_sprite.webgl-program.yaml')
+    for entry in program['targets']:
+        target = load(sprite / entry['path'])
+        assert target['slang']['matrixLayout'] == 'row-major'
+        assert target['requiredExtensions'] == []
+        assert target['status'] == 'Available'
+    print('PASS: GUI/environment/Sprite shared ABI and explicit ES100 inputs/fragment depth')
 
 if __name__=='__main__':main()

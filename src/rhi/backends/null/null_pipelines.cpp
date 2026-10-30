@@ -3,6 +3,7 @@
 #include "rhi/frontend/pipeline_push_constant_abi_identity.h"
 #include "rhi/frontend/pipeline_state_copy.h"
 #include "rhi/frontend/pipeline_validation_report_builder.h"
+#include "shader/generated_shader_artifact_set.h"
 #include "shader/shader_pipeline_reflection_validator.h"
 #include "shader/shader_reflection_cache.h"
 
@@ -81,38 +82,12 @@ ShaderStage shaderStageFromReflection(shader::ShaderStage stage)
 bool nullArtifactReflectionMatchesPackage(
     const ShaderPackageDesc& package, std::pmr::string& diagnostics)
 {
-    if (package.artifacts.reflectionPath.empty()) {
-        diagnostics = "RHI-NULL-REFLECTION-ARTIFACT-PATH-MISSING: shader package is missing "
-                      "reflection artifact path";
+    const auto input = validateGeneratedShaderPackageInput(package);
+    if (!input.success) {
+        diagnostics = input.diagnostics;
         return false;
     }
-    const auto cached =
-        shader::ShaderReflectionCache::loadFromFile(package.artifacts.reflectionPath);
-    if (!cached.success) {
-        diagnostics = "RHI-NULL-REFLECTION-ARTIFACT-LOAD-FAILED: ";
-        diagnostics += cached.diagnostics;
-        return false;
-    }
-    const auto artifactIdentityValidation =
-        shader::ShaderPipelineReflectionValidator::validateGeneratedArtifact(cached.module,
-            package.slangModulePath,
-            package.artifacts.spirvPath,
-            package.artifacts.mslPath,
-            package.artifacts.wgslPath);
-    if (!artifactIdentityValidation.success) {
-        diagnostics = "RHI-NULL-REFLECTION-ARTIFACT-IDENTITY-INVALID: ";
-        diagnostics += artifactIdentityValidation.diagnostics;
-        return false;
-    }
-    const auto memberValidation =
-        shader::ShaderPipelineReflectionValidator::validateGeneratedArtifact(
-            cached.module.reflection);
-    if (!memberValidation.success) {
-        diagnostics = "RHI-NULL-REFLECTION-MEMBER-INVALID: ";
-        diagnostics += memberValidation.diagnostics;
-        return false;
-    }
-    const auto& reflected = cached.module.reflection;
+    const auto& reflected = package.generatedArtifactSet->module().reflection;
     const auto& packageReflection = package.reflection;
     if (reflected.pushConstantSizeBytes != packageReflection.pushConstantByteCount
         || reflected.pushConstantContractVersion != packageReflection.pushConstantContractVersion
@@ -446,6 +421,8 @@ private:
     RenderPipelineDesc desc_;
     PipelineValidationReport validation_;
     ShaderReflectionDesc reflection_;
+    core::SharedPtr<const shader::GeneratedShaderArtifactSet> generatedArtifactSet_ =
+        desc_.shaderPackage ? desc_.shaderPackage->generatedArtifactSet : nullptr;
 };
 
 class NullComputePipeline final : public ComputePipeline {
@@ -476,6 +453,8 @@ private:
     ComputePipelineDesc desc_;
     PipelineValidationReport validation_;
     ShaderReflectionDesc reflection_;
+    core::SharedPtr<const shader::GeneratedShaderArtifactSet> generatedArtifactSet_ =
+        desc_.shaderPackage ? desc_.shaderPackage->generatedArtifactSet : nullptr;
 };
 
 } // namespace

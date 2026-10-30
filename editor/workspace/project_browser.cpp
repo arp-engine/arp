@@ -67,6 +67,10 @@ bool EditorShell::updateFilePathText()
 void EditorShell::refreshFileSystem()
 {
     setResourceNavigationRejected(false);
+    if (projectBrowser_.sourceSnapshot()) {
+        (void)retryFileBrowserPresentation();
+        return;
+    }
     if (!projectBrowser_.refresh()) {
         feedback("Filesystem error: cannot read "
             + core::FilePath::utf8(projectBrowser_.currentDirectory()));
@@ -212,6 +216,16 @@ void EditorShell::updateFileSlots()
 
 bool EditorShell::navigateTo(const std::filesystem::path& path)
 {
+    if (projectBrowser_.sourceSnapshot()) {
+        auto relative = core::FilePath::utf8(path.lexically_relative(projectBrowser_.root()));
+        if (relative == ".")
+            relative.clear();
+        return submitCommand(
+                   NavigateProjectSourceCommand{
+                       ProjectBrowserModel::SourceNavigation::Navigate, std::move(relative)})
+                   .status
+            == EditorResponseStatus::Completed;
+    }
     const auto result = projectBrowser_.navigate(path);
     if (result == ProjectBrowserModel::NavigationResult::Rejected) {
         feedback("Filesystem error: path is outside the project or unavailable");

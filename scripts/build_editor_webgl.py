@@ -39,6 +39,18 @@ class EditorWebGlBuilder:
             '--slangc',args.slangc,'--spirv-reflect',args.spirv_reflect,
             '--spirv-cross-library',args.spirv_cross,'--out-dir',self.programs,
             '--module','gui_unified','--graphics-module','--glsl-es-100'])
+        self.run([sys.executable,'-X','utf8',self.root/'scripts/compile_shaders.py',
+            '--slangc',args.slangc,'--spirv-reflect',args.spirv_reflect,
+            '--spirv-cross-library',args.spirv_cross,'--out-dir',self.programs/'environment',
+            '--module','editor_viewport_environment','--graphics-module','--glsl-es-100'])
+        self.run([sys.executable,'-X','utf8',self.root/'scripts/compile_shaders.py',
+            '--slangc',args.slangc,'--spirv-reflect',args.spirv_reflect,
+            '--spirv-cross-library',args.spirv_cross,'--out-dir',self.programs/'pbr',
+            '--module','editor_viewport_pbr','--graphics-module','--glsl-es-100'])
+        self.run([sys.executable,'-X','utf8',self.root/'scripts/compile_shaders.py',
+            '--slangc',args.slangc,'--spirv-reflect',args.spirv_reflect,
+            '--spirv-cross-library',args.spirv_cross,'--out-dir',self.programs/'sprite',
+            '--module','editor_viewport_sprite','--graphics-module','--glsl-es-100'])
         self.run(['cmake','-S',self.root,'-B',self.output,'-G','Ninja',
             '-DCMAKE_TOOLCHAIN_FILE='+str(toolchain),'-DCMAKE_MAKE_PROGRAM='+args.ninja,
             '-DCMAKE_BUILD_TYPE='+args.build_type,'-DARP_WEB_RHI=webgl1',

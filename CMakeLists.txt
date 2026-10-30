@@ -392,29 +392,46 @@ elseif(WIN32)
     set_target_properties(arp_engine PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
 
-add_library(arp_core
+add_library(arp_core_foundation
+    src/core/text/text_decoder.cpp
     src/core/encoding/base64.cpp
     src/core/memory/cpu_allocator.cpp
     src/core/system/process_runner.cpp
     src/core/system/process_identity_lock.cpp
+    src/core/diagnostics/log.cpp
+    src/core/hash/sha256.cpp
+    src/core/runtime/completion_queue.cpp
+    src/core/runtime/work_service.cpp
+    src/core/hash/sha1.cpp
+)
+target_include_directories(arp_core_foundation PUBLIC src)
+target_link_libraries(arp_core_foundation PUBLIC arp_mimalloc)
+include(cmake/ArpNetworkHttpTransport.cmake)
+arp_add_network_http_transport("${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_library(arp_core
     src/core/io/file_io.cpp
     src/core/io/blocking_file_reader.cpp
     src/core/io/file_service.cpp
     src/core/io/atomic_file_service.cpp
     src/core/io/staged_directory.cpp
     src/core/io/thread_pool_file_backend.cpp
-    src/core/diagnostics/log.cpp
-    src/core/hash/sha256.cpp
+    src/core/io/memory_file_backend.cpp
+    src/core/io/mounted_file_backend.cpp
+    src/core/io/file_query_contract.cpp
+    src/core/io/http_file_contract.cpp
+    src/core/io/http_file_backend.cpp
+    src/core/io/native_directory_file_backend.cpp
+    src/core/io/detail/native_directory_access.cpp
     src/core/runtime/async_runtime.cpp
-    src/core/runtime/completion_queue.cpp
-    src/core/runtime/work_service.cpp
-    src/core/hash/sha1.cpp
 )
 target_include_directories(arp_core PUBLIC src)
-target_link_libraries(arp_core PUBLIC arp_mimalloc)
+target_link_libraries(arp_core PUBLIC arp_core_foundation arp_network_http_transport)
 
 # Compiler installation and build-input snapshots belong to ScriptVM plugins.
 add_library(arp_scriptvm_plugin_build
+    src/scriptvm/plugin/plugin_host_text_reader.cpp
+    src/scriptvm/plugin/script_source_snapshot.cpp
     src/scriptvm/plugin/immutable_build_input_snapshot.cpp
     src/scriptvm/plugin/compiler_toolchain_layout.cpp)
 target_link_libraries(arp_scriptvm_plugin_build PUBLIC arp_core)
@@ -577,7 +594,7 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE
     set(graphics_module_fixture "${CMAKE_CURRENT_BINARY_DIR}/graphics-module-fixture")
     set(graphics_module_publication "${graphics_module_fixture}/ordinary_graphics_storage_read.graphics.module.yaml")
     set(graphics_module_outputs "${graphics_module_publication}")
-    foreach(role slang spv metal wgsl reflection.yaml)
+    foreach(role slang spv metal wgsl reflection.yaml artifact-set.yaml)
         list(APPEND graphics_module_outputs "${graphics_module_fixture}/ordinary_graphics_storage_read.${role}")
         foreach(stage Vertex Fragment)
             list(APPEND graphics_module_outputs "${graphics_module_fixture}/${stage}/ordinary_graphics_storage_read.${role}")
@@ -833,37 +850,16 @@ target_compile_options(arp_terrain_surface_preview_tests PRIVATE $<$<CXX_COMPILE
 add_test(NAME arp_terrain_surface_preview_tests COMMAND arp_terrain_surface_preview_tests)
 
 add_library(arp_network
-    src/network/endpoint.cpp
-    src/network/error.cpp
-    src/network/http/client.cpp
-    src/network/http/header.cpp
-    src/network/http/message.cpp
-    src/network/http/parser.cpp
     src/network/http/router.cpp
     src/network/http/server.cpp
-    src/network/http/serializer.cpp
-    src/network/http/session.cpp
-    src/network/http/uri.cpp
-    src/network/io_context.cpp
-    src/network/io_poller.cpp
-    src/network/io_poller_common.cpp
-    src/network/io_poller_epoll.cpp
-    src/network/io_poller_kqueue.cpp
-    src/network/io_service.cpp
     modules/network/network_module.cpp
-    src/network/socket.cpp
-    src/network/socket_ops.cpp
-    src/network/socket_runtime.cpp
-    src/network/timer.cpp
-    src/network/tls/ssl_stream.cpp
-    src/network/tls/tls_context.cpp
     src/network/websocket/client.cpp
     src/network/websocket/frame.cpp
     src/network/websocket/handshake.cpp
     src/network/websocket/stream.cpp
 )
 target_include_directories(arp_network PUBLIC src modules)
-target_link_libraries(arp_network PUBLIC arp_core)
+target_link_libraries(arp_network PUBLIC arp_core_foundation arp_network_http_transport)
 if(WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     target_link_libraries(arp_network PUBLIC ws2_32)
 endif()
@@ -1010,6 +1006,8 @@ add_library(arp_resource
     src/resource/audio_playback_registry.cpp
     src/resource/environment_asset_resources.cpp
     src/resource/internal_asset_package.cpp
+    src/resource/internal_asset_package_loader.cpp
+    src/resource/shader_artifact_resource.cpp
     src/resource/asset_package_payload.cpp
     src/resource/asset_package_closure.cpp
     src/resource/mesh_asset_resources.cpp
@@ -1028,11 +1026,13 @@ add_library(arp_resource
     src/resource/vegetation_catalog_build_service.cpp
 )
 target_include_directories(arp_resource PUBLIC src tools/unity_import)
-target_link_libraries(arp_resource PUBLIC arp_reflection arp_assets arp_fkyaml_headers arp_audio arp_vegetation arp_terrain)
+target_link_libraries(arp_resource PUBLIC arp_reflection arp_assets arp_fkyaml_headers arp_audio arp_vegetation arp_terrain arp_shader)
 
 add_library(arp_ui_font
     src/ui/ui_font.cpp
     src/ui/ui_font_face_cache.cpp
+    src/ui/ui_font_source.cpp
+    src/ui/detail/ui_freetype_memory.cpp
 )
 target_include_directories(arp_ui_font PUBLIC src)
 target_link_libraries(arp_ui_font PUBLIC arp_core arp_freetype)
@@ -1083,6 +1083,7 @@ add_library(arp_renderer_rhi_contracts
 target_link_libraries(arp_renderer_rhi_contracts PUBLIC arp_render_graph_rhi_plan)
 
 add_library(arp_renderer
+    src/renderer/bindless_shader_package_resource.cpp
     src/renderer/pipeline/basic_forward_contract.cpp
     src/renderer/pipeline/basic_forward_pipeline.cpp
     src/renderer/gui/gui_ordered_renderer.cpp
@@ -1156,6 +1157,7 @@ add_library(arp_rhi
     src/rhi/frontend/bindless_indirect_packet.cpp
     src/rhi/frontend/bindless_shader_package.cpp
     src/rhi/frontend/pipeline_package_reflection.cpp
+    src/rhi/frontend/generated_shader_package_input.cpp
     src/rhi/frontend/pipeline_single_entry_input.cpp
     src/rhi/frontend/pipeline_depth_table_lowering_validation.cpp
     src/rhi/frontend/pipeline_graphics_input.cpp
@@ -1213,50 +1215,14 @@ if(MINGW)
     # limit with GCC 16 Debug. Consumers instantiate the same public templates.
     target_compile_options(arp_rhi PUBLIC "-Wa,-mbig-obj")
 endif()
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/null_hidden_frame_smoke.reflection.yaml
-    ${CMAKE_CURRENT_BINARY_DIR}/null_hidden_frame_smoke.reflection.yaml
-    COPYONLY)
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/null_hidden_frame_smoke.slang
-    ${CMAKE_CURRENT_BINARY_DIR}/null_hidden_frame_smoke.slang
-    COPYONLY)
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/null_hidden_frame_smoke.spv
-    ${CMAKE_CURRENT_BINARY_DIR}/null_hidden_frame_smoke.spv
-    COPYONLY)
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/null_hidden_frame_smoke.metal
-    ${CMAKE_CURRENT_BINARY_DIR}/null_hidden_frame_smoke.metal
-    COPYONLY)
 foreach(ARP_WEBGPU_RHI_FIXTURE webgpu_rhi.slang webgpu_rhi.spv webgpu_rhi.metal webgpu_rhi.wgsl webgpu_rhi.reflection.yaml)
     configure_file(
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/${ARP_WEBGPU_RHI_FIXTURE}
         ${CMAKE_CURRENT_BINARY_DIR}/${ARP_WEBGPU_RHI_FIXTURE}
         COPYONLY)
 endforeach()
-foreach(ARP_RHI_PIPELINE_CONTRACT_FIXTURE
-        rhi_pipeline_contract.slang
-        rhi_pipeline_contract.spv
-        rhi_pipeline_contract.metal
-        rhi_pipeline_contract.wgsl
-        rhi_pipeline_contract.reflection.yaml)
-    configure_file(
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/${ARP_RHI_PIPELINE_CONTRACT_FIXTURE}
-        ${CMAKE_CURRENT_BINARY_DIR}/${ARP_RHI_PIPELINE_CONTRACT_FIXTURE}
-        COPYONLY)
-endforeach()
-foreach(ARP_RHI_PUSH_CONTRACT_FIXTURE
-        rhi_push_contract.slang
-        rhi_push_contract.spv
-        rhi_push_contract.metal
-        rhi_push_contract.wgsl
-        rhi_push_contract.reflection.yaml)
-    configure_file(
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/${ARP_RHI_PUSH_CONTRACT_FIXTURE}
-        ${CMAKE_CURRENT_BINARY_DIR}/${ARP_RHI_PUSH_CONTRACT_FIXTURE}
-        COPYONLY)
-endforeach()
+
+
 
 add_library(arp_rhi_semantics
     src/rhi/semantics/gpu_timing_lowering.cpp
@@ -1780,7 +1746,8 @@ target_include_directories(arp_terrain_asset_tool PRIVATE . src)
 add_executable(arp_terrain_asset_build_service_tests tests/contract/terrain_asset_build_service_tests.cpp)
 target_link_libraries(arp_terrain_asset_build_service_tests PRIVATE arp_resource)
 target_include_directories(arp_terrain_asset_build_service_tests PRIVATE . src)
-foreach(_arp_terrain_tool_target IN ITEMS arp_terrain_asset_tool arp_terrain_asset_build_service_tests)
+foreach(_arp_terrain_tool_target IN ITEMS arp_terrain_asset_tool arp_terrain_asset_build_service_tests
+    arp_terrain_asset_resource_contract_tests)
     if(EMSCRIPTEN OR APPLE)
         target_link_libraries(${_arp_terrain_tool_target} PRIVATE arp_resource arp_scriptvm_host_plugin_runtime arp_3d)
     else()
@@ -7466,6 +7433,8 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     endif()
 endif()
 set(ARP_ENGINE_MODULE_TARGETS
+    arp_core_foundation
+    arp_network_http_transport
     arp_terrain_scene_runtime
     arp_terrain
     arp_core
@@ -7613,9 +7582,25 @@ if(SLANGC_EXECUTABLE)
         "${CMAKE_BINARY_DIR}/shaders/fxaa.slang"
         "${CMAKE_BINARY_DIR}/shaders/wocc_taa.slang"
     )
+    # The compiler manifest owns the complete ordinary publication list; do
+    # not infer it from the historical subset of hand-maintained outputs.
+    execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+        "import runpy,sys; print(';'.join(item[1] for item in runpy.run_path(sys.argv[1])['SHADER_SOURCES']))"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        OUTPUT_VARIABLE ARP_SHADER_SET_PREFIXES OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE ARP_SHADER_SET_MANIFEST_RESULT)
+    if(NOT ARP_SHADER_SET_MANIFEST_RESULT EQUAL 0 OR NOT ARP_SHADER_SET_PREFIXES)
+        message(FATAL_ERROR "Cannot enumerate the authoritative ordinary shader publication manifest")
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py")
+    set(ARP_SHADER_SET_ARTIFACTS)
+    foreach(shader_prefix IN LISTS ARP_SHADER_SET_PREFIXES)
+        list(APPEND ARP_SHADER_SET_ARTIFACTS "${CMAKE_BINARY_DIR}/shaders/${shader_prefix}.artifact-set.yaml")
+    endforeach()
     add_custom_command(
         OUTPUT
             ${ARP_SHADER_SOURCE_ARTIFACTS}
+            ${ARP_SHADER_SET_ARTIFACTS}
             "${CMAKE_BINARY_DIR}/shaders/scene_2d_sprites.slang"
             "${CMAKE_BINARY_DIR}/shaders/scene_2d_sprites.spv"
             "${CMAKE_BINARY_DIR}/shaders/scene_2d_sprites.metal"
@@ -7833,6 +7818,7 @@ if(SLANGC_EXECUTABLE)
     )
     add_custom_target(arp_compile_shaders DEPENDS
         ${ARP_SHADER_SOURCE_ARTIFACTS}
+        ${ARP_SHADER_SET_ARTIFACTS}
         "${CMAKE_BINARY_DIR}/shaders/queen_scene.spv"
         "${CMAKE_BINARY_DIR}/shaders/queen_scene.metal"
         "${CMAKE_BINARY_DIR}/shaders/queen_scene.wgsl"
@@ -8504,4 +8490,5 @@ add_test(NAME arp_core_package_boundary_tests
 set_tests_properties(arp_core_package_boundary_tests PROPERTIES LABELS "architecture;core")
 
 include(cmake/CorePackageValidation.cmake)
+include(cmake/UnifiedIoValidation.cmake)
 include(cmake/ArpMetalDispatchProbe.cmake)

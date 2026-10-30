@@ -173,6 +173,10 @@ int main()
             .executable);
     execution.prototypeOptIn = true;
     execution.contractVersion = 2;
+    assert(
+        WebGlExtensionExecutionContract::lower(Backend::WebGL, execution, extensionProfile, consent)
+            .executable);
+    execution.contractVersion = 3;
     assert(!WebGlExtensionExecutionContract::lower(
         Backend::WebGL, execution, extensionProfile, consent)
             .executable);

@@ -8,4 +8,23 @@ editorMetadata: null
 physics2d: null
 execution: Interpreter
 assetPackages: []
-scriptModules: []
+scriptModules:
+  - id: hello_world
+    resourceId: 23dbb375-d4df-416e-a43c-2d61326f2d42
+    source: hello_world.arp
+    schemaVersion: 1
+    dependencies: []
+    authoring:
+      contractVersion: 1
+      maxSourceBytes: 65536
+      preparationBytes: 16777216
+      maxInstances: 32
+      imports: [arp_scene]
+      execution:
+        instructionLimit: 100000
+        recursionLimit: 64
+        maxFrameValues: 1024
+        maxContainerValues: 1024
+        maxCallArguments: 16
+        maxContinuationFrames: 64
+        maxMemoryBytes: 16777216

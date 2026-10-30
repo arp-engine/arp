@@ -45,6 +45,7 @@ enum class DiagnosticCode {
     response_already_sent,
     unsupported_platform,
     invalid_response,
+    response_aborted,
 };
 
 ARP_API StringView diagnosticName(DiagnosticCode code) noexcept;
@@ -67,6 +68,9 @@ public:
     StringView path() const noexcept;
     StringView query() const noexcept;
     StringView fragment() const noexcept;
+    // Original encoded origin-form path/query, excluding the fragment. Unlike
+    // decoded component accessors this is safe to serialize on the HTTP wire.
+    StringView request_target() const noexcept;
 
 private:
     friend struct UriParseResult;
@@ -78,6 +82,7 @@ private:
     core::pmr::String path_;
     core::pmr::String query_;
     core::pmr::String fragment_;
+    core::pmr::String request_target_;
     uint16 port_ = 0;
     bool absolute_ = false;
     bool explicit_port_ = false;

@@ -86,7 +86,7 @@ public:
 
     static void verifyLoweringAllocator()
     {
-        auto package = rhi::test::makePushContractShaderPackage();
+        auto package = rhi::test::makePushContractShaderPackage(true);
         rhi::PipelineLayoutDesc layoutDesc;
         layoutDesc.pushConstantRanges.push_back(
             {rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment | rhi::ShaderStage::Compute,

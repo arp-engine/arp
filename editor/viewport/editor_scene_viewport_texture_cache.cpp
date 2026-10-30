@@ -19,9 +19,23 @@ EditorSceneViewportTextureCacheResult failure(Diagnostic diagnostic, const char*
 } // namespace
 
 EditorSceneViewportTextureCache::EditorSceneViewportTextureCache(
-    EditorSceneViewportTextureCacheBudget budget)
-    : budget_(budget)
+    EditorSceneViewportTextureCacheBudget budget,
+    std::shared_ptr<rhi::OriginalOrderedGraphicsExecution> execution)
+    : budget_(budget), execution_(std::move(execution))
 {}
+
+const char* EditorSceneViewportTextureCache::clearAfterOrderedIssue()
+{
+    if (!execution_ || !ownerDevice_)
+        return entries_.empty() ? nullptr : "EDITOR-VIEWPORT-ORDERED-TEXTURE-OWNER";
+    if (const auto* id = execution_->diagnostic(*ownerDevice_))
+        return id;
+    for (const auto& entry : entries_)
+        if (const auto* id = execution_->resourceReuseDiagnostic(*entry->texture))
+            return id;
+    clearResources();
+    return nullptr;
+}
 
 EditorSceneViewportTextureCacheResult EditorSceneViewportTextureCache::acquire(
     rhi::GpuDevice& device,
@@ -89,7 +103,8 @@ EditorSceneViewportTextureCacheResult EditorSceneViewportTextureCache::acquire(
         expectedSrgb ? rhi::TextureFormat::Rgba8UnormSrgb : rhi::TextureFormat::Rgba8Unorm;
     textureDesc.usage = rhi::TextureUsage::Sampled | rhi::TextureUsage::CopyDst;
     textureDesc.memory = rhi::MemoryUsage::GpuOnly;
-    textureDesc.initialState = rhi::ResourceState::Undefined;
+    textureDesc.initialState =
+        execution_ ? rhi::ResourceState::ShaderRead : rhi::ResourceState::Undefined;
     auto texture = device.createTexture(textureDesc);
     if (!texture)
         return failure(Diagnostic::TextureCreateFailed, "RHI texture creation failed");
@@ -108,7 +123,8 @@ EditorSceneViewportTextureCacheResult EditorSceneViewportTextureCache::acquire(
         samplerDesc.label = "EditorViewportPbrSampler";
         samplerDesc.minFilter = rhi::SamplerFilter::Linear;
         samplerDesc.magFilter = rhi::SamplerFilter::Linear;
-        samplerDesc.mipFilter = rhi::SamplerMipFilter::Linear;
+        // This cache uploads exactly the decoded base level, on both executors.
+        samplerDesc.mipFilter = rhi::SamplerMipFilter::None;
         samplerDesc.addressU = rhi::SamplerAddressMode::Repeat;
         samplerDesc.addressV = rhi::SamplerAddressMode::Repeat;
         samplerDesc.addressW = rhi::SamplerAddressMode::ClampToEdge;
@@ -124,13 +140,24 @@ EditorSceneViewportTextureCacheResult EditorSceneViewportTextureCache::acquire(
         budget_.maxUploadStagingBytes);
     if (!packedRows.success())
         return failure(Diagnostic::BudgetExceeded, packedRows.diagnostics.c_str());
-    const auto uploaded = renderer::uploadTextureRgba8(device,
-        *texture,
-        packedRows.pixels.data(),
-        source->decodedWidth,
-        source->decodedHeight,
-        packedRows.bytesPerRow,
-        source->decodedHeight);
+    renderer::RendererResult uploaded;
+    if (execution_) {
+        rhi::semantics::ClientTextureUpload upload;
+        upload.contractVersion = 1;
+        upload.extent = textureDesc.extent;
+        upload.bytesPerRow = packedRows.bytesPerRow;
+        upload.bytes = packedRows.pixels;
+        const auto result = execution_->uploadTexture(*texture, upload);
+        uploaded = {result.success, result.diagnostics};
+    } else {
+        uploaded = renderer::uploadTextureRgba8(device,
+            *texture,
+            packedRows.pixels.data(),
+            source->decodedWidth,
+            source->decodedHeight,
+            packedRows.bytesPerRow,
+            source->decodedHeight);
+    }
     if (!uploaded.success)
         return failure(Diagnostic::UploadFailed, uploaded.diagnostics.c_str());
     if (samplerCandidate)

@@ -49,6 +49,14 @@ void EditorShell::appendProjectSnapshot(EditorStateSnapshot& snapshot) const
     snapshot.sceneExportPending = sceneExport_.pending();
     snapshot.projectRoot = core::FilePath::utf8(projectRoot());
     snapshot.projectDiagnostic = projectDiagnostic_;
+    snapshot.projectSource =
+        projectBrowser_.sourceSnapshot() ? projectSourceAlias_ : core::pmr::String{};
+    snapshot.availableProjectSource = projectSourceAlias_;
+    snapshot.projectDirectory = core::FilePath::utf8(projectBrowser_.currentDirectory());
+    snapshot.projectIoTaskId = projectIoTaskId_;
+    snapshot.projectIoTaskStatus = projectIo_ ? projectIo_->status() : ProjectIoStatus::Unknown;
+    if (projectIo_)
+        snapshot.projectIoDiagnostic = projectIo_->diagnostic();
     if (projectManifest_) {
         snapshot.projectId = projectManifest_->id;
         snapshot.projectName = projectManifest_->name;
@@ -89,6 +97,8 @@ EditorCommandOutcome EditorShell::requestEditorExit(bool discardChanges)
         return gate;
     }
     exitRequested_ = true;
+    if (projectIoPending())
+        projectIo_->cancel();
     return {true, true, EditorDiagnosticCode::None};
 }
 
@@ -161,13 +171,22 @@ bool EditorShell::publishProject(EditorProjectResources&& resources, ProjectBrow
     scriptFocused_ = false;
     (void)showTerrainBrowser(false);
     terrainBrowser_ = {};
-    refreshFileSystem();
-    refreshSceneInspector();
+    try {
+        refreshFileSystem();
+        refreshSceneInspector();
+    } catch (...) {
+        // The workspace is committed. Isolate presentation, do not report that
+        // an accepted project replacement rolled back after its publication.
+        setFileBrowserPresentationFailed(true);
+        failSceneInspector("EDITOR-PROJECT-PRESENTATION-FAILED");
+    }
     return true;
 }
 
 EditorCommandOutcome EditorShell::openProject(const OpenProjectCommand& command)
 {
+    if (!command.source.empty())
+        return openSourceProject(command);
     const auto gate = projectReplacementGate(command.discardChanges);
     if (!gate.success)
         return gate;
@@ -197,6 +216,12 @@ EditorCommandOutcome EditorShell::closeProject(bool discardChanges)
     if (!gate.success)
         return gate;
     // Keep the same directory visible, with no live project identity/resources.
+    if (projectBrowser_.sourceSnapshot()) {
+        auto browser = projectBrowser_;
+        if (!publishProject(EditorProjectResources{}, std::move(browser)))
+            return {false, false, EditorDiagnosticCode::ProjectOperationFailed};
+        return {true, true, EditorDiagnosticCode::None};
+    }
     ProjectBrowserModel browser;
     browser.setRoot(projectRoot());
     if (!browser.refresh() || !publishProject(EditorProjectResources{}, std::move(browser)))

@@ -55,7 +55,7 @@ public:
         const ShaderGeneratedArtifacts& a, const ShaderGeneratedArtifacts& b) noexcept
     {
         return a.spirvPath == b.spirvPath && a.mslPath == b.mslPath && a.wgslPath == b.wgslPath
-            && a.reflectionPath == b.reflectionPath;
+            && a.reflectionPath == b.reflectionPath && a.publicationPath == b.publicationPath;
     }
 
     static bool matches(const ShaderReflectionBinding& a, const ShaderReflectionBinding& b) noexcept
@@ -109,8 +109,8 @@ public:
             && a.backendFallbacksHiddenFromUpperLayer == b.backendFallbacksHiddenFromUpperLayer
             && a.nativeHandleExposedToUpperLayer == b.nativeHandleExposedToUpperLayer
             && a.generatedReflectionHydrated == b.generatedReflectionHydrated
-            && sequence(a.entrypoints, b.entrypoints) && matches(a.artifacts, b.artifacts)
-            && matches(a.reflection, b.reflection);
+            && generatedShaderPackageArtifactsEqual(a, b) && sequence(a.entrypoints, b.entrypoints)
+            && matches(a.artifacts, b.artifacts) && matches(a.reflection, b.reflection);
     }
 
     static bool matches(const BlendComponent& a, const BlendComponent& b) noexcept

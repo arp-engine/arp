@@ -550,11 +550,15 @@ core::UniquePtr<GpuTexture> WebGlResources::createTexture(const TextureDesc& des
             for (std::uint32_t mip = 0; mip < desc.mipLevelCount; ++mip)
                 glTexImage2D(GL_TEXTURE_2D,
                     mip,
-                    desc.format == TextureFormat::Depth24Stencil8 ? GL_DEPTH_STENCIL_OES : GL_RGBA,
+                    desc.format == TextureFormat::Depth24Stencil8      ? GL_DEPTH_STENCIL_OES
+                        : desc.format == TextureFormat::Rgba8UnormSrgb ? GL_SRGB_ALPHA_EXT
+                                                                       : GL_RGBA,
                     TextureTransferValidation::mipExtent(desc.extent.width, mip),
                     TextureTransferValidation::mipExtent(desc.extent.height, mip),
                     0,
-                    desc.format == TextureFormat::Depth24Stencil8 ? GL_DEPTH_STENCIL_OES : GL_RGBA,
+                    desc.format == TextureFormat::Depth24Stencil8      ? GL_DEPTH_STENCIL_OES
+                        : desc.format == TextureFormat::Rgba8UnormSrgb ? GL_SRGB_ALPHA_EXT
+                                                                       : GL_RGBA,
                     desc.format == TextureFormat::Depth24Stencil8 ? GL_UNSIGNED_INT_24_8_OES
                                                                   : GL_UNSIGNED_BYTE,
                     nullptr);
@@ -638,7 +642,7 @@ CommandValidationResult WebGlResources::uploadTexture(
                     upload.origin.height + row,
                     upload.extent.width,
                     1,
-                    GL_RGBA,
+                    p.desc.format == TextureFormat::Rgba8UnormSrgb ? GL_SRGB_ALPHA_EXT : GL_RGBA,
                     GL_UNSIGNED_BYTE,
                     upload.bytes.data() + std::size_t{row} * upload.bytesPerRow);
             },

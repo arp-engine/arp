@@ -71,5 +71,41 @@ int main()
     assert(tiny.telemetry().rejected == 1);
     assert(tiny.dispatch(0).status == CompletionStatus::InvalidDispatchBudget);
 
+    CompletionQueue reservedQueue({2});
+    OrderProbe reservedProbe;
+    auto first = reservedQueue.reserve();
+    assert(first.valid() && reservedQueue.reserved() == 1);
+    {
+        auto abandoned = reservedQueue.reserve();
+        assert(abandoned.valid());
+        assert(reservedQueue.reserve().status() == CompletionStatus::QueueFull);
+        assert(
+            reservedQueue.post({recordTwo, &reservedProbe}).status == CompletionStatus::QueueFull);
+    }
+    assert(reservedQueue.reserved() == 1);
+    auto moved = std::move(first);
+    assert(!first.valid() && moved.valid());
+    assert(reservedQueue.post({recordOne, &reservedProbe}).accepted());
+    reservedQueue.shutdown();
+    assert(reservedQueue.reserve().status() == CompletionStatus::ServiceClosed);
+    assert(reservedQueue.postReserved(std::move(moved), {recordTwo, &reservedProbe}).accepted());
+    assert(!moved.valid() && reservedQueue.reserved() == 0);
+    assert(reservedQueue.postReserved(std::move(moved), {recordThree, &reservedProbe}).status
+        == CompletionStatus::InvalidReservation);
+    assert(reservedQueue.dispatch(2).dispatched == 2);
+    assert(
+        reservedProbe.count == 2 && reservedProbe.values[0] == 1 && reservedProbe.values[1] == 2);
+
+    CompletionQueue other({1});
+    auto otherToken = other.reserve();
+    assert(reservedQueue.postReserved(std::move(otherToken), {recordOne, &reservedProbe}).status
+        == CompletionStatus::InvalidReservation);
+    assert(otherToken.valid());
+    assert(
+        other.postReserved(std::move(otherToken), {}).status == CompletionStatus::InvalidCallback);
+    assert(otherToken.valid());
+    otherToken = {};
+    assert(other.reserved() == 0);
+
     return 0;
 }

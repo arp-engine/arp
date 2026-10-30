@@ -321,8 +321,7 @@ public:
                 && previousFontToken == metrics.fontToken) {
                 float kerningX = 0.0f;
                 arp::core::pmr::String kerningDiagnostics{&arp::core::defaultCpuMemoryResource()};
-                if (!fontFaceCache_->kerningX(metrics.sourcePath,
-                        key.sizePx,
+                if (!fontFaceCache_->kerningX(metrics.face,
                         previousCodepoint,
                         glyph.codepoint,
                         kerningX,
@@ -375,7 +374,7 @@ private:
         bool visible = false;
         float advanceX = 0.0f;
         arp::core::pmr::String fontToken{&arp::core::defaultCpuMemoryResource()};
-        std::filesystem::path sourcePath;
+        arp::ui::UiFontFaceDesc face;
         arp::ui::LayoutRect inkRect;
         arp::core::pmr::String diagnostics{&arp::core::defaultCpuMemoryResource()};
     };
@@ -427,21 +426,8 @@ private:
             }
             return candidates;
         }
-        if (!fontFaces_.empty()) {
-            diagnostics = text("UI text layout has no font face for token: ");
-            diagnostics += key.fontToken;
-            return candidates;
-        }
-        auto font = arp::ui::loadDefaultUiFontFace();
-        if (!font.ok()) {
-            diagnostics = font.diagnostic().message;
-            return candidates;
-        }
-        auto face = font.face().desc;
-        face.tokenId = key.fontToken;
-        face.sizePx = key.sizePx;
-        face.lineHeightPx = std::max(key.sizePx, face.lineHeightPx);
-        candidates.push_back(std::move(face));
+        diagnostics = text("UI text layout has no font face for token: ");
+        diagnostics += key.fontToken;
         return candidates;
     }
 
@@ -470,6 +456,11 @@ private:
         arp::core::pmr::String lastDiagnostic{&arp::core::defaultCpuMemoryResource()};
         arp::core::pmr::String resolvedToken{&arp::core::defaultCpuMemoryResource()};
         for (auto face : candidates) {
+            if (!arp::ui::validatePreparedUiFontFace(face, lastDiagnostic)) {
+                rasterized = arp::ui::UiFontRasterizeResult::failure(
+                    arp::ui::UiFontDiagnosticCode::InvalidFontMetadata, lastDiagnostic);
+                continue;
+            }
             face.sizePx = key.sizePx;
             face.lineHeightPx = std::max(key.sizePx, face.lineHeightPx);
             face.renderMode = key.renderMode == GlyphRenderMode::Sdf ? "sdf" : "alpha";
@@ -502,7 +493,7 @@ private:
 
         metrics.ok = true;
         metrics.fontToken = std::move(resolvedToken);
-        metrics.sourcePath = rasterDesc.face.sourcePath;
+        metrics.face = std::move(rasterDesc.face);
         metrics.advanceX = std::max(1.0f, rasterized.text().advanceX);
         if (rasterized.text().pixels.empty()) {
             return metrics;

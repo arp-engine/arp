@@ -28,6 +28,27 @@ struct EditorSceneViewportDrawBudget {
     std::uint32_t maxDrawCalls = 0;
 };
 
+// Shared 256-byte row-major shader payload for native and ordered executors.
+struct EditorSceneViewportPbrPush {
+    core::Mat4 viewProjection, model, normalTransform;
+    std::array<float, 4> cameraPosition, baseColorFactor, emissiveMetallic;
+    std::array<float, 4> roughnessOcclusionAlphaCutoffMode;
+};
+
+static_assert(sizeof(EditorSceneViewportPbrPush) == 256);
+
+inline EditorSceneViewportPbrPush buildEditorSceneViewportPbrPush(
+    const EditorSceneViewportDrawItemSubmission& item)
+{
+    return {item.viewProjection,
+        item.model,
+        item.normalTransform,
+        item.cameraPosition,
+        item.baseColorFactor,
+        item.emissiveMetallic,
+        item.roughnessOcclusionAlphaCutoffMode};
+}
+
 struct EditorSceneViewportDrawExecutionResult {
     core::UniquePtr<rhi::CommandBuffer> commandBuffer;
     core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};

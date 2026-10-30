@@ -1,0 +1,13 @@
+contractVersion: "resource.package.closure/v1"
+files:
+  -
+    byteCount: 3744
+    contentHash: "2d52cb8012f679be"
+    path: "scene.yaml"
+maxDecodedBytes: 4194304
+maxFileBytes: 4194304
+maxFiles: 1
+maxResources: 1
+maxTotalFileBytes: 4194304
+status: "Contract Complete"
+type: "AssetPackageClosure"

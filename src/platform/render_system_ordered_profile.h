@@ -26,14 +26,24 @@ struct RenderSystemOrderedProfile {
     rhi::OrderedGraphicsExecutionRequest execution;
     RenderSystemOrderedGraphicsDesc frames;
     bool mainBrowserThreadWithWorkersOptIn = false;
+    bool fragmentDepthOptIn = false;
+    bool srgbTexturesOptIn = false;
+    bool uint32IndicesOptIn = false;
+    bool instancingOptIn = false;
 };
 
 class RenderSystemOrderedProfileContract final {
 public:
     static const char* validate(rhi::Backend backend, const RenderSystemOrderedProfile& p)
     {
-        if (p.contractVersion != 1 && p.contractVersion != 2)
+        if (p.contractVersion != 1 && p.contractVersion != 2 && p.contractVersion != 3)
             return "PLATFORM-ORDERED-PROFILE-VERSION";
+        if ((p.uint32IndicesOptIn || p.instancingOptIn) && p.contractVersion != 3)
+            return "PLATFORM-ORDERED-GEOMETRY-PROFILE-REQUIRED";
+        if (p.srgbTexturesOptIn && p.contractVersion != 3)
+            return "PLATFORM-ORDERED-SRGB-PROFILE-REQUIRED";
+        if (p.fragmentDepthOptIn && p.contractVersion != 3)
+            return "PLATFORM-ORDERED-FRAGMENT-DEPTH-PROFILE-REQUIRED";
         if (p.contractVersion == 1 && p.derivativesOptIn)
             return "PLATFORM-ORDERED-DERIVATIVES-PROFILE-REQUIRED";
         if (p.contractVersion == 1 && p.mainBrowserThreadWithWorkersOptIn)

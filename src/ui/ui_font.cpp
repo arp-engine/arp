@@ -2,9 +2,9 @@
 
 #include "core/text/utf8.h"
 #include "ui/ui_font_face_cache.h"
+#include "ui/ui_font_source.h"
 
 #include <algorithm>
-#include <fstream>
 
 #if ARP_HAS_FREETYPE
 #include <ft2build.h>
@@ -19,62 +19,6 @@ namespace {
 arp::core::pmr::String text(const char* value)
 {
     return arp::core::pmr::String(value, &arp::core::defaultCpuMemoryResource());
-}
-
-arp::core::pmr::Vector<std::uint8_t> readFontBytes(const std::filesystem::path& path)
-{
-    arp::core::pmr::Vector<std::uint8_t> bytes(&arp::core::defaultCpuMemoryResource());
-    std::ifstream input(path, std::ios::binary);
-    if (!input.good()) {
-        return bytes;
-    }
-    input.seekg(0, std::ios::end);
-    const auto size = input.tellg();
-    if (size <= 0) {
-        return bytes;
-    }
-    input.seekg(0, std::ios::beg);
-    bytes.resize(static_cast<std::size_t>(size));
-    input.read(reinterpret_cast<char*>(bytes.data()), size);
-    if (!input.good()) {
-        bytes.clear();
-    }
-    return bytes;
-}
-
-// Resolve a relative font sourcePath by walking up from the current working
-// directory looking for a project root (a directory containing CMakeLists.txt),
-// then joining the relative path against it. This mirrors the project-root
-// resolution used by render_session.cpp::findShaderModulePath so that .arpui
-// theme files can declare fonts with repo-relative paths (e.g.
-// "assets/ui/fonts/cinzel-regular.ttf"). Absolute paths and paths that already
-// exist relative to the cwd are returned unchanged.
-std::filesystem::path resolveFontSourcePath(const std::filesystem::path& declaredPath)
-{
-    if (declaredPath.empty() || declaredPath.is_absolute()) {
-        return declaredPath;
-    }
-    std::error_code ec;
-    if (std::filesystem::exists(declaredPath, ec)) {
-        return declaredPath;
-    }
-    auto current = std::filesystem::current_path(ec);
-    if (ec) {
-        return declaredPath;
-    }
-    for (;;) {
-        if (std::filesystem::exists(current / "CMakeLists.txt", ec)) {
-            const auto resolved = current / declaredPath;
-            if (std::filesystem::exists(resolved, ec)) {
-                return resolved;
-            }
-        }
-        if (!current.has_parent_path() || current == current.parent_path()) {
-            break;
-        }
-        current = current.parent_path();
-    }
-    return declaredPath;
 }
 
 UiFontFaceDesc defaultFontDescForHost()
@@ -92,8 +36,11 @@ UiFontFaceDesc defaultFontDescForHost()
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     };
     for (const auto& candidate : candidates) {
-        if (std::filesystem::exists(candidate)) {
+        core::pmr::String diagnostic;
+        auto source = UiFontSource::loadHost(candidate, desc.maxSourceBytes, diagnostic);
+        if (source) {
             desc.sourcePath = candidate;
+            desc.source = std::move(source);
             return desc;
         }
     }
@@ -347,14 +294,10 @@ UiFontRasterizeResult UiFontTextRasterizer::rasterize(const UiFontRasterizeDesc&
     }
     const bool sdfMode = (desc.face.renderMode == "sdf");
 
-    // ---- Cached path: reuse a persistent FT_Face (no init/dispose per call) ----
-    // Skips the UiFontFaceLoader validation load, which itself does a full
-    // FT_Init + readFontBytes + FT_New_Memory_Face + FT_Done cycle just to
-    // validate metadata. The cache's acquire() already surfaces load errors.
+    // Prepared source ownership is shared with the cache; no file is reopened.
     if (cache_ != nullptr) {
         arp::core::pmr::String acquireDiagnostics(&arp::core::defaultCpuMemoryResource());
-        const auto cached =
-            cache_->acquire(desc.face.sourcePath, desc.face.sizePx, acquireDiagnostics);
+        const auto cached = cache_->acquire(desc.face, acquireDiagnostics);
         if (cached == nullptr) {
             return UiFontRasterizeResult::failure(
                 UiFontDiagnosticCode::FreeTypeLoadFailed, std::move(acquireDiagnostics));
@@ -365,49 +308,15 @@ UiFontRasterizeResult UiFontTextRasterizer::rasterize(const UiFontRasterizeDesc&
         return rasterizeWithFace(cached->face, desc);
     }
 
-    // ---- Legacy path: init/dispose FreeType every call (cache_ == nullptr) ----
-    const auto loaded = UiFontFaceLoader().load(desc.face);
-    if (!loaded.ok()) {
+    // Uncached calls retain a temporary owner through glyph extraction.
+    UiFontFaceCache temporary({1, desc.face.maxSourceBytes});
+    core::pmr::String diagnostic;
+    const auto* cached = temporary.acquire(desc.face, diagnostic);
+    if (!cached)
         return UiFontRasterizeResult::failure(
-            loaded.diagnostic().code, loaded.diagnostic().message);
-    }
-
-    const auto resolvedSourcePath = resolveFontSourcePath(desc.face.sourcePath);
-    auto bytes = readFontBytes(resolvedSourcePath);
-    if (bytes.empty()) {
-        auto message = text("UI font source file is empty or unreadable: ");
-        message += resolvedSourcePath.generic_string().c_str();
-        return UiFontRasterizeResult::failure(
-            UiFontDiagnosticCode::MissingFontFile, std::move(message));
-    }
-
-    FT_Library library = nullptr;
-    if (FT_Init_FreeType(&library) != 0 || library == nullptr) {
-        return UiFontRasterizeResult::failure(UiFontDiagnosticCode::FreeTypeLoadFailed,
-            text("FreeType failed to initialize for UI text rasterization"));
-    }
-
-    FT_Face face = nullptr;
-    const auto faceLoaded =
-        FT_New_Memory_Face(library, bytes.data(), static_cast<FT_Long>(bytes.size()), 0, &face);
-    if (faceLoaded != 0 || face == nullptr) {
-        FT_Done_FreeType(library);
-        return UiFontRasterizeResult::failure(UiFontDiagnosticCode::FreeTypeLoadFailed,
-            text("FreeType failed to load UI font face for rasterization"));
-    }
-
-    if (FT_Set_Pixel_Sizes(face, 0, desc.face.sizePx) != 0) {
-        FT_Done_Face(face);
-        FT_Done_FreeType(library);
-        return UiFontRasterizeResult::failure(UiFontDiagnosticCode::FreeTypeLoadFailed,
-            text("FreeType failed to set UI font pixel size"));
-    }
-
-    const auto result =
-        sdfMode ? rasterizeWithFaceSdf(face, desc, library) : rasterizeWithFace(face, desc);
-    FT_Done_Face(face);
-    FT_Done_FreeType(library);
-    return result;
+            UiFontDiagnosticCode::FreeTypeLoadFailed, std::move(diagnostic));
+    return sdfMode ? rasterizeWithFaceSdf(cached->face, desc, cached->library)
+                   : rasterizeWithFace(cached->face, desc);
 #endif
 }
 
@@ -422,50 +331,23 @@ UiFontLoadResult UiFontFaceLoader::load(const UiFontFaceDesc& desc) const
         return UiFontLoadResult::failure(UiFontDiagnosticCode::InvalidFontMetadata,
             text("UI font renderMode must be 'alpha' or 'sdf'"));
     }
-    auto sourcePath = desc.sourcePath;
-    if (!std::filesystem::exists(sourcePath)) {
-        const auto resolvedSourcePath = resolveFontSourcePath(sourcePath);
-        if (!std::filesystem::exists(resolvedSourcePath)) {
-            auto message = text("UI font source file is missing: ");
-            message += sourcePath.generic_string().c_str();
-            return UiFontLoadResult::failure(
-                UiFontDiagnosticCode::MissingFontFile, std::move(message));
-        }
-        sourcePath = resolvedSourcePath;
-    }
+    core::pmr::String diagnostic;
+    auto source = acquireUiFontSource(desc, diagnostic);
+    if (!source)
+        return UiFontLoadResult::failure(
+            UiFontDiagnosticCode::MissingFontFile, std::move(diagnostic));
 
 #if !ARP_HAS_FREETYPE
     return UiFontLoadResult::failure(UiFontDiagnosticCode::FreeTypeUnavailable,
         text("UI font source is explicit but FreeType backend is not available"));
 #else
-    auto bytes = readFontBytes(sourcePath);
-    if (bytes.empty()) {
-        auto message = text("UI font source file is empty or unreadable: ");
-        message += sourcePath.generic_string().c_str();
-        return UiFontLoadResult::failure(UiFontDiagnosticCode::MissingFontFile, std::move(message));
-    }
-
-    FT_Library library = nullptr;
-    if (FT_Init_FreeType(&library) != 0 || library == nullptr) {
-        return UiFontLoadResult::failure(UiFontDiagnosticCode::FreeTypeLoadFailed,
-            text("FreeType failed to initialize for UI font loading"));
-    }
-
-    FT_Face face = nullptr;
-    const auto faceLoaded =
-        FT_New_Memory_Face(library, bytes.data(), static_cast<FT_Long>(bytes.size()), 0, &face);
-    if (faceLoaded != 0 || face == nullptr) {
-        FT_Done_FreeType(library);
-        return UiFontLoadResult::failure(
-            UiFontDiagnosticCode::FreeTypeLoadFailed, text("FreeType failed to load UI font face"));
-    }
-
-    FT_Done_Face(face);
-    FT_Done_FreeType(library);
-
     UiFontFace loaded;
     loaded.desc = desc;
-    loaded.desc.sourcePath = std::move(sourcePath);
+    loaded.desc.source = std::move(source);
+    UiFontFaceCache validation({1, desc.maxSourceBytes});
+    if (!validation.acquire(loaded.desc, diagnostic))
+        return UiFontLoadResult::failure(
+            UiFontDiagnosticCode::FreeTypeLoadFailed, std::move(diagnostic));
     loaded.validatedByFreeType = true;
     return UiFontLoadResult::success(std::move(loaded));
 #endif

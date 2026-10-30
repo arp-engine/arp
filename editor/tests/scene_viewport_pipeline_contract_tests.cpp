@@ -2,6 +2,7 @@
 #include "editor/viewport/editor_scene_viewport_pipeline_contract.h"
 #include "editor/viewport/editor_scene_viewport_shader_package.h"
 #include "rhi/backends/null/null_backend.h"
+#include "shader/generated_shader_artifact_set.h"
 #include "shader/shader_reflection_cache.h"
 
 #include <cassert>
@@ -243,6 +244,9 @@ int main()
     std::filesystem::copy_file(artifacts.mslPath, staleMsl);
     std::filesystem::copy_file(artifacts.wgslPath, staleWgsl);
     std::filesystem::copy_file(artifacts.reflectionPath, staleReflection);
+    const auto stalePublication =
+        tempRoot / std::filesystem::path(package.package.artifacts.publicationPath).filename();
+    std::filesystem::copy_file(package.package.artifacts.publicationPath, stalePublication);
     const auto stale = editor::loadEditorSceneViewportShaderPackage({staleSource.string(),
                                                                         staleSpirv.string(),
                                                                         staleMsl.string(),
@@ -262,15 +266,29 @@ int main()
     reflectionText.replace(vertexName, std::string("name: vertexMain").size(), "name: wrongMain");
     const auto wrongEntryReflection =
         tempRoot / std::filesystem::path(artifacts.reflectionPath).filename();
+    std::filesystem::copy_file(
+        artifacts.sourcePath, staleSource, std::filesystem::copy_options::overwrite_existing);
     {
         std::ofstream changed(wrongEntryReflection, std::ios::binary);
         changed.write(reflectionText.data(), static_cast<std::streamsize>(reflectionText.size()));
     }
+    // Re-publish the changed reflection deliberately. A stale manifest must
+    // fail its hash gate before the selected-entry diagnostic can be tested.
+    auto publicationNode = core::YamlContract::parseSingleDocument(
+        shader::shaderArtifactText(package.package.generatedArtifactSet->publicationBytes()));
+    const auto reflectionHash = core::Sha256::hexDigest(reflectionText);
+    publicationNode["files"]["reflection"]["sha256"] =
+        std::string(reflectionHash.substr(core::StringView("sha256:").size()));
+    const auto publicationText = core::YamlContract::serialize(publicationNode);
+    {
+        std::ofstream changed(stalePublication, std::ios::binary);
+        changed.write(publicationText.data(), static_cast<std::streamsize>(publicationText.size()));
+    }
     const auto wrongEntry =
-        editor::loadEditorSceneViewportShaderPackage({artifacts.sourcePath,
-                                                         artifacts.spirvPath,
-                                                         artifacts.mslPath,
-                                                         artifacts.wgslPath,
+        editor::loadEditorSceneViewportShaderPackage({staleSource.string(),
+                                                         staleSpirv.string(),
+                                                         staleMsl.string(),
+                                                         staleWgsl.string(),
                                                          wrongEntryReflection.string()},
             rhi::TextureFormat::Rgba16Float,
             rhi::TextureFormat::D32Float,
@@ -322,6 +340,15 @@ int main()
 
     auto missingInput = loaded.module.reflection;
     missingInput.vertexAttributes.pop_back();
+    const auto baseline = editor::buildEditorSceneViewportPipelineContract(loaded.module.reflection,
+        "editor/viewport_pbr.slang",
+        rhi::TextureFormat::Rgba8Unorm,
+        rhi::TextureFormat::Depth24Stencil8,
+        1u);
+    assert(baseline.valid());
+    assert(baseline.pipeline.colorFormat == rhi::TextureFormat::Rgba8Unorm);
+    assert(baseline.pipeline.depthFormat == rhi::TextureFormat::Depth24Stencil8);
+
     const auto invalidVertex = editor::buildEditorSceneViewportPipelineContract(missingInput,
         "editor/viewport_pbr.slang",
         rhi::TextureFormat::Rgba16Float,

@@ -105,6 +105,7 @@ add_library(arp_scriptvm_aot_tooling OBJECT
     src/scriptvm/aot/aot_package.cpp)
 target_include_directories(arp_scriptvm_aot_tooling PUBLIC src)
 target_link_libraries(arp_scriptvm_aot_tooling PUBLIC
+    arp_scriptvm_plugin_build
     arp_core arp_reflection arp_scriptvm_direct_native_runtime
     arp_scriptvm_ir arp_scriptvm_frontend arp_fkyaml_headers)
 

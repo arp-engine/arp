@@ -13,6 +13,9 @@ struct EditorSceneScriptInputs {
     EditorScriptBindingBudget modules;
     EditorScriptArchiveBudget fields;
     std::uint64_t preparationBytes = 0;
+    // Borrowed for this synchronous operation; the prepared document retains its
+    // own context copy. The FileService host outlives all resulting bindings.
+    const ProjectSourceContext* sources = nullptr;
 };
 
 // Explicit v4 authoring path. The v3 codec and file-store gates are preserved.

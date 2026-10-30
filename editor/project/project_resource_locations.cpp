@@ -9,6 +9,41 @@
 #include <new>
 
 namespace arp::editor {
+void ProjectResourceLocations::swap(ProjectResourceLocations& other) noexcept
+{
+    root_.swap(other.root_);
+    owner_.swap(other.owner_);
+    entries_.swap(other.entries_);
+    inputs_.swap(other.inputs_);
+    location_.swap(other.location_);
+}
+
+const char* ProjectResourceLocations::addDefinition(
+    const resource::InternalAssetPackageEntry& member,
+    core::pmr::String manifest,
+    core::pmr::String envelope)
+{
+    if (entries_.size() >= budget.maxFiles)
+        return "EDITOR-RESOURCE-LOCATION-BUDGET";
+    for (const auto& entry : entries_)
+        if (entry.id == member.resourceId || entry.envelopePath == envelope)
+            return "EDITOR-RESOURCE-LOCATION-AMBIGUOUS";
+    const auto* record = owner_->recordSnapshot(member.resourceId);
+    if (!record || !record->metadataAdmitted || record->type != member.resourceType
+        || record->alias != member.alias || record->status != member.status
+        || record->reloadInProgress)
+        return "EDITOR-RESOURCE-LOCATION-METADATA-CHANGED";
+    Entry entry;
+    entry.id = member.resourceId;
+    entry.type = member.resourceType;
+    entry.manifestPath = std::move(manifest);
+    entry.envelopePath = std::move(envelope);
+    entry.generation = record->generation;
+    entry.contentHash = record->contentHash;
+    entries_.push_back(std::move(entry));
+    return nullptr;
+}
+
 const char* ProjectResourceLocations::capture(const std::filesystem::path& root,
     const core::pmr::Vector<core::pmr::String>& packages,
     core::SharedPtr<resource::ResourceManager> owner,
@@ -46,52 +81,23 @@ const char* ProjectResourceLocations::capture(const std::filesystem::path& root,
             if (!package.success)
                 return "EDITOR-RESOURCE-LOCATION-PACKAGE-INVALID-OR-BUDGET";
             for (const auto& member : package.package.entries) {
-                if (candidate.entries_.size() >= budget.maxFiles)
-                    return "EDITOR-RESOURCE-LOCATION-BUDGET";
-                if (std::any_of(candidate.entries_.begin(),
-                        candidate.entries_.end(),
-                        [&](const auto& entry) {
-                            return entry.id == member.resourceId;
-                        }))
-                    return "EDITOR-RESOURCE-LOCATION-AMBIGUOUS";
-                const auto* record = candidate.owner_->recordSnapshot(member.resourceId);
-                if (!record || !record->metadataAdmitted || record->type != member.resourceType
-                    || record->alias != member.alias || record->status != member.status
-                    || record->reloadInProgress)
-                    return "EDITOR-RESOURCE-LOCATION-METADATA-CHANGED";
                 const auto envelope = packagePath / std::filesystem::u8path(member.envelopePath);
+                if (const auto* issue = candidate.addDefinition(member,
+                        core::FilePath::utf8(manifest.lexically_relative(candidate.root_)),
+                        core::FilePath::utf8(envelope.lexically_relative(candidate.root_))))
+                    return issue;
                 if (std::filesystem::canonical(manifest) != manifest
                     || std::filesystem::canonical(envelope) != envelope.lexically_normal())
                     return "EDITOR-RESOURCE-LOCATION-PATH-ALIAS";
-                if (!inputs.record(envelope, member.envelopeYaml, diagnostic))
+                if (!inputs.recordDecodedText(envelope, member.envelopeYaml, diagnostic))
                     return "EDITOR-RESOURCE-LOCATION-ENVELOPE-READ-OR-BUDGET";
-                Entry entry;
-                entry.id = member.resourceId;
-                entry.type = member.resourceType;
-                entry.manifestPath = core::FilePath::utf8(
-                    std::filesystem::canonical(manifest).lexically_relative(candidate.root_));
-                entry.envelopePath = core::FilePath::utf8(
-                    std::filesystem::canonical(envelope).lexically_relative(candidate.root_));
-                if (std::any_of(
-                        candidate.entries_.begin(), candidate.entries_.end(), [&](const auto& old) {
-                            return old.envelopePath == entry.envelopePath;
-                        }))
-                    return "EDITOR-RESOURCE-LOCATION-AMBIGUOUS";
-                entry.generation = record->generation;
-                // The runtime hash includes the materialized resource contract;
-                // it is not the serialized envelope payload hash.
-                entry.contentHash = record->contentHash;
-                candidate.entries_.push_back(std::move(entry));
             }
         }
         if (!inputs.verify(diagnostic))
             return "EDITOR-RESOURCE-LOCATION-CONTENT-CHANGED";
         candidate.inputs_ = inputs.takeBindings();
         // All owned storage uses the same core resource; publication only swaps.
-        destination.root_.swap(candidate.root_);
-        destination.owner_.swap(candidate.owner_);
-        destination.entries_.swap(candidate.entries_);
-        destination.inputs_.swap(candidate.inputs_);
+        destination.swap(candidate);
         return nullptr;
     } catch (const std::bad_alloc&) {
         return "EDITOR-RESOURCE-LOCATION-ALLOCATION-FAILED";
@@ -111,6 +117,8 @@ const char* ProjectResourceLocations::identify(const std::filesystem::path& enve
     const resource::ResourceManager& owner,
     Definition& destination) const noexcept
 {
+    if (location_)
+        return "EDITOR-RESOURCE-LOCATION-MOUNTED-SOURCE-REQUIRED";
     try {
         if (!envelope.is_absolute() || envelope != envelope.lexically_normal()
             || !core::FilePath::contains(root_, envelope))
@@ -145,6 +153,8 @@ const char* ProjectResourceLocations::resolve(std::string_view id,
     const resource::ResourceManager& owner,
     std::filesystem::path& destination) const noexcept
 {
+    if (location_)
+        return "EDITOR-RESOURCE-LOCATION-MOUNTED-SOURCE-REQUIRED";
     try {
         if (owner_.get() != &owner)
             return "EDITOR-RESOURCE-LOCATION-OWNER-CHANGED";

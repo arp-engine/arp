@@ -1,11 +1,11 @@
 #include "scriptvm/plugin/aot_dynamic_package.h"
 
 #include "core/hash/sha256.h"
-#include "core/io/file_io.h"
 #include "core/system/process_identity_lock.h"
 #include "core/system/process_runner.h"
 #include "core/text/number_format.h"
 #include "core/text/string_utils.h"
+#include "scriptvm/aot/aot_manifest_runtime.h"
 #include "scriptvm/plugin/compiler_toolchain_layout.h"
 #include "scriptvm/plugin/immutable_build_input_snapshot.h"
 
@@ -77,7 +77,8 @@ ScriptResult consistencyFailure(const char* message, const core::pmr::String& di
 
 ScriptResult processFailure(const char* operation,
     const std::filesystem::path& logPath,
-    const core::ProcessRunResult& process)
+    const core::ProcessRunResult& process,
+    const PluginHostTextBudget& budget)
 {
     core::pmr::String message(operation, &core::defaultCpuMemoryResource());
     message += " (exit=";
@@ -87,15 +88,18 @@ ScriptResult processFailure(const char* operation,
         message += ": ";
         message += process.diagnostic;
     }
-    const auto log = core::readTextFile(logPath);
+    const auto log = PluginHostTextReader(budget).diagnostic(logPath);
     if (log.success && !log.text.empty()) {
         // Keep diagnostics bounded while retaining the compiler's first
         // error after the staging directory is reclaimed.
-        constexpr std::size_t kMaxLogBytes = 8192u;
         message += "\n";
-        message.append(log.text.data(), std::min(kMaxLogBytes, log.text.size()));
-        if (log.text.size() > kMaxLogBytes)
+        message += log.text;
+        if (log.truncated)
             message += "\n[process log truncated]";
+    } else if (!log.success) {
+        message += "\n[process log unavailable: ";
+        message += log.diagnosticId;
+        message += "]";
     }
     return ScriptResult::failure(ScriptDiagnosticCode::AotArtifactInvalid, std::move(message));
 }
@@ -176,10 +180,11 @@ bool publishCompletionMarker(const std::filesystem::path& marker,
 }
 
 bool completionMarkerMatches(const std::filesystem::path& marker,
+    const PluginHostTextBudget& budget,
     std::string_view identity,
     const std::filesystem::path& artifact)
 {
-    const auto read = core::readTextFile(marker);
+    const auto read = PluginHostTextReader(budget).read(marker, PluginHostTextKind::Metadata);
     if (!read.success)
         return false;
     const auto expected = completionMarkerText(identity, artifact);
@@ -232,15 +237,6 @@ private:
     std::filesystem::path path_;
 };
 
-bool validIdentity(std::string_view value)
-{
-    if (value.size() != 71u || value.substr(0u, 7u) != "sha256:")
-        return false;
-    return std::all_of(value.begin() + 7, value.end(), [](char ch) {
-        return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
-    });
-}
-
 core::pmr::String lowerAscii(std::string_view value)
 {
     core::pmr::String result{&core::defaultCpuMemoryResource()};
@@ -262,9 +258,10 @@ ScriptResult auditArtifact(
     addArgument(symbolRequest, artifact.string());
     if (!core::ProcessRunner().run(symbolRequest).ok())
         return failure("dynamic AOT package symbol audit failed");
-    const auto symbols = core::readTextFile(symbolsPath);
+    const auto symbols =
+        PluginHostTextReader(desc.hostTextBudget).read(symbolsPath, PluginHostTextKind::Audit);
     if (!symbols.success)
-        return failure("dynamic AOT package symbol audit output is unavailable");
+        return failure(symbols.diagnosticId);
     constexpr std::string_view forbiddenSymbols[] = {
         "arp::scriptvm::Lexer",
         "arp::scriptvm::Parser",
@@ -307,9 +304,10 @@ ScriptResult auditArtifact(
     addArgument(importRequest, artifact.string());
     if (!core::ProcessRunner().run(importRequest).ok())
         return failure("dynamic AOT package import audit failed");
-    const auto imports = core::readTextFile(importsPath);
+    const auto imports =
+        PluginHostTextReader(desc.hostTextBudget).read(importsPath, PluginHostTextKind::Audit);
     if (!imports.success)
-        return failure("dynamic AOT package import audit output is unavailable");
+        return failure(imports.diagnosticId);
     std::string_view remaining(imports.text.data(), imports.text.size());
     constexpr std::string_view prefix = "DLL Name: ";
     constexpr std::string_view allowedImports[] = {
@@ -346,22 +344,22 @@ ScriptResult auditArtifact(
     return ScriptResult::success();
 }
 
-core::pmr::String generatedPackageIdentity(const std::filesystem::path& manifest)
+core::pmr::String generatedPackageIdentity(const std::filesystem::path& manifest,
+    const PluginHostTextBudget& budget,
+    const char*& diagnostic)
 {
-    const auto read = core::readTextFile(manifest);
-    if (!read.success)
+    const auto read = PluginHostTextReader(budget).read(manifest, PluginHostTextKind::Metadata);
+    if (!read.success) {
+        diagnostic = read.diagnosticId;
         return {};
-    constexpr std::string_view prefix = "package-identity: ";
-    std::string_view text(read.text.data(), read.text.size());
-    const auto position = text.find(prefix);
-    if (position == std::string_view::npos)
+    }
+    AotPackageManifestV5 metadata;
+    if (!parseAotPackageManifestV5(read.text, metadata, AotPlatform::Windows).ok()) {
+        diagnostic = "ARP-AOT-GENERATED-PACKAGE-IDENTITY";
         return {};
-    const auto begin = position + prefix.size();
-    const auto end = text.find_first_of("\r\n", begin);
-    const auto identity = text.substr(begin, end - begin);
-    if (!validIdentity(identity))
-        return {};
-    return core::pmr::String(identity.data(), identity.size(), &core::defaultCpuMemoryResource());
+    }
+    diagnostic = nullptr;
+    return std::move(metadata.packageIdentity);
 }
 
 core::pmr::String fileFingerprint(const std::filesystem::path& path)
@@ -493,6 +491,10 @@ WindowsDynamicScriptAotPackageResult WindowsDynamicScriptAotPackageLoader::load(
     const WindowsDynamicScriptAotPackageDesc& desc, ScriptAotPackageRegistry& registry) const
 {
     WindowsDynamicScriptAotPackageResult result;
+    if (!PluginHostTextReader::validBudget(desc.hostTextBudget)) {
+        result.status = failure("ARP-PLUGIN-HOST-TEXT-CONFIG");
+        return result;
+    }
 #if !defined(_WIN32) && !defined(__CYGWIN__)
     (void)desc;
     (void)registry;
@@ -622,11 +624,17 @@ WindowsDynamicScriptAotPackageResult WindowsDynamicScriptAotPackageLoader::load(
     if (!snapshotPackageProcess.ok()) {
         result.status = processFailure("snapshot AOT package generation failed",
             snapshotGenerationLog,
-            snapshotPackageProcess);
+            snapshotPackageProcess,
+            desc.hostTextBudget);
         return result;
     }
-    const auto snapshotPackageIdentity =
-        generatedPackageIdentity(generatedDirectory / "package.aot-v5.yaml");
+    const char* identityDiagnostic = nullptr;
+    const auto snapshotPackageIdentity = generatedPackageIdentity(
+        generatedDirectory / "package.aot-v5.yaml", desc.hostTextBudget, identityDiagnostic);
+    if (snapshotPackageIdentity.empty()) {
+        result.status = failure(identityDiagnostic);
+        return result;
+    }
     WindowsDynamicScriptAotPackageDesc snapshotDesc = desc;
     snapshotDesc.manifest = snapshotManifest;
     snapshotDesc.includeRoot = snapshot.path("include-root");
@@ -668,7 +676,8 @@ WindowsDynamicScriptAotPackageResult WindowsDynamicScriptAotPackageLoader::load(
     auto completionMarker = result.artifactPath;
     completionMarker += ".complete";
     result.cacheHit = std::filesystem::is_regular_file(result.artifactPath)
-        && completionMarkerMatches(completionMarker, artifactDigest, result.artifactPath);
+        && completionMarkerMatches(
+            completionMarker, desc.hostTextBudget, artifactDigest, result.artifactPath);
     bool cacheArtifactAudited = false;
     if (result.cacheHit) {
         // A completion marker is only a publication hint.  Validate the
@@ -720,8 +729,10 @@ WindowsDynamicScriptAotPackageResult WindowsDynamicScriptAotPackageLoader::load(
         addArgument(compileRequest, stagedArtifact.string());
         const auto compileProcess = core::ProcessRunner().run(compileRequest);
         if (!compileProcess.ok() || !std::filesystem::is_regular_file(stagedArtifact)) {
-            result.status = processFailure(
-                "dynamic AOT package compilation failed", compileLog, compileProcess);
+            result.status = processFailure("dynamic AOT package compilation failed",
+                compileLog,
+                compileProcess,
+                desc.hostTextBudget);
             return result;
         }
         result.status = auditArtifact(snapshotDesc, stagedArtifact);
@@ -773,7 +784,8 @@ WindowsDynamicScriptAotPackageResult WindowsDynamicScriptAotPackageLoader::load(
         return retry;
     }
 
-    if (!completionMarkerMatches(completionMarker, artifactDigest, result.artifactPath)
+    if (!completionMarkerMatches(
+            completionMarker, desc.hostTextBudget, artifactDigest, result.artifactPath)
         || fileFingerprint(desc.hostLibrary) != expectedHostHash
         || dynamicArtifactIdentity(result.packageIdentity, desc) != snapshotArtifactDigest) {
         result.status = failure("dynamic AOT host or artifact identity changed before DLL load");
@@ -790,7 +802,8 @@ WindowsDynamicScriptAotPackageResult WindowsDynamicScriptAotPackageLoader::load(
     }
     if (!loadedModulePathMatches(owner->host, desc.hostLibrary)
         || !loadedModulePathMatches(owner->package, result.artifactPath)
-        || !completionMarkerMatches(completionMarker, artifactDigest, result.artifactPath)
+        || !completionMarkerMatches(
+            completionMarker, desc.hostTextBudget, artifactDigest, result.artifactPath)
         || fileFingerprint(desc.hostLibrary) != expectedHostHash
         || dynamicArtifactIdentity(result.packageIdentity, desc) != snapshotArtifactDigest) {
         result.status = failure("dynamic AOT loaded DLL identity changed during module load");

@@ -166,6 +166,16 @@ void contracts(Fixture& fixture)
         }
         assert(quota->liveBytes() == 0);
     }
+    // Parser text strips a BOM, while location identity must retain its bytes.
+    Fixture::write(envelope, "\xef\xbb\xbf" + bytes.text);
+    ProjectResourceLocations bomLocations;
+    const auto* bomIssue = fixture.capture(bomLocations);
+    if (bomIssue)
+        std::fprintf(stderr, "BOM location: %s\n", bomIssue);
+    assert(!bomIssue);
+    assert(!bomLocations.resolve(entry.resourceId, entry.resourceType, *fixture.owner, output));
+    Fixture::write(envelope, bytes.text);
+    assert(bomLocations.resolve(entry.resourceId, entry.resourceType, *fixture.owner, output));
     assert(fixture.owner->unload(entry.resourceId).success);
     rejectIdentity(envelope, *fixture.owner);
     std::puts(

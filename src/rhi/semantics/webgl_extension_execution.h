@@ -38,8 +38,12 @@ public:
             return {false, {}, profile.diagnostic()};
         if (request.contractVersion == 0 && !request.prototypeOptIn && !request.required.any())
             return {true, {}, nullptr};
-        if (request.contractVersion != 1)
+        if (request.contractVersion != 1 && request.contractVersion != 2)
             return {false, {}, "RHI-WEBGL1-EXTENSION-EXECUTION-VERSION"};
+        if (request.required.fragmentDepth && request.contractVersion != 2)
+            return {false, {}, "RHI-WEBGL1-FRAGMENT-DEPTH-PROFILE-REQUIRED"};
+        if (request.required.srgbTextures && request.contractVersion != 2)
+            return {false, {}, "RHI-WEBGL1-SRGB-PROFILE-REQUIRED"};
         if (!request.prototypeOptIn || !request.required.any())
             return {false, {}, "RHI-WEBGL1-EXTENSION-EXECUTION-OPT-IN"};
         WebGlGraphicsRequirements requirements;
@@ -48,10 +52,18 @@ public:
         requirements.vertexArrayObjects = request.required.vertexArrayObjects;
         requirements.depthTextures = request.required.depthTextures;
         requirements.derivatives = request.required.derivatives;
+        requirements.fragmentDepth = request.required.fragmentDepth;
+        requirements.srgbTextures = request.required.srgbTextures;
         const auto admission = profile.admit(requirements, originalOptIn);
         if (admission.compatible && request.required.depthTextures) {
             const auto format = profile.admitFormat(
                 {1, TextureFormat::Depth24Stencil8, WebGlFormatRole::DepthStencilTexture, 1});
+            if (!format.compatible)
+                return {false, {}, format.diagnostic};
+        }
+        if (admission.compatible && request.required.srgbTextures) {
+            const auto format = profile.admitFormat(
+                {1, TextureFormat::Rgba8UnormSrgb, WebGlFormatRole::Texture2DSampled, 1});
             if (!format.compatible)
                 return {false, {}, format.diagnostic};
         }

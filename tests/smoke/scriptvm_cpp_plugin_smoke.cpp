@@ -1,5 +1,6 @@
 #include "core/system/process_runner.h"
 #include "scriptvm/plugin/cpp_plugin_importer.h"
+#include "tests/fixtures/cpp_plugin_source_fixture.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -23,6 +24,7 @@ arp::scriptvm::CppPluginImporterDesc pluginDesc(const std::filesystem::path& cac
 {
     const std::filesystem::path root = ARP_SOURCE_DIR;
     arp::scriptvm::CppPluginImporterDesc desc;
+    arp::tests::bindMathPluginSources(desc);
     desc.sourceRoot = root / "tests" / "fixtures" / "scriptvm_cpp_plugin";
     desc.cacheRoot = cacheRoot;
     desc.includeRoot = root / "src";

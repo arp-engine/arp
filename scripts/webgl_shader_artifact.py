@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes as C
 import hashlib
+import re
 from pathlib import Path
 import subprocess
 
@@ -52,7 +53,7 @@ class WebGlShaderTargetCompiler:
             raise RuntimeError('SHADER-WEBGL1-LEAF-BUDGET')
 
     @classmethod
-    def validate_binary(cls, facts, stage):
+    def validate_binary(cls, facts, stage, allow_fragment_depth=False, allow_discard=False):
         if stage not in ('Vertex', 'Fragment'):
             raise RuntimeError('SHADER-WEBGL1-STAGE-UNSUPPORTED')
         uints, constants, definitions, glsl_sets = set(), set(), {}, set()
@@ -70,7 +71,7 @@ class WebGlShaderTargetCompiler:
             if op == 43:
                 constants.add(a[1])
         for _, op, a in facts.instructions:
-            if op not in cls.ALLOWED:
+            if op not in cls.ALLOWED and not (op == 252 and stage == 'Fragment' and allow_discard):
                 raise RuntimeError(f'SHADER-WEBGL1-OPCODE-UNSUPPORTED:{op}')
             if op not in cls.UNTYPED and op != 43 and a and a[0] in uints:
                 raise RuntimeError('SHADER-WEBGL1-UINT-UNSUPPORTED')
@@ -80,7 +81,8 @@ class WebGlShaderTargetCompiler:
                 raise RuntimeError('SHADER-WEBGL1-INT-WIDTH')
             if op in (65, 66) and any(index not in constants for index in a[3:]):
                 raise RuntimeError('SHADER-WEBGL1-DYNAMIC-INDEX-UNPROVEN')
-            if op == 71 and a[1] == 11 and a[2] not in (0, 17):
+            if op == 71 and a[1] == 11 and a[2] not in (0, 17) and not (
+                    a[2] == 22 and stage == 'Fragment' and allow_fragment_depth):
                 # FragCoord needs a separate origin lowering; Position/FrontFacing do not.
                 raise RuntimeError('SHADER-WEBGL1-BUILTIN-UNSUPPORTED')
             if op == 71 and a[1] in (13, 14, 16):
@@ -190,11 +192,15 @@ class WebGlShaderTargetCompiler:
         spirv = parent / original['files']['spirv']['path']
         stage = original['stage']
         facts = SpirvLayoutFacts(spirv)
-        self.validate_binary(facts, stage)
+        fragment_depth = any(op == 71 and a[1:3] == (11, 22) for _, op, a in facts.instructions)
+        discard = any(op == 252 for _, op, a in facts.instructions)
+        self.validate_binary(facts, stage, allow_fragment_depth=fragment_depth, allow_discard=discard)
         with Cross(self.library, spirv) as c:
             if c.version() != [0, 68, 0]:
                 raise RuntimeError('SHADER-WEBGL1-CONVERTER-API-VERSION')
             c.configure()
+            if fragment_depth:
+                c.check(c.call('require_extension', b'GL_EXT_frag_depth'))
             for kind in (Cross.STORAGE_BUFFER, Cross.SUBPASS, Cross.STORAGE_IMAGE,
                          Cross.SAMPLED_IMAGE, Cross.ATOMIC_COUNTER):
                 if c.resources(kind):
@@ -252,13 +258,21 @@ class WebGlShaderTargetCompiler:
                 pairs.append(dict(name=name, textureSet=ikey[0], textureBinding=ikey[1],
                                   samplerSet=skey[0], samplerBinding=skey[1]))
             text = c.compile()
+            if fragment_depth:
+                if '#extension GL_EXT_frag_depth : require' not in text or not re.search(r'\bgl_FragDepth\b', text):
+                    raise RuntimeError('SHADER-WEBGL1-FRAGMENT-DEPTH-LOWERING')
+                # SPIRV-Cross 0.68 emits the desktop spelling for this builtin.
+                # ES100 EXT_frag_depth defines exactly gl_FragDepthEXT instead.
+                text = re.sub(r'\bgl_FragDepth\b', 'gl_FragDepthEXT', text)
             extensions = sorted(c.extensions())
-            if any(ext not in ('GL_OES_standard_derivatives', 'GL_EXT_shader_texture_lod') for ext in extensions):
+            if any(ext not in ('GL_OES_standard_derivatives', 'GL_EXT_shader_texture_lod', 'GL_EXT_frag_depth') for ext in extensions):
                 raise RuntimeError('SHADER-WEBGL1-EXTENSION-UNSUPPORTED')
+            if ('GL_EXT_frag_depth' in extensions) != fragment_depth:
+                raise RuntimeError('SHADER-WEBGL1-EXTENSION-BINARY-MISMATCH')
             path = parent / (original_entry.stem + '.glsl-es-100')
             with path.open('w', encoding='utf-8', newline='\n') as stream:
                 stream.write(text)
-            return dict(type='WebGlShaderTargetArtifact', contractVersion=1,
+            return dict(type='WebGlShaderTargetArtifact', contractVersion=2 if fragment_depth or discard else 1,
                 target='glsl-es-100', status='Available', stage=stage, entry=original['entry'],
                 matrixLayout='SlangRowMajorTransposedLogicalMatrix/1',
                 coordinates='WebGlShaderCoordinates/1', precision='HighpFloatAndInt/1',

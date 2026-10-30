@@ -3,8 +3,10 @@
 #include "core/encoding/yaml_contract.h"
 #include "core/hash/sha256.h"
 #include "core/io/file_io.h"
+#include "editor/project/project_input_snapshot.h"
 #include "editor/project/project_manifest.h"
 #include "resource/asset_package_closure.h"
+#include "resource/resource_source_io.h"
 
 #include <algorithm>
 
@@ -22,8 +24,15 @@ bool resolve(const std::filesystem::path& root,
     std::string_view relative,
     ProjectPathIntent intent,
     std::filesystem::path& path,
-    core::pmr::String& diagnostic)
+    core::pmr::String& diagnostic,
+    const resource::AssetPackageSourceContext* sources)
 {
+    if (sources) {
+        if (!ProjectInputSnapshot::validLogicalPath(relative)
+            || !resource::resolveResourceSourcePath(root, relative, sources->origin, path))
+            return fail(diagnostic, "EDITOR-RECOVERY-PACKAGE-PATH");
+        return true;
+    }
     ProjectDiagnostic issue;
     if (!ProjectManifestCodec::resolvePath(root, relative, intent, path, issue))
         return fail(diagnostic, issue.code);
@@ -37,12 +46,39 @@ bool ProjectPackageSnapshot::capture(const std::filesystem::path& root,
     core::pmr::Vector<ProjectPackageBinding>& destination,
     core::pmr::String& diagnostic)
 {
+    return captureImpl(root, directories, std::move(codecs), destination, diagnostic, nullptr);
+}
+
+bool ProjectPackageSnapshot::captureSources(const std::filesystem::path& root,
+    const core::pmr::Vector<core::pmr::String>& directories,
+    core::SharedPtr<const resource::AssetPackageCodecRegistry> codecs,
+    const resource::AssetPackageSourceContext& sources,
+    core::pmr::Vector<ProjectPackageBinding>& destination,
+    core::pmr::String& diagnostic)
+{
+    return captureImpl(root, directories, std::move(codecs), destination, diagnostic, &sources);
+}
+
+bool ProjectPackageSnapshot::captureImpl(const std::filesystem::path& root,
+    const core::pmr::Vector<core::pmr::String>& directories,
+    core::SharedPtr<const resource::AssetPackageCodecRegistry> codecs,
+    core::pmr::Vector<ProjectPackageBinding>& destination,
+    core::pmr::String& diagnostic,
+    const resource::AssetPackageSourceContext* sources)
+{
     try {
         std::error_code error;
-        if (!root.is_absolute() || root != root.lexically_normal()
-            || std::filesystem::canonical(root, error) != root || error
-            || !std::filesystem::is_directory(root, error) || error
-            || directories.size() > ProjectManifestBudget{}.maxAssetPackages)
+        if (sources
+                ? (!sources->resources.sources || !sources->resources.requirePreloadedSources
+                      || sources->origin.pathScope != core::io::FilePathScope::MountedResource
+                      || !sources->origin.mount
+                      || (!root.empty()
+                          && !ProjectInputSnapshot::validLogicalPath(core::FilePath::utf8(root))))
+                : (!root.is_absolute() || root != root.lexically_normal()
+                      || std::filesystem::canonical(root, error) != root || error
+                      || !std::filesystem::is_directory(root, error) || error))
+            return fail(diagnostic, "EDITOR-RECOVERY-PACKAGE-ROOT-OR-MANIFEST");
+        if (directories.size() > ProjectManifestBudget{}.maxAssetPackages)
             return fail(diagnostic, "EDITOR-RECOVERY-PACKAGE-ROOT-OR-MANIFEST");
         core::pmr::Vector<ProjectPackageBinding> packages;
         core::pmr::Vector<std::filesystem::path> roots;
@@ -50,18 +86,26 @@ bool ProjectPackageSnapshot::capture(const std::filesystem::path& root,
         std::size_t decodedRemaining = maxAllDecodedBytes;
         for (const auto& relative : directories) {
             std::filesystem::path directory;
-            if (!resolve(
-                    root, relative, ProjectPathIntent::ExistingDirectory, directory, diagnostic))
+            if (!resolve(root,
+                    relative,
+                    ProjectPathIntent::ExistingDirectory,
+                    directory,
+                    diagnostic,
+                    sources))
                 return false;
             if (std::find(roots.begin(), roots.end(), directory) != roots.end())
                 return fail(diagnostic, "EDITOR-RECOVERY-PACKAGE-ALIAS");
             roots.push_back(directory);
-            const auto closure = resource::AssetPackageClosureService(codecs).inspect(directory,
-                {resource::AssetPackageClosureService::maxResources,
-                    maxPackageFiles,
-                    maxPackageFileBytes,
-                    maxPackageBytes,
-                    maxPackageBytes});
+            const resource::AssetPackageClosureBudget limits{
+                resource::AssetPackageClosureService::maxResources,
+                maxPackageFiles,
+                maxPackageFileBytes,
+                maxPackageBytes,
+                maxPackageBytes};
+            const auto closure = sources
+                ? resource::AssetPackageClosureService(codecs).inspectSources(
+                      directory, *sources, limits)
+                : resource::AssetPackageClosureService(codecs).inspect(directory, limits);
             if (!closure.success) {
                 diagnostic = closure.diagnostics;
                 return false;
@@ -88,19 +132,30 @@ bool ProjectPackageSnapshot::capture(const std::filesystem::path& root,
             std::size_t packageRemaining = maxPackageBytes;
             for (const auto& relativeFile : paths) {
                 std::filesystem::path file;
-                if (!resolve(
-                        directory, relativeFile, ProjectPathIntent::ExistingFile, file, diagnostic))
+                if (!resolve(directory,
+                        relativeFile,
+                        ProjectPathIntent::ExistingFile,
+                        file,
+                        diagnostic,
+                        sources))
                     return false;
-                const auto read = core::readTextFile(
-                    file, std::min({maxPackageFileBytes, remaining, packageRemaining}));
+                const auto limit = std::min({maxPackageFileBytes, remaining, packageRemaining});
+                const auto read = sources ? resource::readResourceSource(core::FilePath::utf8(file),
+                                                sources->resources,
+                                                limit,
+                                                true,
+                                                &sources->origin)
+                                          : core::readBinaryFile(file, limit);
                 if (!read.success)
                     return fail(diagnostic, "EDITOR-RECOVERY-PACKAGE-READ-OR-BUDGET");
-                remaining -= read.text.size();
-                packageRemaining -= read.text.size();
+                remaining -= read.bytes.size();
+                packageRemaining -= read.bytes.size();
                 auto item = Yaml::Node::mapping();
                 item["path"] = relativeFile;
-                item["bytes"] = static_cast<std::uint64_t>(read.text.size());
-                item["sha256"] = core::Sha256::hexDigest(read.text);
+                item["bytes"] = static_cast<std::uint64_t>(read.bytes.size());
+                item["sha256"] = core::Sha256::hexDigest(
+                    {read.bytes.empty() ? "" : reinterpret_cast<const char*>(read.bytes.data()),
+                        read.bytes.size()});
                 binding["files"].get_value_ref<Yaml::Node::sequence_type&>().push_back(
                     std::move(item));
             }

@@ -76,7 +76,7 @@ void FrameGraph::executeOrdered(
         throw core::DiagnosticError(id);
     if (hasExecutedCompiledGraph_ || submissionFence_)
         throw core::DiagnosticError("RG-ORDERED-GRAPH-ALREADY-EXECUTED");
-    if ((request.contractVersion != 3 && request.contractVersion != 4) || passes_.empty()
+    if ((request.contractVersion < 3 || request.contractVersion > 5) || passes_.empty()
         || passes_.size() > request.maxPasses
         || textures_.size() + buffers_.size() > request.issue.maxResourceOwners)
         throw core::DiagnosticError("RG-ORDERED-GRAPH-BUDGET");

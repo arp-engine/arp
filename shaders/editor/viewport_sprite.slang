@@ -9,6 +9,7 @@ struct VertexInput
     float4 uv : TEXCOORD3;
     float4 color : TEXCOORD4;
     float4 parameters : TEXCOORD5;
+    float2 corner : TEXCOORD6;
 };
 
 struct VertexOutput
@@ -19,13 +20,9 @@ struct VertexOutput
 };
 
 [shader("vertex")]
-VertexOutput vertexMain(VertexInput input, uint vertexId : SV_VertexID)
+VertexOutput vertexMain(VertexInput input)
 {
-    float2 corners[6] = {
-        float2(0, 0), float2(1, 0), float2(1, 1),
-        float2(0, 0), float2(1, 1), float2(0, 1)
-    };
-    const float2 corner = corners[vertexId];
+    const float2 corner = input.corner;
     const float4 clipPosition = input.origin + input.axisX * corner.x + input.axisY * corner.y;
     const float2 textureCorner = float2(
         input.parameters.x > 0 ? 1 - corner.x : corner.x,

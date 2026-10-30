@@ -2,6 +2,7 @@
 
 #include "assets/asset_pipeline.h"
 #include "editor/viewport/editor_scene_viewport_shader_binding_contract.h"
+#include "editor/viewport/editor_scene_viewport_surface_profile.h"
 #include "shader/shader_pipeline_reflection_validator.h"
 
 #include <array>
@@ -117,8 +118,7 @@ EditorSceneViewportPipelineContractResult buildEditorSceneViewportPipelineContra
         result.diagnostic = EditorSceneViewportPipelineDiagnostic::VertexInputMismatch;
         return result;
     }
-    if (colorFormat != rhi::TextureFormat::Rgba16Float
-        || depthFormat != rhi::TextureFormat::D32Float || sampleCount != 1u) {
+    if (!EditorSceneViewportSurfaceProfile{colorFormat, depthFormat}.valid() || sampleCount != 1u) {
         result.diagnostic = EditorSceneViewportPipelineDiagnostic::AttachmentContractMismatch;
         return result;
     }

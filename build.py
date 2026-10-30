@@ -137,15 +137,51 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
     # 核心库
     # ============================================================
     core_srcs = _find_srcs("src/core")
-    if core_srcs:
+    service_srcs = [path for path in core_srcs
+                    if path.startswith("src/core/io/")
+                    or path == "src/core/runtime/async_runtime.cpp"]
+    foundation_srcs = [path for path in core_srcs if path not in service_srcs]
+    if foundation_srcs:
+        modules["arp_core_foundation"] = ModuleDef(
+            "arp_core_foundation", "library", srcs=foundation_srcs,
+            include_dirs=["src"], deps=["arp_mimalloc"])
+    transport_srcs = [
+        "src/network/endpoint.cpp",
+        "src/network/error.cpp",
+        "src/network/resolver.cpp",
+        "src/network/http/client.cpp",
+        "src/network/http/header.cpp",
+        "src/network/http/message.cpp",
+        "src/network/http/parser.cpp",
+        "src/network/http/serializer.cpp",
+        "src/network/http/session.cpp",
+        "src/network/http/uri.cpp",
+        "src/network/http/byte_read_transport.cpp",
+        "src/network/http/fetch_byte_transfer.cpp",
+        "src/network/io_context.cpp",
+        "src/network/io_poller.cpp",
+        "src/network/io_poller_common.cpp",
+        "src/network/io_poller_epoll.cpp",
+        "src/network/io_poller_kqueue.cpp",
+        "src/network/io_service.cpp",
+        "src/network/socket.cpp",
+        "src/network/socket_ops.cpp",
+        "src/network/socket_runtime.cpp",
+        "src/network/timer.cpp",
+        "src/network/tls/ssl_stream.cpp",
+        "src/network/tls/tls_context.cpp",
+    ]
+    modules["arp_network_http_transport"] = ModuleDef(
+        "arp_network_http_transport", "library", srcs=transport_srcs,
+        include_dirs=["src"], deps=["arp_core_foundation"], platform_deps={"win": ["ws2_32"]})
+    if service_srcs:
         modules["arp_core"] = ModuleDef(
-            "arp_core", "library",
-            srcs=core_srcs,
-            include_dirs=["src"],
-            deps=["arp_mimalloc"],
-        )
+            "arp_core", "library", srcs=service_srcs, include_dirs=["src"],
+            deps=["arp_core_foundation", "arp_network_http_transport"])
 
     plugin_build_srcs = [
+        "src/scriptvm/plugin/plugin_host_text_reader.cpp",
+        "src/scriptvm/plugin/script_source_snapshot.cpp",
         "src/scriptvm/plugin/compiler_toolchain_layout.cpp",
         "src/scriptvm/plugin/immutable_build_input_snapshot.cpp",
     ]
@@ -206,6 +242,7 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
             srcs=scriptvm_interpreter_srcs,
             include_dirs=["src"],
             deps=["arp_core", "arp_reflection", "arp_scriptvm_runtime",
+                  "arp_scriptvm_plugin_build",
                   "arp_scriptvm_ir", "arp_scriptvm_frontend"],
         )
     # AOT is intentionally split into a production DirectNative runtime and
@@ -295,19 +332,19 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
             srcs=resource_srcs,
             include_dirs=["src", "tools/unity_import"],
             deps=["arp_reflection", "arp_assets", "arp_unity_import",
-                  "arp_fkyaml_headers", "arp_audio"],
+                  "arp_fkyaml_headers", "arp_audio", "arp_shader"],
         )
 
     # ============================================================
     # 网络
     # ============================================================
-    net_srcs = _find_srcs("src/network")
+    net_srcs = [path for path in _find_srcs("src/network") if path not in transport_srcs]
     if net_srcs:
         modules["arp_network"] = ModuleDef(
             "arp_network", "library",
             srcs=net_srcs,
             include_dirs=["src"],
-            deps=["arp_core"],
+            deps=["arp_core_foundation", "arp_network_http_transport"],
             platform_deps={"win": ["ws2_32"]},
         )
 
@@ -380,7 +417,7 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
     # ============================================================
     # UI
     # ============================================================
-    ui_font_srcs = _find_srcs("src/ui", ["ui_font.cpp", "ui_font_face_cache.cpp"])
+    ui_font_srcs = _find_srcs("src/ui", ["ui_font.cpp", "ui_font_face_cache.cpp", "ui_font_source.cpp", "ui_freetype_memory.cpp"])
     if ui_font_srcs:
         modules["arp_ui_font"] = ModuleDef(
             "arp_ui_font", "library",
@@ -390,10 +427,8 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
         )
 
     ui_srcs = _find_srcs("src/ui")
-    # 排除 ui_font.cpp 和 ui_font_face_cache.cpp (已在上面的 module)
-    ui_runtime_srcs = [s for s in ui_srcs
-                       if "ui_font.cpp" not in s
-                       and "ui_font_face_cache.cpp" not in s]
+    # 字体来源、缓存和 FreeType 实现只归 arp_ui_font。
+    ui_runtime_srcs = [s for s in ui_srcs if s not in ui_font_srcs]
     if ui_runtime_srcs:
         modules["arp_ui_runtime"] = ModuleDef(
             "arp_ui_runtime", "library",

@@ -48,6 +48,7 @@ StringView diagnosticName(DiagnosticCode code) noexcept
         ARP_HTTP_DIAGNOSTIC(response_already_sent);
         ARP_HTTP_DIAGNOSTIC(unsupported_platform);
         ARP_HTTP_DIAGNOSTIC(invalid_response);
+        ARP_HTTP_DIAGNOSTIC(response_aborted);
     }
 #undef ARP_HTTP_DIAGNOSTIC
     return "unknown_http_diagnostic";
@@ -171,7 +172,8 @@ UriParseResult failed(DiagnosticCode diagnostic)
 Uri::Uri()
     : scheme_(&core::defaultCpuMemoryResource()), host_(&core::defaultCpuMemoryResource()),
       path_(&core::defaultCpuMemoryResource()), query_(&core::defaultCpuMemoryResource()),
-      fragment_(&core::defaultCpuMemoryResource())
+      fragment_(&core::defaultCpuMemoryResource()),
+      request_target_(&core::defaultCpuMemoryResource())
 {}
 
 UriParseResult Uri::parse(StringView text)
@@ -285,7 +287,19 @@ DiagnosticCode Uri::assign_path_query_fragment(StringView suffix)
     } else {
         fragment_.clear();
     }
+    const auto encodedPath = slice(beforeFragment, 0, queryMark);
+    request_target_.assign(encodedPath.empty() ? StringView("/") : encodedPath);
+    if (queryMark != npos) {
+        request_target_ += '?';
+        const auto encodedQuery = beforeFragment.substr(queryMark + 1);
+        request_target_.append(encodedQuery.data(), encodedQuery.size());
+    }
     return DiagnosticCode::none;
+}
+
+StringView Uri::request_target() const noexcept
+{
+    return request_target_;
 }
 
 bool Uri::is_absolute() const noexcept

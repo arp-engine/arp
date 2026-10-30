@@ -1,0 +1,14 @@
+format: ArpRuntimeResource
+version: 1
+resourceId: 00000000-0000-4000-8000-000000000097
+resourceType: SceneAssetResource
+status: Contract Complete
+contentHash: 3623867726
+dependencies: []
+payload:
+  contractVersion: 1
+  documentPath: "scene.yaml"
+  maxDocumentBytes: 4194304
+  maxObjects: 512
+  type: "arp.scene-package"
+  

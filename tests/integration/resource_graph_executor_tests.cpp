@@ -1,3 +1,5 @@
+#include "core/io/memory_file_backend.h"
+#include "core/io/mounted_file_backend.h"
 #include "core/runtime/async_runtime.h"
 #include "resource/resource_graph_executor.h"
 
@@ -18,9 +20,14 @@ class FileBackedGraphResource final : public arp::resource::ResourceBase {
 public:
     FileBackedGraphResource(arp::resource::ResourceReference reference,
         std::filesystem::path path,
-        arp::resource::ResourceGraphStage processingStage)
+        arp::resource::ResourceGraphStage processingStage,
+        arp::core::PoolHandle mount = {},
+        arp::core::io::FilePathScope scope = arp::core::io::FilePathScope::HostFilesystem,
+        std::size_t sourceBudget = 1024,
+        arp::core::io::FileVersionToken expected = {})
         : arp::resource::ResourceBase(std::move(reference)), path_(std::move(path)),
-          processingStage_(processingStage)
+          processingStage_(processingStage), mount_(mount), scope_(scope),
+          sourceBudget_(sourceBudget), expected_(expected)
     {}
 
     bool collectFileReadIntents(arp::resource::ResourceManager&,
@@ -28,10 +35,14 @@ public:
         arp::core::pmr::String&) const override
     {
         arp::resource::ResourceFileReadIntent intent;
-        intent.pathScope = arp::core::io::FilePathScope::HostFilesystem;
+        intent.pathScope = scope_;
+        intent.mount = mount_;
+        intent.expectedVersion = expected_;
+        intent.maxVersionBytes =
+            expected_.kind == arp::core::io::FileVersionKind::None ? 0 : sourceBudget_;
         intent.path = path_.generic_string().c_str();
         intent.role = text("contract-yaml");
-        intent.maxBytes = 1024u;
+        intent.maxBytes = sourceBudget_;
         intents.push_back(std::move(intent));
         return true;
     }
@@ -50,7 +61,10 @@ public:
             return result;
         }
         const auto* source = context.sources->find(path_.generic_string().c_str());
-        if (source == nullptr || source->bytes.empty()) {
+        if (source == nullptr || source->bytes.empty() || source->pathScope != scope_
+            || !(source->mount == mount_)
+            || (expected_.kind != arp::core::io::FileVersionKind::None
+                && source->version != expected_)) {
             result.diagnostics = text("graph resource preloaded source is missing");
             return result;
         }
@@ -63,6 +77,10 @@ public:
 private:
     std::filesystem::path path_;
     arp::resource::ResourceGraphStage processingStage_;
+    arp::core::PoolHandle mount_;
+    arp::core::io::FilePathScope scope_;
+    std::size_t sourceBudget_ = 0;
+    arp::core::io::FileVersionToken expected_;
     std::size_t processedBytes_ = 0u;
 };
 
@@ -95,8 +113,13 @@ void recordResult(void* userData, arp::resource::ResourceGraphExecutionResult re
     ++probe->calls;
 }
 
-arp::resource::ResourceGraphRequest requestFor(
-    const std::filesystem::path& path, const char* id, arp::resource::ResourceGraphStage stage)
+arp::resource::ResourceGraphRequest requestFor(const std::filesystem::path& path,
+    const char* id,
+    arp::resource::ResourceGraphStage stage,
+    arp::core::PoolHandle mount = {},
+    arp::core::io::FilePathScope scope = arp::core::io::FilePathScope::HostFilesystem,
+    std::size_t sourceBudget = 1024,
+    arp::core::io::FileVersionToken expected = {})
 {
     arp::resource::ResourceReference reference;
     reference.id = text(id);
@@ -104,7 +127,8 @@ arp::resource::ResourceGraphRequest requestFor(
     reference.alias = text(id);
     reference.status = text("Prototype Complete");
     arp::resource::ResourceGraphNode node;
-    node.resource = arp::core::makeUnique<FileBackedGraphResource>(reference, path, stage);
+    node.resource = arp::core::makeUnique<FileBackedGraphResource>(
+        reference, path, stage, mount, scope, sourceBudget, expected);
     arp::resource::ResourceGraphRequest request;
     request.rootResourceId = reference.id;
     request.nodes.push_back(std::move(node));
@@ -151,6 +175,181 @@ void dispatchUntil(arp::core::runtime::AsyncRuntime& runtime, Probe& probe)
 
 void noopCompletion(void*) noexcept
 {}
+
+void mountedContracts()
+{
+    using namespace arp::core;
+    using namespace arp::core::io;
+    using namespace arp::resource;
+    auto memory = makeShared<MemoryFileBackend>(MemoryFileBackendDesc{1, 64, 4, 256, 64});
+    const auto bytes = std::string_view("abcdef");
+    assert(memory->registerFile(
+               "node.yaml", reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size())
+        == FileIoStatus::Success);
+    auto router = makeShared<MountedFileBackend>(MountedFileBackendDesc{1, 4, 256, 16, 64});
+    const auto mount = router->mount("workspace", memory);
+    runtime::AsyncRuntimeDesc desc;
+    desc.completionQueueCapacity = 8;
+    desc.completionBudget = 8;
+    desc.workerCount = 1;
+    desc.workQueueCapacity = 4;
+    desc.enableThreadPoolFileBackend = false;
+    desc.fileBackend = router;
+    runtime::AsyncRuntime runtime(desc);
+    ResourceManager manager;
+    ResourceGraphExecutor executor(
+        manager, runtime.fileService(), runtime.workService(), runtime.completionQueue());
+    const auto run = [&](ResourceGraphExecutionRequest request, bool success) {
+        Probe probe;
+        assert(executor.submit(std::move(request), {recordResult, &probe})
+            == ResourceGraphSubmitStatus::Accepted);
+        assert(probe.calls == 0);
+        dispatchUntil(runtime, probe);
+        assert(probe.calls == 1 && probe.result.resource.success == success);
+        assert(probe.result.telemetry.completionCount == 1);
+        return std::move(probe.result);
+    };
+    ResourceGraphExecutionRequest good;
+    Sha256 hash;
+    hash.update(bytes);
+    const auto expected = FileVersionEncoding::finish(hash, FileVersionKind::ContentSha256);
+    good.graph = requestFor("node.yaml",
+        "147091c0-2269-493c-a511-55d876838f5f",
+        ResourceGraphStage::TypedProcessing,
+        mount,
+        FilePathScope::MountedResource,
+        64,
+        expected);
+    good.budget = {1, 1, 64, 64, 8};
+    auto loaded = run(std::move(good), true);
+    assert(loaded.telemetry.submittedFileReads == 1 && loaded.telemetry.bytesRead == 6);
+    const auto* rejectedId = "b1b17037-66e4-4bbb-8b31-86c22f1b5f6a";
+    ResourceGraphExecutionRequest noMemory;
+    noMemory.graph = requestFor("node.yaml",
+        rejectedId,
+        ResourceGraphStage::TypedProcessing,
+        mount,
+        FilePathScope::MountedResource,
+        64);
+    noMemory.budget = {1, 1, 64, 64, 8};
+    Probe rejected;
+    auto quota = makeShared<CpuMemoryQuota>(1);
+    {
+        CpuMemoryQuotaScope scope(quota);
+        assert(executor.submit(std::move(noMemory), {recordResult, &rejected})
+            == ResourceGraphSubmitStatus::AllocationFailed);
+    }
+    assert(rejected.calls == 0 && quota->liveBytes() == 0);
+    assert(runtime.completionQueue().pending() == 0 && runtime.completionQueue().reserved() == 0);
+    ResourceGraphExecutionRequest acceptedFailure;
+    acceptedFailure.graph = requestFor("node.yaml",
+        rejectedId,
+        ResourceGraphStage::TypedProcessing,
+        mount,
+        FilePathScope::MountedResource,
+        64);
+    acceptedFailure.budget = {1, 1, 64, 64, 8};
+    Probe allocation;
+    assert(executor.submit(std::move(acceptedFailure), {recordResult, &allocation})
+        == ResourceGraphSubmitStatus::Accepted);
+    assert(allocation.calls == 0);
+    {
+        CpuMemoryQuotaScope scope(quota);
+        runtime.dispatch();
+    }
+    assert(allocation.calls == 1 && !allocation.result.resource.success);
+    assert(allocation.result.diagnosticId
+        && std::string_view(allocation.result.diagnosticId) == "ARP-RESOURCE-GRAPH-ALLOCATION");
+    assert(quota->liveBytes() == 0 && manager.recordSnapshot(rejectedId) == nullptr);
+    ResourceSourceSet sources;
+    ResourceSourceBuffer first;
+    first.path = "source";
+    first.bytes.assign(bytes.begin(), bytes.end());
+    bool refused = false;
+    {
+        CpuMemoryQuotaScope scope(quota);
+        try {
+            sources.add(std::move(first));
+        } catch (const std::bad_alloc&) {
+            refused = true;
+        }
+    }
+    assert(refused && sources.totalBytes() == 0 && !sources.find("source"));
+    auto wrong = expected;
+    wrong.digest[0] ^= 1;
+    ResourceGraphExecutionRequest changed;
+    changed.graph = requestFor("node.yaml",
+        "2706fdd9-340c-4350-b8c0-c43ae7b986cc",
+        ResourceGraphStage::TypedProcessing,
+        mount,
+        FilePathScope::MountedResource,
+        64,
+        wrong);
+    changed.budget = {1, 1, 64, 64, 8};
+    auto mismatch = run(std::move(changed), false);
+    assert(mismatch.fileStatus == FileIoStatus::VersionMismatch);
+    assert(manager.recordSnapshot("2706fdd9-340c-4350-b8c0-c43ae7b986cc") == nullptr);
+
+    ResourceGraphExecutionRequest tooSmall;
+    tooSmall.graph = requestFor("node.yaml",
+        "269090d6-25ee-40bd-bafa-d7501e12762e",
+        ResourceGraphStage::TypedProcessing,
+        mount,
+        FilePathScope::MountedResource,
+        1);
+    tooSmall.budget = {1, 1, 64, 64, 8};
+    auto failed = run(std::move(tooSmall), false);
+    assert(failed.fileStatus == FileIoStatus::BudgetExceeded);
+    assert(failed.telemetry.bytesRead == 0
+        && manager.recordSnapshot("269090d6-25ee-40bd-bafa-d7501e12762e") == nullptr);
+
+    for (const bool readCountBudget : {false, true}) {
+        const auto* leaf = readCountBudget ? "3e46480c-58cc-41a7-815f-42e9884d6c93"
+                                           : "9d94b82d-2c02-4bd0-9511-f9c889c7523f";
+        const auto* root = readCountBudget ? "987d2215-af7a-4484-a7f3-e7b2e3b0c98e"
+                                           : "3d2668f4-65f6-4ef2-8cce-942d6c530494";
+        ResourceGraphExecutionRequest graph;
+        graph.graph = requestFor("node.yaml",
+            leaf,
+            ResourceGraphStage::TypedProcessing,
+            mount,
+            FilePathScope::MountedResource,
+            64);
+        auto parent = requestFor("node.yaml",
+            root,
+            ResourceGraphStage::TypedProcessing,
+            mount,
+            FilePathScope::MountedResource,
+            64);
+        parent.nodes.front().dependencies.push_back({text(leaf), text("source")});
+        graph.graph.nodes.push_back(std::move(parent.nodes.front()));
+        graph.graph.rootResourceId = text(root);
+        graph.budget = {2, readCountBudget ? 1u : 2u, readCountBudget ? 64u : 6u, 64, 8};
+        auto bounded = run(std::move(graph), false);
+        assert(bounded.telemetry.submittedFileReads == 1 && bounded.telemetry.bytesRead == 6);
+    }
+
+    ResourceGraphExecutionRequest stale;
+    stale.graph = requestFor("node.yaml",
+        "f007c4f4-de2b-4e2b-b7ec-e57973cd09a6",
+        ResourceGraphStage::TypedProcessing,
+        mount,
+        FilePathScope::MountedResource,
+        64);
+    stale.budget = {1, 1, 64, 64, 8};
+    Probe staleProbe;
+    assert(executor.submit(std::move(stale), {recordResult, &staleProbe})
+        == ResourceGraphSubmitStatus::Accepted);
+    assert(router->unmount(mount));
+    const auto replacement = router->mount("workspace", memory);
+    assert(replacement && !(replacement == mount));
+    dispatchUntil(runtime, staleProbe);
+    assert(staleProbe.calls == 1 && !staleProbe.result.resource.success);
+    assert(staleProbe.result.fileStatus == FileIoStatus::StaleLocation);
+    assert(staleProbe.result.telemetry.submittedFileReads == 0);
+    runtime.shutdown();
+    assert(router->telemetry().inFlight == 0 && runtime.completionQueue().reserved() == 0);
+}
 
 } // namespace
 
@@ -289,5 +488,6 @@ int main()
     assert(queueProbe.calls == 0u);
     fullRuntime.dispatch();
     fullRuntime.shutdown(arp::core::runtime::AsyncRuntimeShutdownPolicy::Drain);
+    mountedContracts();
     return 0;
 }

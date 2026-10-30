@@ -115,7 +115,7 @@ public:
         shape.arrayLayerCount = d.arrayLayerCount;
         shape.sampleCount = d.sampleCount;
         shape.cubeCompatible = d.cubeCompatible;
-        const auto a = WebGlGraphicsRequestContract::texture(p, 1, shape);
+        const auto a = WebGlGraphicsRequestContract::texture(p, 1, shape, optIn);
         return a.compatible ? nullptr : a.diagnostic;
     }
 
@@ -123,7 +123,7 @@ public:
     {
         if (u.contractVersion != 1)
             return "RHI-WEBGL1-TEXTURE-UPLOAD-VERSION";
-        if (d.format != TextureFormat::Rgba8Unorm
+        if ((d.format != TextureFormat::Rgba8Unorm && d.format != TextureFormat::Rgba8UnormSrgb)
             || (d.usage & TextureUsage::CopyDst) == TextureUsage::None)
             return "RHI-WEBGL1-TEXTURE-UPLOAD-USAGE";
         const TextureSubresourceRange range{u.mipLevel, 1, 0, 1, TextureAspect::Color};

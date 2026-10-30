@@ -1,3 +1,4 @@
+#include "rhi/frontend/artifact_owned_shader_reflection.h"
 #include "rhi/frontend/command_draw_validation.h"
 #include "rhi/frontend/pipeline_bindless_interface_merger.h"
 #include "rhi/frontend/pipeline_push_constant_abi_identity.h"
@@ -404,58 +405,7 @@ ValidationResult populateRuntimeLengthShaderInterface(
 void copyArtifactOwnedShaderReflection(
     ShaderReflectionDesc& destination, const shader::ShaderReflection& source)
 {
-    destination.reflectionContractVersion = source.reflectionContractVersion;
-    destination.sourceSha256 = source.sourceSha256;
-    destination.bindlessContractVersion = source.bindlessContractVersion;
-    destination.bindlessExecution = source.bindlessExecution;
-    destination.bindlessLoweringSha256 = source.bindlessLoweringSha256;
-    destination.pushConstantByteCount = source.pushConstantSizeBytes;
-    destination.pushConstantContractVersion = source.pushConstantContractVersion;
-    destination.pushConstantStages = source.pushConstantStages;
-    destination.pushConstantWebGpuBindingGroup = source.pushConstantWebGpuBindingGroup;
-    destination.pushConstantWebGpuBindingIndex = source.pushConstantWebGpuBindingIndex;
-    destination.pushConstantMetalBufferIndex = source.pushConstantMetalBufferIndex;
-    destination.computeWorkgroupSizeX = source.computeWorkgroupSizeX;
-    destination.computeWorkgroupSizeY = source.computeWorkgroupSizeY;
-    destination.computeWorkgroupSizeZ = source.computeWorkgroupSizeZ;
-    destination.tessellationControlPointCount = source.tessellationControlPointCount;
-    destination.metalGpuCountedIndirectContractVersion =
-        source.metalGpuCountedIndirectContractVersion;
-    destination.metalGpuCountedIndirectStatus = source.metalGpuCountedIndirectStatus;
-    destination.metalGpuCountedIndirectCountBufferIndex =
-        source.metalGpuCountedIndirectCountBufferIndex;
-    destination.metalGpuCountedIndirectUsesDrawId = source.metalGpuCountedIndirectUsesDrawId;
-    destination.metalGpuCountedIndirectMasksOutOfRange =
-        source.metalGpuCountedIndirectMasksOutOfRange;
-    destination.metalTessellationContractVersion = source.metalTessellationContractVersion;
-    destination.metalTessellationStatus = source.metalTessellationStatus;
-    destination.metalTessellationVertexEntryPoint = source.metalTessellationVertexEntryPoint;
-    destination.metalTessellationFactorBufferIndex = source.metalTessellationFactorBufferIndex;
-    destination.metalTessellationControlPointCount = source.metalTessellationControlPointCount;
-    destination.metalTessellationPatchType = source.metalTessellationPatchType;
-    destination.metalTessellationFactorFormat = source.metalTessellationFactorFormat;
-    destination.metalTessellationFactorBytesPerPatch = source.metalTessellationFactorBytesPerPatch;
-    destination.metalTessellationFactorInstanceStrideBytes =
-        source.metalTessellationFactorInstanceStrideBytes;
-    destination.pushConstantMembers.clear();
-    destination.pushConstantMembers.reserve(source.pushConstantMembers.size());
-    for (const auto& member : source.pushConstantMembers) {
-        ShaderPushConstantMemberDesc copied;
-        copied.name = member.name;
-        copied.scalarType = member.scalarType;
-        copied.scalarWidth = member.scalarWidth;
-        copied.vecSize = member.vecSize;
-        copied.matrixRows = member.matrixRows;
-        copied.matrixCols = member.matrixCols;
-        copied.matrixStride = member.matrixStride;
-        copied.rowMajor = member.rowMajor;
-        copied.arrayDims = member.arrayDims;
-        copied.arrayStride = member.arrayStride;
-        copied.offset = member.offset;
-        copied.size = member.size;
-        copied.decorations = member.decorations;
-        destination.pushConstantMembers.push_back(std::move(copied));
-    }
+    ArtifactOwnedShaderReflection::copy(destination, source);
 }
 
 } // namespace arp::rhi

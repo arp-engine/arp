@@ -5,6 +5,7 @@
 #include "core/io/filesystem_path.h"
 #include "reflection/serialization.h"
 #include "resource/particle_asset_resources.h"
+#include "resource/resource_source_io.h"
 
 #include <algorithm>
 #include <cctype>
@@ -498,32 +499,13 @@ bool readBinaryFile(const std::filesystem::path& path,
     arp::core::pmr::Vector<std::uint8_t>& out,
     arp::core::pmr::String& diagnostics)
 {
-    std::ifstream file(path, std::ios::binary);
-    if (!file.good()) {
-        diagnostics = makeDiagnostic("missing runtime payload blob: ");
-        diagnostics += pathString(path);
+    auto read = core::readBinaryFile(path, expectedSize);
+    if (!read.success || read.bytes.size() != expectedSize) {
+        diagnostics = "runtime payload blob byte size mismatch: ";
+        diagnostics += read.diagnostics;
         return false;
     }
-    file.seekg(0, std::ios::end);
-    const auto size = file.tellg();
-    if (size <= 0 || static_cast<std::uintmax_t>(size) != expectedSize) {
-        diagnostics = makeDiagnostic("runtime payload blob byte size mismatch");
-        return false;
-    }
-    if (static_cast<std::uintmax_t>(size)
-        > static_cast<std::uintmax_t>(std::numeric_limits<std::streamsize>::max())) {
-        diagnostics = makeDiagnostic("runtime payload blob exceeds stream read range");
-        diagnostics += pathString(path);
-        return false;
-    }
-    file.seekg(0, std::ios::beg);
-    out.resize(static_cast<std::size_t>(size));
-    file.read(reinterpret_cast<char*>(out.data()), size);
-    if (!file.good()) {
-        diagnostics = makeDiagnostic("failed to read runtime payload blob: ");
-        diagnostics += pathString(path);
-        return false;
-    }
+    out = std::move(read.bytes);
     return true;
 }
 
@@ -579,12 +561,31 @@ private:
 
 class RuntimeBlobReader final {
 public:
-    explicit RuntimeBlobReader(const arp::core::pmr::Vector<std::uint8_t>& bytes) : bytes_(bytes) {}
+    explicit RuntimeBlobReader(
+        const arp::core::pmr::Vector<std::uint8_t>& bytes, std::size_t maxDecodedBytes = SIZE_MAX)
+        : bytes_(bytes), maxDecodedBytes_(maxDecodedBytes)
+    {}
+
+    bool charge(std::size_t count, std::size_t elementSize)
+    {
+        if (elementSize && count > (maxDecodedBytes_ - decodedBytes_) / elementSize) {
+            budgetExceeded_ = true;
+            return false;
+        }
+        decodedBytes_ += count * elementSize;
+        return true;
+    }
+
+    std::size_t decodedBytes() const noexcept { return decodedBytes_; }
+
+    bool budgetExceeded() const noexcept { return budgetExceeded_; }
+
+    bool bounded() const noexcept { return maxDecodedBytes_ != SIZE_MAX; }
 
     template <typename T> bool POD(T& out)
     {
         static_assert(std::is_trivially_copyable_v<T>);
-        if (cursor_ + sizeof(T) > bytes_.size()) {
+        if (sizeof(T) > remaining()) {
             return false;
         }
         std::memcpy(&out, bytes_.data() + cursor_, sizeof(T));
@@ -595,7 +596,7 @@ public:
     bool string(std::pmr::string& out)
     {
         std::uint32_t size = 0;
-        if (!POD(size) || size > remaining()) {
+        if (!POD(size) || size > remaining() || !charge(static_cast<std::size_t>(size) + 1, 1)) {
             return false;
         }
         out.assign(reinterpret_cast<const char*>(bytes_.data() + cursor_), size);
@@ -610,6 +611,9 @@ public:
 private:
     const arp::core::pmr::Vector<std::uint8_t>& bytes_;
     std::size_t cursor_ = 0;
+    std::size_t maxDecodedBytes_ = 0;
+    std::size_t decodedBytes_ = 0;
+    bool budgetExceeded_ = false;
 };
 
 void writeVec3(RuntimeBlobWriter& writer, const animation::Vec3& value)
@@ -677,10 +681,13 @@ template <typename T, typename Fn>
 bool readVector(RuntimeBlobReader& reader, T& values, Fn&& readOne)
 {
     std::uint32_t count = 0;
-    if (!reader.POD(count) || count > reader.remaining()) {
+    if (!reader.POD(count) || count > reader.remaining()
+        || !reader.charge(count, sizeof(typename T::value_type))) {
         return false;
     }
     values.clear();
+    if (reader.bounded())
+        values.reserve(count);
     for (std::uint32_t index = 0; index < count; ++index) {
         typename T::value_type value{};
         if (!readOne(value)) {
@@ -1253,7 +1260,8 @@ bool parseRuntimePayloadResource(const InternalAssetPackageEntry& entry,
     out.blobPath = yamlStringValue(*blobPath);
     const auto parsedHash = blobHash->get_value<fkyaml::node::integer_type>();
     const auto parsedByteSize = blobByteSize->get_value<fkyaml::node::integer_type>();
-    if (!arp::core::FilePath::isSafeRelativePath(out.blobPath)) {
+    if (out.blobPath.find('\0') != core::pmr::String::npos
+        || !arp::core::FilePath::isSafeRelativePath(out.blobPath)) {
         diagnostics =
             makeDiagnostic("runtime payload blob path is not a safe relative package path");
         return false;
@@ -1330,6 +1338,63 @@ PrefabRuntimePayloadWriteResult writePrefabRuntimePayload(const PrefabRuntimePay
 }
 
 namespace {
+PrefabRuntimePayloadLoadResult decodeRuntimePayloadBytes(
+    const core::pmr::Vector<std::uint8_t>& bytes,
+    const PrefabRuntimePayloadResource& payload,
+    std::size_t maxDecodedBytes)
+{
+    PrefabRuntimePayloadLoadResult result;
+    if (bytes.size() != static_cast<std::size_t>(payload.blobByteSize)) {
+        result.diagnostics = "runtime payload blob byte size mismatch";
+        return result;
+    }
+    if (static_cast<int>(hashBytes(bytes)) != payload.blobHash) {
+        result.diagnostics = makeDiagnostic("runtime payload blob hash mismatch");
+        return result;
+    }
+
+    RuntimeBlobReader reader(bytes, maxDecodedBytes);
+    if (!readRuntimeBlob(reader, result)) {
+        if (reader.budgetExceeded())
+            result.diagnostics = "PACKAGE-PREFAB-DECODED-BUDGET";
+        return result;
+    }
+    result.decodedBytes = reader.decodedBytes();
+    if (result.hasCompleteControllerData
+        && !validateAnimatorControllerForPayload(result.controllerAsset,
+            result.asset,
+            result.defaultStateName,
+            result.stateBindings,
+            result.diagnostics)) {
+        return result;
+    }
+    if (!result.hasCompleteControllerData) {
+        result.diagnostics =
+            makeDiagnostic("legacy runtime payload has no complete animator controller data");
+    }
+    if (result.defaultStateName != payload.defaultStateName) {
+        result.diagnostics = makeDiagnostic("runtime payload default state metadata mismatch");
+        result.success = false;
+        return result;
+    }
+    if (defaultClipForStateBindings(result.stateBindings, result.defaultStateName)
+        != payload.defaultClipName) {
+        result.diagnostics = "runtime payload default clip metadata mismatch";
+        return result;
+    }
+    if (!result.asset.mesh.validForIndexedDraw()
+        || result.asset.skinnedVertices.size() != result.asset.mesh.vertices.size()
+        || !result.asset.skeleton.valid()
+        || result.asset.bindPose.size() != result.asset.skeleton.jointCount()
+        || result.asset.clips.empty() || result.stateBindings.empty()) {
+        result.diagnostics = makeDiagnostic("runtime payload asset is incomplete");
+        result.success = false;
+        return result;
+    }
+    result.success = true;
+    return result;
+}
+
 PrefabRuntimePayloadLoadResult loadPrefabRuntimePayloadFromPackageKey(
     const std::filesystem::path& packageRoot,
     const arp::core::pmr::String& prefabKey,
@@ -1408,43 +1473,7 @@ PrefabRuntimePayloadLoadResult loadPrefabRuntimePayloadFromPackageKey(
             result.diagnostics)) {
         return result;
     }
-    if (static_cast<int>(hashBytes(bytes)) != payload.blobHash) {
-        result.diagnostics = makeDiagnostic("runtime payload blob hash mismatch");
-        return result;
-    }
-
-    RuntimeBlobReader reader(bytes);
-    if (!readRuntimeBlob(reader, result)) {
-        return result;
-    }
-    if (result.hasCompleteControllerData
-        && !validateAnimatorControllerForPayload(result.controllerAsset,
-            result.asset,
-            result.defaultStateName,
-            result.stateBindings,
-            result.diagnostics)) {
-        return result;
-    }
-    if (!result.hasCompleteControllerData) {
-        result.diagnostics =
-            makeDiagnostic("legacy runtime payload has no complete animator controller data");
-    }
-    if (result.defaultStateName != payload.defaultStateName) {
-        result.diagnostics = makeDiagnostic("runtime payload default state metadata mismatch");
-        result.success = false;
-        return result;
-    }
-    if (!result.asset.mesh.validForIndexedDraw()
-        || result.asset.skinnedVertices.size() != result.asset.mesh.vertices.size()
-        || !result.asset.skeleton.valid()
-        || result.asset.bindPose.size() != result.asset.skeleton.jointCount()
-        || result.asset.clips.empty() || result.stateBindings.empty()) {
-        result.diagnostics = makeDiagnostic("runtime payload asset is incomplete");
-        result.success = false;
-        return result;
-    }
-    result.success = true;
-    return result;
+    return decodeRuntimePayloadBytes(bytes, payload, SIZE_MAX);
 }
 } // namespace
 
@@ -1452,6 +1481,65 @@ PrefabRuntimePayloadLoadResult loadPrefabRuntimePayloadFromPackage(
     const std::filesystem::path& packageRoot, const arp::core::pmr::String& prefabAlias)
 {
     return loadPrefabRuntimePayloadFromPackageKey(packageRoot, prefabAlias, false);
+}
+
+AssetPackageReadPlan PrefabRuntimePayloadSourceReader::planSourceReads(
+    const InternalAssetPackageEntry& entry,
+    const std::filesystem::path& root,
+    ResourceFileOrigin origin) const
+{
+    AssetPackageReadPlan result;
+    if (entry.resourceType != PrefabRuntimePayloadResource::resourceTypeName()) {
+        result.diagnostics = "PACKAGE-PREFAB-PAYLOAD-TYPE";
+        return result;
+    }
+    PrefabRuntimePayloadResource payload;
+    if (!parseRuntimePayloadResource(entry, payload, result.diagnostics))
+        return result;
+    std::filesystem::path path;
+    if (!resolveResourceSourcePath(root, payload.blobPath, origin, path)) {
+        result.diagnostics = "PACKAGE-PREFAB-SOURCE-PATH";
+        return result;
+    }
+    result.success = appendResourceReadIntent(core::FilePath::utf8(path),
+        static_cast<std::size_t>(payload.blobByteSize),
+        result.reads,
+        result.diagnostics,
+        origin);
+    if (result.success)
+        result.reads.front().role = "prefab-runtime-blob";
+    return result;
+}
+
+PrefabRuntimePayloadLoadResult PrefabRuntimePayloadSourceReader::readSources(
+    const InternalAssetPackageEntry& entry,
+    const std::filesystem::path& root,
+    const AssetPackageSourceContext& sources) const
+{
+    PrefabRuntimePayloadLoadResult result;
+    if (!sources.resources.requirePreloadedSources || !sources.resources.sources
+        || !sources.resources.maxDecodedBytes || sources.resources.maxDecodedBytes == SIZE_MAX) {
+        result.diagnostics = "PACKAGE-PREFAB-SOURCE-CONTEXT";
+        return result;
+    }
+    const auto plan = planSourceReads(entry, root, sources.origin);
+    if (!plan.success) {
+        result.diagnostics = plan.diagnostics;
+        return result;
+    }
+    PrefabRuntimePayloadResource payload;
+    if (!parseRuntimePayloadResource(entry, payload, result.diagnostics))
+        return result;
+    const auto bytes = readResourceSource(plan.reads.front().path,
+        sources.resources,
+        plan.reads.front().maxBytes,
+        false,
+        &sources.origin);
+    if (!bytes.success) {
+        result.diagnostics = bytes.diagnostics;
+        return result;
+    }
+    return decodeRuntimePayloadBytes(bytes.bytes, payload, sources.resources.maxDecodedBytes);
 }
 
 PrefabRuntimePayloadLoadResult loadPrefabRuntimePayloadByResourceIdFromPackage(

@@ -1,8 +1,9 @@
 #include "editor/project/project_input_snapshot.h"
 
 #include "core/hash/sha256.h"
-#include "core/io/file_io.h"
+#include "core/io/blocking_file_reader.h"
 #include "core/io/filesystem_path.h"
+#include "core/text/text_decoder.h"
 #include "core/text/utf8.h"
 
 #include <algorithm>
@@ -15,12 +16,39 @@ bool fail(core::pmr::String& diagnostic, const char* code)
     return false;
 }
 
-bool validBudget(ProjectInputBudget budget)
+bool validInputBudget(ProjectInputBudget budget)
 {
     const ProjectInputBudget hard;
     return budget.maxFiles && budget.maxFiles <= hard.maxFiles && budget.maxFileBytes
         && budget.maxFileBytes <= hard.maxFileBytes && budget.maxTotalBytes
         && budget.maxTotalBytes <= hard.maxTotalBytes;
+}
+
+bool safeLogicalPath(std::string_view relative)
+{
+    return core::FilePath::isSafeRelativePath(relative, ProjectInputBudget::maxPathBytes)
+        && !core::Utf8Decoder::validate(relative)
+        && std::none_of(relative.begin(), relative.end(), [](unsigned char c) {
+               return c < 32u;
+           });
+}
+
+core::io::FileReadResult readHostInput(const std::filesystem::path& path, std::size_t maxBytes)
+{
+    core::io::FileReadRequest request;
+    request.contractVersion = 1;
+    request.pathScope = core::io::FilePathScope::HostFilesystem;
+    request.path = core::FilePath::utf8(path);
+    // Version1 requires a positive budget; zero-byte identities still require
+    // exactly zero returned bytes at verification, never a substitute byte.
+    request.maxBytes = std::max<std::size_t>(1, maxBytes);
+    return core::io::BlockingFileReader().read(request);
+}
+
+std::string_view originalBytes(const core::io::FileReadResult& source)
+{
+    return {source.bytes.empty() ? "" : reinterpret_cast<const char*>(source.bytes.data()),
+        source.bytes.size()};
 }
 
 bool canonicalFile(const std::filesystem::path& root,
@@ -37,11 +65,7 @@ bool canonicalFile(const std::filesystem::path& root,
         || !std::filesystem::is_regular_file(path, error) || error)
         return fail(diagnostic, "PROJECT-INPUT-PATH");
     relative = core::FilePath::utf8(path.lexically_relative(root));
-    if (!core::FilePath::isSafeRelativePath(relative, ProjectInputBudget::maxPathBytes)
-        || core::Utf8Decoder::validate(relative)
-        || std::any_of(relative.begin(), relative.end(), [](unsigned char c) {
-               return c < 32u;
-           }))
+    if (!safeLogicalPath(relative))
         return fail(diagnostic, "PROJECT-INPUT-PATH");
     return true;
 }
@@ -50,6 +74,16 @@ bool canonicalFile(const std::filesystem::path& root,
 ProjectInputSnapshot::ProjectInputSnapshot(std::filesystem::path root, ProjectInputBudget budget)
     : root_(std::move(root)), budget_(budget)
 {}
+
+bool ProjectInputSnapshot::validBudget(ProjectInputBudget budget) noexcept
+{
+    return validInputBudget(budget);
+}
+
+bool ProjectInputSnapshot::validLogicalPath(std::string_view relative)
+{
+    return safeLogicalPath(relative);
+}
 
 bool ProjectInputSnapshot::record(
     const std::filesystem::path& file, std::string_view bytes, core::pmr::String& diagnostic)
@@ -60,9 +94,19 @@ bool ProjectInputSnapshot::record(
     core::pmr::String relative;
     if (!canonicalFile(root_, file, path, relative, diagnostic))
         return false;
+    return recordLogical(relative, bytes, diagnostic);
+}
+
+bool ProjectInputSnapshot::recordLogical(
+    std::string_view relative, std::string_view bytes, core::pmr::String& diagnostic)
+{
+    if (!validBudget(budget_) || bytes.size() > budget_.maxFileBytes)
+        return fail(diagnostic, "PROJECT-INPUT-BUDGET");
+    if (!safeLogicalPath(relative))
+        return fail(diagnostic, "PROJECT-INPUT-PATH");
     const auto found = std::lower_bound(
         bindings_.begin(), bindings_.end(), relative, [](const auto& binding, const auto& key) {
-            return binding.path < key;
+            return std::string_view(binding.path) < key;
         });
     const auto fingerprint = core::Sha256::hexDigest(bytes);
     if (found != bindings_.end() && found->path == relative) {
@@ -72,7 +116,10 @@ bool ProjectInputSnapshot::record(
         if (bindings_.size() >= budget_.maxFiles
             || bytes.size() > budget_.maxTotalBytes - usedBytes_)
             return fail(diagnostic, "PROJECT-INPUT-BUDGET");
-        bindings_.insert(found, {std::move(relative), bytes.size(), fingerprint});
+        bindings_.insert(found,
+            {core::pmr::String(relative, &core::defaultCpuMemoryResource()),
+                bytes.size(),
+                fingerprint});
         usedBytes_ += bytes.size();
     }
     diagnostic.clear();
@@ -87,10 +134,34 @@ bool ProjectInputSnapshot::read(const std::filesystem::path& file, core::pmr::St
     core::pmr::String relative;
     if (!canonicalFile(root_, file, path, relative, diagnostic))
         return false;
-    const auto bytes = core::readTextFile(path, budget_.maxFileBytes);
-    if (!bytes.success)
+    const auto bytes = readHostInput(path, budget_.maxFileBytes);
+    if (bytes.status != core::io::FileIoStatus::Success)
         return fail(diagnostic, "PROJECT-INPUT-READ-OR-BUDGET");
-    return record(path, bytes.text, diagnostic);
+    return record(path, originalBytes(bytes), diagnostic);
+}
+
+bool ProjectInputSnapshot::recordDecodedText(
+    const std::filesystem::path& file, std::string_view expected, core::pmr::String& diagnostic)
+{
+    if (!validBudget(budget_))
+        return fail(diagnostic, "PROJECT-INPUT-BUDGET");
+    std::filesystem::path path;
+    core::pmr::String relative{&core::defaultCpuMemoryResource()};
+    if (!canonicalFile(root_, file, path, relative, diagnostic))
+        return false;
+    const auto source = readHostInput(path, budget_.maxFileBytes);
+    if (source.status != core::io::FileIoStatus::Success)
+        return fail(diagnostic, "PROJECT-INPUT-READ-OR-BUDGET");
+    core::TextDecodeDesc desc;
+    desc.bom = core::TextBomPolicy::Strip;
+    desc.nul = core::TextNulPolicy::Reject;
+    desc.maxOutputBytes = budget_.maxFileBytes;
+    const auto decoded = core::TextDecoder::decode(originalBytes(source), desc);
+    if (decoded.status != core::TextDecodeStatus::Success)
+        return fail(diagnostic, decoded.diagnosticId);
+    if (decoded.text != expected)
+        return fail(diagnostic, "PROJECT-INPUT-CONTENT-CHANGED");
+    return record(path, originalBytes(source), diagnostic);
 }
 
 bool ProjectInputSnapshot::validateBindings(const core::pmr::Vector<ProjectInputBinding>& bindings,
@@ -102,13 +173,7 @@ bool ProjectInputSnapshot::validateBindings(const core::pmr::Vector<ProjectInput
     std::size_t remaining = budget.maxTotalBytes;
     std::string_view previous;
     for (const auto& binding : bindings) {
-        if (!core::FilePath::isSafeRelativePath(binding.path, ProjectInputBudget::maxPathBytes)
-            || core::Utf8Decoder::validate(binding.path)
-            || std::any_of(binding.path.begin(),
-                binding.path.end(),
-                [](unsigned char c) {
-                    return c < 32u;
-                })
+        if (!safeLogicalPath(binding.path)
             || (!previous.empty() && previous >= std::string_view(binding.path))
             || binding.byteCount > budget.maxFileBytes || binding.byteCount > remaining
             || binding.fingerprint.size() != 71u || binding.fingerprint.substr(0, 7) != "sha256:"
@@ -136,9 +201,10 @@ bool ProjectInputSnapshot::verify(const std::filesystem::path& root,
             return false;
         if (relative != binding.path)
             return fail(diagnostic, "PROJECT-INPUT-TARGET-CHANGED");
-        const auto bytes = core::readTextFile(path, binding.byteCount);
-        if (!bytes.success || bytes.text.size() != binding.byteCount
-            || core::Sha256::hexDigest(bytes.text) != binding.fingerprint)
+        const auto bytes = readHostInput(path, binding.byteCount);
+        if (bytes.status != core::io::FileIoStatus::Success
+            || bytes.bytes.size() != binding.byteCount
+            || core::Sha256::hexDigest(originalBytes(bytes)) != binding.fingerprint)
             return fail(diagnostic, "PROJECT-INPUT-CONTENT-CHANGED");
     }
     diagnostic.clear();

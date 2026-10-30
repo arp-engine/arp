@@ -18,9 +18,11 @@
 // Sema can optionally query ModuleRegistry at compile time to verify that
 // `from X import Y` names an export that actually exists.
 
+#include "core/concurrency/callback.h"
 #include "scriptvm/aot/aot_v5.h"
 #include "scriptvm/plugin/static_plugin_catalog.h"
 #include "scriptvm/runtime/module_exports.h"
+#include "scriptvm/runtime/module_resolution.h"
 
 namespace arp::scriptvm {
 
@@ -36,7 +38,19 @@ public:
     // If the module cannot be found, the resolver should return nullptr.
     using SourceResolver = std::function<std::shared_ptr<ModuleExports>(const core::pmr::String&)>;
 
-    void setSourceResolver(SourceResolver resolver) { sourceResolver_ = std::move(resolver); }
+    void setSourceResolver(SourceResolver resolver)
+    {
+        sourceResolver_ = std::move(resolver);
+        declaredSourceResolver_ = {};
+    }
+
+    using DeclaredSourceResolver = core::SharedCallback<ModuleResolution(const core::pmr::String&)>;
+
+    void setDeclaredSourceResolver(DeclaredSourceResolver resolver)
+    {
+        declaredSourceResolver_ = std::move(resolver);
+        sourceResolver_ = {};
+    }
 
     // Set an importer for explicit .arpplugin manifests. The registry does
     // not own the importer; it must outlive this registry.
@@ -68,6 +82,9 @@ public:
     // Caches results so each module is materialized at most once.
     // Returns nullptr if the module cannot be found.
     std::shared_ptr<ModuleExports> loadModule(const core::pmr::String& name);
+    // Owner-thread cache observation only: never invokes a resolver/importer,
+    // materializes a module, writes diagnostics or allocates an export owner.
+    std::shared_ptr<ModuleExports> findLoadedModule(const core::pmr::String& name) const noexcept;
 
     // Query the list of exported symbol names for a module (for sema).
     // Returns an empty vector if the module is not found.
@@ -115,6 +132,7 @@ private:
     core::pmr::Vector<core::pmr::String> resolving_{&arp::core::defaultCpuMemoryResource()};
 
     SourceResolver sourceResolver_;
+    DeclaredSourceResolver declaredSourceResolver_;
     CppPluginImporter* cppPluginImporter_ = nullptr;
     const StaticPluginCatalog* staticCatalog_ = nullptr;
     ScriptPluginServiceRegistry* pluginServices_ = nullptr;

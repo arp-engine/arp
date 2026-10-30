@@ -2,6 +2,7 @@
 
 #include "core/api.h"
 #include "core/io/file_backend.h"
+#include "core/io/file_text.h"
 #include "core/runtime/completion_queue.h"
 
 #include <cstdint>
@@ -27,8 +28,16 @@ public:
     ~FileService() = default;
 
     FileBackendCapability capability() const noexcept;
+    // Pure admission/location validation; never opens or queries a file.
+    FileReadResult validateRead(const FileReadRequest& request) const;
     FileIoStatus read(const FileReadRequest& request, FileReadCompletion completion) noexcept;
+    FileIoStatus readText(
+        const FileTextReadRequest& request, FileTextReadCompletion completion) noexcept;
+    FileIoStatus query(const FileQueryRequest& request, FileQueryCompletion completion) noexcept;
     FileServiceTelemetry telemetry() const noexcept;
+
+    bool closed() const noexcept { return closed_; }
+
     void shutdown() noexcept;
 
 private:

@@ -3,8 +3,15 @@
 #include "3d/terrain/terrain_surface.h"
 #include "resource/prefab_asset_resources.h"
 
+namespace arp::resource {
+struct AssetPackageReadPlan;
+struct AssetPackageReadBudget;
+struct AssetPackageSourceContext;
+} // namespace arp::resource
+
 namespace arp::editor {
 class ProjectInputSnapshot;
+class ProjectResourceSources;
 
 // A project-owned, explicitly opted-in editor material. Scene YAML still holds
 // a stable MaterialResource reference; tile materials are deterministic outputs.
@@ -29,6 +36,20 @@ bool loadEditorTerrainPreview(const std::filesystem::path& projectRoot,
     resource::ResourceManager& candidate,
     core::pmr::String& diagnostic,
     ProjectInputSnapshot* inputSnapshot = nullptr);
+
+// Strict preloaded profile: no filesystem fallback. Legacy vegetation source
+// import has no mounted-source contract yet and returns an explicit diagnostic.
+bool loadEditorTerrainPreviewSources(const ProjectResourceSources&,
+    std::string_view relativeConfig,
+    resource::ResourceManager& candidate,
+    core::pmr::String& diagnostic,
+    ProjectInputSnapshot* inputSnapshot = nullptr);
+
+// Declared inputs only; missing sources become requests, never host reads.
+resource::AssetPackageReadPlan planEditorTerrainPreviewSources(const std::filesystem::path& root,
+    std::string_view relativeConfig,
+    const resource::AssetPackageSourceContext&,
+    const resource::AssetPackageReadBudget&);
 
 // Empty result means missing/stale/wrong binding; callers fail closed.
 core::pmr::String resolveEditorTerrainPreviewMaterial(const resource::ResourceManager& resources,

@@ -8,16 +8,20 @@
 #include "core/runtime/work_service.h"
 #include "reflection/reflection.h"
 #include "reflection/reflection_macros.h"
+#include "resource/resource_graph_execution_contract.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <type_traits>
 #include <utility>
 
 namespace arp::resource {
+
+struct ResourceGraphExecutionCompletion;
 
 using NameView = reflection::NameView;
 
@@ -45,17 +49,32 @@ enum class ResourceGraphStage : std::uint8_t {
     Completion,
 };
 
+// Explicit host selection. Mounted paths and all manifest-relative dependencies
+// retain this mount generation; no path guessing or host fallback is allowed.
+struct ResourceFileOrigin {
+    core::io::FilePathScope pathScope = core::io::FilePathScope::HostFilesystem;
+    core::PoolHandle mount;
+};
+
 struct ResourceFileReadIntent {
     core::io::FilePathScope pathScope = core::io::FilePathScope::Unspecified;
     core::pmr::String path{&core::defaultCpuMemoryResource()};
     core::pmr::String role{&core::defaultCpuMemoryResource()};
     std::size_t maxBytes = 0u;
+    // Explicit location/identity from the resource's authoring metadata.
+    // Zero maxBytes inherits the remaining finite graph byte budget.
+    core::PoolHandle mount;
+    core::io::FileVersionToken expectedVersion;
+    std::uint64_t maxVersionBytes = 0;
 };
 
 struct ResourceSourceBuffer {
     core::pmr::String path{&core::defaultCpuMemoryResource()};
     core::pmr::String role{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<std::uint8_t> bytes{&core::defaultCpuMemoryResource()};
+    core::io::FilePathScope pathScope = core::io::FilePathScope::Unspecified;
+    core::PoolHandle mount;
+    core::io::FileVersionToken version;
 };
 
 class ARP_API ResourceSourceSet final {
@@ -64,6 +83,13 @@ public:
     const ResourceSourceBuffer* find(NameView path) const;
     void clear();
     std::size_t totalBytes() const noexcept;
+
+    std::size_t size() const noexcept { return sources_.size(); }
+
+    const ResourceSourceBuffer* sourceAt(std::size_t index) const noexcept
+    {
+        return index < sources_.size() ? &sources_[index] : nullptr;
+    }
 
 private:
     core::pmr::Vector<ResourceSourceBuffer> sources_{&core::defaultCpuMemoryResource()};
@@ -240,11 +266,18 @@ struct ResourceReference {
     bool valid() const noexcept { return !id.empty() && !type.empty(); }
 };
 
+struct ResourceCommitGate {
+    bool (*allow)(void*) noexcept = nullptr;
+    void* userData = nullptr;
+};
+
 struct ResourceLoadContext {
     ResourceLoadPolicy policy{};
     const ResourceSourceSet* sources = nullptr;
     bool requirePreloadedSources = false;
     std::size_t maxDecodedBytes = 0u;
+    // Checked inside atomic admission, including after the final resource load.
+    ResourceCommitGate commitGate;
 };
 
 ACLASS(Name = "ResourceBase", Ownership = Engine, Lifecycle = Explicit)
@@ -346,6 +379,15 @@ public:
 
     virtual ResourceLoadResult load(ResourceManager& manager, const ResourceLoadContext& context);
     virtual bool collectFileReadIntents(ResourceManager& manager,
+        core::pmr::Vector<ResourceFileReadIntent>& intents,
+        core::pmr::String& diagnostics) const;
+    // Called before acquisition and after each completed batch. Inspect only
+    // context.sources; emit required sources without opening host files. An
+    // acquired source may be repeated with the same location and constraints.
+    // No remaining reads means processing can begin. The default preserves
+    // one-batch collectors; manifest-based resources override this method.
+    virtual bool planFileReadIntents(ResourceManager& manager,
+        const ResourceLoadContext& context,
         core::pmr::Vector<ResourceFileReadIntent>& intents,
         core::pmr::String& diagnostics) const;
     virtual ResourceGraphStage processingStage() const noexcept;
@@ -479,6 +521,13 @@ public:
     core::runtime::WorkServiceStatus loadGraphAsync(core::runtime::WorkService& workService,
         ResourceGraphRequest request,
         ResourceAsyncLoadCompletion completion) noexcept;
+    ResourceGraphSubmitStatus loadGraphAsync(core::runtime::AsyncRuntime& runtime,
+        ResourceGraphRequest request,
+        const ResourceGraphExecutionBudget& budget,
+        const ResourceGraphExecutionCompletion& completion,
+        core::runtime::CancellationToken cancellation = {}) noexcept;
+
+    bool isOwnerThread() const noexcept { return std::this_thread::get_id() == ownerThread_; }
 
     template <typename ResourceT, typename... Args>
     ResourceLoadResult load(ResourceLoadContext context, Args&&... args)
@@ -536,23 +585,46 @@ public:
         core::UniquePtr<ResourceBase> resource,
         ResourceAsyncLoadCompletion completion,
         ResourceLoadContext context = {}) noexcept;
+    ResourceGraphSubmitStatus loadAsyncResource(core::runtime::AsyncRuntime& runtime,
+        core::UniquePtr<ResourceBase> resource,
+        const ResourceGraphExecutionBudget& budget,
+        const ResourceGraphExecutionCompletion& completion,
+        ResourceLoadContext context = {},
+        core::runtime::CancellationToken cancellation = {}) noexcept;
 
     template <typename ResourceT, typename... Args>
-    core::runtime::WorkServiceStatus loadAsync(core::runtime::WorkService& workService,
-        ResourceAsyncLoadCompletion completion,
+    ResourceGraphSubmitStatus loadAsync(core::runtime::AsyncRuntime& runtime,
+        const ResourceGraphExecutionBudget& budget,
+        const ResourceGraphExecutionCompletion& completion,
         ResourceLoadContext context,
         Args&&... args) noexcept
     {
         static_assert(std::is_base_of_v<ResourceBase, ResourceT>,
             "ResourceManager::loadAsync<T> requires T to derive from ResourceBase");
+        if (!isOwnerThread())
+            return ResourceGraphSubmitStatus::InvalidRequest;
         try {
-            core::UniquePtr<ResourceT> typed =
+            core::UniquePtr<ResourceBase> resource =
                 core::makeUnique<ResourceT>(std::forward<Args>(args)...);
-            core::UniquePtr<ResourceBase> base{std::move(typed)};
-            return loadAsyncResource(workService, std::move(base), completion, std::move(context));
+            return loadAsyncResource(runtime, std::move(resource), budget, completion, context);
+        } catch (const std::bad_alloc&) {
+            return ResourceGraphSubmitStatus::AllocationFailed;
         } catch (...) {
-            return core::runtime::WorkServiceStatus::InvalidWorkItem;
+            return ResourceGraphSubmitStatus::InvalidRequest;
         }
+    }
+
+    // Source compatibility only. WorkService has neither the IO route nor
+    // explicit source budgets required by ResourceAsyncOwnerAdmission/1.
+    template <typename ResourceT, typename... Args>
+    core::runtime::WorkServiceStatus loadAsync(core::runtime::WorkService&,
+        ResourceAsyncLoadCompletion,
+        ResourceLoadContext,
+        Args&&...) noexcept
+    {
+        static_assert(std::is_base_of_v<ResourceBase, ResourceT>,
+            "ResourceManager::loadAsync<T> requires T to derive from ResourceBase");
+        return core::runtime::WorkServiceStatus::InvalidWorkItem;
     }
 
     ResourceLoadResult loadObjectFromEnvelope(
@@ -749,6 +821,7 @@ private:
     core::pmr::Vector<core::UniquePtr<ResourceOperation>> operations_{
         &core::defaultCpuMemoryResource()};
     core::runtime::AsyncRuntime* scriptAsyncRuntime_ = nullptr;
+    const std::thread::id ownerThread_ = std::this_thread::get_id();
     ResourceBudgetConfig budgetConfig_{};
     std::uint64_t budgetExhaustionEvents_ = 0u;
     arp::reflection::object reflectionObject_;

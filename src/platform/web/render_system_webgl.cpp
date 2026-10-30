@@ -99,9 +99,14 @@ RenderSystem createRenderSystem(const RenderSystemDesc& desc)
         context.colorSpace = rhi::semantics::WebGlCanvasColorSpace::SRgb;
         context.maxCpuMetadataBytes = b.contextMetadataBytes;
         context.maxIdentityFieldBytes = b.identityFieldBytes;
-        context.extensionOptIn.contractVersion = 1;
+        context.extensionOptIn.contractVersion =
+            (p.fragmentDepthOptIn || p.srgbTexturesOptIn) ? 2 : 1;
         context.extensionOptIn.extensions.depthTextures = p.sampledDepthOptIn;
         context.extensionOptIn.extensions.derivatives = p.derivativesOptIn;
+        context.extensionOptIn.extensions.fragmentDepth = p.fragmentDepthOptIn;
+        context.extensionOptIn.extensions.srgbTextures = p.srgbTexturesOptIn;
+        context.extensionOptIn.extensions.uint32Indices = p.uint32IndicesOptIn;
+        context.extensionOptIn.extensions.instancing = p.instancingOptIn;
         auto runtime = rhi::webgl::WebGlRuntime::create(
             context, core::makeShared<core::CpuMemoryQuota>(b.contextMetadataBytes), id);
         if (!runtime) {
@@ -116,7 +121,8 @@ RenderSystem createRenderSystem(const RenderSystemDesc& desc)
         ownership.budget.capacity.logicalBufferBytes = b.logicalBufferBytes;
         ownership.budget.capacity.logicalTextureBytes = b.logicalTextureBytes;
         if (context.extensionOptIn.extensions.any())
-            ownership.extensions = {1, true, context.extensionOptIn.extensions};
+            ownership.extensions = {
+                context.extensionOptIn.contractVersion, true, context.extensionOptIn.extensions};
         auto resources = rhi::webgl::WebGlResources::create(std::move(runtime),
             ownership,
             core::makeShared<core::CpuMemoryQuota>(b.resourceMetadataBytes),

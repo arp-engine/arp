@@ -42,6 +42,22 @@ EditorSceneViewportMeshCache::EditorSceneViewportMeshCache(
     : budget_(budget)
 {}
 
+const char* EditorSceneViewportMeshCache::clearAfterOrderedIssue(
+    const rhi::OriginalOrderedGraphicsExecution& execution)
+{
+    if (ownerDevice_)
+        if (const auto* id = execution.diagnostic(*ownerDevice_))
+            return id;
+    for (const auto& entry : entries_) {
+        if (const auto* id = execution.resourceReuseDiagnostic(entry->mesh.vertexBuffer()))
+            return id;
+        if (const auto* id = execution.resourceReuseDiagnostic(entry->mesh.indexBuffer()))
+            return id;
+    }
+    clearResources();
+    return nullptr;
+}
+
 EditorSceneViewportMeshCacheResult EditorSceneViewportMeshCache::acquire(rhi::GpuDevice& device,
     const resource::ResourceManager& resources,
     const EditorSceneViewportResolvedItem& item)

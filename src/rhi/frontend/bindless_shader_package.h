@@ -9,6 +9,10 @@
 
 #include <filesystem>
 
+namespace arp::shader {
+class ShaderArtifactSource;
+}
+
 namespace arp::rhi {
 
 // Explicit cold ordinary-buffer relations for selected authenticated entries.
@@ -58,6 +62,8 @@ struct BindlessPackageLoadBudget {
     std::uint32_t maxTables = 0;
     const BindlessPackageMemoryLoadRequest* ordinaryMemory = nullptr;
     const BindlessPackagePushLoadRequest* push = nullptr;
+    // Pure acquired byte projection. Missing/invalid source never selects host IO.
+    const shader::ShaderArtifactSource* source = nullptr;
 };
 
 struct BindlessPackageFile {

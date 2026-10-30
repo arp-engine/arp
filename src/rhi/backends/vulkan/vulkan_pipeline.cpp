@@ -10,6 +10,7 @@
 #include "rhi/frontend/pipeline_validation_report_builder.h"
 #include "rhi/gpu_bindless.h"
 #include "rhi/semantics/bindless_original_preparation_lowering.h"
+#include "shader/generated_shader_artifact_set.h"
 #include "shader/shader_pipeline_reflection_validator.h"
 #include "shader/shader_reflection_cache.h"
 
@@ -79,38 +80,10 @@ bool shaderStageMatches(shader::ShaderStage cached, rhi::ShaderStage package)
 
 rhi::ValidationResult validateVulkanReflectionArtifact(const rhi::ShaderPackageDesc& package)
 {
-    if (package.artifacts.reflectionPath.empty()) {
-        return {false, "Vulkan RHI requires a generated reflection artifact path"};
-    }
-    const auto cached =
-        shader::ShaderReflectionCache::loadFromFile(package.artifacts.reflectionPath);
-    if (!cached.success) {
-        auto diagnostics = std::pmr::string("Vulkan RHI could not load reflection artifact: ");
-        diagnostics += cached.diagnostics;
-        return {false, std::move(diagnostics)};
-    }
-    const auto artifactIdentityValidation =
-        shader::ShaderPipelineReflectionValidator::validateGeneratedArtifact(cached.module,
-            package.slangModulePath,
-            package.artifacts.spirvPath,
-            package.artifacts.mslPath,
-            package.artifacts.wgslPath);
-    if (!artifactIdentityValidation.success) {
-        auto diagnostics =
-            std::pmr::string("Vulkan RHI reflection artifact identity validation failed: ");
-        diagnostics += artifactIdentityValidation.diagnostics;
-        return {false, std::move(diagnostics)};
-    }
-    const auto memberValidation =
-        shader::ShaderPipelineReflectionValidator::validateGeneratedArtifact(
-            cached.module.reflection);
-    if (!memberValidation.success) {
-        auto diagnostics = std::pmr::string(
-            "Vulkan RHI reflection artifact failed push-constant member validation: ");
-        diagnostics += memberValidation.diagnostics;
-        return {false, std::move(diagnostics)};
-    }
-    const auto& cachedReflection = cached.module.reflection;
+    const auto input = rhi::validateGeneratedShaderPackageInput(package);
+    if (!input.success)
+        return input;
+    const auto& cachedReflection = package.generatedArtifactSet->module().reflection;
     const auto& packageReflection = package.reflection;
     for (const auto& entrypoint : package.entrypoints) {
         const auto found = std::find_if(cachedReflection.entryPoints.begin(),
@@ -307,7 +280,9 @@ public:
           nativePayload_(std::move(nativePayload)), authorization_(std::move(authorization)),
           activeStages_(activeStages), topology_(topology), passState_(passState),
           vertexBuffers_(rhi::RenderPipelineStateCopy::copy(definition).vertexBuffers),
-          graphicsEntries_(entries), retainedGraphics_(captureRetainedGraphics(definition))
+          graphicsEntries_(entries), retainedGraphics_(captureRetainedGraphics(definition)),
+          generatedArtifactSet_(
+              definition.shaderPackage ? definition.shaderPackage->generatedArtifactSet : nullptr)
     {}
 
     const rhi::PipelineLayout* layout() const override { return layout_; }
@@ -391,6 +366,7 @@ private:
     const rhi::PipelineLayout* layout_ = nullptr;
     rhi::ShaderReflectionDesc reflection_;
     rhi::PipelineValidationReport report_;
+    core::SharedPtr<const shader::GeneratedShaderArtifactSet> generatedArtifactSet_;
     std::shared_ptr<VulkanRhiNativeResourcePayload> nativePayload_;
     std::shared_ptr<const rhi::BindlessAuthorization> authorization_;
     rhi::ShaderStage activeStages_;
@@ -408,9 +384,11 @@ public:
         rhi::PipelineValidationReport report,
         std::shared_ptr<VulkanRhiNativeResourcePayload> nativePayload,
         std::shared_ptr<const rhi::BindlessAuthorization> authorization,
-        arp::core::UniquePtr<rhi::PipelineLayout> ownedLayout)
+        arp::core::UniquePtr<rhi::PipelineLayout> ownedLayout,
+        core::SharedPtr<const shader::GeneratedShaderArtifactSet> generatedArtifactSet = {})
         : ownedLayout_(std::move(ownedLayout)), layout_(ownedLayout_ ? ownedLayout_.get() : layout),
           reflection_(std::move(reflection)), report_(std::move(report)),
+          generatedArtifactSet_(std::move(generatedArtifactSet)),
           nativePayload_(std::move(nativePayload)), authorization_(std::move(authorization))
     {}
 
@@ -442,6 +420,7 @@ private:
     const rhi::PipelineLayout* layout_ = nullptr;
     rhi::ShaderReflectionDesc reflection_;
     rhi::PipelineValidationReport report_;
+    core::SharedPtr<const shader::GeneratedShaderArtifactSet> generatedArtifactSet_;
     std::shared_ptr<VulkanRhiNativeResourcePayload> nativePayload_;
     std::shared_ptr<const rhi::BindlessAuthorization> authorization_;
 };
@@ -842,7 +821,8 @@ arp::core::UniquePtr<rhi::ComputePipeline> createVulkanRhiComputePipeline(
         std::move(report),
         std::move(nativePayload),
         std::move(authorization),
-        std::move(ownedLayout));
+        std::move(ownedLayout),
+        desc.shaderPackage->generatedArtifactSet);
 }
 
 arp::core::UniquePtr<rhi::ComputePipeline> createVulkanRhiAuthorizedBindlessComputePipeline(
@@ -868,7 +848,8 @@ arp::core::UniquePtr<rhi::ComputePipeline> createVulkanRhiAuthorizedBindlessComp
         std::move(report),
         std::move(nativePayload),
         std::move(authorization),
-        std::move(ownedLayout));
+        std::move(ownedLayout),
+        desc.shaderPackage->generatedArtifactSet);
 }
 
 std::shared_ptr<VulkanRhiNativeResourcePayload> vulkanRhiNativePayload(

@@ -1,8 +1,12 @@
 #include "ui/ui_font_set_resource.h"
 
 #include "reflection/reflection.h"
+#include "resource/resource_source_io.h"
+#include "ui/detail/ui_content_fingerprint.h"
 #include "ui/ui_atlas_metadata_resource.h"
+#include "ui/ui_font_source.h"
 
+#include <algorithm>
 #include <charconv>
 #include <filesystem>
 #include <system_error>
@@ -38,20 +42,6 @@ bool validateFontFace(const UiFontFaceDesc& font, arp::core::pmr::String& diagno
         return false;
     }
     return true;
-}
-
-std::filesystem::path resolveFontSourcePath(
-    const std::filesystem::path& sourceRoot, const std::filesystem::path& declaredPath)
-{
-    if (declaredPath.empty() || declaredPath.is_absolute() || sourceRoot.empty()) {
-        return declaredPath;
-    }
-    for (const auto& component : declaredPath) {
-        if (component == "..") {
-            return {};
-        }
-    }
-    return (sourceRoot / declaredPath).lexically_normal();
 }
 
 void appendUnsigned(arp::core::pmr::String& out, std::uint64_t value)
@@ -147,6 +137,20 @@ void registerUiFontSetResourceReflection()
 
 } // namespace
 
+void UiFontSetResource::appendContentFingerprint(core::StableHash64& hasher) const noexcept
+{
+    detail::UiContentFingerprint hash(hasher);
+    hash.resource(*this, kUiFontSetResourceContract);
+    hash.number(data != nullptr);
+    if (!data)
+        return;
+    hash.text(data->glyphPolicy);
+    hash.text(data->pagePolicy);
+    hash.number(data->fonts.size());
+    for (const auto& font : data->fonts)
+        hash.font(font);
+}
+
 arp::resource::ResourceLoadResult UiFontSetResource::load(
     arp::resource::ResourceManager& resourceManager,
     const arp::resource::ResourceLoadContext& context)
@@ -188,6 +192,37 @@ arp::resource::ResourceLoadResult UiFontSetResource::load(
         return result;
     }
 
+    core::pmr::Vector<arp::resource::ResourceFileReadIntent> intents;
+    if (!collectFileReadIntents(resourceManager, intents, result.diagnostics))
+        return result;
+    core::pmr::Vector<core::SharedPtr<const UiFontSource>> sources;
+    std::size_t totalBytes = 0;
+    for (const auto& intent : intents) {
+        auto read = arp::resource::readResourceSource(intent.path,
+            context,
+            std::min(desc.maxFontBytes, desc.maxTotalSourceBytes - totalBytes),
+            false,
+            &desc.origin);
+        if (!read.success) {
+            result.diagnostics = std::move(read.diagnostics);
+            return result;
+        }
+        UiFontSourceDesc sourceDesc;
+        sourceDesc.path = intent.path;
+        sourceDesc.pathScope = desc.origin.pathScope;
+        sourceDesc.mount = desc.origin.mount;
+        sourceDesc.maxBytes = desc.maxFontBytes;
+        if (context.sources)
+            if (const auto* source = context.sources->find(intent.path))
+                sourceDesc.version = source->version;
+        auto source =
+            UiFontSource::create(std::move(sourceDesc), std::move(read.bytes), result.diagnostics);
+        if (!source)
+            return result;
+        totalBytes += source->bytes().size();
+        sources.push_back(std::move(source));
+    }
+
     data = arp::core::makeShared<UiFontSetResourceData>();
     data->glyphPolicy = metadata.glyphPolicy;
     data->pagePolicy = metadata.pagePolicy;
@@ -196,21 +231,24 @@ arp::resource::ResourceLoadResult UiFontSetResource::load(
             return result;
         }
         auto resolvedFont = font;
-        resolvedFont.sourcePath = resolveFontSourcePath(desc.sourceRoot, font.sourcePath);
-        if (resolvedFont.sourcePath.empty()) {
+        if (!arp::resource::resolveResourceSourcePath(desc.sourceRoot,
+                core::FilePath::utf8(font.sourcePath),
+                desc.origin,
+                resolvedFont.sourcePath)) {
             result.diagnostics =
                 fontSetText("UI font source path escapes the explicit sourceRoot.");
             return result;
         }
-        if (!desc.sourceRoot.empty()) {
-            std::error_code error;
-            if (!std::filesystem::is_regular_file(resolvedFont.sourcePath, error) || error) {
-                result.diagnostics =
-                    fontSetText("UI font source file is missing under the explicit sourceRoot: ");
-                result.diagnostics += resolvedFont.sourcePath.generic_string().c_str();
-                return result;
-            }
+        const auto path = core::FilePath::utf8(resolvedFont.sourcePath);
+        const auto source = std::find_if(sources.begin(), sources.end(), [&](const auto& source) {
+            return source->desc().path == path;
+        });
+        if (source == sources.end()) {
+            result.diagnostics = "UI-FONT-SET-SOURCE-MISSING";
+            return result;
         }
+        resolvedFont.source = *source;
+        resolvedFont.maxSourceBytes = desc.maxFontBytes;
         data->fonts.push_back(std::move(resolvedFont));
     }
 
@@ -219,6 +257,55 @@ arp::resource::ResourceLoadResult UiFontSetResource::load(
         fontSetText(contracts::kUsageAtlasMetadataFonts.data()),
     });
     return resourceManager.admitResourceMetadata(*this, context.policy);
+}
+
+bool UiFontSetResource::collectFileReadIntents(arp::resource::ResourceManager& manager,
+    core::pmr::Vector<arp::resource::ResourceFileReadIntent>& intents,
+    core::pmr::String& diagnostic) const
+{
+    const auto& desc = loadDesc;
+    if (!desc.maxFaces || desc.maxFaces == SIZE_MAX || !desc.maxFontBytes
+        || desc.maxFontBytes == SIZE_MAX || !desc.maxTotalSourceBytes
+        || desc.maxTotalSourceBytes == SIZE_MAX) {
+        diagnostic = "UI-FONT-SET-BUDGET";
+        return false;
+    }
+    const auto metadata = manager.findByAlias<UiAtlasMetadataResource>(desc.atlasMetadataAlias);
+    if (!metadata.ready() || !metadata.get()->data) {
+        diagnostic = "UI-FONT-SET-METADATA-NOT-READY";
+        return false;
+    }
+    const auto& faces = metadata.get()->data->fontFaces;
+    if (faces.empty() || faces.size() > desc.maxFaces) {
+        diagnostic = "UI-FONT-SET-FACE-BUDGET";
+        return false;
+    }
+    for (const auto& face : faces) {
+        if (!validateFontFace(face, diagnostic))
+            return false;
+        std::filesystem::path path;
+        if (!arp::resource::resolveResourceSourcePath(
+                desc.sourceRoot, core::FilePath::utf8(face.sourcePath), desc.origin, path)) {
+            diagnostic = "UI-FONT-SET-SOURCE-PATH";
+            return false;
+        }
+        const auto name = core::FilePath::utf8(path);
+        if (std::find_if(intents.begin(),
+                intents.end(),
+                [&](const auto& intent) {
+                    return intent.path == name;
+                })
+            != intents.end())
+            continue;
+        if (!arp::resource::appendResourceReadIntent(name,
+                std::min(desc.maxFontBytes, desc.maxTotalSourceBytes),
+                intents,
+                diagnostic,
+                desc.origin))
+            return false;
+        intents.back().role = "ui.font.bytes";
+    }
+    return true;
 }
 
 UiFontSetResourceLoadResult loadUiFontSetResource(

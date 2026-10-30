@@ -40,6 +40,14 @@ public:
     static constexpr std::size_t maxResources = 4096u;
     AssetPackageClosureResult inspect(const std::filesystem::path& packageDirectory,
         const AssetPackageClosureBudget& limits = {}) const;
+    AssetPackageClosureResult inspectSources(const std::filesystem::path& packageDirectory,
+        const AssetPackageSourceContext& sources,
+        const AssetPackageClosureBudget& limits = {}) const;
+    // Validated declared file list only; full closure verification still runs
+    // after acquisition, before typed resource admission.
+    AssetPackageReadPlan planSourceReads(const std::filesystem::path& directory,
+        const AssetPackageSourceContext& sources,
+        const AssetPackageClosureBudget& limits) const;
     // Cold producer operation on caller-owned preparation storage. Writes
     // control metadata from validated bindings, then verifies the full closure.
     // Only publish() commits a user-visible package directory.
@@ -51,6 +59,9 @@ public:
         const AssetPackageClosureBudget& limits = {}) const;
 
 private:
+    AssetPackageClosureResult inspectImpl(const std::filesystem::path& packageDirectory,
+        const AssetPackageClosureBudget& limits,
+        const AssetPackageSourceContext* sources) const;
     core::SharedPtr<const AssetPackageCodecRegistry> codecs_;
 };
 

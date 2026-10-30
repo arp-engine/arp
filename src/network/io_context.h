@@ -6,6 +6,7 @@
 #include "network/io_operation.h"
 #include "network/timer.h"
 
+#include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <utility>
@@ -27,6 +28,9 @@ public:
     time_point now() const;
     void start_op(io_operation* op);
     void dispatch();
+    std::size_t pending_completions() const noexcept;
+    // Native worker wait only; dispatch still executes callbacks on its owner.
+    bool wait_for_completion(std::chrono::milliseconds timeout) noexcept;
     void shutdown();
     void cancel_and_close(socket_t fd, core::Callback<void(const error_code&)> callback);
 
@@ -34,8 +38,11 @@ public:
     {
         core::Callback<void()> item(
             std::bind(std::forward<F>(callback), std::forward<Args>(args)...));
-        std::lock_guard<std::mutex> lock(complete_mutex_);
-        complete_queue_.push_back(std::move(item));
+        {
+            std::lock_guard<std::mutex> lock(complete_mutex_);
+            complete_queue_.push_back(std::move(item));
+        }
+        complete_ready_.notify_one();
     }
 
     deadline_timer_ptr run_at(const time_point& time, task callback);
@@ -46,7 +53,8 @@ public:
 private:
     io_service* service_ = nullptr;
     core::UniquePtr<io_service> owned_service_;
-    std::mutex complete_mutex_;
+    mutable std::mutex complete_mutex_;
+    std::condition_variable complete_ready_;
     core::pmr::Vector<core::Callback<void()>> complete_queue_{&core::defaultCpuMemoryResource()};
 };
 

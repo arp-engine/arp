@@ -1,9 +1,10 @@
 #include "editor/viewport/editor_scene_viewport_sprite_renderer.h"
 
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/math/quad_geometry.h"
+#include "editor/viewport/editor_scene_viewport_sprite_contract.h"
 #include "renderer/materials/texture_upload.h"
 #include "renderer/shader_package_reflection.h"
-#include "shader/shader_pipeline_reflection_validator.h"
-#include "shader/shader_reflection_cache.h"
 
 #include <algorithm>
 #include <array>
@@ -11,52 +12,6 @@
 
 namespace arp::editor {
 namespace {
-
-bool exactSpriteReflection(const shader::ShaderReflection& reflection)
-{
-    if (reflection.entryPoints.size() != 2u || reflection.vertexAttributes.size() != 6u
-        || reflection.bindings.size() != 2u || reflection.pushConstantSizeBytes != 0u
-        || !reflection.pushConstantMembers.empty())
-        return false;
-    bool vertex = false;
-    bool fragment = false;
-    for (const auto& entry : reflection.entryPoints) {
-        vertex |= entry.name == "vertexMain" && entry.stage == shader::ShaderStage::Vertex;
-        fragment |= entry.name == "fragmentMain" && entry.stage == shader::ShaderStage::Fragment;
-    }
-    if (!vertex || !fragment)
-        return false;
-    constexpr std::array<const char*, 6> names{
-        "origin", "axisX", "axisY", "uv", "color", "parameters"};
-    constexpr std::array<const char*, 6> semantics{
-        "TEXCOORD0", "TEXCOORD1", "TEXCOORD2", "TEXCOORD3", "TEXCOORD4", "TEXCOORD5"};
-    for (std::uint32_t location = 0u; location < names.size(); ++location) {
-        const auto found = std::find_if(reflection.vertexAttributes.begin(),
-            reflection.vertexAttributes.end(),
-            [&](const auto& attribute) {
-                return attribute.location == location;
-            });
-        if (found == reflection.vertexAttributes.end() || found->name != names[location]
-            || found->semantic != semantics[location]
-            || found->format != shader::VertexAttributeFormat::Float4)
-            return false;
-    }
-    const auto texture = std::find_if(
-        reflection.bindings.begin(), reflection.bindings.end(), [](const auto& binding) {
-            return binding.name == "SpriteAtlas";
-        });
-    const auto sampler = std::find_if(
-        reflection.bindings.begin(), reflection.bindings.end(), [](const auto& binding) {
-            return binding.name == "SpriteSampler";
-        });
-    return texture != reflection.bindings.end() && sampler != reflection.bindings.end()
-        && texture->type == shader::BindingType::SampledTexture && texture->set == 0u
-        && texture->binding == 0u && texture->arrayCount == 1u
-        && texture->stageMask == static_cast<std::uint32_t>(rhi::ShaderStage::Fragment)
-        && sampler->type == shader::BindingType::Sampler && sampler->set == 0u
-        && sampler->binding == 1u && sampler->arrayCount == 1u
-        && sampler->stageMask == static_cast<std::uint32_t>(rhi::ShaderStage::Fragment);
-}
 
 bool hasSuffix(std::string_view value, std::string_view suffix)
 {
@@ -77,22 +32,6 @@ bool makeSpritePipelinePackage(const EditorSceneViewportShaderArtifacts& artifac
         diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-ARTIFACT-PATH-INVALID";
         return false;
     }
-    const auto reflection =
-        shader::ShaderReflectionCache::loadFromFile(core::pmr::String(artifacts.reflectionPath));
-    if (!reflection.success || !exactSpriteReflection(reflection.module.reflection)) {
-        diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-REFLECTION-ABI-INVALID";
-        return false;
-    }
-    const auto artifact =
-        shader::ShaderPipelineReflectionValidator::validateGeneratedArtifact(reflection.module,
-            core::pmr::String(artifacts.sourcePath),
-            core::pmr::String(artifacts.spirvPath),
-            core::pmr::String(artifacts.mslPath),
-            core::pmr::String(artifacts.wgslPath));
-    if (!artifact.success) {
-        diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-ARTIFACT-IDENTITY-INVALID";
-        return false;
-    }
     package.label = "ARP Editor Viewport Sprite";
     package.slangModulePath = artifacts.sourcePath;
     package.artifacts.spirvPath = artifacts.spirvPath;
@@ -107,7 +46,12 @@ bool makeSpritePipelinePackage(const EditorSceneViewportShaderArtifacts& artifac
         diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-PACKAGE-HYDRATION-FAILED";
         return false;
     }
-    for (const auto& reflected : reflection.module.reflection.bindings) {
+    const auto& reflection = package.generatedArtifactSet->module().reflection;
+    if (!validateEditorSceneViewportSpriteReflection(reflection)) {
+        diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-REFLECTION-ABI-INVALID";
+        return false;
+    }
+    for (const auto& reflected : reflection.bindings) {
         const auto type = rhi::descriptorTypeFromShaderBinding(reflected.type);
         if (!type) {
             diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-REFLECTION-BINDING-INVALID";
@@ -130,49 +74,8 @@ bool makeSpritePipelinePackage(const EditorSceneViewportShaderArtifacts& artifac
         return false;
     }
 
-    pipeline.label = "ARP Editor Viewport Sprite";
-    pipeline.vertexShader = {package.slangModulePath, "vertexMain", rhi::ShaderStage::Vertex};
-    pipeline.fragmentShader = {package.slangModulePath, "fragmentMain", rhi::ShaderStage::Fragment};
-    pipeline.colorFormat = colorFormat;
-    pipeline.depthFormat = depthFormat;
-    pipeline.hasViewport = false;
-    pipeline.hasScissor = false;
-    pipeline.dynamicViewportScissor = true;
-    pipeline.cullMode = rhi::CullMode::None;
-    pipeline.frontFace = rhi::FrontFace::CounterClockwise;
-    pipeline.topology = rhi::PrimitiveTopology::TriangleList;
-    pipeline.multisample.sampleCount = 1u;
-    pipeline.multisample.sampleMask = std::numeric_limits<std::uint64_t>::max();
-    pipeline.multisample.alphaToCoverageEnabled = false;
-    auto& color = pipeline.colorTargets.emplace_back();
-    color.format = colorFormat;
-    color.blendEnabled = true;
-    color.colorBlend = {
-        rhi::BlendFactor::One, rhi::BlendFactor::OneMinusSrcAlpha, rhi::BlendOp::Add};
-    color.alphaBlend = color.colorBlend;
-    color.writeMask = rhi::ColorWriteMask::All;
-    pipeline.depthStencil.format = depthFormat;
-    pipeline.depthStencil.depthTestEnabled = true;
-    pipeline.depthStencil.depthWriteEnabled = false;
-    pipeline.depthStencil.depthCompare = rhi::CompareOp::LessEqual;
-    pipeline.depthStencil.stencilEnabled = false;
-    pipeline.depthStencil.front = {
-        rhi::StencilOp::Keep, rhi::StencilOp::Keep, rhi::StencilOp::Keep, rhi::CompareOp::Always};
-    pipeline.depthStencil.back = pipeline.depthStencil.front;
-    pipeline.depthStencil.stencilReadMask = 0xffu;
-    pipeline.depthStencil.stencilWriteMask = 0u;
-    pipeline.depthStencil.depthBiasEnabled = false;
-    pipeline.depthStencil.depthBiasConstantFactor = 0.0f;
-    pipeline.depthStencil.depthBiasClamp = 0.0f;
-    pipeline.depthStencil.depthBiasSlopeFactor = 0.0f;
-    auto& stream = pipeline.vertexBuffers.emplace_back();
-    stream.slot = 0u;
-    stream.strideBytes = sizeof(scene2d::SpriteInstance);
-    stream.inputRate = rhi::VertexInputRate::Instance;
-    for (std::uint32_t location = 0u; location < 6u; ++location)
-        stream.attributes.push_back({location,
-            location * static_cast<std::uint32_t>(sizeof(core::Vec4)),
-            rhi::VertexFormat::Float32x4});
+    pipeline =
+        buildEditorSceneViewportSpritePipeline(package.slangModulePath, {colorFormat, depthFormat});
     if (!rhi::validateRenderPipelineState(pipeline).success) {
         diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-PIPELINE-STATE-INVALID";
         return false;
@@ -194,7 +97,8 @@ bool EditorSceneViewportSpriteRenderer::create(rhi::GpuDevice& device,
     const std::uint32_t maxInstances,
     const std::uint32_t maxAtlases,
     const std::uint64_t maxUploadBytes,
-    core::pmr::String& diagnostics)
+    core::pmr::String& diagnostics,
+    EditorSceneViewportSurfaceProfile profile)
 {
     if (device_ || !maxInstances || !maxAtlases || !maxUploadBytes) {
         diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-RENDERER-BUDGET-INVALID";
@@ -210,8 +114,8 @@ bool EditorSceneViewportSpriteRenderer::create(rhi::GpuDevice& device,
     rhi::PipelineLayoutDesc layoutDesc;
     rhi::RenderPipelineDesc pipelineDesc;
     if (!makeSpritePipelinePackage(artifacts,
-            rhi::TextureFormat::Rgba16Float,
-            rhi::TextureFormat::D32Float,
+            profile.color,
+            profile.depth,
             package,
             layoutDesc,
             pipelineDesc,
@@ -236,6 +140,19 @@ bool EditorSceneViewportSpriteRenderer::create(rhi::GpuDevice& device,
         diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-PIPELINE-CREATE-FAILED";
         return false;
     }
+    if (!createStorage(device, resources, maxInstances, maxAtlases, maxUploadBytes, diagnostics))
+        return false;
+    pipeline_ = std::move(candidate);
+    return true;
+}
+
+bool EditorSceneViewportSpriteRenderer::createStorage(rhi::GpuDevice& device,
+    resource::ResourceManager& resources,
+    std::uint32_t maxInstances,
+    std::uint32_t maxAtlases,
+    std::uint64_t maxUploadBytes,
+    core::pmr::String& diagnostics)
+{
     rhi::SamplerDesc samplerDesc;
     samplerDesc.label = "EditorViewportSpriteNearest";
     samplerDesc.minFilter = rhi::SamplerFilter::Nearest;
@@ -265,10 +182,24 @@ bool EditorSceneViewportSpriteRenderer::create(rhi::GpuDevice& device,
         diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-INSTANCE-BUFFER-CREATE-FAILED";
         return false;
     }
+    auto corners = device.createBuffer({"EditorSpriteCorners",
+        sizeof(core::QuadTriangleTopology::corners),
+        rhi::ResourceUsage::VertexBuffer | rhi::ResourceUsage::CopyDst,
+        rhi::MemoryUsage::CpuToGpu,
+        rhi::ResourceState::ShaderRead});
+    if (!corners
+        || !device
+            .writeBuffer(*corners,
+                core::QuadTriangleTopology::corners.data(),
+                sizeof(core::QuadTriangleTopology::corners))
+            .success) {
+        diagnostics = "EDITOR-VIEWPORT-SPRITE-CORNERS";
+        return false;
+    }
+    corners_ = std::move(corners);
     device_ = &device;
     resources_ = &resources;
     resources.addLifecycleObserver(*this);
-    pipeline_ = std::move(candidate);
     sampler_ = std::move(sampler);
     instances_ = std::move(instances);
     maxInstances_ = maxInstances;
@@ -280,7 +211,7 @@ bool EditorSceneViewportSpriteRenderer::create(rhi::GpuDevice& device,
 bool EditorSceneViewportSpriteRenderer::prepare(
     const scene2d::SpriteDrawPlan& plan, core::pmr::String& diagnostics)
 {
-    if (!device_ || !resources_ || !pipeline_.pipeline || plan.diagnostic()
+    if (!device_ || !resources_ || !activePipeline() || plan.diagnostic()
         || plan.instances().size() > maxInstances_) {
         diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-PLAN-INVALID";
         return false;
@@ -319,18 +250,29 @@ bool EditorSceneViewportSpriteRenderer::prepare(
             format,
             rhi::TextureUsage::Sampled | rhi::TextureUsage::CopyDst,
             rhi::MemoryUsage::GpuOnly,
-            rhi::ResourceState::Undefined});
+            execution_ ? rhi::ResourceState::ShaderRead : rhi::ResourceState::Undefined});
         if (!owner.texture) {
             diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-ATLAS-TEXTURE-CREATE-FAILED";
             return false;
         }
-        const auto uploaded = renderer::uploadTextureRgba8(*device_,
-            *owner.texture,
-            packed.pixels.data(),
-            image.width,
-            image.height,
-            packed.bytesPerRow,
-            image.height);
+        renderer::RendererResult uploaded;
+        if (execution_) {
+            rhi::semantics::ClientTextureUpload upload;
+            upload.contractVersion = 1;
+            upload.extent = {image.width, image.height, 1};
+            upload.bytesPerRow = packed.bytesPerRow;
+            upload.bytes = packed.pixels;
+            const auto result = execution_->uploadTexture(*owner.texture, upload);
+            uploaded = {result.success, result.diagnostics};
+        } else {
+            uploaded = renderer::uploadTextureRgba8(*device_,
+                *owner.texture,
+                packed.pixels.data(),
+                image.width,
+                image.height,
+                packed.bytesPerRow,
+                image.height);
+        }
         if (!uploaded.success) {
             diagnostics = uploaded.diagnostics;
             return false;
@@ -345,7 +287,7 @@ bool EditorSceneViewportSpriteRenderer::prepare(
             diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-ATLAS-DESCRIPTOR-CREATE-FAILED";
             return false;
         }
-        const auto& layoutDesc = pipeline_.layout->desc();
+        const auto& layoutDesc = activePipeline()->layout()->desc();
         if (layoutDesc.descriptorSets.size() != 1u || layoutDesc.descriptorLayouts.size() != 1u) {
             diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-ATLAS-LAYOUT-INVALID";
             return false;
@@ -372,6 +314,123 @@ bool EditorSceneViewportSpriteRenderer::prepare(
         }
         atlases_.push_back(std::move(owner));
     }
+    return true;
+}
+
+bool EditorSceneViewportSpriteRenderer::createOrdered(rhi::GpuDevice& device,
+    resource::ResourceManager& resources,
+    std::shared_ptr<rhi::RenderPipeline> pipeline,
+    std::shared_ptr<rhi::OriginalOrderedGraphicsExecution> execution,
+    std::uint32_t maxInstances,
+    std::uint32_t maxAtlases,
+    std::uint64_t maxUploadBytes,
+    core::pmr::String& diagnostics)
+{
+    if (device_ || !pipeline || !execution || weak_from_this().expired() || !maxInstances
+        || !maxAtlases || !maxUploadBytes) {
+        diagnostics = "EDITOR-SPRITE-ORDERED-CONFIG";
+        return false;
+    }
+    if (const auto* id = execution->diagnostic(device)) {
+        diagnostics = id;
+        return false;
+    }
+    const char* diagnostic = nullptr;
+    if (!execution->pipelineDefinition(*pipeline, diagnostic)) {
+        diagnostics = diagnostic ? diagnostic : "EDITOR-SPRITE-ORDERED-PIPELINE";
+        return false;
+    }
+    if (!createStorage(device, resources, maxInstances, maxAtlases, maxUploadBytes, diagnostics))
+        return false;
+    orderedPipeline_ = std::move(pipeline);
+    execution_ = std::move(execution);
+    atlases_.reserve(maxAtlases);
+    return true;
+}
+
+bool EditorSceneViewportSpriteRenderer::addPass(render_graph::FrameGraph& graph,
+    render_graph::TextureHandle color,
+    render_graph::TextureHandle depth,
+    const scene2d::SpriteDrawPlan& plan,
+    const core::pmr::Vector<scene2d::SpriteInstance>& projected,
+    core::pmr::String& diagnostics)
+{
+    if (!execution_ || !valid() || projected.size() != plan.instances().size()
+        || projected.size() > maxInstances_) {
+        diagnostics = "EDITOR-SPRITE-ORDERED-PLAN";
+        return false;
+    }
+    if (projected.empty())
+        return true;
+    if (const auto* id = execution_->resourceReuseDiagnostic(*instances_)) {
+        diagnostics = id;
+        return false;
+    }
+    const auto uploaded = device_->writeBuffer(
+        *instances_, projected.data(), projected.size() * sizeof(projected[0]));
+    if (!uploaded.success) {
+        diagnostics = uploaded.diagnostics;
+        return false;
+    }
+
+    struct Batch {
+        const rhi::DescriptorSet* set;
+        std::uint32_t first, count;
+    };
+
+    core::pmr::Vector<Batch> batches;
+    batches.reserve(plan.batches().size());
+    auto owner = shared_from_this();
+    auto pass = graph.addPass("EditorViewportSprite");
+    pass.writeAttachment(
+            color, rhi::ResourceState::ColorAttachment, rhi::LoadOp::Load, rhi::StoreOp::Store)
+        .writeAttachment(
+            depth, rhi::ResourceState::DepthAttachment, rhi::LoadOp::Load, rhi::StoreOp::Store);
+    for (auto* buffer : {instances_.get(), corners_.get()})
+        pass.access(graph.importBufferRef({owner, buffer}),
+            {rhi::ResourceState::ShaderRead,
+                rhi::PipelineStage::VertexInput,
+                rhi::ResourceAccess::VertexAttributeRead},
+            0,
+            buffer->desc().sizeBytes);
+    for (const auto& batch : plan.batches()) {
+        const auto atlas = std::find_if(atlases_.begin(), atlases_.end(), [&](const auto& value) {
+            return value.source.get() == batch.atlas.get();
+        });
+        if (atlas == atlases_.end()) {
+            diagnostics = "EDITOR-SPRITE-ORDERED-ATLAS";
+            return false;
+        }
+        pass.read(
+            graph.importTextureRef({owner, atlas->texture.get()}), rhi::ResourceState::ShaderRead);
+        batches.push_back({atlas->set.get(), batch.first, batch.count});
+    }
+    const auto extent = graph.texture(color).desc().extent;
+    pass.executeRenderPass(
+        [owner, batches = std::move(batches), extent](render_graph::RenderPassContext& context) {
+            auto& encoder = context.renderPass();
+            core::requireSuccessfulResult(
+                encoder.setPipeline(*owner->orderedPipeline_), "EDITOR-SPRITE-PIPELINE");
+            core::requireSuccessfulResult(
+                encoder.setViewport({0, 0, float(extent.width), float(extent.height), 0, 1}),
+                "EDITOR-SPRITE-VIEWPORT");
+            core::requireSuccessfulResult(
+                encoder.setScissor({0, 0, extent.width, extent.height}), "EDITOR-SPRITE-SCISSOR");
+            core::requireSuccessfulResult(
+                encoder.bindVertexBuffer(1, *owner->corners_), "EDITOR-SPRITE-CORNERS");
+            for (const auto& batch : batches) {
+                core::requireSuccessfulResult(
+                    encoder.bindDescriptorSet(0, *batch.set), "EDITOR-SPRITE-ATLAS");
+                core::requireSuccessfulResult(
+                    encoder.bindVertexBuffer(0,
+                        *owner->instances_,
+                        std::uint64_t(batch.first) * sizeof(scene2d::SpriteInstance)),
+                    "EDITOR-SPRITE-INSTANCES");
+                core::requireSuccessfulResult(
+                    encoder.draw(core::QuadTriangleTopology::vertexCount, batch.count, 0, 0),
+                    "EDITOR-SPRITE-DRAW");
+            }
+        });
     return true;
 }
 
@@ -444,6 +503,8 @@ EditorSceneViewportDrawExecutionResult EditorSceneViewportSpriteRenderer::record
             static_cast<std::int32_t>(viewport.y),
             viewport.width,
             viewport.height});
+    if (status.success)
+        status = pass->bindVertexBuffer(1u, *corners_);
     std::uint32_t drawCount = 0u;
     for (const auto& batch : plan.batches()) {
         const auto atlas = std::find_if(atlases_.begin(), atlases_.end(), [&](const auto& owner) {
@@ -483,8 +544,15 @@ EditorSceneViewportDrawExecutionResult EditorSceneViewportSpriteRenderer::record
 
 bool EditorSceneViewportSpriteRenderer::beforeResourceUnload(resource::NameView id) noexcept
 {
-    if (device_)
+    if (execution_) {
+        if (execution_->diagnostic(*device_))
+            return false;
+        for (const auto& atlas : atlases_)
+            if (execution_->resourceReuseDiagnostic(*atlas.texture))
+                return false;
+    } else if (device_) {
         device_->waitIdle();
+    }
     for (auto it = atlases_.begin(); it != atlases_.end(); ++it) {
         if (it->source.id() == id) {
             atlases_.erase(it);
@@ -496,8 +564,15 @@ bool EditorSceneViewportSpriteRenderer::beforeResourceUnload(resource::NameView 
 
 bool EditorSceneViewportSpriteRenderer::beforeRetiredResourcesRelease() noexcept
 {
-    if (device_)
+    if (execution_) {
+        if (execution_->diagnostic(*device_))
+            return false;
+        for (const auto& atlas : atlases_)
+            if (execution_->resourceReuseDiagnostic(*atlas.texture))
+                return false;
+    } else if (device_) {
         device_->waitIdle();
+    }
     return true;
 }
 

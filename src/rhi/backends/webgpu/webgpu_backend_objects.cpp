@@ -512,9 +512,12 @@ public:
         rhi::ShaderReflectionDesc reflection,
         rhi::PipelineValidationReport report,
         rhi::PrimitiveTopology primitiveTopology,
-        std::shared_ptr<WebGpuNativeRenderPipelinePayload> nativePayload)
+        std::shared_ptr<WebGpuNativeRenderPipelinePayload> nativePayload,
+        core::SharedPtr<const shader::GeneratedShaderArtifactSet> generatedArtifactSet = {})
         : layout_(layout), reflection_(std::move(reflection)), report_(std::move(report)),
-          primitiveTopology_(primitiveTopology), nativePayload_(std::move(nativePayload))
+          primitiveTopology_(primitiveTopology),
+          generatedArtifactSet_(std::move(generatedArtifactSet)),
+          nativePayload_(std::move(nativePayload))
     {}
 
     WebGpuRhiRenderPipeline(arp::core::UniquePtr<rhi::PipelineLayout> ownedLayout,
@@ -627,6 +630,7 @@ private:
     rhi::ShaderReflectionDesc reflection_;
     rhi::PipelineValidationReport report_;
     rhi::PrimitiveTopology primitiveTopology_ = rhi::PrimitiveTopology::TriangleList;
+    core::SharedPtr<const shader::GeneratedShaderArtifactSet> generatedArtifactSet_;
     std::shared_ptr<WebGpuNativeRenderPipelinePayload> nativePayload_;
     std::shared_ptr<const rhi::BindlessAuthorization> authorization_;
     const rhi::BindlessGraphicsPipelineEntries graphicsEntries_;
@@ -638,8 +642,10 @@ public:
     WebGpuRhiComputePipeline(const rhi::PipelineLayout* layout,
         rhi::ShaderReflectionDesc reflection,
         rhi::PipelineValidationReport report,
-        std::shared_ptr<WebGpuNativeComputePipelinePayload> nativePayload)
+        std::shared_ptr<WebGpuNativeComputePipelinePayload> nativePayload,
+        core::SharedPtr<const shader::GeneratedShaderArtifactSet> generatedArtifactSet = {})
         : layout_(layout), reflection_(std::move(reflection)), report_(std::move(report)),
+          generatedArtifactSet_(std::move(generatedArtifactSet)),
           nativePayload_(std::move(nativePayload))
     {}
 
@@ -684,6 +690,7 @@ private:
     const rhi::PipelineLayout* layout_ = nullptr;
     rhi::ShaderReflectionDesc reflection_;
     rhi::PipelineValidationReport report_;
+    core::SharedPtr<const shader::GeneratedShaderArtifactSet> generatedArtifactSet_;
     std::shared_ptr<WebGpuNativeComputePipelinePayload> nativePayload_;
     std::shared_ptr<const rhi::BindlessAuthorization> authorization_;
 };
@@ -1634,7 +1641,8 @@ arp::core::UniquePtr<rhi::RenderPipeline> createWebGpuRhiRenderPipeline(
                                 desc.shaderPackage->reflection,
                                 std::move(report),
                                 desc.topology,
-                                std::move(nativePayload))
+                                std::move(nativePayload),
+                                desc.shaderPackage->generatedArtifactSet)
                           : nullptr;
 }
 
@@ -1782,7 +1790,8 @@ arp::core::UniquePtr<rhi::ComputePipeline> createWebGpuRhiComputePipeline(
     return report.success ? arp::core::makeUnique<WebGpuRhiComputePipeline>(desc.layout,
                                 desc.shaderPackage->reflection,
                                 std::move(report),
-                                std::move(nativePayload))
+                                std::move(nativePayload),
+                                desc.shaderPackage->generatedArtifactSet)
                           : nullptr;
 }
 

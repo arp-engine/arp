@@ -2020,7 +2020,9 @@ void remoteTransactions(WorkflowFixture& fixture)
         true);
     assert(mcpLoad.body_text().find("\"isError\":false") != std::string_view::npos);
     // Drain this actual task before attempting project replacement.
-    const auto taskKey = mcpLoad.body_text().find("\"taskId\":");
+    const auto taskScope = mcpLoad.body_text().find("\"scenePersistenceTask\":{");
+    assert(taskScope != std::string_view::npos);
+    const auto taskKey = mcpLoad.body_text().find("\"taskId\":", taskScope);
     assert(taskKey != std::string_view::npos);
     const auto taskText = mcpLoad.body_text().substr(taskKey + 9);
     const auto taskId = std::stoull(std::string(taskText));

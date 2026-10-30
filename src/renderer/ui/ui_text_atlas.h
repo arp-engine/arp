@@ -4,6 +4,7 @@
 #include "renderer/render_frame.h"
 #include "renderer/ui/ui_draw_plan.h"
 #include "ui/ui_font.h"
+#include "ui/ui_font_source.h"
 
 #include <algorithm>
 #include <cmath>
@@ -17,6 +18,7 @@ struct UiTextAtlasBuildDesc {
     const arp::core::pmr::Vector<UiDrawCommand>* commands = nullptr;
     std::uint32_t maxWidth = 1024u;
     std::uint32_t maxHeight = 1024u;
+    const arp::ui::UiFontFaceDesc* fontFace = nullptr;
 };
 
 class UiTextAtlasBuildResult final {
@@ -123,11 +125,6 @@ public:
                 text("UI text atlas budget is smaller than the base atlas."));
         }
 
-        auto font = arp::ui::loadDefaultUiFontFace();
-        if (!font.ok()) {
-            return UiTextAtlasBuildResult::failure(font.diagnostic().message);
-        }
-
         arp::core::pmr::Vector<TextRun> runs{&arp::core::defaultCpuMemoryResource()};
         runs.reserve(desc.commands->size());
         std::uint32_t packedWidth = desc.baseAtlas.extent.width;
@@ -141,7 +138,13 @@ public:
                 continue;
             }
             arp::ui::UiFontRasterizeDesc rasterDesc;
-            rasterDesc.face = font.face().desc;
+            arp::core::pmr::String diagnostic;
+            if (!desc.fontFace
+                || !arp::ui::validatePreparedUiFontFace(*desc.fontFace, diagnostic)) {
+                return UiTextAtlasBuildResult::failure(
+                    desc.fontFace ? std::move(diagnostic) : text("UI-FONT-SOURCE-NOT-PREPARED"));
+            }
+            rasterDesc.face = *desc.fontFace;
             const auto sizePx = static_cast<std::uint32_t>(
                 std::max(6.0f, std::min(24.0f, command.rect.height - 4.0f)));
             rasterDesc.face.sizePx = sizePx;

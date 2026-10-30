@@ -1283,14 +1283,20 @@ void EditorShell::applyActivation(const core::pmr::String& source)
     } else if (source == "file_root") {
         navigateTo(projectBrowser_.root());
     } else if (source == "files_back") {
-        if (projectBrowser_.back()) {
+        if (projectBrowser_.sourceSnapshot()) {
+            (void)submitCommand(
+                NavigateProjectSourceCommand{ProjectBrowserModel::SourceNavigation::Back, {}});
+        } else if (projectBrowser_.back()) {
             selectedFilePath_.clear();
             fileScrollOffset_ = 0;
             lastClickedScriptPath_.clear();
             refreshFileSystem();
         }
     } else if (source == "files_forward") {
-        if (projectBrowser_.forward()) {
+        if (projectBrowser_.sourceSnapshot()) {
+            (void)submitCommand(
+                NavigateProjectSourceCommand{ProjectBrowserModel::SourceNavigation::Forward, {}});
+        } else if (projectBrowser_.forward()) {
             selectedFilePath_.clear();
             fileScrollOffset_ = 0;
             lastClickedScriptPath_.clear();

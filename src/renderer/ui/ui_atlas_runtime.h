@@ -134,6 +134,11 @@ public:
         runtime.logicalAtlasResourceId_ = arp::core::pmr::String(
             runtime.baseAtlas_.resourceId.c_str(), &arp::core::defaultCpuMemoryResource());
         if (desc.fontFaces != nullptr) {
+            for (const auto& face : *desc.fontFaces) {
+                if (!arp::ui::validatePreparedUiFontFace(face, runtime.diagnostics_)) {
+                    return runtime;
+                }
+            }
             runtime.fontFaces_ = *desc.fontFaces;
             runtime.textLayout_.setFontFaces(runtime.fontFaces_);
         }
@@ -177,6 +182,24 @@ public:
         runtime.glyphPageOriginY_ = runtime.baseAtlas_.extent.height;
         runtime.combinedAtlas_ =
             makeCombinedAtlas(runtime.baseAtlas_, desc.maxWidth, desc.maxHeight);
+        // Seed entries describe placement, not pixels. Rebuild their CPU atlas
+        // from retained sources before cache hits can expose the recovered image.
+        for (const auto& entry : runtime.glyphAtlas_.entries()) {
+            if (entry.pageIndex != 0u) {
+                runtime.diagnostics_ = text("UI-ATLAS-RECOVERY-PAGE-UNSUPPORTED");
+                return runtime;
+            }
+            GlyphQuad quad;
+            quad.glyph = entry.key;
+            quad.localRect = entry.atlasRect;
+            quad.rasterOriginX = entry.bearingX;
+            quad.rasterOriginY = entry.bearingY;
+            const auto written = runtime.writeGlyphPixels({}, quad, entry);
+            if (!written.ok()) {
+                runtime.diagnostics_ = written.diagnostics();
+                return runtime;
+            }
+        }
         runtime.ok_ = true;
 
         if (desc.commands != nullptr) {
@@ -278,12 +301,14 @@ public:
                 continue;
             }
             // Resolve the font size from the face (mirrors layoutKeyFor).
-            std::uint32_t sizePx = dimensionFor(command.rect.height);
-            bool sdfFont = false;
-            if (const auto* face = fontFaceFor(command.fontToken)) {
-                sizePx = face->sizePx;
-                sdfFont = (face->renderMode == "sdf");
+            const auto* face = fontFaceFor(command.fontToken);
+            if (!face) {
+                return UnifiedUiAtlasResolveResult::failure(
+                    text("Unified UI atlas runtime has no font face for token: ")
+                    + command.fontToken);
             }
+            const std::uint32_t sizePx = face->sizePx;
+            const bool sdfFont = face->renderMode == "sdf";
             // SDF fonts rasterize at a fixed sample size so one glyph entry
             // serves all render sizes. AlphaMask uses the face's sizePx.
             const auto rasterSizePx = sdfFont ? kSdfSampleSizePx : sizePx;
@@ -461,12 +486,27 @@ public:
         plan.seedEntries = &glyphAtlas_.entries();
         plan.seedPages = &glyphAtlas_.pages();
 
-        const auto estimatedBytes = static_cast<std::uint64_t>(plan.baseAtlas.rgba8.size())
+        auto estimatedBytes = static_cast<std::uint64_t>(plan.baseAtlas.rgba8.size())
             + static_cast<std::uint64_t>(glyphAtlas_.entries().size() * sizeof(GlyphAtlasEntry))
             + static_cast<std::uint64_t>(glyphAtlas_.pages().size() * sizeof(GlyphAtlasPage));
         if (estimatedBytes > policy.maxRecoveryDataBytes) {
             return UiResourceRecoveryPlanResult::failure(
                 text("UI resource recovery plan exceeds retained data budget."));
+        }
+        for (std::size_t i = 0; i < fontFaces_.size(); ++i) {
+            const auto& source = fontFaces_[i].source;
+            const auto duplicate = std::find_if(fontFaces_.begin(),
+                fontFaces_.begin() + static_cast<std::ptrdiff_t>(i),
+                [&](const auto& face) {
+                    return face.source == source;
+                });
+            if (!source || duplicate != fontFaces_.begin() + static_cast<std::ptrdiff_t>(i))
+                continue;
+            if (source->bytes().size() > policy.maxRecoveryDataBytes - estimatedBytes) {
+                return UiResourceRecoveryPlanResult::failure(
+                    text("UI resource recovery plan exceeds retained data budget."));
+            }
+            estimatedBytes += source->bytes().size();
         }
         return UiResourceRecoveryPlanResult::success(std::move(plan));
     }
@@ -707,26 +747,10 @@ private:
             resolved.lineHeightPx = std::max(rasterSizePx, resolved.lineHeightPx);
             return resolved;
         }
-        if (!fontFaces_.empty()) {
-            result.success = false;
-            result.message = text("Unified UI atlas runtime has no font face for token: ");
-            result.message += quad.glyph.fontToken;
-            return {};
-        }
-        auto font = arp::ui::loadDefaultUiFontFace();
-        if (!font.ok()) {
-            result.success = false;
-            result.message = font.diagnostic().message;
-            return {};
-        }
-        auto resolved = font.face().desc;
-        resolved.tokenId = quad.glyph.fontToken;
-        resolved.renderMode = quad.glyph.renderMode == GlyphRenderMode::Sdf ? "sdf" : "alpha";
-        const auto rasterSizePx =
-            (resolved.renderMode == "sdf") ? kSdfSampleSizePx : quad.glyph.sizePx;
-        resolved.sizePx = rasterSizePx;
-        resolved.lineHeightPx = std::max(rasterSizePx, resolved.lineHeightPx);
-        return resolved;
+        result.success = false;
+        result.message = text("Unified UI atlas runtime has no font face for token: ");
+        result.message += quad.glyph.fontToken;
+        return {};
     }
 
     arp::ui::LayoutRect normalizedGlyphAtlasRect(const arp::ui::LayoutRect& rect) const

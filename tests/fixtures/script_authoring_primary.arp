@@ -7,6 +7,10 @@ def read_probes() -> int:
     return probes
 
 
+def reset_probes():
+    probes = 0
+
+
 def field_probe() -> int:
     probes += 1
     return 77

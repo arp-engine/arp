@@ -90,6 +90,24 @@ int main(int argc, char** argv)
     using namespace arp::scriptvm;
     if (argc == 3 && std::string_view(argv[1]) == "--concurrent-child")
         return loadDynamicPackageForProcess(dynamicPackageDesc(argv[2])) ? 0 : 1;
+    if (argc == 2 && std::string_view(argv[1]) == "--host-text-smoke") {
+        auto desc = dynamicPackageDesc(
+            std::filesystem::path(ARP_AOT_DYNAMIC_TEST_CACHE).parent_path() / "aot-host-text");
+        auto invalid = desc;
+        invalid.hostTextBudget.contractVersion = 2;
+        ScriptAotPackageRegistry registry;
+        const auto rejected = WindowsDynamicScriptAotPackageLoader().load(invalid, registry);
+        if (rejected.status.ok()
+            || rejected.status.diagnostic().message != "ARP-PLUGIN-HOST-TEXT-CONFIG")
+            return 91;
+        WindowsDynamicScriptAotPackageResult first, cached;
+        if (!loadDynamicPackageForProcess(desc, &first)
+            || !loadDynamicPackageForProcess(desc, &cached) || !cached.cacheHit
+            || first.packageIdentity != cached.packageIdentity)
+            return 92;
+        std::puts("PluginHostText/1 native AOT registration and cache audit PASS");
+        return 0;
+    }
     if (argc != 1)
         return 90;
 

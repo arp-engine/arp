@@ -28,6 +28,7 @@ struct EditorSceneViewportMaterialTextureBinding {
     EditorSceneViewportTextureColorSpace colorSpace = EditorSceneViewportTextureColorSpace::Linear;
     rhi::GpuTextureView* view = nullptr;
     rhi::GpuSampler* sampler = nullptr;
+    rhi::GpuTexture* texture = nullptr;
 
     bool present() const noexcept
     {

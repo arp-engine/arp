@@ -12,6 +12,28 @@ namespace arp::resource {
 
 class AssetPackageCodecRegistry;
 
+// Complete acquired bytes with explicit logical root and mount generation.
+// Source entry points never inspect the host filesystem or fetch missing data.
+struct AssetPackageSourceContext {
+    ResourceLoadContext resources;
+    ResourceFileOrigin origin;
+};
+
+struct AssetPackageReadBudget {
+    std::size_t maxMetadataBytes = 0;
+    std::size_t maxResources = 0;
+    std::size_t maxFileReads = 0;
+    std::size_t maxFileBytes = 0;
+    std::size_t maxTotalBytes = 0;
+    std::size_t maxDecodedBytes = 0;
+};
+
+struct AssetPackageReadPlan {
+    bool success = false;
+    core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<ResourceFileReadIntent> reads{&core::defaultCpuMemoryResource()};
+};
+
 constexpr NameView kInternalAssetPackageFormat = "ArpInternalAssetPackage";
 constexpr std::uint32_t kInternalAssetPackageVersion = 1;
 
@@ -73,6 +95,14 @@ public:
     InternalAssetPackageValidationResult read(const std::filesystem::path& packageDirectory,
         std::size_t maxMetadataBytes = 0u,
         std::size_t maxResources = 0u) const;
+    InternalAssetPackageValidationResult readSources(const std::filesystem::path& packageDirectory,
+        const AssetPackageSourceContext& sources,
+        std::size_t maxMetadataBytes,
+        std::size_t maxResources) const;
+    AssetPackageReadPlan planSourceReads(const std::filesystem::path& directory,
+        const AssetPackageSourceContext& sources,
+        const AssetPackageReadBudget& budget,
+        core::SharedPtr<const AssetPackageCodecRegistry> codecs = {}) const;
 
     ResourceLoadResult load(const std::filesystem::path& packageDirectory,
         ResourceManager& manager,
@@ -81,6 +111,21 @@ public:
         ResourceManager& manager,
         core::SharedPtr<const AssetPackageCodecRegistry> codecs,
         ResourceLoadPolicy policy = {}) const;
+    ResourceLoadResult loadSources(const std::filesystem::path& packageDirectory,
+        ResourceManager& manager,
+        const AssetPackageSourceContext& sources,
+        core::SharedPtr<const AssetPackageCodecRegistry> codecs = {}) const;
+
+private:
+    InternalAssetPackageValidationResult readImpl(const std::filesystem::path& packageDirectory,
+        std::size_t maxMetadataBytes,
+        std::size_t maxResources,
+        const AssetPackageSourceContext* sources) const;
+    ResourceLoadResult loadImpl(const std::filesystem::path& packageDirectory,
+        ResourceManager& manager,
+        core::SharedPtr<const AssetPackageCodecRegistry> codecs,
+        ResourceLoadPolicy policy,
+        const AssetPackageSourceContext* sources) const;
 };
 
 } // namespace arp::resource

@@ -39,6 +39,10 @@ struct UiThemeResourceLoadDesc {
     arp::core::pmr::String resourceId{&arp::core::defaultCpuMemoryResource()};
     arp::core::pmr::String alias{&arp::core::defaultCpuMemoryResource()};
     arp::core::pmr::String status{&arp::core::defaultCpuMemoryResource()};
+    std::size_t maxThemeBytes = 1024u * 1024u;
+    arp::resource::ResourceFileOrigin origin;
+    // Independent explicit binding; an admitted atlas may live in another mount.
+    arp::resource::ResourceFileOrigin atlasMetadataOrigin;
 };
 
 struct UiThemeResource : public arp::resource::ResourceBase {
@@ -56,6 +60,7 @@ struct UiThemeResource : public arp::resource::ResourceBase {
 
     arp::resource::ResourceLoadResult load(arp::resource::ResourceManager& resourceManager,
         const arp::resource::ResourceLoadContext& context) override;
+    void appendContentFingerprint(core::StableHash64& hash) const noexcept override;
     bool collectFileReadIntents(arp::resource::ResourceManager& resourceManager,
         arp::core::pmr::Vector<arp::resource::ResourceFileReadIntent>& intents,
         arp::core::pmr::String& diagnostics) const override;

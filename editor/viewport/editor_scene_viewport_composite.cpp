@@ -2,16 +2,17 @@
 
 namespace arp::editor {
 
-bool EditorSceneViewportComposite::create(rhi::GpuDevice& device, const rhi::Extent2D extent)
+bool EditorSceneViewportComposite::create(
+    rhi::GpuDevice& device, const rhi::Extent2D extent, EditorSceneViewportSurfaceProfile profile)
 {
-    if (extent.width == 0u || extent.height == 0u
+    if (!profile.valid() || extent.width == 0u || extent.height == 0u
         || (ownerDevice_ != nullptr && ownerDevice_ != &device))
         return false;
 
     rhi::TextureDesc colorDesc;
     colorDesc.label = "ArpEditorSceneViewportColor";
     colorDesc.extent = {extent.width, extent.height, 1u};
-    colorDesc.format = rhi::TextureFormat::Rgba16Float;
+    colorDesc.format = profile.color;
     colorDesc.usage = rhi::TextureUsage::RenderAttachment | rhi::TextureUsage::Sampled;
     colorDesc.initialState = rhi::ResourceState::Undefined;
     auto color = device.createTexture(colorDesc);
@@ -19,7 +20,7 @@ bool EditorSceneViewportComposite::create(rhi::GpuDevice& device, const rhi::Ext
     rhi::TextureDesc depthDesc;
     depthDesc.label = "ArpEditorSceneViewportDepth";
     depthDesc.extent = colorDesc.extent;
-    depthDesc.format = rhi::TextureFormat::D32Float;
+    depthDesc.format = profile.depth;
     depthDesc.usage = rhi::TextureUsage::RenderAttachment;
     depthDesc.initialState = rhi::ResourceState::Undefined;
     auto depth = device.createTexture(depthDesc);

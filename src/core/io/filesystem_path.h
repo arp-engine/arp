@@ -9,6 +9,24 @@ namespace arp::core {
 
 class FilePath final {
 public:
+    // Lexical host-root admission only. Native IO verifies the actual object.
+    static bool isAbsoluteHostPath(std::string_view value) noexcept
+    {
+#if defined(_WIN32)
+        const auto separator = [](char c) {
+            return c == '/' || c == '\\';
+        };
+        const bool drive = value.size() >= 3
+            && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z'))
+            && value[1] == ':' && separator(value[2]);
+        const bool unc =
+            value.size() > 2 && separator(value[0]) && separator(value[1]) && !separator(value[2]);
+        return drive || unc;
+#else
+        return !value.empty() && value.front() == '/';
+#endif
+    }
+
     static bool isSafeRelativePath(std::string_view value, std::size_t maxBytes = 512u)
     {
         if (value.empty() || value.size() > maxBytes || value.front() == '/' || value.back() == '/'

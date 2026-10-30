@@ -93,6 +93,8 @@ def usage() -> string:
     output = output + "Commands: state | activate <source> | search <source> <value>\n"
     output = output + "          project.create <path> <manifest-yaml> [empty|2d|3d] [discard]\n"
     output = output + "          project.open <path> [discard] | project.close [discard]\n"
+    output = output + "          project.open.source <source> <relative-root> [discard] | project.io.cancel <taskId>\n"
+    output = output + "          project.directory.open <relative-directory> | project.directory.back | project.directory.forward | project.directory.refresh\n"
     output = output + "          project.rename <name> | project.save\n"
     output = output + "          project.settings.set <name> <entry-scene-id-or-none>\n"
     output = output + "          scene.save <path> [overwrite] | scene.load <path> [discard] | scene.task.get <taskId>\n"
@@ -117,6 +119,7 @@ def usage() -> string:
     output = output + "          scene.script.fields.set <objectId> <componentId> <resourceId> <scriptType> <moduleSchemaVersion> <enabled> <fields-yaml>\n"
     output = output + "          scene.component.property.set <objectId> <componentId> <property> <kind> <value-json>\n"
     output = output + "          scene.undo | scene.redo\n"
+    output = output + "          script.open <project-relative-path>\n"
     output = output + "          script.replace <documentId> <text> | script.save <documentId>\n"
     output = output + "          script.undo <documentId> | script.redo <documentId>\n"
     output = output + "          script.reload <documentId> [discard] | script.close <documentId> [discard]\n"
@@ -226,6 +229,29 @@ def main(args: [string], configured_url: string, configured_token: string) -> st
         if positional_count != 2:
             return cli_result("2", "error: " + command + " requires a documentId\n")
         body = "{\"schemaVersion\":1,\"command\":" + json_string(command) + ",\"documentId\":" + first + "}"
+    elif command == "project.open.source":
+        if positional_count != 3 and positional_count != 4:
+            return cli_result("2", "error: project.open.source requires source, relative root, and optional discard\n")
+        body = "{\"schemaVersion\":1,\"command\":\"project.open\",\"source\":" + json_string(first)
+        body = body + ",\"path\":" + json_string(second)
+        if positional_count == 4:
+            if third != "discard":
+                return cli_result("2", "error: explicit discard argument must be 'discard'\n")
+            body = body + ",\"discardChanges\":true"
+        body = body + "}"
+    elif command == "project.io.cancel":
+        if positional_count != 2:
+            return cli_result("2", "error: project.io.cancel requires taskId\n")
+        body = "{\"schemaVersion\":1,\"command\":\"project.io.cancel\",\"taskId\":" + first + "}"
+    elif command == "project.directory.open" or command == "script.open":
+        if positional_count != 2:
+            return cli_result("2", "error: " + command + " requires a project-relative path\n")
+        body = "{\"schemaVersion\":1,\"command\":" + json_string(command)
+        body = body + ",\"path\":" + json_string(first) + "}"
+    elif command == "project.directory.back" or command == "project.directory.forward" or command == "project.directory.refresh":
+        if positional_count != 1:
+            return cli_result("2", "error: directory history/refresh takes no arguments\n")
+        body = "{\"schemaVersion\":1,\"command\":" + json_string(command) + "}"
     elif command == "project.open" or command == "scene.load":
         if positional_count != 2 and positional_count != 3:
             return cli_result("2", "error: " + command + " requires a path and optional discard\n")

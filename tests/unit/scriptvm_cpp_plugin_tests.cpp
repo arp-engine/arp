@@ -1,5 +1,6 @@
 #include "core/math/math.h"
 #include "scriptvm/plugin/cpp_plugin_importer.h"
+#include "tests/fixtures/cpp_plugin_source_fixture.h"
 #if ARP_CPP_PLUGIN_DIFFERENTIAL_TEST
 #include "scriptvm/interpreter/eval.h"
 #include "tests/scriptvm_interpreter_test_fixture.h"
@@ -34,12 +35,21 @@ namespace {
 
 using namespace arp::scriptvm;
 
+unsigned shadowCalls = 0;
+
+int shadowEntry(ArpScriptPluginHostV2*)
+{
+    ++shadowCalls;
+    return 0;
+}
+
 } // namespace
 
 int main()
 {
     const std::filesystem::path root = ARP_SOURCE_DIR;
     arp::scriptvm::CppPluginImporterDesc desc;
+    arp::tests::bindMathPluginSources(desc, true);
     desc.sourceRoot = root / "tests" / "fixtures" / "scriptvm_cpp_plugin";
     desc.cacheRoot = std::filesystem::temp_directory_path() / "arp_scriptvm_cpp_plugin_tests";
     desc.includeRoot = root / "src";
@@ -81,6 +91,31 @@ int main()
     REQUIRE(exports->exportContractHash
         == arp::core::pmr::String("sha256:cpp-math-v2", &arp::core::defaultCpuMemoryResource()));
     REQUIRE(exports->moduleVersion == 1u);
+    {
+        StaticPluginCatalog catalog;
+        REQUIRE(catalog.add({"cpp_math", 2, 1, &shadowEntry, "shadow/1", {}, {}}));
+        ModuleRegistry precedence;
+        precedence.setCppPluginImporter(&importer);
+        precedence.setStaticPluginCatalog(&catalog);
+        REQUIRE(precedence.loadModule("cpp_math") == exports && shadowCalls == 0);
+    }
+    const auto nativeCycle = [&] {
+        ModuleRegistry lifetime;
+        lifetime.setCppPluginImporter(&importer);
+        return lifetime.loadModule("cpp_math") == exports;
+    };
+    for (unsigned i = 0; i < 20; ++i)
+        REQUIRE(nativeCycle());
+    const auto beforeNative = arp::core::defaultCpuAllocator().stats();
+    for (unsigned i = 0; i < 20; ++i)
+        REQUIRE(nativeCycle());
+    const auto afterNative = arp::core::defaultCpuAllocator().stats();
+    REQUIRE(beforeNative.liveBytes == afterNative.liveBytes
+        && beforeNative.allocationCount - beforeNative.deallocationCount
+            == afterNative.allocationCount - afterNative.deallocationCount);
+    std::printf("Native plugin registry 20+20 core bytes %llu -> %llu, live delta 0\n",
+        static_cast<unsigned long long>(beforeNative.liveBytes),
+        static_cast<unsigned long long>(afterNative.liveBytes));
 
     // Exercise both descriptor sources even in an AOT-only engine build.
     const auto* pointClass = exports->reflectionRegistration->types().front().classInfo;
@@ -131,7 +166,7 @@ int main()
     const auto missing = registry.loadModule(
         arp::core::pmr::String("missing", &arp::core::defaultCpuMemoryResource()));
     REQUIRE(missing == nullptr);
-    REQUIRE(!importer.lastDiagnostics().empty());
+    REQUIRE(!registry.lastDiagnostics().empty());
 
     const auto v1 = registry.loadModule(
         arp::core::pmr::String("cpp_math_v1", &arp::core::defaultCpuMemoryResource()));
@@ -174,6 +209,15 @@ int main()
     // flat import identifier used by the VM.
 #if ARP_CPP_PLUGIN_DIFFERENTIAL_TEST
     arp::scriptvm::CppPluginImporterDesc domainDesc;
+    domainDesc.sourceBudget = {16, 1024u * 1024u, 8u * 1024u * 1024u, 8u * 1024u * 1024u};
+    domainDesc.sourceBindings.push_back({"arp_core",
+        "arp.core_module.arpplugin",
+        {{"src/core/math/math.h",
+             arp::scriptvm::CppPluginHeaderRoot::IncludeRoot,
+             "core/math/math.h"},
+            {"src/scriptvm/bindings/script_types.h",
+                arp::scriptvm::CppPluginHeaderRoot::IncludeRoot,
+                "scriptvm/bindings/script_types.h"}}});
     domainDesc.sourceRoot = root / "modules";
     domainDesc.cacheRoot =
         std::filesystem::temp_directory_path() / "arp_scriptvm_domain_dynamic_plugin_tests";

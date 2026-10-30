@@ -61,6 +61,27 @@ EditorProjectResources::EditorProjectResources()
     : manager_(core::makeShared<resource::ResourceManager>())
 {}
 
+bool EditorProjectResources::prepareManager(const ProjectManifest& project,
+    core::SharedPtr<resource::ResourceManager>& candidate,
+    core::SharedPtr<physics2d::PhysicsWorld2D>& world,
+    core::SharedPtr<const resource::AssetPackageCodecRegistry>& codecs,
+    core::pmr::String& diagnostic)
+{
+    if (!candidate)
+        candidate = core::makeShared<resource::ResourceManager>();
+    if (project.physics2d) {
+        world = core::makeShared<physics2d::PhysicsWorld2D>(*project.physics2d);
+        if (!world->valid()) {
+            diagnostic = "EDITOR-PROJECT-PHYSICS2D-CREATE: ";
+            diagnostic += world->diagnostic();
+            return false;
+        }
+    }
+    const auto factory = ProjectSceneAuthoring::factory(*candidate, world, diagnostic);
+    codecs = factory ? ProjectSceneAuthoring::packageCodecs(factory, diagnostic) : nullptr;
+    return bool(codecs);
+}
+
 bool EditorProjectResources::bindSceneServices(
     EditorSceneDocument& document, core::pmr::String& diagnostic) const
 {
@@ -117,6 +138,7 @@ EditorProjectResourceLoadResult EditorProjectResources::load(
         physicsWorld2D_.reset();
         packageRoots_.clear();
         resourceLocations_ = {};
+        sourceSnapshot_.reset();
         manifestSnapshot_.clear();
         manifest_.reset();
         metadata_ = {};
@@ -218,23 +240,10 @@ EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
         }
     }
 
-    auto candidate = core::makeShared<resource::ResourceManager>();
+    core::SharedPtr<resource::ResourceManager> candidate;
     core::SharedPtr<physics2d::PhysicsWorld2D> candidatePhysicsWorld;
-    if (project.physics2d) {
-        candidatePhysicsWorld = core::makeShared<physics2d::PhysicsWorld2D>(*project.physics2d);
-        if (!candidatePhysicsWorld->valid()) {
-            result.diagnostics = "EDITOR-PROJECT-PHYSICS2D-CREATE: ";
-            result.diagnostics += candidatePhysicsWorld->diagnostic();
-            lastLoad_ = result;
-            return result;
-        }
-    }
-    const auto sceneFactory =
-        ProjectSceneAuthoring::factory(*candidate, candidatePhysicsWorld, result.diagnostics);
-    const auto codecs = sceneFactory
-        ? ProjectSceneAuthoring::packageCodecs(sceneFactory, result.diagnostics)
-        : nullptr;
-    if (!codecs) {
+    core::SharedPtr<const resource::AssetPackageCodecRegistry> codecs;
+    if (!prepareManager(project, candidate, candidatePhysicsWorld, codecs, result.diagnostics)) {
         lastLoad_ = result;
         return result;
     }
@@ -271,7 +280,8 @@ EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
             return result;
         }
         for (const auto& entry : package.package.entries) {
-            if (!definitionInputs.record(packagePath / std::filesystem::u8path(entry.envelopePath),
+            if (!definitionInputs.recordDecodedText(
+                    packagePath / std::filesystem::u8path(entry.envelopePath),
                     entry.envelopeYaml,
                     result.diagnostics)) {
                 lastLoad_ = result;
@@ -345,6 +355,7 @@ EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
     physicsWorld2D_ = std::move(candidatePhysicsWorld);
     packageRoots_ = std::move(candidatePackageRoots);
     resourceLocations_ = std::move(locations);
+    sourceSnapshot_.reset();
     manifestSnapshot_ = std::move(snapshot);
     manifest_ = std::move(project);
     metadata_ = std::move(metadata);
@@ -361,6 +372,7 @@ void EditorProjectResources::publishAssetPackages(EditorProjectResources&& candi
     manager_ = std::move(candidate.manager_);
     packageRoots_ = std::move(candidate.packageRoots_);
     resourceLocations_ = std::move(candidate.resourceLocations_);
+    sourceSnapshot_ = std::move(candidate.sourceSnapshot_);
     lastLoad_ = std::move(candidate.lastLoad_);
     manifestSnapshot_ = std::move(candidate.manifestSnapshot_);
     manifest_ = std::move(candidate.manifest_);
@@ -382,6 +394,8 @@ void EditorProjectResources::publishSavedSettings(
 bool EditorProjectResources::packageRootForResource(
     resource::NameView resourceId, std::filesystem::path& packageRoot) const
 {
+    if (sourceSnapshot_)
+        return false;
     const auto found = std::find_if(packageRoots_.begin(),
         packageRoots_.end(),
         [resourceId](const PackageResourceRoot& mapping) {

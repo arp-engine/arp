@@ -90,6 +90,7 @@ DiagnosticCode ClientRequest::diagnostic() const noexcept
 
 DiagnosticCode ClientRequest::set_uri(StringView uri)
 {
+    has_connection_endpoint_ = false;
     const auto parsed = Uri::parse(uri);
     if (!parsed.success()) {
         diagnostic_ = parsed.diagnostic;
@@ -102,6 +103,23 @@ DiagnosticCode ClientRequest::set_uri(StringView uri)
     uri_ = parsed.uri;
     diagnostic_ = rebuild_from_uri();
     return diagnostic_;
+}
+
+DiagnosticCode ClientRequest::set_connection_endpoint(const endpoint& remote) noexcept
+{
+    if (!success() || !remote.is_valid() || remote.is_ipv6() || remote.port() != uri_.port()) {
+        has_connection_endpoint_ = false;
+        diagnostic_ = DiagnosticCode::malformed_uri;
+        return diagnostic_;
+    }
+    connection_endpoint_ = remote;
+    has_connection_endpoint_ = true;
+    return DiagnosticCode::none;
+}
+
+const endpoint* ClientRequest::connection_endpoint() const noexcept
+{
+    return has_connection_endpoint_ ? &connection_endpoint_ : nullptr;
 }
 
 void ClientRequest::set_method(Method method) noexcept
@@ -160,13 +178,7 @@ StringView ClientRequest::host_header() const noexcept
 
 DiagnosticCode ClientRequest::rebuild_from_uri()
 {
-    core::pmr::String target{&core::defaultCpuMemoryResource()};
-    appendView(target, uri_.path().empty() ? StringView("/") : uri_.path());
-    if (!uri_.query().empty()) {
-        target.push_back('?');
-        appendView(target, uri_.query());
-    }
-    message_.set_target(target);
+    message_.set_target(uri_.request_target());
 
     host_header_.clear();
     if (hostNeedsBrackets(uri_.host())) {

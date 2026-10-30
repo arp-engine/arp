@@ -1202,7 +1202,9 @@ int main()
     assert(mcpGetUnsupported.first == 405);
 
     const auto taskIdFrom = [](std::string_view body) {
-        const auto key = body.find("\"taskId\":");
+        const auto task = body.find("\"scenePersistenceTask\":{");
+        assert(task != std::string_view::npos);
+        const auto key = body.find("\"taskId\":", task);
         assert(key != std::string_view::npos);
         const auto start = key + sizeof("\"taskId\":") - 1u;
         const auto end = body.find_first_not_of("0123456789", start);

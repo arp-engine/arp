@@ -385,8 +385,8 @@ ResourceLoadResult VegetationCatalogResource::load(
     ResourceManager& resourceManager, const ResourceLoadContext& context)
 {
     if (loadDesc.input == VegetationCatalogInput::Cooked) {
-        auto decoded =
-            VegetationCatalogCookedCodec().decode(reference(), loadDesc.catalogPath, context);
+        auto decoded = VegetationCatalogCookedCodec().decode(
+            reference(), loadDesc.catalogPath, context, loadDesc.sourceOrigin);
         if (!decoded.success)
             return {false,
                 ResourceState::Failed,
@@ -406,7 +406,9 @@ ResourceLoadResult VegetationCatalogResource::load(
         return ResourceBase::load(resourceManager, context);
     }
     if (loadDesc.input != VegetationCatalogInput::LegacySourceCatalog
-        || context.requirePreloadedSources || context.maxDecodedBytes)
+        || context.requirePreloadedSources || context.maxDecodedBytes
+        || loadDesc.sourceOrigin.pathScope != core::io::FilePathScope::HostFilesystem
+        || loadDesc.sourceOrigin.mount)
         return resourceLoadFailure(*this, "VEGETATION-LEGACY-SOURCE-CONTRACT-UNSUPPORTED");
     registerVegetationCatalogReflection();
 
@@ -782,13 +784,39 @@ bool VegetationCatalogResource::collectFileReadIntents(ResourceManager&,
         diagnostics = "VEGETATION-LEGACY-SOURCE-CONTRACT-UNSUPPORTED";
         return false;
     }
-    auto index = VegetationCatalogCookedCodec().inspect(reference(), loadDesc.catalogPath);
+    auto index = VegetationCatalogCookedCodec().inspect(
+        reference(), loadDesc.catalogPath, {}, loadDesc.sourceOrigin);
     diagnostics = std::move(index.diagnostics);
     if (!index.success)
         return false;
     intents.insert(intents.end(),
         std::make_move_iterator(index.files.begin()),
         std::make_move_iterator(index.files.end()));
+    return true;
+}
+
+bool VegetationCatalogResource::planFileReadIntents(ResourceManager&,
+    const ResourceLoadContext& context,
+    core::pmr::Vector<ResourceFileReadIntent>& intents,
+    core::pmr::String& diagnostics) const
+{
+    if (loadDesc.input != VegetationCatalogInput::Cooked) {
+        diagnostics = "VEGETATION-LEGACY-SOURCE-CONTRACT-UNSUPPORTED";
+        return false;
+    }
+    const auto path = core::FilePath::utf8(loadDesc.catalogPath);
+    if (!context.sources || !context.sources->find(path))
+        return appendResourceReadIntent(path,
+            VegetationCatalogCookedCodec::maxManifestBytes,
+            intents,
+            diagnostics,
+            loadDesc.sourceOrigin);
+    auto index = VegetationCatalogCookedCodec().inspect(
+        reference(), loadDesc.catalogPath, context, loadDesc.sourceOrigin);
+    diagnostics = std::move(index.diagnostics);
+    if (!index.success)
+        return false;
+    intents = std::move(index.files);
     return true;
 }
 

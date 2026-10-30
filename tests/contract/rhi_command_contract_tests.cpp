@@ -83,7 +83,7 @@ int main()
     auto pipelineLayout = device->createPipelineLayout(pipelineLayoutDesc);
     assert(pipelineLayout);
 
-    auto shaderPackage = arp::rhi::test::makePushContractShaderPackage();
+    auto shaderPackage = arp::rhi::test::makePushContractShaderPackage(true);
     assert(validateShaderPackage(shaderPackage).success);
 
     auto invalidContractReflection = shaderPackage.reflection;

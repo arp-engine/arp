@@ -31,6 +31,7 @@
 #include "rhi/semantics/native_pipeline_state_lowering.h"
 #include "rhi/semantics/original_synchronous_pipeline_creation_lowering.h"
 #include "rhi/semantics/push_constant_validation.h"
+#include "shader/generated_shader_artifact_set.h"
 #include "shader/shader_pipeline_reflection_validator.h"
 #include "shader/shader_reflection_cache.h"
 #include "shader/single_entry_shader_artifact.h"
@@ -169,7 +170,6 @@ MetalBindingSpaceLoadResult loadMetalBindingSpace(const rhi::ShaderPackageDesc& 
     bool retainEntryPoints = true)
 {
     MetalBindingSpaceLoadResult result;
-    shader::ShaderReflectionCacheLoadResult cached;
     if (verifiedReflection) {
         const auto reflectionValidation =
             shader::ShaderPipelineReflectionValidator::validateGeneratedArtifact(
@@ -180,30 +180,15 @@ MetalBindingSpaceLoadResult loadMetalBindingSpace(const rhi::ShaderPackageDesc& 
             return result;
         }
     } else {
-        if (package.artifacts.reflectionPath.empty()) {
-            result.diagnostics = "Metal RHI requires a generated reflection artifact path";
-            return result;
-        }
-        cached = shader::ShaderReflectionCache::loadFromFile(package.artifacts.reflectionPath);
-        if (!cached.success) {
-            result.diagnostics = "Metal RHI could not load reflection artifact: ";
-            result.diagnostics += cached.diagnostics;
-            return result;
-        }
-        const auto artifactIdentityValidation =
-            shader::ShaderPipelineReflectionValidator::validateGeneratedArtifact(cached.module,
-                package.slangModulePath,
-                package.artifacts.spirvPath,
-                package.artifacts.mslPath,
-                package.artifacts.wgslPath);
-        if (!artifactIdentityValidation.success) {
-            result.diagnostics = "Metal RHI reflection artifact identity validation failed: ";
-            result.diagnostics += artifactIdentityValidation.diagnostics;
+        const auto input = rhi::validateGeneratedShaderPackageInput(package);
+        if (!input.success) {
+            result.diagnostics = input.diagnostics;
             return result;
         }
     }
-    const auto& cachedReflection =
-        verifiedReflection ? *verifiedReflection : cached.module.reflection;
+    const auto& cachedReflection = verifiedReflection
+        ? *verifiedReflection
+        : package.generatedArtifactSet->module().reflection;
     const auto pushMemberValidation =
         shader::ShaderPipelineReflectionValidator::validateGeneratedArtifact(cachedReflection);
     if (!pushMemberValidation.success) {
@@ -1006,6 +991,8 @@ private:
     rhi::RenderPipelineDesc desc_;
     rhi::PipelineValidationReport report_;
     rhi::ShaderReflectionDesc reflection_;
+    core::SharedPtr<const shader::GeneratedShaderArtifactSet> generatedArtifactSet_ =
+        desc_.shaderPackage ? desc_.shaderPackage->generatedArtifactSet : nullptr;
     std::shared_ptr<MetalRhiNativePipelinePayload> nativePayload_;
     rhi::semantics::DirectObjectTelemetryLease telemetryLease_;
     rhi::semantics::DirectObjectBudgetLease budgetLease_;
@@ -1068,6 +1055,8 @@ private:
     rhi::ComputePipelineDesc desc_;
     rhi::PipelineValidationReport report_;
     rhi::ShaderReflectionDesc reflection_;
+    core::SharedPtr<const shader::GeneratedShaderArtifactSet> generatedArtifactSet_ =
+        desc_.shaderPackage ? desc_.shaderPackage->generatedArtifactSet : nullptr;
     std::shared_ptr<MetalRhiNativePipelinePayload> nativePayload_;
     rhi::semantics::DirectObjectTelemetryLease telemetryLease_;
     rhi::semantics::DirectObjectBudgetLease budgetLease_;

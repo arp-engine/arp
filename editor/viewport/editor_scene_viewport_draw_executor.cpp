@@ -1,5 +1,7 @@
 #include "editor/viewport/editor_scene_viewport_draw_executor.h"
 
+#include "editor/viewport/editor_scene_viewport_surface_profile.h"
+
 #include <limits>
 
 namespace arp::editor {
@@ -45,8 +47,8 @@ EditorSceneViewportDrawExecutionResult recordEditorSceneViewportPass(rhi::GpuDev
     const auto depthExtent = depthTarget.desc().extent;
     if (depthExtent.width != colorExtent.width || depthExtent.height != colorExtent.height
         || depthExtent.depth != colorExtent.depth
-        || colorTarget.desc().format != rhi::TextureFormat::Rgba16Float
-        || depthTarget.desc().format != rhi::TextureFormat::D32Float
+        || !EditorSceneViewportSurfaceProfile{colorTarget.desc().format, depthTarget.desc().format}
+            .valid()
         || colorTarget.desc().sampleCount != 1u || depthTarget.desc().sampleCount != 1u) {
         return fail("ARP-EDITOR-VIEWPORT-ATTACHMENT-CONTRACT-MISMATCH");
     }
@@ -164,29 +166,9 @@ EditorSceneViewportDrawExecutionResult recordEditorSceneViewportPass(rhi::GpuDev
                 return fail("ARP-EDITOR-VIEWPORT-SUBMESH-RANGE-INVALID");
             }
 
-            struct PushConstants {
-                core::Mat4 viewProjection;
-                core::Mat4 model;
-                core::Mat4 normalTransform;
-                std::array<float, 4> cameraPosition;
-                std::array<float, 4> baseColorFactor;
-                std::array<float, 4> emissiveMetallic;
-                std::array<float, 4> roughnessOcclusionAlphaCutoffMode;
-            };
-
-            static_assert(sizeof(PushConstants) == 256u);
-            const PushConstants push{item.viewProjection,
-                item.model,
-                item.normalTransform,
-                item.cameraPosition,
-                item.baseColorFactor,
-                item.emissiveMetallic,
-                item.roughnessOcclusionAlphaCutoffMode};
-            const auto pushResult =
-                pass->pushConstants(rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment,
-                    0u,
-                    sizeof(PushConstants),
-                    &push);
+            const auto push = buildEditorSceneViewportPbrPush(item);
+            const auto pushResult = pass->pushConstants(
+                rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, 0u, sizeof(push), &push);
             if (!pushResult.success) {
                 pass->end();
                 return fail("ARP-EDITOR-VIEWPORT-PUSH-CONSTANTS-FAILED");

@@ -2,8 +2,37 @@
 
 #include "core/io/filesystem_path.h"
 #include "resource/prefab_asset_resources.h"
+#include "resource/resource_source_io.h"
 
 namespace arp::resource {
+
+AssetPackagePayloadIndex AssetPackageCodec::inspectSources(const InternalAssetPackageEntry&,
+    const std::filesystem::path&,
+    const AssetPackageSourceContext&) const
+{
+    AssetPackagePayloadIndex result;
+    result.diagnostics = "PACKAGE-CODEC-PRELOADED-SOURCES-UNSUPPORTED";
+    return result;
+}
+
+bool AssetPackageCodec::planSourceReads(const InternalAssetPackageEntry&,
+    const std::filesystem::path&,
+    const AssetPackageSourceContext&,
+    core::pmr::Vector<ResourceFileReadIntent>&,
+    core::pmr::String& diagnostic) const
+{
+    diagnostic = "PACKAGE-CODEC-SOURCE-PLANNING-UNSUPPORTED";
+    return false;
+}
+
+core::UniquePtr<ResourceBase> AssetPackageCodec::prepareSources(const InternalAssetPackageEntry&,
+    const std::filesystem::path&,
+    const AssetPackageSourceContext&,
+    core::pmr::String& diagnostic) const
+{
+    diagnostic = "PACKAGE-CODEC-PRELOADED-SOURCES-UNSUPPORTED";
+    return {};
+}
 
 AssetPackageCodecRegistry::AssetPackageCodecRegistry(std::size_t capacity) : capacity_(capacity)
 {
@@ -88,16 +117,20 @@ AssetPackagePayloadIndex AssetPackagePayloadInspector::inspect(
     if (codecs_)
         if (const auto* codec = codecs_->find(entry.resourceType)) {
             try {
-                result = codec->inspect(entry, root_);
+                result = preloaded_ ? codec->inspectSources(entry, root_, sources_)
+                                    : codec->inspect(entry, root_);
                 if (!result.success)
                     return result;
-                const auto root = std::filesystem::canonical(root_);
+                const auto root = preloaded_ ? root_ : std::filesystem::canonical(root_);
                 for (const auto& file : result.files) {
+                    std::filesystem::path bound;
                     if (file.find('\0') != core::pmr::String::npos
                         || !core::FilePath::isSafeRelativePath(file)
-                        || !core::FilePath::contains(root,
-                            std::filesystem::canonical(
-                                root / std::filesystem::path(file.c_str())))) {
+                        || (preloaded_
+                                ? !resolveResourceSourcePath(root, file, sources_.origin, bound)
+                                : !core::FilePath::contains(root,
+                                      std::filesystem::canonical(root
+                                          / std::filesystem::u8path(file.begin(), file.end()))))) {
                         result.success = false;
                         result.diagnostics = "PACKAGE-CODEC-UNSAFE-FILE-BINDING";
                         return result;

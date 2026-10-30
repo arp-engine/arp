@@ -1,7 +1,10 @@
 #include "3d/components.h"
 #include "core/encoding/yaml_contract.h"
 #include "core/io/file_io.h"
+#include "core/io/memory_file_backend.h"
+#include "core/io/mounted_file_backend.h"
 #include "editor/tests/fixtures/project_fixture.h"
+#include "editor/tests/fixtures/project_source_acquisition_fixture.h"
 #include "editor/tests/fixtures/recovery_fixture.h"
 #include "editor/viewport/editor_scene_viewport_frame_builder.h"
 #include "editor/viewport/editor_scene_viewport_mesh_cache.h"
@@ -16,6 +19,7 @@
 #include "editor/workspace/editor_terrain_preview.h"
 #include "resource/terrain_asset_resource.h"
 #include "rhi/backends/null/null_backend.h"
+#include "tests/fixtures/unified_io_fixture.h"
 
 #include <algorithm>
 #include <cassert>
@@ -358,6 +362,97 @@ void checkCamera()
     assert(!camera.frameBounds({0, 0, 0}, {1, 1, 1}, std::numeric_limits<float>::quiet_NaN()));
     assert(camera.distance() == distance && core::distance(camera.target(), target) == 0);
 }
+
+void checkSources(const std::filesystem::path& root)
+{
+    editor::EditorProjectResources native;
+    assert(native.load(root).success);
+    auto memory = core::makeShared<core::io::MemoryFileBackend>(
+        core::io::MemoryFileBackendDesc{128, 4 * 1024 * 1024, 1, 1024 * 1024, 1024});
+    core::pmr::Vector<core::pmr::String> paths{"project.arp.yaml"};
+    for (const auto& input : native.inputBindings())
+        paths.push_back(input.path);
+    core::pmr::Vector<core::pmr::String> directories{"mounted-terrain"};
+    for (const auto& path : paths) {
+        auto parent = (std::filesystem::path("mounted-terrain") / std::filesystem::u8path(path))
+                          .parent_path();
+        while (!parent.empty()) {
+            const auto text = core::FilePath::utf8(parent);
+            if (std::find(directories.begin(), directories.end(), text) == directories.end())
+                directories.push_back(text);
+            parent = parent.parent_path();
+        }
+    }
+    std::sort(directories.begin(), directories.end());
+    for (const auto& directory : directories)
+        assert(memory->registerDirectory(directory) == core::io::FileIoStatus::Success);
+    for (const auto& path : paths) {
+        const auto bytes = core::readBinaryFile(root / std::filesystem::u8path(path), 1024 * 1024);
+        assert(bytes.success
+            && memory->registerFile(
+                   "mounted-terrain/" + path, bytes.bytes.data(), bytes.bytes.size())
+                == core::io::FileIoStatus::Success);
+    }
+    core::runtime::CompletionQueue queue{{8}};
+    core::io::MountedFileBackend mounts{{1, 1, 1024 * 1024, 64, 1024}};
+    core::io::FileService files(queue, mounts);
+    const auto mount = mounts.mount("terrain", memory);
+    assert(mount && !std::filesystem::exists("mounted-terrain"));
+    const auto acquire = [&](bool omitImage) {
+        if (!omitImage)
+            return editor::tests::ProjectSourceAcquisitionFixture::acquire(files,
+                queue,
+                {mount, "mounted-terrain", 1},
+                {128, 1024 * 1024, 4 * 1024 * 1024},
+                4 * 1024 * 1024);
+        editor::ProjectSourceSession session(
+            files, {mount, "mounted-terrain", 1}, {128, 1024 * 1024, 4 * 1024 * 1024});
+        for (const auto& path : paths) {
+            if (omitImage && path == "map.png")
+                continue;
+            assert(session.read(path, 1024 * 1024) == core::io::FileIoStatus::Accepted);
+            unified_io_fixture::wait(queue, [&] {
+                return session.state() != editor::ProjectSourceState::Pending;
+            });
+            assert(session.state() == editor::ProjectSourceState::Ready);
+        }
+        auto result = session.finish(1);
+        assert(result);
+        return result;
+    };
+    editor::EditorProjectResources mounted;
+    const auto snapshot = acquire(false);
+    const auto loaded = mounted.loadSources(snapshot, files, 1);
+    if (!loaded.success)
+        std::fprintf(stderr, "mounted terrain: %s\n", loaded.diagnostics.c_str());
+    assert(loaded.success);
+    assert(editor::ProjectInputSnapshot::equal(native.inputBindings(), mounted.inputBindings()));
+    const auto getPreview = [](const auto& resources) {
+        return dynamic_cast<const editor::EditorTerrainPreviewMaterial*>(
+            resources.manager().template find<resource::MaterialResource>(previewId).get());
+    };
+    const auto* expected = getPreview(native);
+    const auto* actual = getPreview(mounted);
+    assert(expected && actual && expected->tiles.size() == actual->tiles.size());
+    for (std::size_t i = 0; i < expected->tiles.size(); ++i) {
+        const auto a =
+            native.manager().find<resource::MaterialResource>(expected->tiles[i].materialId);
+        const auto b =
+            mounted.manager().find<resource::MaterialResource>(actual->tiles[i].materialId);
+        const auto imageA =
+            native.manager().find<resource::TextureResource>(a.get()->baseColorTextureId);
+        const auto imageB =
+            mounted.manager().find<resource::TextureResource>(b.get()->baseColorTextureId);
+        assert(imageA.ready() && imageB.ready()
+            && imageA.get()->decodedRgba8 == imageB.get()->decodedRgba8);
+    }
+    const auto owner = mounted.retainManager();
+    assert(
+        !mounted.loadSources(acquire(true), files, 1).success && mounted.retainManager() == owner);
+    assert(!std::filesystem::exists("mounted-terrain"));
+    std::puts(
+        "PASS mounted terrain uses acquired PNG/tile bytes, preserves raw identities and rejects omitted image without host fallback");
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -442,6 +537,7 @@ int main(int argc, char** argv)
         core::pmr::String(arp::editor::tests::ProjectFixture::document("assetPackages: []\n"
                                                                        "physics2d: null\n",
             "editor-project.yaml")));
+    checkSources(root);
     check(root, terrainId, previewId, true);
     checkBrowser(root);
     editor::EditorProjectResources owner;

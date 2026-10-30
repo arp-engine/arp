@@ -5,6 +5,7 @@
 #include "editor/ui/editor_atlas_layout.h"
 #include "editor/workspace/editor_shell.h"
 #include "ui/ui_font.h"
+#include "ui/ui_font_source.h"
 
 #include <initializer_list>
 
@@ -127,6 +128,14 @@ EditorUiAssets EditorUiAssets::build(EditorShell& shell,
         || cjkCodeFont.sourcePath.empty())
         return failure("FONTS",
             "Required UI fonts were not found. Install the platform sans, monospace and CJK fonts.");
+    // Capture the selected platform files once during cold asset preparation.
+    // Rendering and recovery retain these owners instead of reopening paths.
+    for (auto* face : {&font, &semibold, &codeFont, &cjkCodeFont}) {
+        core::pmr::String diagnostic;
+        face->source = ui::acquireUiFontSource(*face, diagnostic);
+        if (!face->source)
+            return failure("FONT-SOURCE", diagnostic);
+    }
     fonts.push_back(std::move(font));
     fonts.push_back(std::move(semibold));
     // Text runs are laid out against the SDF source size, then scaled to the

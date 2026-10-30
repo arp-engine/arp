@@ -1,4 +1,5 @@
 #pragma once
+#include "core/container/array_view.h"
 #include "rhi/semantics/ordered_command_issue.h"
 
 namespace arp::rhi::semantics {
@@ -12,6 +13,9 @@ struct WebGlPreparedCommandsRequest {
     OrderedCommandIssueBudget issue;
     std::uint32_t maxPipelines = 0;
     std::uint32_t maxTargets = 0, maxPasses = 0, maxTransitions = 0;
+    // Version5 bounds heterogeneous pass-local layouts. Counts are capacities,
+    // never descriptor-set or vertex-stream slot numbers.
+    std::uint32_t maxVertexStreams = 0, maxDescriptorSets = 0, maxSampledTextures = 0;
 };
 
 using PreparedGraphicsCommandsRequest = WebGlPreparedCommandsRequest;
@@ -20,8 +24,13 @@ class PreparedGraphicsCommandsContract final {
 public:
     static const char* validate(const PreparedGraphicsCommandsRequest& r) noexcept
     {
-        if (r.contractVersion < 1 || r.contractVersion > 4)
+        if (r.contractVersion < 1 || r.contractVersion > 5)
             return "RHI-WEBGL1-PREPARED-COMMAND-VERSION";
+        if ((r.contractVersion < 5
+                && (r.maxVertexStreams || r.maxDescriptorSets || r.maxSampledTextures))
+            || (r.contractVersion == 5
+                && (!r.maxVertexStreams || !r.maxDescriptorSets || !r.maxSampledTextures)))
+            return "RHI-ORDERED-GRAPHICS-CATALOG-BUDGET";
         if ((r.contractVersion == 1 && r.maxPipelines)
             || (r.contractVersion >= 2 && !r.maxPipelines))
             return "RHI-WEBGL1-PREPARED-PIPELINE-BUDGET";
@@ -52,6 +61,48 @@ public:
         if (r.contractVersion < 4)
             return "RHI-WEBGL1-PREPARED-PIPELINE-ABI-MISMATCH";
         return boundInPass ? "RHI-ORDERED-GRAPHICS-ABI-PASS-BOUNDARY-REQUIRED" : nullptr;
+    }
+};
+
+struct PreparedGraphicsCatalogShape {
+    std::size_t vertexStreams = 0, descriptorSets = 0, sampledTextures = 0;
+    bool topologyMatchesFirst = true;
+};
+
+struct PreparedGraphicsCatalogDecision {
+    std::size_t vertexStreams = 0, descriptorSets = 0, sampledTextures = 0;
+    const char* diagnostic = nullptr;
+};
+
+// Original pipeline/layout owners supply these facts. This decision only
+// sizes CPU custody; it grants no native execution or GPU completion.
+class PreparedGraphicsCatalogContract final {
+public:
+    static PreparedGraphicsCatalogDecision assess(const PreparedGraphicsCommandsRequest& request,
+        core::ArrayView<PreparedGraphicsCatalogShape> shapes) noexcept
+    {
+        PreparedGraphicsCatalogDecision result;
+        if (const auto* id = PreparedGraphicsCommandsContract::validate(request))
+            return {0, 0, 0, id};
+        if (!shapes.data() || shapes.empty()
+            || shapes.size() > (request.contractVersion == 1 ? 1 : request.maxPipelines))
+            return {0, 0, 0, "RHI-WEBGL1-PREPARED-PIPELINE-CAPACITY"};
+        for (const auto& shape : shapes) {
+            if (request.contractVersion < 5 && !shape.topologyMatchesFirst)
+                return {0, 0, 0, "RHI-ORDERED-GRAPHICS-CATALOG-TOPOLOGY"};
+            if (shape.vertexStreams > result.vertexStreams)
+                result.vertexStreams = shape.vertexStreams;
+            if (shape.descriptorSets > result.descriptorSets)
+                result.descriptorSets = shape.descriptorSets;
+            if (shape.sampledTextures > result.sampledTextures)
+                result.sampledTextures = shape.sampledTextures;
+        }
+        if (request.contractVersion == 5
+            && (result.vertexStreams > request.maxVertexStreams
+                || result.descriptorSets > request.maxDescriptorSets
+                || result.sampledTextures > request.maxSampledTextures))
+            return {0, 0, 0, "RHI-ORDERED-GRAPHICS-CATALOG-CAPACITY"};
+        return result;
     }
 };
 } // namespace arp::rhi::semantics

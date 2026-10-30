@@ -127,7 +127,9 @@ std::shared_ptr<WebGlRenderPipeline::Impl> WebGlRenderPipeline::prepare(
                  extensions.instancing,
                  extensions.vertexArrayObjects,
                  extensions.depthTextures,
-                 extensions.derivatives})
+                 extensions.derivatives,
+                 extensions.fragmentDepth,
+                 extensions.srgbTextures})
             r.pipelineCacheKey = hashShaderValue(r.pipelineCacheKey, enabled);
         for (const auto byte : artifact->identity())
             r.pipelineCacheKey = hashShaderValue(r.pipelineCacheKey, byte);

@@ -735,6 +735,17 @@ CommandValidationResult RenderPass::setPipeline(const RenderPipeline& value)
         s.sampled.resize(units);
         s.sampledShapes.resize(units);
     }
+    if (s.request.contractVersion == 5 && !s.bound) {
+        // Capacities came from the original catalog during prepare. Never carry
+        // another pass's slot identities or borrowed bindings into this pass.
+        s.vertices.clear();
+        s.vertices.resize(p->impl->vertexInput.streams().size());
+        s.sets.clear();
+        for (const auto& slot : p->impl->layout->definition.descriptorSets) {
+            auto& binding = s.sets.emplace_back();
+            binding.set = slot.set;
+        }
+    }
     s.pipeline = p->impl;
     s.bound = true;
     const auto& d = s.pipeline->definition;
@@ -1801,8 +1812,9 @@ core::UniquePtr<CommandEncoder> WebGlExecution::prepare(WebGlResources& resource
         diagnostic = "RHI-WEBGL1-PREPARED-DYNAMIC-RECTANGLES-REQUIRED";
         return {};
     }
-    if (bool(target->impl_->depthStencil)
-        != (p->impl->definition.depthFormat != TextureFormat::Unknown)) {
+    if (request.contractVersion < 5
+        && bool(target->impl_->depthStencil)
+            != (p->impl->definition.depthFormat != TextureFormat::Unknown)) {
         diagnostic = "RHI-WEBGL1-PREPARED-PIPELINE-ATTACHMENT-MISMATCH";
         return {};
     }
@@ -1829,7 +1841,8 @@ core::UniquePtr<CommandEncoder> WebGlExecution::prepare(WebGlResources& resource
                 matches = a[i].slot == b[i].slot;
             for (std::size_t i = 0; matches && i < x.size(); ++i)
                 matches = x[i].set == y[i].set;
-            if (!matches || !candidate->impl->definition.dynamicViewportScissor) {
+            if ((request.contractVersion == 4 && !matches)
+                || !candidate->impl->definition.dynamicViewportScissor) {
                 diagnostic = "RHI-ORDERED-GRAPHICS-CATALOG-TOPOLOGY";
                 return {};
             }
@@ -1910,13 +1923,26 @@ core::UniquePtr<CommandEncoder> WebGlExecution::prepare(WebGlResources& resource
                 WebGlRenderPipeline::program(*s->pipelines[i]).artifact->textureUnits().size());
             s->pipelineBanks.push_back(bank);
         }
+        core::pmr::Vector<semantics::PreparedGraphicsCatalogShape> catalogShapes;
+        catalogShapes.reserve(s->pipelines.size());
+        for (const auto& pipeline : s->pipelines)
+            catalogShapes.push_back({pipeline->vertexInput.streams().size(),
+                pipeline->layout->definition.descriptorSets.size(),
+                WebGlRenderPipeline::program(*pipeline).artifact->textureUnits().size(),
+                true});
+        const auto catalog =
+            semantics::PreparedGraphicsCatalogContract::assess(request, catalogShapes);
+        if ((diagnostic = catalog.diagnostic))
+            return {};
+        s->sets.reserve(catalog.descriptorSets);
+        s->vertices.reserve(catalog.vertexStreams);
         s->sources.reserve(maxSources);
         s->sources.resize(s->snapshots().slots().size());
         s->sets.resize(p->impl->layout->definition.descriptorSets.size());
         for (std::size_t i = 0; i < s->sets.size(); ++i)
             s->sets[i].set = p->impl->layout->definition.descriptorSets[i].set;
         s->vertices.resize(p->impl->vertexInput.streams().size());
-        s->owners.resize(s->vertices.size() + 2 * maxTextures + 2);
+        s->owners.resize(catalog.vertexStreams + 2 * maxTextures + 2);
         s->draws.resize(request.maxDraws);
         s->sampledShapes.reserve(maxTextures);
         s->sampled.reserve(maxTextures);
@@ -1924,6 +1950,7 @@ core::UniquePtr<CommandEncoder> WebGlExecution::prepare(WebGlResources& resource
             WebGlRenderPipeline::program(*p->impl).artifact->textureUnits().size());
         s->sampled.resize(WebGlRenderPipeline::program(*p->impl).artifact->textureUnits().size());
         for (auto& d : s->draws) {
+            d.vertices.reserve(catalog.vertexStreams);
             d.vertices.resize(s->vertices.size());
             d.textures.reserve(maxTextures);
             d.textures.resize(s->sampled.size());

@@ -49,11 +49,11 @@ OriginalDepthTableExpansionArtifact::load(const std::filesystem::path& path,
         core::CpuMemoryQuotaScope scope(quota);
         auto object =
             core::makeUnique<OriginalDepthTableExpansionArtifact>(ConstructionKey{}, budget);
-        ShaderArtifactInput input(budget.maxFileBytes, budget.maxTotalBytes);
+        ShaderArtifactInput input(budget.maxFileBytes, budget.maxTotalBytes, budget.source);
         object->publication_ = input.read(path);
         object->identity_ = core::Sha256::digest(shaderArtifactText(object->publication_));
         const auto text = shaderArtifactText(object->publication_);
-        const auto root = Y::Node::deserialize(text.begin(), text.end());
+        const auto root = shaderArtifactYaml(text);
         // The compiler publication's exact fields are a closed schema.
         constexpr std::array keys{"type",
             "contractVersion",
@@ -218,7 +218,7 @@ OriginalDepthTableExpansionArtifact::load(const std::filesystem::path& path,
                 require(entry.files[role + 1u].sha256 == hashes[role],
                     "SHADER-ORIGINAL-TABLE-EXPANSION-TARGET-PROVENANCE");
             const auto reflectionText = shaderArtifactText(entry.files[4u].bytes);
-            const auto raw = Y::Node::deserialize(reflectionText.begin(), reflectionText.end());
+            const auto raw = shaderArtifactYaml(reflectionText);
             ShaderArtifactReflectionContract::validateBindings(raw,
                 budget.maxPhysicalBindings,
                 compute ? 4u

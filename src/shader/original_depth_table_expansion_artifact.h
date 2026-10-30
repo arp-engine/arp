@@ -24,6 +24,7 @@ public:
         std::uint64_t maxFileBytes = 0u, maxTotalBytes = 0u, maxCpuMetadataBytes = 0u;
         std::uint32_t maxLogicalBindings = 0u, maxPhysicalBindings = 0u, maxElements = 0u,
                       maxEntries = 0u;
+        const ShaderArtifactSource* source = nullptr;
     };
 
     struct Element {
@@ -36,7 +37,12 @@ public:
         ShaderReflectionModule physical;
     };
 
-    OriginalDepthTableExpansionArtifact(ConstructionKey, Budget budget) noexcept : budget_(budget)
+    OriginalDepthTableExpansionArtifact(ConstructionKey, Budget budget) noexcept
+        : budget_([](Budget retained) {
+              retained.source =
+                  nullptr; // Acquisition-only; never retained by an immutable artifact.
+              return retained;
+          }(budget))
     {}
 
     OriginalDepthTableExpansionArtifact(const OriginalDepthTableExpansionArtifact&) = delete;

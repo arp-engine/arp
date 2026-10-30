@@ -1,5 +1,6 @@
 #include "renderer/ui/ui_atlas_runtime.h"
 #include "renderer/ui/ui_text_layout.h"
+#include "tests/fixtures/ui_prepared_fonts.h"
 
 #include <cassert>
 
@@ -25,6 +26,7 @@ void fallback_glyph_uses_the_resolved_font_for_atlas_pixels()
     primary.sizePx = 18u;
     primary.lineHeightPx = 24u;
     primary.fallbackChain.push_back(text("font.fallback"));
+    arp::tests::setCorruptUiFontSource(primary);
     fonts.push_back(std::move(primary));
 
     arp::ui::UiFontFaceDesc fallback;
@@ -33,6 +35,8 @@ void fallback_glyph_uses_the_resolved_font_for_atlas_pixels()
     fallback.sourcePath = "C:/Windows/Fonts/arial.ttf";
     fallback.sizePx = 18u;
     fallback.lineHeightPx = 24u;
+    fallback.source = arp::tests::preparedUiFontFace("font.fallback").source;
+    fallback.sourcePath = ARP_FONT_IO_FIXTURE_PATH;
     fonts.push_back(std::move(fallback));
 
     arp::renderer::ui::UiDrawCommand command;
@@ -71,6 +75,9 @@ void declared_line_height_preserves_descender_ink()
     face.sourcePath = "C:/Windows/Fonts/segoeui.ttf";
     face.sizePx = 22u;
     face.lineHeightPx = 32u;
+    arp::core::pmr::String diagnostic;
+    face.source = arp::ui::acquireUiFontSource(face, diagnostic);
+    assert(face.source);
     fonts.push_back(std::move(face));
 
     arp::ui::UiFontFaceCache faceCache;

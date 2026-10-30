@@ -1,5 +1,6 @@
 #include "scene/scene_asset_resource.h"
 
+#include "core/hash/stable_hash.h"
 #include "resource/resource_source_io.h"
 
 namespace arp::scene {
@@ -91,16 +92,42 @@ SceneDocumentResource::SceneDocumentResource(core::pmr::String id,
     std::size_t bytes,
     std::uint32_t objects,
     const char* resourceType,
-    const char* documentType)
+    const char* documentType,
+    resource::ResourceFileOrigin origin)
     : ResourceBase(resource::authoredResourceReference(std::move(id), resourceType)),
-      path_(std::move(path)), documentType_(documentType), maxBytes_(bytes), maxObjects_(objects)
+      path_(std::move(path)), documentType_(documentType), maxBytes_(bytes), maxObjects_(objects),
+      origin_(origin)
 {}
 
 bool SceneDocumentResource::collectFileReadIntents(resource::ResourceManager&,
     core::pmr::Vector<resource::ResourceFileReadIntent>& intents,
     core::pmr::String& diagnostic) const
 {
-    return resource::appendResourceReadIntent(path_, maxBytes_, intents, diagnostic);
+    if (!resource::isResourceUuid(reference().id) || !maxObjects_) {
+        diagnostic = "ARP-SCENE-ASSET-IDENTITY-OR-BUDGET";
+        return false;
+    }
+    if (!resource::appendResourceReadIntent(path_, maxBytes_, intents, diagnostic, origin_))
+        return false;
+    intents.back().role = "scene.document.yaml";
+    return true;
+}
+
+void SceneDocumentResource::appendContentFingerprint(core::StableHash64& hash) const noexcept
+{
+    const auto text = [&](core::StringView value) {
+        hash.appendU64(value.size());
+        hash.appendString(value);
+    };
+    text("SceneDocumentSource/1");
+    text(documentType_);
+    text(yaml_);
+    text(reference().alias);
+    hash.appendU64(dependencies().size());
+    for (const auto& dependency : dependencies()) {
+        text(dependency.id);
+        text(dependency.usage);
+    }
 }
 
 resource::ResourceLoadResult SceneDocumentResource::load(
@@ -109,21 +136,25 @@ resource::ResourceLoadResult SceneDocumentResource::load(
     auto fail = [&](const char* d) {
         return resource::resourceLoadFailure(*this, d);
     };
+    core::pmr::Vector<resource::ResourceFileReadIntent> intents;
+    core::pmr::String diagnostic;
+    if (!collectFileReadIntents(resources, intents, diagnostic))
+        return fail(diagnostic.c_str());
     const auto byteBudget =
         context.maxDecodedBytes ? std::min(maxBytes_, context.maxDecodedBytes) : maxBytes_;
-    auto source = resource::readResourceSource(path_, context, byteBudget);
+    auto source = resource::readResourceText(path_, context, byteBudget, &origin_);
     if (!source.success)
         return fail(source.diagnostics.c_str());
+    if (source.text.empty())
+        return fail("ARP-SCENE-ASSET-SOURCE-EMPTY");
     try {
-        core::pmr::String yaml(
-            reinterpret_cast<const char*>(source.bytes.data()), source.bytes.size());
-        auto root = Y::parseSingleDocument(yaml);
+        auto root = Y::parseSingleDocument(source.text);
         if (Y::uint32(root, "contractVersion") == 1)
             return fail(
                 "ARP-SCENE-MIGRATION-REQUIRED: run python tools/migrate_scene_v1.py source destination");
         if (!validate(root, documentType_, reference().id, maxObjects_))
             return fail("ARP-SCENE-ASSET-CONTRACT");
-        yaml_ = std::move(yaml);
+        yaml_ = std::move(source.text);
         return resources.admitResourceMetadata(*this, context.policy);
     } catch (...) {
         return fail("ARP-SCENE-ASSET-YAML");

@@ -71,6 +71,9 @@ bool sceneInspectorKindForValueKind(
 
 void EditorShell::pollTasks()
 {
+    if (projectIoPending())
+        (void)submitCommand(
+            AdvanceProjectIoCommand{projectIoTaskId_}, EditorCommandOrigin::Internal);
     pollProjectSave();
     pollScenePersistence();
     if (sceneExport_.ready())
@@ -86,6 +89,30 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
     return std::visit(
         [this](const auto& command) -> EditorCommandOutcome {
             using Command = std::decay_t<decltype(command)>;
+            if (projectIoPending() && !std::is_same_v<Command, AdvanceProjectIoCommand>
+                && !std::is_same_v<Command, EditorInputCommand>
+                && !std::is_same_v<Command, CancelProjectIoCommand>
+                && !std::is_same_v<Command, RequestEditorExitCommand>
+                && !std::is_same_v<Command, GetEditorStateQuery>
+                && !std::is_same_v<Command, GetSceneHierarchyQuery>
+                && !std::is_same_v<Command, GetSceneInspectorQuery>
+                && !std::is_same_v<Command, GetSceneInspectorSelectionQuery>
+                && !std::is_same_v<Command, GetSceneComponentCatalogQuery>
+                && !std::is_same_v<Command, GetScenePersistenceTaskQuery>
+                && !std::is_same_v<Command, GetSceneExportTaskQuery>
+                && !std::is_same_v<Command, GetSceneTransformSettingsQuery>)
+                return {false, false, EditorDiagnosticCode::WorkspaceBusy};
+            if (projectBrowser_.sourceSnapshot()) {
+                if constexpr (std::is_same_v<Command, SaveProjectCommand>
+                    || std::is_same_v<Command, SaveSceneCommand>
+                    || std::is_same_v<Command, LoadSceneCommand>
+                    || std::is_same_v<Command, ExportSceneCommand>
+                    || std::is_same_v<Command, BuildTerrainResourceCommand>
+                    || std::is_same_v<Command, SaveScriptCommand>
+                    || std::is_same_v<Command, AddSceneScriptComponentCommand>
+                    || std::is_same_v<Command, SetSceneScriptFieldsCommand>)
+                    return {false, false, EditorDiagnosticCode::ProjectOperationFailed};
+            }
             // Any independent command cancels a pending local reference drag.
             // Retain capture until release so UI cannot receive an orphan up.
             if constexpr (!std::is_same_v<Command, EditorInputCommand>
@@ -187,8 +214,16 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
                 return result;
             } else if constexpr (std::is_same_v<Command, SetSceneTransformSettingsCommand>)
                 return setSceneTransformSettings(command.settings);
+            else if constexpr (std::is_same_v<Command, OpenScriptCommand>)
+                return openScriptDocument(command);
             else if constexpr (std::is_same_v<Command, OpenProjectCommand>)
                 return openProject(command);
+            else if constexpr (std::is_same_v<Command, AdvanceProjectIoCommand>)
+                return advanceProjectIo(command.taskId);
+            else if constexpr (std::is_same_v<Command, CancelProjectIoCommand>)
+                return cancelProjectIo(command.taskId);
+            else if constexpr (std::is_same_v<Command, NavigateProjectSourceCommand>)
+                return navigateSourceProject(command);
             else if constexpr (std::is_same_v<Command, CreateProjectCommand>)
                 return createProject(command);
             else if constexpr (std::is_same_v<Command, CloseProjectCommand>)
@@ -785,23 +820,7 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
                 result.stateChanged = false;
                 result.hasSnapshot = true;
                 appendProjectSnapshot(result.snapshot);
-                result.snapshot.workspace = presentationState_.workspace();
-                result.snapshot.scene = presentationState_.scene();
-                result.snapshot.selection = presentationState_.selection();
-                result.snapshot.activeDocumentId = scriptDocuments_.activeId();
-                result.snapshot.openDocumentCount =
-                    static_cast<std::uint32_t>(std::min<std::size_t>(
-                        scriptDocuments_.size(), std::numeric_limits<std::uint32_t>::max()));
-                result.snapshot.hasActiveDocument = scriptDocuments_.active() != nullptr;
-                result.snapshot.scriptDirty =
-                    scriptDocuments_.active() && scriptDocuments_.active()->dirty();
-                result.snapshot.scriptPresentationFailed = scriptPresentationFailed_;
-                if (const auto* document = scriptDocuments_.active()) {
-                    result.snapshot.scriptText = document->text;
-                    const auto relative = document->path.lexically_relative(projectBrowser_.root());
-                    if (!relative.empty() && !relative.is_absolute())
-                        result.snapshot.scriptRelativePath = core::FilePath::utf8(relative);
-                }
+                appendScriptSnapshot(result.snapshot);
                 return result;
             } else if constexpr (std::is_same_v<Command, GetSceneInspectorSelectionQuery>) {
                 try {

@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ARP Fetch IO contract fixture</title>
+<script>
+'use strict';
+const originalFetch = window.fetch.bind(window);
+const messages = [];
+let reported = false;
+window.arpHttpProbe = {lateSettled: 0, lateAborted: 0, lateBodyCancelled: 0};
+window.fetch = function(input, options) {
+    const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+    if (url.pathname === '/fixture/late-result') {
+        const detached = {...options};
+        detached.signal.addEventListener('abort', () => ++window.arpHttpProbe.lateAborted, {once: true});
+        delete detached.signal;
+        return originalFetch(input, detached).then(response => {
+            ++window.arpHttpProbe.lateSettled;
+            const cancel = response.body.cancel.bind(response.body);
+            response.body.cancel = (...args) => {
+                ++window.arpHttpProbe.lateBodyCancelled;
+                return cancel(...args);
+            };
+            return response;
+        });
+    }
+    return originalFetch(input, options);
+};
+window.arpHttpReport = function(result) {
+    if (reported) return;
+    reported = true;
+    originalFetch('/result', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({...result, messages})});
+};
+window.addEventListener('error', error => window.arpHttpReport({success: false, error: String(error.message)}));
+window.addEventListener('unhandledrejection', error => window.arpHttpReport({success: false, error: String(error.reason)}));
+var Module = {
+    print: text => { if (messages.length < 128) messages.push(String(text).slice(0, 2048)); },
+    printErr: text => { if (messages.length < 128) messages.push(String(text).slice(0, 2048)); },
+    onAbort: error => window.arpHttpReport({success: false, error: String(error)})
+};
+</script>
+<script src="arp_core_http_file_fetch_smoke.js"></script>

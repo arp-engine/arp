@@ -1,7 +1,8 @@
 #include "scriptvm/aot/aot_package.h"
 
 #include "core/hash/sha256.h"
-#include "core/io/file_io.h"
+#include "core/io/blocking_file_reader.h"
+#include "core/io/filesystem_path.h"
 #include "core/text/number_format.h"
 #include "scriptvm/compile/frontend.h"
 #include "scriptvm/compile/parser.h"
@@ -277,7 +278,8 @@ bool writeText(const std::filesystem::path& path, const String& value, ScriptDia
     return true;
 }
 
-String packageIdentity(const ScriptAotPackageDefinition& package)
+String packageIdentity(
+    const ScriptAotPackageDefinition& package, const ScriptSourceSnapshot& sources)
 {
     String canonical(package.type, &core::defaultCpuMemoryResource());
     canonical += "\n";
@@ -315,11 +317,8 @@ String packageIdentity(const ScriptAotPackageDefinition& package)
         core::appendUnsigned(canonical, module.moduleVersion);
         canonical += "\n";
         canonical += pathText(module.source.lexically_relative(package.manifestPath.parent_path()));
-        const auto source = core::readTextFile(module.source);
-        if (source.success) {
-            canonical += "\nsource:";
-            canonical += sha256(source.text);
-        }
+        canonical += "\nsource:";
+        canonical += sources.find(module.moduleId)->textHash;
         for (const auto& entry : module.entries) {
             canonical += "\nentry:";
             canonical += entry;
@@ -434,6 +433,7 @@ void appendUniqueDeclaration(core::pmr::Vector<StmtPtr>& declarations, const Stm
 }
 
 bool mergePackageClassDependencies(const ScriptAotPackageDefinition& package,
+    const ScriptSourceSnapshot& sources,
     const std::shared_ptr<Module>& syntax,
     core::pmr::Vector<String>& resolving,
     ScriptDiagnostic& diagnostic)
@@ -457,12 +457,8 @@ bool mergePackageClassDependencies(const ScriptAotPackageDefinition& package,
             diagnostic = error("circular AOT source module import", dependency->source);
             return false;
         }
-        const auto source = core::readTextFile(dependency->source);
-        if (!source.success) {
-            diagnostic = error(source.diagnostics.c_str(), dependency->source);
-            return false;
-        }
-        auto parsed = parseSource(source.text, pathText(dependency->source));
+        const auto* source = sources.find(dependency->moduleId);
+        auto parsed = parseSource(source->text, pathText(dependency->source));
         if (!parsed.ok() || !parsed.module) {
             diagnostic = parsed.ok()
                 ? error("AOT dependency parser returned no module", dependency->source)
@@ -471,7 +467,7 @@ bool mergePackageClassDependencies(const ScriptAotPackageDefinition& package,
         }
         resolving.push_back(declaration->importModule);
         const bool nested =
-            mergePackageClassDependencies(package, parsed.module, resolving, diagnostic);
+            mergePackageClassDependencies(package, sources, parsed.module, resolving, diagnostic);
         resolving.pop_back();
         if (!nested)
             return false;
@@ -487,6 +483,7 @@ bool mergePackageClassDependencies(const ScriptAotPackageDefinition& package,
 }
 
 ScriptFrontendResult compilePackageFrontend(const ScriptAotPackageDefinition& package,
+    const ScriptSourceSnapshot& sources,
     const ScriptAotPackageModuleInput& module,
     const String& source)
 {
@@ -499,7 +496,7 @@ ScriptFrontendResult compilePackageFrontend(const ScriptAotPackageDefinition& pa
     }
     core::pmr::Vector<String> resolving{&core::defaultCpuMemoryResource()};
     resolving.push_back(module.moduleId);
-    if (!mergePackageClassDependencies(package, parsed.module, resolving, result.error))
+    if (!mergePackageClassDependencies(package, sources, parsed.module, resolving, result.error))
         return result;
     const auto analyzed = analyze(parsed.module, nullptr);
     if (!analyzed.ok()) {
@@ -513,15 +510,44 @@ ScriptFrontendResult compilePackageFrontend(const ScriptAotPackageDefinition& pa
 
 } // namespace
 
-ScriptAotPackageLoadResult ScriptAotPackageBuilder::load(const std::filesystem::path& manifestPath)
+ScriptAotPackageLoadResult ScriptAotPackageBuilder::load(const std::filesystem::path&)
 {
     ScriptAotPackageLoadResult result;
-    result.package.manifestPath = std::filesystem::absolute(manifestPath).lexically_normal();
-    const auto source = core::readTextFile(result.package.manifestPath);
-    if (!source.success) {
-        result.error = error(source.diagnostics.c_str(), result.package.manifestPath);
+    result.error = error("ARP-SCRIPT-SOURCE-BUDGET-REQUIRED");
+    return result;
+}
+
+ScriptAotPackageLoadResult ScriptAotPackageBuilder::load(
+    const std::filesystem::path& manifestPath, std::uint64_t maxManifestBytes)
+{
+    if (!ScriptSourceSnapshot::validBudget(
+            {1, maxManifestBytes, maxManifestBytes, maxManifestBytes})) {
+        ScriptAotPackageLoadResult result;
+        result.error = error("ARP-SCRIPT-SOURCE-BUDGET");
         return result;
     }
+    core::io::FileReadRequest request;
+    request.contractVersion = 1;
+    request.pathScope = core::io::FilePathScope::HostFilesystem;
+    request.path = core::FilePath::utf8(std::filesystem::absolute(manifestPath).lexically_normal());
+    request.maxBytes = maxManifestBytes;
+    return load(request, core::io::BlockingFileReader().read(request), maxManifestBytes);
+}
+
+ScriptAotPackageLoadResult ScriptAotPackageBuilder::load(const core::io::FileReadRequest& binding,
+    core::io::FileReadResult input,
+    std::uint64_t maxTextBytes)
+{
+    ScriptAotPackageLoadResult result;
+    ScriptSourceSnapshot manifest({1, binding.maxBytes, binding.maxBytes, maxTextBytes});
+    const char* diagnosticId = nullptr;
+    if (!manifest.add("manifest", binding, std::move(input), diagnosticId)
+        || !manifest.seal(diagnosticId)) {
+        result.error = error(diagnosticId);
+        return result;
+    }
+    result.package.manifestPath = std::filesystem::u8path(binding.path).lexically_normal();
+    const auto& source = *manifest.find("manifest");
     YamlNode root;
     try {
         root = YamlNode::deserialize(source.text.data(), source.text.data() + source.text.size());
@@ -789,7 +815,7 @@ ScriptResult ScriptAotPackageBuilder::validate(const ScriptAotPackageDefinition&
     for (std::size_t index = 0; index < package.modules.size(); ++index) {
         const auto& module = package.modules[index];
         if (!identifier(module.moduleId) || module.moduleVersion == 0u || module.source.empty()
-            || module.entries.empty() || !std::filesystem::is_regular_file(module.source)) {
+            || module.entries.empty()) {
             return ScriptResult::failure(error("AOT package module is invalid", module.source));
         }
         for (std::size_t other = 0; other < index; ++other) {
@@ -850,19 +876,88 @@ ScriptResult ScriptAotPackageBuilder::validate(const ScriptAotPackageDefinition&
     return ScriptResult::success();
 }
 
+namespace {
+ScriptResult validateSources(
+    const ScriptAotPackageDefinition& package, const ScriptSourceSnapshot& sources)
+{
+    const auto validation = ScriptAotPackageBuilder::validate(package);
+    if (!validation.ok())
+        return validation;
+    if (!sources.sealed() || sources.size() != package.modules.size())
+        return ScriptResult::failure(error("ARP-SCRIPT-SOURCE-SNAPSHOT-INCOMPLETE"));
+    for (const auto& module : package.modules) {
+        const auto* entry = sources.find(module.moduleId);
+        if (!entry || entry->binding.path != core::FilePath::utf8(module.source))
+            return ScriptResult::failure(error("ARP-SCRIPT-SOURCE-BINDING", module.source));
+    }
+    return ScriptResult::success();
+}
+} // namespace
+
+ScriptResult ScriptAotPackageBuilder::captureHostSources(
+    const ScriptAotPackageDefinition& package, ScriptSourceSnapshot& sources)
+{
+    const auto validation = validate(package);
+    if (!validation.ok())
+        return validation;
+    const auto& budget = sources.budget();
+    if (!ScriptSourceSnapshot::validBudget(budget) || sources.size() || sources.sealed()
+        || package.modules.size() > budget.maxFiles)
+        return ScriptResult::failure(error("ARP-SCRIPT-SOURCE-BUDGET"));
+    for (const auto& module : package.modules) {
+        core::io::FileReadRequest request;
+        request.contractVersion = 1;
+        request.pathScope = core::io::FilePathScope::HostFilesystem;
+        request.path = core::FilePath::utf8(module.source);
+        request.maxBytes =
+            std::min(budget.maxFileBytes, budget.maxSourceBytes - sources.sourceBytes());
+        const char* diagnosticId = nullptr;
+        if (!sources.add(module.moduleId,
+                request,
+                core::io::BlockingFileReader().read(request),
+                diagnosticId))
+            return ScriptResult::failure(error(diagnosticId, module.source));
+    }
+    const char* diagnosticId = nullptr;
+    if (!sources.seal(diagnosticId))
+        return ScriptResult::failure(error(diagnosticId));
+    return ScriptResult::success();
+}
+
+DirectNativeGeneratedModuleV5 ScriptAotCompiler::compileModule(const ScriptAotPackageDefinition&,
+    const ScriptAotPackageModuleInput&,
+    const String&,
+    const String&) const
+{
+    DirectNativeGeneratedModuleV5 result;
+    result.error = error("ARP-SCRIPT-SOURCE-SNAPSHOT-REQUIRED");
+    return result;
+}
+
 DirectNativeGeneratedModuleV5 ScriptAotCompiler::compileModule(
     const ScriptAotPackageDefinition& package,
-    const ScriptAotPackageModuleInput& module,
+    const String& moduleId,
+    const ScriptSourceSnapshot& sources,
     const String& identity,
     const String& generatedHeader) const
 {
     DirectNativeGeneratedModuleV5 result;
-    const auto source = core::readTextFile(module.source);
-    if (!source.success) {
-        result.error = error(source.diagnostics.c_str(), module.source);
+    const auto validation = validateSources(package, sources);
+    if (!validation.ok()) {
+        result.error = validation.diagnostic();
         return result;
     }
-    auto frontend = compilePackageFrontend(package, module, source.text);
+    const auto found =
+        std::find_if(package.modules.begin(), package.modules.end(), [&](const auto& module) {
+            return module.moduleId == moduleId;
+        });
+    if (found == package.modules.end() || identity != packageIdentity(package, sources)) {
+        result.error = error("ARP-SCRIPT-AOT-IDENTITY-MISMATCH");
+        return result;
+    }
+    const auto& module = *found;
+    const auto& source = *sources.find(moduleId);
+    auto frontend = compilePackageFrontend(package, sources, module, source.text);
     if (!frontend.ok()) {
         result.error = frontend.error;
         return result;
@@ -904,13 +999,9 @@ DirectNativeGeneratedModuleV5 ScriptAotCompiler::compileModule(
             result.error = error("AOT package dependency is not closed", module.source);
             return result;
         }
-        const auto dependencySource = core::readTextFile(dependencyInput->source);
-        if (!dependencySource.success) {
-            result.error = error(dependencySource.diagnostics.c_str(), dependencyInput->source);
-            return result;
-        }
+        const auto& dependencySource = *sources.find(dependencyInput->moduleId);
         auto dependencyFrontend =
-            compilePackageFrontend(package, *dependencyInput, dependencySource.text);
+            compilePackageFrontend(package, sources, *dependencyInput, dependencySource.text);
         if (!dependencyFrontend.ok()) {
             result.error = dependencyFrontend.error;
             return result;
@@ -983,13 +1074,11 @@ DirectNativeGeneratedModuleV5 ScriptAotCompiler::compileModule(
                     return candidate.moduleId == dependency;
                 });
             if (dependencyInput != package.modules.end()) {
-                const auto dependencySource = core::readTextFile(dependencyInput->source);
-                if (dependencySource.success) {
-                    const auto parsed =
-                        parseSource(dependencySource.text, pathText(dependencyInput->source));
-                    if (parsed.ok() && parsed.module && hasClassDeclaration(parsed.module))
-                        continue;
-                }
+                const auto& dependencySource = *sources.find(dependencyInput->moduleId);
+                const auto parsed =
+                    parseSource(dependencySource.text, pathText(dependencyInput->source));
+                if (parsed.ok() && parsed.module && hasClassDeclaration(parsed.module))
+                    continue;
             }
             result.error =
                 error("AOT declared dependency is not imported by the source", module.source);
@@ -1013,7 +1102,7 @@ DirectNativeGeneratedModuleV5 ScriptAotCompiler::compileModule(
     options.packageId = package.packageId;
     options.packageVersion = package.packageVersion;
     options.packageIdentity = identity;
-    options.sourceHash = sha256(source.text);
+    options.sourceHash = source.textHash;
     options.dependencyGraphHash = package.dependencyGraphHash;
     options.reflectionRegistryHash = package.reflectionRegistryHash;
     options.hostContractHash = package.hostContractHash;
@@ -1030,10 +1119,20 @@ DirectNativeGeneratedModuleV5 ScriptAotCompiler::compileModule(
 }
 
 ScriptAotPackageBuildResult ScriptAotPackageBuilder::build(
-    const ScriptAotPackageDefinition& package, const std::filesystem::path& outputDirectory) const
+    const ScriptAotPackageDefinition&, const std::filesystem::path&) const
 {
     ScriptAotPackageBuildResult result;
-    const auto validation = validate(package);
+    result.error = error("ARP-SCRIPT-SOURCE-SNAPSHOT-REQUIRED");
+    return result;
+}
+
+ScriptAotPackageBuildResult ScriptAotPackageBuilder::build(
+    const ScriptAotPackageDefinition& package,
+    const ScriptSourceSnapshot& sources,
+    const std::filesystem::path& outputDirectory) const
+{
+    ScriptAotPackageBuildResult result;
+    const auto validation = validateSources(package, sources);
     if (!validation.ok()) {
         result.error = validation.diagnostic();
         return result;
@@ -1044,7 +1143,7 @@ ScriptAotPackageBuildResult ScriptAotPackageBuilder::build(
         result.error = error("failed to create AOT output directory", outputDirectory);
         return result;
     }
-    result.packageIdentity = packageIdentity(package);
+    result.packageIdentity = packageIdentity(package, sources);
     ScriptAotCompiler compiler;
     String manifest("type: arp.script.aot-package/v1\ncontract-version: 5\npackage: ",
         &core::defaultCpuMemoryResource());
@@ -1097,8 +1196,8 @@ ScriptAotPackageBuildResult ScriptAotPackageBuilder::build(
         headerName += ".gen.h";
         String sourceName(stem, &core::defaultCpuMemoryResource());
         sourceName += ".gen.cpp";
-        auto generated =
-            compiler.compileModule(package, module, result.packageIdentity, headerName);
+        auto generated = compiler.compileModule(
+            package, module.moduleId, sources, result.packageIdentity, headerName);
         if (!generated.ok()) {
             result.error = generated.error;
             result.report += generated.error.message;

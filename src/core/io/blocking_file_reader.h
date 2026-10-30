@@ -13,6 +13,7 @@ public:
     BlockingFileReader& operator=(const BlockingFileReader&) = delete;
 
     FileReadResult read(const FileReadRequest& request) const;
+    FileReadResult validateRead(const FileReadRequest& request) const;
 };
 
 } // namespace arp::core::io

@@ -71,10 +71,15 @@ public:
         if (!request.maxCpuMetadataBytes || !request.maxIdentityFieldBytes
             || request.maxIdentityFieldBytes > std::uint32_t{INT32_MAX})
             return "RHI-WEBGL1-CONTEXT-METADATA-BUDGET";
-        if (request.extensionOptIn.contractVersion != 0u
-            && request.extensionOptIn.contractVersion != 1u)
+        if (request.extensionOptIn.contractVersion > 2u)
             return "RHI-WEBGL1-EXTENSION-CONTRACT-VERSION";
-        if (request.extensionOptIn.extensions.any() && request.extensionOptIn.contractVersion != 1u)
+        if (request.extensionOptIn.extensions.fragmentDepth
+            && request.extensionOptIn.contractVersion != 2u)
+            return "RHI-WEBGL1-FRAGMENT-DEPTH-PROFILE-REQUIRED";
+        if (request.extensionOptIn.extensions.srgbTextures
+            && request.extensionOptIn.contractVersion != 2u)
+            return "RHI-WEBGL1-SRGB-PROFILE-REQUIRED";
+        if (request.extensionOptIn.extensions.any() && !request.extensionOptIn.contractVersion)
             return "RHI-WEBGL1-EXTENSION-OPT-IN-REQUIRED";
         return nullptr;
     }

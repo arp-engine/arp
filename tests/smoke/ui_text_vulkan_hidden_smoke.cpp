@@ -109,6 +109,11 @@ arp::core::pmr::Vector<arp::ui::UiFontFaceDesc> fontFaces()
     sdf.lineHeightPx = 42u;
     sdf.renderMode = text("sdf");
     fonts.push_back(std::move(sdf));
+    for (auto& face : fonts) {
+        arp::core::pmr::String diagnostic;
+        face.source = arp::ui::acquireUiFontSource(face, diagnostic);
+        assert(face.source);
+    }
     return fonts;
 }
 
@@ -251,6 +256,10 @@ int main()
             stderr, "UI text atlas build failed: %s\n", atlasRuntime.diagnostics().c_str());
         return 1;
     }
+    const auto recovery = atlasRuntime.makeRecoveryPlan();
+    auto recovered = arp::renderer::ui::UnifiedUiAtlasRuntime::build(recovery);
+    assert(recovered.ok() && recovered.atlas().rgba8 == atlasRuntime.atlas().rgba8);
+    atlasRuntime = std::move(recovered);
     const auto resolved = atlasRuntime.resolve(authored);
     if (!resolved.ok()) {
         std::fprintf(stderr, "UI text atlas resolve failed: %s\n", resolved.diagnostics().c_str());

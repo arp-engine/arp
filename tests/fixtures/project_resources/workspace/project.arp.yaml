@@ -1,0 +1,30 @@
+assetPackages:
+  - "assets/main"
+contractVersion: 1
+editorMetadata: "editor.yaml"
+engineContract: "arp.scene-asset/2"
+entryScene: "00000000-0000-4000-8000-000000000097"
+execution: "Interpreter"
+id: "00000000-0000-4000-8000-000000000094"
+name: "Project source resources"
+physics2d:
+  fixedSeconds: 0.01666666753590107
+  gravity:
+    x: 0.0
+    y: 0.0
+  maxBodies: 8
+  maxChainPoints: 16
+  maxColliders: 16
+  maxEvents: 32
+  maxJoints: 4
+  maxNativeShapes: 32
+  maxQueryResults: 32
+  substeps: 4
+scriptModules:
+  -
+    dependencies: []
+    id: "gameplay"
+    resourceId: "00000000-0000-4000-8000-000000000096"
+    schemaVersion: 1
+    source: "scripts/gameplay.arp"
+type: "arp.project"

@@ -2,6 +2,7 @@
 
 #include "core/memory/cpu_allocator.h"
 #include "scriptvm/aot/aot_v5.h"
+#include "scriptvm/plugin/plugin_host_text_reader.h"
 
 #include <filesystem>
 
@@ -16,6 +17,7 @@ struct ARP_API WindowsDynamicScriptAotPackageDesc {
     std::filesystem::path objectInspector;
     std::filesystem::path includeRoot;
     std::filesystem::path hostLibrary;
+    PluginHostTextBudget hostTextBudget;
 };
 
 struct ARP_API WindowsDynamicScriptAotPackageResult {

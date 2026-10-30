@@ -226,6 +226,7 @@ EditorSceneViewportMaterialPayloadResult prepareEditorSceneViewportMaterialPaylo
         binding.generation = source.generation;
         binding.view = cached.view;
         binding.sampler = cached.sampler;
+        binding.texture = cached.texture;
     }
 
     if (!payload.valid())

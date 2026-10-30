@@ -23,12 +23,19 @@ AsyncRuntime::AsyncRuntime(AsyncRuntimeDesc desc)
 #else
           false,
 #endif
+          desc.enableWork,
       }),
-      fileBackend_(work_), fileService_(completions_, fileBackend_)
+      fileBackend_(work_),
+      fileService_(completions_,
+          desc_.fileBackend                      ? static_cast<io::FileBackend&>(*desc_.fileBackend)
+              : desc.enableThreadPoolFileBackend ? static_cast<io::FileBackend&>(fileBackend_)
+                                                 : static_cast<io::FileBackend&>(nullFileBackend_))
 {
     diagnostic_ = validateDesc(desc_);
-    if (diagnostic_ != AsyncRuntimeDiagnostic::None || !work_.valid()) {
+    if (diagnostic_ != AsyncRuntimeDiagnostic::None || (desc.enableWork && !work_.valid())) {
         status_ = AsyncRuntimeStatus::InvalidConfiguration;
+        fileService_.shutdown();
+        work_.shutdown(WorkShutdownPolicy::CancelPending);
     }
 }
 
@@ -85,6 +92,8 @@ void AsyncRuntime::shutdown(AsyncRuntimeShutdownPolicy policy) noexcept
     }
 
     fileService_.shutdown();
+    if (desc_.fileBackend && status_ != AsyncRuntimeStatus::InvalidConfiguration)
+        desc_.fileBackend->shutdown();
     work_.shutdown(mapShutdownPolicy(policy));
     while (completions_.pending() > 0) {
         const auto dispatchResult = completions_.dispatch(desc_.completionBudget);
@@ -101,7 +110,7 @@ AsyncRuntimeTelemetry AsyncRuntime::telemetry() const noexcept
     return {
         completions_.telemetry(),
         work_.telemetry(),
-        fileBackend_.capability(),
+        fileService_.capability(),
         fileService_.telemetry(),
         desc_.completionBudget,
         dispatchCalls_,
@@ -123,6 +132,10 @@ AsyncRuntimeDiagnostic AsyncRuntime::validateDesc(const AsyncRuntimeDesc& desc) 
     if (desc.enableThreadPoolFileBackend && !desc.enableWork) {
         return AsyncRuntimeDiagnostic::MissingFileBackend;
     }
+    if (desc.fileBackend && desc.enableThreadPoolFileBackend)
+        return AsyncRuntimeDiagnostic::AmbiguousFileBackend;
+    if (!desc.fileBackend && !desc.enableThreadPoolFileBackend)
+        return AsyncRuntimeDiagnostic::MissingFileBackend;
     if (!desc.enableExternalNetworkValidation) {
         return AsyncRuntimeDiagnostic::MissingNetworkValidationSurface;
     }

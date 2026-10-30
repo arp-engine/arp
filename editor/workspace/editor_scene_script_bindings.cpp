@@ -15,7 +15,8 @@ core::SharedPtr<EditorSceneScriptBindings> EditorSceneScriptBindings::prepare(
     core::SharedPtr<scene::MainSceneRegistry> scenes,
     core::SharedPtr<EditorSceneServiceSession> services,
     EditorScriptBindingBudget budget,
-    core::pmr::String& diagnostic)
+    core::pmr::String& diagnostic,
+    const ProjectSourceContext* sources)
 {
     diagnostic.clear();
     if (!scenes || !scenes->contains(scene) || scenes->active() != &scene || !services
@@ -26,6 +27,17 @@ core::SharedPtr<EditorSceneScriptBindings> EditorSceneScriptBindings::prepare(
         return {};
     }
     try {
+        if (sources) {
+            const char* issue = nullptr;
+            if (!sources->validate(issue)) {
+                diagnostic = issue;
+                return {};
+            }
+            if (root != std::filesystem::u8path(sources->snapshot->location().root)) {
+                diagnostic = "EDITOR-SCRIPT-SOURCE-ROOT";
+                return {};
+            }
+        }
         ProjectDiagnostic issue;
         core::pmr::String validated;
         if (!ProjectManifestCodec::encode(manifest, validated, issue)) {
@@ -38,6 +50,8 @@ core::SharedPtr<EditorSceneScriptBindings> EditorSceneScriptBindings::prepare(
             core::CpuMemoryQuotaScope scope(quota);
             candidate = core::makeShared<EditorSceneScriptBindings>();
             candidate->root_ = root;
+            if (sources)
+                candidate->sources_ = *sources;
             candidate->scene_ = &scene;
             candidate->scenes_ = std::move(scenes);
             candidate->services_ = std::move(services);
@@ -73,11 +87,20 @@ core::SharedPtr<EditorSceneScriptBindings> EditorSceneScriptBindings::prepare(
             }
         }
         core::SharedPtr<const EditorScriptModules> modules;
-        if (!EditorScriptModules::prepare(
-                root, manifest, candidate->scope_.modules(), modules, diagnostic)
+        const bool prepared = sources
+            ? EditorScriptModules::prepareSources(*sources->snapshot,
+                  *sources->files,
+                  sources->epoch,
+                  manifest,
+                  candidate->scope_.modules(),
+                  modules,
+                  diagnostic)
+            : EditorScriptModules::prepare(
+                  root, manifest, candidate->scope_.modules(), modules, diagnostic);
+        if (!prepared
             || !EditorScriptComponentCatalog::prepare(
                 modules, budget.catalog, candidate->catalog_, diagnostic)
-            || !modules->verifySources(root, diagnostic))
+            || !candidate->verifySources(diagnostic))
             return {};
         if (!candidate->matches(scene, candidate->services_, candidate->scenes_)) {
             diagnostic = "EDITOR-SCRIPT-DOMAIN-STALE";
@@ -105,6 +128,9 @@ bool EditorSceneScriptBindings::matches(const scene::Scene& scene,
 
 bool EditorSceneScriptBindings::verifySources(core::pmr::String& diagnostic) const
 {
+    if (sources_)
+        return catalog_->modules().verifySources(
+            *sources_->snapshot, *sources_->files, sources_->epoch, diagnostic);
     return catalog_->modules().verifySources(root_, diagnostic);
 }
 
@@ -112,6 +138,38 @@ bool EditorSceneDocument::prepareScriptAuthoring(const std::filesystem::path& ro
     const ProjectManifest& manifest,
     EditorScriptBindingBudget budget,
     core::pmr::String& diagnostic)
+{
+    return prepareScriptAuthoringUsing(root, manifest, budget, diagnostic, nullptr);
+}
+
+bool EditorSceneDocument::prepareScriptAuthoringSources(const ProjectSourceContext& sources,
+    const ProjectManifest& manifest,
+    EditorScriptBindingBudget budget,
+    core::pmr::String& diagnostic)
+{
+    const char* issue = nullptr;
+    if (!sources.validate(issue)) {
+        diagnostic = issue;
+        return false;
+    }
+    try {
+        return prepareScriptAuthoringUsing(
+            std::filesystem::u8path(sources.snapshot->location().root),
+            manifest,
+            budget,
+            diagnostic,
+            &sources);
+    } catch (const std::bad_alloc&) {
+        diagnostic = "EDITOR-SCRIPT-DOMAIN-MEMORY-BUDGET";
+        return false;
+    }
+}
+
+bool EditorSceneDocument::prepareScriptAuthoringUsing(const std::filesystem::path& root,
+    const ProjectManifest& manifest,
+    EditorScriptBindingBudget budget,
+    core::pmr::String& diagnostic,
+    const ProjectSourceContext* sources)
 {
     diagnostic.clear();
     // Recompilation prepares a separate document. Do not rebind an existing
@@ -136,8 +194,14 @@ bool EditorSceneDocument::prepareScriptAuthoring(const std::filesystem::path& ro
             diagnostic = "EDITOR-SCRIPT-DOCUMENT-HAS-INSTANCES";
             return false;
         }
-    auto prepared = EditorSceneScriptBindings::prepare(
-        root, manifest, *scene_, scriptSceneRegistry_, sceneServiceSession(), budget, diagnostic);
+    auto prepared = EditorSceneScriptBindings::prepare(root,
+        manifest,
+        *scene_,
+        scriptSceneRegistry_,
+        sceneServiceSession(),
+        budget,
+        diagnostic,
+        sources);
     if (!prepared)
         return false;
     scriptBindings_ = std::move(prepared);

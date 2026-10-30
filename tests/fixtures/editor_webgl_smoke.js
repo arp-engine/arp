@@ -1,7 +1,7 @@
 /* Real WebGL editor, original commands and virtual file roundtrip. */
 (async () => {
   const result={type:'EditorWebGlSmoke',contractVersion:1,success:false,checks:[],errors:[],gpuCompletionClaimed:false,productionReady:false};
-  const deadline=performance.now()+(new URLSearchParams(location.search).get('cycles')==='20'?480000:180000);
+  const deadline=performance.now()+((new URLSearchParams(location.search).get('cycles')==='20'||new URLSearchParams(location.search).has('viewport-smoke'))?480000:180000);
   const wait=async predicate => {
     while (!predicate()) {
       if (Module.editorError) throw Error(Module.editorError);
@@ -15,6 +15,36 @@
     await wait(()=>Module.editorState?.frames>=3);
     check(crossOriginIsolated,'worker-isolation');
     check(Module.editorState.backend==='WebGL1'&&Module.editorState.draws>1000,'real-editor-frame');
+    if(new URLSearchParams(location.search).has('viewport-smoke')) {
+      check(Module.editorCatalogValidated===true,'catalog-runtime-negatives');
+      if(new URLSearchParams(location.search).has('catalog-only')) {
+        result.success=true;result.frames=Module.editorState.frames;result.draws=Module.editorState.draws;
+        await fetch('/result',{method:'POST',body:JSON.stringify(result)});
+        return;
+      }
+      const memory=()=>['editor_core_live_bytes','editor_core_live_allocations',
+        'editor_gpu_logical_bytes','editor_gpu_live_resources'].map(name=>Module.ccall(name,'number',[],[]));
+      result.memory=[];
+      let baseline;
+      // These explicit synthetic resources are not a serialized asset package.
+      // This scenario validates real rendering and ordinary resize retirement;
+      // project export/import is covered by the separate production workflow.
+      for(let cycle=0;cycle<=20;++cycle) {
+        let frame=Module.editorState.frames;
+        Module.canvas.style.width='1000px';Module.canvas.style.height='640px';
+        await wait(()=>Module.editorState.frames>frame+2&&Module.canvas.width===1000);
+        frame=Module.editorState.frames;
+        Module.canvas.style.width='1100px';Module.canvas.style.height='660px';
+        await wait(()=>Module.editorState.frames>frame+2&&Module.canvas.width===1100);
+        const current=memory();
+        if(cycle===0)baseline=current;
+        result.memory.push(current);
+        check(current.every((value,index)=>value===baseline[index]),'viewport-owner-baseline:'+cycle);
+      }
+      result.success=true;result.frames=Module.editorState.frames;result.draws=Module.editorState.draws;
+      await fetch('/result',{method:'POST',body:JSON.stringify(result)});
+      return;
+    }
     const before=Module.editorState.objects;
     action('create','Browser roundtrip');
     await wait(()=>Module.editorState.objects===before+1);

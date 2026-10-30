@@ -11,7 +11,6 @@
 #include "shader/graphics_shader_module_artifact.h"
 
 #include <Metal/Metal.h>
-#include <fstream>
 #include <sstream>
 
 namespace arp::rhi_metal {
@@ -350,14 +349,6 @@ id<MTLDevice> defaultMetalDevice()
     return reinterpret_cast<id<MTLDevice>>(metalRhiNativeDeviceHandle());
 }
 
-std::pmr::string readTextFile(const std::pmr::string& path)
-{
-    std::ifstream file(path.c_str(), std::ios::binary);
-    std::ostringstream stream;
-    stream << file.rdbuf();
-    return arp::core::toPmrString(stream.str());
-}
-
 std::shared_ptr<void> retainNativeObject(id object)
 {
     if (object == nil) {
@@ -503,22 +494,18 @@ MTLStencilOperation metalStencilOperation(rhi::StencilOp operation)
     return MTLStencilOperationKeep;
 }
 
+id<MTLLibrary> createLibrary(std::string_view mslSource, std::pmr::string& diagnostics);
+
 id<MTLLibrary> createLibrary(const rhi::ShaderPackageDesc& package, std::pmr::string& diagnostics)
 {
-    id<MTLDevice> device = defaultMetalDevice();
-    const auto mslSource = readTextFile(package.artifacts.mslPath);
-    if (device == nil || mslSource.empty()) {
-        diagnostics = "Metal RHI native pipeline requires generated MSL source";
+    rhi::GeneratedShaderTargetInput input;
+    const auto selected =
+        rhi::selectGeneratedShaderPackageTarget(package, shader::TargetBackend::Msl, input);
+    if (!selected.success) {
+        diagnostics = selected.diagnostics;
         return nil;
     }
-    NSString* source = [[NSString alloc] initWithUTF8String:mslSource.c_str()];
-    NSError* error = nil;
-    id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];
-    [source release];
-    if (library == nil) {
-        diagnostics = "Metal RHI failed to compile generated MSL artifact";
-    }
-    return library;
+    return createLibrary(input.text, diagnostics);
 }
 
 id<MTLLibrary> createLibrary(std::string_view mslSource, std::pmr::string& diagnostics)

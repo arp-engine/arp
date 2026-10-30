@@ -6,6 +6,7 @@
 #include "core/hash/stable_hash.h"
 #include "core/io/artifact_path.h"
 #include "core/io/file_io.h"
+#include "core/text/text_decoder.h"
 #include "rhi/frontend/bindless_storage_image_domain.h"
 #include "rhi/frontend/descriptor_set_validation.h"
 #include "rhi/frontend/pipeline_bindless_interface_merger.h"
@@ -13,6 +14,7 @@
 #include "rhi/semantics/bindless_entry_access.h"
 #include "rhi/semantics/bindless_graphics_entry_selection_lowering.h"
 #include "shader/buffer_vector_record.h"
+#include "shader/shader_artifact_files.h"
 #include "shader/shader_pipeline_reflection_validator.h"
 #include "shader/spirv_buffer_declaration_layout.h"
 #include "shader/spirv_image_declaration.h"
@@ -40,6 +42,23 @@ void require(bool valid, const char* diagnostic)
 core::StringView textBytes(const core::ByteBuffer& bytes)
 {
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+core::pmr::String decodedText(core::StringView bytes)
+{
+    core::TextDecodeDesc desc;
+    desc.bom = core::TextBomPolicy::Reject;
+    desc.nul = core::TextNulPolicy::Reject;
+    desc.maxOutputBytes = bytes.size();
+    auto result = core::TextDecoder::decode(bytes, desc);
+    require(result.status == core::TextDecodeStatus::Success,
+        result.diagnosticId ? result.diagnosticId : "RHI-BINDLESS-PACKAGE-TEXT");
+    return std::move(result.text);
+}
+
+core::pmr::String decodedText(const core::ByteBuffer& bytes)
+{
+    return decodedText(textBytes(bytes));
 }
 
 DescriptorType descriptorType(const core::pmr::String& name)
@@ -259,13 +278,22 @@ std::shared_ptr<const BindlessShaderPackage> BindlessShaderPackage::load(
         auto read = [&](const std::filesystem::path& path) {
             const auto remaining = budget.maxTotalBytes - result->sourceBytes_;
             require(remaining > 0, "RHI-BINDLESS-PACKAGE-BYTE-BUDGET");
+            if (budget.source) {
+                auto file = budget.source->read(path, std::min(budget.maxFileBytes, remaining));
+                require(!file.diagnostic, file.diagnostic);
+                require(!file.bytes.empty()
+                        && file.bytes.size() <= std::min(budget.maxFileBytes, remaining),
+                    "RHI-BINDLESS-PACKAGE-BYTE-BUDGET");
+                result->sourceBytes_ += file.bytes.size();
+                return std::move(file.bytes);
+            }
             auto file = core::readBinaryFile(path, std::min(budget.maxFileBytes, remaining));
             require(file.success && !file.bytes.empty(), "RHI-BINDLESS-PACKAGE-FILE-READ-FAILED");
             result->sourceBytes_ += file.bytes.size();
             return std::move(file.bytes);
         };
         auto envelopeBytes = read(publication);
-        const auto envelopeText = textBytes(envelopeBytes);
+        const auto envelopeText = decodedText(envelopeBytes);
         const auto envelope = Node::deserialize(envelopeText.begin(), envelopeText.end());
         require(Y::text(envelope, "type") == "BindlessPackagePublication"
                 && Y::uint32(envelope, "contractVersion") == 1,
@@ -276,7 +304,7 @@ std::shared_ptr<const BindlessShaderPackage> BindlessShaderPackage::load(
         auto payloadBytes = read(publication.parent_path() / payloadName.c_str());
         require(core::Sha256::matchesHexDigest(textBytes(payloadBytes), result->sha256_),
             "RHI-BINDLESS-PACKAGE-HASH-MISMATCH");
-        const auto payloadText = textBytes(payloadBytes);
+        const auto payloadText = decodedText(payloadBytes);
         const auto payload = Node::deserialize(payloadText.begin(), payloadText.end());
         require(Y::text(payload, "type") == "BindlessShaderArtifact"
                 && Y::uint32(payload, "contractVersion") == kBindlessContractVersion
@@ -434,6 +462,10 @@ std::shared_ptr<const BindlessShaderPackage> BindlessShaderPackage::load(
             file.bytes = read(publication.parent_path() / file.name.c_str());
             require(core::Sha256::matchesHexDigest(textBytes(file.bytes), file.sha256),
                 "RHI-BINDLESS-PACKAGE-HASH-MISMATCH");
+            // All declared non-SPIR-V members of this versioned package are
+            // generated text. Validate without changing the bytes used by hashes.
+            if (std::filesystem::path(file.name.c_str()).extension() != ".spv")
+                (void)decodedText(file.bytes);
             result->files_.push_back(std::move(file));
         }
 
@@ -791,7 +823,9 @@ std::shared_ptr<const BindlessShaderPackage> BindlessShaderPackage::load(
         const auto loweringYaml = Y::text(payload, "loweringYaml");
         require(core::Sha256::matchesHexDigest(loweringYaml, loweringHash),
             "RHI-BINDLESS-PACKAGE-LOWERING-HASH");
-        const auto lowering = Node::deserialize(loweringYaml.begin(), loweringYaml.end());
+        const auto loweringText =
+            decodedText(core::StringView(loweringYaml.data(), loweringYaml.size()));
+        const auto lowering = Node::deserialize(loweringText.begin(), loweringText.end());
         std::uint32_t pushBytes = 0u, pushStages = 0u, observedPushStages = 0u;
         std::size_t observedPushEntries = 0u;
         if (const auto* request = budget.push) {

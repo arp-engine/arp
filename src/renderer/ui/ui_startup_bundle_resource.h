@@ -28,6 +28,14 @@ struct UiStartupBundleResourceData {
     std::shared_ptr<const arp::ui::UiFontSetResourceData> fontSet;
     arp::core::pmr::Vector<std::shared_ptr<const arp::ui::UiDocumentResourceData>> documents{
         &arp::core::defaultCpuMemoryResource()};
+    std::size_t retainedPayloadBytes = 0;
+};
+
+// Explicit composition limits; these do not represent the entire platform heap.
+struct UiStartupBundleBudget {
+    std::size_t maxDocuments = 0;
+    std::size_t maxFontFaces = 0;
+    std::size_t maxRetainedPayloadBytes = 0;
 };
 
 struct UiStartupBundleResourceLoadDesc {
@@ -41,6 +49,7 @@ struct UiStartupBundleResourceLoadDesc {
     arp::core::pmr::String fontSetAlias{&arp::core::defaultCpuMemoryResource()};
     arp::core::pmr::Vector<arp::core::pmr::String> documentAliases{
         &arp::core::defaultCpuMemoryResource()};
+    UiStartupBundleBudget budget;
 };
 
 struct UiStartupBundleResource : public arp::resource::ResourceBase {
@@ -68,6 +77,8 @@ struct UiStartupBundleResourceLoadResult {
     bool success = false;
     arp::resource::ResourceLoadResult resource;
     arp::core::pmr::String diagnostics{&arp::core::defaultCpuMemoryResource()};
+    // Remains available when an allocation failure prevents owned diagnostic text.
+    const char* diagnosticId = nullptr;
 };
 
 UiStartupBundleResourceLoadResult loadUiStartupBundleResource(

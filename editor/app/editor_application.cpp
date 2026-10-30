@@ -4,6 +4,7 @@
 #include "2d/sprite_text_component.h"
 #include "3d/authoring_components.h"
 #include "3d/components.h"
+#include "editor/app/editor_project_source_host.h"
 #include "editor/app/game_preview.h"
 #include "editor/ingress/editor_platform_input_router.h"
 #include "editor/ingress/platform_input_adapter.h"
@@ -11,6 +12,7 @@
 #include "editor/validation/editor_inspector_safety_smoke.h"
 #include "editor/validation/editor_object_view_smoke.h"
 #include "editor/validation/editor_transform_gesture_smoke.h"
+#include "editor/validation/editor_viewport_resource_smoke.h"
 #include "editor/workspace/editor_terrain_preview.h"
 #ifdef DeviceCapabilities
 #undef DeviceCapabilities
@@ -77,117 +79,7 @@ int fail(const char* stage, const core::pmr::String& message)
     return 1;
 }
 
-constexpr const char* kViewportSmokeMeshId = "7f4b9d5a-1f63-4f4c-9a45-3c1a9e7e92b1";
-constexpr const char* kViewportSmokeMaterialId = "c8591a23-0f99-4070-a4d0-d79ab87379eb";
-constexpr const char* kViewportSmokeCubeMeshId = "7f4b9d5a-1f63-4f4c-9a45-3c1a9e7e92b2";
-constexpr const char* kViewportSmokeCubeMaterialId = "c8591a23-0f99-4070-a4d0-d79ab87379ec";
-constexpr const char* kViewportSmokeSourceId = "b055987e-d04c-42ef-a3f1-f77721eac8f7";
-constexpr const char* kViewportSmokeShaderId = "9e3f0b60-93f7-42b8-88e7-32e0c9f0bc40";
-constexpr const char* kViewportSmokeSrgbTextureId = "86ccf943-c70e-4ddc-b7c4-f1a6c02ff115";
-constexpr const char* kViewportSmokeLinearTextureId = "fd0155f8-360c-43d3-bdb3-081a9848c1a7";
-
-resource::ResourceReference viewportSmokeReference(const char* id, const char* type)
-{
-    resource::ResourceReference reference;
-    reference.id = id;
-    reference.type = type;
-    reference.status = "Contract Complete";
-    return reference;
-}
-
-core::UniquePtr<resource::TextureResource> viewportSmokeTexture(const char* id, bool srgb)
-{
-    auto texture = core::makeUnique<resource::TextureResource>();
-    texture->configureMetadata(viewportSmokeReference(id, "TextureResource"));
-    texture->usage = srgb ? "color" : "data";
-    texture->srgb = srgb;
-    texture->decodedWidth = 1u;
-    texture->decodedHeight = 1u;
-    texture->decodedSrgb = srgb;
-    texture->decodedRgba8 = {255u, 255u, 255u, 255u};
-    return texture;
-}
-
-core::UniquePtr<resource::MaterialResource> viewportSmokeMaterial(
-    const char* id, float red, float green, float blue, float metallic, float roughness)
-{
-    auto material = core::makeUnique<resource::MaterialResource>();
-    material->configureMetadata(viewportSmokeReference(id, "MaterialResource"));
-    material->sourceResourceId = kViewportSmokeSourceId;
-    material->shaderPackageId = kViewportSmokeShaderId;
-    material->materialContractVersion = resource::kPbrMetallicRoughnessContractVersion;
-    material->surfaceModel = resource::kPbrMetallicRoughnessContract;
-    material->baseColorR = red;
-    material->baseColorG = green;
-    material->baseColorB = blue;
-    material->alphaMode = "OPAQUE";
-    material->metallicFactor = metallic;
-    material->roughnessFactor = roughness;
-    material->baseColorTextureId = kViewportSmokeSrgbTextureId;
-    material->normalTextureId = kViewportSmokeLinearTextureId;
-    material->metallicRoughnessTextureId = kViewportSmokeLinearTextureId;
-    material->occlusionTextureId = kViewportSmokeLinearTextureId;
-    material->emissiveTextureId = kViewportSmokeSrgbTextureId;
-    return material;
-}
-
-bool installViewportSmokeSceneResources(EditorShell& shell, core::pmr::String& diagnostics)
-{
-    auto mesh = core::makeUnique<resource::MeshAssetResource>(
-        core::pmr::String(kViewportSmokeMeshId, &core::defaultCpuMemoryResource()),
-        assets::MeshAsset::debugTriangle());
-    if (!shell.projectResources().loadResource(std::move(mesh)).success) {
-        diagnostics = "ARP-EDITOR-VIEWPORT-SMOKE-MESH-RESOURCE";
-        return false;
-    }
-    auto cubeMesh = core::makeUnique<resource::MeshAssetResource>(
-        core::pmr::String(kViewportSmokeCubeMeshId, &core::defaultCpuMemoryResource()), 0.8f);
-    if (!shell.projectResources().loadResource(std::move(cubeMesh)).success) {
-        diagnostics = "ARP-EDITOR-VIEWPORT-SMOKE-CUBE-MESH-RESOURCE";
-        return false;
-    }
-
-    auto source = core::makeUnique<resource::ExternalAssetSourceResource>();
-    source->configureMetadata(
-        viewportSmokeReference(kViewportSmokeSourceId, "ExternalAssetSourceResource"));
-    if (!shell.projectResources().loadResource(std::move(source)).success) {
-        diagnostics = "ARP-EDITOR-VIEWPORT-SMOKE-SOURCE-RESOURCE";
-        return false;
-    }
-
-    auto shader = core::makeUnique<resource::ShaderPackageResource>();
-    shader->configureMetadata(
-        viewportSmokeReference(kViewportSmokeShaderId, "ShaderPackageResource"));
-    shader->slangPath = "shaders/editor/viewport_pbr.slang";
-    shader->spirvPath = "shaders/editor/viewport_pbr.spv";
-    shader->mslPath = "shaders/editor/viewport_pbr.metal";
-    shader->reflectionPath = "shaders/editor/viewport_pbr.reflection.yaml";
-    shader->materialInterfaceContract = resource::kPbrMetallicRoughnessContract;
-    shader->materialInterfaceVersion = resource::kPbrMetallicRoughnessContractVersion;
-    if (!shell.projectResources().loadResource(std::move(shader)).success) {
-        diagnostics = "ARP-EDITOR-VIEWPORT-SMOKE-SHADER-RESOURCE";
-        return false;
-    }
-
-    if (!shell.projectResources()
-            .loadResource(
-                viewportSmokeMaterial(kViewportSmokeMaterialId, 0.8f, 0.32f, 0.12f, 0.0f, 0.8f))
-            .success
-        || !shell.projectResources()
-            .loadResource(viewportSmokeMaterial(
-                kViewportSmokeCubeMaterialId, 0.12f, 0.42f, 0.82f, 0.15f, 0.35f))
-            .success
-        || !shell.projectResources()
-            .loadResource(viewportSmokeTexture(kViewportSmokeSrgbTextureId, true))
-            .success
-        || !shell.projectResources()
-            .loadResource(viewportSmokeTexture(kViewportSmokeLinearTextureId, false))
-            .success) {
-        diagnostics = "ARP-EDITOR-VIEWPORT-SMOKE-MATERIAL-RESOURCES";
-        return false;
-    }
-    return true;
-}
+using namespace validation;
 } // namespace
 
 int EditorApplication::run(bool hidden,
@@ -210,10 +102,11 @@ int EditorApplication::run(bool hidden,
     const bool objectViewSmoke = inspectorSafetySmoke.substr(0, 5) == "view_";
     // View scenarios exercise the ordinary viewport fixture and execution gates.
     viewportRuntimeSmoke = viewportRuntimeSmoke || objectViewSmoke;
-    editor::EditorShell shell;
     ScopedTemporaryDirectory terrainGizmoFixtureDirectory;
-    const auto root = std::filesystem::path(ARP_SOURCE_DIR) / "editor/resources";
     ScopedTemporaryDirectory terrainResourceDirectory;
+    EditorProjectSourceHost projectSourceHost;
+    editor::EditorShell shell;
+    const auto root = std::filesystem::path(ARP_SOURCE_DIR) / "editor/resources";
     auto effectiveProjectRoot = projectRoot;
     // Script smoke fixtures are explicitly created under the source build/ root.
     // Keep ordinary res:// admission intact by mounting that declared test root.
@@ -242,6 +135,9 @@ int EditorApplication::run(bool hidden,
     auto loaded = shell.load(root / "editor.arpui", effectiveProjectRoot);
     if (!loaded.ok())
         return fail("LOAD", loaded.diagnostic().message);
+    if (!projectSourceHost.bind(shell, shell.projectRoot()))
+        std::fprintf(
+            stderr, "EDITOR-PROJECT-SOURCE-UNAVAILABLE: native workspace IO is unavailable\n");
     std::size_t openedTerrainTiles = 0;
     if (!openTerrain.empty()) {
         const core::pmr::String previewId(openTerrain);
@@ -1830,15 +1726,16 @@ int EditorApplication::run(bool hidden,
     const editor::EditorSceneViewportShaderArtifacts viewportSpriteArtifacts{
         spriteSourcePath, spriteSpirvPath, spriteMslPath, spriteWgslPath, spriteReflectionPath};
     const auto environmentSourcePath =
-        (shaderRoot / "editor_viewport_environment.slang").generic_string();
+        (shaderRoot / "editor_environment" / "editor_viewport_environment.slang").generic_string();
     const auto environmentSpirvPath =
-        (shaderRoot / "editor_viewport_environment.spv").generic_string();
+        (shaderRoot / "editor_environment" / "editor_viewport_environment.spv").generic_string();
     const auto environmentMslPath =
-        (shaderRoot / "editor_viewport_environment.metal").generic_string();
+        (shaderRoot / "editor_environment" / "editor_viewport_environment.metal").generic_string();
     const auto environmentWgslPath =
-        (shaderRoot / "editor_viewport_environment.wgsl").generic_string();
+        (shaderRoot / "editor_environment" / "editor_viewport_environment.wgsl").generic_string();
     const auto environmentReflectionPath =
-        (shaderRoot / "editor_viewport_environment.reflection.yaml").generic_string();
+        (shaderRoot / "editor_environment" / "editor_viewport_environment.reflection.yaml")
+            .generic_string();
     const editor::EditorSceneViewportShaderArtifacts viewportEnvironmentArtifacts{
         environmentSourcePath,
         environmentSpirvPath,
@@ -1854,6 +1751,7 @@ int EditorApplication::run(bool hidden,
                 return fail("TERRAIN-SMOKE", "build command rejected");
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
             while (shell.terrainBuildPending() && std::chrono::steady_clock::now() < deadline) {
+                projectSourceHost.dispatch();
                 shell.pollTasks();
                 std::this_thread::yield();
             }
@@ -1939,6 +1837,7 @@ int EditorApplication::run(bool hidden,
                     return false;
                 const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
                 while (std::chrono::steady_clock::now() < deadline) {
+                    projectSourceHost.dispatch();
                     shell.pollTasks();
                     const auto result = shell.submitCommand(GetScenePersistenceTaskQuery{taskId});
                     if (result.snapshot.scenePersistenceTaskStatus
@@ -2169,10 +2068,16 @@ int EditorApplication::run(bool hidden,
     unsigned rendered = 0;
     input::InputSystem inputSystem({});
     core::pmr::String viewportRuntimeDiagnostic(&core::defaultCpuMemoryResource());
+    // A remote smoke needs the same owner loop as the interactive Editor.
+    // Its caller must explicitly exit; retain a bounded failure deadline.
+    const auto remoteSmokeDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
     while (!quit) {
+        if (hidden && remotePort != 0 && std::chrono::steady_clock::now() >= remoteSmokeDeadline)
+            return fail("REMOTE-SMOKE-TIMEOUT", "remote smoke did not request Editor exit");
         const auto remoteStateVersion = shell.stateVersion();
         const auto feedbackVersion = shell.feedbackVersion();
         remoteServer.pump();
+        projectSourceHost.dispatch();
         shell.pollTasks();
         if (shell.stateVersion() != remoteStateVersion
             || shell.feedbackVersion() != feedbackVersion)
@@ -2386,7 +2291,7 @@ int EditorApplication::run(bool hidden,
 #endif
         ++rendered;
         dirty = false;
-        if (hidden) {
+        if (hidden && remotePort == 0) {
             if (!openTerrain.empty()) {
                 if (!viewportAvailableThisFrame
                     || viewportSession.lastSceneDrawCount() != openedTerrainTiles) {

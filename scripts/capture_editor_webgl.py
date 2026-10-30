@@ -17,12 +17,16 @@ def main():
     parser.add_argument('--output',required=True)
     parser.add_argument('--browser',default='C:/Program Files/Google/Chrome/Application/chrome.exe')
     parser.add_argument('--qrenderdoc',default='C:/Program Files/RenderDoc/qrenderdoc.exe')
+    parser.add_argument('--workspace', help='Explicit exported YAML workspace to inspect')
+    parser.add_argument('--viewport-smoke', action='store_true', help='Explicit shared synthetic viewport fixtures')
     args=parser.parse_args()
     root=Path(__file__).resolve().parents[1]
     output=Path(args.output).resolve();output.mkdir(parents=True,exist_ok=False)
     bundle=output/'bundle';bundle.mkdir()
-    for name in ('arp_editor.html','arp_editor.js','arp_editor.wasm','arp_editor.data','editor_webgl_capture.js'):
+    for name in ('arp_editor.html','arp_editor.js','arp_editor.wasm','arp_editor.data','editor_cli_bridge.js','editor_webgl_capture.js'):
         shutil.copy2(Path(args.directory)/name,bundle/name)
+    if args.workspace:
+        shutil.copy2(args.workspace,bundle/'capture-workspace.yaml')
     hashes={path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in bundle.iterdir()}
     class Handler(EditorWebHandler):
         def log_message(self,*unused):pass
@@ -39,7 +43,7 @@ def main():
             super().do_GET()
     server=create_browser_http_server(functools.partial(Handler,directory=str(bundle)))
     threading.Thread(target=server.serve_forever,daemon=True).start()
-    (output/'server.json').write_text(json.dumps({'root':str(root),'port':server.server_port,'browser':args.browser,'bundleHashes':hashes}))
+    (output/'server.json').write_text(json.dumps({'root':str(root),'port':server.server_port,'browser':args.browser,'bundleHashes':hashes,'workspace':bool(args.workspace),'viewportSmoke':args.viewport_smoke}))
     env=dict(os.environ,ARP_EDITOR_WEB_EVIDENCE=str(output))
     try:
         with (output/'qrenderdoc.log').open('w') as log:

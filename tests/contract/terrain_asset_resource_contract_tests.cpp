@@ -386,6 +386,8 @@ void assertV2IndependentGeometry(const std::filesystem::path& root)
         assert(file.success);
         arp::resource::ResourceSourceBuffer buffer;
         buffer.path = path.generic_string().c_str();
+        buffer.pathScope = intent.pathScope;
+        buffer.mount = intent.mount;
         buffer.bytes = file.bytes;
         assert(sources.add(std::move(buffer)));
     }

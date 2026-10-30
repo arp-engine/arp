@@ -3,6 +3,7 @@
 #include "editor/viewport/editor_scene_viewport_camera.h"
 #include "editor/viewport/editor_scene_viewport_draw_executor.h"
 #include "editor/viewport/editor_scene_viewport_shader_package.h"
+#include "editor/viewport/editor_scene_viewport_surface_profile.h"
 
 namespace arp::editor {
 
@@ -24,6 +25,9 @@ struct EditorSceneViewportEnvironmentPush {
 
 static_assert(sizeof(EditorSceneViewportEnvironmentPush) == 176u);
 
+ARP_API rhi::RenderPipelineDesc buildEditorSceneViewportEnvironmentPipeline(
+    core::StringView sourcePath, EditorSceneViewportSurfaceProfile profile = {});
+
 ARP_API EditorSceneViewportEnvironmentPush buildEditorSceneViewportEnvironmentPush(
     const EditorSceneViewportCamera& camera,
     float aspect,
@@ -41,7 +45,8 @@ class EditorSceneViewportEnvironment final {
 public:
     bool initialize(rhi::GpuDevice& device,
         const EditorSceneViewportShaderArtifacts& artifacts,
-        core::pmr::String& diagnostics);
+        core::pmr::String& diagnostics,
+        EditorSceneViewportSurfaceProfile profile = {});
     EditorSceneViewportDrawExecutionResult record(rhi::GpuDevice& device,
         rhi::GpuTexture& color,
         rhi::GpuTexture& depth,
@@ -54,6 +59,8 @@ public:
 private:
     rhi::GpuDevice* device_ = nullptr;
     EditorSceneViewportDevicePipelineResources resources_;
+    core::UniquePtr<rhi::GpuBuffer> corners_;
+    EditorSceneViewportSurfaceProfile profile_;
 };
 
 } // namespace arp::editor

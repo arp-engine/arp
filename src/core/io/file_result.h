@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/io/file_version.h"
 #include "core/memory/cpu_allocator.h"
 
 #include <cstdint>
@@ -19,6 +20,13 @@ enum class FileIoStatus : std::uint8_t {
     QueueFull,
     ServiceClosed,
     InvalidRequest,
+    BudgetExceeded,
+    Unsupported,
+    VersionMismatch,
+    IntegrityMismatch,
+    Timeout,
+    StaleLocation,
+    OutcomeUnknown,
 };
 
 enum class FileBackendKind : std::uint8_t {
@@ -27,6 +35,11 @@ enum class FileBackendKind : std::uint8_t {
     WindowsOverlappedFileBackend,
     LinuxIoUringFileBackend,
     DarwinFileBackend,
+    MemoryFileBackend,
+    MountedFileBackend,
+    HttpFileBackend,
+    FetchFileBackend,
+    NativeDirectoryFileBackend,
 };
 
 enum class FileBackendStatus : std::uint8_t {
@@ -42,6 +55,10 @@ struct FileReadResult {
     FileBackendKind backendKind = FileBackendKind::NullFileBackend;
     core::pmr::Vector<std::uint8_t> bytes{&core::defaultCpuMemoryResource()};
     core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
+    // Static stable identifier; never points into transient backend storage.
+    // Allows cancellation/failure delivery without allocating a message.
+    const char* diagnosticId = nullptr;
+    FileVersionToken version;
 };
 
 using FileReadCompleteFn = void (*)(void*, FileReadResult);

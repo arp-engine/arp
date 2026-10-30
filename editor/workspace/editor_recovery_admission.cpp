@@ -22,6 +22,8 @@ bool EditorRecoveryAdmission::gate(
 {
     if (!shell.loaded_.ok() || shell.exitRequested_)
         return reject(diagnostic, "EDITOR-RECOVERY-LIVE-OWNER-INACTIVE");
+    if (shell.projectBrowser_.sourceSnapshot())
+        return reject(diagnostic, "EDITOR-RECOVERY-SOURCE-NOT-IMPLEMENTED");
     if (shell.authoringUiBlocked() || shell.activeTransformEditObjectId_ != 0
         || shell.sceneViewportGesture_ != EditorShell::SceneViewportGesture::None
         || shell.hierarchyDragging_ || shell.scriptDraggingSelection_

@@ -6,7 +6,8 @@
 
 namespace arp::resource {
 class AssetPackageCodecRegistry;
-}
+struct AssetPackageSourceContext;
+} // namespace arp::resource
 
 namespace arp::editor {
 
@@ -34,6 +35,20 @@ public:
         core::pmr::String& diagnostic);
     static bool equal(const core::pmr::Vector<ProjectPackageBinding>& left,
         const core::pmr::Vector<ProjectPackageBinding>& right) noexcept;
+    static bool captureSources(const std::filesystem::path& root,
+        const core::pmr::Vector<core::pmr::String>& directories,
+        core::SharedPtr<const resource::AssetPackageCodecRegistry> codecs,
+        const resource::AssetPackageSourceContext&,
+        core::pmr::Vector<ProjectPackageBinding>& destination,
+        core::pmr::String& diagnostic);
+
+private:
+    static bool captureImpl(const std::filesystem::path&,
+        const core::pmr::Vector<core::pmr::String>&,
+        core::SharedPtr<const resource::AssetPackageCodecRegistry>,
+        core::pmr::Vector<ProjectPackageBinding>&,
+        core::pmr::String&,
+        const resource::AssetPackageSourceContext*);
 };
 
 } // namespace arp::editor

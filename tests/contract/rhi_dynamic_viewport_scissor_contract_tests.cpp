@@ -84,6 +84,8 @@ arp::rhi::ShaderPackageDesc makeDynamicViewportScissorShaderPackage()
     shaderPackage.reflection.metalGpuCountedIndirectStatus = "Unavailable";
     shaderPackage.reflection.metalTessellationStatus = "Unavailable";
     arp::rhi::test::addFloat4PushConstantMembers(shaderPackage.reflection, 8u);
+    arp::rhi::test::GeneratedShaderPackageFixture::prepare(
+        shaderPackage, "rhi_push_contract.artifact-set.yaml");
     return shaderPackage;
 }
 

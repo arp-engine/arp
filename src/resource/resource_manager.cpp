@@ -3,13 +3,16 @@
 #include "core/hash/stable_hash.h"
 #include "reflection/serialization.h"
 #include "resource/resource_contract.h"
+#include "resource/resource_graph_executor.h"
 #include "resource/resource_graph_plan.h"
 
 #include <algorithm>
+#include <cassert>
 #include <exception>
 #include <fkYAML/Node.hpp>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <utility>
 
 namespace arp::resource {
@@ -336,6 +339,20 @@ const char* fileStatusName(core::io::FileIoStatus status)
         return "ServiceClosed";
     case core::io::FileIoStatus::InvalidRequest:
         return "InvalidRequest";
+    case core::io::FileIoStatus::BudgetExceeded:
+        return "BudgetExceeded";
+    case core::io::FileIoStatus::Unsupported:
+        return "Unsupported";
+    case core::io::FileIoStatus::VersionMismatch:
+        return "VersionMismatch";
+    case core::io::FileIoStatus::IntegrityMismatch:
+        return "IntegrityMismatch";
+    case core::io::FileIoStatus::Timeout:
+        return "Timeout";
+    case core::io::FileIoStatus::StaleLocation:
+        return "StaleLocation";
+    case core::io::FileIoStatus::OutcomeUnknown:
+        return "OutcomeUnknown";
     }
     return "Unknown";
 }
@@ -346,22 +363,7 @@ struct AsyncEnvelopeLoadState {
     ResourceAsyncLoadCompletion completion;
 };
 
-struct AsyncResourceLoadState {
-    ResourceManager* manager = nullptr;
-    core::UniquePtr<ResourceBase> resource;
-    ResourceLoadContext context;
-    ResourceAsyncLoadCompletion completion;
-    ResourceLoadResult result;
-};
-
-struct AsyncResourceGraphLoadState {
-    ResourceManager* manager = nullptr;
-    ResourceGraphRequest request;
-    ResourceAsyncLoadCompletion completion;
-    ResourceLoadResult result;
-};
-
-void completeAsyncEnvelopeLoad(void* userData, core::io::FileReadResult fileResult)
+void completeAsyncEnvelopeLoad(void* userData, core::io::FileTextReadResult fileResult)
 {
     core::UniquePtr<AsyncEnvelopeLoadState> state{
         static_cast<AsyncEnvelopeLoadState*>(userData),
@@ -372,105 +374,40 @@ void completeAsyncEnvelopeLoad(void* userData, core::io::FileReadResult fileResu
     };
 
     ResourceLoadResult result;
-    if (fileResult.status != core::io::FileIoStatus::Success) {
+    if (fileResult.status() != core::io::FileIoStatus::Success) {
         result.success = false;
         result.state = ResourceState::Failed;
         result.diagnostics = makeDiagnostic("resource envelope file read failed: ");
-        result.diagnostics += fileStatusName(fileResult.status);
-        if (!fileResult.diagnostics.empty()) {
+        result.diagnostics += fileStatusName(fileResult.status());
+        if (!fileResult.source.diagnostics.empty()) {
             result.diagnostics += ": ";
-            result.diagnostics += fileResult.diagnostics;
+            result.diagnostics += fileResult.source.diagnostics;
+        } else if (fileResult.diagnosticId()) {
+            result.diagnostics += ": ";
+            result.diagnostics += fileResult.diagnosticId();
         }
     } else {
-        core::pmr::String envelopeYaml(&core::defaultCpuMemoryResource());
-        envelopeYaml.assign(
-            reinterpret_cast<const char*>(fileResult.bytes.data()), fileResult.bytes.size());
-        result = state->manager->loadFromEnvelope(envelopeYaml, state->policy);
+        result = state->manager->loadFromEnvelope(fileResult.decoded.text, state->policy);
     }
     state->completion.complete(state->completion.userData, result);
 }
 
-core::runtime::WorkStatus executeAsyncResourceLoad(void* userData) noexcept
+// Explicit contract0 compatibility. Existing host callers retain their IO
+// admission behavior; the already fetched byte count bounds text conversion.
+// All contract1 callers use the bounded FileService text entry below.
+void completeLegacyEnvelopeRead(void* context, core::io::FileReadResult source)
 {
-    auto* state = static_cast<AsyncResourceLoadState*>(userData);
-    if (state == nullptr || state->manager == nullptr || !state->resource) {
-        return core::runtime::WorkStatus::Failed;
+    core::io::FileTextReadResult result;
+    result.source = std::move(source);
+    if (result.source.status == core::io::FileIoStatus::Success) {
+        core::TextDecodeDesc desc;
+        desc.maxOutputBytes = result.source.bytes.size();
+        desc.bom = core::TextBomPolicy::Strip;
+        result.decoded = core::TextDecoder::decode(
+            {reinterpret_cast<const char*>(result.source.bytes.data()), result.source.bytes.size()},
+            desc);
     }
-
-    try {
-        state->result =
-            state->manager->loadResource(std::move(state->resource), std::move(state->context));
-        return core::runtime::WorkStatus::Completed;
-    } catch (const std::exception& err) {
-        state->result.success = false;
-        state->result.state = ResourceState::Failed;
-        state->result.resourceId = state->resource->reference().id;
-        state->result.resourceType = state->resource->reference().type;
-        state->result.diagnostics = makeDiagnostic("resource async typed load raised exception: ");
-        state->result.diagnostics += err.what();
-    } catch (...) {
-        state->result.success = false;
-        state->result.state = ResourceState::Failed;
-        state->result.resourceId = state->resource->reference().id;
-        state->result.resourceType = state->resource->reference().type;
-        state->result.diagnostics =
-            makeDiagnostic("resource async typed load raised unknown exception");
-    }
-    return core::runtime::WorkStatus::Completed;
-}
-
-void completeAsyncResourceLoad(void* userData, core::runtime::WorkResult workResult) noexcept
-{
-    core::UniquePtr<AsyncResourceLoadState> state{
-        static_cast<AsyncResourceLoadState*>(userData),
-        core::CpuAllocatedDeleter<AsyncResourceLoadState>{
-            userData,
-            &core::destroyCpuAllocatedUnique<AsyncResourceLoadState>,
-        },
-    };
-
-    if (workResult.status != core::runtime::WorkStatus::Completed
-        && state->result.diagnostics.empty()) {
-        state->result.success = false;
-        state->result.state = ResourceState::Failed;
-        if (state->resource) {
-            state->result.resourceId = state->resource->reference().id;
-            state->result.resourceType = state->resource->reference().type;
-        }
-        state->result.diagnostics =
-            makeDiagnostic("resource async typed work was cancelled or failed before completion");
-    }
-    state->completion.complete(state->completion.userData, state->result);
-}
-
-core::runtime::WorkStatus executeAsyncResourceGraphLoad(void* userData) noexcept
-{
-    auto* state = static_cast<AsyncResourceGraphLoadState*>(userData);
-    if (state == nullptr || state->manager == nullptr) {
-        return core::runtime::WorkStatus::Failed;
-    }
-    state->result = state->manager->loadGraph(std::move(state->request));
-    return core::runtime::WorkStatus::Completed;
-}
-
-void completeAsyncResourceGraphLoad(void* userData, core::runtime::WorkResult workResult) noexcept
-{
-    core::UniquePtr<AsyncResourceGraphLoadState> state{
-        static_cast<AsyncResourceGraphLoadState*>(userData),
-        core::CpuAllocatedDeleter<AsyncResourceGraphLoadState>{
-            userData,
-            &core::destroyCpuAllocatedUnique<AsyncResourceGraphLoadState>,
-        },
-    };
-
-    if (workResult.status != core::runtime::WorkStatus::Completed
-        && state->result.diagnostics.empty()) {
-        state->result.success = false;
-        state->result.state = ResourceState::Failed;
-        state->result.diagnostics =
-            makeDiagnostic("resource graph async work was cancelled or failed before completion");
-    }
-    state->completion.complete(state->completion.userData, state->result);
+    completeAsyncEnvelopeLoad(context, std::move(result));
 }
 
 ResourceRecordReloadSnapshot captureReloadSnapshot(const ResourceRecord& record)
@@ -486,6 +423,33 @@ ResourceRecordReloadSnapshot captureReloadSnapshot(const ResourceRecord& record)
     snapshot.generation = record.generation;
     snapshot.contentHash = record.contentHash;
     return snapshot;
+}
+
+// Both records are registry-owned and use the same core memory resource.
+// Preserve the public record address without allocating during publication.
+void swapRecordContents(ResourceRecord& left, ResourceRecord& right) noexcept
+{
+    for (const auto member : {&ResourceRecord::id,
+             &ResourceRecord::type,
+             &ResourceRecord::alias,
+             &ResourceRecord::displayName,
+             &ResourceRecord::status,
+             &ResourceRecord::diagnostics}) {
+        assert((left.*member).get_allocator() == (right.*member).get_allocator());
+        (left.*member).swap(right.*member);
+    }
+    assert(left.dependencies.get_allocator() == right.dependencies.get_allocator());
+    assert(left.ownedObjects.get_allocator() == right.ownedObjects.get_allocator());
+    left.dependencies.swap(right.dependencies);
+    left.ownedObjects.swap(right.ownedObjects);
+    left.ownedResource.swap(right.ownedResource);
+    static_assert(std::is_nothrow_swappable_v<reflection::object>);
+    std::swap(left.value, right.value);
+    std::swap(left.state, right.state);
+    std::swap(left.metadataAdmitted, right.metadataAdmitted);
+    std::swap(left.generation, right.generation);
+    std::swap(left.contentHash, right.contentHash);
+    std::swap(left.reloadInProgress, right.reloadInProgress);
 }
 
 void restoreReloadSnapshot(ResourceRecord& record, const ResourceRecordReloadSnapshot& snapshot)
@@ -542,11 +506,13 @@ bool isResourceUuid(NameView value)
 
 bool ResourceSourceSet::add(ResourceSourceBuffer source)
 {
-    if (source.path.empty() || find(source.path) != nullptr) {
+    if (source.path.empty() || find(source.path) != nullptr
+        || source.bytes.size() > SIZE_MAX - totalBytes_) {
         return false;
     }
-    totalBytes_ += source.bytes.size();
+    const auto bytes = source.bytes.size();
     sources_.push_back(std::move(source));
+    totalBytes_ += bytes;
     return true;
 }
 
@@ -580,6 +546,16 @@ bool ResourceBase::collectFileReadIntents(
     ResourceManager&, core::pmr::Vector<ResourceFileReadIntent>&, core::pmr::String&) const
 {
     return true;
+}
+
+bool ResourceBase::planFileReadIntents(ResourceManager& manager,
+    const ResourceLoadContext& context,
+    core::pmr::Vector<ResourceFileReadIntent>& intents,
+    core::pmr::String& diagnostics) const
+{
+    if (context.sources && context.sources->size() != 0)
+        return true;
+    return collectFileReadIntents(manager, intents, diagnostics);
 }
 
 ResourceGraphStage ResourceBase::processingStage() const noexcept
@@ -816,7 +792,7 @@ ResourceBatchLoadResult ResourceManager::loadResourcesAtomically(
     struct Snapshot {
         core::pmr::String id{&core::defaultCpuMemoryResource()};
         bool hadRecord = false;
-        core::UniquePtr<ResourceRecord> record;
+        std::optional<ResourceRecordMap::node_type> record;
     };
 
     ResourceBatchLoadResult result;
@@ -843,11 +819,23 @@ ResourceBatchLoadResult ResourceManager::loadResourcesAtomically(
 
         const ResourceRecord* existing = findRecord(id);
         if (existing != nullptr
-            && (existing->state != ResourceState::Unloaded || existing->metadataAdmitted
-                || existing->ownedResource || !existing->ownedObjects.empty())) {
+            && ((existing->state != ResourceState::Unloaded
+                    && existing->state != ResourceState::Declared)
+                || existing->metadataAdmitted || existing->ownedResource
+                || !existing->ownedObjects.empty())) {
             result.failedResourceId = id;
             result.diagnostics =
                 makeDiagnostic("atomic resource batch target is already admitted: ", id);
+            return result;
+        }
+        if (existing && existing->type != resource->reference().type) {
+            result.failedResourceId = id;
+            result.diagnostics = "RESOURCE-TRANSACTION-DECLARED-TYPE-MISMATCH";
+            return result;
+        }
+        if (existing && existing->generation == std::numeric_limits<ResourceGeneration>::max()) {
+            result.failedResourceId = id;
+            result.diagnostics = "RESOURCE-TRANSACTION-GENERATION-EXHAUSTED";
             return result;
         }
         Snapshot snapshot;
@@ -856,53 +844,99 @@ ResourceBatchLoadResult ResourceManager::loadResourcesAtomically(
         snapshots.push_back(std::move(snapshot));
     }
 
-    ResourceAliasMap aliasesBefore = aliases_;
+    const auto allowed = [&] {
+        return !context.commitGate.allow || context.commitGate.allow(context.commitGate.userData);
+    };
+    if (!allowed()) {
+        result.diagnostics = "RESOURCE-TRANSACTION-ADMISSION-REJECTED";
+        return result;
+    }
+    if (resources.size() > SIZE_MAX - records_.size())
+        throw std::bad_alloc();
+    // Rollback reinserts retained map nodes without allocating, even if a
+    // loader exhausted its core quota while constructing a candidate.
+    records_.reserve(records_.size() + resources.size());
+    ResourceAliasMap aliasesBefore(aliases_, &core::defaultCpuMemoryResource());
     const auto budgetBefore = budgetConfig_;
     const auto budgetEventsBefore = budgetExhaustionEvents_;
     for (auto& snapshot : snapshots) {
         if (!snapshot.hadRecord)
             continue;
-        auto found = records_.find(snapshot.id);
-        snapshot.record = std::move(found->second);
-        records_.erase(found);
+        snapshot.record.emplace(records_.extract(snapshot.id));
     }
 
     auto rollback = [&]() {
+        if (result.rolledBack)
+            return;
+        result.rolledBack = true;
         for (const auto& id : ids)
             records_.erase(id);
         for (auto& snapshot : snapshots) {
             if (snapshot.hadRecord)
-                records_[snapshot.id] = std::move(snapshot.record);
+                records_.insert(std::move(*snapshot.record));
         }
-        aliases_ = std::move(aliasesBefore);
+        aliases_.swap(aliasesBefore);
         budgetConfig_ = budgetBefore;
         budgetExhaustionEvents_ = budgetEventsBefore;
         result.loadedCount = 0u;
         result.rolledBack = true;
     };
 
-    for (std::size_t index = 0u; index < resources.size(); ++index) {
-        result.failedResourceId = ids[index];
-        ResourceLoadResult loaded;
-        try {
-            loaded = loadResource(std::move(resources[index]), context);
-        } catch (const std::exception& error) {
-            loaded.diagnostics = makeDiagnostic("atomic resource batch load threw: ");
-            loaded.diagnostics += error.what();
-        } catch (...) {
-            loaded.diagnostics =
-                makeDiagnostic("atomic resource batch load threw an unknown exception");
+    try {
+        for (std::size_t index = 0u; index < resources.size(); ++index) {
+            if (!allowed()) {
+                rollback();
+                result.diagnostics = "RESOURCE-TRANSACTION-ADMISSION-REJECTED";
+                return result;
+            }
+            result.failedResourceId = ids[index];
+            ResourceLoadResult loaded;
+            try {
+                loaded = loadResource(std::move(resources[index]), context);
+            } catch (const std::exception& error) {
+                loaded.diagnostics = makeDiagnostic("atomic resource batch load threw: ");
+                loaded.diagnostics += error.what();
+            } catch (...) {
+                loaded.diagnostics =
+                    makeDiagnostic("atomic resource batch load threw an unknown exception");
+            }
+            if (!loaded.success) {
+                result.diagnostics = loaded.diagnostics.empty()
+                    ? makeDiagnostic("atomic resource batch load failed: ", ids[index])
+                    : std::move(loaded.diagnostics);
+                rollback();
+                return result;
+            }
+            ++result.loadedCount;
         }
-        if (!loaded.success) {
-            result.diagnostics = loaded.diagnostics.empty()
-                ? makeDiagnostic("atomic resource batch load failed: ", ids[index])
-                : std::move(loaded.diagnostics);
+
+        if (!allowed()) {
             rollback();
+            result.diagnostics = "RESOURCE-TRANSACTION-ADMISSION-REJECTED";
             return result;
         }
-        ++result.loadedCount;
+    } catch (...) {
+        rollback();
+        throw;
     }
 
+    // No failing operations remain after the final gate. Keep record pointers
+    // stable and advance the previous epoch, rather than publishing a new
+    // record with generation 1 and reviving handles from before unload.
+    for (auto& snapshot : snapshots) {
+        if (!snapshot.hadRecord)
+            continue;
+        auto candidate = records_.find(snapshot.id);
+        auto& original = *snapshot.record->mapped();
+        if (original.alias != candidate->second->alias && !original.alias.empty()) {
+            const auto alias = aliases_.find(original.alias);
+            if (alias != aliases_.end() && alias->second == snapshot.id)
+                aliases_.erase(alias);
+        }
+        candidate->second->generation = original.generation + 1;
+        swapRecordContents(original, *candidate->second);
+        candidate->second.swap(snapshot.record->mapped());
+    }
     result.success = true;
     result.failedResourceId.clear();
     result.diagnostics.clear();
@@ -959,28 +993,43 @@ ResourceLoadResult ResourceManager::loadGraph(ResourceGraphRequest request)
 }
 
 core::runtime::WorkServiceStatus ResourceManager::loadGraphAsync(
-    core::runtime::WorkService& workService,
-    ResourceGraphRequest request,
-    ResourceAsyncLoadCompletion completion) noexcept
+    core::runtime::WorkService&, ResourceGraphRequest, ResourceAsyncLoadCompletion) noexcept
 {
-    if (!completion.valid()) {
-        return core::runtime::WorkServiceStatus::InvalidWorkItem;
+    // ResourceAsyncOwnerAdmission/1: a worker alone cannot acquire bounded
+    // sources or publish the registry on its owner. No legacy execution path.
+    return core::runtime::WorkServiceStatus::InvalidWorkItem;
+}
+
+ResourceGraphSubmitStatus ResourceManager::loadGraphAsync(core::runtime::AsyncRuntime& runtime,
+    ResourceGraphRequest graph,
+    const ResourceGraphExecutionBudget& budget,
+    const ResourceGraphExecutionCompletion& completion,
+    core::runtime::CancellationToken cancellation) noexcept
+{
+    if (!isOwnerThread())
+        return ResourceGraphSubmitStatus::InvalidRequest;
+    if (budgetConfig_.maxGraphNodes && graph.nodes.size() > budgetConfig_.maxGraphNodes) {
+        ++budgetExhaustionEvents_;
+        return ResourceGraphSubmitStatus::NodeBudgetExceeded;
     }
-    auto state = core::makeUnique<AsyncResourceGraphLoadState>();
-    state->manager = this;
-    state->request = std::move(request);
-    state->completion = completion;
-    auto* raw = state.get();
-    const auto submitted = workService.submit(core::runtime::WorkItem{
-        &executeAsyncResourceGraphLoad,
-        raw,
-        &completeAsyncResourceGraphLoad,
-        raw,
-    });
-    if (submitted.accepted()) {
-        state.release();
+    if (budgetConfig_.maxCompletionDispatchCount
+        && graph.nodes.size() > budgetConfig_.maxCompletionDispatchCount) {
+        ++budgetExhaustionEvents_;
+        return ResourceGraphSubmitStatus::InvalidRequest;
     }
-    return submitted.status;
+    try {
+        applyBudgetConfig(graph.context);
+        ResourceGraphExecutionRequest request;
+        request.graph = std::move(graph);
+        request.budget = budget;
+        request.cancellation = std::move(cancellation);
+        ResourceGraphExecutor executor(*this, runtime.fileService(), runtime.completionQueue());
+        return executor.submit(std::move(request), completion);
+    } catch (const std::bad_alloc&) {
+        return ResourceGraphSubmitStatus::AllocationFailed;
+    } catch (...) {
+        return ResourceGraphSubmitStatus::InvalidRequest;
+    }
 }
 
 ResourceLoadResult ResourceManager::loadFromEnvelope(
@@ -1014,46 +1063,63 @@ core::io::FileIoStatus ResourceManager::loadEnvelopeFileAsync(core::io::FileServ
         return core::io::FileIoStatus::InvalidRequest;
     }
 
-    auto state = core::makeUnique<AsyncEnvelopeLoadState>();
-    state->manager = this;
-    state->policy = request.policy;
-    state->completion = completion;
-    auto* raw = state.get();
-    const auto status = fileService.read(
-        request.envelopeFile, core::io::FileReadCompletion{&completeAsyncEnvelopeLoad, raw});
-    if (status == core::io::FileIoStatus::Accepted) {
-        state.release();
+    try {
+        auto state = core::makeUnique<AsyncEnvelopeLoadState>();
+        state->manager = this;
+        state->policy = request.policy;
+        state->completion = completion;
+        core::io::FileIoStatus status;
+        if (request.envelopeFile.contractVersion == 1) {
+            core::io::FileTextReadRequest text;
+            text.file = request.envelopeFile;
+            text.text.maxOutputBytes = request.envelopeFile.maxBytes;
+            text.text.bom = core::TextBomPolicy::Strip;
+            status = fileService.readText(text, {completeAsyncEnvelopeLoad, state.get()});
+        } else {
+            status =
+                fileService.read(request.envelopeFile, {completeLegacyEnvelopeRead, state.get()});
+        }
+        if (status == core::io::FileIoStatus::Accepted)
+            state.release();
+        return status;
+    } catch (const std::bad_alloc&) {
+        return core::io::FileIoStatus::BudgetExceeded;
+    } catch (...) {
+        return core::io::FileIoStatus::InvalidRequest;
     }
-    return status;
 }
 
-core::runtime::WorkServiceStatus ResourceManager::loadAsyncResource(
-    core::runtime::WorkService& workService,
-    core::UniquePtr<ResourceBase> resource,
-    ResourceAsyncLoadCompletion completion,
-    ResourceLoadContext context) noexcept
+core::runtime::WorkServiceStatus ResourceManager::loadAsyncResource(core::runtime::WorkService&,
+    core::UniquePtr<ResourceBase>,
+    ResourceAsyncLoadCompletion,
+    ResourceLoadContext) noexcept
 {
-    applyBudgetConfig(context);
-    if (!resource || !resource->reference().valid() || !completion.valid()) {
-        return core::runtime::WorkServiceStatus::InvalidWorkItem;
-    }
+    return core::runtime::WorkServiceStatus::InvalidWorkItem;
+}
 
-    auto state = core::makeUnique<AsyncResourceLoadState>();
-    state->manager = this;
-    state->resource = std::move(resource);
-    state->context = std::move(context);
-    state->completion = completion;
-    auto* raw = state.get();
-    const auto submitted = workService.submit(core::runtime::WorkItem{
-        &executeAsyncResourceLoad,
-        raw,
-        &completeAsyncResourceLoad,
-        raw,
-    });
-    if (submitted.accepted()) {
-        state.release();
+ResourceGraphSubmitStatus ResourceManager::loadAsyncResource(core::runtime::AsyncRuntime& runtime,
+    core::UniquePtr<ResourceBase> resource,
+    const ResourceGraphExecutionBudget& budget,
+    const ResourceGraphExecutionCompletion& completion,
+    ResourceLoadContext context,
+    core::runtime::CancellationToken cancellation) noexcept
+{
+    if (!isOwnerThread() || !resource || !resource->reference().valid())
+        return ResourceGraphSubmitStatus::InvalidRequest;
+    try {
+        ResourceGraphRequest request;
+        request.rootResourceId = resource->reference().id;
+        request.context = context;
+        ResourceGraphNode node;
+        node.resource = std::move(resource);
+        request.nodes.push_back(std::move(node));
+        return loadGraphAsync(
+            runtime, std::move(request), budget, completion, std::move(cancellation));
+    } catch (const std::bad_alloc&) {
+        return ResourceGraphSubmitStatus::AllocationFailed;
+    } catch (...) {
+        return ResourceGraphSubmitStatus::InvalidRequest;
     }
-    return submitted.status;
 }
 
 ResourceLoadResult ResourceManager::loadObjectFromEnvelope(

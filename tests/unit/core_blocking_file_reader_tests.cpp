@@ -1,4 +1,5 @@
 #include "core/io/blocking_file_reader.h"
+#include "core/io/filesystem_path.h"
 
 #include <cassert>
 #include <filesystem>
@@ -22,7 +23,7 @@ arp::core::io::FileReadRequest requestFor(const std::filesystem::path& path)
 {
     arp::core::io::FileReadRequest request;
     request.pathScope = arp::core::io::FilePathScope::HostFilesystem;
-    request.path = path.generic_string().c_str();
+    request.path = arp::core::FilePath::utf8(path);
     return request;
 }
 
@@ -61,6 +62,11 @@ int main()
 
     auto missing = requestFor(testRoot() / "missing.bin");
     assert(reader.read(missing).status == FileIoStatus::MissingFile);
+
+    const auto unicodePath = testRoot() / std::filesystem::u8path(u8"路径/文件.bin");
+    writeFixture(unicodePath);
+    const auto unicode = reader.read(requestFor(unicodePath));
+    assert(unicode.status == FileIoStatus::Success && unicode.bytes == whole.bytes);
 
     return 0;
 }

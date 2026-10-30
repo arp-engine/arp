@@ -3,6 +3,15 @@
 #include "core/memory/cpu_allocator.h"
 
 #include <filesystem>
+#include <string_view>
+
+namespace arp::editor {
+class ProjectDirectorySnapshot;
+}
+
+namespace arp::core::io {
+class FileService;
+}
 
 namespace arp::editor {
 class ProjectBrowserModel final {
@@ -14,6 +23,23 @@ public:
     };
 
     enum class NavigationResult { Navigated, Unchanged, Rejected };
+    enum class SourceNavigation { Navigate, Refresh, Back, Forward };
+
+    // Prepare a complete source-backed directory without observing host paths.
+    // Source navigation is published only after its corresponding acquisition.
+    const char* prepareSources(core::SharedPtr<const ProjectDirectorySnapshot>,
+        core::io::FileService&,
+        std::uint64_t epoch,
+        SourceNavigation,
+        ProjectBrowserModel& destination,
+        std::size_t maxHistoryEntries = 256) const noexcept;
+    bool sourceTarget(
+        SourceNavigation, std::string_view relative, core::pmr::String& destination) const noexcept;
+
+    const core::SharedPtr<const ProjectDirectorySnapshot>& sourceSnapshot() const noexcept
+    {
+        return source_;
+    }
 
     void setRoot(std::filesystem::path root);
     bool refresh(std::size_t entryBudget = 0);
@@ -52,5 +78,7 @@ private:
     core::pmr::Vector<std::filesystem::path> backHistory_{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<std::filesystem::path> forwardHistory_{&core::defaultCpuMemoryResource()};
     core::pmr::String search_{&core::defaultCpuMemoryResource()};
+    core::SharedPtr<const ProjectDirectorySnapshot> source_;
+    std::size_t sourceHistoryBudget_ = 0;
 };
 } // namespace arp::editor

@@ -24,6 +24,20 @@ public:
     virtual core::UniquePtr<ResourceBase> prepare(const InternalAssetPackageEntry&,
         const std::filesystem::path& packageRoot,
         core::pmr::String& diagnostic) const = 0;
+    // Default is deterministic refusal. A codec must explicitly implement a
+    // source-only path before participating in a preloaded package transaction.
+    virtual AssetPackagePayloadIndex inspectSources(const InternalAssetPackageEntry&,
+        const std::filesystem::path& packageRoot,
+        const AssetPackageSourceContext&) const;
+    virtual core::UniquePtr<ResourceBase> prepareSources(const InternalAssetPackageEntry&,
+        const std::filesystem::path& packageRoot,
+        const AssetPackageSourceContext&,
+        core::pmr::String& diagnostic) const;
+    virtual bool planSourceReads(const InternalAssetPackageEntry&,
+        const std::filesystem::path& packageRoot,
+        const AssetPackageSourceContext&,
+        core::pmr::Vector<ResourceFileReadIntent>&,
+        core::pmr::String& diagnostic) const;
 };
 
 class ARP_API AssetPackageCodecRegistry final {
@@ -65,6 +79,12 @@ public:
         : codecs_(std::move(codecs)), root_(std::move(root))
     {}
 
+    AssetPackagePayloadInspector(core::SharedPtr<const AssetPackageCodecRegistry> codecs,
+        std::filesystem::path root,
+        AssetPackageSourceContext sources)
+        : codecs_(std::move(codecs)), root_(std::move(root)), sources_(sources), preloaded_(true)
+    {}
+
     bool supports(NameView type) const noexcept;
     AssetPackagePayloadIndex inspect(
         const InternalAssetPackageEntry& entry, bool requireFileBindings = false) const;
@@ -74,6 +94,8 @@ public:
 private:
     core::SharedPtr<const AssetPackageCodecRegistry> codecs_;
     std::filesystem::path root_;
+    AssetPackageSourceContext sources_;
+    bool preloaded_ = false;
 };
 
 } // namespace arp::resource

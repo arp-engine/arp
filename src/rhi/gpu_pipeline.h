@@ -21,6 +21,10 @@
 #include <string_view>
 #include <vector>
 
+namespace arp::shader {
+class GeneratedShaderArtifactSet;
+}
+
 namespace arp::rhi_webgpu {
 class WebGpuOriginalArtifactComputeCreation;
 class WebGpuOriginalArtifactGraphicsCreation;
@@ -86,6 +90,7 @@ struct ShaderGeneratedArtifacts {
     core::pmr::String mslPath{&core::defaultCpuMemoryResource()};
     core::pmr::String wgslPath{&core::defaultCpuMemoryResource()};
     core::pmr::String reflectionPath{&core::defaultCpuMemoryResource()};
+    core::pmr::String publicationPath{&core::defaultCpuMemoryResource()};
 };
 
 struct ShaderReflectionBinding {
@@ -210,7 +215,28 @@ struct ShaderPackageDesc {
     /// package consumers must not continue with hand-authored reflection when
     /// this is false.
     bool generatedReflectionHydrated = false;
+    core::SharedPtr<const shader::GeneratedShaderArtifactSet> generatedArtifactSet;
 };
+
+// Pure custody/binding gates, not optional-feature execution authority. Null
+// may validate path-only declarations; native ordinary consumers require input.
+ARP_API ValidationResult validateGeneratedShaderPackageInput(
+    const ShaderPackageDesc&, bool required = true);
+ARP_API ValidationResult validateGeneratedShaderPackageSource(const ShaderPackageDesc&,
+    const core::SharedPtr<const shader::GeneratedShaderArtifactSet>&,
+    std::string_view publicationPath);
+ARP_API bool generatedShaderPackageArtifactsEqual(
+    const ShaderPackageDesc&, const ShaderPackageDesc&) noexcept;
+ARP_API std::uint64_t hashGeneratedShaderPackageArtifacts(const ShaderPackageDesc&) noexcept;
+
+struct GeneratedShaderTargetInput {
+    const core::pmr::Vector<std::uint8_t>* bytes = nullptr;
+    const core::pmr::Vector<std::uint32_t>* spirvWords = nullptr;
+    std::string_view text;
+};
+
+ARP_API ValidationResult selectGeneratedShaderPackageTarget(
+    const ShaderPackageDesc&, shader::TargetBackend, GeneratedShaderTargetInput&);
 
 inline bool hasShaderPathSuffix(const std::pmr::string& path, const std::pmr::string& suffix);
 

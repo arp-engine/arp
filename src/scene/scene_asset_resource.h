@@ -74,6 +74,14 @@ public:
     bool collectFileReadIntents(resource::ResourceManager&,
         core::pmr::Vector<resource::ResourceFileReadIntent>&,
         core::pmr::String&) const override;
+    void appendContentFingerprint(core::StableHash64&) const noexcept override;
+
+    resource::ResourceGraphStage processingStage() const noexcept override
+    {
+        return resource::ResourceGraphStage::YamlParse;
+    }
+
+    std::size_t processedByteCount() const noexcept override { return yaml_.size(); }
 
     const auto& yaml() const { return yaml_; }
 
@@ -83,7 +91,8 @@ protected:
         std::size_t maxBytes,
         std::uint32_t maxObjects,
         const char* resourceType,
-        const char* documentType);
+        const char* documentType,
+        resource::ResourceFileOrigin origin = {});
 
 private:
     bool populate(Scene&,
@@ -94,31 +103,40 @@ private:
     core::pmr::String path_, documentType_, yaml_;
     std::size_t maxBytes_;
     std::uint32_t maxObjects_;
+    resource::ResourceFileOrigin origin_;
 };
 
 class SceneAssetResource final : public SceneDocumentResource {
 public:
-    SceneAssetResource(
-        core::pmr::String id, core::pmr::String path, std::size_t bytes, std::uint32_t objects)
+    SceneAssetResource(core::pmr::String id,
+        core::pmr::String path,
+        std::size_t bytes,
+        std::uint32_t objects,
+        resource::ResourceFileOrigin origin = {})
         : SceneDocumentResource(std::move(id),
               std::move(path),
               bytes,
               objects,
               "SceneAssetResource",
-              "arp.scene-asset")
+              "arp.scene-asset",
+              origin)
     {}
 };
 
 class ScenePrefabResource final : public SceneDocumentResource {
 public:
-    ScenePrefabResource(
-        core::pmr::String id, core::pmr::String path, std::size_t bytes, std::uint32_t objects)
+    ScenePrefabResource(core::pmr::String id,
+        core::pmr::String path,
+        std::size_t bytes,
+        std::uint32_t objects,
+        resource::ResourceFileOrigin origin = {})
         : SceneDocumentResource(std::move(id),
               std::move(path),
               bytes,
               objects,
               "ScenePrefabResource",
-              "arp.scene-prefab")
+              "arp.scene-prefab",
+              origin)
     {}
 };
 

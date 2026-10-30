@@ -62,17 +62,22 @@ struct WebGlRuntimeExtensions {
     bool vertexArrayObjects = false;
     bool depthTextures = false;
     bool derivatives = false;
+    bool fragmentDepth = false;
+    bool srgbTextures = false;
 
     constexpr bool contains(const WebGlRuntimeExtensions& required) const noexcept
     {
         return (!required.uint32Indices || uint32Indices) && (!required.instancing || instancing)
             && (!required.vertexArrayObjects || vertexArrayObjects)
-            && (!required.depthTextures || depthTextures) && (!required.derivatives || derivatives);
+            && (!required.depthTextures || depthTextures) && (!required.derivatives || derivatives)
+            && (!required.fragmentDepth || fragmentDepth)
+            && (!required.srgbTextures || srgbTextures);
     }
 
     constexpr bool any() const noexcept
     {
-        return uint32Indices || instancing || vertexArrayObjects || depthTextures || derivatives;
+        return uint32Indices || instancing || vertexArrayObjects || depthTextures || derivatives
+            || fragmentDepth || srgbTextures;
     }
 };
 
@@ -113,6 +118,7 @@ struct WebGlRuntimeProbe {
     WebGlContextAttributes contextAttributes;
     WebGlFormatFacts formats;
     WebGlRuntimeIdentitySnapshot identity;
+    std::uint32_t fragmentDepthQueryVersion = 0;
 };
 
 struct WebGlGraphicsRequirements {
@@ -138,6 +144,8 @@ struct WebGlGraphicsRequirements {
     std::uint32_t renderbufferHeight = 0u;
     std::uint32_t pushConstantSizeBytes = 0u;
     WebGlPrecisionRequirements precision;
+    bool fragmentDepth = false;
+    bool srgbTextures = false;
 };
 
 // Caller allowances, never native query results. Zero closes a category; the
@@ -240,12 +248,21 @@ public:
             requirement.instancing,
             requirement.vertexArrayObjects,
             requirement.depthTextures,
-            requirement.derivatives};
-        if (optIn.contractVersion != 0u && optIn.contractVersion != 1u)
+            requirement.derivatives,
+            requirement.fragmentDepth,
+            requirement.srgbTextures};
+        if (optIn.contractVersion > 2u)
             return {false, false, "RHI-WEBGL1-EXTENSION-CONTRACT-VERSION"};
+        if ((required.fragmentDepth || optIn.extensions.fragmentDepth)
+            && optIn.contractVersion != 2u)
+            return {false, false, "RHI-WEBGL1-FRAGMENT-DEPTH-PROFILE-REQUIRED"};
+        if ((required.srgbTextures || optIn.extensions.srgbTextures) && optIn.contractVersion != 2u)
+            return {false, false, "RHI-WEBGL1-SRGB-PROFILE-REQUIRED"};
+        if (required.fragmentDepth && probe_.fragmentDepthQueryVersion != 1u)
+            return {false, false, "RHI-WEBGL1-FRAGMENT-DEPTH-QUERY-REQUIRED"};
         if (!probe_.extensions.contains(required))
             return {false, false, "RHI-WEBGL1-EXTENSION-UNAVAILABLE"};
-        if (required.any() && (optIn.contractVersion != 1u || !optIn.extensions.contains(required)))
+        if (required.any() && (!optIn.contractVersion || !optIn.extensions.contains(required)))
             return {false, false, "RHI-WEBGL1-EXTENSION-OPT-IN-REQUIRED"};
         if (!probe_.enabledExtensions.contains(required))
             return {false, false, "RHI-WEBGL1-EXTENSION-NOT-ENABLED"};
@@ -303,6 +320,10 @@ private:
             diagnostic_ = "RHI-WEBGL1-PROBE-INCOMPLETE";
         } else if (!probe.extensions.contains(probe.enabledExtensions)) {
             diagnostic_ = "RHI-WEBGL1-EXTENSION-PROBE-INCONSISTENT";
+        } else if (probe.fragmentDepthQueryVersion > 1u
+            || ((probe.extensions.fragmentDepth || probe.enabledExtensions.fragmentDepth)
+                && probe.fragmentDepthQueryVersion != 1u)) {
+            diagnostic_ = "RHI-WEBGL1-FRAGMENT-DEPTH-PROBE-INVALID";
         } else if (const auto* identityDiagnostic =
                        WebGlRuntimeIdentityContract::validate(probe.identity.view())) {
             diagnostic_ = identityDiagnostic;

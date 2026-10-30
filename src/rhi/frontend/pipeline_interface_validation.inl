@@ -128,6 +128,8 @@ inline std::uint64_t stableShaderPackageHash(const ShaderPackageDesc& desc)
     hash = hashShaderString(hash, desc.artifacts.mslPath);
     hash = hashShaderString(hash, desc.artifacts.wgslPath);
     hash = hashShaderString(hash, desc.artifacts.reflectionPath);
+    hash = hashShaderString(hash, desc.artifacts.publicationPath);
+    hash = hashShaderValue(hash, hashGeneratedShaderPackageArtifacts(desc));
     hash = hashShaderValue(hash, desc.reflection.pushConstantByteCount);
     hash = hashShaderString(hash, desc.reflection.reflectionContractVersion);
     hash = hashShaderString(hash, desc.reflection.sourceSha256);
@@ -389,10 +391,14 @@ inline ValidationResult validateShaderPackageImpl(
     const auto authorization = validateShaderPackageAuthorization(desc, authorizedBindless);
     if (!authorization.success)
         return authorization;
+    const auto prepared = validateGeneratedShaderPackageInput(desc, false);
+    if (!prepared.success)
+        return prepared;
     const auto source = validateShaderPackageSourcePaths(desc);
     if (!source.success)
         return source;
-    if (!hasShaderPathSuffix(desc.artifacts.mslPath, ".metal")
+    if (!(desc.generatedArtifactSet && desc.artifacts.mslPath.empty())
+        && !hasShaderPathSuffix(desc.artifacts.mslPath, ".metal")
         && !hasShaderPathSuffix(desc.artifacts.mslPath, ".msl"))
         return {false, "shader package requires generated MSL artifact"};
     const auto auxiliary = validateShaderPackageAuxiliaryPaths(desc);

@@ -13,6 +13,12 @@ struct ParserLimits {
     std::size_t max_buffer_bytes = 2097152;
     bool server_request_validation = false;
     bool head_response = false;
+    // Explicit opt-in: HTTP responses delimited by transport EOF. Legacy
+    // parser behavior remains unchanged for existing callers.
+    bool allow_close_delimited_body = false;
+    // Allow a streaming consumer to reject a response (e.g. HTTP 404) using
+    // its headers before applying the advertised success-body size limit.
+    bool prioritize_header_observer = false;
 };
 
 enum class ParseStatus {
@@ -71,12 +77,15 @@ public:
     virtual ~ResponseStreamSink();
     virtual void on_headers(const Response& response) = 0;
     virtual void on_body(StringView chunk) = 0;
+
+    virtual bool shouldContinue() const noexcept { return true; }
 };
 
 enum class ResponseStreamBodyMode {
     none,
     fixed,
     chunked,
+    untilClose,
 };
 
 class ARP_API ResponseStreamParser {
@@ -84,6 +93,7 @@ public:
     explicit ResponseStreamParser(ParserLimits limits = {});
 
     ParseResult feed(StringView data, ResponseStreamSink& sink);
+    ParseResult finish(ResponseStreamSink& sink);
     void reset();
     const Response& response() const noexcept;
 

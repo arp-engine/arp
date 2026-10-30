@@ -2,12 +2,14 @@
 
 #include "assets/image_decoder.h"
 #include "reflection/reflection.h"
+#include "resource/resource_source_io.h"
+#include "ui/detail/ui_content_fingerprint.h"
 #include "ui/ui_atlas_metadata_resource.h"
 
 #include <algorithm>
 #include <cctype>
 #include <charconv>
-#include <fstream>
+#include <cmath>
 #include <system_error>
 #include <utility>
 
@@ -22,10 +24,7 @@ arp::core::pmr::String atlasImageText(const char* value)
 
 arp::core::pmr::String pathToText(const std::filesystem::path& path)
 {
-    using StringAllocator = arp::core::pmr::String::allocator_type;
-    return path.generic_string<char, std::char_traits<char>, StringAllocator>(StringAllocator{
-        &arp::core::defaultCpuMemoryResource(),
-    });
+    return arp::core::FilePath::utf8(path);
 }
 
 bool validAtlasImageStatus(const arp::core::pmr::String& status)
@@ -37,54 +36,6 @@ bool validAtlasImageStatus(const arp::core::pmr::String& status)
         },
         "UI atlas image resource")
         .success;
-}
-
-bool readBinaryFile(const std::filesystem::path& path,
-    const arp::resource::ResourceLoadContext& context,
-    arp::core::pmr::Vector<std::uint8_t>& out,
-    arp::core::pmr::String& diagnostics)
-{
-    const auto pathText = pathToText(path);
-    if (context.sources != nullptr) {
-        const auto* source = context.sources->find(pathText);
-        if (source != nullptr) {
-            out = source->bytes;
-            if (out.empty()) {
-                diagnostics = atlasImageText("UI atlas image preloaded source is empty: ");
-                diagnostics += pathText;
-                return false;
-            }
-            return true;
-        }
-    }
-    if (context.requirePreloadedSources) {
-        diagnostics = atlasImageText("UI atlas image requires preloaded source: ");
-        diagnostics += pathText;
-        return false;
-    }
-    std::ifstream input(path, std::ios::binary);
-    if (!input.good()) {
-        diagnostics = atlasImageText("UI atlas image source file is missing: ");
-        diagnostics += path.generic_string().c_str();
-        return false;
-    }
-    input.seekg(0, std::ios::end);
-    const auto size = input.tellg();
-    if (size <= 0) {
-        diagnostics = atlasImageText("UI atlas image source file is empty: ");
-        diagnostics += path.generic_string().c_str();
-        return false;
-    }
-    input.seekg(0, std::ios::beg);
-    out.resize(static_cast<std::size_t>(size));
-    input.read(reinterpret_cast<char*>(out.data()), size);
-    if (!input.good()) {
-        diagnostics = atlasImageText("UI atlas image source file is unreadable: ");
-        diagnostics += path.generic_string().c_str();
-        out.clear();
-        return false;
-    }
-    return true;
 }
 
 arp::core::pmr::String mimeTypeForAtlasImagePath(const std::filesystem::path& path)
@@ -104,15 +55,6 @@ arp::core::pmr::String mimeTypeForAtlasImagePath(const std::filesystem::path& pa
         return atlasImageText("image/tga");
     }
     return {};
-}
-
-std::filesystem::path resolveDeclaredAtlasImagePath(
-    const std::filesystem::path& sourceRoot, const std::filesystem::path& declaredPath)
-{
-    if (declaredPath.is_absolute()) {
-        return declaredPath;
-    }
-    return sourceRoot / declaredPath;
 }
 
 void appendUnsigned(arp::core::pmr::String& out, std::uint64_t value)
@@ -217,6 +159,22 @@ void registerUiAtlasImageResourceReflection()
 
 } // namespace
 
+void UiAtlasImageResource::appendContentFingerprint(core::StableHash64& hasher) const noexcept
+{
+    detail::UiContentFingerprint hash(hasher);
+    hash.resource(*this, kUiAtlasImageResourceContract);
+    hash.number(data != nullptr);
+    if (!data)
+        return;
+    hash.text(data->atlasResourceId);
+    hash.path(data->sourcePath);
+    hash.number(data->width);
+    hash.number(data->height);
+    hash.number(data->srgb);
+    hash.number(data->rgba8.size());
+    hasher.appendBytes(data->rgba8.data(), data->rgba8.size());
+}
+
 arp::resource::ResourceLoadResult UiAtlasImageResource::load(
     arp::resource::ResourceManager& resourceManager,
     const arp::resource::ResourceLoadContext& context)
@@ -231,7 +189,8 @@ arp::resource::ResourceLoadResult UiAtlasImageResource::load(
         result.diagnostics = atlasImageText("invalid UI atlas image resource status");
         return result;
     }
-    if (desc.sourceRoot.empty()) {
+    if (desc.origin.pathScope == arp::core::io::FilePathScope::HostFilesystem
+        && desc.sourceRoot.empty()) {
         result.diagnostics =
             atlasImageText("UI atlas image resource requires explicit sourceRoot.");
         return result;
@@ -251,8 +210,10 @@ arp::resource::ResourceLoadResult UiAtlasImageResource::load(
     }
     const auto& metadata = *metadataHandle.get()->data;
 
-    const auto resolvedSourcePath =
-        resolveDeclaredAtlasImagePath(desc.sourceRoot, metadata.sourcePath);
+    arp::core::pmr::Vector<arp::resource::ResourceFileReadIntent> intents;
+    if (!collectFileReadIntents(resourceManager, intents, result.diagnostics))
+        return result;
+    const auto resolvedSourcePath = std::filesystem::u8path(intents.front().path);
     const auto mimeType = mimeTypeForAtlasImagePath(resolvedSourcePath);
     if (mimeType.empty()) {
         result.diagnostics = atlasImageText("UI atlas image source mime type is unsupported: ");
@@ -260,19 +221,46 @@ arp::resource::ResourceLoadResult UiAtlasImageResource::load(
         return result;
     }
 
-    arp::core::pmr::Vector<std::uint8_t> encodedBytes(&arp::core::defaultCpuMemoryResource());
-    if (!readBinaryFile(resolvedSourcePath, context, encodedBytes, result.diagnostics)) {
+    if (!desc.maxDecodedBytes || desc.maxDecodedBytes == SIZE_MAX) {
+        result.diagnostics = "UI-ATLAS-IMAGE-DECODE-BUDGET";
+        return result;
+    }
+    const auto validDimension = [](float value) {
+        return std::isfinite(value) && value > 0 && std::floor(value) == value
+            && static_cast<double>(value) <= UINT32_MAX;
+    };
+    if (!validDimension(metadata.width) || !validDimension(metadata.height)) {
+        result.diagnostics = "UI-ATLAS-IMAGE-DIMENSIONS";
+        return result;
+    }
+    const auto width = static_cast<std::uint32_t>(metadata.width);
+    const auto height = static_cast<std::uint32_t>(metadata.height);
+    const auto budget = context.maxDecodedBytes
+        ? std::min(desc.maxDecodedBytes, context.maxDecodedBytes)
+        : desc.maxDecodedBytes;
+    const auto pixels = std::uint64_t(width) * height;
+    if (pixels > budget / 4) {
+        result.diagnostics = "UI-ATLAS-IMAGE-DECODE-BUDGET";
+        return result;
+    }
+    auto source = arp::resource::readResourceSource(
+        intents.front().path, context, desc.maxEncodedBytes, false, &desc.origin);
+    if (!source.success) {
+        result.diagnostics = std::move(source.diagnostics);
         return result;
     }
 
-    const auto decoded = assets::decodeImageToRgba8(encodedBytes, mimeType, metadata.srgb);
+    auto decoded = assets::decodeImageToRgba8(
+        arp::core::ArrayView<const std::uint8_t>(source.bytes.data(), source.bytes.size()),
+        mimeType,
+        metadata.srgb,
+        static_cast<std::size_t>(pixels * 4));
     if (!decoded.success) {
         result.diagnostics = atlasImageText("UI atlas image decode failed: ");
         result.diagnostics += decoded.diagnostics.c_str();
         return result;
     }
-    if (decoded.image.width != static_cast<std::uint32_t>(metadata.width)
-        || decoded.image.height != static_cast<std::uint32_t>(metadata.height)
+    if (decoded.image.width != width || decoded.image.height != height
         || decoded.image.srgb != metadata.srgb) {
         result.diagnostics = atlasImageText("UI atlas image decoded metadata mismatch.");
         return result;
@@ -288,7 +276,7 @@ arp::resource::ResourceLoadResult UiAtlasImageResource::load(
     data->width = decoded.image.width;
     data->height = decoded.image.height;
     data->srgb = decoded.image.srgb;
-    data->rgba8.assign(decoded.image.rgba8.begin(), decoded.image.rgba8.end());
+    data->rgba8 = std::move(decoded.image.rgba8);
 
     addDependency(arp::resource::ResourceDependency{
         metadataHandle.id(),
@@ -309,14 +297,26 @@ bool UiAtlasImageResource::collectFileReadIntents(arp::resource::ResourceManager
             : metadataHandle.diagnostics();
         return false;
     }
-    const auto resolvedSourcePath =
-        resolveDeclaredAtlasImagePath(loadDesc.sourceRoot, metadataHandle.get()->data->sourcePath);
-    arp::resource::ResourceFileReadIntent intent;
-    intent.pathScope = arp::core::io::FilePathScope::HostFilesystem;
-    intent.path = pathToText(resolvedSourcePath);
-    intent.role = atlasImageText("ui.atlas.image.encoded");
-    intent.maxBytes = 64u * 1024u * 1024u;
-    intents.push_back(std::move(intent));
+    if (loadDesc.origin.pathScope == arp::core::io::FilePathScope::HostFilesystem
+        && loadDesc.sourceRoot.empty()) {
+        diagnostics = "UI-ATLAS-IMAGE-ROOT-REQUIRED";
+        return false;
+    }
+    std::filesystem::path resolvedSourcePath;
+    if (!arp::resource::resolveResourceSourcePath(loadDesc.sourceRoot,
+            pathToText(metadataHandle.get()->data->sourcePath),
+            loadDesc.origin,
+            resolvedSourcePath)) {
+        diagnostics = "UI-ATLAS-IMAGE-SOURCE-PATH";
+        return false;
+    }
+    if (!arp::resource::appendResourceReadIntent(pathToText(resolvedSourcePath),
+            loadDesc.maxEncodedBytes,
+            intents,
+            diagnostics,
+            loadDesc.origin))
+        return false;
+    intents.back().role = atlasImageText("ui.atlas.image.encoded");
     return true;
 }
 

@@ -1,10 +1,14 @@
 #include "2d/components.h"
 #include "2d/physics_components.h"
 #include "3d/components.h"
+#include "core/io/http_file_backend.h"
+#include "core/io/memory_file_backend.h"
+#include "core/io/mounted_file_backend.h"
 #include "editor/tests/fixtures/editor_script_document_fixture.h"
 #include "editor/workspace/editor_scene_presence.h"
 #include "editor/workspace/editor_scene_script_codec.h"
 #include "reflection/instance.h"
+#include "tests/fixtures/unified_io_fixture.h"
 
 #include <limits>
 
@@ -300,6 +304,195 @@ void cycle(Fixture& files)
     roundTrip(files);
     failures(files);
 }
+
+// The mounted root is deliberately unrelated to Fixture::root. All domain and
+// codec work below must consume acquired bytes, including after native files
+// have become invalid. Actual IO is isolated here, outside cold preparation.
+class SourceFixture final {
+public:
+    static constexpr std::size_t fileBytes = 65536;
+    static constexpr std::uint64_t epoch = 41;
+
+    explicit SourceFixture(Fixture& files) : files_(files)
+    {
+        ProjectDiagnostic issue;
+        check(ProjectManifestCodec::encode(files.manifest, manifest_, issue));
+        primary_ = "\xef\xbb\xbf";
+        primary_ += primary;
+        std::filesystem::create_directories(files.root / root);
+        files.write("workspace/project.arp.yaml", manifest_);
+        files.write("workspace/primary.arp", primary_);
+        files.write("workspace/secondary.arp", secondary);
+    }
+
+    core::SharedPtr<core::io::ManagedFileBackend> backend(unsigned mode, std::string_view url)
+    {
+        using namespace core::io;
+        if (mode == 1) {
+            auto desc = workspace_.descriptor();
+            desc.rootPath = core::FilePath::utf8(files_.root);
+            desc.maxInFlight = 1;
+            desc.maxBytesInFlight = fileBytes;
+            desc.maxScanEntries = 32;
+            return core::makeShared<NativeDirectoryFileBackend>(desc);
+        }
+        if (mode == 2) {
+            HttpFileBackendDesc desc;
+            desc.baseUrl = url;
+            desc.maxInFlight = 1;
+            desc.maxBytesInFlight = fileBytes;
+            desc.maxPathBytes = 512;
+            desc.maxHeaderBytes = 8192;
+            desc.ioChunkBytes = 4096;
+            desc.timeoutMs = 3000;
+            desc.cancellationPollMs = 2;
+            return core::makeShared<HttpFileBackend>(desc);
+        }
+        auto result = core::makeShared<MemoryFileBackend>(
+            MemoryFileBackendDesc{4, 3 * fileBytes, 1, fileBytes, 512});
+        check(result->registerDirectory("workspace") == FileIoStatus::Success);
+        const auto add = [&](const char* name, std::string_view bytes) {
+            check(result->registerFile(
+                      name, reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size())
+                    == FileIoStatus::Success,
+                result->diagnostic() ? result->diagnostic() : "");
+        };
+        add("workspace/project.arp.yaml", manifest_);
+        add("workspace/primary.arp", primary_);
+        add("workspace/secondary.arp", secondary);
+        return result;
+    }
+
+    ProjectSourceContext acquire(core::io::FileService& files,
+        core::runtime::CompletionQueue& queue,
+        core::PoolHandle mount,
+        bool complete = true)
+    {
+        ProjectSourceSession source(
+            files, {mount, "workspace", epoch}, {3, fileBytes, 3 * fileBytes});
+        for (const auto* name : {"project.arp.yaml", "primary.arp", "secondary.arp"}) {
+            if (!complete && std::string_view(name) == "secondary.arp")
+                break;
+            check(source.read(name, fileBytes) == core::io::FileIoStatus::Accepted);
+            unified_io_fixture::wait(queue, [&] {
+                return source.state() != ProjectSourceState::Pending;
+            });
+            check(source.state() == ProjectSourceState::Ready,
+                source.diagnostic() ? source.diagnostic() : "");
+        }
+        auto snapshot = source.finish(epoch);
+        check(bool(snapshot));
+        return {std::move(snapshot), &files, epoch};
+    }
+
+    void emit(const std::filesystem::path& destination)
+    {
+        std::filesystem::copy(
+            files_.root / root, destination / root, std::filesystem::copy_options::recursive);
+    }
+
+    const std::filesystem::path root{"workspace"};
+
+private:
+    Fixture& files_;
+    unified_io_fixture::Workspace workspace_;
+    core::pmr::String manifest_, primary_;
+};
+
+void sourceCycle(Fixture& files, SourceFixture& fixture, unsigned mode, std::string_view url)
+{
+    using namespace core::io;
+    core::runtime::CompletionQueue queue{{8}};
+    MountedFileBackend mounts{{1, 1, SourceFixture::fileBytes, 32, 512}};
+    FileService io{queue, mounts};
+    const auto mount = mounts.mount("fixture", fixture.backend(mode, url));
+    check(bool(mount));
+    const auto source = fixture.acquire(io, queue, mount);
+    const auto count = io.telemetry().submitted;
+    check(count == 3);
+    EditorSceneDocument document(false);
+    core::pmr::String diagnostic;
+    check(document.bindServiceSession(Fixture::services(), diagnostic), diagnostic);
+    const auto epoch = document.ownerTicket();
+    auto invalid = source;
+    invalid.epoch += 1;
+    check(!document.prepareScriptAuthoringSources(
+        invalid, files.manifest, Fixture::budget(), diagnostic));
+    check(epoch.sameCurrentEpoch(document.ownerTicket()) && !document.scriptCatalog());
+    invalid = {};
+    check(!document.prepareScriptAuthoringSources(
+        invalid, files.manifest, Fixture::budget(), diagnostic));
+    check(epoch.sameCurrentEpoch(document.ownerTicket()) && !document.scriptCatalog());
+    const auto quota = core::makeShared<core::CpuMemoryQuota>(1);
+    {
+        core::CpuMemoryQuotaScope limited(quota);
+        try {
+            check(!document.prepareScriptAuthoringSources(
+                source, files.manifest, Fixture::budget(), diagnostic));
+        } catch (const std::bad_alloc&) {
+            // A bounded diagnostic string can itself exhaust this injected quota.
+        }
+    }
+    check(quota->liveBytes() == 0 && epoch.sameCurrentEpoch(document.ownerTicket())
+        && !document.scriptCatalog());
+    check(document.prepareScriptAuthoringSources(
+              source, files.manifest, Fixture::budget(), diagnostic),
+        diagnostic);
+    const auto name = document.scene().name();
+    check(name != "InitializerExecuted" && name != "ConstructorExecuted");
+    const auto catalog = document.scriptCatalog();
+    check(catalog && catalog->entries().size() == 2);
+    for (const auto& entry : catalog->modules().entries())
+        check(entry.module->liveInstances() == 0);
+    const auto graph = populate(document);
+    const auto old = document.scene().findComponent(graph.rootScript)->scriptInstance();
+    auto input = inputs(files);
+    // The logical root has no relation to the physical fixture directory.
+    EditorSceneScriptInputs mounted{
+        fixture.root, files.manifest, input.modules, input.fields, input.preparationBytes, &source};
+    core::pmr::String yaml, restored;
+    check(Codec::encode(document, mounted, yaml, diagnostic), diagnostic);
+    check(document.scene().name() == "Actual authoring root");
+    auto withoutSource = mounted;
+    withoutSource.sources = nullptr;
+    restored = "unchanged";
+    check(!Codec::encode(document, withoutSource, restored, diagnostic) && restored == "unchanged");
+    const std::filesystem::path wrongRoot("different-source-root");
+    EditorSceneScriptInputs wrong{
+        wrongRoot, files.manifest, input.modules, input.fields, input.preparationBytes, &source};
+    check(!Codec::encode(document, wrong, restored, diagnostic) && restored == "unchanged");
+    check(Codec::decode(yaml, document, mounted, diagnostic), diagnostic);
+    check(!old.ptr<reflection::instance>()->alive());
+    check(
+        document.scene().name() == "Actual authoring root" && document.selectedObject() == graph.b);
+    for (const auto& entry : catalog->modules().entries())
+        check(entry.module->liveInstances() == 0);
+    check(Codec::encode(document, mounted, restored, diagnostic) && restored == yaml, diagnostic);
+    check(io.telemetry().submitted == count); // No parser/domain rereads.
+    const auto incomplete = fixture.acquire(io, queue, mount, false);
+    auto missing = mounted;
+    missing.sources = &incomplete;
+    core::UniquePtr<EditorSceneDocument> candidate;
+    check(Codec::prepare(yaml, document, mounted, candidate, diagnostic), diagnostic);
+    const auto* kept = candidate.get();
+    check(
+        !Codec::prepare(yaml, document, missing, candidate, diagnostic) && candidate.get() == kept);
+    auto stale = source;
+    stale.epoch += 1;
+    missing.sources = &stale;
+    check(
+        !Codec::prepare(yaml, document, missing, candidate, diagnostic) && candidate.get() == kept);
+    const auto liveEpoch = document.ownerTicket();
+    check(mounts.unmount(mount));
+    restored = "unchanged";
+    check(!Codec::encode(document, mounted, restored, diagnostic) && restored == "unchanged");
+    check(!document.prepareReplacement(*candidate, diagnostic));
+    check(liveEpoch.sameCurrentEpoch(document.ownerTicket())
+        && document.scene().name() == "Actual authoring root");
+    check(Codec::observeSnapshot(document, mounted, restored, diagnostic), diagnostic);
+    check(restored == yaml); // Retained observation stays IO-free after unmount.
+    check(io.telemetry().submitted == count + 2);
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -307,6 +500,47 @@ int main(int argc, char** argv)
     Fixture files;
     files.write("primary.arp", primary);
     files.write("secondary.arp", secondary);
+    const auto option = argc >= 2 ? std::string_view(argv[1]) : std::string_view{};
+    const bool source = option == "--source" || option == "--source-smoke"
+        || option == "--source-native" || option == "--source-http" || option == "--source-emit";
+    if (source) {
+        SourceFixture fixture(files);
+        if (std::string_view(argv[1]) == "--source-emit") {
+            check(argc == 3);
+            fixture.emit(std::filesystem::u8path(argv[2]));
+            return 0;
+        }
+        const unsigned mode = std::string_view(argv[1]) == "--source-native" ? 1
+            : std::string_view(argv[1]) == "--source-http"                   ? 2
+                                                                             : 0;
+        check(mode != 2 || argc == 3);
+        const auto run = [&] {
+            sourceCycle(files, fixture, mode, mode == 2 ? argv[2] : "");
+        };
+        if (std::string_view(argv[1]) == "--source") {
+            run();
+            std::puts(
+                "PASS explicit source domains/v4 identities/references; no IO or user execution during cold prepare");
+            return 0;
+        }
+        for (unsigned i = 0; i < 20; ++i)
+            run();
+        const auto before = core::defaultCpuAllocator().stats();
+        for (unsigned i = 0; i < 20; ++i)
+            run();
+        const auto after = core::defaultCpuAllocator().stats();
+        std::printf(
+            "Source v4 cold preparation 20+20: core bytes %llu -> %llu; live %llu -> %llu\n",
+            (unsigned long long)before.liveBytes,
+            (unsigned long long)after.liveBytes,
+            (unsigned long long)(before.allocationCount - before.deallocationCount),
+            (unsigned long long)(after.allocationCount - after.deallocationCount));
+        check(before.liveBytes == after.liveBytes
+            && before.allocationCount - before.deallocationCount
+                == after.allocationCount - after.deallocationCount);
+        return 0;
+    }
+    check(argc == 1 || (argc == 2 && option == "--smoke"));
     cycle(files);
     if (argc == 2 && std::string_view(argv[1]) == "--smoke") {
         const auto baseline = core::defaultCpuAllocator().stats();

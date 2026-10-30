@@ -46,41 +46,6 @@ PipelineLayoutDesc makePipelineLayoutDesc(const DescriptorLayoutDesc& frameLayou
     return desc;
 }
 
-ShaderPackageDesc makeShaderPackage()
-{
-    ShaderPackageDesc shaderPackage;
-    shaderPackage.label = "NullHiddenFrameSmokeShaderPackage";
-    shaderPackage.slangModulePath = "null_hidden_frame_smoke.slang";
-    shaderPackage.entrypoints.push_back(
-        {"null_hidden_frame_smoke.slang", "vsMain", ShaderStage::Vertex});
-    shaderPackage.entrypoints.push_back(
-        {"null_hidden_frame_smoke.slang", "fsMain", ShaderStage::Fragment});
-    shaderPackage.artifacts.spirvPath = "null_hidden_frame_smoke.spv";
-    shaderPackage.artifacts.mslPath = "null_hidden_frame_smoke.metal";
-    shaderPackage.artifacts.reflectionPath = "null_hidden_frame_smoke.reflection.yaml";
-    shaderPackage.reflection.pushConstantByteCount = 64;
-    shaderPackage.reflection.pushConstantContractVersion = "AtomicFullBlockPush/1";
-    shaderPackage.reflection.pushConstantStages = "VS|FS";
-    shaderPackage.reflection.pushConstantMembers.push_back({
-        "data",
-        "uint32",
-        32,
-        0,
-        0,
-        0,
-        0,
-        false,
-        {16},
-        4,
-        0,
-        64,
-        0,
-    });
-    shaderPackage.reflection.descriptorBindings.push_back(
-        {0, 0, DescriptorType::UniformBuffer, ShaderStage::Vertex | ShaderStage::Fragment});
-    return shaderPackage;
-}
-
 RenderPipelineDesc makeRenderPipelineDesc(
     const PipelineLayout& layout, const ShaderPackageDesc& shaderPackage, TextureFormat format)
 {
@@ -151,7 +116,9 @@ NullHiddenFrameSmokeReport NullHiddenFrameSmokeRunner::run(const NullHiddenFrame
     report.nativeHandleExposedToUpperLayer =
         report.nativeHandleExposedToUpperLayer || pipelineLayout->nativeHandleExposedToUpperLayer();
 
-    const auto shaderPackage = makeShaderPackage();
+    if (!config.shaderPackage)
+        return fail(report, "RHI-GENERATED-PACKAGE-INPUT-MISSING", recycler);
+    const auto& shaderPackage = *config.shaderPackage;
     const auto renderPipelineDesc =
         makeRenderPipelineDesc(*pipelineLayout, shaderPackage, config.format);
     const auto renderPipelineValidation = device_.validateRenderPipeline(renderPipelineDesc);

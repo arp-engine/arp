@@ -5,6 +5,7 @@
 #include "editor/project/project_metadata.h"
 #include "editor/project/project_package_snapshot.h"
 #include "editor/project/project_resource_locations.h"
+#include "editor/project/project_source_session.h"
 #include "physics/2d/physics_world_2d.h"
 #include "resource/resource_manager.h"
 
@@ -39,6 +40,14 @@ public:
     // remains with the command owner after its on-disk transaction succeeds.
     EditorProjectResourceLoadResult loadManifest(
         const std::filesystem::path& projectRoot, std::string_view yaml);
+    EditorProjectResourceLoadResult loadSources(core::SharedPtr<const ProjectSourceSnapshot>,
+        core::io::FileService&,
+        std::uint64_t currentEpoch);
+
+    const core::SharedPtr<const ProjectSourceSnapshot>& sourceSnapshot() const noexcept
+    {
+        return sourceSnapshot_;
+    }
 
     // Asset-package publication does not replace the live physics world. The
     // caller must verify that the project configuration has not changed.
@@ -102,6 +111,11 @@ public:
     }
 
 private:
+    static bool prepareManager(const ProjectManifest&,
+        core::SharedPtr<resource::ResourceManager>&,
+        core::SharedPtr<physics2d::PhysicsWorld2D>&,
+        core::SharedPtr<const resource::AssetPackageCodecRegistry>&,
+        core::pmr::String&);
     friend class EditorShell;
     // Only the workspace's validated settings save may update this snapshot.
     // It preserves all resource/physics ownership and the dependency contract.
@@ -116,6 +130,7 @@ private:
     core::SharedPtr<physics2d::PhysicsWorld2D> physicsWorld2D_;
     core::pmr::Vector<PackageResourceRoot> packageRoots_{&core::defaultCpuMemoryResource()};
     ProjectResourceLocations resourceLocations_;
+    core::SharedPtr<const ProjectSourceSnapshot> sourceSnapshot_;
     EditorProjectResourceLoadResult lastLoad_;
     core::pmr::String manifestSnapshot_{&core::defaultCpuMemoryResource()};
     std::optional<ProjectManifest> manifest_;

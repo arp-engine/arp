@@ -9,6 +9,8 @@
 
 namespace {
 
+bool tgaMatchesPayload(arp::core::ArrayView<const std::uint8_t> bytes) noexcept;
+
 bool mimeMatchesPayload(
     const arp::core::ArrayView<const std::uint8_t> bytes, const std::pmr::string& mimeType)
 {
@@ -38,6 +40,8 @@ bool mimeMatchesPayload(
     if (mimeType == "image/vnd.adobe.photoshop") {
         return bytes.size() >= 4u && std::memcmp(bytes.data(), "8BPS", 4u) == 0;
     }
+    if (mimeType == "image/tga")
+        return tgaMatchesPayload(bytes);
     return false;
 }
 
@@ -94,6 +98,33 @@ void* stbImageReallocateSized(void* ptr, std::size_t oldSizeBytes, std::size_t n
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
 #include "stb_image.h"
+
+namespace {
+
+bool tgaMatchesPayload(arp::core::ArrayView<const std::uint8_t> bytes) noexcept
+{
+    stbi__context context;
+    stbi__start_mem(&context, bytes.data(), static_cast<int>(bytes.size()));
+    return stbi__tga_test(&context) != 0;
+}
+
+// STB pixels are core-allocated; copying them into a result may still throw.
+class StbImagePixels final {
+public:
+    explicit StbImagePixels(unsigned char* pixels) noexcept : pixels_(pixels) {}
+
+    ~StbImagePixels() { stbi_image_free(pixels_); }
+
+    StbImagePixels(const StbImagePixels&) = delete;
+    StbImagePixels& operator=(const StbImagePixels&) = delete;
+
+    unsigned char* data() const noexcept { return pixels_; }
+
+private:
+    unsigned char* pixels_;
+};
+
+} // namespace
 
 namespace arp::assets {
 
@@ -162,16 +193,13 @@ ImageDecodeResult decodeImageToRgba8(const core::ArrayView<const uint8_t> encode
         return result;
     }
 
-    unsigned char* decoded = stbi_load_from_memory(encodedBytes.data(),
+    StbImagePixels decoded(stbi_load_from_memory(encodedBytes.data(),
         static_cast<int>(encodedBytes.size()),
         &width,
         &height,
         &sourceComponents,
-        4);
-    if (decoded == nullptr || width <= 0 || height <= 0) {
-        if (decoded != nullptr) {
-            stbi_image_free(decoded);
-        }
+        4));
+    if (decoded.data() == nullptr || width <= 0 || height <= 0) {
         result.diagnostics = "stb_image failed to decode image";
         return result;
     }
@@ -180,8 +208,7 @@ ImageDecodeResult decodeImageToRgba8(const core::ArrayView<const uint8_t> encode
     result.image.height = static_cast<uint32_t>(height);
     result.image.srgb = srgb;
     result.image.alpha = sourceComponents == 2 || sourceComponents == 4;
-    result.image.rgba8.assign(decoded, decoded + pixelBytes);
-    stbi_image_free(decoded);
+    result.image.rgba8.assign(decoded.data(), decoded.data() + pixelBytes);
     result.success = true;
     return result;
 }

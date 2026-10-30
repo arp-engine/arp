@@ -616,6 +616,18 @@ ParseResult ResponseStreamParser::feed(StringView data, ResponseStreamSink& sink
     return parse_buffer(sink);
 }
 
+ParseResult ResponseStreamParser::finish(ResponseStreamSink& sink)
+{
+    if (status_ == ParseStatus::done || status_ == ParseStatus::failed)
+        return {status_, diagnostic_};
+    const auto result = parse_buffer(sink);
+    if (result.status != ParseStatus::need_more)
+        return result;
+    return headers_parsed_ && body_mode_ == ResponseStreamBodyMode::untilClose
+        ? complete()
+        : fail(DiagnosticCode::connection_closed);
+}
+
 void ResponseStreamParser::reset()
 {
     buffer_.clear();
@@ -652,6 +664,18 @@ ParseResult ResponseStreamParser::parse_buffer(ResponseStreamSink& sink)
     }
     if (body_mode_ == ResponseStreamBodyMode::chunked) {
         return parse_chunked_body(sink);
+    }
+    if (body_mode_ == ResponseStreamBodyMode::untilClose) {
+        if (buffer_.size() > limits_.max_body_bytes - body_received_)
+            return fail(DiagnosticCode::body_too_large);
+        if (!buffer_.empty()) {
+            sink.on_body(viewOf(buffer_));
+            if (!sink.shouldContinue())
+                return fail(DiagnosticCode::response_aborted);
+            body_received_ += buffer_.size();
+            buffer_.clear();
+        }
+        return needMore();
     }
     return complete();
 }
@@ -694,20 +718,25 @@ ParseResult ResponseStreamParser::parse_headers(ResponseStreamSink& sink)
     } else if (info.chunked) {
         body_mode_ = ResponseStreamBodyMode::chunked;
     } else if (info.has_content_length) {
-        if (info.content_length > limits_.max_body_bytes) {
+        if (info.content_length > limits_.max_body_bytes && !limits_.prioritize_header_observer) {
             return fail(DiagnosticCode::body_too_large);
         }
         body_mode_ =
             info.content_length == 0 ? ResponseStreamBodyMode::none : ResponseStreamBodyMode::fixed;
         content_length_ = info.content_length;
     } else {
-        body_mode_ = ResponseStreamBodyMode::none;
+        body_mode_ = limits_.allow_close_delimited_body ? ResponseStreamBodyMode::untilClose
+                                                        : ResponseStreamBodyMode::none;
     }
 
     response_ = candidate;
     headers_parsed_ = true;
     buffer_.erase(0, headerEnd + 4);
     sink.on_headers(response_);
+    if (!sink.shouldContinue())
+        return fail(DiagnosticCode::response_aborted);
+    if (content_length_ > limits_.max_body_bytes)
+        return fail(DiagnosticCode::body_too_large);
     return done();
 }
 
@@ -723,6 +752,8 @@ ParseResult ResponseStreamParser::parse_fixed_body(ResponseStreamSink& sink)
     const auto remaining = content_length_ - body_received_;
     const auto emitBytes = buffer_.size() < remaining ? buffer_.size() : remaining;
     sink.on_body(StringView(buffer_.data(), emitBytes));
+    if (!sink.shouldContinue())
+        return fail(DiagnosticCode::response_aborted);
     body_received_ += emitBytes;
     buffer_.erase(0, emitBytes);
 
@@ -783,6 +814,8 @@ ParseResult ResponseStreamParser::parse_chunked_body(ResponseStreamSink& sink)
         const auto emitBytes =
             buffer_.size() < chunk_remaining_ ? buffer_.size() : chunk_remaining_;
         sink.on_body(StringView(buffer_.data(), emitBytes));
+        if (!sink.shouldContinue())
+            return fail(DiagnosticCode::response_aborted);
         buffer_.erase(0, emitBytes);
         body_received_ += emitBytes;
         chunk_remaining_ -= emitBytes;

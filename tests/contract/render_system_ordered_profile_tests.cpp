@@ -46,6 +46,18 @@ int main()
     p.contractVersion = 2;
     p.mainBrowserThreadWithWorkersOptIn = true;
     assert(!validate());
+    p.srgbTexturesOptIn = true;
+    assert(validate());
+    p.srgbTexturesOptIn = false;
+    p.uint32IndicesOptIn = true;
+    assert(validate());
+    p.uint32IndicesOptIn = false;
+    p.fragmentDepthOptIn = true;
+    assert(std::strcmp(validate(), "PLATFORM-ORDERED-FRAGMENT-DEPTH-PROFILE-REQUIRED") == 0);
+    p.contractVersion = 3;
+    assert(!validate());
+    p.fragmentDepthOptIn = false;
+    p.contractVersion = 2;
     rhi::semantics::WebGlContextOwnershipRequest context;
     using Context = rhi::semantics::WebGlContextOwnershipContract;
     assert(std::strcmp(Context::executionThreadDiagnostic(context, true, true, true),

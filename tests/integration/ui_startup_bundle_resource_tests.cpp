@@ -1,156 +1,409 @@
-#include "core/memory/cpu_allocator.h"
-#include "renderer/ui/ui_atlas_texture_resource.h"
-#include "renderer/ui/ui_startup_bundle_resource.h"
-#include "resource/resource_manager.h"
-#include "ui/ui_atlas_image_resource.h"
-#include "ui/ui_atlas_metadata_resource.h"
-#include "ui/ui_document_resource.h"
-#include "ui/ui_font_set_resource.h"
-#include "ui/ui_theme_resource.h"
+#include "core/container/generation_pool.h"
+#include "core/io/file_io.h"
+#include "core/io/http_file_backend.h"
+#include "core/io/mounted_file_backend.h"
+#include "core/runtime/async_runtime.h"
+#include "renderer/ui/ui_atlas_runtime.h"
+#include "tests/fixtures/ui_bundle_fixture.h"
+#include "tests/fixtures/unified_io_fixture.h"
 
 #include <cassert>
-#include <filesystem>
-#include <type_traits>
-
-static_assert(std::is_base_of_v<arp::resource::ResourceBase, arp::ui::UiAtlasMetadataResource>);
-static_assert(std::is_base_of_v<arp::resource::ResourceBase, arp::ui::UiThemeResource>);
-static_assert(std::is_base_of_v<arp::resource::ResourceBase, arp::ui::UiAtlasImageResource>);
-static_assert(std::is_base_of_v<arp::resource::ResourceBase, arp::ui::UiFontSetResource>);
-static_assert(std::is_base_of_v<arp::resource::ResourceBase, arp::ui::UiDocumentResource>);
-static_assert(
-    std::is_base_of_v<arp::resource::ResourceBase, arp::renderer::ui::UiAtlasTextureResource>);
-static_assert(
-    std::is_base_of_v<arp::resource::ResourceBase, arp::renderer::ui::UiStartupBundleResource>);
+#include <cstdio>
+#include <string_view>
 
 namespace {
 
-arp::core::pmr::String text(const char* value)
+using namespace arp;
+using Fixture = tests::UiBundleFixture;
+
+void replace(core::pmr::String& text, core::StringView from, core::StringView to)
 {
-    return arp::core::pmr::String(value, &arp::core::defaultCpuMemoryResource());
+    const auto at = text.find(from);
+    assert(at != core::pmr::String::npos);
+    text.replace(at, from.size(), to.data(), to.size());
 }
 
-std::filesystem::path projectRoot()
+void assertRetained(const renderer::ui::UiStartupBundleResourceData& data)
 {
-    auto current = std::filesystem::current_path();
-    while (!current.empty()) {
-        if (std::filesystem::exists(current / "assets" / "pika" / "ui" / "hud.arpui")) {
-            return current;
+    assert(data.documents.size() == 1 && data.documents.front()->document.nodes().size() == 3);
+    assert(data.fontSet->fonts.size() == 2);
+    assert(data.fontSet->fonts[0].source == data.fontSet->fonts[1].source);
+    assert(data.retainedPayloadBytes
+        == data.fontSet->fonts.front().source->bytes().size() + 2 * 32 * 16 * 4);
+    renderer::ui::UnifiedUiAtlasRuntimeBuildDesc desc;
+    desc.baseAtlas = data.atlasTexture->atlasTexture;
+    desc.fontFaces = &data.fontSet->fonts;
+    desc.maxWidth = 128;
+    desc.maxHeight = 128;
+    auto runtime = renderer::ui::UnifiedUiAtlasRuntime::build(desc);
+    assert(runtime.ok());
+    renderer::ui::UiDrawCommand text;
+    text.kind = renderer::ui::UiDrawCommandKind::Text;
+    text.fontToken = "font.test";
+    text.styleId = "body";
+    text.text = "AV";
+    text.rect = ui::LayoutRect::fromOriginSize(0, 0, 96, 20);
+    text.clipRect = text.rect;
+    core::pmr::Vector<renderer::ui::UiDrawCommand> commands;
+    commands.push_back(text);
+    const auto resolved = runtime.resolve(commands);
+    assert(resolved.ok() && resolved.commands().size() == 2);
+    auto recovered = renderer::ui::UnifiedUiAtlasRuntime::build(runtime.makeRecoveryPlan());
+    assert(recovered.ok() && recovered.atlas().rgba8 == runtime.atlas().rgba8);
+}
+
+void rejected(resource::ResourceManager& manager,
+    const renderer::ui::UiStartupBundleResourceLoadDesc& desc,
+    const char* diagnostic)
+{
+    const auto* prior = manager.recordSnapshot(Fixture::bundleId);
+    const auto generation = manager.generationOf(Fixture::bundleId);
+    const auto* child = manager.recordSnapshot(Fixture::themeId);
+    const auto childGeneration = manager.generationOf(Fixture::themeId);
+    const auto loaded = renderer::ui::loadUiStartupBundleResource(manager, desc);
+    if (loaded.success || loaded.diagnostics.find(diagnostic) == core::pmr::String::npos)
+        std::fprintf(stderr, "Bundle rejection (%s): %s\n", diagnostic, loaded.diagnostics.c_str());
+    assert(!loaded.success && loaded.diagnostics.find(diagnostic) != core::pmr::String::npos);
+    assert(manager.recordSnapshot(Fixture::bundleId) == prior);
+    assert(manager.generationOf(Fixture::bundleId) == generation);
+    assert(!manager.resolveAlias("ui/bundle").success);
+    if (prior)
+        assert(prior->state == resource::ResourceState::Declared && !prior->metadataAdmitted);
+    assert(manager.recordSnapshot(Fixture::themeId) == child);
+    assert(child->state == resource::ResourceState::Ready
+        && manager.generationOf(Fixture::themeId) == childGeneration);
+    assert(manager.resolveAlias("ui/theme").resourceId == Fixture::themeId);
+}
+
+void contracts(const core::pmr::Vector<std::uint8_t>& bytes)
+{
+    core::GenerationPool<unsigned> provenance(1);
+    resource::ResourceFileOrigin origin{
+        core::io::FilePathScope::MountedResource, provenance.emplace(1)};
+    Fixture fixture(origin);
+    auto sources = fixture.sources(bytes);
+    resource::ResourceManager manager;
+    fixture.loadChildren(manager, sources);
+    assert(manager.declareResource(Fixture::bundleId, renderer::ui::kUiStartupBundleResourceType)
+            .success);
+    auto desc = fixture.bundle();
+    const auto payloadBytes = bytes.size() + 2 * 32 * 16 * 4;
+    for (unsigned test = 0; test < 13; ++test) {
+        auto bad = desc;
+        const char* diagnostic = "UI-BUNDLE-BUDGET";
+        if (test == 0)
+            bad.budget.maxDocuments = 0;
+        if (test == 1)
+            bad.budget.maxDocuments = SIZE_MAX;
+        if (test == 2)
+            bad.budget.maxFontFaces = 0;
+        if (test == 3)
+            bad.budget.maxRetainedPayloadBytes = 0;
+        if (test == 4)
+            bad.budget.maxRetainedPayloadBytes = SIZE_MAX;
+        if (test == 5) {
+            bad.budget.maxFontFaces = 1;
+            diagnostic = "UI-BUNDLE-FONT-BUDGET";
         }
-        const auto parent = current.parent_path();
-        if (parent == current) {
-            break;
+        if (test == 6) {
+            bad.budget.maxRetainedPayloadBytes = payloadBytes - 1;
+            diagnostic = "UI-BUNDLE-PAYLOAD-BUDGET";
         }
-        current = parent;
+        if (test == 7)
+            bad.documentAliases.clear();
+        if (test == 8) {
+            bad.documentAliases.push_back("ui/document");
+            bad.budget.maxDocuments = 2;
+            diagnostic = "UI-BUNDLE-DOCUMENT-DUPLICATE";
+        }
+        if (test == 9) {
+            bad.fontSetAlias = "ui/missing";
+            diagnostic = "UI-BUNDLE-CHILD-NOT-READY";
+        }
+        if (test == 10) {
+            bad.fontSetAlias = "ui/theme";
+            diagnostic = "UI-BUNDLE-CHILD-NOT-READY";
+        }
+        if (test == 11) {
+            bad.documentAliases[0] = "ui/missing";
+            diagnostic = "UI-BUNDLE-CHILD-NOT-READY";
+        }
+        if (test == 12) {
+            bad.alias = "ui/theme";
+            diagnostic = "duplicate alias";
+        }
+        rejected(manager, bad, diagnostic);
     }
-    return std::filesystem::current_path();
-}
 
-void admitBundleChildren(arp::resource::ResourceManager& manager)
-{
-    const auto root = projectRoot();
-    const auto ui = root / "assets" / "pika" / "ui";
+    // Direct member preparation must preserve existing data and dependencies.
+    renderer::ui::UiStartupBundleResource local(desc);
+    local.data = core::makeShared<renderer::ui::UiStartupBundleResourceData>();
+    const auto original = local.data;
+    local.addDependency({Fixture::documentId, "test.original"});
+    local.loadDesc.alias = "ui/changed-identity";
+    const auto identity = local.load(manager, {});
+    assert(!identity.success && identity.diagnostics == "UI-BUNDLE-IDENTITY-MISMATCH");
+    assert(local.data == original && local.dependencies().size() == 1);
+    local.loadDesc.alias = desc.alias;
+    local.loadDesc.budget.maxRetainedPayloadBytes = payloadBytes - 1;
+    assert(!local.load(manager, {}).success && local.data == original);
+    assert(local.dependencies().size() == 1 && local.dependencies()[0].usage == "test.original");
+    unsigned allocationFailures = 0, allocationSuccesses = 0;
+    for (std::uint64_t limit : {1, 1024, 4096, 65536}) {
+        auto quota = core::makeShared<core::CpuMemoryQuota>(limit);
+        {
+            resource::ResourceManager isolated;
+            fixture.loadChildren(isolated, sources);
+            assert(isolated
+                    .declareResource(Fixture::bundleId, renderer::ui::kUiStartupBundleResourceType)
+                    .success);
+            const auto* before = isolated.recordSnapshot(Fixture::bundleId);
+            const auto generation = isolated.generationOf(Fixture::bundleId);
+            renderer::ui::UiStartupBundleResourceLoadResult loaded;
+            {
+                core::CpuMemoryQuotaScope scope(quota);
+                loaded = renderer::ui::loadUiStartupBundleResource(isolated, desc);
+            }
+            {
+                if (loaded.success) {
+                    ++allocationSuccesses;
+                    assert(isolated.find<renderer::ui::UiStartupBundleResource>(Fixture::bundleId)
+                            .ready());
+                } else {
+                    ++allocationFailures;
+                    assert(loaded.diagnosticId);
+                    if (limit == 1) {
+                        assert(std::string_view(loaded.diagnosticId) == "UI-BUNDLE-ALLOCATION");
+                        assert(loaded.diagnostics.empty() && loaded.resource.diagnostics.empty());
+                    }
+                    assert(isolated.recordSnapshot(Fixture::bundleId) == before);
+                    assert(before->state == resource::ResourceState::Declared
+                        && !before->metadataAdmitted);
+                    assert(isolated.generationOf(Fixture::bundleId) == generation);
+                    assert(!isolated.resolveAlias("ui/bundle").success);
+                }
+            }
+        }
+        assert(quota->liveBytes() == 0);
+    }
+    assert(allocationFailures && allocationSuccesses);
+    assert(!manager.recordSnapshot(Fixture::bundleId)->metadataAdmitted);
+    assert(local.data == original && local.dependencies().size() == 1);
 
-    arp::ui::UiAtlasMetadataResourceLoadDesc metadata;
-    metadata.resourceId = text("6cf0e0f0-d372-42eb-9e7c-78c5ba8eae1a");
-    metadata.alias = text("ui/pika/atlas/metadata");
-    metadata.status = text("Contract Complete");
-    metadata.atlasMetadataPath = ui / "pika_ui_atlas.arpui";
-    metadata.expectedAtlasResourceId = text("texture/pika_ui_atlas");
-    assert(arp::ui::loadUiAtlasMetadataResource(manager, metadata).success);
+    // A caller's explicit additional dependency remains part of admission.
+    {
+        resource::ResourceManager directManager;
+        fixture.loadChildren(directManager, sources);
+        renderer::ui::UiStartupBundleResource direct(desc);
+        direct.addDependency({Fixture::documentId, "test.additional"});
+        const auto loaded = direct.load(directManager, {});
+        assert(loaded.success && direct.dependencies().size() == 7);
+        assert(direct.dependencies().front().usage == "test.additional");
+    }
 
-    arp::ui::UiThemeResourceLoadDesc theme;
-    theme.resourceId = text("8d958aa4-f406-4bc7-9eb4-4cc6cc15c8fe");
-    theme.alias = text("ui/pika/theme/default");
-    theme.status = text("Contract Complete");
-    theme.themePath = ui / "theme.arpui";
-    theme.atlasMetadataPath = ui / "pika_ui_atlas.arpui";
-    theme.atlasMetadataAlias = text("ui/pika/atlas/metadata");
-    assert(arp::ui::loadUiThemeResource(manager, theme).success);
+    // Admission binds managed identity, not just same-looking metadata bytes.
+    auto otherAtlas = fixture.atlas();
+    otherAtlas.resourceId = "88888888-8888-4888-8888-888888888888";
+    otherAtlas.alias = "ui/atlas-other";
+    resource::ResourceLoadContext context;
+    context.sources = &sources;
+    context.requirePreloadedSources = true;
+    assert(manager.loadResource(core::makeUnique<ui::UiAtlasMetadataResource>(otherAtlas), context)
+            .success);
+    auto otherFonts = fixture.fonts();
+    otherFonts.resourceId = "99999999-9999-4999-8999-999999999999";
+    otherFonts.alias = "ui/fonts-other";
+    otherFonts.atlasMetadataAlias = otherAtlas.alias;
+    assert(
+        manager.loadResource(core::makeUnique<ui::UiFontSetResource>(otherFonts), context).success);
+    auto wrongBinding = desc;
+    wrongBinding.fontSetAlias = otherFonts.alias;
+    rejected(manager, wrongBinding, "UI-BUNDLE-DEPENDENCY-MISMATCH");
+    auto& admittedFace =
+        manager.find<ui::UiFontSetResource>(Fixture::fontId).get()->data->fonts.front();
+    const auto originalSource = admittedFace.source;
+    auto foreignOrigin = originalSource->desc();
+    ++foreignOrigin.mount.generation;
+    core::pmr::String sourceDiagnostic;
+    admittedFace.source = ui::UiFontSource::create(foreignOrigin, bytes, sourceDiagnostic);
+    assert(admittedFace.source);
+    rejected(manager, desc, "UI-BUNDLE-FONT-METADATA");
+    admittedFace.source = originalSource;
 
-    arp::ui::UiAtlasImageResourceLoadDesc image;
-    image.resourceId = text("2d844cf4-4902-48ba-b905-839fd7ad6db5");
-    image.alias = text("ui/pika/atlas/image");
-    image.status = text("Prototype Complete");
-    image.atlasMetadataAlias = text("ui/pika/atlas/metadata");
-    image.sourceRoot = root;
-    assert(arp::ui::loadUiAtlasImageResource(manager, image).success);
-
-    arp::renderer::ui::UiAtlasTextureResourceLoadDesc texture;
-    texture.resourceId = text("7e3a24b0-222b-4cbb-a51b-b9a5e132da3b");
-    texture.alias = text("ui/pika/atlas/texture");
-    texture.status = text("Prototype Complete");
-    texture.atlasImageAlias = text("ui/pika/atlas/image");
-    texture.intent.resourceUsage = text("ui.atlas.sampled");
-    texture.intent.uploadPolicy = text("renderer-owned-staging");
-    texture.intent.requiredFormat = text("Rgba8Unorm");
-    texture.intent.requiredDescriptorSet = text("UiAtlasSet");
-    assert(arp::renderer::ui::loadUiAtlasTextureResource(manager, texture).success);
-
-    arp::ui::UiFontSetResourceLoadDesc fontSet;
-    fontSet.resourceId = text("9e34fd0c-4ac4-4b2a-b29f-6005c7acae0b");
-    fontSet.alias = text("ui/pika/font-set/default");
-    fontSet.status = text("Contract Complete");
-    fontSet.atlasMetadataAlias = text("ui/pika/atlas/metadata");
-    fontSet.requiredGlyphPolicy = text("hybrid");
-    fontSet.requiredPagePolicy = text("singleTexture");
-    assert(arp::ui::loadUiFontSetResource(manager, fontSet).success);
-
-    arp::ui::UiDocumentResourceLoadDesc hud;
-    hud.resourceId = text("c28d4d95-953b-4c4c-9631-0c54d44db13a");
-    hud.alias = text("ui/pika/document/hud");
-    hud.status = text("Prototype Complete");
-    hud.documentPath = ui / "hud.arpui";
-    hud.documentContract = text("ui.document/v1");
-    assert(arp::ui::loadUiDocumentResource(manager, hud).success);
-}
-
-void startup_bundle_requires_explicit_dependency_graph()
-{
-    arp::resource::ResourceManager manager;
-    admitBundleChildren(manager);
-
-    arp::renderer::ui::UiStartupBundleResourceLoadDesc desc;
-    desc.resourceId = text("b5895b6e-3cd3-49cb-aa1d-cf640b3156ce");
-    desc.alias = text("ui/pika/startup/visible");
-    desc.status = text("Contract Complete");
-    desc.themeAlias = text("ui/pika/theme/default");
-    desc.atlasMetadataAlias = text("ui/pika/atlas/metadata");
-    desc.atlasImageAlias = text("ui/pika/atlas/image");
-    desc.atlasTextureAlias = text("ui/pika/atlas/texture");
-    desc.fontSetAlias = text("ui/pika/font-set/default");
-    desc.documentAliases.push_back(text("ui/pika/document/hud"));
-
-    const auto loaded = arp::renderer::ui::loadUiStartupBundleResource(manager, desc);
+    desc.budget.maxRetainedPayloadBytes = payloadBytes;
+    const auto* record = manager.recordSnapshot(Fixture::bundleId);
+    const auto generation = manager.generationOf(Fixture::bundleId);
+    const auto loaded = renderer::ui::loadUiStartupBundleResource(manager, desc);
+    if (!loaded.success)
+        std::fprintf(stderr, "Bundle: %s\n", loaded.diagnostics.c_str());
     assert(loaded.success);
-    assert(loaded.resource.resourceType == text("UiStartupBundleResource"));
-
-    const auto handle = manager.findByAlias<arp::renderer::ui::UiStartupBundleResource>(
-        text("ui/pika/startup/visible"));
-    assert(handle.ready());
-    assert(handle.get()->data->documents.size() == 1u);
-    assert(handle.get()->data->theme != nullptr);
-    assert(handle.get()->data->atlasTexture != nullptr);
-    assert(handle.get()->data->fontSet != nullptr);
+    auto handle = manager.find<renderer::ui::UiStartupBundleResource>(Fixture::bundleId);
+    auto retained = handle.get()->data;
+    assert(manager.recordSnapshot(Fixture::bundleId) == record
+        && manager.generationOf(Fixture::bundleId) == generation + 1);
+    assert(handle.get()->dependencies().size() == 6);
+    const auto duplicate = renderer::ui::loadUiStartupBundleResource(manager, desc);
+    assert(!duplicate.success && handle.ready() && handle.get()->data == retained);
+    assert(manager.recordSnapshot(Fixture::bundleId) == record);
+    assert(manager.unload(Fixture::bundleId).success);
+    assert(renderer::ui::loadUiStartupBundleResource(manager, desc).success);
+    assert(!handle.get());
+    for (const auto* id : {Fixture::bundleId,
+             Fixture::documentId,
+             Fixture::textureId,
+             Fixture::imageId,
+             Fixture::fontId,
+             Fixture::themeId,
+             Fixture::atlasId})
+        assert(manager.unload(id).success);
+    assertRetained(*retained);
 }
 
-void startup_bundle_fails_on_missing_child_alias()
+void metadataRejections(const core::pmr::Vector<std::uint8_t>& bytes)
 {
-    arp::resource::ResourceManager manager;
-    arp::renderer::ui::UiStartupBundleResourceLoadDesc desc;
-    desc.resourceId = text("b5895b6e-3cd3-49cb-aa1d-cf640b3156ce");
-    desc.alias = text("ui/pika/startup/visible");
-    desc.status = text("Contract Complete");
-    desc.themeAlias = text("ui/pika/theme/default");
-    const auto loaded = arp::renderer::ui::loadUiStartupBundleResource(manager, desc);
-    assert(!loaded.success);
-    assert(loaded.diagnostics.find("alias not found") != arp::core::pmr::String::npos);
+    core::GenerationPool<unsigned> provenance(1);
+    resource::ResourceFileOrigin origin{
+        core::io::FilePathScope::MountedResource, provenance.emplace(1)};
+    Fixture fixture(origin);
+    for (unsigned test = 0; test < 8; ++test) {
+        core::pmr::String theme = tests::uiBundleThemeFixture();
+        core::pmr::String document = tests::uiBundleDocumentFixture();
+        const char* diagnostic = "UI-BUNDLE-DOCUMENT-TEXTURE";
+        if (test == 0)
+            replace(document, "atlas: test.font.atlas", "atlas: other.atlas");
+        if (test == 1)
+            replace(document, "width: 32, height: 16", "width: 33, height: 16");
+        if (test == 2)
+            replace(document, "srgb: true", "srgb: false");
+        if (test == 3)
+            replace(document, "sampler: linear-clamp", "sampler: nearest-clamp");
+        if (test == 4)
+            replace(document, "alpha: straight", "alpha: premultiplied");
+        if (test == 5) {
+            replace(theme, "family: Droid Sans", "family: Unbound");
+            diagnostic = "UI-BUNDLE-THEME-FONT";
+        }
+        if (test == 6) {
+            replace(document, "style: body\n      state", "style: missing\n      state");
+            diagnostic = "UI-BUNDLE-DOCUMENT-FONT";
+        }
+        if (test == 7) {
+            replace(document,
+                "33333333-3333-4333-8333-333333333333",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+            replace(document,
+                "33333333-3333-4333-8333-333333333333",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        }
+        auto sources = fixture.sources(bytes, theme, document);
+        resource::ResourceManager manager;
+        fixture.loadChildren(manager, sources);
+        rejected(manager, fixture.bundle(), diagnostic);
+    }
+}
+
+void graph(core::SharedPtr<core::io::ManagedFileBackend> backend)
+{
+    auto mounts = core::makeShared<core::io::MountedFileBackend>(core::io::MountedFileBackendDesc{
+        1, 5, Fixture::sourceBudget + 4 * Fixture::textBudget, 32, 128});
+    resource::ResourceFileOrigin origin{
+        core::io::FilePathScope::MountedResource, mounts->mount("bundle", backend)};
+    Fixture fixture(origin);
+    core::runtime::AsyncRuntimeDesc desc;
+    desc.enableWork = desc.enableThreadPoolFileBackend = false;
+    desc.fileBackend = mounts;
+    desc.completionQueueCapacity = desc.completionBudget = 8;
+    core::runtime::AsyncRuntime runtime(desc);
+    resource::ResourceManager manager;
+    resource::ResourceGraphExecutor executor(
+        manager, runtime.fileService(), runtime.completionQueue());
+
+    struct Completion {
+        unsigned count = 0;
+        resource::ResourceGraphExecutionResult result;
+    } completion;
+
+    assert(executor.submit(fixture.graph(),
+               {[](void* context, resource::ResourceGraphExecutionResult result) {
+                    auto& state = *static_cast<Completion*>(context);
+                    ++state.count;
+                    state.result = std::move(result);
+                },
+                   &completion})
+        == resource::ResourceGraphSubmitStatus::Accepted);
+    unified_io_fixture::wait(runtime.completionQueue(), [&] {
+        return completion.count != 0;
+    });
+    if (!completion.result.resource.success)
+        std::fprintf(stderr,
+            "Bundle graph: %s / %s\n",
+            completion.result.diagnosticId ? completion.result.diagnosticId : "none",
+            completion.result.resource.diagnostics.c_str());
+    assert(completion.count == 1 && completion.result.resource.success);
+    assert(completion.result.telemetry.submittedFileReads == 5
+        && completion.result.telemetry.completedNodes == 7);
+    assert(runtime.workService().telemetry().submitted == 0);
+    const auto handle = manager.find<renderer::ui::UiStartupBundleResource>(Fixture::bundleId);
+    const auto retained = handle.get()->data;
+    runtime.shutdown();
+    assert(!runtime.completionQueue().pending() && !runtime.completionQueue().reserved());
+    assert(!mounts->telemetry().inFlight);
+    for (const auto* id : {Fixture::bundleId,
+             Fixture::documentId,
+             Fixture::textureId,
+             Fixture::imageId,
+             Fixture::fontId,
+             Fixture::themeId,
+             Fixture::atlasId})
+        assert(manager.unload(id).success);
+    assertRetained(*retained);
+}
+
+void cycle(const char* url, const core::pmr::Vector<std::uint8_t>& bytes)
+{
+    if (url) {
+        core::io::HttpFileBackendDesc desc;
+        desc.baseUrl = url;
+        desc.maxInFlight = 5;
+        desc.maxBytesInFlight = Fixture::sourceBudget + 4 * Fixture::textBudget;
+        desc.maxPathBytes = 128;
+        desc.maxHeaderBytes = 8 * 1024;
+        desc.ioChunkBytes = 4096;
+        desc.timeoutMs = 3000;
+        desc.cancellationPollMs = 10;
+        auto backend = core::makeShared<core::io::HttpFileBackend>(desc);
+        graph(backend);
+        assert(!backend->telemetry().inFlight && !backend->telemetry().activeNativeTransfers);
+    } else {
+        contracts(bytes);
+        metadataRejections(bytes);
+        graph(Fixture::memory(bytes));
+    }
 }
 
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
-    startup_bundle_requires_explicit_dependency_graph();
-    startup_bundle_fails_on_missing_child_alias();
-    return 0;
+    const char* url = argc == 3 && std::string_view(argv[1]) == "--http" ? argv[2] : nullptr;
+    assert(argc == 1 || url);
+    core::BinaryFileReadResult fixture;
+    if (!url) {
+        fixture = core::readBinaryFile(ARP_FONT_IO_FIXTURE_PATH, Fixture::sourceBudget);
+        assert(fixture.success);
+    }
+    for (unsigned i = 0; i < 20; ++i)
+        cycle(url, fixture.bytes);
+    const auto before = core::defaultCpuAllocator().stats();
+    for (unsigned i = 0; i < 20; ++i)
+        cycle(url, fixture.bytes);
+    const auto after = core::defaultCpuAllocator().stats();
+    assert(before.liveBytes == after.liveBytes);
+    assert(before.allocationCount - before.deallocationCount
+        == after.allocationCount - after.deallocationCount);
+    std::printf(
+        "UI bundle: 20 warmup +20 measured cycles; baseline=%llu end=%llu peak=%llu; core live bytes/count returned to baseline\n",
+        static_cast<unsigned long long>(before.liveBytes),
+        static_cast<unsigned long long>(after.liveBytes),
+        static_cast<unsigned long long>(after.peakBytes));
 }

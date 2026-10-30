@@ -35,15 +35,30 @@ struct ResponseStreamHandlerState {
     HeadersHandler on_headers;
     BodyHandler on_body;
     CompleteHandler on_complete;
+    bool proceed = true;
 };
 
 template <typename HandlerState> class ResponseStreamSinkAdapter final : public ResponseStreamSink {
 public:
     explicit ResponseStreamSinkAdapter(HandlerState state) : state_(std::move(state)) {}
 
-    void on_headers(const Response& response) override { state_->on_headers(response); }
+    void on_headers(const Response& response) override
+    {
+        if constexpr (std::is_same_v<decltype(state_->on_headers(response)), bool>)
+            state_->proceed = state_->on_headers(response);
+        else
+            state_->on_headers(response);
+    }
 
-    void on_body(StringView chunk) override { state_->on_body(chunk); }
+    void on_body(StringView chunk) override
+    {
+        if constexpr (std::is_same_v<decltype(state_->on_body(chunk)), bool>)
+            state_->proceed = state_->on_body(chunk);
+        else
+            state_->on_body(chunk);
+    }
+
+    bool shouldContinue() const noexcept override { return state_->proceed; }
 
 private:
     HandlerState state_;
@@ -254,7 +269,8 @@ void Session::async_read_response_stream_step(Stream& stream, HandlerPtr handler
                 return;
             }
             if (bytes == 0) {
-                status.diagnostic = DiagnosticCode::connection_closed;
+                detail::ResponseStreamSinkAdapter<HandlerPtr> sink(handler);
+                status.diagnostic = response_stream_parser_.finish(sink).diagnostic;
                 handler->on_complete(status);
                 return;
             }
