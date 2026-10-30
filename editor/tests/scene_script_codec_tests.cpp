@@ -340,7 +340,9 @@ public:
             HttpFileBackendDesc desc;
             desc.baseUrl = url;
             desc.maxInFlight = 1;
-            desc.maxBytesInFlight = fileBytes;
+            // Explicit test transport budget includes body plus bounded header,
+            // URL, chunk and task storage; it is not only a body-size limit.
+            desc.maxBytesInFlight = 2 * fileBytes;
             desc.maxPathBytes = 512;
             desc.maxHeaderBytes = 8192;
             desc.ioChunkBytes = 4096;
@@ -352,10 +354,10 @@ public:
             MemoryFileBackendDesc{4, 3 * fileBytes, 1, fileBytes, 512});
         check(result->registerDirectory("workspace") == FileIoStatus::Success);
         const auto add = [&](const char* name, std::string_view bytes) {
-            check(result->registerFile(
-                      name, reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size())
-                    == FileIoStatus::Success,
-                result->diagnostic() ? result->diagnostic() : "");
+            const auto status = result->registerFile(
+                name, reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
+            check(
+                status == FileIoStatus::Success, result->diagnostic() ? result->diagnostic() : "");
         };
         add("workspace/project.arp.yaml", manifest_);
         add("workspace/primary.arp", primary_);
@@ -373,7 +375,9 @@ public:
         for (const auto* name : {"project.arp.yaml", "primary.arp", "secondary.arp"}) {
             if (!complete && std::string_view(name) == "secondary.arp")
                 break;
-            check(source.read(name, fileBytes) == core::io::FileIoStatus::Accepted);
+            const auto status = source.read(name, fileBytes);
+            check(status == core::io::FileIoStatus::Accepted,
+                source.diagnostic() ? source.diagnostic() : "");
             unified_io_fixture::wait(queue, [&] {
                 return source.state() != ProjectSourceState::Pending;
             });

@@ -3299,6 +3299,7 @@ SHADER_SOURCES = [
     ("CloudCompactResolve", "cloud_compact_resolve", "renderer/cloud_compact_resolve.slang", ["computeMain"]),
     ("CloudCompactComposite", "cloud_compact_composite", "renderer/cloud_compact_composite.slang", ["vertexMain", "fragmentMain"]),
     ("SceneOpaque", "scene_opaque", "renderer/scene_opaque.slang", ["vertexMain", "fragmentMain"]),
+    ("SkinnedLayerSurface", "skinned_layer_surface", "renderer/skinned_layer_surface.slang", ["vertexMain", "fragmentMain"]),
     ("ScenePbr", "scene_pbr", "renderer/scene_pbr.slang", ["vertexMain", "fragmentMain"]),
     ("CloudComposite", "cloud_composite", "renderer/cloud_composite.slang", ["vertexMain", "fragmentMain"]),
     ("CloudDemoPresent", "cloud_demo_present", "samples/fog_demo_present.slang", ["vertexMain", "fragmentMain"]),
