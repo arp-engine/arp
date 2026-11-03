@@ -1,4 +1,5 @@
 #include "rhi/frontend/prototype_command_batch_validation.h"
+#include "rhi/semantics/command_lowering.h"
 
 #include <cassert>
 

@@ -2,6 +2,7 @@
 #include "game.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -9,6 +10,33 @@ namespace arp::survivors {
 // Test setup uses real attached components and real PhysicsWorld2D casts.
 // No mocked collision result or native success is used.
 struct GameRunTestAccess {
+    static void pickupContract(GameRun& game)
+    {
+        const auto before = game.liveCounts();
+        const auto physics = game.physics().telemetry();
+        checked(game, game.call("test_pickup", {scriptvm::makeFloat(2), scriptvm::makeFloat(3)}));
+        const auto id = game.result_.cast<int>();
+        auto* object = game.scene_->findObject(scene::GameObjectId::fromValue(id));
+        assert(object && object->childIds().size() == 1);
+        const auto transform = object->world_transform();
+        assert(transform.scale.x == 1 && transform.scale.y == 1 && transform.scale.z == 1);
+        const auto* body = object->getComponent<physics2d::RigidBody2DComponent>();
+        const auto* collider = object->getComponent<physics2d::Collider2DComponent>();
+        assert(body && body->handle() && collider && collider->handle());
+        assert(body->body_state().position.x == 2 && body->body_state().position.y == 3);
+        assert(collider->desc().radius == .2f && collider->desc().sensor);
+        auto* visual = game.scene_->findObject(object->childIds()[0]);
+        assert(visual && visual->getComponent<scene2d::SpriteRendererComponent>());
+        const auto scale = visual->world_transform().scale;
+        assert(std::abs(scale.x - .7f) < .00001f && std::abs(scale.y - .7f) < .00001f);
+        assert(game.physics().telemetry().bodies == physics.bodies + 1);
+        checked(game, game.call("test_remove_pickup", {scriptvm::makeInt(id)}));
+        checked(game, game.update({}, 0));
+        assert(game.liveCounts() == before);
+        assert(game.physics().telemetry().bodies == physics.bodies
+            && game.physics().telemetry().colliders == physics.colliders);
+    }
+
     struct Handle {
         int ticket = -1, index = 0, generation = 0;
 
@@ -122,6 +150,14 @@ int main(int argc, char** argv)
     if (!content.load(root, config, diagnostic)) {
         std::fprintf(stderr, "content: %s\n", diagnostic.c_str());
         return 1;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--pickup-contract") == 0) {
+        survivors::GameRun game(resources, content, rules, config, 42, nullptr);
+        assert(game.valid());
+        survivors::GameRunTestAccess::pickupContract(game);
+        std::puts(
+            "PASS actual pickup: unit-scale body, .7 visual child, unchanged circle sensor and cleanup");
+        return 0;
     }
     const bool fullMemoryCheck = argc > 1 && std::strcmp(argv[1], "--memory-full-check") == 0;
     if (fullMemoryCheck || (argc > 1 && std::strcmp(argv[1], "--memory-check") == 0)) {

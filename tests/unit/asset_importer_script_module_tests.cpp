@@ -1,6 +1,7 @@
 #include "core/io/file_io.h"
 #include "modules/yaml/yaml_module.h"
 #include "scriptvm/plugin/cpp_plugin_importer.h"
+#include "tests/fixtures/animated_mesh_source_fixture.h"
 #include "tests/fixtures/unified_io_fixture.h"
 #include "tools/asset_importer/script_plugin_sources.h"
 #include "tools/asset_importer/script_runner.h"
@@ -1300,6 +1301,19 @@ int main(int argc, char** argv)
         std::filesystem::temp_directory_path() / "arp_asset_importer_script_unit_minimal.glb";
     assert(writeMinimalAnimatedGlb(modelPath));
     reportArgs[0] = arp::scriptvm::makeString(modelPath.generic_string());
+    const auto legacySourceReport = runner.runFileFunction(
+        root / "tests" / "fixtures" / "asset_importer" / "script_unity_import.arp",
+        "export",
+        reportArgs);
+    assert(!legacySourceReport.success && !legacySourceReport.diagnostics.empty());
+    // The strict tool no longer invents absent normals/materials/scene data.
+    // Replace only this test-owned input with the shared authored source.
+    {
+        const auto bytes = arp::tests::AnimatedMeshSourceFixture::bytes();
+        std::ofstream file(modelPath, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        assert(file.good());
+    }
     const auto modelReportResult = runner.runFileFunction(
         root / "tests" / "fixtures" / "asset_importer" / "script_unity_import.arp",
         "export",
@@ -1316,9 +1330,9 @@ int main(int argc, char** argv)
     }
     const auto modelReportText = arp::core::readTextFile(reportPath);
     if (!modelReportText.success || modelReportText.text.find("kind: glb") == std::string::npos
-        || modelReportText.text.find("vertexCount: 3") == std::string::npos
-        || modelReportText.text.find("indexCount: 3") == std::string::npos
-        || modelReportText.text.find("jointCount: 1") == std::string::npos) {
+        || modelReportText.text.find("vertexCount: 9") == std::string::npos
+        || modelReportText.text.find("indexCount: 9") == std::string::npos
+        || modelReportText.text.find("jointCount: 7") == std::string::npos) {
         std::printf("FAIL: minimal GLB report contents are invalid\n");
         return 1;
     }

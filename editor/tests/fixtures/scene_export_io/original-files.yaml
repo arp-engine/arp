@@ -1,0 +1,12 @@
+closure.yaml:
+  bytes: 295
+  sha256: 627c799de9ddb96a01f57e9bd46145aa4d7b804987feca2bba7dbd0c70b8e0bb
+manifest.arpkg.yaml:
+  bytes: 406
+  sha256: 5bf89c656c92b3ac442769ce8093ae8aee1d029c40137adc68d82f672111543d
+resources/scene.arpres.yaml:
+  bytes: 322
+  sha256: e4fca95f53e2aca72dae820b9e4acf04a3fd140a824503a3538ae8eb3293d36b
+scene.yaml:
+  bytes: 2713
+  sha256: 331872d56311bc19012fd004d060ea4a5d4be4ba1358ff1a6f19538bef46c1bf

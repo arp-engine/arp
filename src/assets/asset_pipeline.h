@@ -358,6 +358,8 @@ struct NamedVariant {
     std::pmr::string name;                    ///< GLB node name (the variant id)
     MeshAsset mesh;                           ///< per-variant mesh (not merged)
     std::pmr::vector<uint32_t> materialSlots; ///< material indices used by this variant
+    // Layout is explicit on NamedVariantImportResult. Bounded source imports
+    // use core row-major; the cold-file adapter retains LegacyColumnMajor.
     float worldTransform[16]{
         ///< local-to-world matrix of the node
         1.0f,
@@ -384,6 +386,8 @@ struct NamedVariant {
     std::pmr::vector<float> windWeights;
 };
 
+enum class NamedVariantTransformLayout { LegacyColumnMajor, RowMajor };
+
 /// Result of importing a GLB file with named variant preservation.
 /// Each mesh-bearing named node is extracted as a separate NamedVariant,
 /// and COLOR_0 (wind weights) is read into FoliageVertex where present.
@@ -394,6 +398,8 @@ struct NamedVariantImportResult {
     std::pmr::vector<ImportedMaterialAsset> materials;
     std::pmr::vector<ImportedTextureAsset> textures;
     std::pmr::vector<ImportedImageAsset> images;
+    NamedVariantTransformLayout transformLayout = NamedVariantTransformLayout::LegacyColumnMajor;
+    std::uint64_t importPeakBytes = 0;
 };
 
 struct MaterialJsonSchema {

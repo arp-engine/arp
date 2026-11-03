@@ -917,6 +917,14 @@ VkBlendFactor blendFactorFor(rhi::BlendFactor factor)
         return VK_BLEND_FACTOR_DST_ALPHA;
     case rhi::BlendFactor::OneMinusDstAlpha:
         return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+    case rhi::BlendFactor::SrcColor:
+        return VK_BLEND_FACTOR_SRC_COLOR;
+    case rhi::BlendFactor::OneMinusSrcColor:
+        return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+    case rhi::BlendFactor::DstColor:
+        return VK_BLEND_FACTOR_DST_COLOR;
+    case rhi::BlendFactor::OneMinusDstColor:
+        return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
     }
     return VK_BLEND_FACTOR_ONE;
 }

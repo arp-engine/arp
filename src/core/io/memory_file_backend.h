@@ -9,10 +9,13 @@ namespace arp::core::io {
 struct MemoryFileBackendDesc {
     // Historical field name; bounds all explicit file/directory registrations.
     std::size_t maxFiles = 0;
+    // Retained file payload capacities; registry/path storage is bounded by
+    // maxFiles/maxPathBytes and uses the core allocator independently.
     std::uint64_t maxResidentBytes = 0;
     std::size_t maxInFlight = 0;
     std::uint64_t maxQueuedBytes = 0;
     std::size_t maxPathBytes = 0;
+    bool allowObservedBaselineReplace = false;
 };
 
 struct MemoryFileBackendTelemetry {
@@ -23,8 +26,8 @@ struct MemoryFileBackendTelemetry {
     std::size_t directories = 0;
 };
 
-// Owner-thread backend. Files are explicitly registered immutable byte arrays;
-// it never probes a host path or fabricates a missing file.
+// Owner-thread backend. Files/directories are explicitly registered. Optional
+// saves use the same bounded mounted contract; no host path or implicit parent.
 class ARP_API MemoryFileBackend final : public ManagedFileBackend {
 public:
     explicit MemoryFileBackend(MemoryFileBackendDesc desc);
@@ -42,6 +45,9 @@ public:
     FileIoStatus queryAsync(const FileQueryRequest& request,
         FileQueryCompletion completion,
         runtime::CompletionQueue& completions) noexcept override;
+    FileSaveCapability saveCapability(core::PoolHandle = {}) const noexcept override;
+    FileIoStatus saveAsync(
+        FileSaveRequest, FileSaveCompletion, runtime::CompletionQueue&) noexcept override;
     void shutdown() noexcept override;
     MemoryFileBackendTelemetry telemetry() const noexcept;
 
@@ -51,6 +57,7 @@ private:
     struct State;
     struct Pending;
     struct PendingQuery;
+    struct PendingSave;
 
     struct File {
         core::pmr::String path{&core::defaultCpuMemoryResource()};
@@ -60,6 +67,7 @@ private:
 
     static void deliver(void* context) noexcept;
     static void deliverQuery(void* context) noexcept;
+    static void deliverSave(void* context) noexcept;
     FileIoStatus registerEntry(
         std::string_view path, FileEntryKind kind, const std::uint8_t* bytes, std::size_t size);
     MemoryFileBackendDesc desc_;

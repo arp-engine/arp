@@ -74,9 +74,9 @@ foreach(cloud_shader cloud_raymarch cloud_temporal cloud_composite cloud_demo_pr
             "${cloud_shader_dir}/${cloud_shader}.metal"
             "${cloud_shader_dir}/${cloud_shader}.wgsl"
             "${cloud_shader_dir}/${cloud_shader}.slang"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --module "${cloud_shader}" --out-dir "${cloud_shader_dir}" ${cloud_shader_compiler_args}
-        DEPENDS "${cloud_shader_source}"
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} "${cloud_shader_source}"
             shaders/renderer/cloud_ray_integration.slang shaders/renderer/cloud_history.slang
             shaders/renderer/cloud_composite_impl.slang shaders/renderer/cloud_sample_storage.slang shaders/renderer/cloud_spatial_resolve_impl.slang
             shaders/renderer/cloud_spatial_resolve.slang shaders/renderer/cloud_spatial_composite.slang
@@ -101,8 +101,35 @@ target_sources(arp_resource PRIVATE src/resource/cloud_asset_resource.cpp)
 target_sources(arp_3d PRIVATE src/3d/cloud_types.cpp src/3d/cloud_component.cpp)
 
 add_executable(arp_cloud_asset_tool tools/cloud_asset/main.cpp)
-target_link_libraries(arp_cloud_asset_tool PRIVATE arp_resource)
+add_library(arp_cloud_cook_tooling STATIC tools/cloud_asset/cloud_cook_session.cpp
+    tools/cloud_asset/cloud_cook_application.cpp)
+target_include_directories(arp_cloud_cook_tooling PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(arp_cloud_cook_tooling PUBLIC arp_resource arp_cold_tool_files)
+target_link_libraries(arp_cloud_asset_tool PRIVATE arp_cloud_cook_tooling)
 arp_add_mingw_static_runtime(arp_cloud_asset_tool)
+
+add_executable(arp_cloud_cook_tool_io_tests tests/contract/cloud_cook_tool_io_tests.cpp)
+target_link_libraries(arp_cloud_cook_tool_io_tests PRIVATE arp_cloud_cook_tooling)
+target_compile_options(arp_cloud_cook_tool_io_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_cloud_cook_tool_io_tests)
+if(NOT EMSCRIPTEN)
+    add_test(NAME arp_cloud_cook_tool_io_tests COMMAND arp_cloud_cook_tool_io_tests)
+    add_test(NAME arp_cloud_cook_tool_io_smoke COMMAND arp_cloud_cook_tool_io_tests --smoke)
+    set_tests_properties(arp_cloud_cook_tool_io_tests arp_cloud_cook_tool_io_smoke PROPERTIES
+        TIMEOUT 60 LABELS "tools;cloud;io;smoke")
+    if(WIN32)
+        foreach(mode IN ITEMS native http)
+            add_test(NAME arp_cloud_cook_tool_${mode}_smoke
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/contract/cloud_cook_tool_cli_smoke.py"
+                    --executable "$<TARGET_FILE:arp_cloud_asset_tool>"
+                    --output "${CMAKE_CURRENT_BINARY_DIR}/cloud-cook-tool-${mode}" --mode ${mode})
+            set_tests_properties(arp_cloud_cook_tool_${mode}_smoke PROPERTIES
+                TIMEOUT 180 LABELS "tools;cloud;io;smoke")
+        endforeach()
+    endif()
+else()
+    include("${CMAKE_CURRENT_LIST_DIR}/CloudCookToolWebValidation.cmake")
+endif()
 
 add_executable(arp_cloud_cook_v3_tests tests/contract/cloud_cook_v3_tests.cpp)
 target_link_libraries(arp_cloud_cook_v3_tests PRIVATE arp_resource)
@@ -411,8 +438,8 @@ endif()
 
 add_custom_command(OUTPUT "${cloud_shader_dir}/cloud_foreground.reflection.yaml"
     BYPRODUCTS "${cloud_shader_dir}/cloud_foreground.artifact-set.yaml"
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
         --fixture cloud_foreground --out-dir "${cloud_shader_dir}" ${cloud_shader_compiler_args}
-    DEPENDS tests/fixtures/cloud_foreground.slang scripts/compile_shaders.py VERBATIM)
+    DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/cloud_foreground.slang scripts/compile_shaders.py VERBATIM)
 add_custom_target(arp_cloud_visual_foreground DEPENDS "${cloud_shader_dir}/cloud_foreground.reflection.yaml")
 add_dependencies(arp_volumetric_cloud arp_cloud_visual_foreground)

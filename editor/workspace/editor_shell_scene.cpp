@@ -52,6 +52,8 @@ EditorCommandOutcome EditorShell::newScene(bool discardChanges)
     activeScenePath_.clear();
     savedSceneFileTarget_.clear();
     savedSceneFileBytes_.clear();
+    savedSceneSourceScope_.reset();
+    sourceSceneSaveUnknown_ = false;
     ++sceneDocumentEpoch_;
     refreshSceneInspector();
     return {true, true, EditorDiagnosticCode::None};
@@ -80,6 +82,8 @@ EditorCommandOutcome EditorShell::duplicateScene()
     activeScenePath_.clear();
     savedSceneFileTarget_.clear();
     savedSceneFileBytes_.clear();
+    savedSceneSourceScope_.reset();
+    sourceSceneSaveUnknown_ = false;
     ++sceneDocumentEpoch_;
     resetSceneDocumentInteraction();
     refreshSceneInspector();

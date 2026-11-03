@@ -2,6 +2,7 @@
 
 #include "core/hash/stable_hash.h"
 #include "core/io/file_io.h"
+#include "core/text/utf8.h"
 #include "scriptvm/plugin/cpp_plugin_api.h"
 #include "scriptvm/runtime/value.h"
 
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <utility>
 
 namespace arp::scriptvm::plugins::io {
@@ -63,6 +65,56 @@ IoTextResult readText(const String& path)
 IoBytesResult readBytes(const String& path)
 {
     return makeBytesResult(arp::core::readBinaryFile(std::filesystem::path(path.c_str())));
+}
+
+arp::scriptvm::Value IoBinaryResult::data() const
+{
+    return bytes;
+}
+
+std::int64_t IoBinaryResult::byteCount() const
+{
+    const auto* source = arp::scriptvm::asScriptBytes(bytes);
+    return source ? static_cast<std::int64_t>(source->data.size()) : 0;
+}
+
+IoBinaryResult readBinaryLocal(
+    const String& path, std::int64_t maxBytes, std::int64_t maxAllocationBytes)
+{
+    const auto fail = [](const char* id) {
+        IoBinaryResult result;
+        result.diagnostics = id;
+        return result;
+    };
+    if (maxBytes <= 0 || maxAllocationBytes <= 0 || static_cast<std::uint64_t>(maxBytes) >= SIZE_MAX
+        || static_cast<std::uint64_t>(maxAllocationBytes) >= SIZE_MAX)
+        return fail("SCRIPT-IO-BINARY-BUDGET");
+    if (path.empty() || path.find('\0') != String::npos || arp::core::Utf8Decoder::validate(path))
+        return fail("SCRIPT-IO-BINARY-PATH");
+    try {
+        auto quota = arp::core::currentCpuMemoryQuota();
+        std::optional<arp::core::CpuMemoryQuotaScope> scope;
+        if (quota) {
+            if (!quota->limitBytes()
+                || quota->limitBytes() > static_cast<std::uint64_t>(maxAllocationBytes))
+                return fail("SCRIPT-IO-BINARY-QUOTA-LIMIT");
+        } else {
+            quota = arp::core::makeShared<arp::core::CpuMemoryQuota>(maxAllocationBytes);
+            scope.emplace(quota);
+        }
+        auto read =
+            arp::core::readBinaryFile(std::filesystem::u8path(path.begin(), path.end()), maxBytes);
+        IoBinaryResult result;
+        if (!read.success) {
+            result.diagnostics = std::move(read.diagnostics);
+            return result;
+        }
+        result.bytes = arp::scriptvm::makeBytes(std::move(read.bytes));
+        result.success = true;
+        return result;
+    } catch (const std::bad_alloc&) {
+        return fail("SCRIPT-IO-BINARY-ALLOCATION-BUDGET");
+    }
 }
 
 IoOperationResult writeText(const String& path, const String& text)
@@ -129,7 +181,7 @@ bool exists(const String& path)
 
 hlist listFiles(const String& root, bool recursive)
 {
-    hlist files(hlist::allocator_type(&arp::core::defaultCpuMemoryResource()));
+    hlist files((hlist::allocator_type(&arp::core::defaultCpuMemoryResource())));
     std::error_code error;
     if (recursive) {
         for (const auto& entry :

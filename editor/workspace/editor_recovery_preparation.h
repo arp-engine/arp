@@ -159,10 +159,14 @@ public:
     static bool validateForWorkspace(const WorkspaceCandidate& candidate,
         const EditorShell& shell,
         core::pmr::String& diagnostic);
+    // Shared pure value preparation for native and mounted recovery candidates.
+    // The caller admits the scene target. This token alone authorizes no commit.
+    static core::UniquePtr<WorkspaceState> prepareWorkspaceState(const EditorRecoverySnapshot&,
+        const std::filesystem::path& sceneTarget,
+        core::pmr::String& diagnostic,
+        EditorRecoveryBudget budget = {});
 
 private:
-    static core::UniquePtr<WorkspaceState> prepareState(
-        const Candidate& candidate, core::pmr::String& diagnostic);
     static bool candidateFingerprint(const Candidate& candidate,
         EditorRecoveryBudget budget,
         core::ByteBuffer& destination,

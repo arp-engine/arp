@@ -261,7 +261,7 @@ void EditorProjectPanel::save(EditorShell& shell)
         ? shell.submitCommand(SaveProjectCommand{})
         : renamed;
     if (saved.status == EditorResponseStatus::Completed) {
-        saving_ = bool(shell.projectSaveRequest_);
+        saving_ = shell.projectSettingsSavePending();
         status_ = saving_ ? "Saving project settings..." : "Project settings saved.";
     } else
         status_ = "Settings were not saved. " + shell.projectDiagnostic_;
@@ -270,7 +270,7 @@ void EditorProjectPanel::save(EditorShell& shell)
 
 void EditorProjectPanel::synchronize(EditorShell& shell)
 {
-    if (saving_ && !shell.projectSaveRequest_) {
+    if (saving_ && !shell.projectSettingsSavePending()) {
         saving_ = false;
         status_ = shell.projectDiagnostic_.empty()
             ? "Project settings saved."

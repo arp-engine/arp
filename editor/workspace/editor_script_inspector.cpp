@@ -246,8 +246,38 @@ struct EditorScriptInspector::Session {
     }
 };
 
+struct EditorScriptInspector::Pending {
+    core::UniquePtr<Session> candidate;
+    std::uint64_t taskId = 0;
+    std::size_t entry = 0;
+};
+
 EditorScriptInspector::EditorScriptInspector() = default;
 EditorScriptInspector::~EditorScriptInspector() = default;
+
+void EditorScriptInspector::sourceTaskFinished(
+    EditorShell& shell, std::uint64_t id, bool success) noexcept
+{
+    if (!pending_ || pending_->taskId != id)
+        return;
+    auto pending = std::move(pending_);
+    try {
+        if (!session_ || !session_->current(shell) || !pending->candidate->current(shell))
+            return;
+        if (success)
+            session_.swap(pending->candidate);
+        else if (pending->entry < session_->entries.size()) {
+            auto& entry = session_->entries[pending->entry];
+            entry.error = "Dependency check failed or cancelled - draft retained";
+            if (!shell.runtime()
+                    .setValue(entry.status, ui::UiControlValue::fromText(entry.error))
+                    .ok())
+                shell.failSceneInspector("EDITOR-SCRIPT-INSPECTOR-ERROR-SYNC");
+        }
+    } catch (...) {
+        shell.failSceneInspector("EDITOR-SCRIPT-INSPECTOR-ERROR-SYNC");
+    }
+}
 
 bool EditorScriptInspector::handles(std::string_view source) noexcept
 {
@@ -550,6 +580,15 @@ void EditorScriptInspector::addMenuOptions(
                            return handles(option.commandValue);
                        }),
         prepared.end());
+    if (shell.projectBrowser_.sourceSnapshot()
+        && shell.sceneAuthoringVersion_ == EditorSceneAuthoringCodec::contractVersion
+        && shell.projectManifest_ && !shell.projectManifest_->scriptModules.empty()) {
+        prepared.push_back({"Enable scripts (v4; clear Undo)",
+            "scene_script_prepare",
+            static_cast<int>(prepared.size())});
+        options.swap(prepared);
+        return;
+    }
     if (!session_ || !session_->current(shell)
         || shell.sceneAuthoringVersion_ != EditorSceneScriptCodec::contractVersion) {
         options.swap(prepared);
@@ -666,6 +705,11 @@ EditorCommandOutcome EditorScriptInspector::activate(EditorShell& shell, std::st
     const auto navigation = shell.sceneNavigationGate();
     if (!navigation.success)
         return navigation;
+    if (source == "scene_script_prepare") {
+        if (shell.authoringUiBlocked() || !shell.acceptsInspectorInput(source))
+            return rejected();
+        return shell.submitCommand(PrepareSceneScriptAuthoringCommand{}).intoNestedOutcome();
+    }
     if (shell.authoringUiBlocked() || !shell.acceptsInspectorInput(source) || !session_
         || !session_->current(shell))
         return rejected();
@@ -785,6 +829,11 @@ EditorCommandOutcome EditorScriptInspector::activate(EditorShell& shell, std::st
             }
             candidate->validateBudget();
 
+            // Allocate the deferred UI handoff before accepting source IO. The
+            // current draft is kept until that exact task actually commits.
+            auto pending = shell.projectBrowser_.sourceSnapshot() ? core::makeUnique<Pending>()
+                                                                  : core::UniquePtr<Pending>{};
+
             struct Applying {
                 bool& flag;
 
@@ -814,6 +863,14 @@ EditorCommandOutcome EditorScriptInspector::activate(EditorShell& shell, std::st
             if (!outcome.success) {
                 notice(entry.pending() ? "Attachment rejected - draft retained"
                                        : "Apply rejected - draft retained");
+                return outcome;
+            }
+            if (pending && shell.projectIoPending()) {
+                pending->taskId = shell.projectIoTaskId_;
+                pending->entry = entryIndex;
+                pending->candidate = std::move(candidate);
+                pending_.swap(pending);
+                notice("Dependency check pending - draft retained");
                 return outcome;
             }
         } else {

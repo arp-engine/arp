@@ -320,13 +320,15 @@ int main()
         (void)probe;
     }
 
-    // 12. Queue-full: submitting more async work than queue capacity.
+    // 12. Queue-full: accepted work holds one completion slot until dispatch.
+    // This admission gate is deterministic for native workers and inline Web
+    // work; worker-queue saturation alone depends on filesystem timing.
     {
         arp::core::runtime::AsyncRuntimeDesc queueDesc;
-        queueDesc.completionQueueCapacity = 16;
+        queueDesc.completionQueueCapacity = 1;
         queueDesc.workerCount = 1;
         queueDesc.workQueueCapacity = 1;
-        queueDesc.completionBudget = 8;
+        queueDesc.completionBudget = 1;
         queueDesc.enableWork = true;
         queueDesc.enableThreadPoolFileBackend = true;
         arp::core::runtime::AsyncRuntime queueRuntime(queueDesc);
@@ -334,7 +336,7 @@ int main()
 
         arp::resource::ResourceManager queueManager;
 
-        // Fill the work queue.
+        // Keep the first completion reserved/queued without dispatching it.
         int accepted = 0;
         int rejected = 0;
         Probe probes[10];
@@ -351,10 +353,11 @@ int main()
                 ++accepted;
                 ++probeCount;
             } else {
+                assert(status == arp::core::io::FileIoStatus::QueueFull);
                 ++rejected;
             }
         }
-        assert(rejected > 0); // At least one request should be rejected when queue is full.
+        assert(accepted == 1 && rejected == 9);
 
         // Dispatch any accepted completions before shutdown.
         for (int i = 0; i < 50; ++i) {

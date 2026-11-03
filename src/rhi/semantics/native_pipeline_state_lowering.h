@@ -79,7 +79,9 @@ enum class NativePipelineStateSemantic {
     WebGpuDepthOnlyRenderPassState,
 
     // Diagnostic: the descriptor contains state no backend can lower.
-    UnsupportedStateDiagnostic
+    UnsupportedStateDiagnostic,
+    // ColorBlendFactors/1: complete component factors retained by lowering.
+    L2ComponentColorBlendFactors
 };
 
 /// Result of lowering one `RenderPipelineDesc` against a backend capability

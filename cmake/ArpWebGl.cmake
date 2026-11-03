@@ -459,34 +459,34 @@ function(arp_add_webgl_shader_program_tests)
     set(program_dir "${CMAKE_CURRENT_BINARY_DIR}/webgl1-program")
     set(program "${program_dir}/webgl1_graphics.webgl-program.yaml")
     add_custom_command(OUTPUT "${program}"
-        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${webgl1_spirv_reflect_tool}"
             --fixture webgl1_graphics --graphics-module --preserve-implicit-sampling
             --glsl-es-100 --spirv-cross-library "${ARP_SPIRV_CROSS_LIBRARY}" --out-dir "${program_dir}"
             --webgl-optional-uniform Vertex:arpUbo_0_0.m3
             --webgl-optional-uniform Fragment:arpUbo_0_0.m3
-        DEPENDS scripts/compile_shaders.py scripts/webgl_shader_artifact.py scripts/spirv_cross_api.py
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} scripts/compile_shaders.py scripts/webgl_shader_artifact.py scripts/spirv_cross_api.py
             scripts/spirv_layout.py scripts/shader_bindings_codegen.py tests/fixtures/webgl1_graphics.slang
             "${SLANGC_EXECUTABLE}" "${webgl1_spirv_reflect_tool}" "${ARP_SPIRV_CROSS_LIBRARY}"
         VERBATIM)
     set(extension_dir "${program_dir}/extensions")
     set(extension_program "${extension_dir}/webgl1_extensions.webgl-program.yaml")
     add_custom_command(OUTPUT "${extension_program}"
-        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${webgl1_spirv_reflect_tool}"
             --fixture webgl1_extensions --graphics-module --preserve-implicit-sampling
             --glsl-es-100 --spirv-cross-library "${ARP_SPIRV_CROSS_LIBRARY}" --out-dir "${extension_dir}"
-        DEPENDS scripts/compile_shaders.py scripts/webgl_shader_artifact.py scripts/spirv_cross_api.py
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} scripts/compile_shaders.py scripts/webgl_shader_artifact.py scripts/spirv_cross_api.py
             scripts/spirv_layout.py scripts/shader_bindings_codegen.py tests/fixtures/webgl1_extensions.slang
             "${SLANGC_EXECUTABLE}" "${webgl1_spirv_reflect_tool}" "${ARP_SPIRV_CROSS_LIBRARY}"
         VERBATIM)
     set(sprite_program "${program_dir}/scene_2d_vertices.webgl-program.yaml")
     add_custom_command(OUTPUT "${sprite_program}"
-        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${webgl1_spirv_reflect_tool}"
             --module scene_2d_vertices --graphics-module --glsl-es-100
             --spirv-cross-library "${ARP_SPIRV_CROSS_LIBRARY}" --out-dir "${program_dir}"
-        DEPENDS scripts/compile_shaders.py scripts/webgl_shader_artifact.py scripts/spirv_cross_api.py
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} scripts/compile_shaders.py scripts/webgl_shader_artifact.py scripts/spirv_cross_api.py
             scripts/spirv_layout.py scripts/shader_bindings_codegen.py shaders/2d/sprites.slang
             "${SLANGC_EXECUTABLE}" "${webgl1_spirv_reflect_tool}" "${ARP_SPIRV_CROSS_LIBRARY}"
         VERBATIM)
@@ -500,22 +500,22 @@ function(arp_add_webgl_shader_program_tests)
             --directory "${program_dir}" --reflect "${webgl1_spirv_reflect_tool}")
     set(gui_program "${program_dir}/gui_bitmap.webgl-program.yaml")
     add_custom_command(OUTPUT "${gui_program}"
-        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${webgl1_spirv_reflect_tool}"
             --module gui_bitmap --graphics-module --glsl-es-100
             --spirv-cross-library "${ARP_SPIRV_CROSS_LIBRARY}" --out-dir "${program_dir}"
-        DEPENDS scripts/compile_shaders.py scripts/webgl_shader_artifact.py scripts/spirv_cross_api.py
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} scripts/compile_shaders.py scripts/webgl_shader_artifact.py scripts/spirv_cross_api.py
             scripts/spirv_layout.py scripts/shader_bindings_codegen.py shaders/gui/bitmap.slang
             "${SLANGC_EXECUTABLE}" "${webgl1_spirv_reflect_tool}" "${ARP_SPIRV_CROSS_LIBRARY}"
         VERBATIM)
     add_custom_target(arp_gui_bitmap_shader_publication_tests DEPENDS "${gui_program}")
     set(basic_program "${program_dir}/basic_forward.webgl-program.yaml")
     add_custom_command(OUTPUT "${basic_program}"
-        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${webgl1_spirv_reflect_tool}"
             --module basic_forward --graphics-module --glsl-es-100
             --spirv-cross-library "${ARP_SPIRV_CROSS_LIBRARY}" --out-dir "${program_dir}"
-        DEPENDS scripts/compile_shaders.py scripts/webgl_shader_artifact.py scripts/spirv_cross_api.py
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} scripts/compile_shaders.py scripts/webgl_shader_artifact.py scripts/spirv_cross_api.py
             scripts/spirv_layout.py scripts/shader_bindings_codegen.py shaders/basic/forward.slang
             "${SLANGC_EXECUTABLE}" "${webgl1_spirv_reflect_tool}" "${ARP_SPIRV_CROSS_LIBRARY}"
         VERBATIM)
@@ -528,11 +528,11 @@ function(arp_add_webgl_shader_program_tests)
     add_dependencies(arp_webgl_shader_program_artifacts arp_basic_forward_shader_artifacts)
     set(basic_depth_program "${program_dir}/basic_depth_receiver.webgl-program.yaml")
     add_custom_command(OUTPUT "${basic_depth_program}"
-        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${webgl1_spirv_reflect_tool}"
             --module basic_depth_receiver --graphics-module --glsl-es-100
             --spirv-cross-library "${ARP_SPIRV_CROSS_LIBRARY}" --out-dir "${program_dir}"
-        DEPENDS scripts/compile_shaders.py scripts/webgl_shader_artifact.py scripts/spirv_cross_api.py
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} scripts/compile_shaders.py scripts/webgl_shader_artifact.py scripts/spirv_cross_api.py
             scripts/spirv_layout.py scripts/shader_bindings_codegen.py shaders/basic/depth_receiver.slang
             "${SLANGC_EXECUTABLE}" "${webgl1_spirv_reflect_tool}" "${ARP_SPIRV_CROSS_LIBRARY}"
         VERBATIM)
@@ -549,11 +549,11 @@ function(arp_add_webgl_shader_program_tests)
             --module gui_bitmap --push-bytes 64 --vertex-entry vertexMain)
     set(fragment_program "${program_dir}/environment/editor_viewport_environment.webgl-program.yaml")
     add_custom_command(OUTPUT "${fragment_program}"
-        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${webgl1_spirv_reflect_tool}"
             --module editor_viewport_environment --graphics-module --glsl-es-100
             --spirv-cross-library "${ARP_SPIRV_CROSS_LIBRARY}" --out-dir "${program_dir}/environment"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/editor/viewport_environment.slang"
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} "${CMAKE_CURRENT_SOURCE_DIR}/shaders/editor/viewport_environment.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/webgl_shader_artifact.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/spirv_cross_api.py"
         VERBATIM)

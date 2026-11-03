@@ -1,0 +1,6 @@
+type: SurvivorsPackageOriginalProducer
+contractVersion: 1
+sourcePath: scripts/package_survivors.py
+fixture: original_package_survivors.py
+sha256: 4ddf47ddd3d6d65db9b08a74d1aa6a213140c40478cbc2f0b29b4ac043b3caee
+scope: Original offline producer byte comparison only, not a production fallback

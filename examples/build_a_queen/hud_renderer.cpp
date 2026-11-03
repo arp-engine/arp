@@ -10,27 +10,22 @@ namespace arp::build_a_queen {
 HudRenderer::HudRenderer(rhi::GpuDevice& device) : device_(device), renderer_(device)
 {}
 
-renderer::RendererResult HudRenderer::create(
-    const core::pmr::String& shaderPath, rhi::TextureFormat colorFormat, rhi::Extent2D extent)
+renderer::RendererResult HudRenderer::create(const NativeShaderSources& shaders,
+    const NativeHudSources& sources,
+    rhi::TextureFormat colorFormat,
+    rhi::Extent2D extent)
 {
-    if (rendererReady_ || shaderPath.empty() || colorFormat == rhi::TextureFormat::Unknown
-        || extent.width == 0u || extent.height == 0u)
+    if (rendererReady_ || !shaders.valid() || !sources.valid()
+        || colorFormat == rhi::TextureFormat::Unknown || !extent.width || !extent.height)
         return {false, "ARP-QUEEN-HUD-CONFIG"};
-
-    auto font = ui::loadDefaultUiFontFace();
-    if (!font.ok())
-        return {false, font.diagnostic().message};
-    auto fontDesc = font.face().desc;
-    fontDesc.tokenId = kQueenFontToken;
-    fontDesc.sizePx = 18u;
-    fontDesc.lineHeightPx = 22u;
-    fontFaces_.push_back(std::move(fontDesc));
-
+    fontFaces_.push_back(sources.face.desc);
+    baseAtlas_ = sources.atlas;
     const auto content = createHud(extent);
     if (!content.success)
         return content;
-
-    shaderPath_ = shaderPath;
+    shaderPath_ = "gui_overlay.slang";
+    preparedShader_ = shaders.programs[5];
+    shaderPublication_ = NativeShaderSources::publications[5];
     colorFormat_ = colorFormat;
     const auto resized = resize(extent);
     if (!resized.success)
@@ -49,9 +44,12 @@ renderer::RendererResult HudRenderer::resize(rhi::Extent2D extent)
 
     if (!atlasRuntime_) {
         renderer::GuiAtlasTextureDesc baseAtlas;
-        baseAtlas.resourceId = "queen.ui.framework.atlas";
-        baseAtlas.extent = {1u, 1u};
-        baseAtlas.rgba8 = {255u, 255u, 255u, 255u};
+        if (!baseAtlas_)
+            return {false, "QUEEN-HUD-BASE-ATLAS-NOT-PREPARED"};
+        baseAtlas.resourceId = baseAtlas_->atlasResourceId;
+        baseAtlas.extent = {baseAtlas_->width, baseAtlas_->height};
+        baseAtlas.rgba8 = baseAtlas_->rgba8;
+        baseAtlas.srgb = baseAtlas_->srgb;
         renderer::ui::UnifiedUiAtlasRuntimeBuildDesc atlasDesc;
         atlasDesc.baseAtlas = std::move(baseAtlas);
         atlasDesc.fontFaces = &fontFaces_;
@@ -65,6 +63,8 @@ renderer::RendererResult HudRenderer::resize(rhi::Extent2D extent)
 
         renderer::GuiRendererDesc rendererDesc;
         rendererDesc.shaderPath = shaderPath_;
+        rendererDesc.shaderPublication = shaderPublication_;
+        rendererDesc.preparedShaderArtifacts = preparedShader_;
         rendererDesc.colorFormat = colorFormat_;
         rendererDesc.extent = extent_;
         rendererDesc.atlasTexture = atlasRuntime_->atlas();

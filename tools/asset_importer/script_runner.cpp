@@ -11,6 +11,10 @@
 #include "scriptvm/runtime/module_registry.h"
 #include "scriptvm/runtime/semantic_runtime.h"
 #include "tools/asset_importer/script_plugin_sources.h"
+#if !defined(ARP_SCRIPT_AOT_ONLY_TOOL)
+#include "tools/asset_importer/script_diagnostics.h"
+#include "tools/asset_importer/tool_script_source_host.h"
+#endif
 
 #include <algorithm>
 #include <stdexcept>
@@ -504,34 +508,11 @@ struct SourceModuleLifetime final {
     scriptvm::Program program;
 };
 
-core::pmr::String diagnosticText(const scriptvm::ScriptDiagnostic& diagnostic)
-{
-    core::pmr::String result{&core::defaultCpuMemoryResource()};
-    if (!diagnostic.file.empty()) {
-        result += diagnostic.file;
-        result += ":";
-    }
-    if (diagnostic.line > 0) {
-        result += std::to_string(diagnostic.line);
-        result += ":";
-        result += std::to_string(diagnostic.column);
-        result += " ";
-    }
-    result += diagnostic.message;
-    return result;
-}
+using detail::diagnosticText;
 
 core::pmr::String sha256Contract(const core::pmr::String& text)
 {
-    const auto digest = core::Sha256::digest(core::StringView(text.data(), text.size()));
-    static constexpr char digits[] = "0123456789abcdef";
-    core::pmr::String result("sha256:", &core::defaultCpuMemoryResource());
-    result.reserve(71u);
-    for (const auto byte : digest) {
-        result.push_back(digits[(byte >> 4u) & 0x0fu]);
-        result.push_back(digits[byte & 0x0fu]);
-    }
-    return result;
+    return core::Sha256::hexDigest(text);
 }
 
 bool buildModuleInputHashes(const std::shared_ptr<scriptvm::Module>& module,
@@ -640,115 +621,149 @@ bool containsModule(
     return false;
 }
 
-bool sameTopLevelDeclaration(const scriptvm::StmtPtr& left, const scriptvm::StmtPtr& right)
-{
-    if (left->kind != right->kind)
-        return false;
-    switch (left->kind) {
-    case scriptvm::StmtKind::ImportDecl:
-        if (left->importModule != right->importModule
-            || left->importIsModuleImport != right->importIsModuleImport
-            || left->importAlias != right->importAlias
-            || left->importNames.size() != right->importNames.size()) {
-            return false;
+// Declaration identity preserves the first-definition order of the previous
+// bundler, without rescanning every previously merged declaration.
+class UniqueSourceDeclarations final {
+public:
+    void append(const scriptvm::StmtPtr& declaration)
+    {
+        core::pmr::String key{&core::defaultCpuMemoryResource()};
+        const auto part = [&](core::StringView value) {
+            key.append(value.data(), value.size());
+            key.push_back('\0');
+        };
+        switch (declaration->kind) {
+        case scriptvm::StmtKind::ImportDecl:
+            key = "I";
+            part(declaration->importModule);
+            key.push_back(declaration->importIsModuleImport ? '1' : '0');
+            part(declaration->importAlias);
+            for (const auto& name : declaration->importNames) {
+                part(name.name);
+                part(name.alias);
+            }
+            break;
+        case scriptvm::StmtKind::ClassDecl:
+            key = "C";
+            part(declaration->className);
+            break;
+        case scriptvm::StmtKind::FuncDecl:
+            key = "F";
+            part(declaration->funcName);
+            break;
+        case scriptvm::StmtKind::VarDecl:
+            key = "V";
+            part(declaration->varName);
+            break;
+        default:
+            declarations_.push_back(declaration);
+            return;
         }
-        for (std::size_t index = 0; index < left->importNames.size(); ++index) {
-            if (left->importNames[index].name != right->importNames[index].name
-                || left->importNames[index].alias != right->importNames[index].alias) {
+        if (keys_.insert(std::move(key)).second)
+            declarations_.push_back(declaration);
+    }
+
+    auto take() { return std::move(declarations_); }
+
+private:
+    core::pmr::Vector<scriptvm::StmtPtr> declarations_{&core::defaultCpuMemoryResource()};
+    core::pmr::Set<core::pmr::String> keys_{&core::defaultCpuMemoryResource()};
+};
+
+// Cache only inside this bundle operation. A later run must re-read changed
+// source files, and analyzed ASTs must never be shared between Programs.
+class SourceClassDependencyBundler final {
+public:
+    SourceClassDependencyBundler(const ToolScriptSources& sources,
+        core::pmr::Vector<core::pmr::String>& resolving,
+        core::pmr::String& dependencyContract,
+        core::pmr::String& diagnostics)
+        : sources_(sources), resolving_(resolving), dependencyContract_(dependencyContract),
+          diagnostics_(diagnostics)
+    {
+        dependencyContract_ += "arp.source-class-dependency-graph/v2\n";
+    }
+
+    bool merge(const std::shared_ptr<scriptvm::Module>& module)
+    {
+        UniqueSourceDeclarations merged;
+        for (const auto& declaration : module->decls) {
+            if (declaration->kind != scriptvm::StmtKind::ImportDecl
+                || declaration->importModule.empty()) {
+                merged.append(declaration);
+                continue;
+            }
+            const auto* observed = sources_.find(declaration->importModule);
+            if (!observed) {
+                diagnostics_ = "TOOL-SOURCE-MODULE-NOT-OBSERVED";
                 return false;
             }
+            if (observed->absent) {
+                merged.append(declaration);
+                continue;
+            }
+            const auto* source = observed->source();
+            if (!source) {
+                diagnostics_ = "TOOL-SOURCE-MODULE-INCOMPLETE";
+                return false;
+            }
+            // Check the active recursion stack before the completed cache.
+            // A cached sibling must not hide an actual cycle.
+            if (containsModule(resolving_, declaration->importModule)) {
+                diagnostics_ = "circular source module import: ";
+                diagnostics_ += declaration->importModule;
+                return false;
+            }
+            auto found = prepared_.find(declaration->importModule);
+            if (found == prepared_.end()) {
+                dependencyContract_ += declaration->importModule;
+                dependencyContract_ += "=";
+                dependencyContract_ += source->textHash;
+                dependencyContract_ += "\n";
+                auto parsed = scriptvm::parseSource(source->text, observed->displayName);
+                if (!parsed.ok() || !parsed.module) {
+                    diagnostics_ = parsed.ok()
+                        ? core::pmr::String("source dependency parser returned no module",
+                              &core::defaultCpuMemoryResource())
+                        : diagnosticText(parsed.error);
+                    return false;
+                }
+                resolving_.push_back(declaration->importModule);
+                const bool ready = merge(parsed.module);
+                resolving_.pop_back();
+                if (!ready)
+                    return false;
+                found =
+                    prepared_.emplace(declaration->importModule, std::move(parsed.module)).first;
+            }
+            if (!hasClassDeclaration(found->second)) {
+                merged.append(declaration);
+                continue;
+            }
+            for (const auto& dependencyDeclaration : found->second->decls)
+                merged.append(dependencyDeclaration);
         }
+        module->decls = merged.take();
         return true;
-    case scriptvm::StmtKind::ClassDecl:
-        return left->className == right->className;
-    case scriptvm::StmtKind::FuncDecl:
-        return left->funcName == right->funcName;
-    case scriptvm::StmtKind::VarDecl:
-        return left->varName == right->varName;
-    default:
-        return false;
     }
-}
 
-void appendUniqueDeclaration(
-    core::pmr::Vector<scriptvm::StmtPtr>& declarations, const scriptvm::StmtPtr& declaration)
-{
-    for (const auto& existing : declarations) {
-        if (sameTopLevelDeclaration(existing, declaration))
-            return;
-    }
-    declarations.push_back(declaration);
-}
+private:
+    const ToolScriptSources& sources_;
+    core::pmr::Vector<core::pmr::String>& resolving_;
+    core::pmr::String& dependencyContract_;
+    core::pmr::String& diagnostics_;
+    core::pmr::Map<core::pmr::String, std::shared_ptr<scriptvm::Module>, std::less<>> prepared_{
+        &core::defaultCpuMemoryResource()};
+};
 
-bool mergeSourceClassDependencies(const std::filesystem::path& sourceRoot,
+bool mergeSourceClassDependencies(const ToolScriptSources& sources,
     const std::shared_ptr<scriptvm::Module>& module,
     core::pmr::Vector<core::pmr::String>& resolving,
     core::pmr::String& dependencyContract,
     core::pmr::String& diagnostics)
 {
-    core::pmr::Vector<scriptvm::StmtPtr> merged{&core::defaultCpuMemoryResource()};
-    for (const auto& declaration : module->decls) {
-        if (declaration->kind != scriptvm::StmtKind::ImportDecl
-            || declaration->importModule.empty()) {
-            appendUniqueDeclaration(merged, declaration);
-            continue;
-        }
-
-        const auto dependencyPath = sourceRoot
-            / (std::string(declaration->importModule.data(), declaration->importModule.size())
-                + ".arp");
-        if (!std::filesystem::exists(dependencyPath)) {
-            appendUniqueDeclaration(merged, declaration);
-            continue;
-        }
-        if (containsModule(resolving, declaration->importModule)) {
-            diagnostics = "circular source module import: ";
-            diagnostics += declaration->importModule;
-            return false;
-        }
-
-        const auto source = core::readTextFile(dependencyPath);
-        if (!source.success) {
-            diagnostics = source.diagnostics;
-            return false;
-        }
-        dependencyContract += declaration->importModule;
-        dependencyContract += "=";
-        dependencyContract += sha256Contract(source.text);
-        dependencyContract += "\n";
-        auto parsed =
-            scriptvm::parseSource(source.text, core::toPmrString(dependencyPath.generic_string()));
-        if (!parsed.ok() || !parsed.module) {
-            diagnostics = parsed.ok()
-                ? core::pmr::String("source dependency parser returned no module",
-                      &core::defaultCpuMemoryResource())
-                : diagnosticText(parsed.error);
-            return false;
-        }
-
-        resolving.push_back(declaration->importModule);
-        if (!mergeSourceClassDependencies(
-                sourceRoot, parsed.module, resolving, dependencyContract, diagnostics)) {
-            resolving.pop_back();
-            return false;
-        }
-        resolving.pop_back();
-
-        if (!hasClassDeclaration(parsed.module)) {
-            appendUniqueDeclaration(merged, declaration);
-            continue;
-        }
-
-        // Source modules containing classes are bundled into the importing
-        // program so script class identity, inheritance, and method indices
-        // remain owned by one Program. Their declarations are deduplicated
-        // because host imports can already exist in the importing module.
-        for (const auto& dependencyDeclaration : parsed.module->decls) {
-            appendUniqueDeclaration(merged, dependencyDeclaration);
-        }
-    }
-    module->decls = std::move(merged);
-    return true;
+    return SourceClassDependencyBundler(sources, resolving, dependencyContract, diagnostics)
+        .merge(module);
 }
 
 } // namespace
@@ -792,46 +807,49 @@ ScriptRunResult ScriptToolRunner::runFileFunction(const std::filesystem::path& s
     const core::pmr::Vector<scriptvm::Value>& args)
 {
     ScriptRunResult result;
-    const auto source = core::readTextFile(scriptPath);
-    if (!source.success) {
-        result.diagnostics = source.diagnostics;
+    auto prepared = ToolScriptSourceHost::prepareNative(scriptPath, sourceModuleRoot_);
+    if (!prepared.sources) {
+        result.diagnostics = std::move(prepared.diagnostics);
         return result;
     }
+    return runPreparedFunction(*prepared.sources, functionName, args);
+}
+
+ScriptRunResult ScriptToolRunner::runPreparedFunction(const ToolScriptSources& sources,
+    const char* functionName,
+    const core::pmr::Vector<scriptvm::Value>& args)
+{
+    ScriptRunResult result;
+    if (!sources.ready() || !sources.entry() || !sources.entry()->source() || !functionName
+        || !*functionName) {
+        result.diagnostics = "TOOL-SOURCE-CLOSURE-NOT-READY";
+        return result;
+    }
+    const auto& source = *sources.entry()->source();
+    const auto& sourceName = sources.entry()->displayName;
 
     auto& pluginImporter = *pluginImporter_;
     scriptvm::ModuleRegistry modules;
     modules.setCppPluginImporter(&pluginImporter);
-    const auto sourceModuleRoot = sourceModuleRoot_;
     core::pmr::String sourceModuleDiagnostics{&core::defaultCpuMemoryResource()};
     auto sourceResolver =
-        [sourceModuleRoot, &modules, &sourceModuleDiagnostics, &pluginImporter](
+        [&sources, &modules, &sourceModuleDiagnostics, &pluginImporter](
             const core::pmr::String& moduleName) -> std::shared_ptr<scriptvm::ModuleExports> {
         sourceModuleDiagnostics.clear();
         const auto fail = [&](const char* message) -> std::shared_ptr<scriptvm::ModuleExports> {
             sourceModuleDiagnostics = message;
             return nullptr;
         };
-        if (moduleName.empty()) {
-            return fail("source module name is empty");
-        }
-        for (const char ch : moduleName) {
-            if (!(ch == '_' || ch == '-' || ch == '.' || (ch >= 'a' && ch <= 'z')
-                    || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))) {
-                return fail("source module name contains an invalid character");
-            }
-        }
-
-        const auto path =
-            sourceModuleRoot / (std::string(moduleName.data(), moduleName.size()) + ".arp");
-        if (!std::filesystem::exists(path)) {
+        const auto* observed = sources.find(moduleName);
+        if (!observed)
+            return fail("TOOL-SOURCE-MODULE-NOT-OBSERVED");
+        if (observed->absent)
             return nullptr;
-        }
-        const auto source = core::readTextFile(path);
-        if (!source.success) {
-            sourceModuleDiagnostics = source.diagnostics;
-            return nullptr;
-        }
-        auto parsed = scriptvm::parseSource(source.text, core::toPmrString(path.generic_string()));
+        const auto* captured = observed->source();
+        if (!captured)
+            return fail("TOOL-SOURCE-MODULE-INCOMPLETE");
+        const auto& source = *captured;
+        auto parsed = scriptvm::parseSource(source.text, observed->displayName);
         if (!parsed.ok() || !parsed.module) {
             sourceModuleDiagnostics = parsed.ok()
                 ? core::pmr::String(
@@ -842,7 +860,7 @@ ScriptRunResult ScriptToolRunner::runFileFunction(const std::filesystem::path& s
         core::pmr::Vector<core::pmr::String> resolving{&core::defaultCpuMemoryResource()};
         core::pmr::String sourceDependencyContract{&core::defaultCpuMemoryResource()};
         resolving.push_back(moduleName);
-        if (!mergeSourceClassDependencies(sourceModuleRoot,
+        if (!mergeSourceClassDependencies(sources,
                 parsed.module,
                 resolving,
                 sourceDependencyContract,
@@ -956,13 +974,12 @@ ScriptRunResult ScriptToolRunner::runFileFunction(const std::filesystem::path& s
                 return {scriptvm::ModuleResolutionStatus::Ready, std::move(exports), {}};
             if (!sourceModuleDiagnostics.empty())
                 return {scriptvm::ModuleResolutionStatus::Failed, {}, sourceModuleDiagnostics};
-            // This tool's existing filename-based discovery is still inventoried
-            // for M6; only its explicit failure result is migrated here.
+            // Only the closed input's observed MissingFile can reach Absent.
+            // A late undeclared name is a failure, never permission to read.
             return {};
         });
 
-    auto parsed =
-        scriptvm::parseSource(source.text, core::toPmrString(scriptPath.generic_string()));
+    auto parsed = scriptvm::parseSource(source.text, sourceName);
     if (!parsed.ok()) {
         result.diagnostics = diagnosticText(parsed.error);
         return result;
@@ -994,8 +1011,8 @@ ScriptRunResult ScriptToolRunner::runFileFunction(const std::filesystem::path& s
             result.diagnostics)) {
         return result;
     }
-    auto frontend = scriptvm::ScriptFrontend::adoptAnalyzedSyntax(
-        parsed.module, core::toPmrString(scriptPath.generic_string()), &modules);
+    auto frontend =
+        scriptvm::ScriptFrontend::adoptAnalyzedSyntax(parsed.module, sourceName, &modules);
     if (!frontend.ok()) {
         result.diagnostics = diagnosticText(frontend.error);
         return result;

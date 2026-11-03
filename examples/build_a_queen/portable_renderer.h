@@ -3,6 +3,7 @@
 #include "platform/render_system_ordered_graphics.h"
 #include "renderer/gui/gui_ordered_renderer.h"
 #include "scene_content.h"
+#include "web_font_source_task.h"
 
 namespace arp::build_a_queen {
 struct PortableQueenDesc {
@@ -13,12 +14,14 @@ struct PortableQueenDesc {
     // Sky, real geometry shadow, lit scene, framework GUI.
     std::array<std::shared_ptr<rhi::RenderPipeline>, 4> pipelines;
     bool attachmentSampleFlipY = false;
+    core::SharedPtr<const WebFontResources> fontResources;
 };
 
 class PortableQueenRenderer final : public platform::OrderedGraphicsFrameWorkload {
 public:
     PortableQueenRenderer(rhi::GpuDevice&, PortableQueenDesc);
     renderer::RendererResult create(const core::pmr::String& characterDirectory);
+    renderer::RendererResult create(const CharacterSources& sources);
     renderer::RendererResult update(const Game&, float seconds);
     core::ArrayView<std::shared_ptr<rhi::RenderPipeline>> pipelines() const noexcept override;
     void build(render_graph::FrameGraph&, render_graph::TextureHandle) override;
@@ -31,6 +34,8 @@ public:
     }
 
 private:
+    renderer::RendererResult createImpl(
+        const core::pmr::String& characterDirectory, const CharacterSources* sources);
     std::shared_ptr<rhi::GpuTexture> target(const char*, rhi::Extent2D, bool depth);
     void draw(render_graph::RenderPassContext&,
         std::uint32_t pipeline,
@@ -45,7 +50,6 @@ private:
     HudContent hud_;
     SceneContent::PreparedFrame frame_;
     renderer::GuiOrderedRenderer gui_;
-    resource::ResourceManager resources_;
     const ui::UiBitmapFontResource* font_ = nullptr;
     std::shared_ptr<rhi::GpuBuffer> world_, preview_, corners_;
     std::shared_ptr<rhi::GpuTexture> color_, depth_, previewColor_, previewDepth_, shadowColor_,

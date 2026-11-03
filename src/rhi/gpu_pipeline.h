@@ -305,7 +305,20 @@ public:
     virtual bool nativeHandleExposedToUpperLayer() const = 0;
 };
 
-enum class BlendFactor { Zero, One, SrcAlpha, OneMinusSrcAlpha, DstAlpha, OneMinusDstAlpha };
+// ColorBlendFactors/1: component color factors use RGB in the color equation
+// and the corresponding alpha component in the alpha equation. Preserve IDs.
+enum class BlendFactor {
+    Zero = 0,
+    One = 1,
+    SrcAlpha = 2,
+    OneMinusSrcAlpha = 3,
+    DstAlpha = 4,
+    OneMinusDstAlpha = 5,
+    SrcColor = 6,
+    OneMinusSrcColor = 7,
+    DstColor = 8,
+    OneMinusDstColor = 9
+};
 
 enum class BlendOp { Add, Subtract, ReverseSubtract, Min, Max };
 
@@ -1202,4 +1215,5 @@ ARP_API void copyArtifactOwnedShaderReflection(
 } // namespace arp::rhi
 
 // Inline definitions follow the complete public declarations.
+#include "rhi/frontend/blend_state_contract.inl"
 #include "rhi/frontend/pipeline_interface_validation.inl"

@@ -40,6 +40,7 @@ enum class FileBackendKind : std::uint8_t {
     HttpFileBackend,
     FetchFileBackend,
     NativeDirectoryFileBackend,
+    WorkspaceFileBackend,
 };
 
 enum class FileBackendStatus : std::uint8_t {

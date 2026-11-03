@@ -51,6 +51,8 @@ EditorResponse EditorScenePanel::submit(EditorShell& shell, Operation operation)
                 && response.snapshot.scenePersistenceTaskId) {
                 taskKind_ = TaskKind::Persistence;
                 taskId_ = response.snapshot.scenePersistenceTaskId;
+                if (saving)
+                    taskSave_.emplace(std::get<SaveSceneCommand>(std::move(operation)));
             } else {
                 closePresentation(shell);
                 if (shell.presentationState_.workspace() != "3D")
@@ -114,6 +116,19 @@ void EditorScenePanel::synchronize(EditorShell& shell)
                         == SceneExportStatus::ExportedUnregistered
                           : result.snapshot.scenePersistenceTaskStatus
                         == ScenePersistenceTaskStatus::Succeeded);
+        if (!success && !exporting && result.hasSnapshot && taskSave_ && active()
+            && result.snapshot.scenePersistenceTaskDiagnostic
+                == "EDITOR-SCENE-SOURCE-OVERWRITE-REQUIRED") {
+            pending_.emplace(std::move(*taskSave_));
+            taskSave_.reset();
+            taskId_ = 0;
+            taskKind_ = TaskKind::None;
+            modal_.armConfirmation();
+            modal_.commandCompleted(shell.stateVersion(), shell.stateVersion(), false);
+            if (!render(shell) || !shell.runtime().requestFocus(ids_[Cancel]).ok())
+                failureNotice(shell);
+            return;
+        }
         core::pmr::String status;
         core::pmr::String detail;
         if (!result.hasSnapshot)
@@ -136,6 +151,7 @@ void EditorScenePanel::synchronize(EditorShell& shell)
         detail_.swap(detail);
         taskId_ = 0;
         taskKind_ = TaskKind::None;
+        taskSave_.reset();
         if (success && !exporting && active())
             closePresentation(shell);
         feedbackPending_ = true;

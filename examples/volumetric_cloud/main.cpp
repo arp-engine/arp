@@ -14,6 +14,7 @@
 #include "resource/cloud_asset_cooked.h"
 #include "resource/resource_contract.h"
 #include "rhi/backends/null/null_backend.h"
+#include "rhi/semantics/command_lowering.h"
 #include "rhi/semantics/render_target_coordinates.h"
 
 #include <charconv>

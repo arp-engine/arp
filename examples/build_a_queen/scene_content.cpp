@@ -1,14 +1,17 @@
 #include "scene_content.h"
 
 #include "animation/linear_blend_skinning.h"
+#include "assets/animated_mesh_source_import.h"
 #include "assets/glb_static_mesh_importer.h"
+#include "character_sources.h"
 #include "core/encoding/yaml_contract.h"
+#include "core/io/file_io.h"
 #include "renderer/mesh/gpu_skinning_contract.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
-#include <fstream>
 
 namespace arp::build_a_queen {
 namespace {
@@ -33,18 +36,91 @@ core::Vec3 normal(core::Vec3 a, core::Vec3 b, core::Vec3 c)
     return core::normalize(core::cross(sub(b, a), sub(c, a)));
 }
 
-bool readTextFile(const std::filesystem::path& path, core::pmr::String& output)
+// The explicit prepared path only borrows retained bytes. The cold host path
+// owns its last local read until the importer finishes consuming that view.
+class CharacterContentInput final {
+public:
+    CharacterContentInput(const core::pmr::String& root, const CharacterSources* prepared)
+        : root_(root), prepared_(prepared)
+    {}
+
+    bool manifest(core::pmr::String& output) const
+    {
+        if (prepared_) {
+            if (prepared_->manifestText().empty())
+                return false;
+            output = prepared_->manifestText();
+            return true;
+        }
+        auto source = core::readTextFile(
+            std::filesystem::path(root_.c_str()) / CharacterSources::manifestFile,
+            CharacterSources::maxManifestBytes);
+        if (!source.success)
+            return false;
+        output = std::move(source.text);
+        return true;
+    }
+
+    core::ArrayView<const std::uint8_t> character(std::string_view name, std::size_t cap)
+    {
+        if (prepared_) {
+            const auto bytes = prepared_->characterBytes(name);
+            return bytes.size() <= cap ? bytes : core::ArrayView<const std::uint8_t>();
+        }
+        current_ = core::readBinaryFile(std::filesystem::path(root_.c_str()) / name, cap);
+        return current_.success
+            ? core::ArrayView<const std::uint8_t>(current_.bytes.data(), current_.bytes.size())
+            : core::ArrayView<const std::uint8_t>();
+    }
+
+private:
+    const core::pmr::String& root_;
+    const CharacterSources* prepared_;
+    core::BinaryFileReadResult current_;
+};
+
+// Legacy static pickup/preview projection of the two authored characters.
+// Keep its existing flattening rules; only byte acquisition moves to core IO.
+// This is not the strict static scene or animated source profile.
+class LegacyStaticCharacterSource final {
+public:
+    assets::StaticMeshImportResult load(core::ArrayView<const std::uint8_t> input) const
+    {
+        // Explicit corpus caps: <=12968 vertices, <=19272 indices and <=10
+        // primitives per source. Select finite bytes, geometry and JSON caps;
+        // the Legacy traversal semantics are retained explicitly.
+        const assets::StaticMeshSourceImportLimits limits{
+            CharacterSources::maxCharacterBytes, 65536, 65536, 32, false, 32, 262144};
+        return assets::importStaticMeshFromGlbBytes(input, limits);
+    }
+};
+
+assets::AnimatedMeshSourceImportLimits characterSourceLimits()
 {
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
-        return false;
-    input.seekg(0, std::ios::end);
-    const auto size = input.tellg();
-    if (size <= 0)
-        return false;
-    output.resize(static_cast<std::size_t>(size));
-    input.seekg(0, std::ios::beg);
-    return static_cast<bool>(input.read(output.data(), size));
+    // Explicit content profile for the two distributed licensed characters.
+    // Corpus tests cover their 24 clips, <=129 runtime joints and <=19272
+    // indices; limits are admission caps, never inferred from a filename.
+    assets::AnimatedMeshSourceImportLimits result;
+    result.maxSourceBytes = CharacterSources::maxCharacterBytes;
+    result.maxImportBytes = 64 * 1024 * 1024;
+    result.maxDecodedBytes = 16 * 1024 * 1024;
+    result.maxJsonDepth = 32;
+    result.maxJsonValues = 262144;
+    result.selectedScene = 0;
+    result.layout = {3000, 3000, 200000, 1000000, 256 * 1024};
+    result.scene = {128, 128, 2, 16, 4, 256, 16, 65536};
+    result.animation = {32, 3000, 3000, 65536, 65536, 262144, 256 * 1024};
+    result.skeleton = {256, 65536, 4 * 1024 * 1024, .00001f};
+    result.geometry = {65536,
+        65536,
+        32,
+        assets::AnimatedMeshColorPolicy::RejectColor0,
+        assets::AnimatedMeshTangentPolicy::AuthoredOrMaterialUnused,
+        .0001f,
+        .0001f,
+        .0001f};
+    result.materials = {32, 32, 32, 1024 * 1024, 4 * 1024 * 1024};
+    return result;
 }
 
 SceneContent::MaterialRole materialRole(const core::YamlContract::Node& node)
@@ -89,12 +165,12 @@ std::size_t SceneContent::slotIndex(MaterialRole role)
 
 SceneContent::CharacterModel::CharacterModel() = default;
 
-bool SceneContent::loadCharacters(const core::pmr::String& characterDirectory)
+bool SceneContent::loadCharacters(
+    const core::pmr::String& characterDirectory, const CharacterSources* prepared)
 {
+    CharacterContentInput inputs(characterDirectory, prepared);
     core::pmr::String source;
-    const auto manifestPath =
-        std::filesystem::path(characterDirectory.c_str()) / "character_manifest.yaml";
-    if (!readTextFile(manifestPath, source))
+    if (!inputs.manifest(source))
         return false;
     try {
         const auto root =
@@ -112,8 +188,10 @@ bool SceneContent::loadCharacters(const core::pmr::String& characterDirectory)
                 static_cast<float>(core::YamlContract::number(description, "yawDegrees"));
             if (model.id.empty() || file.empty() || height <= 0.0f || !std::isfinite(height))
                 return false;
-            auto imported = assets::importStaticMeshFromGlbFile(
-                std::filesystem::path(characterDirectory.c_str()) / file.c_str());
+            auto imported = LegacyStaticCharacterSource().load(
+                inputs.character(file, CharacterSources::maxCharacterBytes));
+            if (!imported.success)
+                std::fprintf(stderr, "ARP-QUEEN-STATIC-SOURCE: %s\n", imported.diagnostics.c_str());
             if (!imported.success || !imported.mesh.validForIndexedDraw()
                 || imported.materials.empty())
                 return false;
@@ -203,19 +281,22 @@ bool SceneContent::loadCharacters(const core::pmr::String& characterDirectory)
         && characters_[1].id == "rival";
 }
 
-bool SceneContent::loadAnimatedCharacters(const core::pmr::String& characterDirectory)
+bool SceneContent::loadAnimatedCharacters(
+    const core::pmr::String& characterDirectory, const CharacterSources* prepared)
 {
-    constexpr std::array<const char*, 2> files{"Casual.glb", "Formal.glb"};
-    animatedCharacters_.reserve(files.size());
-    for (const auto* file : files) {
-        const auto source =
-            std::find_if(characters_.begin(), characters_.end(), [&](const auto& item) {
-                return item.sourceFile == file;
-            });
-        if (source == characters_.end())
+    CharacterContentInput inputs(characterDirectory, prepared);
+    const auto limits = characterSourceLimits();
+    animatedCharacters_.reserve(characters_.size());
+    for (const auto& source : characters_) {
+        const auto bytes = inputs.character(source.sourceFile, limits.maxSourceBytes);
+        if (bytes.empty())
             return false;
-        auto imported = assets::importAnimatedMeshFromGlbFile(
-            std::filesystem::path(characterDirectory.c_str()) / file);
+        auto imported = assets::importAnimatedMeshFromGlbBytes(bytes, limits);
+        if (!imported.success)
+            std::fprintf(stderr,
+                "ARP-QUEEN-ANIMATED-SOURCE: %s / %s\n",
+                imported.diagnosticId ? imported.diagnosticId : "missing diagnostic",
+                imported.diagnostics.c_str());
         if (!imported.success || !imported.asset.mesh.validForIndexedDraw()
             || !imported.asset.skeleton.valid()
             || imported.asset.skeleton.jointCount() > renderer::kMaxGpuSkinningJoints
@@ -249,12 +330,12 @@ bool SceneContent::loadAnimatedCharacters(const core::pmr::String& characterDire
         core::pmr::Vector<MaterialRole> roles(&core::defaultCpuMemoryResource());
         roles.reserve(character.asset.materials.size());
         for (const auto& material : character.asset.materials) {
-            const auto binding = std::find_if(source->materialBindings.begin(),
-                source->materialBindings.end(),
+            const auto binding = std::find_if(source.materialBindings.begin(),
+                source.materialBindings.end(),
                 [&](const MaterialBinding& item) {
                     return item.name == material.name;
                 });
-            if (binding == source->materialBindings.end())
+            if (binding == source.materialBindings.end())
                 return false;
             roles.push_back(binding->role);
         }
@@ -471,10 +552,25 @@ void SceneContent::addCube(core::Vec3 center, core::Vec3 halfExtent, core::Vec4 
 
 renderer::RendererResult SceneContent::createContent(const core::pmr::String& characterDirectory)
 {
+    return createContent(characterDirectory, nullptr);
+}
+
+renderer::RendererResult SceneContent::createContent(const CharacterSources& sources)
+{
+    if (!sources.ready())
+        return {false, "ARP-QUEEN-SOURCE-INCOMPLETE"};
+    const core::pmr::String root(&core::defaultCpuMemoryResource());
+    return createContent(root, &sources);
+}
+
+renderer::RendererResult SceneContent::createContent(
+    const core::pmr::String& characterDirectory, const CharacterSources* prepared)
+{
     if (!characters_.empty() || !animatedCharacters_.empty())
         return {false, "ARP-QUEEN-CONTENT-ALREADY-CREATED"};
-    if (!loadCharacters(characterDirectory) || characters_.size() != 2u
-        || !loadAnimatedCharacters(characterDirectory) || animatedCharacters_.size() != 2u)
+    if (!loadCharacters(characterDirectory, prepared) || characters_.size() != 2u
+        || !loadAnimatedCharacters(characterDirectory, prepared)
+        || animatedCharacters_.size() != 2u)
         return renderer::RendererResult{false, "ARP-QUEEN-3D-CHARACTER-ASSET-CONTRACT"};
     std::size_t maxPartVertices = 0;
     for (const auto& model : characters_) {

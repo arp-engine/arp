@@ -107,16 +107,21 @@ void mountContract()
     auto router = makeShared<MountedFileBackend>(MountedFileBackendDesc{2, 2, 8, 16, 128});
     auto handle = router->mount("workspace", backend);
     assert(handle && router->findMount("workspace") == handle);
+    FileService files(queue, *router);
+    assert(files.capability(handle).supportsRead && files.capability(handle).supportsEnumeration);
     assert(!router->mount("workspace", backend));
     assert(!router->mount("nested", router));
     Probe old, current, rejected;
     const auto oldRequest = request(handle);
     assert(router->readAsync(oldRequest, old.callback(), queue) == FileIoStatus::Accepted);
     assert(router->unmount(handle));
+    assert(!files.capability(handle).supportsRead && !files.capability(handle).supportsEnumeration);
     assert(
         router->readAsync(oldRequest, rejected.callback(), queue) == FileIoStatus::StaleLocation);
     handle = router->mount("workspace", backend);
     assert(handle && !(handle == oldRequest.mount));
+    assert(
+        files.capability(handle).supportsRead && !files.capability(oldRequest.mount).supportsRead);
     assert(router->readAsync(request(handle), current.callback(), queue) == FileIoStatus::Accepted);
     queue.dispatch(4);
     assert(old.calls == 1 && old.result.status == FileIoStatus::StaleLocation);
@@ -131,6 +136,7 @@ void mountContract()
     assert(router->telemetry().inFlight == 0 && rejected.calls == 0);
     assert(router->readAsync(request(handle), current.callback(), queue) == FileIoStatus::Accepted);
     router->shutdown();
+    assert(!files.capability(handle).supportsRead);
     assert(router->readAsync(request(handle), rejected.callback(), queue)
         == FileIoStatus::ServiceClosed);
     queue.dispatch(1);

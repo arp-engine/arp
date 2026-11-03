@@ -1,8 +1,8 @@
 type: arp.script.cpp-plugin
 contractVersion: 2
 module: io
-moduleVersion: 1
-exportContractHash: sha256:io-v2
+moduleVersion: 2
+exportContractHash: sha256:b23e5b32bad31b428dd8dd2d71cd3c89d26e0887b5392561a5e6815407d33a29
 source: io_module.cpp
 entry: arp_register_io
 reflectionModule: io

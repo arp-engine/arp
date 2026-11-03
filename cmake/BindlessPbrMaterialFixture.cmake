@@ -10,7 +10,7 @@ foreach(record_mode Native Emulated)
     set(record_publication "${bindless_pbr_record_dir}/PbrMaterialRecord.${record_mode_name}.bindless.yaml")
     list(APPEND bindless_pbr_record_outputs "${record_publication}")
     add_custom_command(OUTPUT "${record_publication}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_pbr_material_record.yaml"
             --bindless-source-library "${CMAKE_SOURCE_DIR}/shaders/core/leaf_surface.slang"
@@ -19,7 +19,7 @@ foreach(record_mode Native Emulated)
             --bindless-source "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_pbr_material_record.slang"
             --bindless-entry vertexMain --bindless-entry colorMain --bindless-entry depthMain --bindless-entry shadowMain
             --bindless-mode "${record_mode}" --out-dir "${bindless_pbr_record_dir}"
-        DEPENDS tests/fixtures/bindless_pbr_material_record.yaml tests/fixtures/bindless_pbr_material_record.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_pbr_material_record.yaml tests/fixtures/bindless_pbr_material_record.slang
             shaders/core/leaf_surface.slang shaders/core/pbr_material.slang shaders/renderer/bindless_pbr_material.slang
             scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
             scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
@@ -30,11 +30,11 @@ add_custom_target(arp_bindless_pbr_record_fixture DEPENDS ${bindless_pbr_record_
 set(pbr_reference_dir "${CMAKE_BINARY_DIR}/bindless-implicit-reference/ordinary_pbr_material")
 set(pbr_reference_publication "${pbr_reference_dir}/ordinary_pbr_material.graphics.module.yaml")
 add_custom_command(OUTPUT "${pbr_reference_publication}"
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
         --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
         --fixture ordinary_pbr_material --graphics-module --preserve-implicit-sampling
         --out-dir "${pbr_reference_dir}"
-    DEPENDS tests/fixtures/ordinary_pbr_material.slang shaders/core/leaf_surface.slang
+    DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/ordinary_pbr_material.slang shaders/core/leaf_surface.slang
         shaders/core/pbr_material.slang scripts/compile_shaders.py scripts/shader_bindings_codegen.py
         scripts/spirv_layout.py "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
     VERBATIM)
@@ -55,7 +55,7 @@ foreach(material_mode Native Emulated)
     set(material_publication "${bindless_pbr_material_dir}/GraphicsPbrMaterial.${material_mode_name}.bindless.yaml")
     list(APPEND bindless_pbr_material_outputs "${material_publication}")
     add_custom_command(OUTPUT "${material_publication}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_graphics_pbr_material.yaml"
             --bindless-source-library "${CMAKE_SOURCE_DIR}/shaders/core/leaf_surface.slang"
@@ -63,7 +63,7 @@ foreach(material_mode Native Emulated)
             --bindless-source "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_graphics_pbr_material.slang"
             --bindless-entry vertexMain --bindless-entry cleanFragment --bindless-entry faultFragment
             --bindless-mode "${material_mode}" --out-dir "${bindless_pbr_material_dir}"
-        DEPENDS tests/fixtures/bindless_graphics_pbr_material.yaml tests/fixtures/bindless_graphics_pbr_material.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_graphics_pbr_material.yaml tests/fixtures/bindless_graphics_pbr_material.slang
             shaders/core/leaf_surface.slang shaders/core/pbr_material.slang
             scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
             scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py

@@ -88,20 +88,28 @@ void EditorSceneViewportOrderedRenderer::create(rhi::GpuDevice& device,
     corners_ = std::move(corners);
 }
 
+const char* EditorSceneViewportOrderedRenderer::releaseProjectResourcesAfterOrderedIssue()
+{
+    if (!geometry_)
+        return nullptr;
+    if (geometry_.use_count() != 1)
+        return "EDITOR-ORDERED-VIEWPORT-GRAPH-RESERVED";
+    if (const auto* id = geometry_->meshes.clearAfterOrderedIssue(*execution_))
+        return id;
+    if (const auto* id = geometry_->textures.clearAfterOrderedIssue())
+        return id;
+    geometry_.reset();
+    return nullptr;
+}
+
 void EditorSceneViewportOrderedRenderer::prepareGeometry(
     EditorShell& shell, const EditorSceneViewportFrame& frame)
 {
     if (geometry_ && geometry_.use_count() != 1)
         throw core::DiagnosticError("EDITOR-ORDERED-VIEWPORT-GRAPH-RESERVED");
     if (!geometry_ || geometry_->resources.get() != &shell.projectResources()) {
-        if (geometry_) {
-            if (geometry_.use_count() != 1)
-                throw core::DiagnosticError("EDITOR-ORDERED-VIEWPORT-GRAPH-RESERVED");
-            if (const auto* id = geometry_->meshes.clearAfterOrderedIssue(*execution_))
-                throw core::DiagnosticError(id);
-            if (const auto* id = geometry_->textures.clearAfterOrderedIssue())
-                throw core::DiagnosticError(id);
-        }
+        if (const auto* id = releaseProjectResourcesAfterOrderedIssue())
+            throw core::DiagnosticError(id);
         auto candidate = core::makeShared<GeometryState>(execution_);
         candidate->resources = shell.retainProjectResourceManager();
         geometry_ = std::move(candidate);

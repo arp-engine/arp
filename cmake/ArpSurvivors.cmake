@@ -130,10 +130,37 @@ target_link_libraries(arp_script_record_pool_tests PRIVATE arp_core)
 target_compile_options(arp_script_record_pool_tests PRIVATE -UNDEBUG)
 arp_add_mingw_static_runtime(arp_script_record_pool_tests)
 add_test(NAME arp_script_record_pool_tests COMMAND arp_script_record_pool_tests)
-add_executable(arp_survivors_script_codegen examples/survivors/script_codegen.cpp examples/survivors/content.cpp)
+# Shared pure gameplay-text decoding is example-owned, including the legacy
+# offline code generator. Acquisition does not depend on that AOT generator.
+add_library(arp_survivors_gameplay_text STATIC examples/survivors/gameplay_text.cpp)
+include(cmake/ArpExampleStartupFiles.cmake)
+include(cmake/ArpSurvivorsScriptExportValidation.cmake)
+target_include_directories(arp_survivors_gameplay_text PUBLIC src)
+target_link_libraries(arp_survivors_gameplay_text PUBLIC arp_2d_resources arp_scriptvm_runtime)
+add_library(arp_survivors_gameplay_sources STATIC examples/survivors/gameplay_source_task.cpp
+    examples/common/startup_resource_task.cpp)
+target_include_directories(arp_survivors_gameplay_sources PUBLIC src)
+target_link_libraries(arp_survivors_gameplay_sources PUBLIC arp_survivors_gameplay_text arp_resource)
+add_library(arp_survivors_content STATIC examples/survivors/content.cpp)
+target_include_directories(arp_survivors_content PUBLIC src)
+target_link_libraries(arp_survivors_content PUBLIC arp_survivors_gameplay_text arp_scene_assets arp_audio)
+add_library(arp_survivors_content_sources STATIC examples/survivors/content_source_task.cpp
+    examples/common/startup_resource_task.cpp)
+target_include_directories(arp_survivors_content_sources PUBLIC src)
+target_link_libraries(arp_survivors_content_sources PUBLIC arp_survivors_content arp_resource)
+include(cmake/ArpSurvivorsContentValidation.cmake)
+add_library(arp_survivors_codegen_io STATIC examples/survivors/codegen_io.cpp)
+target_include_directories(arp_survivors_codegen_io PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(arp_survivors_codegen_io PUBLIC arp_survivors_gameplay_sources
+    arp_survivors_content_sources arp_example_startup_files arp_cold_tool_files)
+add_executable(arp_survivors_script_codegen examples/survivors/script_codegen.cpp)
 target_include_directories(arp_survivors_script_codegen PRIVATE examples/survivors src)
-target_link_libraries(arp_survivors_script_codegen PRIVATE arp_script_components arp_scene_script_reflection arp_scene2d_script_reflection arp_scriptvm_aot_tooling)
+target_link_libraries(arp_survivors_script_codegen PRIVATE arp_survivors_codegen_io arp_script_components arp_scene_script_reflection arp_scene2d_script_reflection arp_scriptvm_aot_tooling)
+if(MINGW)
+    target_link_options(arp_survivors_script_codegen PRIVATE -municode)
+endif()
 arp_add_mingw_static_runtime(arp_survivors_script_codegen)
+include(cmake/ArpSurvivorsCodegenValidation.cmake)
 add_test(NAME arp_survivors_script_cpu_smoke COMMAND arp_survivors_script_codegen "${CMAKE_CURRENT_SOURCE_DIR}/examples/survivors/assets" "${CMAKE_BINARY_DIR}/generated/survivors-aot" --check)
 set_tests_properties(arp_survivors_script_cpu_smoke PROPERTIES TIMEOUT 30)
 set(survivors_aot_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/survivors-aot")
@@ -149,12 +176,29 @@ add_custom_command(OUTPUT "${survivors_aot_dir}/survivors.gen.cpp" "${survivors_
         examples/survivors/assets/game.yaml
         ${survivors_script_sources}
     VERBATIM)
+# Byte-oracle tooling can prepare the original outputs without compiling the
+# generated AOT translation unit or linking the game.
+add_custom_target(arp_survivors_script_outputs DEPENDS
+    "${survivors_aot_dir}/survivors.gen.cpp"
+    "${survivors_aot_dir}/script_aot_v5.gen.h"
+    "${survivors_aot_dir}/survivors.manifest.yaml")
 add_library(arp_survivors_script STATIC "${survivors_aot_dir}/survivors.gen.cpp")
+add_dependencies(arp_survivors_script arp_survivors_script_outputs)
 target_include_directories(arp_survivors_script PRIVATE src "${survivors_aot_dir}")
 target_link_libraries(arp_survivors_script PUBLIC arp_scriptvm_aot_tooling)
-add_library(arp_survivors_game STATIC examples/survivors/content.cpp examples/survivors/game.cpp)
+add_library(arp_survivors_game STATIC examples/survivors/game.cpp)
+
+# Example-owned startup inputs; no dependency on Editor or game simulation.
+add_library(arp_survivors_shader_sources STATIC examples/survivors/shader_source_task.cpp
+    examples/common/startup_resource_task.cpp)
+target_include_directories(arp_survivors_shader_sources PUBLIC src)
+target_link_libraries(arp_survivors_shader_sources PUBLIC arp_resource)
 target_include_directories(arp_survivors_game PUBLIC examples/survivors src)
-target_link_libraries(arp_survivors_game PUBLIC arp_script_components arp_scene_script_reflection arp_scene2d_script_reflection arp_survivors_script)
+target_link_libraries(arp_survivors_game PUBLIC arp_survivors_content arp_survivors_gameplay_text arp_script_components arp_scene_script_reflection arp_scene2d_script_reflection arp_survivors_script)
+add_library(arp_survivors_records STATIC examples/survivors/record_session.cpp)
+target_include_directories(arp_survivors_records PUBLIC src)
+target_link_libraries(arp_survivors_records PUBLIC arp_core arp_fkyaml_headers)
+include(cmake/ArpSurvivorsRecordValidation.cmake)
 add_executable(arp_survivors examples/survivors/main.cpp)
 add_executable(arp_survivors_game_tests tests/contract/survivors_game_tests.cpp)
 target_compile_definitions(arp_survivors_game_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
@@ -170,12 +214,15 @@ foreach(script_test IN ITEMS survivors_script)
     add_test(NAME arp_${script_test}_tests COMMAND arp_${script_test}_tests)
 endforeach()
 add_test(NAME arp_survivors_game_tests COMMAND arp_survivors_game_tests)
+add_test(NAME arp_survivors_pickup_contract_tests COMMAND arp_survivors_game_tests --pickup-contract)
+set_tests_properties(arp_survivors_pickup_contract_tests PROPERTIES TIMEOUT 30)
 add_test(NAME arp_survivors_memory_tests COMMAND arp_survivors_game_tests --memory-check)
 set_tests_properties(arp_survivors_memory_tests PROPERTIES TIMEOUT 180)
 add_test(NAME arp_survivors_full_memory_tests COMMAND arp_survivors_game_tests --memory-full-check)
 set_tests_properties(arp_survivors_full_memory_tests PROPERTIES TIMEOUT 1200)
 target_include_directories(arp_survivors PRIVATE src)
-target_link_libraries(arp_survivors PRIVATE arp_survivors_game arp_rhi arp_rhi_semantics arp_core)
+target_link_libraries(arp_survivors PRIVATE arp_survivors_game arp_rhi arp_rhi_semantics arp_core
+    arp_survivors_gameplay_sources arp_survivors_content_sources arp_example_startup_files arp_survivors_records)
 arp_add_mingw_static_runtime(arp_survivors)
 add_test(NAME arp_survivors_null_smoke COMMAND arp_survivors --null-smoke --seed 42)
 set_tests_properties(arp_survivors_null_smoke PROPERTIES TIMEOUT 30)

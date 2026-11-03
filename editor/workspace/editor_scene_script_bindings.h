@@ -18,6 +18,7 @@ struct EditorScriptBindingBudget {
 // document may publish it; its Scene remains the canonical document Scene.
 class EditorSceneScriptBindings final {
 private:
+    friend class EditorProjectSourceSaveTask;
     friend class EditorSceneDocument;
     static core::SharedPtr<EditorSceneScriptBindings> prepare(const std::filesystem::path&,
         const ProjectManifest&,

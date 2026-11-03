@@ -1,8 +1,9 @@
 #include "editor/ui/editor_ui_assets.h"
 
 #include "assets/image_decoder.h"
-#include "core/io/file_io.h"
+#include "editor/io/editor_cold_host_read.h"
 #include "editor/ui/editor_atlas_layout.h"
+#include "editor/ui/editor_ui_content.h"
 #include "editor/workspace/editor_shell.h"
 #include "ui/ui_font.h"
 #include "ui/ui_font_source.h"
@@ -40,7 +41,8 @@ EditorUiAssets EditorUiAssets::build(EditorShell& shell,
     const core::pmr::Vector<renderer::ui::UiDrawCommand>& commands)
 {
     using namespace arp;
-    auto file = core::readBinaryFile(root / "editor_atlas.png", 16 * 1024 * 1024);
+    auto file = EditorColdHostRead::readBinaryBytes(
+        root / "editor_atlas.png", EditorUiContentLimits::maxAtlasBytes);
     if (!file.success)
         return failure("ATLAS-FILE", file.diagnostics);
     auto decoded = assets::decodeImageToRgba8(file.bytes, "image/png", false);
@@ -54,7 +56,6 @@ EditorUiAssets EditorUiAssets::build(EditorShell& shell,
     base.extent = {decoded.image.width, decoded.image.height};
     base.rgba8 = std::move(decoded.image.rgba8);
     base.srgb = false;
-    core::pmr::Vector<ui::UiFontFaceDesc> fonts;
     ui::UiFontFaceDesc font;
     font.tokenId = "font.editor";
     font.sizePx = 16;
@@ -136,6 +137,37 @@ EditorUiAssets EditorUiAssets::build(EditorShell& shell,
         if (!face->source)
             return failure("FONT-SOURCE", diagnostic);
     }
+    return buildInputs(shell,
+        std::move(base),
+        {std::move(font), std::move(semibold), std::move(codeFont), std::move(cjkCodeFont)},
+        commands);
+}
+
+EditorUiAssets EditorUiAssets::buildPrepared(EditorShell& shell,
+    const EditorUiContent& input,
+    const core::pmr::Vector<renderer::ui::UiDrawCommand>& commands)
+{
+    core::pmr::String diagnostic;
+    if (!input.valid(diagnostic))
+        return failure("UI-SOURCE", diagnostic);
+    renderer::GuiAtlasTextureDesc base{core::pmr::String{&core::defaultCpuMemoryResource()}};
+    base.resourceId = input.baseAtlas.resourceId;
+    base.extent = input.baseAtlas.extent;
+    base.rgba8 = input.baseAtlas.rgba8;
+    base.srgb = input.baseAtlas.srgb;
+    return buildInputs(shell, std::move(base), input.fonts, commands);
+}
+
+EditorUiAssets EditorUiAssets::buildInputs(EditorShell& shell,
+    renderer::GuiAtlasTextureDesc base,
+    std::array<ui::UiFontFaceDesc, 4> faces,
+    const core::pmr::Vector<renderer::ui::UiDrawCommand>& commands)
+{
+    auto font = std::move(faces[0]);
+    auto semibold = std::move(faces[1]);
+    auto codeFont = std::move(faces[2]);
+    auto cjkCodeFont = std::move(faces[3]);
+    core::pmr::Vector<ui::UiFontFaceDesc> fonts;
     fonts.push_back(std::move(font));
     fonts.push_back(std::move(semibold));
     // Text runs are laid out against the SDF source size, then scaled to the

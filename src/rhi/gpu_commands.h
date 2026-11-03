@@ -6,7 +6,6 @@
 #include "rhi/frontend/resource_barrier_values.h"
 #include "rhi/gpu_descriptors.h"
 #include "rhi/gpu_pipeline.h"
-#include "rhi/prototype_command_batch.h"
 
 #include <cstdint>
 #include <memory>

@@ -1,0 +1,46 @@
+type: ReflectionCodegenOriginalBytes
+contractVersion: 1
+originalToolSha256: 25e3939c252725d13a203baa4c00bbb903e7c2557102e4753a76cfdcc9a1168f
+originalSourceSha256: 793d5964fce6a0a87f3555808f329cc2dcc3e80ae1fa7ee79c674078299d13ac
+cases:
+- name: inheritance
+  module: io_inheritance
+  headers:
+  - tests/fixtures/reflection_codegen_inheritance_fixture.h
+  sourceSha256:
+    tests/fixtures/reflection_codegen_inheritance_fixture.h: 59f715672fb4808719dd774ee2f2e4639247900c53067ece401ad18c62b6be12
+  stdoutHex: ''
+  stderrHex: ''
+  outputs:
+    schema.json: a9b8f51cef090a1ac94ea7d4c222018a7167806f5cea07ca6d66fcccc3bce505
+    schema.cpp: bcc6e635b031371304a8764a0f6f7f3290dd01f68eceec128d6a00c749d87238
+- name: scene
+  module: io_scene
+  headers:
+  - src/scene/component.h
+  - src/scene/game_object.h
+  - src/scene/scene.h
+  - src/scene/transform_component.h
+  sourceSha256:
+    src/scene/component.h: 53f941ab6746b4f9a2555af51c1523a8519e89b762a10e73eed208a5816ab415
+    src/scene/game_object.h: 3926ecec15922e7e7e9c1cdf9cc20b89ca5352fc77a39116a852e88f4558b1d4
+    src/scene/scene.h: 9c4c466a62d7dbf180f6089fb09350e5d05c6d07b5c49c9d4473a895c761738e
+    src/scene/transform_component.h: 315df95cd27a85f3880dd257f5835cde77a6e23558fad8813d7e33f1ef0e451f
+  stdoutHex: ''
+  stderrHex: ''
+  outputs:
+    schema.json: 8b92c3b4ce75f0f5eb06472b6efcbf9262ff2279c340ed5a092ac537f71d1321
+    schema.cpp: 089b55332e783e7220995f09a410c5258cacb48618af2a4e9f5c5af2db8cc551
+- name: core
+  module: io_core
+  headers:
+  - src/core/math/math.h
+  - src/core/time/game_clock.h
+  sourceSha256:
+    src/core/math/math.h: 702a8f7bb6894adf557d40cf0cfb70b83a1ba3178c4db4497bb5f2d420e884ee
+    src/core/time/game_clock.h: fc0cd322419a0ab8499efc49b3fccf6ee7e75f854e118f79a5b5a6533f55c09d
+  stdoutHex: ''
+  stderrHex: ''
+  outputs:
+    schema.json: 4e52485c8341a4c1eee7e0939f2a269805d53e201a3195512d19f27b9df513ba
+    schema.cpp: 0a4596fa89f722b875b37add44535808793a92ed3aff3c6626a6bdf203459029

@@ -1,10 +1,14 @@
 #pragma once
 
+#include "editor/project/project_source_session.h"
 #include "editor/workspace/editor_scene_script_codec.h"
 
 namespace arp::editor {
+class EditorSceneScriptReload;
+
 // Owner-thread preparation only. It carries ordinary byte snapshots plus weak
-// freshness evidence, never a Scene, receiver, module or borrowed service owner.
+// freshness evidence, never a Scene, receiver or module. A mounted context
+// retains acquired CPU sources; its FileService host outlives this token.
 // The persistence service consumes these snapshots through conditional IO.
 class EditorSceneScriptFilePreparation final {
 public:
@@ -43,6 +47,7 @@ public:
         core::pmr::String path_, relativePath_, project_, hash_;
         core::pmr::Vector<std::uint8_t> previous_, replacement_;
         core::LifetimeEpoch::Ticket document_;
+        ProjectSourceContext sources_;
         bool targetExisted_ = false, ready_ = false;
     };
 
@@ -53,6 +58,7 @@ public:
         const EditorSceneScriptInputs&,
         Request,
         core::UniquePtr<Prepared>& output,
-        core::pmr::String& diagnostic);
+        core::pmr::String& diagnostic,
+        const EditorSceneScriptReload* reload = nullptr);
 };
 } // namespace arp::editor

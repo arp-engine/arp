@@ -17,11 +17,14 @@ CONSUMER_LIBRARIES = (*LIBRARIES, SOURCE)
 CONSUMER_ENTRIES = (*ENTRIES, "visibilityVertexMain", "visibilityFragmentMain")
 
 
-def schema(consumer=False):
+def schema(consumer=False, *, input_files=None):
     name = "gpu_visibility_consumer" if consumer else "gpu_visibility"
-    return yaml.safe_load((ROOT / f"shaders/renderer/{name}.bindless.yaml").read_text(encoding="utf-8"))
+    path = ROOT / f"shaders/renderer/{name}.bindless.yaml"
+    text = input_files.read_text(path) if input_files is not None else path.read_text(encoding="utf-8")
+    return yaml.safe_load(text)
 
 
-def authored_source(consumer=False):
+def authored_source(consumer=False, *, input_files=None):
     paths = (*CONSUMER_LIBRARIES, CONSUMER_SOURCE) if consumer else (*LIBRARIES, SOURCE)
-    return "\n".join(path.read_text(encoding="utf-8") for path in paths)
+    return "\n".join(input_files.read_text(path) if input_files is not None
+                     else path.read_text(encoding="utf-8") for path in paths)

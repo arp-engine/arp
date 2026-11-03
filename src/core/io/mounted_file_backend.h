@@ -10,6 +10,7 @@ namespace arp::core::io {
 struct MountedFileBackendDesc {
     std::uint32_t maxMounts = 0;
     std::uint32_t maxInFlight = 0;
+    // Historical name: shared reservation for reads, queries and saves.
     std::uint64_t maxReadBytesInFlight = 0;
     std::size_t maxNameBytes = 0;
     std::size_t maxPathBytes = 0;
@@ -34,12 +35,20 @@ public:
     bool unmount(core::PoolHandle handle) noexcept;
     core::PoolHandle findMount(std::string_view name) const noexcept;
     FileBackendCapability capability() const noexcept override;
+    FileBackendCapability locationCapability(core::PoolHandle mount) const noexcept override;
     FileReadResult validateRead(const FileReadRequest& request) const override;
     FileIoStatus readAsync(const FileReadRequest& request,
         FileReadCompletion completion,
         runtime::CompletionQueue& completions) noexcept override;
     FileIoStatus queryAsync(const FileQueryRequest& request,
         FileQueryCompletion completion,
+        runtime::CompletionQueue& completions) noexcept override;
+    FileSaveCapability saveCapability(core::PoolHandle mount = {}) const noexcept override;
+    FileIoStatus saveAsync(FileSaveRequest request,
+        FileSaveCompletion completion,
+        runtime::CompletionQueue& completions) noexcept override;
+    FileIoStatus receiptAsync(const FileSaveReceiptRequest& request,
+        FileSaveReceiptCompletion completion,
         runtime::CompletionQueue& completions) noexcept override;
     void shutdown() noexcept override;
     MountedFileBackendTelemetry telemetry() const noexcept;
@@ -51,6 +60,8 @@ private:
     struct Completion;
     static void complete(void* context, FileReadResult result);
     static void completeQuery(void* context, FileQueryResult result);
+    static void completeSave(void* context, FileSaveResult result);
+    static void completeReceipt(void* context, FileSaveReceiptResult result);
     MountedFileBackendDesc desc_;
     core::SharedPtr<State> state_;
     const char* diagnostic_ = nullptr;

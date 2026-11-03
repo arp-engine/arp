@@ -14,14 +14,22 @@ void require(bool condition)
 } // namespace
 
 // Cold command admission only. Ordinary frame/hash/Inspector observation must
-// never call this disk-source check. Presence and field commands share it.
+// never call this source check. Presence and field commands share it. A mounted
+// context is admitted only inside the owner task that just revalidated its bytes.
 void EditorShell::requireSceneScriptContext() const
 {
     require(sceneAuthoringVersion_ == EditorSceneScriptCodec::contractVersion && projectManifest_);
     const auto catalog = sceneDocument_.scriptCatalog();
     require(catalog && catalog->modules().matchesManifest(*projectManifest_));
     core::pmr::String diagnostic;
-    if (!catalog->modules().verifySources(projectRoot(), diagnostic))
+    if (projectBrowser_.sourceSnapshot()) {
+        require(sourceSceneApplying_ && sourceSceneAdmission_);
+        if (!catalog->modules().verifySources(*sourceSceneAdmission_->snapshot,
+                *sourceSceneAdmission_->files,
+                sourceSceneAdmission_->epoch,
+                diagnostic))
+            throw std::invalid_argument(diagnostic.c_str());
+    } else if (!catalog->modules().verifySources(projectRoot(), diagnostic))
         throw std::invalid_argument(diagnostic.c_str());
 }
 

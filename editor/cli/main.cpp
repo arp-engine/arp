@@ -1,4 +1,4 @@
-#include "core/io/file_io.h"
+#include "editor/cli/cli_source.h"
 #include "network/io_context.h"
 #include "network/io_service.h"
 #include "network/network_module.h"
@@ -69,14 +69,18 @@ int main(int argc, char** argv)
     scriptvm::ModuleRegistry modules;
     modules.setStaticPluginCatalog(&catalog, &services);
 
-    const auto source =
-        core::readTextFile(std::filesystem::path(ARP_SOURCE_DIR) / "editor/cli/arp_editor_cli.arp");
-    if (!source.success) {
-        std::fprintf(stderr, "arp_editor_cli: %s\n", source.diagnostics.c_str());
+    const auto source = editor::EditorCliSource::read(
+        std::filesystem::path(ARP_SOURCE_DIR) / "editor/cli/arp_editor_cli.arp");
+    if (source.status != core::io::FileIoStatus::Success) {
+        std::fprintf(stderr,
+            "arp_editor_cli: %s\n",
+            source.diagnosticId ? source.diagnosticId : "EDITOR-CLI-SOURCE-READ");
         return 10;
     }
     scriptvm::ScriptInterpreterBuildRequest request;
-    request.source = source.text;
+    if (!source.bytes.empty())
+        request.source.assign(
+            reinterpret_cast<const char*>(source.bytes.data()), source.bytes.size());
     request.filename = "editor/cli/arp_editor_cli.arp";
     request.moduleId = "arp_editor_cli";
     request.moduleVersion = 1;

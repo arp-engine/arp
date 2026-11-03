@@ -2,6 +2,7 @@
 
 #include "core/io/filesystem_path.h"
 #include "editor/workspace/editor_scene_persistence.h"
+#include "editor/workspace/editor_scene_script_reload.h"
 
 #include <exception>
 
@@ -30,6 +31,19 @@ bool resolve(const EditorSceneScriptInputs& input,
     }
     std::filesystem::path resolved;
     const char* issue = nullptr;
+    if (input.sources) {
+        if (!input.sources->validate(issue)) {
+            diagnostic = issue ? issue : "EDITOR-SCRIPT-FILE-SOURCE-STALE";
+            return false;
+        }
+        if (input.projectRoot
+            != std::filesystem::u8path(input.sources->snapshot->location().root)) {
+            diagnostic = "EDITOR-SCRIPT-SOURCE-ROOT";
+            return false;
+        }
+        path = input.sources->snapshot->location().pathFor(relative);
+        return true;
+    }
     if (!EditorScenePersistence::resolvePath(
             input.projectRoot, relative, existed, resolved, issue)) {
         diagnostic = issue ? issue : "EDITOR-SCRIPT-FILE-PATH";
@@ -44,7 +58,8 @@ bool EditorSceneScriptFilePreparation::prepare(const EditorSceneDocument& docume
     const EditorSceneScriptInputs& input,
     Request request,
     core::UniquePtr<Prepared>& output,
-    core::pmr::String& diagnostic)
+    core::pmr::String& diagnostic,
+    const EditorSceneScriptReload* reload)
 {
     diagnostic.clear();
     try {
@@ -65,7 +80,10 @@ bool EditorSceneScriptFilePreparation::prepare(const EditorSceneDocument& docume
                 input, request.relativePath, request.targetExisted, prepared->path_, diagnostic)
             || !projectSnapshot(input, prepared->project_, diagnostic))
             return false;
-        if (request.targetExisted) {
+        if (request.targetExisted
+            && !(reload
+                && reload->allowsPrevious(
+                    document, input, request.relativePath, request.previousBytes))) {
             core::UniquePtr<EditorSceneDocument> previous;
             if (!EditorSceneScriptCodec::prepare(
                     request.previousBytes, document, input, previous, diagnostic))
@@ -79,6 +97,8 @@ bool EditorSceneScriptFilePreparation::prepare(const EditorSceneDocument& docume
         prepared->replacement_.assign(yaml.begin(), yaml.end());
         prepared->relativePath_ = request.relativePath;
         prepared->document_ = document.ownerTicket();
+        if (input.sources)
+            prepared->sources_ = *input.sources;
         prepared->targetExisted_ = request.targetExisted;
         prepared->ready_ = true;
         if (!prepared->current(document, input, diagnostic))
@@ -102,6 +122,14 @@ bool EditorSceneScriptFilePreparation::Prepared::current(const EditorSceneDocume
     try {
         if (!ready_ || !document_.sameCurrentEpoch(document.ownerTicket())) {
             diagnostic = "EDITOR-SCRIPT-FILE-DOCUMENT-STALE";
+            return false;
+        }
+        if (bool(sources_.snapshot) != bool(input.sources)
+            || (input.sources
+                && (sources_.snapshot != input.sources->snapshot
+                    || sources_.files != input.sources->files
+                    || sources_.epoch != input.sources->epoch))) {
+            diagnostic = "EDITOR-SCRIPT-FILE-SOURCE-CHANGED";
             return false;
         }
         if (!input.preparationBytes) {

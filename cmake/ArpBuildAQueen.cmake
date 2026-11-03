@@ -2,25 +2,30 @@ option(ARP_BUILD_A_QUEEN "Build the Build a Queen example and its tests" ON)
 if(NOT ARP_BUILD_A_QUEEN)
     return()
 endif()
+include(cmake/ArpExampleStartupFiles.cmake)
 
 add_library(arp_build_a_queen_game STATIC examples/build_a_queen/game.cpp)
 target_include_directories(arp_build_a_queen_game PUBLIC examples/build_a_queen src)
 target_link_libraries(arp_build_a_queen_game PUBLIC arp_core)
 
-add_library(arp_build_a_queen_scene STATIC examples/build_a_queen/scene_renderer.cpp examples/build_a_queen/scene_content.cpp)
+add_library(arp_build_a_queen_scene STATIC examples/build_a_queen/scene_renderer.cpp
+    examples/build_a_queen/scene_content.cpp examples/build_a_queen/character_sources.cpp
+    examples/build_a_queen/native_shader_source_task.cpp examples/common/startup_resource_task.cpp
+    examples/build_a_queen/native_hud_source_task.cpp)
 target_include_directories(arp_build_a_queen_scene PUBLIC examples/build_a_queen src)
 target_link_libraries(arp_build_a_queen_scene PUBLIC arp_build_a_queen_game arp_renderer arp_rhi arp_rhi_semantics arp_assets arp_animation)
 add_dependencies(arp_build_a_queen_scene arp_compile_shaders)
 
 add_executable(arp_build_a_queen
     examples/build_a_queen/main.cpp
+    examples/build_a_queen/character_source_task.cpp
     examples/build_a_queen/hud_renderer.cpp
     examples/build_a_queen/hud_content.cpp
     src/platform/common/platform_lifecycle_state.cpp
     src/platform/common/renderdoc_capture_scope.cpp)
 target_include_directories(arp_build_a_queen PRIVATE . src)
 target_link_libraries(arp_build_a_queen PRIVATE
-    arp_build_a_queen_scene arp_platform arp_2d_renderer arp_2d_resources
+    arp_build_a_queen_scene arp_platform arp_2d_renderer arp_2d_resources arp_example_startup_files
     "$<LINK_GROUP:RESCAN,arp_gui,arp_ui_runtime,arp_resource>"
     arp_scriptvm_runtime arp_scriptvm_ir arp_scriptvm_frontend arp_scriptvm_interpreter
     arp_scriptvm_aot_tooling)
@@ -32,6 +37,12 @@ add_custom_command(TARGET arp_build_a_queen POST_BUILD
         "$<TARGET_FILE_DIR:arp_build_a_queen>/assets"
     VERBATIM)
 set_property(TARGET arp_build_a_queen APPEND PROPERTY LINK_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/build_a_queen/assets/native/hud.atlas.arpui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/build_a_queen/assets/native/DroidSans.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/build_a_queen/assets/native/white.png"
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/build_a_queen/assets/native/Apache-2.0.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/build_a_queen/assets/native/NOTICE.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/build_a_queen/assets/native/sources.yaml"
     "${CMAKE_CURRENT_SOURCE_DIR}/examples/build_a_queen/assets/queen_atlas.png"
     "${CMAKE_CURRENT_SOURCE_DIR}/examples/build_a_queen/assets/queen_atlas.yaml"
     "${CMAKE_CURRENT_SOURCE_DIR}/examples/build_a_queen/assets/characters/Casual.glb"
@@ -48,6 +59,12 @@ if(WIN32)
     add_test(NAME arp_build_a_queen_vulkan_hidden_smoke
         COMMAND arp_build_a_queen --hidden --autoplay --frames 120)
     set_tests_properties(arp_build_a_queen_vulkan_hidden_smoke PROPERTIES TIMEOUT 60)
+    add_test(NAME arp_queen_character_host_http_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/contract/queen_character_host_http_smoke.py"
+        "$<TARGET_FILE:arp_build_a_queen>"
+        "${CMAKE_CURRENT_SOURCE_DIR}/examples/build_a_queen/assets/characters")
+    set_tests_properties(arp_queen_character_host_http_smoke
+        PROPERTIES TIMEOUT 180 LABELS "assets;io;http;example;vulkan;smoke")
 endif()
 
 add_executable(arp_build_a_queen_game_tests tests/contract/build_a_queen_game_tests.cpp)

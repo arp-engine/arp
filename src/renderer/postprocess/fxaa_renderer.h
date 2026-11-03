@@ -16,7 +16,32 @@ public:
 
     explicit FxaaRenderer(rhi::GpuDevice& device) : device_(device) {}
 
-    RendererResult create(const FxaaRendererDesc& desc)
+    RendererResult create(const FxaaRendererDesc& desc) { return createImpl(desc, nullptr); }
+
+    // Prepared failures leave the current renderer and GPU untouched. Source
+    // acquisition belongs to the caller; this overload never uses cold IO.
+    RendererResult create(
+        const FxaaRendererDesc& desc, const ShaderPackagePreparationDesc& preparation)
+    {
+        const auto validated =
+            detail::validateRendererCreateDesc(desc.shaderPath, desc.colorFormat, desc.extent);
+        if (!validated.success)
+            return validated;
+        rhi::ShaderPackageDesc candidate;
+        const auto prepared = detail::prepareGraphicsShaderPackage(candidate,
+            "FxaaRhi",
+            desc.shaderPath,
+            sizeof(FxaaPushConstants),
+            preparation,
+            rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment);
+        if (!prepared.success)
+            return prepared;
+        return createImpl(desc, &candidate);
+    }
+
+private:
+    RendererResult createImpl(
+        const FxaaRendererDesc& desc, const rhi::ShaderPackageDesc* preparedPackage)
     {
         reset();
 
@@ -32,8 +57,10 @@ public:
             return RendererResult{false, "FXAA RHI pipeline layout creation failed"};
         }
 
-        shaderPackage_ = detail::makeGraphicsShaderPackage(
-            "FxaaRhi", desc.shaderPath, sizeof(FxaaPushConstants));
+        shaderPackage_ = preparedPackage
+            ? *preparedPackage
+            : detail::makeGraphicsShaderPackage(
+                  "FxaaRhi", desc.shaderPath, sizeof(FxaaPushConstants));
         const auto reflectionHydration =
             detail::validateGeneratedReflectionHydration(shaderPackage_);
         if (!reflectionHydration.success) {
@@ -88,6 +115,7 @@ public:
         return RendererResult{true, ""};
     }
 
+public:
     RendererResult drawFrame(const RenderFrameContext& frame,
         rhi::GpuTexture& sourceColor,
         const FxaaSettings& settings = {})

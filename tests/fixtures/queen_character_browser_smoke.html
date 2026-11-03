@@ -1,0 +1,127 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Queen prepared character source contract</title>
+<iframe id="game" width="1280" height="760"></iframe>
+<script>
+(async () => {
+    const mode = new URLSearchParams(location.search).get('mode');
+    const frame = document.getElementById('game');
+    const url = new URL('arp_build_a_queen_webgl.html', location.href);
+    if (mode === 'missing' || mode === 'manifest') {
+        url.searchParams.set('character-base-url', new URL('queen-source-fixture-' + mode + '/', location.href).href);
+    }
+    const shaderFailure = mode.startsWith('shader-');
+    if (mode === 'shader-missing' || mode === 'shader-hash') {
+        url.searchParams.set('shader-base-url', new URL('queen-source-fixture-' + mode + '/', location.href).href);
+    }
+    const fontFailure = mode.startsWith('font-');
+    if (mode === 'font-missing' || mode === 'font-hash')
+        url.searchParams.set('font-base-url', new URL('queen-source-fixture-' + mode + '/', location.href).href);
+    frame.src = url.href;
+    const deadline = performance.now() + 45000;
+    let cancelled = false, started = false, pendingObserved = false;
+    const require = (condition, text) => { if (!condition) throw Error(text); };
+    try {
+        while (performance.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 5));
+            const child = frame.contentWindow;
+            const module = child.Module;
+            if (!module || !module.queenSources) continue;
+            const sources = module.queenSources;
+            if (sources.phase === 0) {
+                require(!module.queenPlatform && !module.queenState, 'GPU/game published before source readiness');
+                pendingObserved = true;
+                if (mode === 'cancel' && sources.reads === 1 && !cancelled) {
+                    module.ccall('queen_action', null, ['number'], [4]);
+                    cancelled = true;
+                }
+                continue;
+            }
+            if (mode !== 'success' && !shaderFailure && !fontFailure) {
+                require(sources.phase === 2 && sources.retired, 'Failed/cancelled IO did not retire');
+                require(!module.queenPlatform && !module.queenState, 'Failed source created a game');
+                const expected = mode === 'missing' ? 'IO-HTTP-STATUS' : mode === 'manifest'
+                    ? 'ARP-QUEEN-SOURCE-MANIFEST-SCHEMA' : 'ARP-QUEEN-SOURCE-TASK-CANCELLED';
+                require((module.queenError || '').includes(expected), module.queenError || 'No diagnostic');
+                require(sources.reads === (mode === 'missing' ? 2 : 1), 'Unexpected read/fallback');
+            } else {
+                require(sources.phase === 1 && sources.retired && sources.reads === 3, 'Incomplete acquisition');
+                const shaders = module.queenShaders;
+                if (!shaders || shaders.phase === 0) {
+                    require(!module.queenPlatform && !module.queenState, 'GPU/game published before shader readiness');
+                    if (mode === 'shader-cancel' && shaders && shaders.reads > 0 && !cancelled) {
+                        module.ccall('queen_action', null, ['number'], [4]);
+                        cancelled = true;
+                    }
+                    continue;
+                }
+                if (shaderFailure) {
+                    require(shaders.phase === 2 && shaders.retired, 'Failed shader IO did not retire');
+                    require(!module.queenPlatform && !module.queenState, 'Failed shader created a game');
+                    const expected = mode === 'shader-missing' ? 'IO-HTTP-STATUS'
+                        : mode === 'shader-hash' ? 'HASH' : 'QUEEN-SHADER-SOURCES-CANCELLED';
+                    require((module.queenError || '').includes(expected), module.queenError || 'No shader diagnostic');
+                } else {
+                if (module.queenError && !fontFailure) throw Error(module.queenError);
+                require(shaders.phase === 1 && shaders.files === shaders.reads && shaders.files > 4,
+                    'Incomplete shader snapshot');
+                const fonts = module.queenFonts;
+                if (!fonts || fonts.phase === 0) {
+                    require(!module.queenPlatform && !module.queenState, 'GPU/game published before font readiness');
+                    if (mode === 'font-cancel' && fonts && fonts.reads > 0 && !cancelled) {
+                        module.ccall('queen_action', null, ['number'], [4]);
+                        cancelled = true;
+                    }
+                    continue;
+                }
+                if (fontFailure) {
+                    require(fonts.phase === 2 && fonts.retired, 'Failed font IO did not retire');
+                    require(!module.queenPlatform && !module.queenState, 'Failed font created a game');
+                    const expected = mode === 'font-missing' ? 'IO-HTTP-STATUS'
+                        : mode === 'font-hash' ? 'UI-BITMAP-FONT-PIXEL-IDENTITY' : 'QUEEN-FONT-SOURCES-CANCELLED';
+                    require((module.queenError || '').includes(expected), module.queenError || 'No font diagnostic');
+                } else {
+                    require(fonts.phase === 1 && fonts.reads === 3 && fonts.retired && shaders.retired,
+                        'Incomplete font acquisition or IO not retired');
+                    const state = module.queenState;
+                    if (!state) continue;
+                    if (!started) {
+                        require(state.phase === 0, 'Menu missing');
+                        module.ccall('queen_action', null, ['number'], [0]);
+                        started = true;
+                    }
+                    if (state.phase !== 1 || state.frames < 4) continue;
+                    require(state.vertices > 30000, 'Real character/world geometry missing');
+                    require(module.queenPlatform.backend === 4 && module.queenPlatform.orderedGraphics,
+                        'Original WebGL1 execution missing');
+                }
+                }
+            }
+            const resources = child.performance.getEntriesByType('resource').map(entry => entry.name)
+                .filter(name => /\/(character_manifest.yaml|Casual.glb|Formal.glb)$/.test(name));
+            require(resources.length === sources.reads, 'Actual Fetch request count mismatch');
+            const shaderRoot = new URL(child.location.href).searchParams.get('shader-base-url')
+                ?? new URL('artifacts/',child.location.href).href;
+            const shaderResources = child.performance.getEntriesByType('resource').map(entry => entry.name)
+                .filter(name => name.startsWith(shaderRoot));
+            if (mode === 'success') require(shaderResources.length === module.queenShaders.files, 'Shader Fetch count mismatch');
+            const fontRoot = new URL(child.location.href).searchParams.get('font-base-url')
+                ?? new URL('fonts/',child.location.href).href;
+            const fontResources = child.performance.getEntriesByType('resource').map(entry => entry.name)
+                .filter(name => name.startsWith(fontRoot));
+            if (mode === 'success') require(fontResources.length === 3, 'Font Fetch count mismatch');
+            const report = {success:true,mode,pendingObserved,sources,resources,
+                shaders:module.queenShaders,shaderResources,fonts:module.queenFonts,fontResources,
+                state:module.queenState || null,error:module.queenError || null,
+                platform:module.queenPlatform || null,productionReady:false};
+            await fetch('/result', {method:'POST',body:JSON.stringify(report)});
+            return;
+        }
+        throw Error('Queen startup deadline');
+    } catch (error) {
+        const module=frame.contentWindow.Module || {};
+        await fetch('/result', {method:'POST',body:JSON.stringify({success:false,mode,error:String(error),
+            sources:module.queenSources,shaders:module.queenShaders,gameError:module.queenError})});
+    }
+})();
+</script>

@@ -142,6 +142,9 @@ EditorCommandOutcome EditorShell::closeScriptDocument(std::uint64_t documentId, 
         const auto index = static_cast<std::size_t>(found - documents.begin());
         const bool closingActive = index == scriptDocuments_.activeIndex();
         const bool scriptWorkspace = presentationState_.workspace() == "Script";
+        if (projectIoPending() && projectIo_->savingScript()
+            && projectIo_->scriptSaveReceipt(projectIoTaskId_).documentId == documentId)
+            projectIo_->cancel();
         scriptDocuments_.erase(index);
         if (closingActive)
             cancelScriptPointerCapture();
@@ -212,6 +215,9 @@ void EditorShell::appendScriptSnapshot(EditorStateSnapshot& snapshot) const
     snapshot.scriptPresentationFailed = scriptPresentationFailed_;
     if (const auto* document = scriptDocuments_.active()) {
         snapshot.scriptText = document->text;
+        snapshot.scriptSourceMounted = document->sourceBound();
+        snapshot.scriptSourceMissing = bool(document->missingSource);
+        snapshot.scriptSourceConflict = document->sourceConflict();
         const auto relative = document->path.lexically_relative(projectBrowser_.root());
         if (!relative.empty() && !relative.is_absolute())
             snapshot.scriptRelativePath = core::FilePath::utf8(relative);
@@ -226,6 +232,9 @@ bool EditorShell::saveScript()
 
 EditorCommandOutcome EditorShell::saveScriptDocument()
 {
+    if (projectBrowser_.sourceSnapshot()
+        || (scriptDocuments_.active() && scriptDocuments_.active()->sourceBound()))
+        return saveSourceScript();
     try {
         auto message = "Saved " + core::FilePath::utf8(scriptPath().filename());
         const bool wasDirty = scriptDirty();
@@ -261,7 +270,8 @@ EditorCommandOutcome EditorShell::saveScriptDocument()
 
 EditorCommandOutcome EditorShell::reloadScriptDocument(bool discardChanges)
 {
-    if (projectBrowser_.sourceSnapshot())
+    if (projectBrowser_.sourceSnapshot()
+        || (scriptDocuments_.active() && scriptDocuments_.active()->sourceBound()))
         return reloadSourceScript(discardChanges);
     try {
         core::pmr::String message(

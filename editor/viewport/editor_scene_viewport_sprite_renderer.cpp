@@ -42,7 +42,7 @@ bool makeSpritePipelinePackage(const EditorSceneViewportShaderArtifacts& artifac
         {package.slangModulePath, "vertexMain", rhi::ShaderStage::Vertex});
     package.entrypoints.push_back(
         {package.slangModulePath, "fragmentMain", rhi::ShaderStage::Fragment});
-    if (!renderer::hydrateShaderPackageReflectionFromArtifact(package)) {
+    if (!hydrateEditorSceneViewportShaderPackage(package, artifacts, diagnostics)) {
         diagnostics = "ARP-EDITOR-VIEWPORT-SPRITE-PACKAGE-HYDRATION-FAILED";
         return false;
     }

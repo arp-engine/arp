@@ -1,4 +1,5 @@
 #pragma once
+#include "core/container/array_view.h"
 #include "core/io/file_io.h"
 #include "core/io/file_read_contract.h"
 #include "core/io/filesystem_path.h"
@@ -6,6 +7,17 @@
 #include "resource/resource_manager.h"
 
 namespace arp::resource {
+// Reload identity is local to this manager/runtime, unlike persistent source
+// SHA. A changed mount must publish its new binding even for identical bytes.
+inline void appendResourceOriginFingerprint(
+    core::StableHash64& hash, ResourceFileOrigin origin) noexcept
+{
+    hash.appendU64(static_cast<unsigned>(origin.pathScope));
+    hash.appendU64(reinterpret_cast<std::uintptr_t>(origin.mount.owner));
+    hash.appendU64(origin.mount.index);
+    hash.appendU64(origin.mount.generation);
+}
+
 enum class ResourceSourcePlanStatus { Valid, InvalidRequest, Ambiguous, Conflict };
 
 struct ResourceSourcePlanValidation {
@@ -110,30 +122,37 @@ inline core::BinaryFileReadResult readResourceSource(const core::pmr::String& pa
     return core::readBinaryFile(std::filesystem::u8path(path.begin(), path.end()), budget);
 }
 
+// Pure Text/1 projection; callers retain raw bytes for exact content identity.
+inline core::TextFileReadResult decodeResourceText(
+    core::ArrayView<const std::uint8_t> bytes, std::size_t budget)
+{
+    core::TextFileReadResult result;
+    core::TextDecodeDesc desc;
+    desc.bom = core::TextBomPolicy::Strip;
+    desc.nul = core::TextNulPolicy::Reject;
+    desc.maxOutputBytes = budget;
+    auto decoded = core::TextDecoder::decode(
+        {bytes.empty() ? "" : reinterpret_cast<const char*>(bytes.data()), bytes.size()}, desc);
+    result.success = decoded.status == core::TextDecodeStatus::Success;
+    result.text = std::move(decoded.text);
+    if (!result.success)
+        result.diagnostics = decoded.diagnosticId;
+    return result;
+}
+
 // Domain YAML acquisition keeps raw bytes in ResourceSourceSet for identity.
-// Decoding has an explicit UTF-8/BOM/NUL policy and preserves newline bytes.
 inline core::TextFileReadResult readResourceText(const core::pmr::String& path,
     const ResourceLoadContext& context,
     std::size_t budget,
     const ResourceFileOrigin* origin = nullptr)
 {
     auto source = readResourceSource(path, context, budget, false, origin);
-    core::TextFileReadResult result;
     if (!source.success) {
+        core::TextFileReadResult result;
         result.diagnostics = std::move(source.diagnostics);
         return result;
     }
-    core::TextDecodeDesc desc;
-    desc.bom = core::TextBomPolicy::Strip;
-    desc.nul = core::TextNulPolicy::Reject;
-    desc.maxOutputBytes = budget;
-    auto decoded = core::TextDecoder::decode(
-        {reinterpret_cast<const char*>(source.bytes.data()), source.bytes.size()}, desc);
-    result.success = decoded.status == core::TextDecodeStatus::Success;
-    result.text = std::move(decoded.text);
-    if (!result.success)
-        result.diagnostics = decoded.diagnosticId;
-    return result;
+    return decodeResourceText({source.bytes.data(), source.bytes.size()}, budget);
 }
 
 inline ResourceReference authoredResourceReference(core::pmr::String id, const char* type)
@@ -152,11 +171,9 @@ inline ResourceLoadResult resourceLoadFailure(const ResourceBase& resource, cons
     return result;
 }
 
-inline bool appendResourceReadIntent(const core::pmr::String& path,
-    std::size_t budget,
-    core::pmr::Vector<ResourceFileReadIntent>& intents,
-    core::pmr::String& diagnostic,
-    ResourceFileOrigin origin = {})
+// Pure location/budget admission shared by collectors and direct cold loads.
+inline core::io::FileReadValidation validateResourceReadIntent(
+    const core::pmr::String& path, std::size_t budget, ResourceFileOrigin origin = {})
 {
     if (path.empty() || !budget || budget == SIZE_MAX
         || (origin.pathScope != core::io::FilePathScope::HostFilesystem
@@ -164,8 +181,7 @@ inline bool appendResourceReadIntent(const core::pmr::String& path,
         || (origin.pathScope == core::io::FilePathScope::HostFilesystem && origin.mount)
         || (origin.pathScope == core::io::FilePathScope::MountedResource
             && (!origin.mount || !core::FilePath::isSafeRelativePath(path, path.size())))) {
-        diagnostic = "ARP-RESOURCE-SOURCE-CONFIG";
-        return false;
+        return {core::io::FileIoStatus::InvalidRequest, "ARP-RESOURCE-SOURCE-CONFIG"};
     }
     core::io::FileReadRequest request;
     request.contractVersion = 1;
@@ -173,7 +189,16 @@ inline bool appendResourceReadIntent(const core::pmr::String& path,
     request.pathScope = origin.pathScope;
     request.mount = origin.mount;
     request.maxBytes = budget;
-    const auto validation = core::io::FileReadContract::validate(request);
+    return core::io::FileReadContract::validate(request);
+}
+
+inline bool appendResourceReadIntent(const core::pmr::String& path,
+    std::size_t budget,
+    core::pmr::Vector<ResourceFileReadIntent>& intents,
+    core::pmr::String& diagnostic,
+    ResourceFileOrigin origin = {})
+{
+    const auto validation = validateResourceReadIntent(path, budget, origin);
     if (validation.status != core::io::FileIoStatus::Success) {
         diagnostic = validation.diagnostic;
         return false;

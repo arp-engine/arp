@@ -8,16 +8,19 @@
 namespace arp::scene2d {
 using Y = core::YamlContract;
 
-TileSetResource::TileSetResource(core::pmr::String id, core::pmr::String path, std::size_t budget)
+TileSetResource::TileSetResource(core::pmr::String id,
+    core::pmr::String path,
+    std::size_t budget,
+    resource::ResourceFileOrigin origin)
     : ResourceBase(resource::authoredResourceReference(std::move(id), "TileSetResource")),
-      path_(std::move(path)), maxBytes_(budget)
+      path_(std::move(path)), maxBytes_(budget), sourceOrigin_(origin)
 {}
 
 bool TileSetResource::collectFileReadIntents(resource::ResourceManager&,
     core::pmr::Vector<resource::ResourceFileReadIntent>& out,
     core::pmr::String& d) const
 {
-    return resource::appendResourceReadIntent(path_, maxBytes_, out, d);
+    return resource::appendResourceReadIntent(path_, maxBytes_, out, d, sourceOrigin_);
 }
 
 const TileDefinition* TileSetResource::tile(std::uint32_t id) const
@@ -34,12 +37,14 @@ resource::ResourceLoadResult TileSetResource::load(
     auto fail = [&](const char* d) {
         return resource::resourceLoadFailure(*this, d);
     };
-    auto source = resource::readResourceSource(path_, context, maxBytes_);
+    const auto valid = resource::validateResourceReadIntent(path_, maxBytes_, sourceOrigin_);
+    if (valid.diagnostic)
+        return fail(valid.diagnostic);
+    auto source = resource::readResourceText(path_, context, maxBytes_, &sourceOrigin_);
     if (!source.success)
         return fail(source.diagnostics.c_str());
     try {
-        auto n = Y::Node::deserialize(core::pmr::String(
-            reinterpret_cast<const char*>(source.bytes.data()), source.bytes.size()));
+        auto n = Y::Node::deserialize(source.text);
         if (Y::text(n, "type") != "arp.tile-set" || Y::uint32(n, "contractVersion") != 1
             || Y::text(n, "resourceId") != reference().id)
             return fail("ARP-2D-TILESET-CONTRACT");
@@ -102,10 +107,13 @@ resource::ResourceLoadResult TileSetResource::load(
     }
 }
 
-TileMapResource::TileMapResource(
-    core::pmr::String id, core::pmr::String set, core::pmr::String path, std::size_t budget)
+TileMapResource::TileMapResource(core::pmr::String id,
+    core::pmr::String set,
+    core::pmr::String path,
+    std::size_t budget,
+    resource::ResourceFileOrigin origin)
     : ResourceBase(resource::authoredResourceReference(std::move(id), "TileMapResource")),
-      tileSetId_(std::move(set)), path_(std::move(path)), maxBytes_(budget)
+      tileSetId_(std::move(set)), path_(std::move(path)), maxBytes_(budget), sourceOrigin_(origin)
 {
     addDependency({tileSetId_, "tile-set"});
 }
@@ -114,7 +122,7 @@ bool TileMapResource::collectFileReadIntents(resource::ResourceManager&,
     core::pmr::Vector<resource::ResourceFileReadIntent>& out,
     core::pmr::String& d) const
 {
-    return resource::appendResourceReadIntent(path_, maxBytes_, out, d);
+    return resource::appendResourceReadIntent(path_, maxBytes_, out, d, sourceOrigin_);
 }
 
 resource::ResourceLoadResult TileMapResource::load(
@@ -126,12 +134,14 @@ resource::ResourceLoadResult TileMapResource::load(
     auto set = manager.find<TileSetResource>(tileSetId_);
     if (!set.ready())
         return fail("ARP-2D-TILEMAP-TILESET");
-    auto source = resource::readResourceSource(path_, context, maxBytes_);
+    const auto valid = resource::validateResourceReadIntent(path_, maxBytes_, sourceOrigin_);
+    if (valid.diagnostic)
+        return fail(valid.diagnostic);
+    auto source = resource::readResourceText(path_, context, maxBytes_, &sourceOrigin_);
     if (!source.success)
         return fail(source.diagnostics.c_str());
     try {
-        auto n = Y::Node::deserialize(core::pmr::String(
-            reinterpret_cast<const char*>(source.bytes.data()), source.bytes.size()));
+        auto n = Y::Node::deserialize(source.text);
         if (Y::text(n, "type") != "arp.tile-map" || Y::uint32(n, "contractVersion") != 1
             || Y::text(n, "resourceId") != reference().id || Y::text(n, "tileSetId") != tileSetId_)
             return fail("ARP-2D-TILEMAP-CONTRACT");

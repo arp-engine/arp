@@ -3,6 +3,12 @@
 #include "examples/ui/control_events.h"
 #include "renderer/ui/ui_draw_plan.h"
 #endif
+#if defined(ARP_UI_TOOL_DOCUMENT_VISUAL)
+#include "core/io/filesystem_path.h"
+#include "renderer/ui/ui_draw_plan.h"
+#include "tools/io/cold_tool_files.h"
+#include "ui/ui_document.h"
+#endif
 #include "renderer/render_graph/render_graph.h"
 #include "renderer/ui/gui_renderer.h"
 #include "renderer/ui/ui_atlas_runtime.h"
@@ -156,7 +162,7 @@ int main()
         || !std::filesystem::exists("C:/Windows/Fonts/consola.ttf")) {
         std::fprintf(
             stderr, "UI text Vulkan smoke unavailable: required contract fonts are missing\n");
-#if defined(ARP_UI_CONTROL_EVENTS_VISUAL)
+#if defined(ARP_UI_CONTROL_EVENTS_VISUAL) || defined(ARP_UI_TOOL_DOCUMENT_VISUAL)
         return 1;
 #else
         return 0;
@@ -166,7 +172,39 @@ int main()
     auto fonts = fontFaces();
     arp::core::pmr::Vector<arp::renderer::ui::UiDrawCommand> authored{
         &arp::core::defaultCpuMemoryResource()};
-#if defined(ARP_UI_CONTROL_EVENTS_VISUAL)
+#if defined(ARP_UI_CONTROL_EVENTS_VISUAL) || defined(ARP_UI_TOOL_DOCUMENT_VISUAL)
+#if defined(ARP_UI_TOOL_DOCUMENT_VISUAL)
+    const auto* sourcePath = std::getenv("ARP_UI_TOOL_DOCUMENT");
+    if (!sourcePath || !*sourcePath)
+        return 1;
+    const auto inputPath = std::filesystem::absolute(std::filesystem::u8path(sourcePath));
+    arp::tools::io::ColdToolFiles files(4 * 1024 * 1024, 1);
+    const auto mount = files.mountDirectory("document", inputPath.parent_path());
+    if (!mount)
+        return 1;
+    arp::core::io::FileTextReadRequest request;
+    request.file.contractVersion = 1;
+    request.file.pathScope = arp::core::io::FilePathScope::MountedResource;
+    request.file.path = arp::core::FilePath::utf8(inputPath.filename());
+    request.file.mount = mount;
+    request.file.maxBytes = request.text.maxOutputBytes = 4 * 1024 * 1024;
+    request.text.bom = arp::core::TextBomPolicy::Strip;
+    auto source = files.readText(request);
+    files.retire();
+    if (source.status() != arp::core::io::FileIoStatus::Success)
+        return 1;
+    arp::ui::UiArpuiRuntimeLoadDesc document;
+    document.sourceYaml = std::move(source.decoded.text);
+    document.sourceYamlProvided = true;
+    const auto imported = arp::ui::UiArpuiRuntimeLoader{}.load(document);
+    if (!imported.ok()) {
+        std::fprintf(
+            stderr, "Imported YAML consumer failed: %s\n", imported.diagnostic().message.c_str());
+        return 1;
+    }
+    assert(imported.document().nodes().size() == 4);
+    const auto& canvas = imported.runtime().canvas();
+#else
     arp::examples::ControlEventsExample example;
     const auto loaded =
         example.load(std::filesystem::path(ARP_SOURCE_DIR) / "examples/ui/control_events.arpui");
@@ -184,8 +222,10 @@ int main()
         assert(example.button()->clicks == 1 && example.slider()->lastValue == 0.75f);
         assert(example.input()->value().text == "Typed through InputFrame");
     }
-    const auto layout = example.runtime().canvas().resolveLayout();
-    const auto extracted = arp::ui::RenderExtractor().extract(example.runtime().canvas(), layout);
+    const auto& canvas = example.runtime().canvas();
+#endif
+    const auto layout = canvas.resolveLayout();
+    const auto extracted = arp::ui::RenderExtractor().extract(canvas, layout);
     assert(extracted.ok());
     const auto planned = arp::ui::DrawPlanner().plan(extracted.queue());
     assert(planned.ok());
@@ -276,7 +316,7 @@ int main()
                 && command.sdfMode;
         });
     assert(alphaGlyphCount > 20);
-#if defined(ARP_UI_CONTROL_EVENTS_VISUAL)
+#if defined(ARP_UI_CONTROL_EVENTS_VISUAL) || defined(ARP_UI_TOOL_DOCUMENT_VISUAL)
     assert(sdfGlyphCount == 0);
 #else
     assert(sdfGlyphCount > 10);
@@ -296,7 +336,7 @@ int main()
     if (!initialized.success) {
         std::fprintf(
             stderr, "UI text Vulkan smoke unavailable: %s\n", initialized.diagnostics.c_str());
-#if defined(ARP_UI_CONTROL_EVENTS_VISUAL)
+#if defined(ARP_UI_CONTROL_EVENTS_VISUAL) || defined(ARP_UI_TOOL_DOCUMENT_VISUAL)
         return 1;
 #else
         return 0;
@@ -305,7 +345,7 @@ int main()
     auto window = platform.createWindow({"UiTextVulkanSmoke", kWidth, kHeight, true, true});
     if (!window.valid()) {
         std::fprintf(stderr, "UI text Vulkan smoke unavailable: window creation failed\n");
-#if defined(ARP_UI_CONTROL_EVENTS_VISUAL)
+#if defined(ARP_UI_CONTROL_EVENTS_VISUAL) || defined(ARP_UI_TOOL_DOCUMENT_VISUAL)
         return 1;
 #else
         return 0;
@@ -316,7 +356,7 @@ int main()
     if (!renderSystem.valid() || renderSystem.backend() != arp::rhi::Backend::Vulkan) {
         std::fprintf(
             stderr, "UI text Vulkan smoke unavailable: %s\n", renderSystem.diagnostics().c_str());
-#if defined(ARP_UI_CONTROL_EVENTS_VISUAL)
+#if defined(ARP_UI_CONTROL_EVENTS_VISUAL) || defined(ARP_UI_TOOL_DOCUMENT_VISUAL)
         return 1;
 #else
         return 0;

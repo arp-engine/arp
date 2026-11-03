@@ -3,6 +3,7 @@ import yaml
 import asset
 import arp_import_host
 import unity_import_common
+import glb_source_profile
 
 def main(input: string, projectRoot: string) -> int:
     var read: io.IoTextResult = io.read_text(input)
@@ -28,7 +29,12 @@ def main(input: string, projectRoot: string) -> int:
     if kindCode != 1:
         return 128
 
-    var imported: asset.ImportedModelResult = asset.import_glb(input)
+    var options: asset.GlbSourceOptions = glb_source_profile.make_options()
+    var acquired: io.IoBinaryResult = io.read_binary_local(
+        input, options.maxSourceBytes, glb_source_profile.local_acquisition_bytes(options))
+    if not acquired.success:
+        return 32
+    var imported: asset.ImportedModelResult = asset.import_glb_bytes(input, acquired.data(), options)
     var importOk: bool = imported.success
     var diagnostics: string = imported.diagnostics
     if importOk:

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/memory/cpu_allocator.h"
+#include "editor/project/project_directory_session.h"
 
 #include <filesystem>
 #include <string_view>
@@ -16,6 +17,8 @@ class FileService;
 namespace arp::editor {
 class ProjectBrowserModel final {
 public:
+    class PreparedProjectRebind;
+
     struct Entry {
         std::filesystem::path path;
         core::pmr::String name{&core::defaultCpuMemoryResource()};
@@ -33,6 +36,14 @@ public:
         SourceNavigation,
         ProjectBrowserModel& destination,
         std::size_t maxHistoryEntries = 256) const noexcept;
+    // Explicit owner-thread handoff after source-refresh admission. Normal
+    // directory navigation still requires the identical project snapshot.
+    const char* prepareReloadedSources(const core::SharedPtr<const ProjectSourceSnapshot>& expected,
+        core::SharedPtr<const ProjectDirectorySnapshot>,
+        core::io::FileService&,
+        std::uint64_t epoch,
+        ProjectBrowserModel& destination,
+        std::size_t maxHistoryEntries) const noexcept;
     bool sourceTarget(
         SourceNavigation, std::string_view relative, core::pmr::String& destination) const noexcept;
 
@@ -40,6 +51,9 @@ public:
     {
         return source_;
     }
+
+    core::UniquePtr<PreparedProjectRebind> prepareProjectRebind(
+        const ProjectSourceSnapshot::PreparedFileSave&, const char*& diagnostic) const noexcept;
 
     void setRoot(std::filesystem::path root);
     bool refresh(std::size_t entryBudget = 0);
@@ -80,5 +94,27 @@ private:
     core::pmr::String search_{&core::defaultCpuMemoryResource()};
     core::SharedPtr<const ProjectDirectorySnapshot> source_;
     std::size_t sourceHistoryBudget_ = 0;
+};
+
+// A settings save keeps the exact directory/search/history state. The live
+// owner must still match its prepared state when its new scope is published.
+class ProjectBrowserModel::PreparedProjectRebind final {
+public:
+    PreparedProjectRebind() = default;
+    PreparedProjectRebind(const PreparedProjectRebind&) = delete;
+    PreparedProjectRebind& operator=(const PreparedProjectRebind&) = delete;
+    bool canFinish(const ProjectSourceSnapshot::PreparedFileSave&,
+        const core::SharedPtr<const ProjectSourceSnapshot>&,
+        const ProjectBrowserModel&) const noexcept;
+    bool finish(const ProjectSourceSnapshot::PreparedFileSave&,
+        core::SharedPtr<const ProjectSourceSnapshot>,
+        ProjectBrowserModel&) noexcept;
+
+private:
+    friend class ProjectBrowserModel;
+    const ProjectBrowserModel* owner_ = nullptr;
+    ProjectBrowserModel candidate_;
+    core::UniquePtr<ProjectDirectorySnapshot::PreparedProjectRebind> directory_;
+    bool consumed_ = false;
 };
 } // namespace arp::editor

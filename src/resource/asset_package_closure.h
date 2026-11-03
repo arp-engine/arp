@@ -43,6 +43,13 @@ public:
     AssetPackageClosureResult inspectSources(const std::filesystem::path& packageDirectory,
         const AssetPackageSourceContext& sources,
         const AssetPackageClosureBudget& limits = {}) const;
+    // Pure acquired-source preparation; independently owned output is delivered
+    // only after complete closure and typed decode validation, without host IO.
+    AssetPackageOutputResult prepare(const InternalAssetPackageDesc& package,
+        const std::filesystem::path& logicalRoot,
+        const AssetPackageSourceContext& sources,
+        const AssetPackageClosureBudget& payloadBudget,
+        const AssetPackageOutputBudget& outputBudget) const;
     // Validated declared file list only; full closure verification still runs
     // after acquisition, before typed resource admission.
     AssetPackageReadPlan planSourceReads(const std::filesystem::path& directory,

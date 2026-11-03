@@ -459,6 +459,14 @@ WGPUBlendFactor nativeBlendFactor(rhi::BlendFactor factor)
         return WGPUBlendFactor_DstAlpha;
     case rhi::BlendFactor::OneMinusDstAlpha:
         return WGPUBlendFactor_OneMinusDstAlpha;
+    case rhi::BlendFactor::SrcColor:
+        return WGPUBlendFactor_Src;
+    case rhi::BlendFactor::OneMinusSrcColor:
+        return WGPUBlendFactor_OneMinusSrc;
+    case rhi::BlendFactor::DstColor:
+        return WGPUBlendFactor_Dst;
+    case rhi::BlendFactor::OneMinusDstColor:
+        return WGPUBlendFactor_OneMinusDst;
     }
     return WGPUBlendFactor_One;
 }

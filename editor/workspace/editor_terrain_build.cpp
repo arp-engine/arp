@@ -1,8 +1,8 @@
 #include "editor/workspace/editor_terrain_build.h"
 
 #include "core/io/atomic_file_service.h"
-#include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
+#include "editor/io/editor_cold_host_read.h"
 #include "resource/terrain_asset_build_service.h"
 
 namespace arp::editor {
@@ -52,7 +52,7 @@ struct EditorTerrainBuild::Task final {
                 task.result.diagnostic = "EDITOR-TERRAIN-MANIFEST-PATH";
                 return core::runtime::WorkStatus::Failed;
             }
-            const auto file = core::readTextFile(path, manifestBudget);
+            const auto file = EditorColdHostRead::readTextBytes(path, manifestBudget);
             if (!file.success) {
                 task.result.diagnostic = file.diagnostics;
                 return core::runtime::WorkStatus::Failed;
@@ -184,7 +184,7 @@ EditorTerrainBuild::Result EditorTerrainBuild::finish(
     }
     if (exists) {
         const auto canonical = std::filesystem::canonical(path, error);
-        const auto current = core::readTextFile(path, manifestBudget);
+        const auto current = EditorColdHostRead::readTextBytes(path, manifestBudget);
         if (error || !core::FilePath::contains(task->root, canonical) || !current.success
             || current.text != task->previousManifest) {
             failed.diagnostic = "EDITOR-TERRAIN-MANIFEST-CONFLICT";

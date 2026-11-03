@@ -4,6 +4,8 @@
 #include "core/io/file_query.h"
 #include "core/io/file_request.h"
 #include "core/io/file_result.h"
+#include "core/io/file_save.h"
+#include "core/io/file_save_receipt.h"
 #include "core/runtime/completion_queue.h"
 
 namespace arp::core::io {
@@ -17,6 +19,7 @@ struct FileBackendCapability {
     bool supportsMetadata = false;
     bool supportsEnumeration = false;
     bool supportsContentVersion = false;
+    bool supportsRead = false;
 };
 
 class ARP_API FileBackend {
@@ -24,6 +27,12 @@ public:
     virtual ~FileBackend() = default;
 
     virtual FileBackendCapability capability() const noexcept = 0;
+
+    virtual FileBackendCapability locationCapability(core::PoolHandle) const noexcept
+    {
+        return capability();
+    }
+
     // Pure request/location admission; no filesystem or network IO. A closed
     // producer reports ServiceClosed, including when reached through a mount.
     virtual FileReadResult validateRead(const FileReadRequest& request) const = 0;
@@ -33,6 +42,21 @@ public:
 
     virtual FileIoStatus queryAsync(
         const FileQueryRequest&, FileQueryCompletion, runtime::CompletionQueue&) noexcept
+    {
+        return FileIoStatus::Unsupported;
+    }
+
+    virtual FileSaveCapability saveCapability(core::PoolHandle = {}) const noexcept { return {}; }
+
+    virtual FileIoStatus saveAsync(
+        FileSaveRequest, FileSaveCompletion, runtime::CompletionQueue&) noexcept
+    {
+        return FileIoStatus::Unsupported;
+    }
+
+    virtual FileIoStatus receiptAsync(const FileSaveReceiptRequest&,
+        FileSaveReceiptCompletion,
+        runtime::CompletionQueue&) noexcept
     {
         return FileIoStatus::Unsupported;
     }

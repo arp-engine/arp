@@ -450,6 +450,20 @@ struct CancelProjectIoCommand {
     std::uint64_t taskId = 0;
 };
 
+struct SourceFileReceiptCommand {
+    core::pmr::String source;
+    core::io::FileSaveReceipt receipt;
+    core::io::FileSaveReceiptOperation operation = core::io::FileSaveReceiptOperation::Query;
+};
+
+struct AdvanceSourceReceiptCommand {
+    std::uint64_t taskId = 0;
+};
+
+struct CancelSourceReceiptCommand {
+    std::uint64_t taskId = 0;
+};
+
 struct NavigateProjectSourceCommand {
     ProjectBrowserModel::SourceNavigation intent = ProjectBrowserModel::SourceNavigation::Navigate;
     core::pmr::String directory{&core::defaultCpuMemoryResource()};
@@ -512,11 +526,28 @@ struct LoadSceneCommand {
     bool discardChanges = false;
 };
 
-enum class ScenePersistenceTaskStatus : std::uint8_t { Unknown, Pending, Succeeded, Failed };
+enum class ScenePersistenceTaskStatus : std::uint8_t {
+    Unknown,
+    Pending,
+    Succeeded,
+    Failed,
+    Cancelled
+};
 
 struct GetScenePersistenceTaskQuery {
     std::uint64_t taskId = 0;
 };
+
+struct CancelScenePersistenceCommand {
+    std::uint64_t taskId = 0;
+};
+
+// Explicit document-format transition for a source v3 Scene. Cold module
+// preparation replaces the document owner and clears the old history branch;
+// it executes no user initializer and does not save or change source files.
+struct PrepareSceneScriptAuthoringCommand {};
+
+struct ReloadSceneScriptsCommand {};
 
 // Only an actual private IO result may complete the referenced task.
 struct CompleteScenePersistenceCommand {
@@ -640,6 +671,9 @@ using EditorCommandPayload = std::variant<BuildTerrainResourceCommand,
     OpenProjectCommand,
     AdvanceProjectIoCommand,
     CancelProjectIoCommand,
+    SourceFileReceiptCommand,
+    AdvanceSourceReceiptCommand,
+    CancelSourceReceiptCommand,
     NavigateProjectSourceCommand,
     CloseProjectCommand,
     SaveProjectCommand,
@@ -661,7 +695,10 @@ using EditorCommandPayload = std::variant<BuildTerrainResourceCommand,
     GetSceneHierarchyQuery,
     GetSceneComponentCatalogQuery,
     SetSceneScriptFieldsCommand,
-    AddSceneScriptComponentCommand>;
+    AddSceneScriptComponentCommand,
+    CancelScenePersistenceCommand,
+    PrepareSceneScriptAuthoringCommand,
+    ReloadSceneScriptsCommand>;
 
 struct EditorCommandEnvelope {
     static constexpr std::uint16_t currentVersion = 1;
@@ -739,6 +776,16 @@ struct EditorStateSnapshot {
     std::uint64_t projectIoTaskId = 0;
     ProjectIoStatus projectIoTaskStatus = ProjectIoStatus::Unknown;
     core::pmr::String projectIoDiagnostic{&core::defaultCpuMemoryResource()};
+    ProjectScriptSaveReceipt scriptSaveReceipt;
+    ProjectSourceSaveReceipt sceneSaveReceipt;
+    ProjectSourceSaveReceipt projectSaveReceipt;
+    std::uint64_t sourceReceiptTaskId = 0;
+    ProjectIoStatus sourceReceiptTaskStatus = ProjectIoStatus::Unknown;
+    bool sourceReceiptSubmitted = false;
+    core::io::FileSaveReceiptOperation sourceReceiptOperation =
+        core::io::FileSaveReceiptOperation::Query;
+    core::io::FileSaveReceipt sourceReceiptIdentity;
+    core::io::FileSaveReceiptResult sourceReceiptResult;
 
     core::pmr::String workspace{&core::defaultCpuMemoryResource()};
     core::pmr::String scene{&core::defaultCpuMemoryResource()};
@@ -749,6 +796,9 @@ struct EditorStateSnapshot {
     std::uint32_t openDocumentCount = 0;
     bool hasActiveDocument = false;
     bool scriptDirty = false;
+    bool scriptSourceMounted = false;
+    bool scriptSourceMissing = false;
+    bool scriptSourceConflict = false;
     bool scriptPresentationFailed = false;
     std::uint64_t scenePersistenceTaskId = 0;
     ScenePersistenceTaskStatus scenePersistenceTaskStatus = ScenePersistenceTaskStatus::Unknown;

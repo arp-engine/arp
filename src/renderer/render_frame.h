@@ -14,6 +14,10 @@ namespace arp::render_graph {
 class RenderContext;
 }
 
+namespace arp::shader {
+class GeneratedShaderArtifactSet;
+}
+
 namespace arp::renderer::ui {
 struct GlyphAtlasUploadSchedule;
 }
@@ -50,6 +54,10 @@ struct GuiRendererDesc {
     rhi::Extent2D extent;
     GuiAtlasTextureDesc atlasTexture;
     bool hasAtlasTexture = false;
+    // Both fields form the explicit prepared profile. A partial binding fails;
+    // neither GUI creation nor resize reacquires source files in this profile.
+    core::pmr::String shaderPublication;
+    core::SharedPtr<const shader::GeneratedShaderArtifactSet> preparedShaderArtifacts;
 };
 
 struct FxaaRendererDesc {

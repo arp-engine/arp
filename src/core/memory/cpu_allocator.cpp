@@ -51,6 +51,16 @@ public:
 
 class MimallocCpuAllocationBackend final : public RawCpuAllocationBackend {
 public:
+    MimallocCpuAllocationBackend() noexcept
+    {
+#if defined(__EMSCRIPTEN__)
+        // WasmBacking/1: use emmalloc-backed OS allocations directly. Reserving
+        // arenas consumes linear memory without virtual address reservation.
+        // Backend construction precedes its first raw or ledger allocation.
+        mi_option_set(mi_option_arena_reserve, 0);
+#endif
+    }
+
     void* allocate(std::size_t sizeBytes) noexcept override { return mi_malloc(sizeBytes); }
 
     void deallocate(void* ptr) noexcept override { mi_free(ptr); }

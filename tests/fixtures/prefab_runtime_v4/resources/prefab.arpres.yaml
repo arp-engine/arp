@@ -1,0 +1,36 @@
+format: ArpRuntimeResource
+version: 1
+resourceId: 0b5f7a2d-78a7-47d2-91f5-4ab0f8b827e1
+resourceType: PrefabResource
+alias: prefab/runtime
+displayName: prefab/runtime
+status: Prototype Complete
+contentHash: 3675654629
+dependencies:
+  - id: c8591a23-0f99-4070-a4d0-d79ab87379eb
+    usage: runtime-payload
+  - id: 3c71905f-6c79-42d9-a8e1-69549913fc23
+    usage: animator-controller
+payload:
+  fields:
+    animationSetId: ""
+    animatorControllerId: ""
+    avatarId: ""
+    componentCount: 0
+    lightHelperCount: 0
+    materialSetId: ""
+    modelId: ""
+    name: "runtime"
+    objectCount: 0
+    physicsColliderCount: 0
+    previewStudioId: ""
+    runtimePayloadId: "c8591a23-0f99-4070-a4d0-d79ab87379eb"
+    sequenceBindingSetId: ""
+    sequenceId: ""
+    shaderPackageIds: []
+    skeletonId: ""
+    skinnedMeshId: ""
+    sourcePath: ""
+    sourceResourceId: ""
+  type: "PrefabResource"
+  

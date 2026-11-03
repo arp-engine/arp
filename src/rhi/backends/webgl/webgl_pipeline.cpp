@@ -177,6 +177,14 @@ GLenum factor(BlendFactor v) noexcept
         return GL_DST_ALPHA;
     case BlendFactor::OneMinusDstAlpha:
         return GL_ONE_MINUS_DST_ALPHA;
+    case BlendFactor::SrcColor:
+        return GL_SRC_COLOR;
+    case BlendFactor::OneMinusSrcColor:
+        return GL_ONE_MINUS_SRC_COLOR;
+    case BlendFactor::DstColor:
+        return GL_DST_COLOR;
+    case BlendFactor::OneMinusDstColor:
+        return GL_ONE_MINUS_DST_COLOR;
     }
     std::terminate();
 }

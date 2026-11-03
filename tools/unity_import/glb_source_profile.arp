@@ -1,0 +1,66 @@
+import asset
+
+
+# Unity import tool profile v1. These are explicit admission caps owned by this
+# tool, not importer defaults or values inferred from a model filename. A file
+# outside the supported authored glTF subset fails with the native diagnostic.
+# Callers with a different workload may construct their own GlbSourceOptions.
+def make_options() -> asset.GlbSourceOptions:
+    var options: asset.GlbSourceOptions = asset.GlbSourceOptions()
+    options.maxSourceBytes = 67108864
+    options.maxImportBytes = 268435456
+    options.maxDecodedBytes = 134217728
+    options.maxSourceLabelBytes = 16384
+    options.maxJsonDepth = 32
+    options.maxJsonValues = 1048576
+    options.selectedScene = 0
+
+    options.maxBufferViews = 65536
+    options.maxAccessors = 65536
+    options.maxElements = 4194304
+    options.maxScalars = 16777216
+    options.maxDescriptorBytes = 8388608
+
+    options.maxNodes = 16384
+    options.maxEdges = 16384
+    options.maxScenes = 256
+    options.maxSceneRoots = 16384
+    options.maxSkins = 256
+    options.maxSkinJoints = 65536
+    options.maxMeshInstances = 16384
+    options.maxGraphWorkingBytes = 8388608
+
+    options.maxClips = 256
+    options.maxSamplers = 262144
+    options.maxChannels = 262144
+    options.maxTimeKeys = 2097152
+    options.maxOutputKeys = 2097152
+    options.maxValueScalars = 8388608
+    options.maxAnimationWorkingBytes = 16777216
+
+    options.maxJoints = 16384
+    options.maxKeyframes = 2097152
+    options.maxNameBytes = 8388608
+    options.matrixElementError = 0.00001
+
+    options.maxVertices = 4194304
+    options.maxIndices = 12582912
+    options.maxPrimitives = 65536
+    options.colorPolicy = "RejectColor0"
+    options.tangentPolicy = "AuthoredOrMaterialUnused"
+    options.unitVectorError = 0.0001
+    options.orthogonalityError = 0.0001
+    options.weightSumError = 0.0001
+
+    options.maxMaterials = 65536
+    options.maxTextures = 65536
+    options.maxImages = 65536
+    options.maxMaterialMetadataBytes = 16777216
+    options.maxEncodedImageBytes = 67108864
+    return options
+
+
+# The local acquisition quota admits the source plus at most 1 MiB of core IO
+# bookkeeping and the immutable Value carrier. Decoding has its own quota.
+def local_acquisition_bytes(options: asset.GlbSourceOptions) -> int64:
+    return options.maxSourceBytes + 1048576

@@ -7,6 +7,7 @@
 #include "core/io/filesystem_path.h"
 #include "core/io/staged_directory.h"
 #include "resource/asset_package_payload.h"
+#include "resource/detail/asset_package_output_builder.h"
 #include "resource/resource_source_io.h"
 #include "resource/terrain_asset_resource.h"
 #include "resource/vegetation_catalog_cooked.h"
@@ -176,6 +177,49 @@ bool discoverFiles(const std::filesystem::path& root,
                         .lexically_relative(root)));
     }
     return true;
+}
+
+void validateClosurePreparation(
+    const InternalAssetPackageDesc& package, const AssetPackageClosureBudget& budget)
+{
+    require(budget.maxResources && budget.maxResources <= AssetPackageClosureService::maxResources
+            && package.entries.size() <= budget.maxResources && budget.maxFiles
+            && budget.maxFileBytes && budget.maxTotalFileBytes && budget.maxDecodedBytes,
+        "PACKAGE-CLOSURE-BUDGET");
+    for (const auto value :
+        {budget.maxFiles, budget.maxFileBytes, budget.maxTotalFileBytes, budget.maxDecodedBytes})
+        require(static_cast<std::uint64_t>(value) <= static_cast<std::uint64_t>(INT64_MAX),
+            "PACKAGE-CLOSURE-BUDGET");
+    require(safePath(package.closurePath), "PACKAGE-CLOSURE-DECLARATION-REQUIRED");
+}
+
+core::pmr::String closureIndexYaml(const AssetPackageClosureBudget& budget,
+    const core::pmr::Vector<AssetPackageClosureFile>& files)
+{
+    auto index = Yaml::Node::mapping();
+    index["type"] = "AssetPackageClosure";
+    index["contractVersion"] = "resource.package.closure/v1";
+    index["status"] = "Contract Complete";
+    index["maxResources"] = static_cast<std::int64_t>(budget.maxResources);
+    index["maxFiles"] = static_cast<std::int64_t>(budget.maxFiles);
+    index["maxFileBytes"] = static_cast<std::int64_t>(budget.maxFileBytes);
+    index["maxTotalFileBytes"] = static_cast<std::int64_t>(budget.maxTotalFileBytes);
+    index["maxDecodedBytes"] = static_cast<std::int64_t>(budget.maxDecodedBytes);
+    index["files"] = Yaml::Node::sequence();
+    for (const auto& value : files) {
+        char hex[17]{};
+        std::snprintf(
+            hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(value.contentHash));
+        auto file = Yaml::Node::mapping();
+        file["path"] = value.path.c_str();
+        file["byteCount"] = static_cast<std::int64_t>(value.byteCount);
+        file["contentHash"] = hex;
+        index["files"].get_value_ref<Yaml::Node::sequence_type&>().push_back(std::move(file));
+    }
+    auto text = Yaml::serialize(index);
+    require(text.size() <= AssetPackageClosureService::maxMetadataBytes,
+        "PACKAGE-CLOSURE-METADATA-BUDGET");
+    return text;
 }
 
 struct ClosureDeclaration {
@@ -390,16 +434,7 @@ AssetPackageClosureResult AssetPackageClosureService::prepareIndex(
     result.maxDecodedBytes = budget.maxDecodedBytes;
     try {
         require(!codecs_ || codecs_->frozen(), "PACKAGE-CODEC-REGISTRY-NOT-FROZEN");
-        require(budget.maxResources && budget.maxResources <= maxResources
-                && package.entries.size() <= budget.maxResources && budget.maxFiles
-                && budget.maxFileBytes && budget.maxTotalFileBytes && budget.maxDecodedBytes,
-            "PACKAGE-CLOSURE-BUDGET");
-        for (const auto value : {budget.maxFiles,
-                 budget.maxFileBytes,
-                 budget.maxTotalFileBytes,
-                 budget.maxDecodedBytes})
-            require(value <= INT64_MAX, "PACKAGE-CLOSURE-BUDGET");
-        require(safePath(package.closurePath), "PACKAGE-CLOSURE-DECLARATION-REQUIRED");
+        validateClosurePreparation(package, budget);
         const auto written = InternalAssetPackageWriter().write(package, directory);
         if (!written.success) {
             result.diagnostics = written.diagnostics;
@@ -412,35 +447,16 @@ AssetPackageClosureResult AssetPackageClosureService::prepareIndex(
         core::pmr::Vector<core::pmr::String> paths(
             required.begin(), required.end(), &core::defaultCpuMemoryResource());
         std::sort(paths.begin(), paths.end());
-        auto index = Yaml::Node::mapping();
-        index["type"] = "AssetPackageClosure";
-        index["contractVersion"] = "resource.package.closure/v1";
-        index["status"] = "Contract Complete";
-        index["maxResources"] = static_cast<std::int64_t>(budget.maxResources);
-        index["maxFiles"] = static_cast<std::int64_t>(budget.maxFiles);
-        index["maxFileBytes"] = static_cast<std::int64_t>(budget.maxFileBytes);
-        index["maxTotalFileBytes"] = static_cast<std::int64_t>(budget.maxTotalFileBytes);
-        index["maxDecodedBytes"] = static_cast<std::int64_t>(budget.maxDecodedBytes);
-        index["files"] = Yaml::Node::sequence();
+        core::pmr::Vector<AssetPackageClosureFile> files{&core::defaultCpuMemoryResource()};
         std::size_t total = 0u;
         for (const auto& path : paths) {
             const auto bytes = core::readBinaryFile(contained(root, path),
                 std::min(budget.maxFileBytes, budget.maxTotalFileBytes - total));
             require(bytes.success, "PACKAGE-CLOSURE-FILE-BUDGET-OR-READ");
             total += bytes.bytes.size();
-            char hex[17]{};
-            std::snprintf(hex,
-                sizeof(hex),
-                "%016llx",
-                static_cast<unsigned long long>(hashBytes(bytes.bytes)));
-            auto file = Yaml::Node::mapping();
-            file["path"] = path.c_str();
-            file["byteCount"] = static_cast<std::int64_t>(bytes.bytes.size());
-            file["contentHash"] = hex;
-            index["files"].get_value_ref<Yaml::Node::sequence_type&>().push_back(std::move(file));
+            files.push_back({path, bytes.bytes.size(), hashBytes(bytes.bytes)});
         }
-        const auto text = Yaml::serialize(index);
-        require(text.size() <= maxMetadataBytes, "PACKAGE-CLOSURE-METADATA-BUDGET");
+        const auto text = closureIndexYaml(budget, files);
         const auto indexPath = root / std::filesystem::path(package.closurePath.c_str());
         std::filesystem::create_directories(indexPath.parent_path());
         core::ByteBuffer bytes(text.begin(), text.end(), &core::defaultCpuMemoryResource());
@@ -454,6 +470,139 @@ AssetPackageClosureResult AssetPackageClosureService::prepareIndex(
         result.diagnostics = error.diagnostic;
     } catch (...) {
         result.diagnostics = "PACKAGE-CLOSURE-PREPARATION-FAILED";
+    }
+    return result;
+}
+
+AssetPackageOutputResult AssetPackageClosureService::prepare(
+    const InternalAssetPackageDesc& package,
+    const std::filesystem::path& logicalRoot,
+    const AssetPackageSourceContext& sources,
+    const AssetPackageClosureBudget& payloadBudget,
+    const AssetPackageOutputBudget& outputBudget) const
+{
+    AssetPackageOutputResult result;
+    try {
+        detail::validatePackageOutputBudget(outputBudget);
+        validateClosurePreparation(package, payloadBudget);
+        for (const auto value : {payloadBudget.maxFiles,
+                 payloadBudget.maxFileBytes,
+                 payloadBudget.maxTotalFileBytes,
+                 payloadBudget.maxDecodedBytes})
+            detail::requirePackageOutput(value < SIZE_MAX, "PACKAGE-OUTPUT-BUDGET");
+        require(!codecs_ || codecs_->frozen(), "PACKAGE-CODEC-REGISTRY-NOT-FROZEN");
+        const auto rootText = core::FilePath::utf8(logicalRoot);
+        detail::requirePackageOutput(safePath(rootText)
+                && logicalRoot.lexically_normal() == logicalRoot && sources.resources.sources
+                && sources.resources.requirePreloadedSources && sources.resources.maxDecodedBytes
+                && sources.resources.maxDecodedBytes < SIZE_MAX
+                && sources.resources.policy.dependencyPolicy
+                    == ResourceDependencyPolicy::RequireDeclared
+                && !sources.resources.commitGate.allow && !sources.resources.commitGate.userData
+                && ((sources.origin.pathScope == core::io::FilePathScope::HostFilesystem
+                        && !sources.origin.mount)
+                    || (sources.origin.pathScope == core::io::FilePathScope::MountedResource
+                        && sources.origin.mount)),
+            "PACKAGE-OUTPUT-SOURCE-CONTEXT");
+        detail::PackageOutputPreparationScope scope(outputBudget.maxPreparationBytes);
+        auto metadata = detail::preparePackageMetadata(package, outputBudget);
+        if (!metadata.success)
+            return metadata;
+
+        auto input = sources;
+        input.resources.maxDecodedBytes =
+            std::min(payloadBudget.maxDecodedBytes, sources.resources.maxDecodedBytes);
+        AssetPackageClosureResult closure;
+        closure.package = package;
+        closure.maxDecodedBytes = input.resources.maxDecodedBytes;
+        core::pmr::UnorderedSet<core::pmr::String> required{&core::defaultCpuMemoryResource()};
+        if (!discoverFiles(
+                logicalRoot, closure, payloadBudget.maxFiles, required, codecs_, &input)) {
+            result.diagnosticId = "PACKAGE-OUTPUT-CLOSURE-INVALID";
+            result.diagnostics = std::move(closure.diagnostics);
+            return result;
+        }
+        core::pmr::Vector<core::pmr::String> paths(
+            required.begin(), required.end(), &core::defaultCpuMemoryResource());
+        std::sort(paths.begin(), paths.end());
+        detail::AssetPackageOutputBuilder builder(outputBudget);
+        for (auto& file : metadata.files)
+            builder.append(std::move(file));
+        std::size_t totalBytes = 0;
+        for (const auto& path : paths) {
+            const auto resolved = contained(logicalRoot, path, &input);
+            const auto logicalLimit =
+                std::min(payloadBudget.maxFileBytes, payloadBudget.maxTotalFileBytes - totalBytes);
+            auto bytes = readResourceSource(core::FilePath::utf8(resolved),
+                input.resources,
+                std::max<std::size_t>(1, logicalLimit),
+                true,
+                &input.origin);
+            if (!bytes.success) {
+                result.diagnosticId = "PACKAGE-OUTPUT-PAYLOAD-READ";
+                result.diagnostics = std::move(bytes.diagnostics);
+                return result;
+            }
+            require(bytes.bytes.size() <= logicalLimit, "PACKAGE-CLOSURE-FILE-BUDGET-OR-READ");
+            totalBytes += bytes.bytes.size();
+            closure.files.push_back({path, bytes.bytes.size(), hashBytes(bytes.bytes)});
+            AssetPackageOutputFile file;
+            file.role = AssetPackageOutputRole::Payload;
+            file.path = path;
+            file.bytes = std::move(bytes.bytes);
+            builder.append(std::move(file));
+        }
+        builder.appendText(AssetPackageOutputRole::Closure,
+            package.closurePath,
+            closureIndexYaml(payloadBudget, closure.files));
+        builder.sort();
+
+        // Validate exactly the owned output, including generated control files.
+        // Caller sources may retire as soon as this synchronous operation returns.
+        ResourceSourceSet complete;
+        for (const auto& file : builder.files()) {
+            ResourceSourceBuffer source;
+            std::filesystem::path resolved;
+            detail::requirePackageOutput(
+                resolveResourceSourcePath(logicalRoot, file.path, input.origin, resolved),
+                "PACKAGE-OUTPUT-PATH");
+            source.path = core::FilePath::utf8(resolved);
+            source.pathScope = input.origin.pathScope;
+            source.mount = input.origin.mount;
+            source.bytes = file.bytes;
+            detail::requirePackageOutput(
+                complete.add(std::move(source)), "PACKAGE-OUTPUT-PATH-COLLISION");
+        }
+        auto verification = input;
+        verification.resources.sources = &complete;
+        const auto closed = inspectSources(logicalRoot, verification, payloadBudget);
+        if (!closed.success) {
+            result.diagnosticId = "PACKAGE-OUTPUT-CLOSURE-INVALID";
+            result.diagnostics = closed.diagnostics;
+            return result;
+        }
+        ResourceManager decoded;
+        ResourceBudgetConfig decodeBudget;
+        decodeBudget.maxGraphNodes = outputBudget.maxResources;
+        decodeBudget.maxDecodedBytes = verification.resources.maxDecodedBytes;
+        decoded.setBudgetConfig(decodeBudget);
+        const auto loaded =
+            InternalAssetPackageReader().loadSources(logicalRoot, decoded, verification, codecs_);
+        if (!loaded.success) {
+            result.diagnosticId = "PACKAGE-OUTPUT-DECODE-INVALID";
+            result.diagnostics = loaded.diagnostics;
+            return result;
+        }
+        result.files = builder.take();
+        result.success = true;
+    } catch (const detail::PackageOutputFailure& error) {
+        result.diagnosticId = error.diagnostic;
+    } catch (const core::YamlContractError& error) {
+        result.diagnosticId = error.diagnostic;
+    } catch (const std::bad_alloc&) {
+        result.diagnosticId = "PACKAGE-OUTPUT-ALLOCATION";
+    } catch (...) {
+        result.diagnosticId = "PACKAGE-OUTPUT-PREPARATION";
     }
     return result;
 }

@@ -1,13 +1,16 @@
 """Create an offline standalone Windows package from a completed MinGW build."""
-import argparse,hashlib,shutil,subprocess,zipfile
+import argparse,shutil,subprocess,zipfile
 from pathlib import Path
+
+from survivors_package_inventory import PackageInventoryClient
 
 ROOT=Path(__file__).resolve().parents[1]
 def quoted(value):return "'"+str(value).replace("'","''")+"'"
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--build',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
+    p=argparse.ArgumentParser();p.add_argument('--build',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--io-tool',type=Path)
     args=p.parse_args();build=args.build.resolve();out=args.output.resolve()
     if out.exists():raise SystemExit('Output must be a new directory: '+str(out))
+    inventory=PackageInventoryClient(args.io_tool if args.io_tool else build/'arp_survivors_package_inventory.exe')
     exe=build/'arp_survivors.exe'
     imports=subprocess.check_output(['C:/mingw64/bin/objdump.exe','-p',str(exe)],text=True)
     dlls=sorted({line.split('DLL Name:',1)[1].strip() for line in imports.splitlines() if 'DLL Name:' in line})
@@ -64,8 +67,9 @@ Validation scope: Windows/Vulkan only. Not all-backend Production Ready.
     rows=['type: arp.survivors-package','contractVersion: 1','platform: windows-x64','backend: Vulkan','scriptExecutionModes: [DirectNativeV5, Interpreter]','systemDlls:']
     rows+=['  - '+quoted(dll) for dll in dlls if dll.lower() in system or dll.lower().startswith('api-ms-win-')]
     rows+=['files:']
-    for source in sorted(out.rglob('*')):
-        if source.is_file():rows+=['  - path: '+quoted(source.relative_to(out).as_posix()),'    bytes: '+str(source.stat().st_size),'    sha256: '+quoted(hashlib.sha256(source.read_bytes()).hexdigest())]
+    entries=inventory.inspect([source for source in sorted(out.rglob('*')) if source.is_file()],out)
+    for entry in entries:
+        rows+=['  - path: '+quoted(entry['path']),'    bytes: '+str(entry['bytes']),'    sha256: '+quoted(entry['sha256'])]
     (out/'package.yaml').write_text('\n'.join(rows)+'\n',encoding='utf-8')
     archive=out.with_suffix('.zip')
     with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:

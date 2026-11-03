@@ -1,0 +1,33 @@
+type: OriginalShaderDependentInputFixture
+contractVersion: 1
+sources:
+- path: scripts/compile_shaders.py
+  sha256: f706097b43b0d7e6f078fb6fe677ad293d98867845ab577aacd2680423b31bef
+  bytes: 206122
+- path: scripts/bindless_codegen.py
+  sha256: 6000b1652179e5b0a245f5f5b914046684592ec9e4c4c38a0e82efbe65ed4a67
+  bytes: 75424
+- path: scripts/webgl_shader_artifact.py
+  sha256: 13e822ba8ce01ab8fb95604fbeeefd6f1e5ddbec20cf265279cf2815264269ec
+  bytes: 20159
+- path: scripts/spirv_cross_api.py
+  sha256: d82681122f431bee8dca332428a62dc7a9c401c6238cca1969d5add25429bd32
+  bytes: 8021
+- path: scripts/gpu_visibility_codegen.py
+  sha256: 6d0983b26405cdf7c7a145be20659069914c8cb6c5af2666cdc6c8fd2af097c9
+  bytes: 1132
+- path: scripts/shader_bindings_codegen.py
+  sha256: 05ef877f46bd503d3f796609966655e5bd772ab85cf40ba5ac963afd5485f7c7
+  bytes: 58735
+- path: scripts/spirv_layout.py
+  sha256: 062d6ce6a42e7136c10a76f806e5554f8a8dcd0925153159d0461ebe3f33f7d6
+  bytes: 19622
+- path: scripts/slang_resource_switch.py
+  sha256: 15256046ffd939b10483837be42f98a8db5a340ea83e9ef2732cfde2ced34268
+  bytes: 1224
+- path: scripts/buffer_vector_record.py
+  sha256: ca33f0f9639f0e1e65e999cf8c218d632463d5c21fa95c173d833ac868a7aa19
+  bytes: 3536
+- path: scripts/bindless_zero_base_identity.py
+  sha256: 6afd753a7cabd711d43ab92cae00591f92e21e1fe9159bace3709e5dbeee4b33
+  bytes: 3696

@@ -1,10 +1,10 @@
 #include "editor/project/project_input_snapshot.h"
 
 #include "core/hash/sha256.h"
-#include "core/io/blocking_file_reader.h"
 #include "core/io/filesystem_path.h"
 #include "core/text/text_decoder.h"
 #include "core/text/utf8.h"
+#include "editor/io/editor_cold_host_read.h"
 
 #include <algorithm>
 
@@ -42,7 +42,7 @@ core::io::FileReadResult readHostInput(const std::filesystem::path& path, std::s
     // Version1 requires a positive budget; zero-byte identities still require
     // exactly zero returned bytes at verification, never a substitute byte.
     request.maxBytes = std::max<std::size_t>(1, maxBytes);
-    return core::io::BlockingFileReader().read(request);
+    return EditorColdHostRead::read(request);
 }
 
 std::string_view originalBytes(const core::io::FileReadResult& source)

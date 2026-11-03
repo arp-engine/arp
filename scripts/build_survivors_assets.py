@@ -3,14 +3,18 @@
 Input grid is Kenney's Tilesheet.txt: 12 x 11, 16px, packed PNG (no gap).
 Selections and animation edits below are explicit art decisions, not inferred
 resource semantics. Runtime consumes the generated PNG and versioned YAML.
+Run with --io-tool <build>/arp_survivors_package_inventory.exe; no direct file-read fallback.
 """
 from pathlib import Path
-import hashlib
+import argparse
+from io import BytesIO
 import math
 import shutil
 import struct
 import wave
 from PIL import Image, ImageDraw
+
+from survivors_package_inventory import PackageInventoryClient
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'examples/survivors/assets'
@@ -64,10 +68,16 @@ FONT = {
 '.':['0','0','0','0','0','1','1'], ' ':['0']*7,
 }
 
-def build():
+def build(io_tool):
+    source = PackageInventoryClient(io_tool).read_file(SOURCE)
+    try:
+        with Image.open(BytesIO(source.data), formats=["PNG"]) as image:
+            if image.size != (192, 176):
+                raise ValueError("SURVIVORS-AUTHORING-PACKED-GRID")
+            src = image.convert('RGBA')
+    except OSError as error:
+        raise ValueError("SURVIVORS-AUTHORING-PNG-INVALID") from error
     OUT.mkdir(parents=True, exist_ok=True)
-    src=Image.open(SOURCE).convert('RGBA')
-    assert src.size==(192,176), 'explicit packed-grid contract'
     atlas=Image.new('RGBA',(512,256))
     atlas.paste(src,(0,0))
     slices=[];sprites=[];animations=[]
@@ -159,9 +169,15 @@ contractVersion: 1
 source: https://kenney.nl/assets/tiny-dungeon
 download: https://kenney.nl/media/pages/assets/tiny-dungeon/f8422efb44-1674742415/kenney_tiny-dungeon.zip
 license: CC0-1.0
-sourcePngSha256: {hashlib.sha256(SOURCE.read_bytes()).hexdigest()}
+sourcePngSha256: {source.sha256}
 derivatives: Explicit second animation poses, bitmap alphabet, UI pixels and effects authored by ARP contributors.
 audio: Original offline synthesized event tones and two-voice loop by ARP contributors; CC0-1.0.
 ''',encoding='utf-8')
 
-if __name__=='__main__':build()
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--io-tool', type=Path, required=True)
+    parser.add_argument('--output', type=Path, default=OUT)
+    args = parser.parse_args()
+    OUT = args.output
+    build(args.io_tool)

@@ -3,9 +3,9 @@
 #include "editor/viewport/editor_scene_viewport_environment.h"
 #include "editor/viewport/editor_scene_viewport_pipeline_contract.h"
 #include "editor/viewport/editor_scene_viewport_sprite_contract.h"
+#include "editor/web/editor_web_startup_sources.h"
 #include "platform/render_system.h"
 #include "platform/render_system_ordered_profile.h"
-#include "shader/shader_reflection_cache.h"
 
 namespace arp::editor {
 // Explicit Prototype budgets include the 2048x3072 atlas and a complete editor
@@ -80,19 +80,18 @@ public:
         return platform::createRenderSystem(creation);
     }
 
-    static std::shared_ptr<rhi::RenderPipeline> spritePipeline(
-        platform::RenderSystem& system, core::pmr::String& diagnostic)
+    static std::shared_ptr<rhi::RenderPipeline> spritePipeline(platform::RenderSystem& system,
+        const EditorWebStartupSources& sources,
+        core::pmr::String& diagnostic)
     {
-        const auto loaded = shader::ShaderReflectionCache::loadFromFile(
-            "/artifacts/sprite/editor_viewport_sprite.reflection.yaml");
-        if (!loaded.success
-            || !validateEditorSceneViewportSpriteReflection(loaded.module.reflection)) {
+        if (!validateEditorSceneViewportSpriteReflection(sources.spriteReflection())) {
             diagnostic = "EDITOR-WEB-SPRITE-REFLECTION";
             return {};
         }
         platform::OrderedPipelineLoadDesc request;
-        request.artifactPath = "/artifacts/sprite/editor_viewport_sprite.webgl-program.yaml";
-        request.artifactBudget = {4 * MiB, 32 * MiB, 32 * MiB, 32};
+        request.artifactPath = EditorWebStartupLimits::programs[2];
+        request.artifactBudget = EditorWebStartupLimits::programBudget().original;
+        request.artifactBudget.source = &sources.shaders();
         request.maxUniformLeaves = 256;
         request.maxInterfaces = 32;
         request.maxTypeNodes = 1024;
@@ -106,25 +105,21 @@ public:
     }
 
     static std::shared_ptr<rhi::RenderPipeline> pbrPipeline(platform::RenderSystem& system,
+        const EditorWebStartupSources& sources,
         shader::ShaderReflection& reflection,
         core::pmr::String& diagnostic)
     {
-        const auto loaded = shader::ShaderReflectionCache::loadFromFile(
-            "/artifacts/pbr/editor_viewport_pbr.reflection.yaml");
-        if (!loaded.success) {
-            diagnostic = "EDITOR-WEB-PBR-REFLECTION";
-            return {};
-        }
         const auto surface = EditorSceneViewportSurfaceProfile::baseline();
         const auto contract = buildEditorSceneViewportPipelineContract(
-            loaded.module.reflection, "editor/viewport_pbr.slang", surface.color, surface.depth, 1);
+            sources.pbrReflection(), "editor/viewport_pbr.slang", surface.color, surface.depth, 1);
         if (!contract.valid()) {
             diagnostic = editorSceneViewportPipelineDiagnosticCode(contract.diagnostic);
             return {};
         }
         platform::OrderedPipelineLoadDesc request;
-        request.artifactPath = "/artifacts/pbr/editor_viewport_pbr.webgl-program.yaml";
-        request.artifactBudget = {4 * MiB, 32 * MiB, 32 * MiB, 32};
+        request.artifactPath = EditorWebStartupLimits::programs[3];
+        request.artifactBudget = EditorWebStartupLimits::programBudget().original;
+        request.artifactBudget.source = &sources.shaders();
         request.maxUniformLeaves = 256;
         request.maxInterfaces = 32;
         request.maxTypeNodes = 1024;
@@ -133,17 +128,18 @@ public:
         request.pipeline = contract.pipeline;
         request.pipeline.vertexShader = {};
         request.pipeline.fragmentShader = {};
-        reflection = loaded.module.reflection;
+        reflection = sources.pbrReflection();
         return system.createOrderedPipeline(request, diagnostic);
     }
 
-    static std::shared_ptr<rhi::RenderPipeline> environmentPipeline(
-        platform::RenderSystem& system, core::pmr::String& diagnostic)
+    static std::shared_ptr<rhi::RenderPipeline> environmentPipeline(platform::RenderSystem& system,
+        const EditorWebStartupSources& sources,
+        core::pmr::String& diagnostic)
     {
         platform::OrderedPipelineLoadDesc request;
-        request.artifactPath =
-            "/artifacts/environment/editor_viewport_environment.webgl-program.yaml";
-        request.artifactBudget = {4 * MiB, 32 * MiB, 32 * MiB, 32};
+        request.artifactPath = EditorWebStartupLimits::programs[1];
+        request.artifactBudget = EditorWebStartupLimits::programBudget().original;
+        request.artifactBudget.source = &sources.shaders();
         request.maxUniformLeaves = 256;
         request.maxInterfaces = 32;
         request.maxTypeNodes = 1024;
@@ -157,13 +153,15 @@ public:
         return system.createOrderedPipeline(request, diagnostic);
     }
 
-    static std::shared_ptr<rhi::RenderPipeline> pipeline(
-        platform::RenderSystem& system, core::pmr::String& diagnostic)
+    static std::shared_ptr<rhi::RenderPipeline> pipeline(platform::RenderSystem& system,
+        const EditorWebStartupSources& sources,
+        core::pmr::String& diagnostic)
     {
         using namespace rhi;
         platform::OrderedPipelineLoadDesc request;
-        request.artifactPath = "/artifacts/gui_unified.webgl-program.yaml";
-        request.artifactBudget = {4 * MiB, 32 * MiB, 32 * MiB, 32};
+        request.artifactPath = EditorWebStartupLimits::programs[0];
+        request.artifactBudget = EditorWebStartupLimits::programBudget().original;
+        request.artifactBudget.source = &sources.shaders();
         request.maxUniformLeaves = 256;
         request.maxInterfaces = 32;
         request.maxTypeNodes = 1024;

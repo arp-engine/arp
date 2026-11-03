@@ -1,0 +1,16 @@
+type: arp.cloud.cook-tool-byte-baseline
+contractVersion: 1
+platform: Windows/MinGW
+comparison: original tool before FileService host migration
+documentBudget: 4194304
+cases:
+- algorithmVersion: 2
+  source: tests/fixtures/cloud/reference.cook.yaml
+  sourceSha256: c7294bd08fc77e72c3869c756d30f7b61a40c9924a58f0dfd1251d3d449e5206
+  cookedBytes: 809367
+  cookedSha256: 0d789756170e9bd5ab6408eb7dfa0b3c90c4e844417568a036704d5d409aa195
+- algorithmVersion: 3
+  source: tests/fixtures/cloud/reference-v3.cook.yaml
+  sourceSha256: 0e7ac6cc5505b8cd4f60f14b33d7e1613a40065b878d429b3fa7fc24ad63cc4a
+  cookedBytes: 809467
+  cookedSha256: 5fa00ce4bd10aba74e0236d1442ef7ed64febe1af51e03d26f5c70266af6a03a

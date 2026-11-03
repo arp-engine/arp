@@ -18,6 +18,10 @@ FileBackendCapability ThreadPoolFallbackFileBackend::capability() const noexcept
         false,
         true,
         true,
+        false,
+        false,
+        false,
+        !workService_.closed(),
     };
 }
 

@@ -28,12 +28,18 @@ public:
     ~FileService() = default;
 
     FileBackendCapability capability() const noexcept;
+    FileBackendCapability capability(core::PoolHandle mount) const noexcept;
     // Pure admission/location validation; never opens or queries a file.
     FileReadResult validateRead(const FileReadRequest& request) const;
     FileIoStatus read(const FileReadRequest& request, FileReadCompletion completion) noexcept;
     FileIoStatus readText(
         const FileTextReadRequest& request, FileTextReadCompletion completion) noexcept;
     FileIoStatus query(const FileQueryRequest& request, FileQueryCompletion completion) noexcept;
+    FileSaveCapability saveCapability(core::PoolHandle mount) const noexcept;
+    // Ownership transfers at submission; no per-byte projection or payload copy.
+    FileIoStatus save(FileSaveRequest request, FileSaveCompletion completion) noexcept;
+    FileIoStatus receipt(
+        const FileSaveReceiptRequest& request, FileSaveReceiptCompletion completion) noexcept;
     FileServiceTelemetry telemetry() const noexcept;
 
     bool closed() const noexcept { return closed_; }

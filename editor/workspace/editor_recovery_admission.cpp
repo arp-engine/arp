@@ -24,6 +24,9 @@ bool EditorRecoveryAdmission::gate(
         return reject(diagnostic, "EDITOR-RECOVERY-LIVE-OWNER-INACTIVE");
     if (shell.projectBrowser_.sourceSnapshot())
         return reject(diagnostic, "EDITOR-RECOVERY-SOURCE-NOT-IMPLEMENTED");
+    for (const auto& document : shell.scriptDocuments_.documents())
+        if (document.sourceBound())
+            return reject(diagnostic, "EDITOR-RECOVERY-SOURCE-DOCUMENT-ADMISSION-REQUIRED");
     if (shell.authoringUiBlocked() || shell.activeTransformEditObjectId_ != 0
         || shell.sceneViewportGesture_ != EditorShell::SceneViewportGesture::None
         || shell.hierarchyDragging_ || shell.scriptDraggingSelection_

@@ -24,6 +24,11 @@ EM_JS(int,
     (void* context,
         const char* urlBytes,
         const char* rangeBytes,
+        int post,
+        const char* originBytes,
+        const char* tokenBytes,
+        const unsigned char* bodyBytes,
+        int bodyLength,
         char* header,
         int headerCapacity,
         unsigned char* scratch,
@@ -33,7 +38,13 @@ EM_JS(int,
     {
         // clang-format off
     const url = UTF8ToString(urlBytes);
-    if (new URL(url).origin !== location.origin) return 0;
+    let destination;
+    try { destination = new URL(url).origin; } catch (_) { return 0; }
+    if (post ? destination !== UTF8ToString(originBytes) : destination !== location.origin) return 0;
+    // Copy before returning to C++; no asynchronous continuation borrows
+    // request fields or a wasm heap view across await/memory growth.
+    const token = post ? UTF8ToString(tokenBytes) : '';
+    const postBody = post ? HEAPU8.slice(bodyBytes, bodyBytes + bodyLength) : undefined;
     const transfers = Module.arpCoreFileTransfers || (Module.arpCoreFileTransfers = new Map());
     if (transfers.has(context)) return 0;
     const entry = { controller: new AbortController(), reader: null, timer: null, poll: null };
@@ -54,12 +65,16 @@ EM_JS(int,
     }, pollMs);
     const range = UTF8ToString(rangeBytes);
     const requestHeaders = range ? {Range: range} : {};
+    if (post) {
+        requestHeaders.Authorization = 'Bearer ' + token;
+        requestHeaders['Content-Type'] = 'application/json';
+    }
     // Accept-Encoding is a forbidden browser request header. V1 refuses
-    // cross-origin reads and observable non-identity response encoding.
+    // anonymous cross-origin reads and observable non-identity response encoding.
     Promise.resolve().then(async () => {
         if (!live()) return;
-        const response = await fetch(url, {method: 'GET', headers: requestHeaders,
-            signal: entry.controller.signal, mode: 'same-origin', credentials: 'omit',
+        const response = await fetch(url, {method: post ? 'POST' : 'GET', headers: requestHeaders,
+            body: postBody, signal: entry.controller.signal, mode: post ? 'cors' : 'same-origin', credentials: 'omit',
             redirect: 'error', cache: 'no-store', referrerPolicy: 'no-referrer'});
         if (!live()) {
             if (response.body) response.body.cancel().catch(() => {});
@@ -171,6 +186,11 @@ ByteReadStatus FetchByteTransfer::start(const ByteReadDesc& desc,
     active_ = arpFetchStart(this,
         request.url.c_str(),
         request.range.c_str(),
+        request.operation == ByteReadRequest::Operation::BearerJsonPost,
+        request.credentialOrigin.c_str(),
+        request.bearerToken.c_str(),
+        reinterpret_cast<const unsigned char*>(request.requestBody.data()),
+        static_cast<int>(request.requestBody.size()),
         header_.data(),
         static_cast<int>(header_.size()),
         scratch_.data(),

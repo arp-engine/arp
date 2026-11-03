@@ -46,7 +46,10 @@ int main()
     assert(childValue.is_native_reference());
     auto* child = childValue.cast<arp::scene::GameObject*>();
     assert(child != nullptr);
-    assert(childValue.call("object_name").cast<arp::core::pmr::String>() == "child");
+    // Getter/setter pairs are generated as accessor properties. Calling the
+    // property as a method returns undefined even while the object is alive.
+    assert(childValue.class_()->get_field("object_name").is_property());
+    assert(childValue["object_name"].cast<arp::core::pmr::String>() == "child");
     assert(sceneValue
                .call("find_object_by_name_ref",
                    arp::core::pmr::String("child", &arp::core::defaultCpuMemoryResource()))
@@ -54,7 +57,7 @@ int main()
         == child);
     assert(sceneValue.call("destroy_object_ref", child).cast<bool>());
     assert(!childValue.native_reference_alive());
-    assert(childValue.call("object_name").is_undefined());
+    assert(childValue["object_name"].is_undefined());
     assert(sceneValue
             .call("find_object_by_name_ref",
                 arp::core::pmr::String("child", &arp::core::defaultCpuMemoryResource()))

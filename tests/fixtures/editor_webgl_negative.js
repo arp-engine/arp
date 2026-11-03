@@ -6,20 +6,13 @@ if(negativeCase==='derivatives'||negativeCase==='fragment-depth'||negativeCase==
   WebGLRenderingContext.prototype.getExtension=function(name){return name===denied?null:getExtension.call(this,name);};
 }
 if(negativeCase==='shader'){
-  Module.preRun=Module.preRun||[];
-  Module.preRun.push(()=>{
-    Module.addRunDependency('editor-negative-shader');
-    const deadline=performance.now()+60000;
-    const timer=setInterval(()=>{
-      const path='/artifacts/gui_unified.webgl-program.yaml';
-      if(Module.FS.analyzePath(path).exists){
-        clearInterval(timer);Module.FS.unlink(path);Module.removeRunDependency('editor-negative-shader');
-      }else if(performance.now()>deadline){
-        clearInterval(timer);Module.editorError='EDITOR-NEGATIVE-PRELOAD-DEADLINE';
-        Module.removeRunDependency('editor-negative-shader');
-      }
-    },10);
-  });
+  const originalFetch=globalThis.fetch;
+  const denied=new URL('editor-sources/shaders/gui_unified.webgl-program.yaml',location.href).href;
+  globalThis.fetch=function(input,...options){
+    const url=typeof input==='string'?input:input.url;
+    if(url===denied)return Promise.resolve(new Response('missing original publication',{status:404}));
+    return originalFetch.call(this,input,...options);
+  };
 }
 (async()=>{
   const deadline=performance.now()+60000;
@@ -47,7 +40,7 @@ if(negativeCase==='shader'){
       await wait(()=>!!Module.editorError);
       result.diagnostic=Module.editorError;
       result.success=!Module.editorState?.frames && (negativeCase==='derivatives'||negativeCase==='fragment-depth'||negativeCase==='srgb'
-        ?result.diagnostic.startsWith('RHI-WEBGL1-EXTENSION-'):result.diagnostic.includes('SHADER-'));
+        ?result.diagnostic.startsWith('RHI-WEBGL1-EXTENSION-'):result.diagnostic.includes('IO-HTTP-STATUS'));
     }
   }catch(error){result.error=String(error);}
   await fetch('/result',{method:'POST',body:JSON.stringify(result)});

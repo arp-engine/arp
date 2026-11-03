@@ -3,6 +3,7 @@
 #include "core/io/mounted_file_backend.h"
 #include "resource/resource_graph_executor.h"
 #include "resource/shader_artifact_resource.h"
+#include "tests/fixtures/shader_source_files.h"
 #include "tests/fixtures/unified_io_fixture.h"
 
 #include <algorithm>
@@ -61,30 +62,8 @@ enum class Mutation { None, MissingTarget, BadHash, BadUtf8, EmbeddedNul, Unknow
 
 // Fixture inventory is confined to the test's explicitly copied, finite tree.
 // Runtime HTTP acquisition receives neither this list nor a host source root.
-struct FixtureFiles {
-    core::pmr::Vector<resource::ResourceSourceBuffer> files;
-    core::pmr::Vector<core::pmr::String> directories;
-
-    explicit FixtureFiles(const std::filesystem::path& root)
-    {
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
-            const auto name = core::FilePath::utf8(entry.path().lexically_relative(root));
-            if (entry.is_directory())
-                directories.push_back(name);
-            if (entry.is_regular_file()) {
-                auto bytes = core::readBinaryFile(entry.path(), fileBytes);
-                assert(bytes.success);
-                resource::ResourceSourceBuffer source;
-                source.path = name;
-                source.bytes = std::move(bytes.bytes);
-                files.push_back(std::move(source));
-            }
-        }
-        assert(files.size() + directories.size() <= 512);
-        std::sort(directories.begin(), directories.end(), [](const auto& a, const auto& b) {
-            return a.size() == b.size() ? a < b : a.size() < b.size();
-        });
-    }
+struct FixtureFiles : shader_source_fixture::Files {
+    explicit FixtureFiles(const std::filesystem::path& root) : Files(root, fileBytes, 512) {}
 
     core::SharedPtr<MemoryFileBackend> memory(
         unsigned kind, Mutation mutation = Mutation::None) const

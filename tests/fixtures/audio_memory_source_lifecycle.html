@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><title>Audio memory source lifecycle</title>
+<script>
+var audioRoot=new URL('audio-memory-fixture/',location.href).href;
+var Module={arguments:[audioRoot],audioRequests:{},
+    onAbort:reason=>fetch('/result',{method:'POST',body:JSON.stringify({success:false,error:String(reason)})})};
+const audioFetch=globalThis.fetch;
+globalThis.fetch=function(input,...options){
+    const url=typeof input==='string'?input:input.url;
+    if(url && url.startsWith(audioRoot)){
+        const path=url.slice(audioRoot.length);
+        Module.audioRequests[path]=(Module.audioRequests[path]||0)+1;
+    }
+    return audioFetch.call(this,input,...options);
+};
+</script><script src="arp_audio_memory_source_lifecycle.js"></script>

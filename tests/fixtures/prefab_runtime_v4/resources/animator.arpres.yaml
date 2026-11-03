@@ -1,0 +1,18 @@
+format: ArpRuntimeResource
+version: 1
+resourceId: 3c71905f-6c79-42d9-a8e1-69549913fc23
+resourceType: AnimatorControllerResource
+alias: prefab/runtime/animator
+displayName: prefab/runtime/animator
+status: Prototype Complete
+contentHash: 1477385735
+dependencies: []
+payload:
+  fields:
+    defaultStateName: "idle"
+    name: "runtime-controller"
+    parameterCount: 1
+    sourcePath: ""
+    stateCount: 2
+  type: "AnimatorControllerResource"
+  

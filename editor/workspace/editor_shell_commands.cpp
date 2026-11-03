@@ -1,6 +1,7 @@
 #include "core/io/filesystem_path.h"
 #include "core/text/string_utils.h"
 #include "editor/workspace/editor_layout.h"
+#include "editor/workspace/editor_scene_script_policy.h"
 #include "editor/workspace/editor_scene_service_session.h"
 #include "editor/workspace/editor_shell.h"
 #include "editor/workspace/editor_shell_internal.h"
@@ -71,6 +72,9 @@ bool sceneInspectorKindForValueKind(
 
 void EditorShell::pollTasks()
 {
+    if (sourceReceiptPending())
+        (void)submitCommand(
+            AdvanceSourceReceiptCommand{sourceReceiptTaskId_}, EditorCommandOrigin::Internal);
     if (projectIoPending())
         (void)submitCommand(
             AdvanceProjectIoCommand{projectIoTaskId_}, EditorCommandOrigin::Internal);
@@ -87,9 +91,35 @@ void EditorShell::pollTasks()
 EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
 {
     return std::visit(
-        [this](const auto& command) -> EditorCommandOutcome {
+        [this, &payload](const auto& command) -> EditorCommandOutcome {
             using Command = std::decay_t<decltype(command)>;
-            if (projectIoPending() && !std::is_same_v<Command, AdvanceProjectIoCommand>
+            const bool concurrentScriptEdit = projectIoPending() && projectIo_->savingScript()
+                && !sourceScenePending()
+                && (std::is_same_v<Command, ReplaceScriptTextCommand>
+                    || std::is_same_v<Command, UndoScriptCommand>
+                    || std::is_same_v<Command, RedoScriptCommand>
+                    || std::is_same_v<Command, CloseScriptCommand>);
+            const bool concurrentProjectEdit = projectIoPending() && projectIo_->savingProject()
+                && !sourceScenePending()
+                && (std::is_same_v<Command, SetProjectSettingsCommand>
+                    || std::is_same_v<Command, RenameProjectCommand>);
+            const bool concurrentSceneEdit = !projectIoPending()
+                && std::any_of(scenePersistenceTasks_.begin(),
+                    scenePersistenceTasks_.end(),
+                    [](const auto& task) {
+                        return task.sourceSave && task.sourceSave->submitted();
+                    })
+                && (std::is_same_v<Command, SetSceneObjectNameCommand>
+                    || std::is_same_v<Command, SetSceneObjectTranslationCommand>
+                    || std::is_same_v<Command, SetSceneObjectTransformCommand>);
+            if (!sourceSceneApplying_
+                && (projectIoPending() || sourceScenePending() || sourceReceiptPending())
+                && !concurrentScriptEdit && !concurrentSceneEdit && !concurrentProjectEdit
+                && !std::is_same_v<Command, AdvanceProjectIoCommand>
+                && !std::is_same_v<Command, AdvanceSourceReceiptCommand>
+                && !std::is_same_v<Command, CancelSourceReceiptCommand>
+                && !std::is_same_v<Command, CompleteScenePersistenceCommand>
+                && !std::is_same_v<Command, CancelScenePersistenceCommand>
                 && !std::is_same_v<Command, EditorInputCommand>
                 && !std::is_same_v<Command, CancelProjectIoCommand>
                 && !std::is_same_v<Command, RequestEditorExitCommand>
@@ -103,14 +133,8 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
                 && !std::is_same_v<Command, GetSceneTransformSettingsQuery>)
                 return {false, false, EditorDiagnosticCode::WorkspaceBusy};
             if (projectBrowser_.sourceSnapshot()) {
-                if constexpr (std::is_same_v<Command, SaveProjectCommand>
-                    || std::is_same_v<Command, SaveSceneCommand>
-                    || std::is_same_v<Command, LoadSceneCommand>
-                    || std::is_same_v<Command, ExportSceneCommand>
-                    || std::is_same_v<Command, BuildTerrainResourceCommand>
-                    || std::is_same_v<Command, SaveScriptCommand>
-                    || std::is_same_v<Command, AddSceneScriptComponentCommand>
-                    || std::is_same_v<Command, SetSceneScriptFieldsCommand>)
+                if constexpr (std::is_same_v<Command, ExportSceneCommand>
+                    || std::is_same_v<Command, BuildTerrainResourceCommand>)
                     return {false, false, EditorDiagnosticCode::ProjectOperationFailed};
             }
             // Any independent command cancels a pending local reference drag.
@@ -204,7 +228,38 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
                 if (!gate.success)
                     return gate;
             }
-            if constexpr (std::is_same_v<Command, RequestEditorExitCommand>)
+            if constexpr (std::is_same_v<Command, PrepareSceneScriptAuthoringCommand>
+                || std::is_same_v<Command, AddSceneScriptComponentCommand>
+                || std::is_same_v<Command, SetSceneScriptFieldsCommand>
+                || std::is_same_v<Command, RemoveSceneComponentCommand>
+                || std::is_same_v<Command, DestroySceneObjectCommand>
+                || std::is_same_v<Command, UndoSceneCommand>
+                || std::is_same_v<Command, RedoSceneCommand>) {
+                bool needsSourceCheck = true;
+                if constexpr (std::is_same_v<Command, UndoSceneCommand>
+                    || std::is_same_v<Command, RedoSceneCommand>) {
+                    const auto& history = std::is_same_v<Command, UndoSceneCommand>
+                        ? sceneUndoHistory_
+                        : sceneRedoHistory_;
+                    needsSourceCheck = !history.empty()
+                        && (history.back().kind == SceneHistoryEntry::Kind::ScriptFields
+                            || (history.back().componentSnapshot
+                                && history.back().componentSnapshot->script)
+                            || (history.back().subtree
+                                && EditorScenePresence::containsScripts(*history.back().subtree)));
+                }
+                if (projectBrowser_.sourceSnapshot() && !sourceSceneApplying_ && needsSourceCheck
+                    && (sceneAuthoringVersion_ == EditorSceneScriptCodec::contractVersion
+                        || std::is_same_v<Command, PrepareSceneScriptAuthoringCommand>
+                        || std::is_same_v<Command, AddSceneScriptComponentCommand>
+                        || std::is_same_v<Command, SetSceneScriptFieldsCommand>))
+                    return beginSourceSceneAuthoring(payload);
+            }
+            if constexpr (std::is_same_v<Command, PrepareSceneScriptAuthoringCommand>)
+                return prepareSourceSceneScriptDomain();
+            else if constexpr (std::is_same_v<Command, ReloadSceneScriptsCommand>)
+                return reloadSceneScripts();
+            else if constexpr (std::is_same_v<Command, RequestEditorExitCommand>)
                 return requestEditorExit(command.discardChanges);
             else if constexpr (std::is_same_v<Command, GetSceneTransformSettingsQuery>) {
                 EditorCommandOutcome result;
@@ -222,6 +277,12 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
                 return advanceProjectIo(command.taskId);
             else if constexpr (std::is_same_v<Command, CancelProjectIoCommand>)
                 return cancelProjectIo(command.taskId);
+            else if constexpr (std::is_same_v<Command, SourceFileReceiptCommand>)
+                return observeSourceReceipt(command);
+            else if constexpr (std::is_same_v<Command, AdvanceSourceReceiptCommand>)
+                return advanceSourceReceipt(command.taskId);
+            else if constexpr (std::is_same_v<Command, CancelSourceReceiptCommand>)
+                return cancelSourceReceipt(command.taskId);
             else if constexpr (std::is_same_v<Command, NavigateProjectSourceCommand>)
                 return navigateSourceProject(command);
             else if constexpr (std::is_same_v<Command, CreateProjectCommand>)
@@ -815,6 +876,8 @@ EditorCommandOutcome EditorShell::execute(const EditorCommandPayload& payload)
                 return scenePersistenceTaskSnapshot(command.taskId);
             } else if constexpr (std::is_same_v<Command, CompleteScenePersistenceCommand>) {
                 return completeScenePersistence(command.taskId);
+            } else if constexpr (std::is_same_v<Command, CancelScenePersistenceCommand>) {
+                return cancelSourceScenePersistence(command.taskId);
             } else if constexpr (std::is_same_v<Command, GetEditorStateQuery>) {
                 EditorCommandOutcome result;
                 result.stateChanged = false;

@@ -16,7 +16,8 @@ public:
     SpriteAtlasResource(core::pmr::String id,
         core::pmr::String metadataPath,
         core::pmr::String pngPath,
-        std::size_t maxBytes);
+        std::size_t maxBytes,
+        resource::ResourceFileOrigin origin = {});
     resource::ResourceLoadResult load(
         resource::ResourceManager&, const resource::ResourceLoadContext&) override;
     bool collectFileReadIntents(resource::ResourceManager&,
@@ -32,6 +33,7 @@ public:
 private:
     core::pmr::String metadataPath_, pngPath_;
     std::size_t maxBytes_;
+    resource::ResourceFileOrigin sourceOrigin_;
     assets::DecodedImage image_;
     core::pmr::Vector<SpriteSlice> slices_{&core::defaultCpuMemoryResource()};
 };

@@ -8,6 +8,8 @@
 #include "assets/image_decoder.h"
 #include "core/hash/sha1.h"
 #include "core/io/file_io.h"
+#include "core/math/checked_integer_cast.h"
+#include "core/text/utf8.h"
 #include "resource/internal_asset_package.h"
 #include "resource/prefab_asset_resources.h"
 #include "resource/resource_manager.h"
@@ -22,6 +24,7 @@
 #include <filesystem>
 #include <fkYAML/node.hpp>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -32,6 +35,134 @@ using arp::reflection::hlist;
 using arp::scriptvm::Value;
 
 using YamlNode = fkyaml::node;
+
+const char* GlbSourceOptions::project(
+    arp::assets::AnimatedMeshSourceImportLimits& output) const noexcept
+{
+    arp::assets::AnimatedMeshSourceImportLimits candidate;
+    const auto copy = [](auto value, auto& destination) {
+        return arp::core::checkedIntegerCast(value, destination);
+    };
+    if (maxSourceLabelBytes <= 0 || static_cast<std::uint64_t>(maxSourceLabelBytes) >= SIZE_MAX
+        || maxSourceLabelBytes > maxImportBytes || !copy(maxSourceBytes, candidate.maxSourceBytes)
+        || !copy(maxImportBytes, candidate.maxImportBytes)
+        || !copy(maxDecodedBytes, candidate.maxDecodedBytes)
+        || !copy(maxJsonDepth, candidate.maxJsonDepth)
+        || !copy(maxJsonValues, candidate.maxJsonValues)
+        || !copy(selectedScene, candidate.selectedScene)
+        || !copy(maxBufferViews, candidate.layout.maxBufferViews)
+        || !copy(maxAccessors, candidate.layout.maxAccessors)
+        || !copy(maxElements, candidate.layout.maxElements)
+        || !copy(maxScalars, candidate.layout.maxScalars)
+        || !copy(maxDescriptorBytes, candidate.layout.maxDescriptorBytes)
+        || !copy(maxNodes, candidate.scene.maxNodes) || !copy(maxEdges, candidate.scene.maxEdges)
+        || !copy(maxScenes, candidate.scene.maxScenes)
+        || !copy(maxSceneRoots, candidate.scene.maxSceneRoots)
+        || !copy(maxSkins, candidate.scene.maxSkins)
+        || !copy(maxSkinJoints, candidate.scene.maxSkinJoints)
+        || !copy(maxMeshInstances, candidate.scene.maxMeshInstances)
+        || !copy(maxGraphWorkingBytes, candidate.scene.maxWorkingBytes)
+        || !copy(maxClips, candidate.animation.maxClips)
+        || !copy(maxSamplers, candidate.animation.maxSamplers)
+        || !copy(maxChannels, candidate.animation.maxChannels)
+        || !copy(maxTimeKeys, candidate.animation.maxTimeKeys)
+        || !copy(maxOutputKeys, candidate.animation.maxOutputKeys)
+        || !copy(maxValueScalars, candidate.animation.maxValueScalars)
+        || !copy(maxAnimationWorkingBytes, candidate.animation.maxWorkingBytes)
+        || !copy(maxJoints, candidate.skeleton.maxJoints)
+        || !copy(maxKeyframes, candidate.skeleton.maxKeyframes)
+        || !copy(maxNameBytes, candidate.skeleton.maxNameBytes)
+        || !copy(maxVertices, candidate.geometry.maxVertices)
+        || !copy(maxIndices, candidate.geometry.maxIndices)
+        || !copy(maxPrimitives, candidate.geometry.maxPrimitives)
+        || !copy(maxMaterials, candidate.materials.maxMaterials)
+        || !copy(maxTextures, candidate.materials.maxTextures)
+        || !copy(maxImages, candidate.materials.maxImages)
+        || !copy(maxMaterialMetadataBytes, candidate.materials.maxMetadataBytes)
+        || !copy(maxEncodedImageBytes, candidate.materials.maxEncodedImageBytes))
+        return "SCRIPT-GLB-SOURCE-OPTIONS";
+    candidate.skeleton.matrixElementError = matrixElementError;
+    candidate.geometry.unitVectorError = unitVectorError;
+    candidate.geometry.orthogonalityError = orthogonalityError;
+    candidate.geometry.weightSumError = weightSumError;
+    if (colorPolicy == "RejectColor0")
+        candidate.geometry.colorPolicy = arp::assets::AnimatedMeshColorPolicy::RejectColor0;
+    else if (colorPolicy == "DiscardValidatedRgba")
+        candidate.geometry.colorPolicy = arp::assets::AnimatedMeshColorPolicy::DiscardValidatedRgba;
+    else
+        return "SCRIPT-GLB-SOURCE-COLOR-POLICY";
+    if (tangentPolicy == "RequireAuthored")
+        candidate.geometry.tangentPolicy = arp::assets::AnimatedMeshTangentPolicy::RequireAuthored;
+    else if (tangentPolicy == "AuthoredOrMaterialUnused")
+        candidate.geometry.tangentPolicy =
+            arp::assets::AnimatedMeshTangentPolicy::AuthoredOrMaterialUnused;
+    else
+        return "SCRIPT-GLB-SOURCE-TANGENT-POLICY";
+    if (const auto* id = arp::assets::validateAnimatedMeshSourceImportLimits(candidate))
+        return id;
+    output = candidate;
+    return nullptr;
+}
+
+String GlbSourceOptions::validate() const
+{
+    arp::assets::AnimatedMeshSourceImportLimits limits;
+    const auto* id = project(limits);
+    return String(id ? id : "", &arp::core::defaultCpuMemoryResource());
+}
+
+String ImportedModel::diagnosticId() const
+{
+    return String(
+        sourceDiagnosticId ? sourceDiagnosticId : "", &arp::core::defaultCpuMemoryResource());
+}
+
+ImportedModel importGlbBytes(
+    const String& sourceLabel, Value bytes, const GlbSourceOptions& options)
+{
+    const auto fail = [](const char* id) {
+        ImportedModel result;
+        result.sourceDiagnosticId = id;
+        try {
+            result.diagnostics = id;
+        } catch (const std::bad_alloc&) {
+            // Native diagnostics stay observable even when owned text cannot allocate.
+        }
+        return result;
+    };
+    arp::assets::AnimatedMeshSourceImportLimits limits;
+    if (const auto* id = options.project(limits))
+        return fail(id);
+    if (sourceLabel.empty()
+        || sourceLabel.size() > static_cast<std::uint64_t>(options.maxSourceLabelBytes)
+        || sourceLabel.find('\0') != String::npos || arp::core::Utf8Decoder::validate(sourceLabel))
+        return fail("SCRIPT-GLB-SOURCE-LABEL");
+    const auto* source = arp::scriptvm::checkedOwnedValuePayload<arp::scriptvm::ScriptBytes>(bytes);
+    if (!source)
+        return fail("SCRIPT-GLB-SOURCE-BYTES-TYPE");
+    try {
+        auto quota = arp::core::currentCpuMemoryQuota();
+        std::optional<arp::core::CpuMemoryQuotaScope> scope;
+        if (quota) {
+            if (!quota->limitBytes() || quota->limitBytes() > limits.maxImportBytes)
+                return fail("ASSET-ANIMATED-SOURCE-QUOTA-LIMIT");
+        } else {
+            quota = arp::core::makeShared<arp::core::CpuMemoryQuota>(limits.maxImportBytes);
+            scope.emplace(quota);
+        }
+        auto imported = arp::assets::importAnimatedMeshFromGlbBytes(
+            {source->data.data(), source->data.size()}, limits);
+        if (!imported.success)
+            return fail(imported.diagnosticId);
+        ImportedModel result;
+        result.source = sourceLabel;
+        result.asset = std::move(imported.asset);
+        result.success = true;
+        return result;
+    } catch (const std::bad_alloc&) {
+        return fail("SCRIPT-GLB-SOURCE-IMPORT-BUDGET");
+    }
+}
 
 String uuidFromDigest(const std::uint8_t* digest)
 {
@@ -109,7 +240,7 @@ Value key(const char* name)
 
 template <typename T> Value numberList(const T* values, std::size_t count)
 {
-    hlist list(hlist::allocator_type(&arp::core::defaultCpuMemoryResource()));
+    hlist list((hlist::allocator_type(&arp::core::defaultCpuMemoryResource())));
     list.reserve(count);
     for (std::size_t index = 0; index < count; ++index) {
         list.emplace_back(arp::scriptvm::makeFloat(values[index]));
@@ -550,7 +681,7 @@ Value ImportedModel::toRecord() const
     record[key("source")] = Value{source};
     record[key("diagnostics")] = Value{diagnostics};
 
-    hlist vertices(hlist::allocator_type(&arp::core::defaultCpuMemoryResource()));
+    hlist vertices((hlist::allocator_type(&arp::core::defaultCpuMemoryResource())));
     vertices.reserve(asset.mesh.vertices.size());
     for (const auto& vertex : asset.mesh.vertices) {
         hdict value{arp::core::pmr::Map<Value, Value>::allocator_type(
@@ -563,14 +694,14 @@ Value ImportedModel::toRecord() const
     }
     record[key("vertices")] = Value{std::move(vertices)};
 
-    hlist indices(hlist::allocator_type(&arp::core::defaultCpuMemoryResource()));
+    hlist indices((hlist::allocator_type(&arp::core::defaultCpuMemoryResource())));
     indices.reserve(asset.mesh.indices.size());
     for (const auto index : asset.mesh.indices) {
         indices.emplace_back(arp::scriptvm::makeInt64(index));
     }
     record[key("indices")] = Value{std::move(indices)};
 
-    hlist submeshes(hlist::allocator_type(&arp::core::defaultCpuMemoryResource()));
+    hlist submeshes((hlist::allocator_type(&arp::core::defaultCpuMemoryResource())));
     submeshes.reserve(asset.mesh.submeshes.size());
     for (const auto& submesh : asset.mesh.submeshes) {
         hdict value{arp::core::pmr::Map<Value, Value>::allocator_type(
@@ -582,7 +713,7 @@ Value ImportedModel::toRecord() const
     }
     record[key("submeshes")] = Value{std::move(submeshes)};
 
-    hlist joints(hlist::allocator_type(&arp::core::defaultCpuMemoryResource()));
+    hlist joints((hlist::allocator_type(&arp::core::defaultCpuMemoryResource())));
     joints.reserve(asset.skeleton.joints.size());
     for (const auto& joint : asset.skeleton.joints) {
         hdict value{arp::core::pmr::Map<Value, Value>::allocator_type(
@@ -594,7 +725,7 @@ Value ImportedModel::toRecord() const
     }
     record[key("joints")] = Value{std::move(joints)};
 
-    hlist clips(hlist::allocator_type(&arp::core::defaultCpuMemoryResource()));
+    hlist clips((hlist::allocator_type(&arp::core::defaultCpuMemoryResource())));
     clips.reserve(asset.clips.size());
     for (const auto& clip : asset.clips) {
         hdict value{arp::core::pmr::Map<Value, Value>::allocator_type(

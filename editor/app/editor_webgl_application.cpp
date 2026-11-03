@@ -1,5 +1,8 @@
 #include "core/diagnostics/diagnostic_error.h"
 #include "core/io/filesystem_path.h"
+#include "editor/app/editor_project_source_host.h"
+#include "editor/app/editor_web_startup_host.h"
+#include "editor/app/editor_workspace_connection_profile.h"
 #include "editor/ingress/editor_platform_input_router.h"
 #include "editor/ingress/platform_input_adapter.h"
 #include "editor/remote/editor_remote_protocol.h"
@@ -23,11 +26,12 @@
 
 // clang-format off
 EM_JS(void, editorPublish, (int frames, int draws, int objects, int dirty, int busy,
-    int scriptDirty, const char* message), {
+    int scriptDirty, int connected, int writable, const char* message), {
     const state = Module.editorState || (Module.editorState = {});
     Object.assign(state, {frames, draws, objects, dirty: !!dirty, busy: !!busy,
         scriptDirty: !!scriptDirty, message: UTF8ToString(message), backend: 'WebGL1',
-        gpuCompletion: false, persistent: false});
+        gpuCompletion: false, connectedWorkspace: !!connected,
+        workspaceReadOnly: !!connected && !writable, persistent: !!connected && !!writable});
     if (Module.onEditorState) Module.onEditorState(state);
 });
 EM_JS(void, editorFatal, (const char* message), {
@@ -44,6 +48,13 @@ EM_JS(int, editorViewportValidationRequested, (), {
     return new URLSearchParams(location.search).has('viewport-smoke') ? 1 : 0;
 });
 EM_JS(void, editorCatalogValidationPassed, (), { Module.editorCatalogValidated = true; });
+EM_JS(int, editorStartupBaseUrl, (int role, char* output, int capacity), {
+    const paths=['editor-sources/ui/','editor-sources/fonts/','editor-sources/shaders/'];
+    if(role<0||role>=paths.length)return 0;
+    const value=new URL(paths[role],location.href).href;
+    if(lengthBytesUTF8(value)>=capacity)return 0;
+    stringToUTF8(value,output,capacity);return 1;
+});
 // clang-format on
 
 namespace arp::editor {
@@ -56,10 +67,11 @@ public:
         shell_.reset();
     }
 
-    void create();
+    void create(core::SharedPtr<const EditorWebStartupSources>);
     void tick();
     bool action(core::StringView, core::StringView);
     bool importWorkspace(core::StringView);
+    bool connectWorkspace(core::StringView, core::StringView);
     const char* remoteRequest(core::StringView method,
         core::StringView path,
         core::StringView body,
@@ -99,15 +111,24 @@ public:
 private:
     core::UniquePtr<EditorShell> loadShell(const std::filesystem::path& root);
     bool restoreCandidatePresentation();
+    bool acceptsWorkspaceReplacement() const;
+    void advanceSourceCandidate();
+    void discardSourceCandidate(std::string_view);
+    static constexpr std::size_t maxConnectionBytes = 64 * 1024;
+    static constexpr std::size_t maxConnectionMessageBytes = 4096;
 
     EditorResponse command(EditorCommandPayload value)
     {
         return shell_->submitCommand(std::move(value));
     }
 
+    core::SharedPtr<const EditorWebStartupSources> startupSources_;
     platform::WindowSystem windows_;
     platform::PlatformWindow window_;
     input::InputSystem input_{{}};
+    // Both hosts outlive their Shell and all private file callbacks.
+    core::UniquePtr<EditorProjectSourceHost> sourceHost_, candidateSourceHost_;
+    core::UniquePtr<EditorWorkspaceConnectionProfile> candidateConnection_;
     core::UniquePtr<EditorShell> shell_, candidate_;
     std::optional<BrowserWorkspace::Staged> staged_, workspace_;
     std::optional<EditorUiAssets> assets_;
@@ -123,12 +144,14 @@ private:
     std::uint64_t exportTaskId_ = 0, candidateTaskId_ = 0;
     int width_ = 1440, height_ = 810;
     bool exportPending_ = false;
+    bool sourceOpening_ = false;
     core::UniquePtr<EditorRemoteProtocol> remote_;
     core::pmr::String remoteSession_, remoteResponse_;
     int remoteStatus_ = 503;
 };
 
 core::UniquePtr<BrowserEditor> app;
+core::UniquePtr<EditorWebStartupHost> startup;
 
 const char* BrowserEditor::remoteRequest(core::StringView method,
     core::StringView path,
@@ -177,7 +200,7 @@ const char* BrowserEditor::remoteRequest(core::StringView method,
 core::UniquePtr<EditorShell> BrowserEditor::loadShell(const std::filesystem::path& root)
 {
     auto shell = core::makeUnique<EditorShell>();
-    const auto loaded = shell->load("/app/editor/resources/editor.arpui", root);
+    const auto loaded = shell->loadPreparedUi(startupSources_->ui().document(), root);
     if (!loaded.ok())
         throw core::DiagnosticError(loaded.diagnostic().message);
     if (assets_)
@@ -189,8 +212,12 @@ core::UniquePtr<EditorShell> BrowserEditor::loadShell(const std::filesystem::pat
     return shell;
 }
 
-void BrowserEditor::create()
+void BrowserEditor::create(core::SharedPtr<const EditorWebStartupSources> sources)
 {
+    if (!sources)
+        throw core::DiagnosticError("EDITOR-WEB-STARTUP-OWNER-MISSING");
+    startupSources_ = std::move(sources);
+    message_.reserve(maxConnectionMessageBytes);
     core::requireSuccessfulResult(windows_.initialize(), "EDITOR-WEB-WINDOW");
     platform::WindowDesc window;
     window.title = "ARP Editor WebGL";
@@ -209,18 +236,20 @@ void BrowserEditor::create()
     auto authored = shell_->drawCommands();
     if (!authored.ok())
         throw core::DiagnosticError(authored.diagnostics());
-    assets_.emplace(EditorUiAssets::build(*shell_, "/app/editor/resources", authored.commands()));
+    assets_.emplace(
+        EditorUiAssets::buildPrepared(*shell_, startupSources_->ui(), authored.commands()));
     if (!assets_->ok())
         throw core::DiagnosticError(assets_->diagnostic());
     system_ = BrowserRendering::create();
     if (!system_.valid())
         throw core::DiagnosticError(system_.diagnostics());
     core::pmr::String diagnostic;
-    pipelines_[3] = BrowserRendering::pipeline(system_, diagnostic);
-    pipelines_[2] = BrowserRendering::environmentPipeline(system_, diagnostic);
-    pipelines_[1] = BrowserRendering::spritePipeline(system_, diagnostic);
+    pipelines_[3] = BrowserRendering::pipeline(system_, *startupSources_, diagnostic);
+    pipelines_[2] = BrowserRendering::environmentPipeline(system_, *startupSources_, diagnostic);
+    pipelines_[1] = BrowserRendering::spritePipeline(system_, *startupSources_, diagnostic);
     shader::ShaderReflection pbrReflection;
-    pipelines_[0] = BrowserRendering::pbrPipeline(system_, pbrReflection, diagnostic);
+    pipelines_[0] =
+        BrowserRendering::pbrPipeline(system_, *startupSources_, pbrReflection, diagnostic);
     for (const auto& pipeline : pipelines_)
         if (!pipeline)
             throw core::DiagnosticError(diagnostic);
@@ -288,15 +317,22 @@ bool BrowserEditor::action(core::StringView action, core::StringView arg)
     if (action == "control")
         return command(ActivateControlCommand(arg)).status == EditorResponseStatus::Completed;
     if (action == "script")
-        return shell_->openScriptFile(shell_->projectRoot() / std::filesystem::path(arg));
+        return command(OpenScriptCommand{core::pmr::String(arg)}).status
+            == EditorResponseStatus::Completed;
     if (action == "save-script")
         return shell_->saveScript();
+    if (action == "reload-scripts")
+        return command(ReloadSceneScriptsCommand{}).status == EditorResponseStatus::Completed;
     if (action == "save-project")
         return command(SaveProjectCommand{}).status == EditorResponseStatus::Completed;
     if (action == "replace-script")
         return command(ReplaceScriptTextCommand(shell_->activeScriptDocumentId(), arg)).status
             == EditorResponseStatus::Completed;
     if (action == "save-scene" || action == "export") {
+        if (action == "export" && sourceHost_) {
+            message_ = "Connected workspaces save to their source; archive export is unavailable.";
+            return false;
+        }
         auto state = command(GetEditorStateQuery{}).snapshot;
         if (state.sceneIoPending || state.projectSavePending || state.sceneExportPending)
             return false;
@@ -312,7 +348,8 @@ bool BrowserEditor::action(core::StringView action, core::StringView arg)
             return false;
         exportPending_ = action == "export";
         exportTaskId_ = response.snapshot.scenePersistenceTaskId;
-        message_ = "Saving scene to virtual workspace...";
+        message_ = sourceHost_ ? "Saving scene to connected workspace..."
+                               : "Saving scene to virtual workspace...";
         return true;
     }
     if (action == "reopen") {
@@ -326,9 +363,7 @@ bool BrowserEditor::action(core::StringView action, core::StringView arg)
 
 bool BrowserEditor::importWorkspace(core::StringView source)
 {
-    const auto state = command(GetEditorStateQuery{}).snapshot;
-    if (candidate_ || exportPending_ || state.sceneIoPending || state.sceneDirty
-        || shell_->hasUnsavedScripts() || state.projectDirty) {
+    if (!acceptsWorkspaceReplacement()) {
         message_ = "Save/export current changes before importing a workspace";
         return false;
     }
@@ -352,11 +387,139 @@ bool BrowserEditor::importWorkspace(core::StringView source)
     }
 }
 
+bool BrowserEditor::acceptsWorkspaceReplacement() const
+{
+    const auto state = shell_->submitCommand(GetEditorStateQuery{}).snapshot;
+    const auto uncertain = [](const ProjectSourceSaveReceipt& save) {
+        return save.terminal && !save.baselineRefreshed
+            && save.outcome.commitState == core::io::FileCommitState::OutcomeUnknown;
+    };
+    return !candidate_ && !exportPending_ && !state.sceneIoPending && !state.projectSavePending
+        && !state.sceneExportPending && state.projectIoTaskStatus != ProjectIoStatus::Pending
+        && state.sourceReceiptTaskStatus != ProjectIoStatus::Pending && !state.sceneDirty
+        && !state.projectDirty && !shell_->hasUnsavedScripts()
+        && !uncertain(state.scriptSaveReceipt) && !uncertain(state.sceneSaveReceipt)
+        && !uncertain(state.projectSaveReceipt);
+}
+
+bool BrowserEditor::connectWorkspace(core::StringView yaml, core::StringView token)
+{
+    if (!acceptsWorkspaceReplacement()) {
+        message_ =
+            "Finish pending operations and resolve unsaved or uncertain saves before connecting.";
+        return false;
+    }
+    const char* diagnostic = nullptr;
+    auto profile =
+        EditorWorkspaceConnectionProfile::decode(yaml, token, maxConnectionBytes, diagnostic);
+    if (!profile) {
+        message_ = diagnostic;
+        return false;
+    }
+    try {
+        auto host = core::makeUnique<EditorProjectSourceHost>();
+        // Private UI/bootstrap data is never a fallback for unavailable remote
+        // project bytes. Only a successful original source-open can publish it.
+        auto candidate = loadShell("/workspace/default");
+        core::pmr::String message("Connecting workspace...");
+        message.reserve(maxConnectionMessageBytes);
+        if (host->connectRemote(profile->io, profile->editor) != core::io::FileIoStatus::Accepted) {
+            message_ = "EDITOR-WEB-WORKSPACE-CONNECTION-NOT-ACCEPTED";
+            return false;
+        }
+        candidate_ = std::move(candidate);
+        candidateSourceHost_ = std::move(host);
+        candidateConnection_ = std::move(profile);
+        sourceOpening_ = false;
+        candidateTaskId_ = 0;
+        message_.swap(message);
+        return true;
+    } catch (...) {
+        message_ = "EDITOR-WEB-WORKSPACE-CONNECTION-PREPARATION";
+        return false;
+    }
+}
+
+void BrowserEditor::discardSourceCandidate(std::string_view diagnostic)
+{
+    if (diagnostic.size() <= maxConnectionMessageBytes)
+        message_.assign(diagnostic.data(), diagnostic.size());
+    else
+        message_ = "EDITOR-WEB-WORKSPACE-DIAGNOSTIC-BUDGET";
+    candidate_.reset();
+    candidateSourceHost_.reset();
+    candidateConnection_.reset();
+    sourceOpening_ = false;
+}
+
+void BrowserEditor::advanceSourceCandidate()
+try {
+    using S = EditorProjectSourceHost::ConnectionStatus;
+    candidateSourceHost_->dispatch();
+    const auto status = candidateSourceHost_->connectionStatus();
+    if (status == S::Connecting)
+        return;
+    if (status == S::Failed) {
+        discardSourceCandidate(candidateSourceHost_->diagnostic()
+                ? candidateSourceHost_->diagnostic()
+                : "EDITOR-WEB-WORKSPACE-CONNECTION-FAILED");
+        return;
+    }
+    if (!sourceOpening_) {
+        if (!candidateSourceHost_->bindRemote(*candidate_)) {
+            discardSourceCandidate("EDITOR-WEB-WORKSPACE-BIND-FAILED");
+            return;
+        }
+        OpenProjectCommand open{candidateConnection_->projectRoot, true};
+        open.source = "workspace";
+        const auto accepted = candidate_->submitCommand(std::move(open));
+        if (accepted.status != EditorResponseStatus::Completed) {
+            discardSourceCandidate("EDITOR-WEB-WORKSPACE-PROJECT-NOT-ACCEPTED");
+            return;
+        }
+        candidateTaskId_ = accepted.snapshot.projectIoTaskId;
+        sourceOpening_ = true;
+    }
+    candidate_->pollTasks();
+    const auto state = candidate_->submitCommand(GetEditorStateQuery{}).snapshot;
+    if (state.projectIoTaskStatus == ProjectIoStatus::Pending)
+        return;
+    if (state.projectIoTaskId != candidateTaskId_
+        || state.projectIoTaskStatus != ProjectIoStatus::Succeeded) {
+        discardSourceCandidate(state.projectIoDiagnostic.empty()
+                ? std::string_view("EDITOR-WEB-WORKSPACE-PROJECT-FAILED")
+                : std::string_view(state.projectIoDiagnostic));
+        return;
+    }
+    core::pmr::String ready(candidateSourceHost_->remoteWritable()
+            ? "Connected workspace. Save changes before closing."
+            : "Connected workspace (read-only).");
+    ready.reserve(maxConnectionMessageBytes);
+    if (const auto* id = viewport_.releaseProjectResourcesAfterOrderedIssue()) {
+        discardSourceCandidate(id);
+        return;
+    }
+    // Destroy the retired Shell before its host stops producers and drains
+    // callbacks. Then retire any old virtual filesystem workspace.
+    shell_ = std::move(candidate_);
+    sourceHost_ = std::move(candidateSourceHost_);
+    workspace_.reset();
+    candidateConnection_.reset();
+    sourceOpening_ = false;
+    message_.swap(ready);
+} catch (...) {
+    discardSourceCandidate("EDITOR-WEB-WORKSPACE-PROJECT-PREPARATION");
+}
+
 void BrowserEditor::tick()
 {
     const bool replacingWorkspace = bool(candidate_);
+    if (sourceHost_)
+        sourceHost_->dispatch();
     shell_->pollTasks();
-    if (candidate_) {
+    if (candidateSourceHost_)
+        advanceSourceCandidate();
+    else if (candidate_) {
         candidate_->pollTasks();
         const auto state = candidate_->submitCommand(GetEditorStateQuery{}).snapshot;
         if (!state.sceneIoPending) {
@@ -368,8 +531,11 @@ void BrowserEditor::tick()
                 message_ += task.scenePersistenceTaskDiagnostic;
             } else if (!restoreCandidatePresentation()) {
                 message_ = "EDITOR-WEB-IMPORT-SCRIPT-PRESENTATION-FAILED";
+            } else if (const auto* id = viewport_.releaseProjectResourcesAfterOrderedIssue()) {
+                message_ = id;
             } else {
                 shell_ = std::move(candidate_);
+                sourceHost_.reset();
                 workspace_.reset();
                 workspace_.emplace(std::move(*staged_));
                 message_ = "Imported into virtual workspace; export to keep changes";
@@ -424,6 +590,8 @@ void BrowserEditor::tick()
             shell_->sceneDirty(),
             true,
             shell_->hasUnsavedScripts(),
+            bool(sourceHost_),
+            sourceHost_ && sourceHost_->remoteWritable(),
             message_.c_str());
         return;
     }
@@ -525,8 +693,12 @@ void BrowserEditor::tick()
         int(commands_.size()),
         int(shell_->sceneDocument().hierarchyEntries().size()),
         state.sceneDirty || state.projectDirty,
-        state.sceneIoPending || bool(candidate_),
+        state.sceneIoPending || bool(candidate_)
+            || state.projectIoTaskStatus == ProjectIoStatus::Pending
+            || state.sourceReceiptTaskStatus == ProjectIoStatus::Pending,
         shell_->hasUnsavedScripts(),
+        bool(sourceHost_),
+        sourceHost_ && sourceHost_->remoteWritable(),
         message_.c_str());
 }
 
@@ -563,6 +735,14 @@ try {
 extern "C" EMSCRIPTEN_KEEPALIVE int editor_import_workspace(const char* source)
 {
     return arp::editor::app && arp::editor::app->importWorkspace(source);
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int editor_connect_workspace(const char* yaml, const char* token)
+try {
+    return yaml && token && arp::editor::app && arp::editor::app->connectWorkspace(yaml, token);
+} catch (...) {
+    // Configuration/transport rejection must not stop the editor or echo secrets.
+    return 0;
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE const char* editor_script_text()
@@ -613,14 +793,34 @@ extern "C" EMSCRIPTEN_KEEPALIVE double editor_gpu_live_resources()
 
 int main()
 try {
-    arp::editor::app = arp::core::makeUnique<arp::editor::BrowserEditor>();
-    arp::editor::app->create();
+    std::array<arp::core::pmr::String, 3> urls;
+    for (std::size_t i = 0; i < urls.size(); ++i) {
+        std::array<char, 4096> value{};
+        if (!editorStartupBaseUrl(static_cast<int>(i), value.data(), value.size()))
+            throw arp::core::DiagnosticError("EDITOR-WEB-STARTUP-URL-BUDGET");
+        urls[i] = value.data();
+    }
+    arp::editor::startup = arp::core::makeUnique<arp::editor::EditorWebStartupHost>(urls);
     emscripten_set_main_loop(
         [] {
             try {
+                if (arp::editor::startup) {
+                    auto& host = *arp::editor::startup;
+                    host.poll();
+                    if (!host.done())
+                        return;
+                    if (!host.ready())
+                        throw arp::core::DiagnosticError(host.diagnostic());
+                    auto candidate = arp::core::makeUnique<arp::editor::BrowserEditor>();
+                    candidate->create(host.sources());
+                    arp::editor::app = std::move(candidate);
+                    arp::editor::startup.reset();
+                    return;
+                }
                 arp::editor::app->tick();
             } catch (const std::exception& error) {
                 editorFatal(error.what());
+                arp::editor::startup.reset();
                 emscripten_cancel_main_loop();
             }
         },

@@ -14,6 +14,8 @@ struct NativeDirectoryFileBackendDesc {
     std::size_t directoryBufferBytes = 0;
     std::uint32_t maxScanEntries = 0;
     std::uint64_t maxScanNameBytes = 0;
+    // Read mounts remain read-only unless the owning host explicitly opts in.
+    bool allowObservedBaselineReplace = false;
 };
 
 struct NativeDirectoryFileBackendTelemetry {
@@ -35,6 +37,10 @@ public:
         runtime::CompletionQueue& completions) noexcept override;
     FileIoStatus queryAsync(const FileQueryRequest& request,
         FileQueryCompletion completion,
+        runtime::CompletionQueue& completions) noexcept override;
+    FileSaveCapability saveCapability(core::PoolHandle mount = {}) const noexcept override;
+    FileIoStatus saveAsync(FileSaveRequest request,
+        FileSaveCompletion completion,
         runtime::CompletionQueue& completions) noexcept override;
     void shutdown() noexcept override;
     NativeDirectoryFileBackendTelemetry telemetry() const noexcept;

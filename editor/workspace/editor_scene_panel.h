@@ -75,6 +75,7 @@ private:
     Mode mode_ = Mode::None;
     EditorModalSession modal_;
     std::optional<Operation> pending_;
+    std::optional<SaveSceneCommand> taskSave_;
     core::pmr::String path_, status_, detail_;
     TaskKind taskKind_ = TaskKind::None;
     std::uint64_t taskId_ = 0;

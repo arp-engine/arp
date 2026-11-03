@@ -23,10 +23,10 @@ list(APPEND original_cloud_module_payloads
     "${original_cloud_module_dir}/Fragment/cloud_composite.fragmentMain.entry.yaml")
 add_custom_command(OUTPUT "${original_cloud_module}"
     BYPRODUCTS ${original_cloud_module_payloads}
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
         --module cloud_composite --graphics-module --out-dir "${original_cloud_module_dir}"
         ${original_graphics_compiler_args}
-    DEPENDS shaders/renderer/cloud_composite.slang shaders/renderer/cloud_common.slang
+    DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} shaders/renderer/cloud_composite.slang shaders/renderer/cloud_common.slang
         shaders/renderer/cloud_composite_impl.slang shaders/renderer/cloud_sample_storage.slang shaders/renderer/cloud_spatial_resolve_impl.slang
         shaders/renderer/volume/medium_integration.slang scripts/compile_shaders.py
         scripts/shader_bindings_codegen.py ${original_cloud_publication_tools} VERBATIM)
@@ -44,10 +44,10 @@ list(APPEND original_cloud_spatial_payloads
     "${original_cloud_module_dir}/Fragment/cloud_spatial_composite.fragmentMain.entry.yaml")
 add_custom_command(OUTPUT "${original_cloud_spatial_module}"
     BYPRODUCTS ${original_cloud_spatial_payloads}
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
         --module cloud_spatial_composite --graphics-module --out-dir "${original_cloud_module_dir}"
         ${original_graphics_compiler_args}
-    DEPENDS shaders/renderer/cloud_spatial_composite.slang shaders/renderer/cloud_common.slang
+    DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} shaders/renderer/cloud_spatial_composite.slang shaders/renderer/cloud_common.slang
         shaders/renderer/cloud_composite_impl.slang shaders/renderer/cloud_sample_storage.slang shaders/renderer/cloud_spatial_resolve_impl.slang
         shaders/renderer/volume/medium_integration.slang scripts/compile_shaders.py
         scripts/shader_bindings_codegen.py ${original_cloud_publication_tools} VERBATIM)
@@ -65,10 +65,10 @@ list(APPEND original_cloud_compact_payloads
     "${original_cloud_module_dir}/Fragment/cloud_compact_composite.fragmentMain.entry.yaml")
 add_custom_command(OUTPUT "${original_cloud_compact_module}"
     BYPRODUCTS ${original_cloud_compact_payloads}
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
         --module cloud_compact_composite --graphics-module --out-dir "${original_cloud_module_dir}"
         ${original_graphics_compiler_args}
-    DEPENDS shaders/renderer/cloud_compact_composite.slang shaders/renderer/cloud_spatial_composite.slang shaders/renderer/cloud_common.slang
+    DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} shaders/renderer/cloud_compact_composite.slang shaders/renderer/cloud_spatial_composite.slang shaders/renderer/cloud_common.slang
         shaders/renderer/cloud_composite_impl.slang shaders/renderer/cloud_sample_storage.slang shaders/renderer/cloud_spatial_resolve_impl.slang
         shaders/renderer/volume/medium_integration.slang scripts/compile_shaders.py
         scripts/shader_bindings_codegen.py ${original_cloud_publication_tools} VERBATIM)
@@ -83,10 +83,10 @@ foreach(cloud_module cloud_raymarch cloud_temporal cloud_spatial_resolve cloud_c
     endforeach()
     add_custom_command(OUTPUT "${cloud_entry}"
         BYPRODUCTS ${cloud_payloads}
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --module ${cloud_module} --single-entry computeMain --out-dir "${original_cloud_compute_dir}"
             ${original_graphics_compiler_args}
-        DEPENDS "shaders/renderer/${cloud_module}.slang" shaders/renderer/cloud_common.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} "shaders/renderer/${cloud_module}.slang" shaders/renderer/cloud_common.slang
             shaders/renderer/cloud_ray_integration.slang shaders/renderer/cloud_history.slang
             shaders/renderer/cloud_sample_storage.slang shaders/renderer/cloud_spatial_resolve_impl.slang shaders/renderer/cloud_spatial_resolve.slang
             shaders/renderer/volume/medium_integration.slang scripts/compile_shaders.py
@@ -109,10 +109,10 @@ list(APPEND cloud_foreground_payloads
     "${cloud_foreground_dir}/Fragment/cloud_foreground.fragmentMain.entry.yaml")
 add_custom_command(OUTPUT "${cloud_foreground_module}"
     BYPRODUCTS ${cloud_foreground_payloads}
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
         --fixture cloud_foreground --graphics-module --out-dir "${cloud_foreground_dir}"
         ${original_graphics_compiler_args}
-    DEPENDS tests/fixtures/cloud_foreground.slang scripts/compile_shaders.py
+    DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/cloud_foreground.slang scripts/compile_shaders.py
         scripts/shader_bindings_codegen.py VERBATIM)
 add_custom_target(arp_cloud_foreground_module DEPENDS "${cloud_foreground_module}")
 add_test(NAME arp_cloud_foreground_shader_contract
@@ -133,10 +133,10 @@ list(APPEND scene_opaque_payloads
     "${scene_opaque_dir}/Fragment/scene_opaque.fragmentMain.entry.yaml")
 add_custom_command(OUTPUT "${scene_opaque_module}"
     BYPRODUCTS ${scene_opaque_payloads}
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
         --module scene_opaque --graphics-module --out-dir "${scene_opaque_dir}"
         ${original_graphics_compiler_args}
-    DEPENDS shaders/renderer/scene_opaque.slang scripts/compile_shaders.py
+    DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} shaders/renderer/scene_opaque.slang scripts/compile_shaders.py
         scripts/shader_bindings_codegen.py VERBATIM)
 add_custom_target(arp_scene_opaque_module DEPENDS "${scene_opaque_module}")
 add_test(NAME arp_scene_opaque_shader_contract
@@ -161,10 +161,10 @@ list(APPEND scene_pbr_payloads
     "${scene_pbr_dir}/Fragment/scene_pbr.fragmentMain.entry.yaml")
 add_custom_command(OUTPUT "${scene_pbr_module}"
     BYPRODUCTS ${scene_pbr_payloads}
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
         --module scene_pbr --graphics-module --out-dir "${scene_pbr_dir}"
         ${original_graphics_compiler_args}
-    DEPENDS shaders/renderer/scene_pbr.slang shaders/renderer/pbr_brdf.slang
+    DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} shaders/renderer/scene_pbr.slang shaders/renderer/pbr_brdf.slang
         shaders/core/pbr_material.slang shaders/core/leaf_surface.slang
         scripts/compile_shaders.py scripts/shader_bindings_codegen.py
         ${original_cloud_publication_tools} VERBATIM)

@@ -143,7 +143,7 @@ FileReadValidation HttpFileContract::responseHeaders(
     unsigned status, std::string_view block, HttpFileResponseHeaders& output) noexcept
 {
     output = {status, {}, {}, {}};
-    bool seenLength = false, seenRange = false, seenEncoding = false;
+    bool seenLength = false, seenRange = false, seenEncoding = false, seenType = false;
     while (!block.empty()) {
         const auto end = block.find('\n');
         auto line = block.substr(0, end);
@@ -172,6 +172,9 @@ FileReadValidation HttpFileContract::responseHeaders(
         } else if (headerName(name, "content-encoding")) {
             target = &output.contentEncoding;
             seen = &seenEncoding;
+        } else if (headerName(name, "content-type")) {
+            target = &output.contentType;
+            seen = &seenType;
         }
         if (target) {
             if (*seen || value.empty())

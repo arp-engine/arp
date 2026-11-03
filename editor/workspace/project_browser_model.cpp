@@ -137,6 +137,70 @@ void ProjectBrowserModel::swap(ProjectBrowserModel& other) noexcept
     std::swap(sourceHistoryBudget_, other.sourceHistoryBudget_);
 }
 
+core::UniquePtr<ProjectBrowserModel::PreparedProjectRebind>
+ProjectBrowserModel::prepareProjectRebind(
+    const ProjectSourceSnapshot::PreparedFileSave& replacement,
+    const char*& diagnostic) const noexcept
+{
+    diagnostic = "EDITOR-BROWSER-REBIND-SOURCE-REQUIRED";
+    if (!source_)
+        return {};
+    try {
+        auto directory = source_->prepareProjectRebind(replacement, diagnostic);
+        if (!directory)
+            return {};
+        auto prepared = core::makeUnique<PreparedProjectRebind>();
+        prepared->candidate_ = *this;
+        prepared->directory_ = std::move(directory);
+        prepared->owner_ = this;
+        diagnostic = nullptr;
+        return prepared;
+    } catch (...) {
+        diagnostic = "EDITOR-BROWSER-REBIND-ALLOCATION";
+        return {};
+    }
+}
+
+bool ProjectBrowserModel::PreparedProjectRebind::canFinish(
+    const ProjectSourceSnapshot::PreparedFileSave& replacement,
+    const core::SharedPtr<const ProjectSourceSnapshot>& committed,
+    const ProjectBrowserModel& destination) const noexcept
+{
+    const auto& before = candidate_;
+    if (consumed_ || owner_ != &destination || !directory_ || destination.source_ != before.source_
+        || destination.root_ != before.root_
+        || destination.currentDirectory_ != before.currentDirectory_
+        || destination.search_ != before.search_ || destination.backHistory_ != before.backHistory_
+        || destination.forwardHistory_ != before.forwardHistory_
+        || destination.visibleEntries_ != before.visibleEntries_
+        || destination.sourceHistoryBudget_ != before.sourceHistoryBudget_
+        || destination.entries_.size() != before.entries_.size())
+        return false;
+    for (std::size_t i = 0; i < before.entries_.size(); ++i) {
+        const auto& a = before.entries_[i];
+        const auto& b = destination.entries_[i];
+        if (a.path != b.path || a.name != b.name || a.directory != b.directory)
+            return false;
+    }
+    return directory_->canFinish(replacement, committed);
+}
+
+bool ProjectBrowserModel::PreparedProjectRebind::finish(
+    const ProjectSourceSnapshot::PreparedFileSave& replacement,
+    core::SharedPtr<const ProjectSourceSnapshot> committed,
+    ProjectBrowserModel& destination) noexcept
+{
+    if (!canFinish(replacement, committed, destination))
+        return false;
+    auto rebound = directory_->finish(replacement, std::move(committed));
+    if (!rebound)
+        return false;
+    candidate_.source_ = std::move(rebound);
+    destination.swap(candidate_);
+    consumed_ = true;
+    return true;
+}
+
 ProjectBrowserModel::NavigationResult ProjectBrowserModel::navigate(
     const std::filesystem::path& path, bool remember)
 {
@@ -306,6 +370,37 @@ const char* ProjectBrowserModel::prepareSources(
         return "EDITOR-BROWSER-SOURCE-ALLOCATION";
     } catch (...) {
         return "EDITOR-BROWSER-SOURCE-PREPARATION";
+    }
+}
+
+const char* ProjectBrowserModel::prepareReloadedSources(
+    const core::SharedPtr<const ProjectSourceSnapshot>& expected,
+    core::SharedPtr<const ProjectDirectorySnapshot> next,
+    core::io::FileService& files,
+    std::uint64_t epoch,
+    ProjectBrowserModel& destination,
+    std::size_t maxHistoryEntries) const noexcept
+{
+    try {
+        const char* issue = nullptr;
+        if (!source_ || source_->project() != expected || !next
+            || !source_->validate(files, epoch, issue) || !next->validate(files, epoch, issue))
+            return issue ? issue : "EDITOR-BROWSER-RELOAD-OWNER";
+        const auto& a = expected->location();
+        const auto& b = next->project()->location();
+        if (!(a.mount == b.mount) || a.root != b.root || a.epoch != b.epoch
+            || next->directory() != source_->directory())
+            return "EDITOR-BROWSER-RELOAD-LOCATION";
+        auto prepared = *this;
+        prepared.source_ = next;
+        return prepared.prepareSources(std::move(next),
+            files,
+            epoch,
+            SourceNavigation::Refresh,
+            destination,
+            maxHistoryEntries);
+    } catch (...) {
+        return "EDITOR-BROWSER-RELOAD-PREPARATION";
     }
 }
 

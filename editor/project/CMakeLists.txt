@@ -1,12 +1,31 @@
 # Project manifests describe authoring. Runtime targets consume exported assets.
 add_library(arp_editor_project STATIC project_manifest.cpp project_metadata.cpp project_scene_authoring.cpp project_identity.cpp project_input_snapshot.cpp project_package_snapshot.cpp project_resource_locations.cpp)
-target_sources(arp_editor_project PRIVATE project_source_session.cpp)
+target_sources(arp_editor_project PRIVATE project_source_session.cpp project_file_save_task.cpp)
+target_sources(arp_editor_project PRIVATE project_file_read_task.cpp)
+
+add_executable(arp_editor_project_file_save_tests ../tests/project_file_save_tests.cpp)
+target_sources(arp_editor_project_file_save_tests PRIVATE
+    ../workspace/script_document_session.cpp ../workspace/script_document_source_recovery.cpp)
+target_link_libraries(arp_editor_project_file_save_tests PRIVATE arp_editor_project)
+target_include_directories(arp_editor_project_file_save_tests PRIVATE "${ARP_EDITOR_ENGINE_ROOT}")
+target_compile_options(arp_editor_project_file_save_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_editor_project_file_save_tests)
+add_test(NAME arp_editor_project_file_save_tests COMMAND arp_editor_project_file_save_tests)
+add_test(NAME arp_editor_project_file_save_smoke COMMAND arp_editor_project_file_save_tests --smoke)
+set_tests_properties(arp_editor_project_file_save_tests arp_editor_project_file_save_smoke
+    PROPERTIES TIMEOUT 60 LABELS "editor;io;save")
+target_sources(arp_editor_project PRIVATE project_source_verification.cpp)
 target_sources(arp_editor_project PRIVATE project_directory_session.cpp)
 target_sources(arp_editor_project PRIVATE project_resource_sources.cpp)
 target_sources(arp_editor_project PRIVATE project_resource_locations_sources.cpp)
 target_include_directories(arp_editor_project PUBLIC
     "${ARP_EDITOR_ENGINE_ROOT}" "${ARP_EDITOR_ENGINE_ROOT}/src")
 target_link_libraries(arp_editor_project PUBLIC arp_core arp_resource arp_fkyaml_headers arp_scene3d_assets arp_2d_resources)
+target_link_libraries(arp_editor_project PRIVATE arp_editor_cold_host_read)
+if(NOT EMSCRIPTEN)
+    # Native authoring output only. No tool policy is linked into arp_engine.
+    target_link_libraries(arp_editor_project PRIVATE arp_cold_tool_files)
+endif()
 
 add_executable(arp_editor_project_manifest_tests ../tests/project_manifest_tests.cpp)
 target_link_libraries(arp_editor_project_manifest_tests PRIVATE arp_editor_project)
@@ -31,7 +50,7 @@ endif()
 
 if(NOT EMSCRIPTEN)
     add_executable(arp_editor_project_migrate ../tools/project_migrate.cpp)
-    target_link_libraries(arp_editor_project_migrate PRIVATE arp_editor_project)
+    target_link_libraries(arp_editor_project_migrate PRIVATE arp_editor_project arp_editor_migration_io)
     target_compile_definitions(arp_editor_project_migrate PRIVATE ARP_STATIC_LINK=1)
     if(MINGW)
         target_link_options(arp_editor_project_migrate PRIVATE -municode)

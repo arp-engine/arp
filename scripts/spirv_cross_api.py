@@ -20,6 +20,9 @@ class CombinedSampler(C.Structure):
                 ("sampler_id", C.c_uint)]
 
 
+_LEGACY_PATH_INPUT = object()
+
+
 class SpirvCrossCompiler:
     GLSL_BIT = 0x2000000
     COMMON_BIT = 0x1000000
@@ -33,14 +36,17 @@ class SpirvCrossCompiler:
     LOCATION, BINDING, DESCRIPTOR_SET, COL_MAJOR = 30, 33, 34, 5
     INT32, FP32, STRUCT = 7, 13, 15
 
-    def __init__(self, library: Path, spirv: Path):
+    def __init__(self, library: Path, spirv: Path, *, data=_LEGACY_PATH_INPUT):
         self.library = C.CDLL(str(Path(library).resolve()))
         self.context = C.c_void_p()
         self.compiler = C.c_void_p()
         self._bind()
         self.check(self.api("context_create")(C.byref(self.context)))
         try:
-            data = Path(spirv).read_bytes()
+            if data is _LEGACY_PATH_INPUT:
+                data = Path(spirv).read_bytes()
+            if not isinstance(data, (bytes, bytearray)):
+                raise RuntimeError('SHADER-WEBGL1-SPIRV-BINARY')
             if len(data) < 20 or len(data) % 4 or struct.unpack_from('<I', data)[0] != 0x07230203:
                 raise RuntimeError('SHADER-WEBGL1-SPIRV-BINARY')
             words = (C.c_uint * (len(data) // 4)).from_buffer_copy(data)

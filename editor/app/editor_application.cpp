@@ -5,6 +5,8 @@
 #include "3d/authoring_components.h"
 #include "3d/components.h"
 #include "editor/app/editor_project_source_host.h"
+#include "editor/app/editor_ui_source_host.h"
+#include "editor/app/editor_viewport_shader_host.h"
 #include "editor/app/game_preview.h"
 #include "editor/ingress/editor_platform_input_router.h"
 #include "editor/ingress/platform_input_adapter.h"
@@ -96,17 +98,41 @@ int EditorApplication::run(bool hidden,
     bool terrainAssets,
     const std::filesystem::path& legacyWoccExecutable,
     std::string_view transformGestureSmoke,
-    std::string_view inspectorSafetySmoke)
+    std::string_view inspectorSafetySmoke,
+    bool sourceWrites,
+    std::optional<std::string_view> viewportShaderBaseUrl,
+    std::optional<std::string_view> uiBaseUrl)
 {
     using namespace arp;
+#if defined(__EMSCRIPTEN__)
+    if (viewportShaderBaseUrl)
+        return fail("VIEWPORT-SHADER-SOURCES", "EDITOR-VIEWPORT-SHADER-NATIVE-HOST-REQUIRED");
+    if (uiBaseUrl)
+        return fail("UI-SOURCES", "EDITOR-UI-SOURCE-NATIVE-HOST-REQUIRED");
+#endif
     const bool objectViewSmoke = inspectorSafetySmoke.substr(0, 5) == "view_";
     // View scenarios exercise the ordinary viewport fixture and execution gates.
     viewportRuntimeSmoke = viewportRuntimeSmoke || objectViewSmoke;
     ScopedTemporaryDirectory terrainGizmoFixtureDirectory;
     ScopedTemporaryDirectory terrainResourceDirectory;
     EditorProjectSourceHost projectSourceHost;
+    core::SharedPtr<const EditorUiSources> uiSources;
     editor::EditorShell shell;
     const auto root = std::filesystem::path(ARP_SOURCE_DIR) / "editor/resources";
+#if !defined(__EMSCRIPTEN__)
+#if defined(_WIN32)
+    const bool prepareUi = true;
+    const std::filesystem::path fontRoot = ARP_EDITOR_UI_FONT_ROOT;
+#else
+    const bool prepareUi = uiBaseUrl.has_value();
+    const std::filesystem::path fontRoot;
+#endif
+    core::pmr::String uiSourceDiagnostic;
+    if (prepareUi
+        && !EditorUiSourceHost::prepare(
+            root, fontRoot, ARP_SHADER_DIR, uiBaseUrl, uiSources, uiSourceDiagnostic))
+        return fail("UI-SOURCES", uiSourceDiagnostic);
+#endif
     auto effectiveProjectRoot = projectRoot;
     // Script smoke fixtures are explicitly created under the source build/ root.
     // Keep ordinary res:// admission intact by mounting that declared test root.
@@ -132,10 +158,11 @@ int EditorApplication::run(bool hidden,
                 / "editor/tests/fixtures/project/authoring.arp.yaml",
             effectiveProjectRoot / "project.arp.yaml");
     }
-    auto loaded = shell.load(root / "editor.arpui", effectiveProjectRoot);
+    auto loaded = uiSources ? shell.loadPreparedUi(uiSources->document(), effectiveProjectRoot)
+                            : shell.load(root / "editor.arpui", effectiveProjectRoot);
     if (!loaded.ok())
         return fail("LOAD", loaded.diagnostic().message);
-    if (!projectSourceHost.bind(shell, shell.projectRoot()))
+    if (!projectSourceHost.bind(shell, shell.projectRoot(), sourceWrites))
         std::fprintf(
             stderr, "EDITOR-PROJECT-SOURCE-UNAVAILABLE: native workspace IO is unavailable\n");
     std::size_t openedTerrainTiles = 0;
@@ -1479,6 +1506,14 @@ int EditorApplication::run(bool hidden,
         std::printf(
             "PASS: resolved TerrainAsset, authoring extent and CritterField bounds reach the viewport gizmo overlay\n");
     }
+    const auto shaderRoot = std::filesystem::path(ARP_SHADER_DIR);
+#if !defined(__EMSCRIPTEN__)
+    EditorViewportShaderSources viewportShaderSources;
+    core::pmr::String viewportSourceDiagnostic;
+    if (!EditorViewportShaderHost::prepare(
+            shaderRoot, viewportShaderBaseUrl, viewportShaderSources, viewportSourceDiagnostic))
+        return fail("VIEWPORT-SHADER-SOURCES", viewportSourceDiagnostic);
+#endif
     platform::WindowSystem platform;
     auto initialized = platform.initialize();
     if (!initialized.success)
@@ -1500,7 +1535,8 @@ int EditorApplication::run(bool hidden,
     auto authored = shell.drawCommands();
     if (!authored.ok())
         return fail("DRAW", authored.diagnostics());
-    auto assets = EditorUiAssets::build(shell, root, authored.commands());
+    auto assets = uiSources ? EditorUiAssets::buildPrepared(shell, *uiSources, authored.commands())
+                            : EditorUiAssets::build(shell, root, authored.commands());
     if (!assets.ok())
         return fail(assets.stage(), assets.diagnostic());
     auto& atlas = assets.atlas();
@@ -1705,7 +1741,11 @@ int EditorApplication::run(bool hidden,
             static_cast<std::uint32_t>(
                 std::lround(viewport->rect.height * window.pixelHeight() / 1080.0f))};
     };
-    const auto shaderRoot = std::filesystem::path(ARP_SHADER_DIR);
+#if !defined(__EMSCRIPTEN__)
+    const auto viewportArtifacts = viewportShaderSources.artifacts(0);
+    const auto viewportSpriteArtifacts = viewportShaderSources.artifacts(1);
+    const auto viewportEnvironmentArtifacts = viewportShaderSources.artifacts(2);
+#else
     const auto viewportSourcePath = (shaderRoot / "editor_viewport_pbr.slang").generic_string();
     const auto viewportSpirvPath = (shaderRoot / "editor_viewport_pbr.spv").generic_string();
     const auto viewportMslPath = (shaderRoot / "editor_viewport_pbr.metal").generic_string();
@@ -1742,6 +1782,7 @@ int EditorApplication::run(bool hidden,
         environmentMslPath,
         environmentWgslPath,
         environmentReflectionPath};
+#endif
     if (viewportPipelineSmoke || viewportRuntimeSmoke) {
         if (terrainResourceSmoke) {
             BuildTerrainResourceCommand build;
@@ -2054,8 +2095,14 @@ int EditorApplication::run(bool hidden,
     }
     renderer::GuiRenderer renderer(*system.gpuDevice());
     renderer::GuiRendererDesc desc;
-    desc.shaderPath =
-        (std::filesystem::path(ARP_SHADER_DIR) / "gui_overlay.slang").generic_string();
+    if (uiSources) {
+        desc.shaderPath = "gui_overlay.slang";
+        desc.shaderPublication = core::FilePath::utf8(uiSources->guiShader.publication);
+        desc.preparedShaderArtifacts = uiSources->guiShader.prepared;
+    } else {
+        desc.shaderPath =
+            (std::filesystem::path(ARP_SHADER_DIR) / "gui_overlay.slang").generic_string();
+    }
     desc.colorFormat = system.colorFormat();
     desc.extent = {unsigned(window.pixelWidth()), unsigned(window.pixelHeight())};
     desc.atlasTexture = atlas.atlas();

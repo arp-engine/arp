@@ -7088,9 +7088,9 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
         for token in ["OriginalCommandBufferLease::validateOriginal(source)",
                       "device.validateOriginalResourceRegistration(*source->originalObject())",
                       "originalResourceRegistration().generation()", "MemoryUsage::GpuToCpu",
-                      "containsUnsignedRange", '"rhi/buffer_readback_range.h"']:
+                      "containsUnsignedRange", '"rhi/frontend/transfer_validation.h"']:
             self.assertIn(token, request)
-        ranges = self.read_source("src/rhi/buffer_readback_range.h")
+        ranges = self.read_source("src/rhi/frontend/transfer_validation.h")
         for token in ("offsetAlignment=8u", "sizeAlignment=4u"):
             self.assertIn(token, ranges)
         owned_fields = request.rsplit("private:", 1)[1]
@@ -8129,7 +8129,7 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
             self.assertIn("Sequence::prepareHistoricalInput(", source[end:])
 
     def test_original_buffer_readback_native_mapping_preserves_finite_request_interval(self):
-        contract = self.read_source("src/rhi/buffer_readback_range.h")
+        contract = self.read_source("src/rhi/frontend/transfer_validation.h")
         for token in ("offsetAlignment=8u", "sizeAlignment=4u",
                       "sizeBytes<=allocationBytes-offsetBytes", "offsetBytes==other.offsetBytes"):
             self.assertIn(token, contract)
@@ -8519,12 +8519,13 @@ class CommandRecordingApiInventoryTest(unittest.TestCase):
     def test_visibility_shader_abi_contracts_have_no_reverse_pcg_dependency(self):
         for name in ("layout", "frozen_inputs", "root_inputs", "root_producer", "root_consumer",
                      "root_geometry", "indirect_fetch", "root_readback"):
-            name = "gpu_visibility_" + name + ".h"
-            contract = self.read_source("src/rhi/frontend/visibility/" + name)
+            compatibility_name = "gpu_visibility_" + name + ".h"
+            name = "visibility_" + name + ".h"
+            contract = self.read_source("src/rhi/frontend/" + name)
             self.assertNotIn('"pcg/', contract)
             self.assertIn("namespace arp::rhi::visibility", contract)
-            compatibility = self.read_source("src/pcg/" + name)
-            self.assertIn('"rhi/frontend/visibility/' + name + '"', compatibility)
+            compatibility = self.read_source("src/pcg/" + compatibility_name)
+            self.assertIn('"rhi/frontend/' + name + '"', compatibility)
             self.assertIn("using rhi::visibility::", compatibility)
 
 if __name__ == "__main__":

@@ -23,14 +23,14 @@ foreach(pyramid_mode Native Emulated)
         endif()
     else()
     add_custom_command(OUTPUT "${pyramid_publication}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_depth_pyramid.yaml"
             --bindless-source "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_depth_pyramid.slang"
             --bindless-entry depthPyramidCopyMain --bindless-entry depthPyramidReduceMain
             --bindless-entry depthPyramidReadMain --bindless-mode "${pyramid_mode}"
             --out-dir "${ARP_BINDLESS_DEPTH_PYRAMID_DIR}"
-        DEPENDS tests/fixtures/bindless_depth_pyramid.yaml tests/fixtures/bindless_depth_pyramid.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_depth_pyramid.yaml tests/fixtures/bindless_depth_pyramid.slang
             scripts/bindless_codegen.py scripts/compile_shaders.py scripts/slang_resource_switch.py
             scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
             "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"

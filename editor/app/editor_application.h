@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string_view>
 
 namespace arp::editor {
@@ -22,7 +23,10 @@ public:
         bool terrainAssets = false,
         const std::filesystem::path& legacyWoccExecutable = {},
         std::string_view transformGestureSmoke = {},
-        std::string_view inspectorSafetySmoke = {});
+        std::string_view inspectorSafetySmoke = {},
+        bool sourceWrites = false,
+        std::optional<std::string_view> viewportShaderBaseUrl = {},
+        std::optional<std::string_view> uiBaseUrl = {});
 };
 
 } // namespace arp::editor

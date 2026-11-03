@@ -33,13 +33,9 @@ public:
 private:
     struct State;
     struct Pending;
-    static runtime::WorkStatus execute(void* context);
-    static void complete(void* context, runtime::WorkResult result);
     static void deliver(void* context);
-    static void browserComplete(void* context);
     FileIoStatus start(runtime::CompletionQueue& queue);
     core::SharedPtr<State> state_;
-    core::UniquePtr<runtime::WorkService> work_;
     runtime::CompletionQueue* queue_ = nullptr;
     const char* diagnostic_ = nullptr;
 };

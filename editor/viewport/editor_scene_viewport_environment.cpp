@@ -40,7 +40,7 @@ bool EditorSceneViewportEnvironment::initialize(rhi::GpuDevice& device,
         {shaderPackage.slangModulePath, "vertexMain", rhi::ShaderStage::Vertex});
     shaderPackage.entrypoints.push_back(
         {shaderPackage.slangModulePath, "fragmentMain", rhi::ShaderStage::Fragment});
-    if (!renderer::hydrateShaderPackageReflectionFromArtifact(shaderPackage)) {
+    if (!hydrateEditorSceneViewportShaderPackage(shaderPackage, artifacts, diagnostics)) {
         diagnostics = "ARP-EDITOR-ENVIRONMENT-ARTIFACT-INVALID";
         return false;
     }

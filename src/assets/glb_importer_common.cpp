@@ -3,6 +3,8 @@
 #include "assets/glb_static_mesh_importer.h"
 #include "core/encoding/base64.h"
 #include "core/memory/cpu_allocator.h"
+#include "core/text/number_format.h"
+#include "core/text/utf8.h"
 
 #include <algorithm>
 #include <cctype>
@@ -30,9 +32,9 @@ public:
 
     bool parse(JsonValue& out)
     {
-        if (limits_.strictAscii
+        if ((bounded() || limits_.strictAscii)
             && (text_.find('\0') != std::pmr::string::npos || !limits_.maxDepth
-                || !limits_.maxValues))
+                || !limits_.maxValues || core::Utf8Decoder::validate(text_)))
             return false;
         skipWhitespace();
         if (!parseValue(out)) {
@@ -43,9 +45,11 @@ public:
     }
 
 private:
+    bool bounded() const noexcept { return limits_.maxDepth || limits_.maxValues; }
+
     bool parseValue(JsonValue& out)
     {
-        if (limits_.strictAscii && (depth_ >= limits_.maxDepth || values_ >= limits_.maxValues))
+        if (bounded() && (depth_ >= limits_.maxDepth || values_ >= limits_.maxValues))
             return false;
         ++values_;
         ++depth_;
@@ -103,7 +107,7 @@ private:
             if (!parseString(key)) {
                 return false;
             }
-            if (limits_.strictAscii
+            if (bounded()
                 && std::any_of(
                     out.objectValue.begin(), out.objectValue.end(), [&](const auto& item) {
                         return item.first == key;
@@ -174,8 +178,8 @@ private:
         out.clear();
         while (*cursor_ != '\0') {
             const char ch = *cursor_++;
-            if (limits_.strictAscii
-                && (static_cast<unsigned char>(ch) < 32u || static_cast<unsigned char>(ch) > 126u))
+            if ((bounded() && static_cast<unsigned char>(ch) < 32u)
+                || (limits_.strictAscii && static_cast<unsigned char>(ch) > 126u))
                 return false;
             if (ch == '"') {
                 return true;
@@ -211,6 +215,11 @@ private:
             case 'u':
                 if (limits_.strictAscii)
                     return false;
+                if (bounded()) {
+                    if (!unicodeEscape(out))
+                        return false;
+                    break;
+                }
                 for (int i = 0; i < 4 && std::isxdigit(static_cast<unsigned char>(*cursor_)); ++i) {
                     ++cursor_;
                 }
@@ -226,7 +235,7 @@ private:
     bool parseNumber(JsonValue& out)
     {
         const char* expectedEnd = cursor_;
-        if (limits_.strictAscii) {
+        if (bounded()) {
             if (*expectedEnd == '-')
                 ++expectedEnd;
             if (*expectedEnd == '0')
@@ -256,8 +265,7 @@ private:
         }
         char* end = nullptr;
         const auto value = std::strtod(cursor_, &end);
-        if (end == cursor_
-            || (limits_.strictAscii && (end != expectedEnd || !std::isfinite(value)))) {
+        if (end == cursor_ || (bounded() && (end != expectedEnd || !std::isfinite(value)))) {
             return false;
         }
         cursor_ = end;
@@ -278,11 +286,47 @@ private:
 
     void skipWhitespace()
     {
-        while (limits_.strictAscii
+        while (bounded()
                 ? (*cursor_ == ' ' || *cursor_ == '\t' || *cursor_ == '\n' || *cursor_ == '\r')
                 : std::isspace(static_cast<unsigned char>(*cursor_))) {
             ++cursor_;
         }
+    }
+
+    bool unicodeEscape(core::pmr::String& out)
+    {
+        const auto unit = [&](std::uint32_t& value) {
+            value = 0;
+            for (unsigned i = 0; i < 4; ++i) {
+                const auto ch = *cursor_;
+                unsigned digit;
+                if (ch >= '0' && ch <= '9')
+                    digit = ch - '0';
+                else if (ch >= 'a' && ch <= 'f')
+                    digit = ch - 'a' + 10;
+                else if (ch >= 'A' && ch <= 'F')
+                    digit = ch - 'A' + 10;
+                else
+                    return false;
+                ++cursor_;
+                value = (value << 4u) | digit;
+            }
+            return true;
+        };
+        std::uint32_t value;
+        if (!unit(value))
+            return false;
+        if (value >= 0xd800 && value <= 0xdbff) {
+            if (*cursor_ != '\\' || cursor_[1] != 'u')
+                return false;
+            cursor_ += 2;
+            std::uint32_t low;
+            if (!unit(low) || low < 0xdc00 || low > 0xdfff)
+                return false;
+            value = 0x10000u + ((value - 0xd800u) << 10u) + low - 0xdc00u;
+        }
+        core::pmr::String diagnostic;
+        return core::appendUtf8Codepoint(out, value, diagnostic);
     }
 
     std::pmr::string text_;
@@ -293,7 +337,7 @@ private:
 
 uint32_t readU32(const std::pmr::string& bytes, const std::size_t offset)
 {
-    if (offset + 4 > bytes.size()) {
+    if (offset > bytes.size() || bytes.size() - offset < 4) {
         return 0;
     }
     return static_cast<uint32_t>(static_cast<unsigned char>(bytes[offset + 0]))
@@ -331,7 +375,9 @@ std::pmr::string jsonString(const JsonValue* value, const std::pmr::string& fall
 
 std::pmr::string indexedName(const char* prefix, const std::size_t index)
 {
-    return std::pmr::string(prefix) + arp::core::toPmrString(std::to_string(index));
+    core::pmr::String name(prefix, &core::defaultCpuMemoryResource());
+    core::appendUnsigned(name, index);
+    return name;
 }
 
 void copyFloatArray(const JsonValue* value, float* out, const std::size_t count)
@@ -457,6 +503,8 @@ bool parseJson(const std::pmr::string& text, JsonValue& out)
 
 bool parseJson(const std::pmr::string& text, JsonValue& out, JsonParseLimits limits)
 {
+    if (!limits.maxDepth || !limits.maxValues)
+        return false;
     JsonParser parser(text, limits);
     return parser.parse(out);
 }
@@ -475,6 +523,18 @@ bool readFile(const std::filesystem::path& path, std::pmr::string& out)
 
 bool readGlbChunks(const std::pmr::string& bytes, GlbChunks& chunks, std::pmr::string& diagnostics)
 {
+    return readGlbChunks(bytes, chunks, diagnostics, GlbChunkPolicy::Legacy);
+}
+
+bool readGlbChunks(const std::pmr::string& bytes,
+    GlbChunks& chunks,
+    std::pmr::string& diagnostics,
+    GlbChunkPolicy policy)
+{
+    if (policy != GlbChunkPolicy::Legacy && policy != GlbChunkPolicy::EmbeddedSourceV1) {
+        diagnostics = "ASSET-GLB-CHUNK-POLICY";
+        return false;
+    }
     if (bytes.size() < 20 || readU32(bytes, 0) != glbMagic || readU32(bytes, 4) != 2) {
         diagnostics = "GLB v2 header is required";
         return false;
@@ -486,24 +546,31 @@ bool readGlbChunks(const std::pmr::string& bytes, GlbChunks& chunks, std::pmr::s
 
     const auto jsonLength = readU32(bytes, 12);
     const auto jsonType = readU32(bytes, 16);
-    if (jsonType != jsonChunkType || 20u + jsonLength > bytes.size()) {
+    if (jsonType != jsonChunkType || jsonLength > bytes.size() - 20u) {
         diagnostics = "GLB JSON chunk is invalid";
         return false;
     }
-    chunks.json = bytes.substr(20, jsonLength);
-
-    const auto binOffset = 20u + jsonLength;
-    if (binOffset + 8u > bytes.size()) {
+    const auto binOffset = std::size_t(20) + jsonLength;
+    if (bytes.size() - binOffset < 8u) {
         diagnostics = "GLB binary chunk is required";
         return false;
     }
     const auto binLength = readU32(bytes, binOffset);
     const auto binType = readU32(bytes, binOffset + 4u);
-    if (binType != binChunkType || binOffset + 8u + binLength > bytes.size()) {
+    if (binType != binChunkType || binLength > bytes.size() - binOffset - 8u) {
         diagnostics = "GLB binary chunk is invalid";
         return false;
     }
-    chunks.bin = bytes.substr(binOffset + 8u, binLength);
+    if (policy == GlbChunkPolicy::EmbeddedSourceV1
+        && (jsonLength % 4 || binLength % 4 || binLength != bytes.size() - binOffset - 8u)) {
+        diagnostics = "ASSET-GLB-CHUNK-SOURCE-LAYOUT";
+        return false;
+    }
+    GlbChunks candidate;
+    candidate.json = bytes.substr(20, jsonLength);
+    candidate.bin = bytes.substr(binOffset + 8u, binLength);
+    chunks.json.swap(candidate.json);
+    chunks.bin.swap(candidate.bin);
     return true;
 }
 

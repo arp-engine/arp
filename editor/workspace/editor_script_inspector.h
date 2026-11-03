@@ -23,6 +23,7 @@ public:
     void addMenuOptions(EditorShell&, core::pmr::Vector<SceneInspectorEnumOption>&);
     EditorCommandOutcome edit(EditorShell&, std::string_view source, std::string_view value);
     EditorCommandOutcome activate(EditorShell&, std::string_view source);
+    void sourceTaskFinished(EditorShell&, std::uint64_t taskId, bool success) noexcept;
 
     bool applying() const noexcept { return applying_; }
 
@@ -32,7 +33,9 @@ public:
 
 private:
     struct Session;
+    struct Pending;
     core::UniquePtr<Session> session_;
+    core::UniquePtr<Pending> pending_;
     std::uint64_t generation_ = 0;
     bool applying_ = false;
 };

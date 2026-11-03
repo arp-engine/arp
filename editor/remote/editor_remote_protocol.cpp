@@ -1,7 +1,10 @@
 #include "editor/remote/editor_remote_protocol.h"
 
+#include "core/encoding/json_document.h"
 #include "core/text/number_format.h"
 #include "core/text/string_utils.h"
+#include "editor/remote/editor_file_receipt_wire.h"
+#include "editor/remote/editor_http_access.h"
 #include "editor/workspace/editor_scene_script_policy.h"
 #include "editor/workspace/editor_shell.h"
 #include "network/http/uri.h"
@@ -19,73 +22,26 @@ namespace arp::editor {
 namespace {
 constexpr std::size_t maxScriptBytes = 2u * 1024u * 1024u;
 
-struct alignas(std::max_align_t) JsonAllocationHeader {
-    std::size_t size = 0;
-    std::pmr::memory_resource* resource = nullptr;
-};
+using core::json::CoreJsonAllocator;
+using core::json::JsonDocument;
+using core::json::JsonValue;
+using detail::constantTimeEquals;
 
-class CoreJsonAllocator final {
-public:
-    static constexpr bool kNeedFree = true;
-
-    explicit CoreJsonAllocator(
-        std::pmr::memory_resource* resource = &core::defaultCpuMemoryResource())
-        : resource_(resource)
-    {}
-
-    CoreJsonAllocator(const CoreJsonAllocator&) = default;
-    CoreJsonAllocator& operator=(const CoreJsonAllocator&) = default;
-
-    void* Malloc(std::size_t size)
-    {
-        const auto payloadSize = std::max<std::size_t>(size, 1u);
-        auto* header = static_cast<JsonAllocationHeader*>(resource_->allocate(
-            sizeof(JsonAllocationHeader) + payloadSize, alignof(JsonAllocationHeader)));
-        header->size = payloadSize;
-        header->resource = resource_;
-        return header + 1;
-    }
-
-    void* Realloc(void* original, std::size_t originalSize, std::size_t newSize)
-    {
-        if (!original)
-            return Malloc(newSize);
-        if (newSize == 0) {
-            Free(original);
-            return nullptr;
-        }
-        void* replacement = Malloc(newSize);
-        std::memcpy(replacement, original, std::min(originalSize, newSize));
-        Free(original);
-        return replacement;
-    }
-
-    static void Free(void* ptr)
-    {
-        if (!ptr)
-            return;
-        auto* header = static_cast<JsonAllocationHeader*>(ptr) - 1;
-        header->resource->deallocate(
-            header, sizeof(JsonAllocationHeader) + header->size, alignof(JsonAllocationHeader));
-    }
-
-private:
-    std::pmr::memory_resource* resource_;
-};
-
-using JsonDocument =
-    rapidjson::GenericDocument<rapidjson::UTF8<>, CoreJsonAllocator, CoreJsonAllocator>;
-using JsonValue = rapidjson::GenericValue<rapidjson::UTF8<>, CoreJsonAllocator>;
-
-bool constantTimeEquals(std::string_view lhs, std::string_view rhs) noexcept
+const char* projectIoStatusName(ProjectIoStatus value) noexcept
 {
-    std::uint32_t difference = static_cast<std::uint32_t>(lhs.size() ^ rhs.size());
-    for (std::size_t i = 0; i < 256; ++i) {
-        const auto left = i < lhs.size() ? static_cast<unsigned char>(lhs[i]) : 0u;
-        const auto right = i < rhs.size() ? static_cast<unsigned char>(rhs[i]) : 0u;
-        difference |= left ^ right;
+    switch (value) {
+    case ProjectIoStatus::Pending:
+        return "pending";
+    case ProjectIoStatus::Succeeded:
+        return "succeeded";
+    case ProjectIoStatus::Failed:
+        return "failed";
+    case ProjectIoStatus::Cancelled:
+        return "cancelled";
+    case ProjectIoStatus::Unknown:
+        return "unknown";
     }
-    return difference == 0;
+    return "unknown";
 }
 
 std::string_view asView(const JsonValue& value)
@@ -311,6 +267,8 @@ const char* sceneTaskStatusName(ScenePersistenceTaskStatus status)
         return "succeeded";
     case ScenePersistenceTaskStatus::Failed:
         return "failed";
+    case ScenePersistenceTaskStatus::Cancelled:
+        return "cancelled";
     case ScenePersistenceTaskStatus::Unknown:
         return "unknown";
     }
@@ -436,6 +394,12 @@ void appendSnapshot(core::pmr::String& out, const EditorStateSnapshot& snapshot)
     appendUnsigned(out, snapshot.openDocumentCount);
     out += ",\"scriptDirty\":";
     out += snapshot.scriptDirty ? "true" : "false";
+    out += ",\"scriptSourceMounted\":";
+    out += snapshot.scriptSourceMounted ? "true" : "false";
+    out += ",\"scriptSourceMissing\":";
+    out += snapshot.scriptSourceMissing ? "true" : "false";
+    out += ",\"scriptSourceConflict\":";
+    out += snapshot.scriptSourceConflict ? "true" : "false";
     out += ",\"scriptPresentationFailed\":";
     out += snapshot.scriptPresentationFailed ? "true" : "false";
     out += ",\"scriptRelativePath\":";
@@ -488,6 +452,81 @@ void appendSnapshot(core::pmr::String& out, const EditorStateSnapshot& snapshot)
     out += ",\"diagnostic\":";
     appendJsonString(out, snapshot.projectIoDiagnostic);
     out += '}';
+    for (const auto& entry : {std::pair<std::string_view, const ProjectSourceSaveReceipt*>{
+                                  "scriptSaveReceipt", &snapshot.scriptSaveReceipt},
+             {"sceneSaveReceipt", &snapshot.sceneSaveReceipt},
+             {"projectSaveReceipt", &snapshot.projectSaveReceipt}}) {
+        out += ",\"";
+        out.append(entry.first.data(), entry.first.size());
+        out += "\":";
+        const auto& save = *entry.second;
+        if (!save.taskId) {
+            out += "null";
+        } else {
+            out += "{\"contractVersion\":1,\"taskId\":";
+            appendUnsigned(out, save.taskId);
+            out += ",\"documentId\":";
+            appendUnsigned(out, save.documentId);
+            out += ",\"submitted\":";
+            out += save.submitted ? "true" : "false";
+            out += ",\"terminal\":";
+            out += save.terminal ? "true" : "false";
+            out += ",\"published\":";
+            out += save.published ? "true" : "false";
+            out += ",\"cancellationRequested\":";
+            out += save.cancellationRequested ? "true" : "false";
+            out += ",\"baselineRefreshed\":";
+            out += save.baselineRefreshed ? "true" : "false";
+            out += ",\"ioStatus\":";
+            appendUnsigned(out, static_cast<std::uint8_t>(save.outcome.status));
+            out += ",\"deliveryStatus\":";
+            appendUnsigned(out, static_cast<std::uint8_t>(save.outcome.deliveryStatus));
+            out += ",\"commitState\":";
+            appendJsonString(out,
+                save.outcome.commitState == core::io::FileCommitState::Committed ? "committed"
+                    : save.outcome.commitState == core::io::FileCommitState::OutcomeUnknown
+                    ? "outcome_unknown"
+                    : "not_committed");
+            out += ",\"diagnostic\":";
+            appendJsonString(out, save.outcome.diagnosticId ? save.outcome.diagnosticId : "");
+            out += ",\"versionKind\":";
+            appendUnsigned(out, static_cast<std::uint8_t>(save.outcome.committedVersion.kind));
+            out += ",\"versionDigest\":[";
+            for (std::size_t i = 0; i < save.outcome.committedVersion.digest.size(); ++i) {
+                if (i)
+                    out += ',';
+                appendUnsigned(out, save.outcome.committedVersion.digest[i]);
+            }
+            out += "],\"receipt\":";
+            out += EditorFileReceiptWire::encodeIdentity(
+                save.outcome.receipt, EditorRemoteProtocol::maxRequestBytes);
+            out += ",\"receiptMaintenance\":{\"queryAttempted\":";
+            out += save.maintenance.queryAttempted ? "true" : "false";
+            out += ",\"releaseAttempted\":";
+            out += save.maintenance.releaseAttempted ? "true" : "false";
+            out += ",\"result\":";
+            out += EditorFileReceiptWire::encodeResult(
+                save.maintenance.result, EditorRemoteProtocol::maxRequestBytes);
+            out += "}}";
+        }
+    }
+    out += ",\"sourceReceiptTask\":{\"taskId\":";
+    appendUnsigned(out, snapshot.sourceReceiptTaskId);
+    out += ",\"status\":";
+    appendJsonString(out, projectIoStatusName(snapshot.sourceReceiptTaskStatus));
+    out += ",\"submitted\":";
+    out += snapshot.sourceReceiptSubmitted ? "true" : "false";
+    out += ",\"operation\":";
+    appendJsonString(out,
+        snapshot.sourceReceiptOperation == core::io::FileSaveReceiptOperation::Query ? "query"
+                                                                                     : "release");
+    out += ",\"receipt\":";
+    out += EditorFileReceiptWire::encodeIdentity(
+        snapshot.sourceReceiptIdentity, EditorRemoteProtocol::maxRequestBytes);
+    out += ",\"result\":";
+    out += EditorFileReceiptWire::encodeResult(
+        snapshot.sourceReceiptResult, EditorRemoteProtocol::maxRequestBytes);
+    out += "}";
     out += ",\"scenePersistenceTask\":{\"taskId\":";
     appendUnsigned(out, snapshot.scenePersistenceTaskId);
     out += ",\"status\":";
@@ -944,6 +983,13 @@ std::uint64_t fingerprint(std::string_view command,
             feed(value->discardChanges ? "discard" : "protect");
         } else if (const auto* value = std::get_if<CancelProjectIoCommand>(payload)) {
             feed(core::formatUnsigned(value->taskId));
+        } else if (const auto* value = std::get_if<SourceFileReceiptCommand>(payload)) {
+            feed(value->source);
+            feed(core::formatUnsigned(static_cast<unsigned>(value->operation)));
+            feed(EditorFileReceiptWire::encodeIdentity(
+                value->receipt, EditorRemoteProtocol::maxRequestBytes));
+        } else if (const auto* value = std::get_if<CancelSourceReceiptCommand>(payload)) {
+            feed(core::formatUnsigned(value->taskId));
         } else if (const auto* value = std::get_if<NavigateProjectSourceCommand>(payload)) {
             feed(core::formatUnsigned(static_cast<unsigned>(value->intent)));
             feed(value->directory);
@@ -1191,6 +1237,7 @@ bool allowedRemoteActivation(EditorShell& shell, std::string_view source)
              "exit_ui_cancel",
              "script_ui_close",
              "script_ui_reload",
+             "script_ui_reload_modules",
              "script_ui_confirm",
              "script_ui_cancel",
              "script_presentation_retry",
@@ -1314,6 +1361,32 @@ bool makeCommand(std::string_view name,
         if (!path || !path->IsString() || !path->GetStringLength() || path->GetStringLength() > 512)
             return false;
         payload = OpenScriptCommand{core::pmr::String(asView(*path))};
+        return true;
+    }
+    if (name == "source.receipt.query" || name == "source.receipt.release") {
+        const auto* source = member(arguments, "source");
+        const auto* ticket = member(arguments, "receipt");
+        if (!source || !source->IsString() || !source->GetStringLength()
+            || source->GetStringLength() > 128 || !ticket)
+            return false;
+        try {
+            SourceFileReceiptCommand command;
+            command.source = asView(*source);
+            command.receipt = EditorFileReceiptWire::parse(*ticket);
+            command.operation = name == "source.receipt.query"
+                ? core::io::FileSaveReceiptOperation::Query
+                : core::io::FileSaveReceiptOperation::Release;
+            payload = std::move(command);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+    if (name == "source.receipt.cancel") {
+        const auto* id = member(arguments, "taskId");
+        if (!id || !id->IsUint64() || !id->GetUint64())
+            return false;
+        payload = CancelSourceReceiptCommand{id->GetUint64()};
         return true;
     }
     if (name == "project.io.cancel") {
@@ -1622,6 +1695,14 @@ bool makeCommand(std::string_view name,
         payload = std::move(command);
         return true;
     }
+    if (name == "scene.script.prepare") {
+        payload = PrepareSceneScriptAuthoringCommand{};
+        return true;
+    }
+    if (name == "scene.scripts.reload") {
+        payload = ReloadSceneScriptsCommand{};
+        return true;
+    }
     if (name == "scene.script.fields.set" || name == "scene.script.add") {
         std::uint64_t objectId = 0, componentId = 0;
         const auto* resource = member(arguments, "resourceId");
@@ -1836,10 +1917,13 @@ bool makeCommand(std::string_view name,
         payload = GetSceneExportTaskQuery{documentId};
         return true;
     }
-    if (name == "scene.task.get") {
+    if (name == "scene.task.get" || name == "scene.task.cancel") {
         if (!unsignedValue(member(arguments, "taskId"), documentId) || documentId == 0)
             return false;
-        payload = GetScenePersistenceTaskQuery{documentId};
+        if (name == "scene.task.get")
+            payload = GetScenePersistenceTaskQuery{documentId};
+        else
+            payload = CancelScenePersistenceCommand{documentId};
         return true;
     }
     return false;
@@ -1926,7 +2010,7 @@ network::http::Response EditorRemoteProtocol::discovery(EditorShell& shell)
     body += "{\"schemaVersion\":1,\"stateVersion\":";
     appendUnsigned(body, shell.stateVersion());
     body +=
-        ",\"capabilities\":[\"project.create\",\"project.open\",\"project.io.cancel\",\"project.directory.open\",\"project.directory.back\",\"project.directory.forward\",\"project.directory.refresh\",\"project.close\",\"project.rename\",\"project.settings.set\",\"project.save\",\"editor.state.get\",\"editor.exit\",\"editor.activate\",\"editor.search\",\"editor.text.set\",\"scene.inspector.get\",\"scene.inspector.selection.get\",\"scene.hierarchy.get\",\"scene.component.catalog.get\",\"scene.component.add\",\"scene.component.remove\",\"scene.script.fields.set\",\"scene.script.add\",\"scene.component.property.set\",\"scene.undo\",\"scene.redo\",\"scene.reparent\",\"scene.rename\",\"scene.active.set\",\"scene.object.view.set\",\"scene.select\",\"scene.selection.focus\",\"scene.reference.focus\",\"scene.resource.locate\",\"scene.selection.transform\",\"scene.transform.pivot.set\",\"scene.transform.settings.get\",\"scene.transform.settings.set\",\"scene.new\",\"scene.duplicate\",\"scene.export\",\"scene.export.task.get\",\"scene.save\",\"scene.load\",\"scene.task.get\",\"script.open\",\"script.replace\",\"script.save\",\"script.reload\",\"script.close\",\"script.undo\",\"script.redo\"]}";
+        ",\"capabilities\":[\"source.receipt.query\",\"source.receipt.release\",\"source.receipt.cancel\",\"project.create\",\"project.open\",\"project.io.cancel\",\"project.directory.open\",\"project.directory.back\",\"project.directory.forward\",\"project.directory.refresh\",\"project.close\",\"project.rename\",\"project.settings.set\",\"project.save\",\"editor.state.get\",\"editor.exit\",\"editor.activate\",\"editor.search\",\"editor.text.set\",\"scene.inspector.get\",\"scene.inspector.selection.get\",\"scene.hierarchy.get\",\"scene.component.catalog.get\",\"scene.component.add\",\"scene.component.remove\",\"scene.script.fields.set\",\"scene.script.add\",\"scene.script.prepare\",\"scene.scripts.reload\",\"scene.component.property.set\",\"scene.undo\",\"scene.redo\",\"scene.reparent\",\"scene.rename\",\"scene.active.set\",\"scene.object.view.set\",\"scene.select\",\"scene.selection.focus\",\"scene.reference.focus\",\"scene.resource.locate\",\"scene.selection.transform\",\"scene.transform.pivot.set\",\"scene.transform.settings.get\",\"scene.transform.settings.set\",\"scene.new\",\"scene.duplicate\",\"scene.export\",\"scene.export.task.get\",\"scene.save\",\"scene.load\",\"scene.task.get\",\"scene.task.cancel\",\"script.open\",\"script.replace\",\"script.save\",\"script.reload\",\"script.close\",\"script.undo\",\"script.redo\"]}";
     return jsonResponse(200, body);
 }
 
@@ -1969,6 +2053,7 @@ network::http::Response EditorRemoteProtocol::restCommand(
                 "discardChanges",
                 "overwriteExisting",
                 "taskId",
+                "receipt",
                 "source",
                 "value",
                 "objectId",
@@ -2053,6 +2138,31 @@ network::http::Response EditorRemoteProtocol::restCommand(
         return protocolError(400, "invalid_command_fields");
     if (commandName != "scene.save" && member(document, "overwriteExisting"))
         return protocolError(400, "invalid_command_fields");
+    if (commandName == "source.receipt.query" || commandName == "source.receipt.release"
+        || commandName == "source.receipt.cancel") {
+        const bool fields = commandName == "source.receipt.cancel"
+            ? hasUniqueAllowedMembers(document,
+                  {"schemaVersion",
+                      "command",
+                      "commandId",
+                      "correlationId",
+                      "expectedStateVersion",
+                      "idempotencyKey",
+                      "taskId"})
+            : hasUniqueAllowedMembers(document,
+                  {"schemaVersion",
+                      "command",
+                      "commandId",
+                      "correlationId",
+                      "expectedStateVersion",
+                      "idempotencyKey",
+                      "source",
+                      "receipt"});
+        if (!fields)
+            return protocolError(400, "invalid_command_fields");
+    } else if (member(document, "receipt")) {
+        return protocolError(400, "invalid_command_fields");
+    }
     if (commandName == "project.io.cancel" || commandName == "project.directory.open"
         || commandName == "project.directory.back" || commandName == "project.directory.forward"
         || commandName == "project.directory.refresh") {
@@ -2412,9 +2522,10 @@ network::http::Response EditorRemoteProtocol::restCommand(
         return protocolError(400, "invalid_command_fields");
     if (commandName != "scene.export" && commandName != "scene.export.task.get"
         && commandName != "scene.save" && commandName != "scene.load"
-        && commandName != "scene.task.get" && commandName != "project.create"
-        && commandName != "project.open" && commandName != "project.directory.open"
-        && commandName != "project.io.cancel" && commandName != "script.open"
+        && commandName != "scene.task.get" && commandName != "scene.task.cancel"
+        && commandName != "project.create" && commandName != "project.open"
+        && commandName != "project.directory.open" && commandName != "project.io.cancel"
+        && commandName != "source.receipt.cancel" && commandName != "script.open"
         && (member(document, "path") || member(document, "taskId")))
         return protocolError(400, "invalid_command_fields");
     if ((commandName == "script.reload" || commandName == "script.close")
@@ -2427,6 +2538,25 @@ network::http::Response EditorRemoteProtocol::restCommand(
                 "idempotencyKey",
                 "documentId",
                 "discardChanges"}))
+        return protocolError(400, "invalid_command_fields");
+    if ((commandName == "scene.task.get" || commandName == "scene.task.cancel")
+        && !hasOnlyMembers(document,
+            {"schemaVersion",
+                "command",
+                "commandId",
+                "correlationId",
+                "expectedStateVersion",
+                "idempotencyKey",
+                "taskId"}))
+        return protocolError(400, "invalid_command_fields");
+    if ((commandName == "scene.script.prepare" || commandName == "scene.scripts.reload")
+        && !hasOnlyMembers(document,
+            {"schemaVersion",
+                "command",
+                "commandId",
+                "correlationId",
+                "expectedStateVersion",
+                "idempotencyKey"}))
         return protocolError(400, "invalid_command_fields");
     if ((commandName == "editor.state.get"
             && (member(document, "documentId") || member(document, "text")
@@ -2443,7 +2573,7 @@ network::http::Response EditorRemoteProtocol::restCommand(
             && (member(document, "documentId") || member(document, "taskId")
                 || member(document, "text") || member(document, "source")
                 || member(document, "value")))
-        || (commandName == "scene.task.get"
+        || ((commandName == "scene.task.get" || commandName == "scene.task.cancel")
             && (member(document, "documentId") || member(document, "path")
                 || member(document, "text") || member(document, "source")
                 || member(document, "value")))
@@ -2568,6 +2698,9 @@ network::http::Response EditorRemoteProtocol::mcpMessage(
         output += R"json(,"result":{"tools":[
 {"name":"project.create","description":"Create and open an explicit empty, 2d or 3d project. Templates require manifest.entryScene UUID.","inputSchema":{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":512},"manifestYaml":{"type":"string","maxLength":1048576},"template":{"type":"string","enum":["empty","2d","3d"]},"discardChanges":{"type":"boolean"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false,"required":["path","manifestYaml"]}},
 {"name":"project.open","description":"Validate a candidate project before replacing the workspace.","inputSchema":{"type":"object","properties":{"path":{"type":"string","minLength":0,"maxLength":512},"source":{"type":"string","minLength":1,"maxLength":128},"discardChanges":{"type":"boolean"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false,"required":["path"]}},
+{"name":"source.receipt.query","description":"Observe exactly one original file-save receipt. Never replays the save or publishes authoring state; poll sourceReceiptTask in editor.state.get.","inputSchema":{"type":"object","properties":{"source":{"type":"string","minLength":1,"maxLength":128},"receipt":{"type":"object","properties":{"contractVersion":{"type":"integer","enum":[1]},"scope":{"type":"integer","minimum":1},"operationId":{"type":"integer","minimum":1},"sessionVersion":{"type":"object","properties":{"kind":{"type":"string","enum":["content-sha256"]},"digest":{"type":"string","minLength":44,"maxLength":44}},"required":["kind","digest"],"additionalProperties":false},"requestVersion":{"type":"object","properties":{"kind":{"type":"string","enum":["content-sha256"]},"digest":{"type":"string","minLength":44,"maxLength":44}},"required":["kind","digest"],"additionalProperties":false}},"required":["contractVersion","scope","operationId","sessionVersion","requestVersion"],"additionalProperties":false},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["source","receipt"],"additionalProperties":false}},
+{"name":"source.receipt.release","description":"Release exactly one original receipt from the bounded remote journal. Does not remove a file or imply rollback; poll sourceReceiptTask.","inputSchema":{"type":"object","properties":{"source":{"type":"string","minLength":1,"maxLength":128},"receipt":{"type":"object","properties":{"contractVersion":{"type":"integer","enum":[1]},"scope":{"type":"integer","minimum":1},"operationId":{"type":"integer","minimum":1},"sessionVersion":{"type":"object","properties":{"kind":{"type":"string","enum":["content-sha256"]},"digest":{"type":"string","minLength":44,"maxLength":44}},"required":["kind","digest"],"additionalProperties":false},"requestVersion":{"type":"object","properties":{"kind":{"type":"string","enum":["content-sha256"]},"digest":{"type":"string","minLength":44,"maxLength":44}},"required":["kind","digest"],"additionalProperties":false}},"required":["contractVersion","scope","operationId","sessionVersion","requestVersion"],"additionalProperties":false},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["source","receipt"],"additionalProperties":false}},
+{"name":"source.receipt.cancel","description":"Cancel delivery of the current receipt task; a completed remote release is not undone.","inputSchema":{"type":"object","properties":{"taskId":{"type":"integer","minimum":1},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["taskId"],"additionalProperties":false}},
 {"name":"project.io.cancel","description":"Cancel the current private project IO candidate; retain the published workspace.","inputSchema":{"type":"object","properties":{"taskId":{"type":"integer","minimum":1},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false,"required":["taskId"]}},
 {"name":"project.directory.open","description":"Queue source directory navigation relative to the project root.","inputSchema":{"type":"object","properties":{"path":{"type":"string","maxLength":512},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false,"required":["path"]}},
 {"name":"project.directory.back","description":"Queue source directory history navigation.","inputSchema":{"type":"object","properties":{"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false}},
@@ -2576,7 +2709,7 @@ network::http::Response EditorRemoteProtocol::mcpMessage(
 {"name":"project.close","description":"Close the project, protecting all unsaved documents.","inputSchema":{"type":"object","properties":{"discardChanges":{"type":"boolean"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false}},
 {"name":"project.rename","description":"Edit the project name draft.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false,"required":["name"]}},
 {"name":"project.settings.set","description":"Edit project name and Ready SceneAsset startup reference together; empty entryScene explicitly clears it. Save separately.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"entryScene":{"type":"string","maxLength":36},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false,"required":["name","entryScene"]}},
-{"name":"project.save","description":"Queue an atomic project settings snapshot save; observe completion through editor.state.get.","inputSchema":{"type":"object","properties":{"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false}},
+{"name":"project.save","description":"Save project settings against their observed baseline. An explicit writable source returns a pending projectIoTask; inspect editor.state.get.projectSaveReceipt for commit and publication truth. Newer settings stay dirty. Unknown or committed-but-unpublished baselines require explicit reopen. This is a per-file operation, not cross-process CAS.","inputSchema":{"type":"object","properties":{"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false}},
 {"name":"editor.state.get","description":"Read current editor and active script state.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
 {"name":"scene.inspector.get","description":"Read typed Inspector properties and stable object/component IDs for a scene object (defaults to selection).","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1}},"additionalProperties":false}},
 {"name":"scene.inspector.selection.get","description":"Read the complete current selection, common and mixed fields, original per-object values and a read-only reason. Does not edit any object.","inputSchema":{"type":"object","properties":{"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false}},
@@ -2584,8 +2717,10 @@ network::http::Response EditorRemoteProtocol::mcpMessage(
 {"name":"scene.component.catalog.get","description":"Read the explicit allowlisted component factory catalog.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
 {"name":"scene.component.add","description":"Add one allowlisted component, optionally applying typed initial Inspector properties atomically.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"type":{"type":"string","minLength":1,"maxLength":128},"properties":{"type":"array","maxItems":64,"items":{"type":"object","properties":{"property":{"type":"string","minLength":1,"maxLength":256},"kind":{"type":"string","enum":["boolean","integer","unsignedInteger","number","enumeration","vector2","vector2List","vector3","color4","string","resourceReference","sceneObjectReference"]},"value":{}},"required":["property","kind","value"],"additionalProperties":false}},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId","type"],"additionalProperties":false}},
 {"name":"scene.component.remove","description":"Remove one non-Transform component by stable object and component IDs.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"componentId":{"type":"integer","minimum":1},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId","componentId"],"additionalProperties":false}},
-{"name":"scene.script.fields.set","description":"Replace complete explicit YAML fields and enabled state of one v4 ScriptComponent through shared history. Requires exact resource/module schema/type; never evaluates defaults or user code. fieldsYaml is limited to 262144 UTF-8 bytes, with 64 exact local references.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"componentId":{"type":"integer","minimum":1},"resourceId":{"type":"string","minLength":36,"maxLength":36},"scriptType":{"type":"string","minLength":1,"maxLength":128},"moduleSchemaVersion":{"type":"integer","minimum":1,"maximum":4294967295},"fieldsYaml":{"type":"string","minLength":1,"maxLength":262144},"enabled":{"type":"boolean"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId","componentId","resourceId","scriptType","moduleSchemaVersion","fieldsYaml","enabled"],"additionalProperties":false}},
-{"name":"scene.script.add","description":"Attach one ScriptComponent to an explicit owner in a v4 document, with exact resource/module schema/type and complete initial YAML fields. Uses shared exact identity history; never evaluates defaults or user code. fieldsYaml is limited to 262144 UTF-8 bytes, with 64 exact local references.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"resourceId":{"type":"string","minLength":36,"maxLength":36},"scriptType":{"type":"string","minLength":1,"maxLength":128},"moduleSchemaVersion":{"type":"integer","minimum":1,"maximum":4294967295},"fieldsYaml":{"type":"string","minLength":1,"maxLength":262144},"enabled":{"type":"boolean"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId","resourceId","scriptType","moduleSchemaVersion","fieldsYaml","enabled"],"additionalProperties":false}},
+{"name":"scene.script.prepare","description":"Source projects only: asynchronously verify project inputs, cold-prepare the configured ScriptComponent modules and explicitly upgrade a v3 Scene to v4. Replaces the document owner and clears scene history; retains the raw save point as dirty. No user code or file write. Query projectIoTask; cancel via project.io.cancel.","inputSchema":{"type":"object","properties":{"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false}},
+{"name":"scene.scripts.reload","description":"Source-backed v4 Scene only: explicitly reacquire registered module sources and cold-restore the same object/component identities, fields and references. Other project bytes must match. Dirty script/project, unknown saves or incompatible fields reject. Clears Scene Undo history, preserves the original save target as dirty, writes no file and executes no user code. Script text tabs retain their own explicit reload command. Query projectIoTask; cancel via project.io.cancel.","inputSchema":{"type":"object","properties":{"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false}},
+{"name":"scene.script.fields.set","description":"Replace complete explicit YAML fields and enabled state of one v4 ScriptComponent through shared history. Requires exact resource/module schema/type; never evaluates defaults or user code. fieldsYaml is limited to 262144 UTF-8 bytes, with 64 exact local references. Source projects return a pending projectIoTask; query editor.state.get and wait for Succeeded before assuming mutation.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"componentId":{"type":"integer","minimum":1},"resourceId":{"type":"string","minLength":36,"maxLength":36},"scriptType":{"type":"string","minLength":1,"maxLength":128},"moduleSchemaVersion":{"type":"integer","minimum":1,"maximum":4294967295},"fieldsYaml":{"type":"string","minLength":1,"maxLength":262144},"enabled":{"type":"boolean"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId","componentId","resourceId","scriptType","moduleSchemaVersion","fieldsYaml","enabled"],"additionalProperties":false}},
+{"name":"scene.script.add","description":"Attach one ScriptComponent to an explicit owner in a v4 document, with exact resource/module schema/type and complete initial YAML fields. Uses shared exact identity history; never evaluates defaults or user code. fieldsYaml is limited to 262144 UTF-8 bytes, with 64 exact local references. Source projects return a pending projectIoTask; query editor.state.get and wait for Succeeded before assuming mutation.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"resourceId":{"type":"string","minLength":36,"maxLength":36},"scriptType":{"type":"string","minLength":1,"maxLength":128},"moduleSchemaVersion":{"type":"integer","minimum":1,"maximum":4294967295},"fieldsYaml":{"type":"string","minLength":1,"maxLength":262144},"enabled":{"type":"boolean"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId","resourceId","scriptType","moduleSchemaVersion","fieldsYaml","enabled"],"additionalProperties":false}},
 {"name":"scene.component.property.set","description":"Set one typed scene component Inspector property through the editor command history.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"componentId":{"type":"integer","minimum":1},"property":{"type":"string","minLength":1,"maxLength":256},"kind":{"type":"string","enum":["boolean","integer","unsignedInteger","number","enumeration","vector2","vector2List","vector3","color4","string","resourceReference","sceneObjectReference"]},"value":{},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId","componentId","property","kind","value"],"additionalProperties":false}},
 {"name":"scene.select","description":"Select an existing scene object by exact ID using the shared Inspector selection command. Selection does not edit authoring content or Undo history.","inputSchema":{"type":"object","properties":{"objectId":{"type":"integer","minimum":1},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["objectId"],"additionalProperties":false}},
 {"name":"scene.selection.focus","description":"Move the editor camera target to the center of selected world origins, preserving orientation, distance, scene contents and selection. This does not fit geometry bounds. Modal, gesture and workspace busy guards apply.","inputSchema":{"type":"object","properties":{"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false}},
@@ -2604,7 +2739,7 @@ network::http::Response EditorRemoteProtocol::mcpMessage(
 {"name":"editor.search","description":"Set a bounded query on an editor search field.","inputSchema":{"type":"object","properties":{"source":{"type":"string","enum":["scene_search","file_search","property_search"]},"value":{"type":"string","maxLength":512}},"required":["source","value"],"additionalProperties":false}},
 {"name":"script.open","description":"Open a project-relative script. Source projects acquire privately through FileService and report projectIoTask; query editor.state.get for publication.","inputSchema":{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":512},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["path"],"additionalProperties":false}},
 {"name":"script.replace","description":"Replace full text in the targeted open script.","inputSchema":{"type":"object","properties":{"documentId":{"type":"integer","minimum":1},"text":{"type":"string"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["documentId","text"],"additionalProperties":false}},
-{"name":"script.save","description":"Atomically save the targeted open script after checking its exact disk baseline. External changes or an unreadable baseline reject the save and preserve local edits.","inputSchema":{"type":"object","properties":{"documentId":{"type":"integer","minimum":1},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["documentId"],"additionalProperties":false}},
+{"name":"script.save","description":"Save the targeted script against its observed byte baseline. Mounted writable projects return a pending projectIoTask; query editor.state.get.scriptSaveReceipt for terminal commit/publication truth. Newer edits stay dirty. Read-only sources reject. Unknown outcomes require explicit reload before retry; this is not cross-process CAS.","inputSchema":{"type":"object","properties":{"documentId":{"type":"integer","minimum":1},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["documentId"],"additionalProperties":false}},
 {"name":"script.close","description":"Close one exact open document ID without saving/deleting its disk file. Dirty buffers require explicit discardChanges. Other documents and their histories stay intact; stale IDs reject.","inputSchema":{"type":"object","properties":{"documentId":{"type":"integer","minimum":1},"discardChanges":{"type":"boolean"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["documentId"],"additionalProperties":false}},
 {"name":"script.reload","description":"Reload the targeted active script. Mounted projects return a pending projectIoTask; poll editor.state.get until terminal. Dirty buffers require explicit discardChanges=true. Successful reload retains the document ID and clears local history; failures preserve the document.","inputSchema":{"type":"object","properties":{"documentId":{"type":"integer","minimum":1},"discardChanges":{"type":"boolean"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["documentId"],"additionalProperties":false}},
 {"name":"script.undo","description":"Undo the latest edit in the targeted open script.","inputSchema":{"type":"object","properties":{"documentId":{"type":"integer","minimum":1},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["documentId"],"additionalProperties":false}},
@@ -2619,7 +2754,8 @@ network::http::Response EditorRemoteProtocol::mcpMessage(
 {"name":"scene.duplicate","description":"Adopt the complete current draft as a new unsaved scene identity, preserving contents and referenced resources. Clears the authoring path and old history; source files stay unchanged. Busy guard applies.","inputSchema":{"type":"object","properties":{"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"additionalProperties":false}},
 {"name":"scene.save","description":"Save the current authoring scene to a project-relative .arp.yaml path. Returns a taskId.","inputSchema":{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":512},"overwriteExisting":{"type":"boolean"},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["path"],"additionalProperties":false}},
 {"name":"scene.load","description":"Load and validate a project-relative authoring scene. Returns a taskId.","inputSchema":{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":512},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0},"discardChanges":{"type":"boolean"}},"required":["path"],"additionalProperties":false}},
-{"name":"scene.task.get","description":"Read the status and diagnostic of a scene save/load task.","inputSchema":{"type":"object","properties":{"taskId":{"type":"integer","minimum":1},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["taskId"],"additionalProperties":false}}
+{"name":"scene.task.get","description":"Read the status and diagnostic of a scene save/load task.","inputSchema":{"type":"object","properties":{"taskId":{"type":"integer","minimum":1},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["taskId"],"additionalProperties":false}},
+{"name":"scene.task.cancel","description":"Cancel a pending source Scene read. Native persistence cancellation is unsupported. The old Scene and history remain intact.","inputSchema":{"type":"object","properties":{"taskId":{"type":"integer","minimum":1},"idempotencyKey":{"type":"string","maxLength":128},"expectedStateVersion":{"type":"integer","minimum":0}},"required":["taskId"],"additionalProperties":false}}
 ]}})json";
         // clang-format on
     } else if (method == "tools/call") {
@@ -2647,6 +2783,12 @@ network::http::Response EditorRemoteProtocol::mcpMessage(
             : toolName == "project.open"
             ? hasUniqueAllowedMembers(*arguments,
                   {"path", "source", "discardChanges", "idempotencyKey", "expectedStateVersion"})
+            : (toolName == "source.receipt.query" || toolName == "source.receipt.release")
+            ? hasUniqueAllowedMembers(
+                  *arguments, {"source", "receipt", "idempotencyKey", "expectedStateVersion"})
+            : toolName == "source.receipt.cancel"
+            ? hasUniqueAllowedMembers(
+                  *arguments, {"taskId", "idempotencyKey", "expectedStateVersion"})
             : toolName == "project.io.cancel"
             ? hasUniqueAllowedMembers(
                   *arguments, {"taskId", "idempotencyKey", "expectedStateVersion"})
@@ -2716,6 +2858,8 @@ network::http::Response EditorRemoteProtocol::mcpMessage(
             : toolName == "scene.component.add"
             ? hasOnlyMembers(*arguments,
                   {"objectId", "type", "properties", "idempotencyKey", "expectedStateVersion"})
+            : (toolName == "scene.script.prepare" || toolName == "scene.scripts.reload")
+            ? hasOnlyMembers(*arguments, {"idempotencyKey", "expectedStateVersion"})
             : toolName == "scene.script.fields.set" ? hasUniqueAllowedMembers(*arguments,
                                                           {"objectId",
                                                               "componentId",
@@ -2779,6 +2923,8 @@ network::http::Response EditorRemoteProtocol::mcpMessage(
                   {"path", "overwriteExisting", "idempotencyKey", "expectedStateVersion"})
             : toolName == "scene.task.get"
             ? hasOnlyMembers(*arguments, {"taskId", "expectedStateVersion"})
+            : toolName == "scene.task.cancel"
+            ? hasOnlyMembers(*arguments, {"taskId", "expectedStateVersion", "idempotencyKey"})
             : (toolName == "script.reload" || toolName == "script.close")
             ? hasOnlyMembers(*arguments,
                   {"documentId", "discardChanges", "idempotencyKey", "expectedStateVersion"})

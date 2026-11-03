@@ -728,7 +728,11 @@ PostProcessFixtureResult runSsaoFeatureFixture(rhi::Extent2D extent)
     return runSsaoFeatureFixture(*device, extent);
 }
 
-PostProcessFixtureResult runSsaoFeatureFixture(rhi::GpuDevice& device, rhi::Extent2D extent)
+namespace {
+PostProcessFixtureResult runSsaoFixtureWithSource(rhi::GpuDevice& device,
+    rhi::Extent2D extent,
+    const renderer::ShaderPackagePreparationDesc* preparation,
+    FixtureReadbackPolicy policy)
 {
     extent.width = std::clamp(extent.width, 8u, 64u);
     extent.height = std::clamp(extent.height, 8u, 64u);
@@ -747,16 +751,24 @@ PostProcessFixtureResult runSsaoFeatureFixture(rhi::GpuDevice& device, rhi::Exte
     // Read the fixture depth once before the production pass. This is a
     // diagnostic observation only; acceptance remains based on its AO output.
     rhi::TextureReadbackSample depthReadback;
-    const auto depthReadbackStatus =
-        readbackOutput(device, *depth, "FeatureLab.SsaoDepthFixture", depthReadback, diagnostic);
+    const auto depthReadbackStatus = (policy == FixtureReadbackPolicy::RenderDocReplay
+            ? FixtureReadbackStatus::Unavailable
+            : readbackOutput(
+                  device, *depth, "FeatureLab.SsaoDepthFixture", depthReadback, diagnostic));
     if (depthReadbackStatus == FixtureReadbackStatus::Failed
         || (depthReadbackStatus == FixtureReadbackStatus::Unavailable
-            && device.backend() != rhi::Backend::Null)) {
+            && device.backend() != rhi::Backend::Null
+            && policy != FixtureReadbackPolicy::RenderDocReplay)) {
         return fail("FEATURE-LAB-SSAO-DEPTH-READBACK", diagnostic);
     }
     renderer::SsaoRenderer renderer(device);
+    const renderer::SsaoRendererDesc rendererDesc{preparation
+            ? preparation->prepared->filename(shader::ShaderArtifactRole::Source)
+            : shaderPath("ssao.slang"),
+        rhi::TextureFormat::R8Unorm,
+        extent};
     const auto created =
-        renderer.create({shaderPath("ssao.slang"), rhi::TextureFormat::R8Unorm, extent});
+        preparation ? renderer.create(rendererDesc, *preparation) : renderer.create(rendererDesc);
     if (!created.success)
         return fail("FEATURE-LAB-SSAO-CREATE", created.diagnostics);
     const auto before = device.queue().submitCount();
@@ -773,16 +785,19 @@ PostProcessFixtureResult runSsaoFeatureFixture(rhi::GpuDevice& device, rhi::Exte
         return fail("FEATURE-LAB-SSAO-DRAW", drawn.diagnostics);
 
     rhi::TextureReadbackSample readback;
-    const auto readbackStatus =
-        readbackOutput(device, *output, "FeatureLab.SsaoVisibility", readback, diagnostic);
+    const auto readbackStatus = (policy == FixtureReadbackPolicy::RenderDocReplay
+            ? FixtureReadbackStatus::Unavailable
+            : readbackOutput(device, *output, "FeatureLab.SsaoVisibility", readback, diagnostic));
     if (readbackStatus == FixtureReadbackStatus::Failed
         || (readbackStatus == FixtureReadbackStatus::Unavailable
-            && device.backend() != rhi::Backend::Null)) {
+            && device.backend() != rhi::Backend::Null
+            && policy != FixtureReadbackPolicy::RenderDocReplay)) {
         return fail("FEATURE-LAB-SSAO-READBACK", diagnostic);
     }
 
     PostProcessFixtureResult result;
     result.success = true;
+    result.readbackDeferredToRenderDoc = policy == FixtureReadbackPolicy::RenderDocReplay;
     result.passTrace.push_back("Post.Ssao");
     result.submittedFrameCount = device.queue().submitCount() - before;
     result.attachmentMetrics.push_back({"ao",
@@ -802,6 +817,21 @@ PostProcessFixtureResult runSsaoFeatureFixture(rhi::GpuDevice& device, rhi::Exte
     return result;
 }
 
+} // namespace
+
+PostProcessFixtureResult runSsaoFeatureFixture(rhi::GpuDevice& device, rhi::Extent2D extent)
+{
+    return runSsaoFixtureWithSource(device, extent, nullptr, FixtureReadbackPolicy::NativeHost);
+}
+
+PostProcessFixtureResult runSsaoFeatureFixture(rhi::GpuDevice& device,
+    rhi::Extent2D extent,
+    const renderer::ShaderPackagePreparationDesc* preparation,
+    FixtureReadbackPolicy policy)
+{
+    return runSsaoFixtureWithSource(device, extent, preparation, policy);
+}
+
 PostProcessFixtureResult runTaaFeatureFixture(rhi::Extent2D extent)
 {
     auto device = rhi::createNullDevice();
@@ -810,7 +840,11 @@ PostProcessFixtureResult runTaaFeatureFixture(rhi::Extent2D extent)
     return runTaaFeatureFixture(*device, extent);
 }
 
-PostProcessFixtureResult runTaaFeatureFixture(rhi::GpuDevice& device, rhi::Extent2D extent)
+namespace {
+PostProcessFixtureResult runTaaFixtureWithSource(rhi::GpuDevice& device,
+    rhi::Extent2D extent,
+    const renderer::ShaderPackagePreparationDesc* preparation,
+    FixtureReadbackPolicy policy)
 {
     extent.width = std::clamp(extent.width, 8u, 64u);
     extent.height = std::clamp(extent.height, 8u, 64u);
@@ -843,8 +877,13 @@ PostProcessFixtureResult runTaaFeatureFixture(rhi::GpuDevice& device, rhi::Exten
     }
 
     renderer::TaaRenderer renderer(device);
+    const renderer::TaaRendererDesc rendererDesc{preparation
+            ? preparation->prepared->filename(shader::ShaderArtifactRole::Source)
+            : shaderPath("wocc_taa.slang"),
+        rhi::TextureFormat::Bgra8Unorm,
+        extent};
     const auto created =
-        renderer.create({shaderPath("wocc_taa.slang"), rhi::TextureFormat::Bgra8Unorm, extent});
+        preparation ? renderer.create(rendererDesc, *preparation) : renderer.create(rendererDesc);
     if (!created.success)
         return fail("FEATURE-LAB-TAA-CREATE", created.diagnostics);
     const auto before = device.queue().submitCount();
@@ -854,11 +893,14 @@ PostProcessFixtureResult runTaaFeatureFixture(rhi::GpuDevice& device, rhi::Exten
     if (!first.success)
         return fail("FEATURE-LAB-TAA-FIRST-FRAME", first.diagnostics);
     rhi::TextureReadbackSample firstReadback;
-    const auto firstReadbackStatus =
-        readbackOutput(device, *output, "FeatureLab.TaaFirstFrame", firstReadback, diagnostic);
+    const auto firstReadbackStatus = (policy == FixtureReadbackPolicy::RenderDocReplay
+            ? FixtureReadbackStatus::Unavailable
+            : readbackOutput(
+                  device, *output, "FeatureLab.TaaFirstFrame", firstReadback, diagnostic));
     if (firstReadbackStatus == FixtureReadbackStatus::Failed
         || (firstReadbackStatus == FixtureReadbackStatus::Unavailable
-            && device.backend() != rhi::Backend::Null)) {
+            && device.backend() != rhi::Backend::Null
+            && policy != FixtureReadbackPolicy::RenderDocReplay)) {
         return fail("FEATURE-LAB-TAA-FIRST-READBACK", diagnostic);
     }
     renderer.markHistoryValid();
@@ -879,16 +921,20 @@ PostProcessFixtureResult runTaaFeatureFixture(rhi::GpuDevice& device, rhi::Exten
     if (!reset.success)
         return fail("FEATURE-LAB-TAA-RESET-FRAME", reset.diagnostics);
     rhi::TextureReadbackSample resetReadback;
-    const auto resetReadbackStatus =
-        readbackOutput(device, *output, "FeatureLab.TaaResetFrame", resetReadback, diagnostic);
+    const auto resetReadbackStatus = (policy == FixtureReadbackPolicy::RenderDocReplay
+            ? FixtureReadbackStatus::Unavailable
+            : readbackOutput(
+                  device, *output, "FeatureLab.TaaResetFrame", resetReadback, diagnostic));
     if (resetReadbackStatus == FixtureReadbackStatus::Failed
         || (resetReadbackStatus == FixtureReadbackStatus::Unavailable
-            && device.backend() != rhi::Backend::Null)) {
+            && device.backend() != rhi::Backend::Null
+            && policy != FixtureReadbackPolicy::RenderDocReplay)) {
         return fail("FEATURE-LAB-TAA-RESET-READBACK", diagnostic);
     }
 
     PostProcessFixtureResult result;
     result.success = true;
+    result.readbackDeferredToRenderDoc = policy == FixtureReadbackPolicy::RenderDocReplay;
     result.passTrace.push_back("Post.TaaResolve.FirstFrame");
     result.passTrace.push_back("Post.TaaResolve.Accumulated");
     result.passTrace.push_back("Post.TaaResolve.Reset");
@@ -902,6 +948,21 @@ PostProcessFixtureResult runTaaFeatureFixture(rhi::GpuDevice& device, rhi::Exten
     result.gpuMemoryBytes = device.memoryStats().allocatedBytes;
     device.waitIdle();
     return result;
+}
+
+} // namespace
+
+PostProcessFixtureResult runTaaFeatureFixture(rhi::GpuDevice& device, rhi::Extent2D extent)
+{
+    return runTaaFixtureWithSource(device, extent, nullptr, FixtureReadbackPolicy::NativeHost);
+}
+
+PostProcessFixtureResult runTaaFeatureFixture(rhi::GpuDevice& device,
+    rhi::Extent2D extent,
+    const renderer::ShaderPackagePreparationDesc* preparation,
+    FixtureReadbackPolicy policy)
+{
+    return runTaaFixtureWithSource(device, extent, preparation, policy);
 }
 
 namespace {
@@ -1134,7 +1195,10 @@ PostPassPipeline createPostPipeline(rhi::GpuDevice& device,
     return result;
 }
 
-PostProcessFixtureResult runPostFixtureOnDevice(rhi::GpuDevice& device, rhi::Extent2D extent)
+PostProcessFixtureResult runPostFixtureOnDevice(rhi::GpuDevice& device,
+    rhi::Extent2D extent,
+    const renderer::ShaderPackagePreparationDesc* preparation = nullptr,
+    FixtureReadbackPolicy policy = FixtureReadbackPolicy::NativeHost)
 {
     extent.width = std::clamp(extent.width, 8u, 64u);
     extent.height = std::clamp(extent.height, 8u, 64u);
@@ -1243,7 +1307,13 @@ PostProcessFixtureResult runPostFixtureOnDevice(rhi::GpuDevice& device, rhi::Ext
         return fail("FEATURE-LAB-POST-RECORD", diagnostic);
 
     renderer::FxaaRenderer fxaa(device);
-    const auto fxaaCreated = fxaa.create({shaderPath("fxaa.slang"), format, extent});
+    const renderer::FxaaRendererDesc rendererDesc{preparation
+            ? preparation->prepared->filename(shader::ShaderArtifactRole::Source)
+            : shaderPath("fxaa.slang"),
+        format,
+        extent};
+    const auto fxaaCreated =
+        preparation ? fxaa.create(rendererDesc, *preparation) : fxaa.create(rendererDesc);
     if (!fxaaCreated.success)
         return fail("FEATURE-LAB-POST-FXAA-CREATE", fxaaCreated.diagnostics);
     if (!prepareOutputTexture(device, *finalOutput, diagnostic)) {
@@ -1255,6 +1325,7 @@ PostProcessFixtureResult runPostFixtureOnDevice(rhi::GpuDevice& device, rhi::Ext
 
     PostProcessFixtureResult result;
     result.success = true;
+    result.readbackDeferredToRenderDoc = policy == FixtureReadbackPolicy::RenderDocReplay;
     result.passTrace = {"Post.Bloom.Downsample",
         "Post.Bloom.Blur",
         "Post.Bloom.Composite",
@@ -1264,7 +1335,9 @@ PostProcessFixtureResult runPostFixtureOnDevice(rhi::GpuDevice& device, rhi::Ext
     const auto readMetric = [&](rhi::GpuTexture& texture, const char* label) {
         rhi::TextureReadbackSample sample;
         core::pmr::String readbackDiagnostic;
-        const auto status = readbackOutput(device, texture, label, sample, readbackDiagnostic);
+        const auto status = policy == FixtureReadbackPolicy::RenderDocReplay
+            ? FixtureReadbackStatus::Unavailable
+            : readbackOutput(device, texture, label, sample, readbackDiagnostic);
         if (status == FixtureReadbackStatus::Failed) {
             diagnostic = readbackDiagnostic;
             return FeatureLabAttachmentMetric{label, "finite_fraction", 0.0f, false};
@@ -1287,7 +1360,8 @@ PostProcessFixtureResult runPostFixtureOnDevice(rhi::GpuDevice& device, rhi::Ext
         // not expose pixel readback.  Keep its metrics explicitly unavailable
         // while allowing the contract run to pass, matching the other Lab
         // fixtures.  Real backends must provide every requested measurement.
-        result.success = result.success && (metric.available || nullBackend);
+        result.success = result.success
+            && (metric.available || nullBackend || result.readbackDeferredToRenderDoc);
     }
     result.submittedFrameCount = device.queue().submitCount();
     result.gpuMemoryBytes = device.memoryStats().allocatedBytes;
@@ -1311,6 +1385,14 @@ PostProcessFixtureResult runPostFeatureFixture(rhi::Extent2D extent)
 PostProcessFixtureResult runPostFeatureFixture(rhi::GpuDevice& device, rhi::Extent2D extent)
 {
     return runPostFixtureOnDevice(device, extent);
+}
+
+PostProcessFixtureResult runPostFeatureFixture(rhi::GpuDevice& device,
+    rhi::Extent2D extent,
+    const renderer::ShaderPackagePreparationDesc* preparation,
+    FixtureReadbackPolicy policy)
+{
+    return runPostFixtureOnDevice(device, extent, preparation, policy);
 }
 
 namespace {

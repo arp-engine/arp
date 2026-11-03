@@ -176,7 +176,7 @@ void transaction(ExportFixture& fixture)
     assert(core::readTextFile(root / "assets/exported/scene.yaml").text == bytes.text);
     // A staging collision exercises a real asynchronous failure. The unrelated
     // directory must survive, with neither published output nor partial package.
-    const auto blocker = root / "assets/blocked.preparation.arp-staging";
+    const auto blocker = root / "assets/blocked.arp-staging";
     std::filesystem::create_directory(blocker);
     std::ofstream(blocker / "owner.txt") << "other writer";
     const auto failing = shell.submitCommand(ExportSceneCommand{"assets/blocked"});
@@ -240,7 +240,7 @@ void snapshotFailures(ExportFixture& fixture)
         assert(diagnostic.find(expected) != core::pmr::String::npos);
         assert(!std::filesystem::exists(output)
             && !std::filesystem::exists(std::filesystem::path(
-                output.native() + std::filesystem::path(".preparation.arp-staging").native())));
+                output.native() + std::filesystem::path(".arp-staging").native())));
     };
     auto dynamic = plain;
     dynamic["objects"][0]["components"][0]["configuration"] = Y::Node::mapping();
@@ -318,6 +318,22 @@ void lifetime(ExportFixture& fixture)
 int main(int argc, char** argv)
 {
     ExportFixture fixture;
+    if (argc == 3 && std::string_view(argv[1]) == "--io-baseline") {
+        resource::ResourceManager resources;
+        core::pmr::String diagnostic;
+        auto factory = ProjectSceneAuthoring::factory(resources, {}, diagnostic);
+        assert(factory);
+        scene::Scene authored(
+            "Unified IO export", scene::SceneId::fromValue(1), scene::SceneExecutionMode::Passive);
+        authored.createObject("Camera").addComponent<scene::CameraComponent>(
+            scene::CameraComponentDesc::perspective(60, 16.f / 9.f, .1f, 1000));
+        authored.createObject("Sky").addComponent<scene3d::SkyComponent>();
+        const auto id = resource::deriveResourceUuid("unified-io-export", "entry");
+        assert(ProjectSceneAuthoring::exportScene(
+            authored, *factory, id, std::filesystem::u8path(argv[2]), diagnostic));
+        std::puts("PASS original scene-only package producer");
+        return 0;
+    }
     if (argc == 2 && std::string_view(argv[1]) == "--smoke") {
         lifetime(fixture);
         return 0;

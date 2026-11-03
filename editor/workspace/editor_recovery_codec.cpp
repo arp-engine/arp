@@ -2,7 +2,9 @@
 
 #include "core/encoding/base64.h"
 #include "core/encoding/yaml_contract.h"
+#include "core/hash/sha256.h"
 #include "core/io/filesystem_path.h"
+#include "core/text/text_decoder.h"
 #include "core/text/utf8.h"
 #include "editor/project/project_manifest.h"
 #include "editor/project/project_metadata.h"
@@ -132,6 +134,35 @@ private:
     EditorRecoveryBudget budget_;
     std::size_t remaining_;
 };
+
+Node inputBindingsNode(const core::pmr::Vector<ProjectInputBinding>& bindings)
+{
+    auto result = Node::sequence();
+    for (const auto& input : bindings) {
+        auto item = Node::mapping();
+        item["path"] = textNode(input.path);
+        item["bytes"] = static_cast<std::uint64_t>(input.byteCount);
+        item["fingerprint"] = textNode(input.fingerprint);
+        result.get_value_ref<Node::sequence_type&>().push_back(std::move(item));
+    }
+    return result;
+}
+
+void readInputBindings(const Node& sequence,
+    RecoveryReader& reader,
+    core::pmr::Vector<ProjectInputBinding>& destination)
+{
+    if (!sequence.is_sequence() || sequence.size() > ProjectInputBudget{}.maxFiles)
+        Yaml::fail();
+    for (const auto& item : sequence.get_value_ref<const Node::sequence_type&>()) {
+        Yaml::onlyKeys(item, {"path", "bytes", "fingerprint"});
+        ProjectInputBinding input;
+        input.path = reader.text(Yaml::required(item, "path"), reader.pathLimit());
+        input.byteCount = RecoveryReader::index(Yaml::required(item, "bytes"));
+        input.fingerprint = reader.text(Yaml::required(item, "fingerprint"), 71u);
+        destination.push_back(std::move(input));
+    }
+}
 } // namespace
 
 bool EditorRecoveryCodec::validateBudget(
@@ -166,11 +197,21 @@ bool EditorRecoveryCodec::validate(
         if (!resource::isResourceUuid(value.sessionId) || !value.sequence || !value.workspaceEpoch
             || value.sequence > INT64_MAX || value.workspaceEpoch > INT64_MAX)
             return fail(diagnostic, "EDITOR-RECOVERY-IDENTITY-INVALID");
-        if (!pathText(value.projectRoot, budget.maxPathBytes))
-            return fail(diagnostic, "EDITOR-RECOVERY-ROOT-INVALID");
-        const auto root = std::filesystem::u8path(value.projectRoot);
-        if (!root.is_absolute() || root != root.lexically_normal())
-            return fail(diagnostic, "EDITOR-RECOVERY-ROOT-INVALID");
+        if (value.source) {
+            const auto& source = *value.source;
+            if (!value.projectRoot.empty() || !value.project || source.alias.size() > 128u
+                || !ProjectInputSnapshot::validLogicalPath(source.alias)
+                || source.alias.find('/') != core::pmr::String::npos
+                || (!source.root.empty() && !ProjectInputSnapshot::validLogicalPath(source.root))
+                || source.root.size() > budget.maxPathBytes)
+                return fail(diagnostic, "EDITOR-RECOVERY-SOURCE-LOCATION-INVALID");
+        } else {
+            if (!pathText(value.projectRoot, budget.maxPathBytes))
+                return fail(diagnostic, "EDITOR-RECOVERY-ROOT-INVALID");
+            const auto root = std::filesystem::u8path(value.projectRoot);
+            if (!root.is_absolute() || root != root.lexically_normal())
+                return fail(diagnostic, "EDITOR-RECOVERY-ROOT-INVALID");
+        }
         if ((value.workspace != "Game" && value.workspace != "3D" && value.workspace != "Script")
             || value.scripts.size() > budget.maxScripts
             || (value.activeScript && *value.activeScript >= value.scripts.size())
@@ -184,6 +225,42 @@ bool EditorRecoveryCodec::validate(
         if (!count(value.sessionId, 36u) || !count(value.projectRoot, budget.maxPathBytes)
             || !count(value.workspace, 6u))
             return fail(diagnostic, "EDITOR-RECOVERY-PAYLOAD-LIMIT");
+        if (value.source) {
+            const auto& source = *value.source;
+            if (!count(source.alias, 128u) || !count(source.root, budget.maxPathBytes)
+                || !count(source.manifestFileBytes, ProjectManifestBudget{}.maxDocumentBytes)
+                || !ProjectInputSnapshot::validateBindings(source.inputs, diagnostic))
+                return fail(diagnostic, "EDITOR-RECOVERY-SOURCE-INPUT-BUDGET-OR-BINDING");
+            const auto decoded = core::TextDecoder::decode(source.manifestFileBytes,
+                {1,
+                    core::TextEncoding::Utf8,
+                    core::TextBomPolicy::Strip,
+                    core::TextNulPolicy::Reject,
+                    ProjectManifestBudget{}.maxDocumentBytes});
+            if (decoded.status != core::TextDecodeStatus::Success
+                || decoded.text != value.project->savedFileBytes)
+                return fail(diagnostic, "EDITOR-RECOVERY-SOURCE-MANIFEST-BYTES");
+            const ProjectInputBinding* manifest = nullptr;
+            for (const auto& input : source.inputs) {
+                if (!ProjectInputSnapshot::validLogicalPath(input.path)
+                    || !count(input.path, budget.maxPathBytes) || !count(input.fingerprint, 71u))
+                    return fail(diagnostic, "EDITOR-RECOVERY-SOURCE-INPUT-LIMIT-OR-PATH");
+                if (input.path == "project.arp.yaml")
+                    manifest = &input;
+            }
+            if (!manifest || manifest->byteCount != source.manifestFileBytes.size()
+                || manifest->fingerprint != core::Sha256::hexDigest(source.manifestFileBytes))
+                return fail(diagnostic, "EDITOR-RECOVERY-SOURCE-MANIFEST-IDENTITY");
+            for (const auto& dependency : value.project->inputFiles) {
+                const auto found = std::find_if(
+                    source.inputs.begin(), source.inputs.end(), [&](const auto& input) {
+                        return input.path == dependency.path;
+                    });
+                if (found == source.inputs.end() || found->byteCount != dependency.byteCount
+                    || found->fingerprint != dependency.fingerprint)
+                    return fail(diagnostic, "EDITOR-RECOVERY-SOURCE-INPUT-CLOSURE");
+            }
+        }
         if (value.project) {
             const auto& project = *value.project;
             if (!count(project.id, 36u)
@@ -248,6 +325,10 @@ bool EditorRecoveryCodec::validate(
                     || !relativePath(scene.boundTarget, budget.maxPathBytes)
                     || !EditorSceneAuthoringCodec::isContentHash(scene.savedContentHash))))
             return fail(diagnostic, "EDITOR-RECOVERY-SCENE-BINDING-INVALID");
+        if (value.source && bound
+            && (scene.path != scene.boundTarget
+                || !ProjectInputSnapshot::validLogicalPath(scene.path)))
+            return fail(diagnostic, "EDITOR-RECOVERY-SOURCE-SCENE-TARGET");
         // A saved hash describes the decoded live document, not wire YAML
         // spelling. Resource-ready candidate preparation must check it against
         // the restored baseline; this codec only validates its schema.
@@ -259,6 +340,11 @@ bool EditorRecoveryCodec::validate(
         }
         for (std::size_t i = 0; i < value.scripts.size(); ++i) {
             const auto& script = value.scripts[i];
+            if (value.source
+                && (!ProjectInputSnapshot::validLogicalPath(script.path)
+                    || core::Utf8Decoder::validate(script.text)
+                    || script.text.find('\0') != core::pmr::String::npos))
+                return fail(diagnostic, "EDITOR-RECOVERY-SOURCE-SCRIPT-INVALID");
             if (!relativePath(script.path, budget.maxPathBytes)
                 || !ScriptDocumentSession::isScriptPath(std::filesystem::u8path(script.path))
                 || !count(script.path, budget.maxPathBytes)
@@ -270,8 +356,8 @@ bool EditorRecoveryCodec::validate(
             if (script.cursor > script.text.size() || script.anchor > script.text.size()
                 || script.scrollLine > INT64_MAX
                 || (script.newline != "\n" && script.newline != "\r\n")
-                || ScriptDocumentSession::normalizeFileBytes(
-                       script.savedFileBytes, core::TextNulPolicy::Preserve)
+                || ScriptDocumentSession::normalizeFileBytes(script.savedFileBytes,
+                       value.source ? core::TextNulPolicy::Reject : core::TextNulPolicy::Preserve)
                     != script.savedText
                 || script.newline
                     != (script.savedFileBytes.find("\r\n") != core::pmr::String::npos ? "\r\n"
@@ -297,11 +383,20 @@ bool EditorRecoveryCodec::encode(const EditorRecoverySnapshot& value,
     try {
         auto root = Node::mapping();
         root["type"] = "arp.editor-recovery";
-        root["contractVersion"] = contractVersion;
+        root["contractVersion"] = value.source ? sourceContractVersion : contractVersion;
         root["sessionId"] = textNode(value.sessionId);
         root["sequence"] = value.sequence;
         root["workspaceEpoch"] = value.workspaceEpoch;
-        root["projectRoot"] = textNode(value.projectRoot);
+        root["projectRoot"] = value.source ? Node() : textNode(value.projectRoot);
+        if (value.source) {
+            auto& source = root["source"];
+            source = Node::mapping();
+            source["contractVersion"] = 1;
+            source["alias"] = textNode(value.source->alias);
+            source["root"] = textNode(value.source->root);
+            source["manifestDisk"] = blob(value.source->manifestFileBytes);
+            source["inputs"] = inputBindingsNode(value.source->inputs);
+        }
         root["workspace"] = textNode(value.workspace);
         root["activeScript"] =
             value.activeScript ? Node(static_cast<std::uint64_t>(*value.activeScript)) : Node();
@@ -318,14 +413,7 @@ bool EditorRecoveryCodec::encode(const EditorRecoverySnapshot& value,
                 metadata["path"] = textNode(value.project->metadata->path);
                 metadata["disk"] = blob(value.project->metadata->fileBytes);
             }
-            project["inputs"] = Node::sequence();
-            for (const auto& input : value.project->inputFiles) {
-                auto item = Node::mapping();
-                item["path"] = textNode(input.path);
-                item["bytes"] = static_cast<std::uint64_t>(input.byteCount);
-                item["fingerprint"] = textNode(input.fingerprint);
-                project["inputs"].get_value_ref<Node::sequence_type&>().push_back(std::move(item));
-            }
+            project["inputs"] = inputBindingsNode(value.project->inputFiles);
             project["packages"] = Node::sequence();
             for (const auto& package : value.project->packages) {
                 auto item = Node::mapping();
@@ -377,28 +465,61 @@ bool EditorRecoveryCodec::decode(std::string_view yaml,
     const char* stage = "EDITOR-RECOVERY-FIELD-INVALID";
     try {
         const auto root = Yaml::parseSingleDocument(yaml);
+        const auto version = Yaml::uint32(root, "contractVersion");
+        const bool sourceVersion = version == sourceContractVersion;
         if (Yaml::text(root, "type") != "arp.editor-recovery"
-            || Yaml::uint32(root, "contractVersion") != contractVersion)
+            || (version != contractVersion && !sourceVersion))
             return fail(diagnostic, "EDITOR-RECOVERY-CONTRACT-UNSUPPORTED");
-        Yaml::onlyKeys(root,
-            {"type",
-                "contractVersion",
-                "sessionId",
-                "sequence",
-                "workspaceEpoch",
-                "projectRoot",
-                "workspace",
-                "activeScript",
-                "project",
-                "scene",
-                "scripts"});
+        if (sourceVersion) {
+            Yaml::onlyKeys(root,
+                {"type",
+                    "contractVersion",
+                    "sessionId",
+                    "sequence",
+                    "workspaceEpoch",
+                    "projectRoot",
+                    "source",
+                    "workspace",
+                    "activeScript",
+                    "project",
+                    "scene",
+                    "scripts"});
+        } else
+            Yaml::onlyKeys(root,
+                {"type",
+                    "contractVersion",
+                    "sessionId",
+                    "sequence",
+                    "workspaceEpoch",
+                    "projectRoot",
+                    "workspace",
+                    "activeScript",
+                    "project",
+                    "scene",
+                    "scripts"});
         RecoveryReader reader(budget);
         EditorRecoverySnapshot candidate;
         candidate.sessionId = reader.text(Yaml::required(root, "sessionId"), 36u);
         candidate.sequence = Yaml::uint64(Yaml::required(root, "sequence"));
         candidate.workspaceEpoch = Yaml::uint64(Yaml::required(root, "workspaceEpoch"));
-        candidate.projectRoot =
-            reader.text(Yaml::required(root, "projectRoot"), reader.pathLimit());
+        if (sourceVersion) {
+            stage = "EDITOR-RECOVERY-SOURCE-FIELD-INVALID";
+            if (!Yaml::required(root, "projectRoot").is_null())
+                Yaml::fail();
+            const auto& source = Yaml::required(root, "source");
+            Yaml::onlyKeys(source, {"contractVersion", "alias", "root", "manifestDisk", "inputs"});
+            if (Yaml::uint32(source, "contractVersion") != 1)
+                Yaml::fail();
+            candidate.source.emplace();
+            candidate.source->alias = reader.text(Yaml::required(source, "alias"), 128u);
+            candidate.source->root =
+                reader.text(Yaml::required(source, "root"), reader.pathLimit());
+            candidate.source->manifestFileBytes = reader.bytes(
+                Yaml::required(source, "manifestDisk"), ProjectManifestBudget{}.maxDocumentBytes);
+            readInputBindings(Yaml::required(source, "inputs"), reader, candidate.source->inputs);
+        } else
+            candidate.projectRoot =
+                reader.text(Yaml::required(root, "projectRoot"), reader.pathLimit());
         candidate.workspace = reader.text(Yaml::required(root, "workspace"), 6u);
         const auto& active = Yaml::required(root, "activeScript");
         if (!active.is_null())
@@ -422,17 +543,7 @@ bool EditorRecoveryCodec::decode(std::string_view yaml,
                 value.metadata->fileBytes =
                     reader.bytes(Yaml::required(metadata, "disk"), maxMetadataBytes);
             }
-            const auto& inputs = Yaml::sequence(project, "inputs");
-            if (inputs.size() > ProjectInputBudget{}.maxFiles)
-                Yaml::fail();
-            for (const auto& item : inputs) {
-                Yaml::onlyKeys(item, {"path", "bytes", "fingerprint"});
-                ProjectInputBinding input;
-                input.path = reader.text(Yaml::required(item, "path"), reader.pathLimit());
-                input.byteCount = RecoveryReader::index(Yaml::required(item, "bytes"));
-                input.fingerprint = reader.text(Yaml::required(item, "fingerprint"), 71u);
-                value.inputFiles.push_back(std::move(input));
-            }
+            readInputBindings(Yaml::required(project, "inputs"), reader, value.inputFiles);
             const auto& packages = Yaml::sequence(project, "packages");
             if (packages.size() > ProjectManifestBudget{}.maxAssetPackages)
                 Yaml::fail();

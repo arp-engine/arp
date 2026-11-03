@@ -19,6 +19,12 @@ public:
 
     static constexpr std::size_t maxSceneBytes = 4u * 1024u * 1024u;
     static constexpr std::uint32_t maxObjects = 512;
+    // Explicit scene-only export profile; exhaustion rejects the whole candidate.
+    static constexpr std::size_t maxPackageMetadataFileBytes = 64u * 1024u;
+    static constexpr std::size_t maxPackageMetadataBytes = 3u * maxPackageMetadataFileBytes;
+    static constexpr std::uint32_t maxPackageFiles = 4;
+    static constexpr std::size_t maxPackageBytes = maxSceneBytes + maxPackageMetadataBytes;
+    static constexpr std::size_t maxPackagePreparationBytes = 64u * 1024u * 1024u;
     static core::SharedPtr<scene::SceneComponentFactory> factory(resource::ResourceManager&,
         core::SharedPtr<physics2d::PhysicsWorld2D>,
         core::pmr::String& diagnostic);

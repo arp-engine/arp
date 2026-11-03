@@ -14,6 +14,8 @@
 #include "editor/workspace/editor_scene_persistence.h"
 #include "editor/workspace/editor_scene_presence.h"
 #include "editor/workspace/editor_scene_reference_drag.h"
+#include "editor/workspace/editor_scene_source_save_task.h"
+#include "editor/workspace/editor_scene_source_task.h"
 #include "editor/workspace/editor_scene_transform_panel.h"
 #include "editor/workspace/editor_scene_view_pointer.h"
 #include "editor/workspace/editor_scene_view_state.h"
@@ -39,6 +41,7 @@
 namespace arp::editor {
 
 class EditorShell;
+class EditorSceneScriptReload;
 
 class EditorAction final : public ui::Button {
 public:
@@ -213,6 +216,8 @@ public:
     SceneReplacementResult commitSceneReplacement(
         PreparedSceneReplacement&, EditorSceneDocument& candidate) noexcept;
     ui::UiResult load(const std::filesystem::path& path, std::filesystem::path projectRoot = {});
+    ui::UiResult loadPreparedUi(
+        const ui::UiArpuiRuntimeLoadDesc&, std::filesystem::path projectRoot = {});
     EditorResponse submitCommand(EditorCommandPayload payload,
         EditorCommandOrigin origin = EditorCommandOrigin::LocalUi,
         std::uint64_t correlationId = 0);
@@ -440,6 +445,7 @@ public:
 
 private:
     friend class EditorEnumDropdown;
+    ui::UiResult loadUi(ui::UiArpuiRuntimeLoadDesc, std::filesystem::path projectRoot);
     friend class EditorRecoveryAdmission;
     friend class EditorProjectPanel;
     friend class EditorScenePanel;
@@ -488,10 +494,17 @@ private:
     void applyGamePreviewState(bool running, bool starting, const core::pmr::String& status);
     EditorCommandOutcome applyScriptHistory(std::uint64_t documentId, bool undo);
     EditorCommandOutcome saveScriptDocument();
+    EditorCommandOutcome saveSourceScript();
+    EditorCommandOutcome advanceSourceScriptSave();
+    EditorCommandOutcome saveSourceProject();
+    EditorCommandOutcome advanceSourceProjectSave();
+    bool projectSettingsSavePending() const noexcept;
     EditorCommandOutcome openScriptDocument(const OpenScriptCommand&);
     void appendScriptSnapshot(EditorStateSnapshot&) const;
     EditorCommandOutcome reloadScriptDocument(bool discardChanges);
     EditorCommandOutcome reloadSourceScript(bool discardChanges);
+    EditorCommandOutcome reloadSceneScripts();
+    EditorCommandOutcome completeSceneScriptReload();
     EditorCommandOutcome applySceneHistory(bool undo);
     EditorCommandOutcome applySceneBatchHistory(bool undo);
     EditorCommandOutcome transformSceneSelection(const TransformSceneSelectionCommand&);
@@ -577,7 +590,16 @@ private:
     EditorCommandOutcome navigateSourceProject(const NavigateProjectSourceCommand&);
     EditorCommandOutcome advanceProjectIo(std::uint64_t taskId);
     EditorCommandOutcome cancelProjectIo(std::uint64_t taskId);
+    bool sourceReceiptPending() const noexcept;
+    EditorCommandOutcome observeSourceReceipt(const SourceFileReceiptCommand&);
+    EditorCommandOutcome advanceSourceReceipt(std::uint64_t);
+    EditorCommandOutcome cancelSourceReceipt(std::uint64_t);
+    EditorCommandOutcome beginSourceSceneAuthoring(const EditorCommandPayload&);
+    EditorCommandOutcome completeSourceSceneAuthoring();
+    EditorCommandOutcome prepareSourceSceneScriptDomain();
+    void retireSourceSceneIntent(bool success) noexcept;
     bool projectIoPending() const noexcept;
+    bool sourceScenePending() const noexcept;
     EditorCommandOutcome createProject(const CreateProjectCommand& command);
     EditorCommandOutcome closeProject(bool discardChanges);
     EditorCommandOutcome requestEditorExit(bool discardChanges);
@@ -603,9 +625,9 @@ private:
 
     bool authoringUiBlocked() const
     {
-        return projectIoPending() || projectPanel_.active() || scenePanel_.active()
-            || scriptFilePanel_.active() || exitPanel_.active() || sceneTransformPanel_.active()
-            || presentationState_.menuOpen();
+        return projectIoPending() || sourceScenePending() || projectPanel_.active()
+            || scenePanel_.active() || scriptFilePanel_.active() || exitPanel_.active()
+            || sceneTransformPanel_.active() || presentationState_.menuOpen();
     }
 
     EditorCommandOutcome newScene(bool discardChanges);
@@ -620,6 +642,10 @@ private:
     void pollScenePersistence();
     bool observeSceneHash(core::pmr::String&, core::pmr::String&) const;
     EditorCommandOutcome completeScenePersistence(std::uint64_t taskId);
+    EditorCommandOutcome completeSourceScenePersistence(std::uint64_t taskId);
+    EditorCommandOutcome beginSourceSceneSave(std::string_view relativePath, bool overwrite);
+    EditorCommandOutcome completeSourceSceneSave(std::uint64_t taskId);
+    EditorCommandOutcome cancelSourceScenePersistence(std::uint64_t taskId);
     bool sceneFileContextCurrent(const std::filesystem::path&,
         std::string_view projectModel,
         std::string_view manifestBytes,
@@ -698,6 +724,20 @@ private:
     core::pmr::String projectSourceAlias_{&core::defaultCpuMemoryResource()};
     EditorProjectIoBudget projectIoBudget_;
     core::UniquePtr<EditorProjectIoTask> projectIo_;
+    core::UniquePtr<ProjectFileSaveTask> sourceReceiptTask_;
+    std::uint64_t sourceReceiptTaskId_ = 0;
+    bool sourceReceiptSubmitted_ = false;
+    core::io::FileSaveReceiptResult sourceReceiptResult_;
+    ProjectIoStatus sourceReceiptTaskStatus_ = ProjectIoStatus::Unknown;
+    core::io::FileSaveReceiptOperation sourceReceiptOperation_ =
+        core::io::FileSaveReceiptOperation::Query;
+    core::io::FileSaveReceipt sourceReceiptIdentity_;
+    ProjectScriptSaveReceipt lastScriptSave_;
+    ProjectSourceSaveReceipt lastProjectSave_;
+    struct SourceSceneIntent;
+    core::UniquePtr<SourceSceneIntent> sourceSceneIntent_;
+    const ProjectSourceContext* sourceSceneAdmission_ = nullptr;
+    bool sourceSceneApplying_ = false;
     core::MonotonicIdSequence projectIoIds_;
     std::uint64_t projectIoTaskId_ = 0;
     std::uint64_t projectIoSceneEpoch_ = 0;
@@ -720,6 +760,9 @@ private:
     core::pmr::String activeScenePath_;
     std::filesystem::path savedSceneFileTarget_;
     core::pmr::Vector<std::uint8_t> savedSceneFileBytes_;
+    core::SharedPtr<const ProjectSourceSnapshot> savedSceneSourceScope_;
+    bool sourceSceneSaveUnknown_ = false;
+    ProjectSourceSaveReceipt lastSceneSave_;
     std::uint64_t sceneDocumentEpoch_ = 1;
     std::uint64_t resourceRevision_ = 1;
     EditorTerrainBuild terrainBuild_;
@@ -729,6 +772,7 @@ private:
     core::pmr::Vector<ui::WidgetId> terrainBrowserWidgets_;
     // Resource-backed scene components are destroyed before their ResourceManager owner.
     EditorSceneDocument sceneDocument_;
+    core::UniquePtr<EditorSceneScriptReload> scriptReloadProof_;
     EditorSceneViewState sceneViewState_;
 
     struct ScenePersistenceTaskRecord {
@@ -742,6 +786,11 @@ private:
         bool committed = false;
         std::uint32_t version = EditorSceneAuthoringCodec::contractVersion;
         core::LifetimeEpoch::Ticket owner;
+        core::LifetimeEpoch::Ticket scripts;
+        std::uint64_t resourceRevision = 0;
+        core::UniquePtr<EditorSceneSourceTask> sourceTask;
+        core::UniquePtr<EditorSceneSourceSaveTask> sourceSave;
+        ProjectSourceSaveReceipt saveReceipt;
         std::filesystem::path projectRoot;
         core::pmr::String projectModel, manifestBytes;
 
@@ -750,6 +799,7 @@ private:
         core::pmr::String relativePath;
         std::filesystem::path resolvedTarget;
         core::pmr::String saveYaml;
+        core::pmr::Vector<std::uint8_t> sourceSavedBytes;
         core::pmr::String diagnostic;
         std::optional<core::io::AtomicFileResult> result;
     };

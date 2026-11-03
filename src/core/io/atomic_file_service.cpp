@@ -1,7 +1,7 @@
 #include "core/io/atomic_file_service.h"
 
+#include "core/io/detail/atomic_file_writer.h"
 #include "core/io/file_io.h"
-#include "core/ownership/monotonic_id_sequence.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -17,28 +17,15 @@
 
 namespace arp::core::io {
 namespace {
-MonotonicIdSequence nextTemporary;
-
 bool atomicReplace(
     const pmr::String& path, const pmr::Vector<std::uint8_t>& bytes, AtomicFileResult& result)
 {
     const std::filesystem::path destination(path.c_str());
-    char suffix[96];
-#ifdef _WIN32
-    const auto process = GetCurrentProcessId();
-#else
-    const auto process = getpid();
-#endif
-    const auto serial = nextTemporary.tryAcquire();
-    if (!serial) {
+    detail::AtomicFileWriter::Suffix suffix;
+    if (!detail::AtomicFileWriter::temporarySuffix(suffix)) {
         result.diagnostic = "ARP-FILE-TEMP-ID-EXHAUSTED";
         return false;
     }
-    std::snprintf(suffix,
-        sizeof(suffix),
-        ".arp-tmp-%llu-%llu",
-        static_cast<unsigned long long>(process),
-        static_cast<unsigned long long>(serial));
     auto temporary = destination;
     temporary += suffix;
 #ifdef _WIN32
@@ -48,20 +35,9 @@ bool atomicReplace(
         result.diagnostic = "ARP-FILE-TEMP-CREATE";
         return false;
     }
-    bool success = true;
-    std::size_t offset = 0;
-    while (offset < bytes.size()) {
-        DWORD written = 0;
-        const auto remaining = bytes.size() - offset;
-        const DWORD amount = remaining > MAXDWORD ? MAXDWORD : static_cast<DWORD>(remaining);
-        if (!WriteFile(file, bytes.data() + offset, amount, &written, nullptr) || !written) {
-            success = false;
-            break;
-        }
-        offset += written;
-    }
-    if (success)
-        success = FlushFileBuffers(file) != 0;
+    bool success = detail::AtomicFileWriter::writeAndFlush(
+                       file, {reinterpret_cast<const char*>(bytes.data()), bytes.size()})
+        == detail::AtomicFileWriter::WriteResult::Flushed;
     if (!CloseHandle(file))
         success = false;
     if (success)

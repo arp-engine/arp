@@ -1,0 +1,28 @@
+type: ui.atlas
+contractVersion: ui.atlas/v2
+status: Prototype Complete
+atlasId: queen.native.hud
+resourceId: queen.ui.framework.atlas
+baseImageAtlas:
+  sourcePath: white.png
+  width: 1
+  height: 1
+  colorSpace: srgb
+fontFaces:
+  - tokenId: queen.font
+    family: Droid Sans
+    sourcePath: DroidSans.ttf
+    fallbackChain: [Droid Sans]
+    supportedScripts: [Latin]
+    charset: queen.visible.ascii
+    weight: 400
+    lineHeightPx: 22
+    sizeRangePx: { min: 18, max: 18 }
+    renderMode: alpha
+glyphPolicy:
+  mode: hybrid
+pagePolicy:
+  mode: singleTexture
+slices:
+  - sliceId: white
+    rect: { x: 0, y: 0, width: 1, height: 1 }

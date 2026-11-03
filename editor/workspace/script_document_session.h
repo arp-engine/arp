@@ -1,9 +1,11 @@
 #pragma once
 
+#include "core/io/file_save.h"
 #include "core/memory/cpu_allocator.h"
 #include "core/ownership/lifetime_epoch.h"
 #include "core/ownership/monotonic_id_sequence.h"
 #include "core/text/text_decoder.h"
+#include "editor/project/project_source_session.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -49,6 +51,23 @@ public:
         std::size_t cursorAfter = 0, anchorAfter = 0;
     };
 
+    struct Document;
+
+    // A MissingFile observation is not a successful acquired source. Keep its
+    // explicit origin so a recovered tab can never reach native file IO.
+    // The FileService/queue host outlives source tabs and their prepared tokens.
+    class MissingSourceBinding final {
+    public:
+        MissingSourceBinding() = default;
+
+    private:
+        friend class ScriptDocumentSession;
+        friend struct Document;
+        ProjectSourceContext context_;
+        core::io::FileReadRequest binding_;
+        core::io::FileReadResult observation_;
+    };
+
     struct Document {
         std::uint64_t id = 0;
         std::filesystem::path path;
@@ -65,6 +84,14 @@ public:
         // A one-file immutable receipt binds logical paths to a mount/epoch.
         // Native save/reload must never interpret these paths as host paths.
         core::SharedPtr<const ProjectSourceSnapshot> sourceSnapshot;
+        core::SharedPtr<const MissingSourceBinding> missingSource;
+
+        bool sourceBound() const noexcept { return sourceSnapshot || missingSource; }
+
+        const ProjectSourceLocation* sourceLocation() const noexcept;
+        bool sourceConflict() const noexcept;
+        bool validateSource(
+            core::io::FileService&, std::uint64_t epoch, const char*& diagnostic) const noexcept;
 
         bool dirty() const noexcept { return text != savedText; }
     };
@@ -120,6 +147,34 @@ public:
         bool consumed_ = false;
     };
 
+    // Both save points and the immutable source receipt are prepared before IO.
+    // The caller retains this token and the terminal receipt through dispatch.
+    class PreparedSourceSave final {
+    public:
+        PreparedSourceSave();
+        ~PreparedSourceSave();
+        PreparedSourceSave(const PreparedSourceSave&) = delete;
+        PreparedSourceSave& operator=(const PreparedSourceSave&) = delete;
+        core::io::FileSaveRequest takeRequest() noexcept;
+        const char* diagnostic() const noexcept;
+
+    private:
+        friend class ScriptDocumentSession;
+        struct State;
+        core::UniquePtr<State> state_;
+    };
+
+    core::UniquePtr<PreparedSourceSave> prepareSourceSave(std::uint64_t documentId,
+        core::io::FileService&,
+        std::uint64_t epoch,
+        const char*& diagnostic) const noexcept;
+    // Newer local edits stay dirty against the bytes actually committed. A
+    // replaced/closed document or changed mount/epoch cannot receive this result.
+    bool commitSourceSave(PreparedSourceSave&,
+        core::io::FileService&,
+        std::uint64_t epoch,
+        const core::io::FileSaveResult&) noexcept;
+
     core::UniquePtr<PreparedReload> prepareReload(std::uint64_t documentId,
         bool discardChanges,
         ReloadBudget budget,
@@ -135,7 +190,8 @@ public:
         Incomplete,
         Stale,
         Consumed,
-        IdentityExhausted
+        IdentityExhausted,
+        SourceValidationRequired
     };
 
     class PreparedRecovery final {
@@ -158,6 +214,7 @@ public:
         std::size_t activeIndex_ = noActiveDocument;
         bool prepared_ = false;
         bool committed_ = false;
+        ProjectSourceContext sources_;
     };
 
     const core::pmr::Vector<Document>& documents() const noexcept { return documents_; }
@@ -187,6 +244,17 @@ public:
         const core::pmr::Vector<Document>& prepared,
         std::size_t activeIndex,
         core::pmr::String& diagnostic) const;
+    // Distinct source entry: logical paths, actual one-file receipts or explicit
+    // missing bindings. Historical saved bytes may conflict with current IO.
+    core::UniquePtr<PreparedRecovery> prepareRecoveredSourceDocuments(
+        const core::pmr::Vector<Document>& prepared,
+        std::size_t activeIndex,
+        ProjectSourceContext,
+        core::pmr::String& diagnostic) const;
+    // Fallible pure source admission precedes the allocation-free ID/swap step.
+    // No callback or external operation occurs between admission and publication.
+    RecoveryCommitResult commitRecoveredSourceDocuments(
+        PreparedRecovery&, const ProjectSourceContext&, core::pmr::String& diagnostic);
     // These do not allocate, do IO, normalize text or invoke callbacks. They
     // observe Session epochs, not arbitrary direct Document* writes; enclosing
     // workspace content/authorization gates remain the caller's responsibility.
@@ -199,6 +267,12 @@ public:
         std::string_view relative,
         core::io::FileService&,
         std::uint64_t epoch,
+        core::UniquePtr<Document>& destination,
+        const char*& diagnostic);
+    static bool prepareMissingSourceFile(ProjectSourceContext,
+        std::string_view relative,
+        const core::io::FileReadRequest&,
+        const core::io::FileReadResult&,
         core::UniquePtr<Document>& destination,
         const char*& diagnostic);
     // Prepare saved baselines before disk replacement; successful publication
@@ -229,15 +303,24 @@ private:
     static void swapDocumentContents(Document&, Document&) noexcept;
     static core::TextDecodeResult decodeFileBytes(
         std::string_view, core::TextNulPolicy nul = core::TextNulPolicy::Reject);
+    static FileResultCode encodeFileBytes(const Document&, core::pmr::String& output);
     static bool prepareFileContents(const std::filesystem::path&,
         std::string_view raw,
         core::UniquePtr<Document>& destination,
         const char*& diagnostic);
-    const char* validateRecoveredDocuments(
-        const core::pmr::Vector<Document>& prepared, std::size_t activeIndex) const;
+    const char* validateRecoveredDocuments(const core::pmr::Vector<Document>& prepared,
+        std::size_t activeIndex,
+        const ProjectSourceContext* sources = nullptr) const;
+    core::UniquePtr<PreparedRecovery> prepareRecovery(const core::pmr::Vector<Document>&,
+        std::size_t,
+        const ProjectSourceContext*,
+        core::pmr::String&) const;
+    RecoveryCommitResult publishRecoveredDocuments(PreparedRecovery&) noexcept;
     core::pmr::Vector<Document> documents_{&core::defaultCpuMemoryResource()};
     std::size_t activeIndex_ = noActiveDocument;
     core::MonotonicIdSequence documentIds_;
     core::LifetimeEpoch stateEpoch_;
+    // Separate lifetime identity: edits may occur while a save is pending.
+    core::LifetimeEpoch sourceSaveOwner_;
 };
 } // namespace arp::editor

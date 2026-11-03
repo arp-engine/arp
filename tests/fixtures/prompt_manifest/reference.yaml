@@ -1,0 +1,30 @@
+# Frozen from the original six explicit C++ prompt records; no generated assets.
+type: AiAssetPromptManifest
+contractVersion: 1
+provider: Meshy
+outputDirectory: artifacts/ai-assets/production-demo
+assets:
+  - name: cliff_rock_cluster
+    prompt: stylized anime open world cliff rock cluster, clean topology, game ready, no text
+    file: cliff_rock_cluster.glb
+    format: glb
+  - name: anime_pine_tree
+    prompt: anime pine tree low poly, stylized foliage, game ready, no text
+    file: anime_pine_tree.glb
+    format: glb
+  - name: grass_tuft
+    prompt: fantasy grass tuft for anime open world terrain, game ready, no text
+    file: grass_tuft.glb
+    format: glb
+  - name: shrine_gate
+    prompt: small red shrine gate, anime fantasy open world prop, game ready, no text
+    file: shrine_gate.glb
+    format: glb
+  - name: stone_lantern
+    prompt: weathered stone lantern, stylized anime prop, game ready, no text
+    file: stone_lantern.glb
+    format: glb
+  - name: hero_proxy
+    prompt: anime adventurer hero proxy character, simple game ready 3D model, no text
+    file: hero_proxy.glb
+    format: glb

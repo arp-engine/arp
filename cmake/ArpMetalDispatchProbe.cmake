@@ -23,10 +23,10 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE)
     endforeach()
     add_custom_command(OUTPUT "${dispatch_probe_entry}"
         BYPRODUCTS ${dispatch_probe_payloads}
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --fixture compute_dispatch_grid_probe --single-entry computeMain
             --slangc "${SLANGC_EXECUTABLE}" --out-dir "${dispatch_probe_dir}" ${dispatch_probe_args}
-        DEPENDS tests/fixtures/compute_dispatch_grid_probe.slang scripts/compile_shaders.py
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/compute_dispatch_grid_probe.slang scripts/compile_shaders.py
             scripts/shader_bindings_codegen.py ${dispatch_probe_tools}
         VERBATIM)
     add_custom_target(arp_compute_dispatch_grid_probe_shader DEPENDS "${dispatch_probe_entry}")

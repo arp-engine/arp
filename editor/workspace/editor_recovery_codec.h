@@ -63,6 +63,15 @@ struct EditorRecoveryScript {
     std::size_t scrollLine = 0;
 };
 
+// Persistent source identity, never a reusable mount generation or host path.
+// Reopening requires an explicitly configured alias and freshly acquired IO.
+struct EditorRecoverySource {
+    core::pmr::String alias;
+    core::pmr::String root;
+    core::pmr::String manifestFileBytes;
+    core::pmr::Vector<ProjectInputBinding> inputs;
+};
+
 // Cold data only: no live scene IDs, resource handles, runtime objects or Undo
 // entries. Selection is already document-local in the existing scene YAML.
 struct EditorRecoverySnapshot {
@@ -70,6 +79,7 @@ struct EditorRecoverySnapshot {
     std::uint64_t sequence = 0;
     std::uint64_t workspaceEpoch = 0;
     core::pmr::String projectRoot;
+    std::optional<EditorRecoverySource> source;
     std::optional<EditorRecoveryProject> project;
     EditorRecoveryScene scene;
     core::pmr::Vector<EditorRecoveryScript> scripts;
@@ -80,6 +90,7 @@ struct EditorRecoverySnapshot {
 class EditorRecoveryCodec final {
 public:
     static constexpr std::uint32_t contractVersion = 2;
+    static constexpr std::uint32_t sourceContractVersion = 3;
     static constexpr std::size_t maxMetadataBytes = 1024u * 1024u;
 
     static bool validateBudget(const EditorRecoveryBudget& budget, core::pmr::String& diagnostic);

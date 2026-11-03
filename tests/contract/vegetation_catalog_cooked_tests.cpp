@@ -18,6 +18,7 @@
 #include "tests/fixtures/package_async_fixture.h"
 #include "tests/fixtures/package_source_fixture.h"
 #include "tests/fixtures/static_glb_geometry.h"
+#include "tests/fixtures/vegetation_authoring_fixture.h"
 
 #include <algorithm>
 #include <cassert>
@@ -368,23 +369,7 @@ public:
 
 class CatalogAuthoringFixture final {
 public:
-    static Yaml::Node document()
-    {
-        return Yaml::parseSingleDocument(
-            "type: VegetationCatalogAuthoring\ncontractVersion: vegetation.catalog.authoring/v1\n"
-            "resourceId: 3ea4c197-d012-4e64-8f5f-6a415ec2c109\nalias: vegetation/authored\n"
-            "inputContract: static-glb-geometry/v1\nmaxSourceBytes: 1048576\n"
-            "maxTotalSourceBytes: 2097152\nmaxImportBytes: 4194304\nmaxDecodedBytes: 204\n"
-            "maxTemplates: 4\nmaxVertices: 32\nmaxIndices: 64\nmaxPrimitives: 4\n"
-            "maxJsonDepth: 16\nmaxJsonValues: 256\ndependencyPackage: dependencies\n"
-            "packageBudget:\n  maxResources: 16\n  maxFiles: 64\n  maxFileBytes: 1048576\n"
-            "  maxTotalFileBytes: 4194304\n  maxDecodedBytes: 1048576\nassets:\n"
-            "  - assetId: grass-a\n    source: plant.glb\n    role: ground_cover\n"
-            "    category: ground_cover\n    heightClass: low\n    templateCategory: foliage_grass\n"
-            "    templateId: 1\n    variantIndex: 0\n    lodIndex: 0\n    metersPerUnit: 2.0\n"
-            "    baseColor: [0.125, 0.25, 0.5, 1.0]\n    wind: [0.25, 0.5, 0.75]\n"
-            "    materials:\n      - slot: 0\n        resourceId: 33c5dcdf-4f06-482a-94eb-26baf7c937fb\n");
-    }
+    static Yaml::Node document() { return tests::VegetationAuthoringFixture::document(); }
 
     static void write(const std::filesystem::path& root)
     {
@@ -1448,10 +1433,35 @@ void testMaterialClosure(const std::filesystem::path& root)
 
 int main(int argc, char** argv)
 {
-    if (argc == 2 && std::string_view(argv[1]) == "--async-contracts") {
+#if defined(__EMSCRIPTEN__)
+    if (argc == 2 && std::string_view(argv[1]) == "--publication-gate") {
+        // MEMFS rename does not provide the native exclusive-publication contract.
+        const auto root = std::filesystem::temp_directory_path() / "arp_catalog_publication_gate";
+        std::filesystem::create_directories(root);
+        const auto result = VegetationCatalogCookedCodec().write(
+            reference(), Fixture::catalog(), root / "catalog", geometryBytes);
+        assert(
+            !result.success && result.diagnostics == "ARP-DIRECTORY-EXCLUSIVE-PUBLISH-UNSUPPORTED");
+        assert(!std::filesystem::exists(root / "catalog")
+            && !std::filesystem::exists(root / "catalog.arp-staging"));
+        std::filesystem::remove(root);
+        std::puts(
+            "PASS Wasm native catalog publication is explicitly Unsupported; no partial output");
+        return 0;
+    }
+#endif
+    if ((argc == 2 || argc == 3) && std::string_view(argv[1]) == "--async-contracts") {
+#if defined(__EMSCRIPTEN__)
+        if (argc != 3) {
+            std::fputs("PACKAGE-SOURCE-EXPLICIT-PREBUILT-FIXTURE-REQUIRED\n", stderr);
+            return 2;
+        }
+#endif
         unified_io_fixture::Workspace workspace;
-        const auto root = workspace.root / "snapshot";
-        ClosureFixture::write(root);
+        const auto root =
+            argc == 3 ? std::filesystem::u8path(argv[2]) : workspace.root / "snapshot";
+        if (argc == 2)
+            ClosureFixture::write(root);
         tests::PackageAsyncFixture::contracts(root);
 #if defined(_WIN32)
         tests::PackageAsyncFixture::run(
@@ -1478,12 +1488,20 @@ int main(int argc, char** argv)
             "Async package real HTTP with no native file list, 20 ordinary cycles core live bytes/count delta 0 PASS");
         return 0;
     }
-    if (argc == 2 && std::string_view(argv[1]) == "--source-contracts") {
+    if ((argc == 2 || argc == 3) && std::string_view(argv[1]) == "--source-contracts") {
+#if defined(__EMSCRIPTEN__)
+        if (argc != 3) {
+            std::fputs("PACKAGE-SOURCE-EXPLICIT-PREBUILT-FIXTURE-REQUIRED\n", stderr);
+            return 2;
+        }
+#endif
         using Source = tests::PackageSourceFixture;
         Source::codecContracts();
         unified_io_fixture::Workspace workspace;
-        const auto sourceRoot = workspace.root / "snapshot";
-        ClosureFixture::write(sourceRoot);
+        const auto sourceRoot =
+            argc == 3 ? std::filesystem::u8path(argv[2]) : workspace.root / "snapshot";
+        if (argc == 2)
+            ClosureFixture::write(sourceRoot);
         for (const auto mutation : {Source::Mutation::None,
                  Source::Mutation::Missing,
                  Source::Mutation::Corrupt,

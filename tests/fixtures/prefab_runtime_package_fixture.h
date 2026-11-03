@@ -56,7 +56,8 @@ arp::resource::InternalAssetPackageEntry makeEntry(const char* id,
     return entry;
 }
 
-inline arp::assets::AnimatedMeshAsset makeRuntimeAsset()
+inline arp::assets::AnimatedMeshAsset makeRuntimeAsset(
+    animation::ChannelInterpolation interpolation = animation::ChannelInterpolation::LegacyLinear)
 {
     arp::assets::AnimatedMeshAsset asset;
     asset.mesh = arp::assets::MeshAsset::debugTriangle();
@@ -78,10 +79,15 @@ inline arp::assets::AnimatedMeshAsset makeRuntimeAsset()
     channel.jointIndex = 0;
     channel.jointName = "root";
     channel.targetPath = "translation";
+    channel.interpolation = interpolation;
     channel.keyframes.push_back(animation::JointKeyframe{});
     animation::JointKeyframe endFrame;
     endFrame.timeSeconds = 1.0f;
     channel.keyframes.push_back(endFrame);
+    if (interpolation == animation::ChannelInterpolation::GltfLinear) {
+        channel.targetPath = "rotation";
+        channel.keyframes.back().transform.rotation = {0, 1, 0, 0};
+    }
     clip.channels.push_back(channel);
     asset.clips.push_back(clip);
     auto runClip = clip;
@@ -194,9 +200,10 @@ inline resource::PrefabRuntimePayloadWriteDesc describe(const std::filesystem::p
     return desc;
 }
 
-inline resource::InternalAssetPackageDesc write(const std::filesystem::path& root)
+inline resource::InternalAssetPackageDesc write(const std::filesystem::path& root,
+    animation::ChannelInterpolation interpolation = animation::ChannelInterpolation::LegacyLinear)
 {
-    const auto asset = makeRuntimeAsset();
+    const auto asset = makeRuntimeAsset(interpolation);
     const auto controller = makeController();
     const auto payload = resource::writePrefabRuntimePayload(describe(root, asset, controller));
     assert(payload.success);

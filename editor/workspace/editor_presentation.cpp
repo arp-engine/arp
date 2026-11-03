@@ -546,6 +546,7 @@ renderer::ui::UiDrawPlanLowerResult EditorShell::drawCommands(
         id("project_ui_modal"),
         id("scene_ui_modal"),
         id("script_ui_reload"),
+        id("script_ui_reload_modules"),
         id("script_ui_modal"),
         id("exit_ui_modal"),
         id("transform_ui_modal"),

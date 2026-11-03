@@ -15,6 +15,8 @@ struct ProjectDirectoryBudget {
 
 class ProjectDirectorySnapshot final {
 public:
+    class PreparedProjectRebind;
+
     bool validate(
         core::io::FileService&, std::uint64_t epoch, const char*& diagnostic) const noexcept;
 
@@ -32,6 +34,9 @@ public:
 
     const core::io::FileVersionToken& version() const noexcept { return version_; }
 
+    core::UniquePtr<PreparedProjectRebind> prepareProjectRebind(
+        const ProjectSourceSnapshot::PreparedFileSave&, const char*& diagnostic) const noexcept;
+
 private:
     friend class ProjectDirectorySession;
     core::SharedPtr<const ProjectSourceSnapshot> project_;
@@ -39,6 +44,26 @@ private:
     core::pmr::Vector<core::io::FileDirectoryEntry> entries_{&core::defaultCpuMemoryResource()};
     core::io::FileVersionToken version_;
     bool sealed_ = false;
+};
+
+// Private directory copy allocated before submission. The old observed listing
+// is preserved; only its project dependency scope changes after a proven commit.
+class ProjectDirectorySnapshot::PreparedProjectRebind final {
+public:
+    PreparedProjectRebind() = default;
+    PreparedProjectRebind(const PreparedProjectRebind&) = delete;
+    PreparedProjectRebind& operator=(const PreparedProjectRebind&) = delete;
+    bool canFinish(const ProjectSourceSnapshot::PreparedFileSave&,
+        const core::SharedPtr<const ProjectSourceSnapshot>&) const noexcept;
+    core::SharedPtr<const ProjectDirectorySnapshot> finish(
+        const ProjectSourceSnapshot::PreparedFileSave&,
+        core::SharedPtr<const ProjectSourceSnapshot>) noexcept;
+
+private:
+    friend class ProjectDirectorySnapshot;
+    core::SharedPtr<ProjectDirectorySnapshot> candidate_;
+    core::SharedPtr<const ProjectSourceSnapshot> expected_;
+    bool consumed_ = false;
 };
 
 enum class ProjectDirectoryState { Ready, Pending, Complete, Sealed, Failed, Cancelled };

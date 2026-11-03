@@ -3,6 +3,7 @@
 #include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
 #include "reflection/reflection_macros.h"
+#include "scriptvm/runtime/value.h"
 
 #include <cstdint>
 
@@ -60,6 +61,23 @@ struct IoBytesResult final {
     String diagnostics{&arp::core::defaultCpuMemoryResource()};
 };
 
+// Immutable first-class bytes, without allocating one script object per byte.
+ASTRUCT(Name = "IoBinaryResult")
+
+struct IoBinaryResult final {
+    APROP()
+    bool success = false;
+    APROP()
+    String diagnostics{&arp::core::defaultCpuMemoryResource()};
+
+    AFUNC(Name = "data")
+    arp::scriptvm::Value data() const;
+    AFUNC(Name = "byte_count")
+    std::int64_t byteCount() const;
+
+    arp::scriptvm::Value bytes;
+};
+
 ASTRUCT()
 
 struct IoHashResult final {
@@ -78,6 +96,12 @@ IoTextResult readText(const String& path);
 
 AFUNC(Name = "read_bytes")
 IoBytesResult readBytes(const String& path);
+
+// Cold local acquisition only. Browser network callers must use async source
+// acquisition and pass the resulting bytes to the same domain decoder.
+AFUNC(Name = "read_binary_local")
+IoBinaryResult readBinaryLocal(
+    const String& path, std::int64_t maxBytes, std::int64_t maxAllocationBytes);
 
 AFUNC(Name = "write_text")
 IoOperationResult writeText(const String& path, const String& text);

@@ -3,6 +3,9 @@
 #include "core/memory/cpu_allocator.h"
 #include "scriptvm/interpreter/eval.h"
 #include "scriptvm/plugin/cpp_plugin_importer.h"
+#if !defined(ARP_SCRIPT_AOT_ONLY_TOOL)
+#include "tools/asset_importer/tool_script_sources.h"
+#endif
 
 #include <filesystem>
 
@@ -36,6 +39,12 @@ public:
     ScriptRunResult runFileFunction(const std::filesystem::path& scriptPath,
         const char* functionName,
         const core::pmr::Vector<scriptvm::Value>& args = {});
+
+#if !defined(ARP_SCRIPT_AOT_ONLY_TOOL)
+    ScriptRunResult runPreparedFunction(const ToolScriptSources&,
+        const char* functionName,
+        const core::pmr::Vector<scriptvm::Value>& args = {});
+#endif
 
     ScriptRunResult runPackageFunction(const std::filesystem::path& packageManifest,
         const char* moduleId,

@@ -16,7 +16,7 @@ from webgl1_runtime_build import WebGl1RuntimeBuilder
 
 
 class QueenBrowserTest:
-    def __init__(self, port, output):
+    def __init__(self, port, output, capture=False):
         pages = json.load(urllib.request.urlopen(f'http://localhost:{port}/json'))
         page = next(p for p in pages if 'arp_build_a_queen_webgl.html' in p.get('url', ''))
         self.socket = websocket.create_connection(page['webSocketDebuggerUrl'],
@@ -25,13 +25,16 @@ class QueenBrowserTest:
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
         self.observations = []
+        self.capture = capture
         self.bundle=Path(__file__).resolve().parents[3]/'build/queen-webgl1'
         self.artifacts=self.hashes()
 
     def hashes(self):
-        return {name:WebGl1RuntimeBuilder.sha(self.bundle/name) for name in (
-            'arp_build_a_queen_webgl.html','arp_build_a_queen_webgl.js',
-            'arp_build_a_queen_webgl.wasm','arp_build_a_queen_webgl.data')}
+        paths=[self.bundle/('arp_build_a_queen_webgl.'+suffix) for suffix in ('html','js','wasm')]
+        for folder in ('characters','artifacts','fonts'):
+            paths.extend(p for p in sorted((self.bundle/folder).rglob('*')) if p.is_file())
+        return {p.relative_to(self.bundle).as_posix():WebGl1RuntimeBuilder.sha(p) for p in paths}
+
 
     def call(self, method, params=None):
         self.serial += 1
@@ -68,6 +71,14 @@ class QueenBrowserTest:
     def screenshot(self, name):
         result = self.call('Page.captureScreenshot', dict(format='png'))
         (self.output / (name + '.png')).write_bytes(base64.b64decode(result['data']))
+        ordinal = {'running-3d':1,'final-3d-look':2}.get(name)
+        if self.capture and ordinal:
+            (self.output / ('request-'+str(ordinal))).write_text(name)
+            deadline = time.monotonic()+15
+            while not (self.output / ('done-'+str(ordinal))).exists():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('QUEEN-GAME-RENDERDOC-CAPTURE-'+str(ordinal))
+                time.sleep(.02)
 
     def key(self, key, code):
         self.call('Input.dispatchKeyEvent', dict(type='keyDown', key=key, code=code))
@@ -97,6 +108,9 @@ class QueenBrowserTest:
         platform = self.js('Module.queenPlatform')
         assert platform == dict(engineRenderSystem=True, backend=4, orderedGraphics=True,
                                surfaceLifecycle=True, gpuCompletionClaimed=False)
+        acquisition = self.js('({characters:Module.queenSources,shaders:Module.queenShaders,fonts:Module.queenFonts})')
+        assert acquisition['fonts'] == dict(phase=1,reads=3,retired=True,backend='Fetch')
+        assert acquisition['shaders']['retired'] and acquisition['characters']['retired']
         self.screenshot('menu')
         # Keep steering decisions on the browser's RAF clock. Host screenshot
         # round trips must not miss the 0.72-second gaps between real pickups.
@@ -154,9 +168,12 @@ class QueenBrowserTest:
             webGpuUnavailable=True, keyboard=True, mouse=True, touch=True,
             fullLevel=True, nextLevel=True, restart=True, pauseResume=True, course=course, observations=self.observations,
             renderDocVerified=False, productionReady=False,artifacts=self.artifacts,
-            platformIntegration=platform)
+            platformIntegration=platform,acquisition=acquisition)
         assert self.hashes()==self.artifacts,'Game bundle changed during acceptance'
+        assert self.js('({characters:Module.queenSources,shaders:Module.queenShaders,fonts:Module.queenFonts})')==acquisition
         (self.output / 'gameplay.json').write_text(json.dumps(receipt, indent=2), encoding='utf8')
+        if self.capture:
+            (self.output / 'game-test-done').write_text('complete')
         self.socket.close()
         print(json.dumps(dict(success=True, result=result, output=str(self.output))))
 
@@ -165,5 +182,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=9335)
     parser.add_argument('--output', required=True)
+    parser.add_argument('--capture',action='store_true')
     args = parser.parse_args()
-    QueenBrowserTest(args.port, args.output).run()
+    QueenBrowserTest(args.port, args.output,args.capture).run()

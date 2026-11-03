@@ -258,6 +258,15 @@ NativePipelineStateLoweringDecision lowerRenderPipelineState(
     if (!decision.success) {
         return decision;
     }
+    for (std::uint32_t index = 0; index < decision.colorTargetCount; ++index) {
+        const auto target = rhi::effectiveColorTargetAt(desc, index);
+        const auto component = [](const rhi::BlendComponent& blend) {
+            return blend.sourceFactor >= rhi::BlendFactor::SrcColor
+                || blend.destinationFactor >= rhi::BlendFactor::SrcColor;
+        };
+        if (target.blendEnabled && (component(target.colorBlend) || component(target.alphaBlend)))
+            addUnique(decision, NativePipelineStateSemantic::L2ComponentColorBlendFactors);
+    }
     decision.tessellationStateLowered = desc.topology != rhi::PrimitiveTopology::PatchList
         || hasNativePipelineStateSemantic(
             decision, NativePipelineStateSemantic::MetalTessellationPipelineState)

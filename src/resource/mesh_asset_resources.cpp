@@ -2,6 +2,7 @@
 
 #include "assets/glb_static_mesh_importer.h"
 #include "assets/mesh_section_grouping.h"
+#include "resource/resource_source_io.h"
 
 #include <cmath>
 #include <iostream>
@@ -22,14 +23,14 @@ void flattenSubmeshes(assets::MeshAsset& mesh)
 
 ResourceLoadResult MeshAssetResource::load(
     ResourceManager& manager, const ResourceLoadContext& context)
-{
+try {
     std::cerr << "[MeshAssetResource::load] begin kind=" << static_cast<int>(sourceKind_) << '\n';
     mesh_ = core::makeUnique<assets::MeshAsset>();
 
     switch (sourceKind_) {
     case MeshSourceKind::GlbFile:
         std::cerr << "[MeshAssetResource::load] loadFromGlb\n";
-        loadFromGlb();
+        loadFromGlb(context);
         break;
     case MeshSourceKind::ProceduralGrid:
         std::cerr << "[MeshAssetResource::load] generateProceduralGrid\n";
@@ -65,17 +66,57 @@ ResourceLoadResult MeshAssetResource::load(
     // Admit metadata into ResourceManager
     std::cerr << "[MeshAssetResource::load] admit metadata\n";
     return ResourceBase::load(manager, context);
+} catch (const std::bad_alloc&) {
+    return resourceLoadFailure(*this, "MESH-GLB-IMPORT-BUDGET");
+} catch (const std::exception& error) {
+    return resourceLoadFailure(*this, error.what());
 }
 
-void MeshAssetResource::loadFromGlb()
+const char* MeshAssetResource::validateGlbSource() const
 {
+    if (!glbSource_)
+        return "MESH-GLB-EXPLICIT-SOURCE-REQUIRED";
+    const auto& source = *glbSource_;
+    const auto& limits = source.limits;
+    if (!source.maxImportBytes || source.maxImportBytes == UINT64_MAX || !limits.maxVertices
+        || !limits.maxIndices || !limits.maxPrimitives || !limits.maxJsonDepth
+        || limits.maxJsonDepth > 64 || !limits.maxJsonValues || limits.maxSourceBytes > UINT32_MAX)
+        return "MESH-GLB-IMPORT-LIMITS";
+    return validateResourceReadIntent(source.path, limits.maxSourceBytes, source.origin).diagnostic;
+}
+
+bool MeshAssetResource::collectFileReadIntents(ResourceManager&,
+    core::pmr::Vector<ResourceFileReadIntent>& intents,
+    core::pmr::String& diagnostic) const
+{
+    if (sourceKind_ != MeshSourceKind::GlbFile)
+        return true;
+    if (const auto* issue = validateGlbSource()) {
+        diagnostic = issue;
+        return false;
+    }
+    if (!appendResourceReadIntent(glbSource_->path,
+            glbSource_->limits.maxSourceBytes,
+            intents,
+            diagnostic,
+            glbSource_->origin))
+        return false;
+    intents.back().role = "mesh-glb";
+    return true;
+}
+
+void MeshAssetResource::loadFromGlb(const ResourceLoadContext& context)
+{
+    core::SharedPtr<core::CpuMemoryQuota> quota;
+    std::optional<core::CpuMemoryQuotaScope> importScope;
+    if (glbSource_) {
+        if (const auto* issue = validateGlbSource())
+            throw core::DiagnosticError(issue);
+        quota = core::makeShared<core::CpuMemoryQuota>(glbSource_->maxImportBytes);
+        importScope.emplace(quota);
+    }
     textureResourceIds_.clear();
     if (sourcePath_.empty()) {
-        return;
-    }
-
-    std::error_code ec;
-    if (!std::filesystem::exists(sourcePath_, ec)) {
         return;
     }
 
@@ -83,7 +124,30 @@ void MeshAssetResource::loadFromGlb()
     sourceIdentityVersion_ = 0;
     sourceContentDigest_ = {};
     assets::StaticMeshImportResult result;
-    if (retainSourceIdentity_) {
+    if (glbSource_) {
+        const auto bytes = readResourceSource(glbSource_->path,
+            context,
+            glbSource_->limits.maxSourceBytes,
+            false,
+            &glbSource_->origin);
+        if (!bytes.success)
+            throw core::DiagnosticError(bytes.diagnostics);
+        const core::ArrayView<const std::uint8_t> input(bytes.bytes.data(), bytes.bytes.size());
+        if (retainSourceIdentity_) {
+            auto identified =
+                assets::importStaticMeshWithSourceIdentityFromGlbBytes(input, glbSource_->limits);
+            sourceIdentityVersion_ = identified.identityVersion;
+            sourceContentDigest_ = identified.sourceContentDigest;
+            sourceIdentities_ = std::move(identified.identities);
+            result = std::move(identified.geometry);
+        } else {
+            result = assets::importStaticMeshFromGlbBytes(input, glbSource_->limits);
+        }
+        if (!result.success)
+            throw core::DiagnosticError(result.diagnostics);
+    } else if (context.requirePreloadedSources || context.sources) {
+        throw core::DiagnosticError("MESH-GLB-EXPLICIT-SOURCE-REQUIRED");
+    } else if (retainSourceIdentity_) {
         auto identified = assets::importStaticMeshWithSourceIdentityFromGlbFile(sourcePath_);
         sourceIdentityVersion_ = identified.identityVersion;
         sourceContentDigest_ = identified.sourceContentDigest;
@@ -114,6 +178,8 @@ void MeshAssetResource::loadFromGlb()
                 meshResourceId, "TextureResource/glb", static_cast<std::uint64_t>(index)));
         }
         flattenSubmeshes(*mesh_);
+        if (context.maxDecodedBytes && processedByteCount() > context.maxDecodedBytes)
+            throw core::DiagnosticError("MESH-GLB-DECODE-BUDGET");
     }
 }
 

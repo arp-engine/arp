@@ -105,7 +105,8 @@ inline rhi::ShaderEntrypoint shaderEntrypoint(
     };
 }
 
-inline rhi::ShaderPackageDesc makeGraphicsShaderPackage(const std::pmr::string& label,
+// ConventionalGenerated/1 descriptor construction only; no source acquisition.
+inline rhi::ShaderPackageDesc graphicsShaderPackageIntent(const std::pmr::string& label,
     const std::pmr::string& modulePath,
     std::uint32_t pushConstantBytes)
 {
@@ -125,6 +126,48 @@ inline rhi::ShaderPackageDesc makeGraphicsShaderPackage(const std::pmr::string& 
         shaderPackage.reflection.pushConstantContractVersion = "AtomicFullBlockPush/1";
         shaderPackage.reflection.pushConstantStages = "VS|FS";
     }
+    return shaderPackage;
+}
+
+// Prepared input is mandatory for this entry. Failure never selects cold IO,
+// and the caller's output is published only after identity/ABI validation.
+inline RendererResult prepareGraphicsShaderPackage(rhi::ShaderPackageDesc& output,
+    const std::pmr::string& label,
+    const std::pmr::string& modulePath,
+    std::uint32_t pushConstantBytes,
+    const ShaderPackagePreparationDesc& preparation,
+    rhi::ShaderStage requiredPushStages = rhi::ShaderStage::None)
+{
+    if (!preparation.prepared || preparation.publication.empty() || preparation.budget.source)
+        return {false, "RENDERER-PREPARED-SHADER-CONFIG"};
+    if (const auto* diagnostic =
+            shader::GeneratedShaderArtifactSet::validateOriginal(preparation.prepared))
+        return {false, diagnostic};
+    auto candidate = graphicsShaderPackageIntent(label, modulePath, pushConstantBytes);
+    // An unavailable target is explicitly declared by the immutable publication.
+    if (preparation.prepared->filename(shader::ShaderArtifactRole::Metal).empty())
+        candidate.artifacts.mslPath.clear();
+    if (preparation.prepared->filename(shader::ShaderArtifactRole::Wgsl).empty())
+        candidate.artifacts.wgslPath.clear();
+    core::pmr::String diagnostic;
+    if (!hydrateShaderPackageReflectionFromArtifact(candidate, preparation, diagnostic))
+        return {false, std::move(diagnostic)};
+    if (candidate.reflection.pushConstantByteCount != pushConstantBytes)
+        return {false, "RENDERER-PREPARED-SHADER-PUSH-ABI"};
+    if (pushConstantBytes && requiredPushStages != rhi::ShaderStage::None
+        && (candidate.reflection.pushConstantContractVersion != "AtomicFullBlockPush/1"
+            || rhi::parseShaderReflectionPushConstantStages(candidate.reflection.pushConstantStages)
+                != requiredPushStages))
+        return {false, "RENDERER-PREPARED-SHADER-PUSH-ABI"};
+    output = std::move(candidate);
+    return {true, {}};
+}
+
+inline rhi::ShaderPackageDesc makeGraphicsShaderPackage(const std::pmr::string& label,
+    const std::pmr::string& modulePath,
+    std::uint32_t pushConstantBytes)
+{
+    auto shaderPackage = graphicsShaderPackageIntent(label, modulePath, pushConstantBytes);
     if (!hydrateShaderPackageReflectionFromArtifact(shaderPackage)) {
         shaderPackage.generatedReflectionHydrated = false;
     }

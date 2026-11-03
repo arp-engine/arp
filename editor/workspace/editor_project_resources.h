@@ -111,14 +111,15 @@ public:
     }
 
 private:
+    friend class EditorProjectSourceSaveTask;
     static bool prepareManager(const ProjectManifest&,
         core::SharedPtr<resource::ResourceManager>&,
         core::SharedPtr<physics2d::PhysicsWorld2D>&,
         core::SharedPtr<const resource::AssetPackageCodecRegistry>&,
         core::pmr::String&);
     friend class EditorShell;
-    // Only the workspace's validated settings save may update this snapshot.
-    // It preserves all resource/physics ownership and the dependency contract.
+    // Validated settings save or explicit module-only source refresh updates
+    // this snapshot without changing resource/physics or dependency ownership.
     void publishSavedSettings(ProjectManifest manifest, core::pmr::String snapshot);
 
     struct PackageResourceRoot {

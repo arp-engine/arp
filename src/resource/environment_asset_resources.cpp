@@ -1,6 +1,8 @@
 #include "resource/environment_asset_resources.h"
 
 #include "assets/glb_static_mesh_importer.h"
+#include "core/hash/sha256.h"
+#include "resource/resource_source_io.h"
 
 #include <algorithm>
 #include <array>
@@ -173,9 +175,78 @@ ResourceLoadResult TerrainSurfaceAsset::load(
 // NamedMeshVariantSet
 // ===========================================================================
 
+const char* NamedMeshVariantSet::validateSource() const
+{
+    if (!source_)
+        return "NAMED-MESH-EXPLICIT-SOURCE-REQUIRED";
+    if (const auto* diagnostic = assets::validateNamedVariantSourceImportLimits(source_->limits))
+        return diagnostic;
+    if (!expectedVariantCount_ || expectedVariantCount_ > source_->limits.maxVariants
+        || (source_->geometrySpace != assets::NamedVariantGeometrySpace::Scene
+            && source_->geometrySpace != assets::NamedVariantGeometrySpace::RootRelative))
+        return "NAMED-MESH-SOURCE-CONFIG";
+    return validateResourceReadIntent(
+        source_->path, source_->limits.maxSourceBytes, source_->origin)
+        .diagnostic;
+}
+
+bool NamedMeshVariantSet::collectFileReadIntents(ResourceManager&,
+    core::pmr::Vector<ResourceFileReadIntent>& reads,
+    core::pmr::String& diagnostic) const
+{
+    if (const auto* invalid = validateSource()) {
+        diagnostic = invalid;
+        return false;
+    }
+    return appendResourceReadIntent(
+        source_->path, source_->limits.maxSourceBytes, reads, diagnostic, source_->origin);
+}
+
 ResourceLoadResult NamedMeshVariantSet::load(
     ResourceManager& manager, const ResourceLoadContext& context)
 {
+    if (source_) {
+        try {
+            if (const auto* invalid = validateSource())
+                return resourceLoadFailure(*this, invalid);
+            if (!context.maxDecodedBytes)
+                return resourceLoadFailure(*this, "NAMED-MESH-DECODE-BUDGET-REQUIRED");
+            auto input = readResourceSource(
+                source_->path, context, source_->limits.maxSourceBytes, false, &source_->origin);
+            if (!input.success)
+                return resourceLoadFailure(*this, input.diagnostics.c_str());
+            auto imported = assets::importNamedVariantsFromGlbBytes(
+                {input.bytes.data(), input.bytes.size()}, source_->geometrySpace, source_->limits);
+            if (!imported.success)
+                return resourceLoadFailure(*this, imported.diagnostics.c_str());
+            if (imported.variants.size() != expectedVariantCount_)
+                return resourceLoadFailure(*this, "NAMED-MESH-VARIANT-COUNT");
+            std::uint64_t decoded = 0;
+            for (const auto& variant : imported.variants)
+                decoded += variant.mesh.vertices.size() * sizeof(assets::MeshVertex)
+                    + variant.mesh.indices.size() * sizeof(std::uint32_t)
+                    + variant.mesh.submeshes.size() * sizeof(assets::Submesh)
+                    + variant.materialSlots.size() * sizeof(std::uint32_t)
+                    + variant.windWeights.size() * sizeof(float);
+            if (decoded > context.maxDecodedBytes)
+                return resourceLoadFailure(*this, "NAMED-MESH-DECODE-BUDGET");
+            const auto digest = core::Sha256::digest(
+                {reinterpret_cast<const char*>(input.bytes.data()), input.bytes.size()});
+            std::copy(digest.begin(), digest.end(), sourceDigest_.begin());
+            variants_ = std::move(imported.variants);
+            materials_ = std::move(imported.materials);
+            textures_ = std::move(imported.textures);
+            images_ = std::move(imported.images);
+            transformLayout_ = imported.transformLayout;
+            return ResourceBase::load(manager, context);
+        } catch (const std::bad_alloc&) {
+            return resourceLoadFailure(*this, "ASSET-NAMED-VARIANT-IMPORT-BUDGET");
+        } catch (const std::exception&) {
+            return resourceLoadFailure(*this, "NAMED-MESH-SOURCE-INVALID");
+        }
+    }
+    if (context.requirePreloadedSources || context.sources)
+        return resourceLoadFailure(*this, "NAMED-MESH-EXPLICIT-SOURCE-REQUIRED");
     auto importResult = assets::importNamedVariantsFromGlbFile(glbPath_);
     if (!importResult.success) {
         ResourceLoadResult result;
@@ -201,11 +272,42 @@ ResourceLoadResult NamedMeshVariantSet::load(
     return ResourceBase::load(manager, context);
 }
 
+void NamedMeshVariantSet::appendContentFingerprint(core::StableHash64& hasher) const noexcept
+{
+    hasher.appendBytes(assetSetId_.data(), assetSetId_.size());
+    if (source_) {
+        hasher.appendU64(source_->path.size());
+        hasher.appendBytes(source_->path.data(), source_->path.size());
+        appendResourceOriginFingerprint(hasher, source_->origin);
+        hasher.appendU64(static_cast<unsigned>(source_->geometrySpace));
+        hasher.appendU64(static_cast<unsigned>(source_->limits.colorPolicy));
+        const auto& limits = source_->limits;
+        for (const auto budget : {std::uint64_t(limits.maxSourceBytes),
+                 limits.maxImportBytes,
+                 std::uint64_t(limits.maxVertices),
+                 std::uint64_t(limits.maxIndices),
+                 std::uint64_t(limits.maxPrimitives),
+                 std::uint64_t(limits.maxVariants),
+                 std::uint64_t(limits.maxNodeVisits),
+                 std::uint64_t(limits.maxNodeDepth),
+                 std::uint64_t(limits.maxJsonDepth),
+                 std::uint64_t(limits.maxJsonValues)})
+            hasher.appendU64(budget);
+        hasher.appendBytes(sourceDigest_.data(), sourceDigest_.size());
+    } else {
+        const auto pathStr = glbPath_.string();
+        hasher.appendBytes(pathStr.data(), pathStr.size());
+    }
+    hasher.appendU64(expectedVariantCount_);
+    hasher.appendU64(expectedLodCount_);
+}
+
 const assets::NamedVariant* NamedMeshVariantSet::findVariant(const std::string& name) const
 {
     auto it =
         std::find_if(variants_.begin(), variants_.end(), [&name](const assets::NamedVariant& v) {
-            return std::string(v.name.c_str(), v.name.size()) == name;
+            return core::StringView(v.name.data(), v.name.size())
+                == core::StringView(name.data(), name.size());
         });
     return it != variants_.end() ? &(*it) : nullptr;
 }
@@ -224,8 +326,64 @@ std::vector<std::string> NamedMeshVariantSet::variantNames() const
 // PlantAssetSet
 // ===========================================================================
 
+PlantAssetSet::PlantAssetSet(core::pmr::String resourceId,
+    core::pmr::String alias,
+    core::pmr::String assetSetId,
+    EnvironmentLodSourceDesc source,
+    core::pmr::String woodMaterialRole,
+    core::pmr::String foliageMaterialRole)
+    : ResourceBase(
+          {std::move(resourceId), resourceTypeName(), std::move(alias), "Contract Complete", {}}),
+      assetSetId_(std::move(assetSetId)), woodMaterialRole_(std::move(woodMaterialRole)),
+      foliageMaterialRole_(std::move(foliageMaterialRole)), source_(std::move(source))
+{}
+
+bool PlantAssetSet::collectFileReadIntents(ResourceManager&,
+    core::pmr::Vector<ResourceFileReadIntent>& reads,
+    core::pmr::String& diagnostic) const
+{
+    if (!source_) {
+        diagnostic = "ENVIRONMENT-LOD-EXPLICIT-SOURCE-REQUIRED";
+        return false;
+    }
+    return EnvironmentLodSourceLoader::collect(*source_, reads, diagnostic);
+}
+
+core::UniquePtr<PlantAssetSet> PlantAssetSet::makeLodCandidate(std::uint32_t residentLevels) const
+{
+    if (!source_ || residentLevels <= lods_.size() || residentLevels > source_->levels.size())
+        return {};
+    auto next = *source_;
+    next.residentLevels = residentLevels;
+    return core::makeUnique<PlantAssetSet>(reference().id,
+        reference().alias,
+        assetSetId_,
+        std::move(next),
+        woodMaterialRole_,
+        foliageMaterialRole_);
+}
+
 ResourceLoadResult PlantAssetSet::load(ResourceManager& manager, const ResourceLoadContext& context)
 {
+    if (source_) {
+        try {
+            for (const auto* label : {&woodMaterialRole_, &foliageMaterialRole_})
+                if (label->empty() || label->find('\0') != core::pmr::String::npos
+                    || core::Utf8Decoder::validate(*label))
+                    return resourceLoadFailure(*this, "ENVIRONMENT-LOD-MATERIAL-ROLE");
+            auto prepared = EnvironmentLodSourceLoader::prepare(*source_, context);
+            if (!prepared.success)
+                return resourceLoadFailure(*this, prepared.diagnostic.c_str());
+            lods_ = std::move(prepared.levels);
+            sourceDecodedBytes_ = prepared.decodedBytes;
+            return ResourceBase::load(manager, context);
+        } catch (const std::bad_alloc&) {
+            return resourceLoadFailure(*this, "ENVIRONMENT-LOD-IMPORT-BUDGET");
+        }
+    }
+    if (context.requirePreloadedSources || context.sources)
+        return resourceLoadFailure(*this, "ENVIRONMENT-LOD-EXPLICIT-SOURCE-REQUIRED");
+
     std::cerr << "[PlantAssetSet::load] begin assetSetId=" << assetSetId_
               << " dir=" << runtimeDir_.string() << '\n';
     // Load each LOD GLB file.
@@ -316,6 +474,17 @@ ResourceLoadResult PlantAssetSet::load(ResourceManager& manager, const ResourceL
 
 ResourceLoadResult PlantAssetSet::loadLod(std::uint32_t lodIndex)
 {
+    if (source_) {
+        if (lodIndex >= lods_.size())
+            return resourceLoadFailure(*this, "ENVIRONMENT-LOD-RELOAD-REQUIRED");
+        ResourceLoadResult result;
+        result.success = true;
+        result.state = ResourceState::Ready;
+        result.resourceId = reference().id;
+        result.resourceType = reference().type;
+        return result;
+    }
+
     if (lodIndex >= maxLodCount_) {
         ResourceLoadResult result;
         result.diagnostics =
@@ -389,7 +558,8 @@ const assets::NamedVariant* PlantAssetSet::findVariant(
     const auto& variants = resolved->variants;
     auto it = std::find_if(
         variants.begin(), variants.end(), [&variantName](const assets::NamedVariant& v) {
-            return std::string(v.name.c_str(), v.name.size()) == variantName;
+            return core::StringView(v.name.data(), v.name.size())
+                == core::StringView(variantName.data(), variantName.size());
         });
     return it != variants.end() ? &(*it) : nullptr;
 }
@@ -415,8 +585,53 @@ std::size_t PlantAssetSet::variantCount() const
 // RockAssetSet
 // ===========================================================================
 
+RockAssetSet::RockAssetSet(core::pmr::String resourceId,
+    core::pmr::String alias,
+    core::pmr::String assetSetId,
+    EnvironmentLodSourceDesc source)
+    : ResourceBase(
+          {std::move(resourceId), resourceTypeName(), std::move(alias), "Contract Complete", {}}),
+      assetSetId_(std::move(assetSetId)), source_(std::move(source))
+{}
+
+bool RockAssetSet::collectFileReadIntents(ResourceManager&,
+    core::pmr::Vector<ResourceFileReadIntent>& reads,
+    core::pmr::String& diagnostic) const
+{
+    if (!source_) {
+        diagnostic = "ENVIRONMENT-LOD-EXPLICIT-SOURCE-REQUIRED";
+        return false;
+    }
+    return EnvironmentLodSourceLoader::collect(*source_, reads, diagnostic);
+}
+
+core::UniquePtr<RockAssetSet> RockAssetSet::makeLodCandidate(std::uint32_t residentLevels) const
+{
+    if (!source_ || residentLevels <= lods_.size() || residentLevels > source_->levels.size())
+        return {};
+    auto next = *source_;
+    next.residentLevels = residentLevels;
+    return core::makeUnique<RockAssetSet>(
+        reference().id, reference().alias, assetSetId_, std::move(next));
+}
+
 ResourceLoadResult RockAssetSet::load(ResourceManager& manager, const ResourceLoadContext& context)
 {
+    if (source_) {
+        try {
+            auto prepared = EnvironmentLodSourceLoader::prepare(*source_, context);
+            if (!prepared.success)
+                return resourceLoadFailure(*this, prepared.diagnostic.c_str());
+            lods_ = std::move(prepared.levels);
+            sourceDecodedBytes_ = prepared.decodedBytes;
+            return ResourceBase::load(manager, context);
+        } catch (const std::bad_alloc&) {
+            return resourceLoadFailure(*this, "ENVIRONMENT-LOD-IMPORT-BUDGET");
+        }
+    }
+    if (context.requirePreloadedSources || context.sources)
+        return resourceLoadFailure(*this, "ENVIRONMENT-LOD-EXPLICIT-SOURCE-REQUIRED");
+
     std::cerr << "[RockAssetSet::load] begin assetSetId=" << assetSetId_
               << " dir=" << runtimeDir_.string() << '\n';
     const std::uint32_t lodLimit = std::min(initialLodCount_, maxLodCount_);
@@ -447,6 +662,7 @@ ResourceLoadResult RockAssetSet::load(ResourceManager& manager, const ResourceLo
 
         LodData lodData;
         lodData.lodIndex = lod;
+        lodData.sourceLod = lod;
         std::cerr << "[RockAssetSet::load] move variants/materials lod=" << lod << '\n';
         lodData.variants = std::move(importResult.variants);
         lodData.materials = std::move(importResult.materials);
@@ -478,6 +694,17 @@ ResourceLoadResult RockAssetSet::load(ResourceManager& manager, const ResourceLo
 
 ResourceLoadResult RockAssetSet::loadLod(std::uint32_t lodIndex)
 {
+    if (source_) {
+        if (lodIndex >= lods_.size())
+            return resourceLoadFailure(*this, "ENVIRONMENT-LOD-RELOAD-REQUIRED");
+        ResourceLoadResult result;
+        result.success = true;
+        result.state = ResourceState::Ready;
+        result.resourceId = reference().id;
+        result.resourceType = reference().type;
+        return result;
+    }
+
     if (lodIndex >= maxLodCount_) {
         ResourceLoadResult result;
         result.diagnostics =
@@ -515,6 +742,7 @@ ResourceLoadResult RockAssetSet::loadLod(std::uint32_t lodIndex)
         }
         LodData data;
         data.lodIndex = lod;
+        data.sourceLod = lod;
         data.variants = std::move(imported.variants);
         data.materials = std::move(imported.materials);
         lods_.push_back(std::move(data));
@@ -531,12 +759,14 @@ ResourceLoadResult RockAssetSet::loadLod(std::uint32_t lodIndex)
 const assets::NamedVariant* RockAssetSet::findVariant(
     const std::string& variantName, std::uint32_t lodIndex) const
 {
-    if (lodIndex >= lods_.size())
+    const auto* resolved = EnvironmentLodSourceLoader::resolve(lods_, lodIndex);
+    if (!resolved)
         return nullptr;
-    const auto& variants = lods_[lodIndex].variants;
+    const auto& variants = resolved->variants;
     auto it = std::find_if(
         variants.begin(), variants.end(), [&variantName](const assets::NamedVariant& v) {
-            return std::string(v.name.c_str(), v.name.size()) == variantName;
+            return core::StringView(v.name.data(), v.name.size())
+                == core::StringView(variantName.data(), variantName.size());
         });
     return it != variants.end() ? &(*it) : nullptr;
 }

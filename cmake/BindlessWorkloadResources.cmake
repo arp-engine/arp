@@ -50,11 +50,11 @@ set(bindless_visibility_test_args)
 if(Python3_Interpreter_FOUND AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
     set(bindless_visibility_shader_dir "${CMAKE_BINARY_DIR}/bindless-gpu-visibility")
     add_custom_command(OUTPUT "${bindless_visibility_shader_dir}/gpu_visibility_layout.computeMain.entry.yaml"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --fixture gpu_visibility_layout --single-entry computeMain
             --out-dir "${bindless_visibility_shader_dir}"
-        DEPENDS shaders/core/gpu_visibility.slang shaders/core/instance_transform.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} shaders/core/gpu_visibility.slang shaders/core/instance_transform.slang
             tests/fixtures/gpu_visibility_layout.slang
             scripts/compile_shaders.py scripts/shader_bindings_codegen.py
         VERBATIM)
@@ -76,11 +76,11 @@ if(Python3_Interpreter_FOUND AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(visibility_kernel_entry "visibility${visibility_phase}ComputeMain")
         set(visibility_kernel_publication "${visibility_kernel_dir}/gpu_visibility.${visibility_kernel_entry}.entry.yaml")
         add_custom_command(OUTPUT "${visibility_kernel_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --module gpu_visibility --single-entry "${visibility_kernel_entry}"
                 --out-dir "${visibility_kernel_dir}"
-            DEPENDS shaders/renderer/gpu_visibility.slang shaders/core/gpu_visibility.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} shaders/renderer/gpu_visibility.slang shaders/core/gpu_visibility.slang
                 shaders/core/gpu_visibility_kernel.slang
                 shaders/core/instance_transform.slang scripts/compile_shaders.py scripts/shader_bindings_codegen.py
             VERBATIM)
@@ -101,7 +101,7 @@ if(Python3_Interpreter_FOUND AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(visibility_publication "${bindless_visibility_shader_dir}/Public/ArpGpuVisibility.${visibility_mode_name}.bindless.yaml")
         list(APPEND bindless_visibility_publications "${visibility_publication}")
         add_custom_command(OUTPUT "${visibility_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_SOURCE_DIR}/shaders/renderer/gpu_visibility.bindless.yaml"
                 --bindless-source-library "${CMAKE_SOURCE_DIR}/shaders/core/instance_transform.slang"
@@ -111,7 +111,7 @@ if(Python3_Interpreter_FOUND AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
                 --bindless-entry visibilityResetComputeMain --bindless-entry visibilityCullComputeMain
                 --bindless-entry visibilityEmitComputeMain --bindless-entry visibilityFinalizeComputeMain
                 --bindless-mode "${visibility_mode}" --out-dir "${bindless_visibility_shader_dir}/Public"
-            DEPENDS shaders/renderer/gpu_visibility.bindless.yaml shaders/renderer/gpu_visibility_bindless.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} shaders/renderer/gpu_visibility.bindless.yaml shaders/renderer/gpu_visibility_bindless.slang
                 shaders/core/instance_transform.slang shaders/core/gpu_visibility.slang shaders/core/gpu_visibility_kernel.slang
                 scripts/bindless_codegen.py scripts/gpu_visibility_codegen.py scripts/compile_shaders.py
                 scripts/buffer_vector_record.py scripts/slang_resource_switch.py scripts/spirv_layout.py
@@ -127,7 +127,7 @@ if(Python3_Interpreter_FOUND AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(visibility_publication "${bindless_visibility_shader_dir}/Public/ArpGpuVisibilityConsumer.${visibility_mode_name}.bindless.yaml")
         list(APPEND bindless_visibility_publications "${visibility_publication}")
         add_custom_command(OUTPUT "${visibility_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_SOURCE_DIR}/shaders/renderer/gpu_visibility_consumer.bindless.yaml"
                 --bindless-source-library "${CMAKE_SOURCE_DIR}/shaders/core/instance_transform.slang"
@@ -139,7 +139,7 @@ if(Python3_Interpreter_FOUND AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
                 --bindless-entry visibilityEmitComputeMain --bindless-entry visibilityFinalizeComputeMain
                 --bindless-entry visibilityVertexMain --bindless-entry visibilityFragmentMain
                 --bindless-mode "${visibility_mode}" --out-dir "${bindless_visibility_shader_dir}/Public"
-            DEPENDS shaders/renderer/gpu_visibility_consumer.bindless.yaml shaders/renderer/gpu_visibility_consumer.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} shaders/renderer/gpu_visibility_consumer.bindless.yaml shaders/renderer/gpu_visibility_consumer.slang
                 shaders/renderer/gpu_visibility.bindless.yaml shaders/renderer/gpu_visibility_bindless.slang
                 shaders/core/instance_transform.slang shaders/core/gpu_visibility.slang shaders/core/gpu_visibility_kernel.slang
                 scripts/bindless_codegen.py scripts/gpu_visibility_codegen.py scripts/compile_shaders.py

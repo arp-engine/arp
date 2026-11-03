@@ -29,6 +29,7 @@ void EditorScriptFilePanel::synchronize(EditorShell& shell)
 {
     const bool scriptMode = shell.presentationState_.workspace() == "Script";
     shell.visible("script_ui_reload", scriptMode);
+    shell.visible("script_ui_reload_modules", scriptMode);
     if (const auto* viewport = shell.runtime().canvas().findWidget(shell.id("viewport"))) {
         if (auto* button = shell.runtime().canvas().findWidget(shell.id("script_ui_reload")))
             button->setLocalRect(ui::LayoutRect::fromOriginSize(
@@ -36,9 +37,19 @@ void EditorScriptFilePanel::synchronize(EditorShell& shell)
                 viewport->desc().localRect.y + 3.0f,
                 160.0f,
                 24.0f));
+        if (auto* button =
+                shell.runtime().canvas().findWidget(shell.id("script_ui_reload_modules")))
+            button->setLocalRect(ui::LayoutRect::fromOriginSize(
+                viewport->desc().localRect.x + viewport->desc().localRect.width - 340.0f,
+                viewport->desc().localRect.y + 3.0f,
+                160.0f,
+                24.0f));
     }
     (void)shell.runtime().setEnabled(
         shell.id("script_ui_reload"), shell.activeScriptDocumentId() != 0);
+    (void)shell.runtime().setEnabled(shell.id("script_ui_reload_modules"),
+        bool(shell.projectBrowser_.sourceSnapshot()) && bool(shell.sceneDocument_.scriptCatalog())
+            && !shell.hasUnsavedScripts() && !shell.projectManifestDirty_);
 }
 
 bool EditorScriptFilePanel::validBindings(EditorShell& shell) const noexcept
@@ -166,6 +177,11 @@ bool EditorScriptFilePanel::handles(std::string_view source) noexcept
 EditorCommandOutcome EditorScriptFilePanel::activate(EditorShell& shell, std::string_view source)
 {
     try {
+        if (source == "script_ui_reload_modules") {
+            if (shell.presentationState_.workspace() != "Script")
+                return {false, false, EditorDiagnosticCode::WorkspaceBusy};
+            return shell.submitCommand(ReloadSceneScriptsCommand{}).intoNestedOutcome();
+        }
         if (source == "script_ui_reload") {
             if (shell.presentationState_.workspace() != "Script")
                 return {false, false, EditorDiagnosticCode::WorkspaceBusy};

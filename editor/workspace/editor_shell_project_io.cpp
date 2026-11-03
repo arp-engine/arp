@@ -13,8 +13,8 @@ bool EditorShell::bindProjectSourceFiles(core::io::FileService& files,
     std::string_view alias,
     EditorProjectIoBudget budget)
 {
-    if (projectIoPending() || projectBrowser_.sourceSnapshot() || !mount || alias.empty()
-        || !EditorProjectIoTask::validBudget(budget) || alias.size() > 128
+    if (projectIoPending() || sourceReceiptPending() || projectBrowser_.sourceSnapshot() || !mount
+        || alias.empty() || !EditorProjectIoTask::validBudget(budget) || alias.size() > 128
         || !ProjectInputSnapshot::validLogicalPath(alias)
         || alias.find('/') != std::string_view::npos)
         return false;
@@ -131,11 +131,11 @@ EditorCommandOutcome EditorShell::openScriptDocument(const OpenScriptCommand& co
             || !scope->validate(*projectSourceFiles_, scope->location().epoch, issue))
             return {false, false, EditorDiagnosticCode::ScriptFileOperationFailed};
         if (const auto* existing = scriptDocuments_.find(path)) {
-            const auto& source = existing->sourceSnapshot;
-            if (!source || !(source->location().mount == scope->location().mount)
-                || source->location().root != scope->location().root
-                || source->location().epoch != scope->location().epoch
-                || !source->validate(*projectSourceFiles_, scope->location().epoch, issue))
+            const auto* source = existing->sourceLocation();
+            if (!source || !(source->mount == scope->location().mount)
+                || source->root != scope->location().root
+                || source->epoch != scope->location().epoch
+                || !existing->validateSource(*projectSourceFiles_, scope->location().epoch, issue))
                 return {false, false, EditorDiagnosticCode::ScriptFileOperationFailed};
             const auto& docs = scriptDocuments_.documents();
             const auto index = static_cast<std::size_t>(existing - docs.data());
@@ -167,7 +167,132 @@ EditorCommandOutcome EditorShell::cancelProjectIo(std::uint64_t id)
     if (!id || id != projectIoTaskId_ || !projectIoPending())
         return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
     projectIo_->cancel();
+    retireSourceSceneIntent(false);
     return {true, true, EditorDiagnosticCode::None};
+}
+
+EditorCommandOutcome EditorShell::saveSourceScript()
+{
+    const auto gate = sceneNavigationGate();
+    if (!gate.success)
+        return gate;
+    const auto* document = scriptDocuments_.active();
+    const auto& directory = projectBrowser_.sourceSnapshot();
+    if (!document || !document->sourceLocation() || !directory || !projectSourceFiles_)
+        return {false, false, EditorDiagnosticCode::ScriptFileOperationFailed};
+    const auto& scope = directory->project();
+    if (!projectSourceFiles_->saveCapability(scope->location().mount).observedBaselineReplace)
+        return {false, false, EditorDiagnosticCode::ProjectOperationFailed};
+    if (lastScriptSave_.terminal && !lastScriptSave_.baselineRefreshed
+        && lastScriptSave_.outcome.commitState == core::io::FileCommitState::OutcomeUnknown
+        && scriptDocuments_.find(lastScriptSave_.documentId))
+        return {false, false, EditorDiagnosticCode::WorkspaceBusy};
+    try {
+        const auto& source = *document->sourceLocation();
+        const auto& project = scope->location();
+        const char* issue = nullptr;
+        if (!(source.mount == project.mount) || source.root != project.root
+            || source.epoch != project.epoch
+            || !scope->validate(*projectSourceFiles_, project.epoch, issue))
+            return {false, false, EditorDiagnosticCode::ScriptFileOperationFailed};
+        auto prepared = scriptDocuments_.prepareSourceSave(
+            document->id, *projectSourceFiles_, project.epoch, issue);
+        if (!prepared)
+            return {false, false, EditorDiagnosticCode::CommandPreparationFailed};
+        const auto id = projectIoIds_.tryAcquire();
+        if (!id)
+            return {false, false, EditorDiagnosticCode::CommandPreparationFailed};
+        auto result = acceptProjectIoTask(
+            core::makeUnique<EditorProjectIoTask>(*projectSourceFiles_,
+                EditorProjectIoTask::ScriptSaveInput{scope, std::move(prepared), document->id},
+                projectIoBudget_),
+            id);
+        if (result.success)
+            result.snapshot.scriptSaveReceipt = projectIo_->scriptSaveReceipt(id);
+        return result;
+    } catch (...) {
+        return {false, false, EditorDiagnosticCode::CommandPreparationFailed};
+    }
+}
+
+EditorCommandOutcome EditorShell::advanceSourceScriptSave()
+{
+    const auto& directory = projectBrowser_.sourceSnapshot();
+    const bool currentOwner =
+        projectSourceFiles_ && directory && directory->project() == projectIo_->scriptSaveScope();
+    if (!currentOwner)
+        projectIo_->cancel();
+    const auto previous = lastScriptSave_;
+    projectIo_->advance();
+    lastScriptSave_ = projectIo_->scriptSaveReceipt(projectIoTaskId_);
+    const bool changed = previous.taskId != lastScriptSave_.taskId
+        || previous.submitted != lastScriptSave_.submitted
+        || previous.terminal != lastScriptSave_.terminal
+        || !(previous.maintenance == lastScriptSave_.maintenance)
+        || previous.cancellationRequested != lastScriptSave_.cancellationRequested;
+    if (projectIo_->status() != ProjectIoStatus::Pending)
+        return {true, true, EditorDiagnosticCode::None};
+    if (!projectIo_->ready())
+        return {true, changed, EditorDiagnosticCode::None};
+    const auto& receipt = lastScriptSave_.outcome;
+    const char* issue = nullptr;
+    if (receipt.commitState == core::io::FileCommitState::OutcomeUnknown) {
+        issue = "EDITOR-SCRIPT-SAVE-OUTCOME-UNKNOWN";
+        projectIo_->fail(issue);
+    } else if (!currentOwner) {
+        issue = "EDITOR-SCRIPT-SAVE-OWNER-CHANGED";
+        projectIo_->fail(issue);
+    } else if (projectIo_->scriptSaveCancelled()) {
+        issue = receipt.commitState == core::io::FileCommitState::Committed
+            ? "EDITOR-SCRIPT-SAVE-CANCELLED-AFTER-COMMIT"
+            : "EDITOR-SCRIPT-SAVE-CANCELLED";
+        projectIo_->finishCancelledScriptSave(issue);
+    } else if (receipt.status != core::io::FileIoStatus::Success
+        || receipt.commitState != core::io::FileCommitState::Committed) {
+        issue = receipt.diagnosticId ? receipt.diagnosticId : "EDITOR-SCRIPT-SAVE-NOT-COMMITTED";
+        projectIo_->fail(issue);
+    } else if (!scriptDocuments_.commitSourceSave(
+                   *projectIo_->scriptSave(), *projectSourceFiles_, projectIo_->epoch(), receipt)) {
+        issue = projectIo_->scriptSave()->diagnostic();
+        projectIo_->fail(issue ? issue : "EDITOR-SCRIPT-SAVE-PUBLICATION-REFUSED");
+    } else {
+        projectIo_->published();
+    }
+    lastScriptSave_ = projectIo_->scriptSaveReceipt(projectIoTaskId_);
+    // File/domain truth is terminal before any fallible presentation work.
+    try {
+        const char* text = "Saved script source.";
+        if (!lastScriptSave_.published) {
+            if (receipt.commitState == core::io::FileCommitState::OutcomeUnknown)
+                text = "Save result unknown. Reload the file before saving again.";
+            else if (receipt.status == core::io::FileIoStatus::VersionMismatch)
+                text = "File changed outside the editor; local edits kept. Reload to continue.";
+            else if (receipt.commitState == core::io::FileCommitState::Committed)
+                text =
+                    "File saved before cancellation or owner change. Reload to refresh the save point.";
+            else if (lastScriptSave_.cancellationRequested)
+                text = "Script save cancelled; local edits kept.";
+            else
+                text = "Script save failed; local edits kept.";
+        }
+        core::pmr::String message(text, &core::defaultCpuMemoryResource());
+        const bool presented = publishScriptPresentation(std::move(message));
+        if (issue) {
+            presentationState_.openOutput();
+            if (auto* output = runtime().canvas().findWidget(scriptPresentationOutput_))
+                output->setVisible(true);
+        }
+        if (!presented && lastScriptSave_.published)
+            projectIo_->published("EDITOR-SCRIPT-PRESENTATION-FAILED");
+        return {true,
+            true,
+            presented ? EditorDiagnosticCode::None
+                      : EditorDiagnosticCode::ScriptPresentationFailed};
+    } catch (...) {
+        if (lastScriptSave_.published)
+            projectIo_->published("EDITOR-SCRIPT-PRESENTATION-FAILED");
+        return {true, true, EditorDiagnosticCode::ScriptPresentationFailed};
+    }
 }
 
 EditorCommandOutcome EditorShell::reloadSourceScript(bool discardChanges)
@@ -177,19 +302,18 @@ EditorCommandOutcome EditorShell::reloadSourceScript(bool discardChanges)
         return gate;
     const auto* document = scriptDocuments_.active();
     const auto& directory = projectBrowser_.sourceSnapshot();
-    if (!document || !directory || !document->sourceSnapshot || !projectSourceFiles_)
+    if (!document || !directory || !document->sourceLocation() || !projectSourceFiles_)
         return {false, false, EditorDiagnosticCode::ScriptFileOperationFailed};
     if (document->dirty() && !discardChanges)
         return {false, false, EditorDiagnosticCode::UnsavedChanges};
     try {
         const auto& scope = directory->project();
-        const auto& source = document->sourceSnapshot;
+        const auto* source = document->sourceLocation();
         const char* issue = nullptr;
-        if (!(source->location().mount == scope->location().mount)
-            || source->location().root != scope->location().root
-            || source->location().epoch != scope->location().epoch
+        if (!(source->mount == scope->location().mount) || source->root != scope->location().root
+            || source->epoch != scope->location().epoch
             || !scope->validate(*projectSourceFiles_, scope->location().epoch, issue)
-            || !source->validate(*projectSourceFiles_, scope->location().epoch, issue))
+            || !document->validateSource(*projectSourceFiles_, scope->location().epoch, issue))
             return {false, false, EditorDiagnosticCode::ScriptFileOperationFailed};
         auto relative = core::FilePath::utf8(document->path.lexically_relative(projectRoot()));
         auto reload = scriptDocuments_.prepareReload(
@@ -213,23 +337,35 @@ EditorCommandOutcome EditorShell::advanceProjectIo(std::uint64_t id)
 {
     if (!projectIoPending() || id != projectIoTaskId_)
         return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
+    if (projectIo_->savingScript())
+        return advanceSourceScriptSave();
+    if (projectIo_->savingProject())
+        return advanceSourceProjectSave();
     try {
         if (sceneDocumentEpoch_ != projectIoSceneEpoch_
             || resourceRevision_ != projectIoResourceRevision_
             || !projectIoScripts_.sameCurrentEpoch(scriptDocuments_.stateTicket())) {
             projectIo_->fail("EDITOR-PROJECT-IO-OWNER-CHANGED");
+            retireSourceSceneIntent(false);
             return {true, true, EditorDiagnosticCode::None};
         }
         projectIo_->advance();
-        if (projectIo_->status() != ProjectIoStatus::Pending)
+        if (projectIo_->status() != ProjectIoStatus::Pending) {
+            retireSourceSceneIntent(false);
             return {true, true, EditorDiagnosticCode::None};
+        }
         if (!projectIo_->ready())
             return {true, false, EditorDiagnosticCode::None};
         core::pmr::String hash, diagnostic;
         if (!observeSceneHash(hash, diagnostic) || hash != projectIoSceneHash_) {
             projectIo_->fail("EDITOR-PROJECT-IO-DOCUMENT-CHANGED");
+            retireSourceSceneIntent(false);
             return {true, true, EditorDiagnosticCode::None};
         }
+        if (projectIo_->verifyingSources())
+            return completeSourceSceneAuthoring();
+        if (projectIo_->reloadingScripts())
+            return completeSceneScriptReload();
         if (projectIo_->openingScript()) {
             auto& document = projectIo_->script();
             auto* reload = projectIo_->scriptReload();
@@ -251,6 +387,8 @@ EditorCommandOutcome EditorShell::advanceProjectIo(std::uint64_t id)
                     projectIo_->fail("EDITOR-SCRIPT-RELOAD-STALE");
                     return {true, true, EditorDiagnosticCode::None};
                 }
+                if (lastScriptSave_.documentId == scriptDocuments_.activeId())
+                    lastScriptSave_.baselineRefreshed = true;
             } else {
                 const auto index = scriptDocuments_.append(std::move(document));
                 if (index == ScriptDocumentSession::noActiveDocument) {
@@ -295,13 +433,14 @@ EditorCommandOutcome EditorShell::advanceProjectIo(std::uint64_t id)
             fileScrollOffset_ = 0;
             (void)retryFileBrowserPresentation();
         }
-        projectIo_->published(
-            filesPresentationFailed_ || (projectIo_->opening() && inspectorFailure())
+        projectIo_->published(filesPresentationFailed_
+                    || (projectIo_->opening() && sceneInspectorState_ == InspectorState::Failed)
                 ? "EDITOR-PROJECT-PRESENTATION-FAILED"
                 : nullptr);
         return {true, true, EditorDiagnosticCode::None};
     } catch (...) {
         projectIo_->fail("EDITOR-PROJECT-IO-PREPARATION");
+        retireSourceSceneIntent(false);
         return {true, true, EditorDiagnosticCode::None};
     }
 }

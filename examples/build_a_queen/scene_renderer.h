@@ -4,6 +4,7 @@
 #include "assets/glb_animated_mesh_importer.h"
 #include "core/memory/cpu_allocator.h"
 #include "game.h"
+#include "native_shader_source_task.h"
 #include "renderer/renderer_common.h"
 #include "scene_content.h"
 
@@ -25,6 +26,14 @@ public:
         const core::pmr::String& characterDirectory,
         rhi::TextureFormat colorFormat,
         rhi::Extent2D extent);
+    renderer::RendererResult create(const core::pmr::String& shaderPath,
+        const CharacterSources& sources,
+        rhi::TextureFormat colorFormat,
+        rhi::Extent2D extent);
+    renderer::RendererResult create(const NativeShaderSources& shaders,
+        const CharacterSources& sources,
+        rhi::TextureFormat colorFormat,
+        rhi::Extent2D extent);
     renderer::RendererResult resize(rhi::Extent2D extent);
     renderer::RendererResult draw(rhi::GpuTexture& target,
         const rhi::AcquiredFrame& acquiredFrame,
@@ -41,6 +50,13 @@ public:
     std::uint32_t lastVertexCount() const { return lastVertexCount_; }
 
 private:
+    renderer::RendererResult createImpl(const core::pmr::String& shaderPath,
+        const core::pmr::String& characterDirectory,
+        const CharacterSources* sources,
+        rhi::TextureFormat colorFormat,
+        rhi::Extent2D extent,
+        const NativeShaderSources* shaders = nullptr);
+
     struct FrameSlot {
         FrameSlot();
 

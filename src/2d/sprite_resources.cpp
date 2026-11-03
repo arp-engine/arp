@@ -42,9 +42,11 @@ float number(const core::YamlContract::Node& n, const char* key)
 SpriteAtlasResource::SpriteAtlasResource(core::pmr::String id,
     core::pmr::String metadataPath,
     core::pmr::String pngPath,
-    std::size_t maxBytes)
+    std::size_t maxBytes,
+    resource::ResourceFileOrigin origin)
     : ResourceBase(makeReference(std::move(id), "SpriteAtlasResource")),
-      metadataPath_(std::move(metadataPath)), pngPath_(std::move(pngPath)), maxBytes_(maxBytes)
+      metadataPath_(std::move(metadataPath)), pngPath_(std::move(pngPath)), maxBytes_(maxBytes),
+      sourceOrigin_(origin)
 {}
 
 bool SpriteAtlasResource::collectFileReadIntents(resource::ResourceManager&,
@@ -56,12 +58,9 @@ bool SpriteAtlasResource::collectFileReadIntents(resource::ResourceManager&,
         return false;
     }
     for (const auto* p : {&metadataPath_, &pngPath_}) {
-        resource::ResourceFileReadIntent intent;
-        intent.path = *p;
-        intent.role = "sprite-atlas";
-        intent.maxBytes = maxBytes_;
-        intent.pathScope = core::io::FilePathScope::HostFilesystem;
-        intents.push_back(std::move(intent));
+        if (!resource::appendResourceReadIntent(*p, maxBytes_, intents, diagnostic, sourceOrigin_))
+            return false;
+        intents.back().role = "sprite-atlas";
     }
     return true;
 }
@@ -71,19 +70,25 @@ resource::ResourceLoadResult SpriteAtlasResource::load(
 {
     if (!maxBytes_ || !resource::isResourceUuid(reference().id))
         return outcome(*this, "ARP-2D-RESOURCE-CONFIG");
-    auto metadata = resource::readResourceSource(metadataPath_, c, maxBytes_);
+    for (const auto* path : {&metadataPath_, &pngPath_}) {
+        const auto valid = resource::validateResourceReadIntent(*path, maxBytes_, sourceOrigin_);
+        if (valid.diagnostic)
+            return outcome(*this, valid.diagnostic);
+    }
+    auto metadata = resource::readResourceText(metadataPath_, c, maxBytes_, &sourceOrigin_);
     if (!metadata.success)
         return outcome(*this, metadata.diagnostics.c_str());
     try {
         using Y = core::YamlContract;
-        auto n = Y::Node::deserialize(core::pmr::String(
-            reinterpret_cast<const char*>(metadata.bytes.data()), metadata.bytes.size()));
+        auto n = Y::Node::deserialize(metadata.text);
         if (Y::text(n, "type") != "arp.sprite-atlas" || Y::uint32(n, "contractVersion") != 1
             || Y::text(n, "resourceId") != reference().id || Y::text(n, "filter") != "nearest"
             || Y::text(n, "alpha") != "straight")
             return outcome(*this, "ARP-2D-ATLAS-CONTRACT");
         const auto width = Y::uint32(n, "width"), height = Y::uint32(n, "height");
-        if (!width || !height || std::uint64_t(width) * height > maxBytes_ / 4)
+        const auto decodedBudget =
+            c.maxDecodedBytes ? std::min(maxBytes_, c.maxDecodedBytes) : maxBytes_;
+        if (!width || !height || std::uint64_t(width) * height > decodedBudget / 4)
             return outcome(*this, "ARP-2D-ATLAS-BUDGET");
         const auto& sequence = Y::sequence(n, "slices");
         if (sequence.empty() || sequence.size() > std::uint64_t(width) * height)
@@ -107,14 +112,14 @@ resource::ResourceLoadResult SpriteAtlasResource::load(
                 return outcome(*this, "ARP-2D-ATLAS-SLICE-INVALID");
             slices.push_back(std::move(s));
         }
-        auto encoded = resource::readResourceSource(pngPath_, c, maxBytes_);
+        auto encoded = resource::readResourceSource(pngPath_, c, maxBytes_, false, &sourceOrigin_);
         if (!encoded.success)
             return outcome(*this, encoded.diagnostics.c_str());
         auto decoded = assets::decodeImageToRgba8(
             core::ArrayView<const std::uint8_t>(encoded.bytes.data(), encoded.bytes.size()),
             "image/png",
             Y::boolean(n, "srgb"),
-            maxBytes_);
+            decodedBudget);
         if (!decoded.success)
             return outcome(*this, decoded.diagnostics.c_str());
         if (decoded.image.width != width || decoded.image.height != height)

@@ -19,10 +19,10 @@ const auto fixtureRoot = std::filesystem::path(ARP_SOURCE_DIR) / "tests/fixtures
 
 // Seed explicit golden exported bytes, never substitute host reads for missing
 // mounted content. The Shell itself only receives the mount, not this path.
-core::SharedPtr<MemoryFileBackend> memory(bool malformed = false)
+core::SharedPtr<MemoryFileBackend> memory(bool malformed = false, bool writable = false)
 {
     auto backend = core::makeShared<MemoryFileBackend>(
-        MemoryFileBackendDesc{64, 4 * fileBytes, 1, fileBytes, 512});
+        MemoryFileBackendDesc{64, 4 * fileBytes, 1, 8 * fileBytes, 512, writable});
     core::pmr::Vector<std::filesystem::path> entries;
     for (const auto& entry : std::filesystem::recursive_directory_iterator(fixtureRoot))
         entries.push_back(entry.path());
@@ -47,17 +47,25 @@ class Host final {
 public:
     explicit Host(bool native = false,
         bool malformed = false,
-        const std::filesystem::path& source = fixtureRoot)
+        const std::filesystem::path& source = fixtureRoot,
+        bool writable = false)
     {
         if (native) {
             auto desc = workspace.descriptor();
-            desc.rootPath = core::FilePath::utf8(source);
+            if (writable) {
+                std::filesystem::copy(source,
+                    workspace.root,
+                    std::filesystem::copy_options::recursive
+                        | std::filesystem::copy_options::overwrite_existing);
+            }
+            desc.rootPath = core::FilePath::utf8(writable ? workspace.root : source);
             desc.maxInFlight = 1;
-            desc.maxBytesInFlight = 2 * fileBytes;
+            desc.maxBytesInFlight = writable ? 8 * fileBytes : 2 * fileBytes;
             desc.ioChunkBytes = 4096;
+            desc.allowObservedBaselineReplace = writable;
             mount = mounts.mount("workspace", core::makeShared<NativeDirectoryFileBackend>(desc));
         } else {
-            memoryFiles = memory(malformed);
+            memoryFiles = memory(malformed, writable);
             mount = mounts.mount("workspace", memoryFiles);
         }
         assert(mount);
@@ -129,7 +137,7 @@ public:
 
     unified_io_fixture::Workspace workspace;
     core::runtime::CompletionQueue queue{core::runtime::CompletionQueueDesc{8}};
-    MountedFileBackend mounts{MountedFileBackendDesc{2, 1, 2 * fileBytes, 128, 512}};
+    MountedFileBackend mounts{MountedFileBackendDesc{2, 1, 8 * fileBytes, 128, 512}};
     FileService files{queue, mounts};
     core::PoolHandle mount;
     core::SharedPtr<MemoryFileBackend> memoryFiles;
@@ -188,8 +196,17 @@ void lifecycle(bool native)
         Host::rejected(shell, SaveProjectCommand{}, EditorDiagnosticCode::ProjectOperationFailed);
         Host::rejected(
             shell, SaveSceneCommand("scene.yaml"), EditorDiagnosticCode::ProjectOperationFailed);
-        Host::rejected(
-            shell, LoadSceneCommand("scene.yaml"), EditorDiagnosticCode::ProjectOperationFailed);
+        const auto missingScene = Host::completed(shell, LoadSceneCommand("scene.yaml"));
+        assert(missingScene.snapshot.scenePersistenceTaskStatus
+            == ScenePersistenceTaskStatus::Pending);
+        unified_io_fixture::wait(host.queue, [&] {
+            shell.pollTasks();
+            return !Host::state(shell).sceneIoPending;
+        });
+        assert(Host::completed(shell,
+                   GetScenePersistenceTaskQuery{missingScene.snapshot.scenePersistenceTaskId})
+                   .snapshot.scenePersistenceTaskStatus
+            == ScenePersistenceTaskStatus::Failed);
         assert(shell.openScriptFile("workspace/scripts/gameplay.arp"));
         assert(host.finish(shell).projectIoTaskStatus == ProjectIoStatus::Succeeded);
         const auto script = Host::state(shell);
@@ -235,6 +252,38 @@ void lifecycle(bool native)
     while (host.queue.pending())
         host.queue.dispatch(8);
     assert(host.mounts.telemetry().inFlight == 0);
+}
+
+void projectEntrySourceSave()
+{
+    Host host(false, false, fixtureRoot, true);
+    EditorShell shell;
+    host.initialize(shell);
+    Host::start(shell);
+    auto state = host.finish(shell);
+    assert(state.projectIoTaskStatus == ProjectIoStatus::Succeeded
+        && !state.projectEntryScene.empty());
+    const auto entry = state.projectEntryScene;
+    const auto resources = shell.retainProjectResourceManager();
+    const auto* scene = &shell.sceneDocument().scene();
+    Host::completed(shell, SetProjectSettingsCommand{"Entry cleared", {}});
+    Host::completed(shell, SaveProjectCommand{});
+    state = host.finish(shell);
+    assert(state.projectSaveReceipt.published && !state.projectDirty
+        && state.projectEntryScene.empty());
+    Host::completed(shell, SetProjectSettingsCommand{"Ready startup restored", entry});
+    Host::completed(shell, SaveProjectCommand{});
+    state = host.finish(shell);
+    assert(state.projectSaveReceipt.published && !state.projectDirty
+        && state.projectEntryScene == entry && shell.retainProjectResourceManager() == resources
+        && &shell.sceneDocument().scene() == scene);
+    const auto invalid = shell.submitCommand(
+        SetProjectSettingsCommand{"Invalid startup", "00000000-0000-4000-8000-000000000099"});
+    assert(invalid.status != EditorResponseStatus::Completed && !shell.projectDirty());
+    Host::start(shell, "workspace", true);
+    state = host.finish(shell);
+    assert(state.projectIoTaskStatus == ProjectIoStatus::Succeeded
+        && state.projectName == "Ready startup restored" && state.projectEntryScene == entry);
 }
 
 void negatives()
@@ -380,6 +429,7 @@ void scriptDocuments()
     const std::string_view rawText(
         reinterpret_cast<const char*>(raw.bytes.data()), raw.bytes.size());
     assert(opened.hasActiveDocument && opened.openDocumentCount == 1 && !opened.scriptDirty
+        && opened.scriptSourceMounted && !opened.scriptSourceMissing && !opened.scriptSourceConflict
         && opened.scriptText == ScriptDocumentSession::normalizeFileBytes(rawText)
         && shell.retainProjectResourceManager() == owner
         && shell.sceneDocument().scene().rootId() == scene);
@@ -528,6 +578,323 @@ void nativeSourceReload()
     assert(host.mounts.unmount(host.mount));
     assert(host.finish(shell).projectIoTaskStatus == ProjectIoStatus::Failed
         && Host::state(shell).scriptText == reloaded.scriptText);
+}
+#endif
+
+// Transport outcome fixture. Read/query bytes come from the real registered
+// memory backend; this fixture never claims to have committed a remote write.
+class UnknownSaveBackend final : public ManagedFileBackend {
+public:
+    explicit UnknownSaveBackend(core::SharedPtr<ManagedFileBackend> read) : read_(std::move(read))
+    {}
+
+    FileBackendCapability capability() const noexcept override { return read_->capability(); }
+
+    FileReadResult validateRead(const FileReadRequest& request) const override
+    {
+        return read_->validateRead(request);
+    }
+
+    FileIoStatus readAsync(const FileReadRequest& request,
+        FileReadCompletion completion,
+        core::runtime::CompletionQueue& queue) noexcept override
+    {
+        return read_->readAsync(request, completion, queue);
+    }
+
+    FileIoStatus queryAsync(const FileQueryRequest& request,
+        FileQueryCompletion completion,
+        core::runtime::CompletionQueue& queue) noexcept override
+    {
+        return read_->queryAsync(request, completion, queue);
+    }
+
+    FileSaveCapability saveCapability(core::PoolHandle) const noexcept override
+    {
+        return {true, false, false};
+    }
+
+    FileIoStatus saveAsync(FileSaveRequest,
+        FileSaveCompletion completion,
+        core::runtime::CompletionQueue& queue) noexcept override
+    {
+        struct Pending {
+            FileSaveCompletion completion;
+
+            static void deliver(void* context) noexcept
+            {
+                core::UniquePtr<Pending> pending{static_cast<Pending*>(context),
+                    core::CpuAllocatedDeleter<Pending>{
+                        context, &core::destroyCpuAllocatedUnique<Pending>}};
+                FileSaveResult result;
+                result.fail(FileIoStatus::OutcomeUnknown, "TEST-SAVE-RESPONSE-LOST");
+                result.commitState = FileCommitState::OutcomeUnknown;
+                pending->completion.complete(pending->completion.userData, result);
+            }
+        };
+
+        try {
+            auto reserved = queue.reserve();
+            if (!reserved.valid())
+                return FileIoStatus::QueueFull;
+            auto pending = core::makeUnique<Pending>();
+            pending->completion = completion;
+            if (!queue.postReserved(std::move(reserved), {Pending::deliver, pending.get()})
+                    .accepted())
+                return FileIoStatus::ServiceClosed;
+            pending.release();
+            ++saveCalls;
+            return FileIoStatus::Accepted;
+        } catch (...) {
+            return FileIoStatus::BudgetExceeded;
+        }
+    }
+
+    void shutdown() noexcept override { read_->shutdown(); }
+
+    unsigned saveCalls = 0;
+
+private:
+    core::SharedPtr<ManagedFileBackend> read_;
+};
+
+void unknownSave()
+{
+    Host host;
+    assert(host.mounts.unmount(host.mount));
+    auto backend = core::makeShared<UnknownSaveBackend>(host.memoryFiles);
+    host.mount = host.mounts.mount("workspace", backend);
+    EditorShell shell;
+    host.initialize(shell);
+    Host::start(shell);
+    assert(host.finish(shell).projectIoTaskStatus == ProjectIoStatus::Succeeded);
+    Host::completed(shell, OpenScriptCommand{"scripts/gameplay.arp"});
+    const auto id = host.finish(shell).activeDocumentId;
+    Host::completed(shell, ReplaceScriptTextCommand{id, "// pending unknown outcome\n"});
+    const auto accepted = Host::completed(shell, SaveScriptCommand{id});
+    assert(accepted.snapshot.projectIoTaskStatus == ProjectIoStatus::Pending);
+    assert(backend->saveCalls == 0 && !accepted.snapshot.scriptSaveReceipt.submitted);
+    const auto unknown = host.finish(shell);
+    assert(unknown.projectIoTaskStatus == ProjectIoStatus::Failed && unknown.scriptDirty);
+    assert(unknown.scriptSaveReceipt.terminal && !unknown.scriptSaveReceipt.published
+        && unknown.scriptSaveReceipt.outcome.commitState == FileCommitState::OutcomeUnknown);
+    Host::rejected(shell, SaveScriptCommand{id}, EditorDiagnosticCode::WorkspaceBusy);
+    assert(backend->saveCalls == 1);
+    NavigateProjectSourceCommand refresh;
+    refresh.intent = ProjectBrowserModel::SourceNavigation::Refresh;
+    Host::completed(shell, refresh);
+    const auto afterRead = host.finish(shell);
+    assert(afterRead.scriptSaveReceipt.taskId == unknown.scriptSaveReceipt.taskId
+        && afterRead.scriptSaveReceipt.outcome.commitState == FileCommitState::OutcomeUnknown);
+    Host::rejected(shell, SaveScriptCommand{id}, EditorDiagnosticCode::WorkspaceBusy);
+    Host::completed(shell, ReloadScriptCommand{id, true});
+    const auto reloaded = host.finish(shell);
+    assert(!reloaded.scriptDirty && reloaded.scriptSaveReceipt.baselineRefreshed);
+    assert(reloaded.scriptSaveReceipt.outcome.commitState == FileCommitState::OutcomeUnknown);
+    Host::completed(shell, SaveScriptCommand{id});
+    (void)host.finish(shell);
+    assert(backend->saveCalls == 2);
+}
+
+void memorySourceSaveCycle()
+{
+    Host host(false, false, fixtureRoot, true);
+    EditorShell shell;
+    host.initialize(shell);
+    Host::start(shell);
+    assert(host.finish(shell).projectIoTaskStatus == ProjectIoStatus::Succeeded);
+    Host::completed(shell, OpenScriptCommand{"scripts/gameplay.arp"});
+    const auto id = host.finish(shell).activeDocumentId;
+    const auto read = [&] {
+        FileReadRequest request;
+        request.contractVersion = 1;
+        request.pathScope = FilePathScope::MountedResource;
+        request.path = "workspace/scripts/gameplay.arp";
+        request.mount = host.mount;
+        request.maxBytes = fileBytes;
+        unified_io_fixture::Probe<FileReadResult> result;
+        assert(host.files.read(request, {decltype(result)::complete, &result})
+            == FileIoStatus::Accepted);
+        host.queue.dispatch(8);
+        assert(result.calls == 1 && result.result.status == FileIoStatus::Success);
+        return result.result;
+    };
+    const auto original = read();
+    Host::completed(shell, ReplaceScriptTextCommand{id, "// memory first\n"});
+    const auto submitted = host.files.telemetry().submitted;
+    const auto pending = Host::completed(shell, SaveScriptCommand{id});
+    assert(!pending.snapshot.scriptSaveReceipt.submitted
+        && host.files.telemetry().submitted == submitted);
+    assert(read().bytes == original.bytes);
+    Host::completed(shell, ReplaceScriptTextCommand{id, "// memory newer\n"});
+    Host::completed(shell, UndoScriptCommand{id});
+    Host::completed(shell, RedoScriptCommand{id});
+    auto state = host.finish(shell);
+    assert(state.projectIoTaskStatus == ProjectIoStatus::Succeeded && state.scriptDirty
+        && state.scriptSaveReceipt.published);
+    const auto saved = read();
+    assert(std::string_view(reinterpret_cast<const char*>(saved.bytes.data()), saved.bytes.size())
+        == "\xef\xbb\xbf// memory first\r\n");
+    Host::completed(shell, SaveScriptCommand{id});
+    state = host.finish(shell);
+    assert(state.projectIoTaskStatus == ProjectIoStatus::Succeeded && !state.scriptDirty);
+    assert(state.scriptSaveReceipt.outcome.backendKind == FileBackendKind::MemoryFileBackend);
+
+    // Simulate a separate authorized writer through the same production IO
+    // contract, rather than bypassing the backend or fabricating a receipt.
+    FileSaveRequest external;
+    external.mount = host.mount;
+    external.pathScope = FilePathScope::MountedResource;
+    external.path = "workspace/scripts/gameplay.arp";
+    const std::string_view edited = "// external memory\n";
+    external.bytes.assign(edited.begin(), edited.end());
+    external.precondition = FileSavePrecondition::ContentSha256;
+    external.expectedVersion = state.scriptSaveReceipt.outcome.committedVersion;
+    external.maxBaselineBytes = fileBytes;
+    external.maxWriteBytes = fileBytes;
+    unified_io_fixture::Probe<FileSaveResult> receipt;
+    assert(host.files.save(std::move(external), {decltype(receipt)::complete, &receipt})
+        == FileIoStatus::Accepted);
+    host.queue.dispatch(8);
+    assert(receipt.result.commitState == FileCommitState::Committed);
+    Host::completed(shell, ReplaceScriptTextCommand{id, "// keep local\n"});
+    Host::completed(shell, SaveScriptCommand{id});
+    state = host.finish(shell);
+    assert(state.projectIoTaskStatus == ProjectIoStatus::Failed && state.scriptDirty
+        && state.scriptSaveReceipt.outcome.status == FileIoStatus::VersionMismatch);
+    Host::completed(shell, ReloadScriptCommand{id, true});
+    state = host.finish(shell);
+    assert(!state.scriptDirty && state.scriptText == edited);
+
+    Host::completed(shell, ReplaceScriptTextCommand{id, "// before cancellation\n"});
+    auto task = Host::completed(shell, SaveScriptCommand{id});
+    Host::completed(shell, CancelProjectIoCommand{task.snapshot.projectIoTaskId});
+    state = host.finish(shell);
+    assert(state.projectIoTaskStatus == ProjectIoStatus::Cancelled
+        && !state.scriptSaveReceipt.submitted
+        && state.scriptSaveReceipt.outcome.commitState == FileCommitState::NotCommitted);
+    Host::completed(shell, SaveScriptCommand{id});
+    shell.pollTasks();
+    assert(host.queue.pending() == 1);
+    Host::completed(shell, CancelProjectIoCommand{Host::state(shell).projectIoTaskId});
+    state = host.finish(shell);
+    assert(state.projectIoTaskStatus == ProjectIoStatus::Cancelled && state.scriptDirty
+        && state.scriptSaveReceipt.outcome.commitState == FileCommitState::Committed
+        && state.scriptSaveReceipt.outcome.deliveryStatus == FileIoStatus::Cancelled);
+    Host::completed(shell, ReloadScriptCommand{id, true});
+    assert(!host.finish(shell).scriptDirty);
+    Host::completed(shell, ReplaceScriptTextCommand{id, "// closed before submit\n"});
+    Host::completed(shell, SaveScriptCommand{id});
+    Host::completed(shell, CloseScriptCommand{id, true});
+    state = host.finish(shell);
+    assert(state.projectIoTaskStatus == ProjectIoStatus::Cancelled && !state.hasActiveDocument
+        && !state.scriptSaveReceipt.submitted);
+    Host::completed(shell, OpenScriptCommand{"scripts/gameplay.arp"});
+    state = host.finish(shell);
+    assert(state.activeDocumentId != id && state.scriptText == "// before cancellation\n");
+    assert(host.memoryFiles->telemetry().inFlight == 0
+        && host.memoryFiles->telemetry().queuedBytes == 0);
+}
+
+#if defined(_WIN32)
+void sourceSaveCycle()
+{
+    Host host(true, false, fixtureRoot, true);
+    const auto diskPath = host.workspace.root / "workspace/scripts/gameplay.arp";
+    const auto original = core::readBinaryFile(diskPath, fileBytes);
+    assert(original.success);
+    {
+        EditorShell shell;
+        host.initialize(shell);
+        Host::start(shell);
+        assert(host.finish(shell).projectIoTaskStatus == ProjectIoStatus::Succeeded);
+        Host::completed(shell, OpenScriptCommand{"scripts/gameplay.arp"});
+        const auto opened = host.finish(shell);
+        const auto id = opened.activeDocumentId;
+        Host::completed(shell, ReplaceScriptTextCommand{id, "// save first\n"});
+        const auto accepted = Host::completed(shell, SaveScriptCommand{id});
+        assert(accepted.snapshot.projectIoTaskStatus == ProjectIoStatus::Pending);
+        assert(accepted.snapshot.scriptSaveReceipt.documentId == id
+            && !accepted.snapshot.scriptSaveReceipt.submitted);
+        assert(core::readBinaryFile(diskPath, fileBytes).bytes == original.bytes);
+        Host::completed(shell, ReplaceScriptTextCommand{id, "// newer local edit\n"});
+        Host::completed(shell, UndoScriptCommand{id});
+        Host::completed(shell, RedoScriptCommand{id});
+        Host::rejected(shell, SaveScriptCommand{id}, EditorDiagnosticCode::WorkspaceBusy);
+        auto saved = host.finish(shell);
+        assert(saved.projectIoTaskStatus == ProjectIoStatus::Succeeded && saved.scriptDirty);
+        assert(saved.scriptText == "// newer local edit\n" && saved.scriptSaveReceipt.published);
+        assert(saved.scriptSaveReceipt.outcome.commitState == FileCommitState::Committed);
+        const auto encoded = std::string_view("\xef\xbb\xbf"
+                                              "// save first\r\n");
+        const auto written = core::readBinaryFile(diskPath, fileBytes);
+        assert(written.success
+            && std::string_view(
+                   reinterpret_cast<const char*>(written.bytes.data()), written.bytes.size())
+                == encoded);
+        Host::completed(shell, SaveScriptCommand{id});
+        saved = host.finish(shell);
+        assert(saved.projectIoTaskStatus == ProjectIoStatus::Succeeded && !saved.scriptDirty);
+        const auto savedTask = saved.scriptSaveReceipt.taskId;
+        NavigateProjectSourceCommand refresh;
+        refresh.intent = ProjectBrowserModel::SourceNavigation::Refresh;
+        Host::completed(shell, refresh);
+        assert(host.finish(shell).scriptSaveReceipt.taskId == savedTask);
+
+        Host::completed(shell, ReplaceScriptTextCommand{id, "// conflicting\n"});
+        Host::completed(shell, SaveScriptCommand{id});
+        host.workspace.write("workspace/scripts/gameplay.arp", "// external\r\n");
+        saved = host.finish(shell);
+        assert(saved.projectIoTaskStatus == ProjectIoStatus::Failed && saved.scriptDirty);
+        assert(saved.scriptSaveReceipt.outcome.status == FileIoStatus::VersionMismatch
+            && saved.scriptSaveReceipt.outcome.commitState == FileCommitState::NotCommitted);
+        Host::completed(shell, ReloadScriptCommand{id, true});
+        assert(!host.finish(shell).scriptDirty);
+
+        Host::completed(shell, ReplaceScriptTextCommand{id, "// cancelled after commit\n"});
+        auto task = Host::completed(shell, SaveScriptCommand{id});
+        shell.pollTasks();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+        while (!host.queue.pending() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        assert(host.queue.pending() == 1);
+        Host::completed(shell, CancelProjectIoCommand{task.snapshot.projectIoTaskId});
+        assert(Host::state(shell).projectIoTaskStatus == ProjectIoStatus::Pending);
+        saved = host.finish(shell);
+        assert(saved.projectIoTaskStatus == ProjectIoStatus::Cancelled && saved.scriptDirty);
+        assert(saved.scriptSaveReceipt.outcome.commitState == FileCommitState::Committed
+            && !saved.scriptSaveReceipt.published && saved.scriptSaveReceipt.cancellationRequested);
+        assert(core::readTextFile(diskPath).text == "// cancelled after commit\r\n");
+
+        task = Host::completed(shell, SaveScriptCommand{id});
+        Host::completed(shell, CloseScriptCommand{id, true});
+        saved = host.finish(shell);
+        assert(saved.projectIoTaskStatus == ProjectIoStatus::Cancelled && !saved.hasActiveDocument);
+        assert(!saved.scriptSaveReceipt.submitted
+            && saved.scriptSaveReceipt.outcome.commitState == FileCommitState::NotCommitted);
+        assert(core::readTextFile(diskPath).text == "// cancelled after commit\r\n");
+        Host::completed(shell, OpenScriptCommand{"scripts/gameplay.arp"});
+        const auto reopened = host.finish(shell);
+        assert(reopened.activeDocumentId != id);
+        const auto before = core::readBinaryFile(diskPath, fileBytes);
+        auto quota = core::makeShared<core::CpuMemoryQuota>(1);
+        {
+            core::CpuMemoryQuotaScope failure(quota);
+            const auto refused = shell.submitCommand(SaveScriptCommand{reopened.activeDocumentId});
+            assert(refused.status != EditorResponseStatus::Completed);
+        }
+        assert(core::readBinaryFile(diskPath, fileBytes).bytes == before.bytes);
+        assert(Host::state(shell).projectIoTaskStatus != ProjectIoStatus::Pending
+            && quota->liveBytes() == 0);
+        Host::completed(
+            shell, ReplaceScriptTextCommand{reopened.activeDocumentId, "// abandoned owner\n"});
+        Host::completed(shell, SaveScriptCommand{reopened.activeDocumentId});
+        shell.pollTasks(); // Destruction abandons an accepted save's publication.
+    }
+    host.mounts.shutdown();
+    while (host.queue.pending())
+        host.queue.dispatch(8);
+    assert(host.mounts.telemetry().inFlight == 0 && host.mounts.telemetry().reservedReadBytes == 0);
 }
 #endif
 
@@ -727,6 +1094,32 @@ void remote()
 
 int main(int argc, char** argv)
 {
+    const bool saveContracts = argc == 2 && std::string_view(argv[1]) == "--source-save-contracts";
+    const bool saveSmoke = argc == 2 && std::string_view(argv[1]) == "--source-save-smoke";
+    if (saveContracts || saveSmoke) {
+        const auto run = [] {
+            unknownSave();
+            memorySourceSaveCycle();
+#if defined(_WIN32)
+            sourceSaveCycle();
+#endif
+        };
+        run();
+        const auto before = core::defaultCpuAllocator().stats();
+        for (unsigned i = 0; i < (saveSmoke ? 20u : 1u); ++i)
+            run();
+        const auto after = core::defaultCpuAllocator().stats();
+        std::printf("Shell source save %u cycles: core bytes %llu -> %llu; live %llu -> %llu\n",
+            saveSmoke ? 20u : 1u,
+            (unsigned long long)before.liveBytes,
+            (unsigned long long)after.liveBytes,
+            (unsigned long long)(before.allocationCount - before.deallocationCount),
+            (unsigned long long)(after.allocationCount - after.deallocationCount));
+        assert(before.liveBytes == after.liveBytes);
+        assert(before.allocationCount - before.deallocationCount
+            == after.allocationCount - after.deallocationCount);
+        return 0;
+    }
     const bool scriptHttp = argc == 3 && std::string_view(argv[1]) == "--script-http";
     const bool scriptSmoke = argc == 2 && std::string_view(argv[1]) == "--script-input-smoke";
     if (scriptHttp || scriptSmoke) {
@@ -768,6 +1161,7 @@ int main(int argc, char** argv)
     assert(argc == 1 || smoke || native);
     if (!smoke && !native) {
         lifecycle(false);
+        projectEntrySourceSave();
         negatives();
         scriptDocuments();
         nativeEncoding();
@@ -775,6 +1169,10 @@ int main(int argc, char** argv)
         nativeSourceReload();
 #endif
         scriptInputCycle(memory());
+        unknownSave();
+#if defined(_WIN32)
+        sourceSaveCycle();
+#endif
         remote();
     } else {
         for (unsigned i = 0; i < 20; ++i)

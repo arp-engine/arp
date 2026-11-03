@@ -1,6 +1,6 @@
-#include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
 #include "core/io/staged_directory.h"
+#include "editor/io/editor_cold_host_read.h"
 #include "editor/project/project_scene_authoring.h"
 #include "editor/workspace/editor_scene_file_format.h"
 #include "editor/workspace/editor_scene_service_session.h"
@@ -45,7 +45,7 @@ void EditorShell::appendProjectSnapshot(EditorStateSnapshot& snapshot) const
         scenePersistenceTasks_.begin(), scenePersistenceTasks_.end(), [](const auto& task) {
             return task.status == ScenePersistenceTaskStatus::Pending;
         });
-    snapshot.projectSavePending = bool(projectSaveRequest_);
+    snapshot.projectSavePending = projectSettingsSavePending();
     snapshot.sceneExportPending = sceneExport_.pending();
     snapshot.projectRoot = core::FilePath::utf8(projectRoot());
     snapshot.projectDiagnostic = projectDiagnostic_;
@@ -57,6 +57,19 @@ void EditorShell::appendProjectSnapshot(EditorStateSnapshot& snapshot) const
     snapshot.projectIoTaskStatus = projectIo_ ? projectIo_->status() : ProjectIoStatus::Unknown;
     if (projectIo_)
         snapshot.projectIoDiagnostic = projectIo_->diagnostic();
+    snapshot.scriptSaveReceipt = lastScriptSave_;
+    snapshot.sceneSaveReceipt = lastSceneSave_;
+    snapshot.projectSaveReceipt = lastProjectSave_;
+    snapshot.sourceReceiptTaskId = sourceReceiptTaskId_;
+    snapshot.sourceReceiptTaskStatus = sourceReceiptTaskStatus_;
+    snapshot.sourceReceiptOperation = sourceReceiptOperation_;
+    snapshot.sourceReceiptIdentity = sourceReceiptIdentity_;
+    snapshot.sourceReceiptSubmitted = sourceReceiptSubmitted_;
+    snapshot.sourceReceiptResult = sourceReceiptResult_;
+    if (projectIoPending() && projectIo_->savingProject())
+        snapshot.projectSaveReceipt = projectIo_->projectSaveReceipt(projectIoTaskId_);
+    if (projectIoPending() && projectIo_->savingScript())
+        snapshot.scriptSaveReceipt = projectIo_->scriptSaveReceipt(projectIoTaskId_);
     if (projectManifest_) {
         snapshot.projectId = projectManifest_->id;
         snapshot.projectName = projectManifest_->name;
@@ -99,6 +112,8 @@ EditorCommandOutcome EditorShell::requestEditorExit(bool discardChanges)
     exitRequested_ = true;
     if (projectIoPending())
         projectIo_->cancel();
+    if (sourceReceiptPending())
+        sourceReceiptTask_->cancel();
     return {true, true, EditorDiagnosticCode::None};
 }
 
@@ -157,6 +172,8 @@ bool EditorShell::publishProject(EditorProjectResources&& resources, ProjectBrow
     ++resourceRevision_;
     projectManifest_ = std::move(manifest);
     projectManifestDirty_ = false;
+    if (lastProjectSave_.terminal)
+        lastProjectSave_.baselineRefreshed = true;
     projectDiagnostic_.clear();
     projectBrowser_ = std::move(browser);
     sceneAuthoringVersion_ = EditorSceneAuthoringCodec::contractVersion;
@@ -164,6 +181,8 @@ bool EditorShell::publishProject(EditorProjectResources&& resources, ProjectBrow
     activeScenePath_.clear();
     savedSceneFileTarget_.clear();
     savedSceneFileBytes_.clear();
+    savedSceneSourceScope_.reset();
+    sourceSceneSaveUnknown_ = false;
     ++sceneDocumentEpoch_;
     selectedFilePath_.clear();
     lastClickedScriptPath_.clear();
@@ -322,6 +341,8 @@ EditorCommandOutcome EditorShell::setProjectSettings(const SetProjectSettingsCom
 
 EditorCommandOutcome EditorShell::saveProject()
 {
+    if (projectBrowser_.sourceSnapshot())
+        return saveSourceProject();
     if (!projectManifest_)
         return {false, false, EditorDiagnosticCode::ProjectOperationFailed};
     if (projectSaveRequest_ || terrainBuild_.pending() || sceneExport_.pending())
@@ -340,7 +361,8 @@ EditorCommandOutcome EditorShell::saveProject()
         projectDiagnostic_ = diagnostic.code;
         return {false, false, EditorDiagnosticCode::ProjectOperationFailed};
     }
-    const auto disk = core::readTextFile(path, EditorProjectResources::maxManifestBytes);
+    const auto disk =
+        EditorColdHostRead::readTextBytes(path, EditorProjectResources::maxManifestBytes);
     if (!disk.success || disk.text != projectResources_.manifestSnapshot()) {
         projectDiagnostic_ = "EDITOR-PROJECT-MANIFEST-EXTERNALLY-CHANGED";
         return {false, false, EditorDiagnosticCode::ProjectOperationFailed};

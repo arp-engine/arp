@@ -1,0 +1,23 @@
+format: ArpRuntimeResource
+version: 1
+resourceId: c8591a23-0f99-4070-a4d0-d79ab87379eb
+resourceType: PrefabRuntimePayloadResource
+alias: prefab/runtime/runtime-payload
+displayName: prefab/runtime/runtime-payload
+status: Prototype Complete
+contentHash: 3507094486
+dependencies: []
+payload:
+  fields:
+    blobByteSize: 1119
+    blobHash: 929153580
+    blobPath: "blobs/prefab-runtime.arpa.bin"
+    defaultClipName: "idle"
+    defaultStateName: "idle"
+    imageCount: 0
+    materialCount: 1
+    name: "runtime"
+    stateBindingCount: 2
+    textureCount: 0
+  type: "PrefabRuntimePayloadResource"
+  

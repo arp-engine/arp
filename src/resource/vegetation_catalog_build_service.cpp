@@ -6,6 +6,7 @@
 #include "core/io/filesystem_path.h"
 #include "core/io/staged_directory.h"
 #include "resource/asset_package_closure.h"
+#include "resource/resource_source_io.h"
 #include "resource/vegetation_catalog_layout.h"
 #include "resource/vegetation_template_geometry_builder.h"
 
@@ -24,6 +25,61 @@ std::size_t positive(const Yaml::Node& node, const char* field)
     const auto value = Yaml::uint64(Yaml::required(node, field));
     require(value && value <= SIZE_MAX, "CATALOG-AUTHORING-BUDGET");
     return static_cast<std::size_t>(value);
+}
+
+Yaml::Node authoringDocument(std::string_view yaml)
+{
+    require(yaml.size() <= VegetationCatalogBuildService::maxAuthoringBytes,
+        "CATALOG-AUTHORING-METADATA-BUDGET");
+    const auto text =
+        decodeResourceText({reinterpret_cast<const std::uint8_t*>(yaml.data()), yaml.size()},
+            VegetationCatalogBuildService::maxAuthoringBytes);
+    require(text.success, "CATALOG-AUTHORING-TEXT");
+    const auto root = Yaml::parseSingleDocument(text.text);
+    Yaml::onlyKeys(root,
+        {"type",
+            "contractVersion",
+            "resourceId",
+            "alias",
+            "inputContract",
+            "maxSourceBytes",
+            "maxTotalSourceBytes",
+            "maxImportBytes",
+            "maxDecodedBytes",
+            "maxTemplates",
+            "maxVertices",
+            "maxIndices",
+            "maxPrimitives",
+            "maxJsonDepth",
+            "maxJsonValues",
+            "dependencyPackage",
+            "packageBudget",
+            "assets"});
+    require(Yaml::text(root, "type") == "VegetationCatalogAuthoring"
+            && Yaml::text(root, "contractVersion") == "vegetation.catalog.authoring/v1"
+            && Yaml::text(root, "inputContract") == "static-glb-geometry/v1",
+        "CATALOG-AUTHORING-CONTRACT");
+    return root;
+}
+
+std::filesystem::path sourceRoot(const VegetationCatalogSourceDesc& source)
+{
+    require(!core::Utf8Decoder::validate(source.sourceRoot)
+            && source.sourceRoot.find('\0') == core::pmr::String::npos,
+        "CATALOG-AUTHORING-SOURCE-ROOT");
+    const auto root = std::filesystem::u8path(source.sourceRoot.begin(), source.sourceRoot.end());
+    std::filesystem::path probe;
+    require(resolveResourceSourcePath(root, "source", source.origin, probe),
+        "CATALOG-AUTHORING-SOURCE-ROOT");
+    return root;
+}
+
+std::filesystem::path logicalSource(
+    const std::filesystem::path& root, core::StringView relative, ResourceFileOrigin origin)
+{
+    std::filesystem::path path;
+    require(resolveResourceSourcePath(root, relative, origin, path), "CATALOG-AUTHORING-PATH");
+    return path;
 }
 
 AssetPackageClosureBudget packageBudget(const Yaml::Node& root)
@@ -85,34 +141,90 @@ InternalAssetPackageEntry catalogEntry(const ResourceReference& reference)
 VegetationCatalogPrepareResult VegetationCatalogBuildService::prepare(
     std::string_view yaml, const std::filesystem::path& sourceRoot) const
 {
+    return prepareImpl(yaml, sourceRoot, nullptr, nullptr);
+}
+
+bool VegetationCatalogBuildService::collectSourceReadIntents(std::string_view yaml,
+    const VegetationCatalogSourceDesc& source,
+    core::pmr::Vector<ResourceFileReadIntent>& reads,
+    core::pmr::String& diagnostic) const
+{
+    try {
+        const auto base = sourceRoot(source);
+        const auto root = authoringDocument(yaml);
+        const auto sourceLimit = positive(root, "maxSourceBytes");
+        const auto totalLimit = positive(root, "maxTotalSourceBytes");
+        const auto templateLimit = positive(root, "maxTemplates");
+        const auto& entries = Yaml::sequence(root, "assets");
+        require(sourceLimit <= UINT32_MAX && totalLimit != SIZE_MAX
+                && templateLimit <= VegetationCatalogCookedCodec::maxTemplates && !entries.empty()
+                && entries.size() <= templateLimit,
+            "CATALOG-AUTHORING-BUDGET");
+        const auto importLimit = positive(root, "maxImportBytes");
+        require(importLimit != SIZE_MAX, "CATALOG-AUTHORING-BUDGET");
+        auto quota = core::makeShared<core::CpuMemoryQuota>(importLimit);
+        core::CpuMemoryQuotaScope scope(quota);
+        core::pmr::Vector<ResourceFileReadIntent> candidate;
+        for (const auto& entry : entries) {
+            const auto path = core::FilePath::utf8(
+                logicalSource(base, Yaml::text(entry, "source"), source.origin));
+            // Multiple templates may deliberately bind the same source file.
+            const auto duplicate =
+                std::find_if(candidate.begin(), candidate.end(), [&](const auto& read) {
+                    return read.path == path;
+                });
+            if (duplicate == candidate.end()
+                && !appendResourceReadIntent(
+                    path, std::min(sourceLimit, totalLimit), candidate, diagnostic, source.origin))
+                return false;
+        }
+        reads = std::move(candidate);
+        diagnostic.clear();
+        return true;
+    } catch (const core::YamlContractError& error) {
+        diagnostic = error.diagnostic;
+    } catch (const std::bad_alloc&) {
+        diagnostic = "CATALOG-AUTHORING-IMPORT-BUDGET";
+    } catch (...) {
+        diagnostic = "CATALOG-AUTHORING-INVALID";
+    }
+    return false;
+}
+
+VegetationCatalogPrepareResult VegetationCatalogBuildService::prepareFromSources(
+    std::string_view yaml,
+    const VegetationCatalogSourceDesc& source,
+    const ResourceLoadContext& context) const
+{
+    try {
+        const auto root = sourceRoot(source);
+        auto inputs = context;
+        inputs.requirePreloadedSources = true;
+        return prepareImpl(yaml, root, &inputs, &source.origin);
+    } catch (const core::YamlContractError& error) {
+        VegetationCatalogPrepareResult result;
+        result.diagnostics = error.diagnostic;
+        return result;
+    } catch (const std::bad_alloc&) {
+        VegetationCatalogPrepareResult result;
+        result.diagnostics = "CATALOG-AUTHORING-IMPORT-BUDGET";
+        return result;
+    } catch (...) {
+        VegetationCatalogPrepareResult result;
+        result.diagnostics = "CATALOG-AUTHORING-INVALID";
+        return result;
+    }
+}
+
+VegetationCatalogPrepareResult VegetationCatalogBuildService::prepareImpl(std::string_view yaml,
+    const std::filesystem::path& sourceRoot,
+    const ResourceLoadContext* context,
+    const ResourceFileOrigin* origin) const
+{
     VegetationCatalogPrepareResult result;
     std::shared_ptr<core::CpuMemoryQuota> quota;
     try {
-        require(yaml.size() <= maxAuthoringBytes, "CATALOG-AUTHORING-METADATA-BUDGET");
-        const auto root = Yaml::parseSingleDocument(yaml);
-        Yaml::onlyKeys(root,
-            {"type",
-                "contractVersion",
-                "resourceId",
-                "alias",
-                "inputContract",
-                "maxSourceBytes",
-                "maxTotalSourceBytes",
-                "maxImportBytes",
-                "maxDecodedBytes",
-                "maxTemplates",
-                "maxVertices",
-                "maxIndices",
-                "maxPrimitives",
-                "maxJsonDepth",
-                "maxJsonValues",
-                "dependencyPackage",
-                "packageBudget",
-                "assets"});
-        require(Yaml::text(root, "type") == "VegetationCatalogAuthoring"
-                && Yaml::text(root, "contractVersion") == "vegetation.catalog.authoring/v1"
-                && Yaml::text(root, "inputContract") == "static-glb-geometry/v1",
-            "CATALOG-AUTHORING-CONTRACT");
+        const auto root = authoringDocument(yaml);
         result.reference.id = Yaml::text(root, "resourceId");
         result.reference.type = "VegetationCatalogResource";
         result.reference.status = "Contract Complete";
@@ -131,6 +243,8 @@ VegetationCatalogPrepareResult VegetationCatalogBuildService::prepare(
         const auto totalLimit = positive(root, "maxTotalSourceBytes");
         const auto templateLimit = positive(root, "maxTemplates");
         const auto importLimit = positive(root, "maxImportBytes");
+        require(!context || (totalLimit != SIZE_MAX && importLimit != SIZE_MAX),
+            "CATALOG-AUTHORING-BUDGET");
         require(sourceLimit <= UINT32_MAX
                 && templateLimit <= VegetationCatalogCookedCodec::maxTemplates,
             "CATALOG-AUTHORING-BUDGET");
@@ -148,7 +262,7 @@ VegetationCatalogPrepareResult VegetationCatalogBuildService::prepare(
         const auto& entries = Yaml::sequence(root, "assets");
         require(!entries.empty() && entries.size() <= templateLimit,
             "CATALOG-AUTHORING-TEMPLATE-BUDGET");
-        const auto base = std::filesystem::canonical(sourceRoot);
+        const auto base = context ? sourceRoot : std::filesystem::canonical(sourceRoot);
         quota = core::makeShared<core::CpuMemoryQuota>(importLimit);
         core::CpuMemoryQuotaScope scope(quota);
         auto data = core::makeShared<VegetationCatalogResourceData>();
@@ -200,19 +314,35 @@ VegetationCatalogPrepareResult VegetationCatalogBuildService::prepare(
             require(detail::CatalogFamilyContract::increment(
                         data->templateConfig, entry.templateCategory),
                 "CATALOG-AUTHORING-LAYOUT");
-            const auto path = resolve(base, entry.source);
-            std::error_code error;
-            require(
-                std::filesystem::is_regular_file(path, error) && !error, "CATALOG-AUTHORING-PATH");
-            const auto size = std::filesystem::file_size(path, error);
-            require(!error && size <= sourceLimit && result.sourceBytes <= totalLimit
+            const auto path =
+                context ? logicalSource(base, entry.source, *origin) : resolve(base, entry.source);
+            core::BinaryFileReadResult acquired;
+            std::uint64_t size = 0;
+            if (context) {
+                acquired = readResourceSource(
+                    core::FilePath::utf8(path), *context, sourceLimit, false, origin);
+                if (!acquired.success) {
+                    result.diagnostics = acquired.diagnostics;
+                    return result;
+                }
+                size = acquired.bytes.size();
+            } else {
+                std::error_code error;
+                require(std::filesystem::is_regular_file(path, error) && !error,
+                    "CATALOG-AUTHORING-PATH");
+                size = std::filesystem::file_size(path, error);
+                require(!error, "CATALOG-AUTHORING-SOURCE-BUDGET");
+            }
+            require(size <= sourceLimit && result.sourceBytes <= totalLimit
                     && size <= totalLimit - result.sourceBytes,
                 "CATALOG-AUTHORING-SOURCE-BUDGET");
             result.sourceBytes += size;
             auto sourceLimits = limits;
             sourceLimits.maxSourceBytes = size;
-            auto imported =
-                assets::importStaticMeshWithSourceIdentityFromGlbFile(path, sourceLimits);
+            auto imported = context
+                ? assets::importStaticMeshWithSourceIdentityFromGlbBytes(
+                      {acquired.bytes.data(), acquired.bytes.size()}, sourceLimits)
+                : assets::importStaticMeshWithSourceIdentityFromGlbFile(path, sourceLimits);
             if (!imported.geometry.success) {
                 result.diagnostics = imported.geometry.diagnostics;
                 return result;

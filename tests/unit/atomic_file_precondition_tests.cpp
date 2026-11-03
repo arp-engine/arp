@@ -2,6 +2,7 @@
 #include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
 #include "core/io/versioned_yaml_store.h"
+#include "tests/fixtures/atomic_file_completion.h"
 
 #include <cassert>
 #include <chrono>
@@ -14,6 +15,7 @@ namespace {
 using namespace arp::core;
 using namespace arp::core::io;
 using Condition = FileReplacePrecondition;
+using arp::tests::atomic_file::finish;
 
 pmr::Vector<std::uint8_t> bytes(std::string_view text)
 {
@@ -59,20 +61,6 @@ public:
 
     std::filesystem::path root;
 };
-
-AtomicFileResult finish(AtomicFileService& service, PoolHandle handle)
-{
-    assert(handle);
-    AtomicFileResult result;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (service.take(handle, result))
-            return result;
-        std::this_thread::yield();
-    }
-    assert(false && "file completion deadline");
-    return result;
-}
 
 void expectFailure(const AtomicFileResult& result, std::string_view diagnostic)
 {

@@ -1,0 +1,93 @@
+type: EditorMigrationOriginalBytes
+contractVersion: 1
+toolSha256:
+  project: f43226b0f5a89b87bdcf42129c2b3b3cd87e0043943b2d4648d9908a0e06d0b4
+  scene: d1c67d147676a9754f138ed6a6f4b9d7fc6680b63fc8ec454328b858f1748052
+cases:
+- name: project
+  kind: project
+  source: 'format: ArpEditorProject
+
+    version: 1
+
+    assetPackages: [Assets/base.arpkg]
+
+    '
+  extra: []
+  stdout: 'PROJECT-MIGRATION-CONVERTED: source preserved; output is a conversion bundle,
+    not a copied game project. Validate and adopt its files under the original project
+    root.
+
+    '
+  sourceSha256: 4f97408e5826f0118599ddadcf454397fef45baeeec79c981a3e6da7dd816f88
+  outputs:
+    project.arp.yaml: 0f066a56b0ebc0300ab773f713648a24a937a4ba785b47c6b3802d49609a9473
+- name: project-metadata
+  kind: project
+  source: 'format: ArpEditorProject
+
+    version: 1
+
+    assetPackages: [Assets/base.arpkg]
+
+    terrainPreviews: [terrain/preview.yaml]
+
+    '
+  extra:
+  - --editor-metadata
+  - .arp/editor-project.yaml
+  stdout: 'PROJECT-MIGRATION-CONVERTED: source preserved; output is a conversion bundle,
+    not a copied game project. Validate and adopt its files under the original project
+    root.
+
+    '
+  sourceSha256: f23a633213144cd0a06b320154173930402ee4d5ff804137bbd4e8dcc5903cfa
+  outputs:
+    project.arp.yaml: 3fdbc5401cf4ff26646ff9f7d6a9b93b9c1fa008d4d7bcee3a096d4082e01782
+    .arp/editor-project.yaml: 667943c824d10fcd6fa10dc24ed25323fa9cd09612c8ff39e0eab95bd27dded3
+- name: scene-bound
+  kind: scene
+  source: 'type: arp.editor-scene
+
+    contractVersion: 2
+
+    name: 原场景
+
+    objects: []
+
+    selected: 0
+
+    '
+  extra:
+  - --runtime-scene
+  - a75b3294-d283-4b12-92d8-7d522b14eae2
+  stdout: 'Editor scene v2 -> v3 migrated; resource readiness is checked on project
+    load.
+
+    '
+  sourceSha256: 0297c87ad3fb44059350bba2f0352fb68279e981557ff2bc371c9837e44bbb74
+  outputs:
+    scene.arp.yaml: deae3754d939ce28bdf3e800183ec03f61ce771e1e5d97426b5dfb3992455ed1
+- name: scene-unbound
+  kind: scene
+  source: 'type: arp.editor-scene
+
+    contractVersion: 2
+
+    name: 原场景
+
+    objects: []
+
+    selected: 0
+
+    '
+  extra:
+  - --runtime-scene
+  - none
+  stdout: 'Editor scene v2 -> v3 migrated; resource readiness is checked on project
+    load.
+
+    '
+  sourceSha256: 0297c87ad3fb44059350bba2f0352fb68279e981557ff2bc371c9837e44bbb74
+  outputs:
+    scene.arp.yaml: bc07af3071679fd6006f5164f53a14c8092f6250e6320a3514c5029153e0069e

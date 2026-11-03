@@ -27,6 +27,22 @@ bool hasExactGraphicsEntryPoints(const shader::ShaderReflection& reflection)
 
 } // namespace
 
+bool hydrateEditorSceneViewportShaderPackage(rhi::ShaderPackageDesc& package,
+    const EditorSceneViewportShaderArtifacts& artifacts,
+    core::pmr::String& diagnostic)
+{
+    package.generatedReflectionHydrated = false;
+    const auto& input = artifacts.preparation;
+    if (input.prepared || !input.publication.empty() || input.budget.source) {
+        if (!input.prepared || input.publication.empty() || input.budget.source) {
+            diagnostic = "ARP-EDITOR-VIEWPORT-SHADER-PREPARATION-INCOMPLETE";
+            return false;
+        }
+        return renderer::hydrateShaderPackageReflectionFromArtifact(package, input, diagnostic);
+    }
+    return renderer::hydrateShaderPackageReflectionFromArtifact(package, diagnostic);
+}
+
 EditorSceneViewportShaderPackageResult loadEditorSceneViewportShaderPackage(
     const EditorSceneViewportShaderArtifacts& artifacts,
     const rhi::TextureFormat colorFormat,
@@ -58,7 +74,7 @@ EditorSceneViewportShaderPackageResult loadEditorSceneViewportShaderPackage(
     package.entrypoints.push_back(
         {package.slangModulePath, "fragmentMain", rhi::ShaderStage::Fragment});
     core::pmr::String diagnostic;
-    if (!renderer::hydrateShaderPackageReflectionFromArtifact(package, diagnostic)) {
+    if (!hydrateEditorSceneViewportShaderPackage(package, artifacts, diagnostic)) {
         result.diagnostic = diagnostic == "RHI-GENERATED-PACKAGE-ENTRY-ABI"
             ? EditorSceneViewportShaderPackageDiagnostic::EntryPointMismatch
             : EditorSceneViewportShaderPackageDiagnostic::ArtifactIdentityInvalid;

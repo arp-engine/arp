@@ -28,6 +28,74 @@ public:
 
 int main()
 {
+    {
+        ByteReadDesc desc{4096, 1024, 1000, 5, 0};
+        ByteReadRequest request;
+        request.url = "http://127.0.0.1:8094/workspace/v1";
+        request.maxBodyBytes = 4096;
+        assert(ByteReadTransport::validate(desc, request) == ByteReadStatus::Success);
+        request.bearerToken = "read-01234567890123456789012345678901";
+        assert(ByteReadTransport::validate(desc, request) == ByteReadStatus::InvalidRequest);
+        request.contractVersion = 2;
+        request.replayProtected = true;
+        request.operation = ByteReadRequest::Operation::BearerJsonPost;
+        request.credentialOrigin = "http://127.0.0.1:8094";
+        request.requestBody = "{}";
+        request.maxRequestBytes = 2;
+        assert(ByteReadTransport::validate(desc, request) == ByteReadStatus::Success);
+        const auto valid = request;
+        for (unsigned failure = 0; failure < 13; ++failure) {
+            request = valid;
+            switch (failure) {
+            case 0:
+                request.contractVersion = 3;
+                break;
+            case 1:
+                request.contractVersion = 1;
+                break;
+            case 2:
+                request.range = "bytes=0-1";
+                break;
+            case 3:
+                request.credentialOrigin = "http://127.0.0.1:8093";
+                break;
+            case 4:
+                request.credentialOrigin += '/';
+                break;
+            case 5:
+                request.bearerToken += '\n';
+                break;
+            case 6:
+                request.bearerToken.clear();
+                break;
+            case 7:
+                request.maxRequestBytes = 1;
+                break;
+            case 8:
+                request.requestBody.clear();
+                break;
+            case 9:
+                request.operation = ByteReadRequest::Operation::AnonymousGet;
+                break;
+            case 10:
+                request.url = "http://name@127.0.0.1:8094/workspace/v1";
+                break;
+            case 11:
+                request.credentialOrigin += "?x";
+                break;
+            case 12:
+                request.replayProtected = false;
+                break;
+            }
+            assert(ByteReadTransport::validate(desc, request) == ByteReadStatus::InvalidRequest);
+        }
+        request = valid;
+        request.url = "https://Example.com:443/workspace/v1";
+        request.credentialOrigin = "https://example.com";
+        assert(ByteReadTransport::validate(desc, request) == ByteReadStatus::Success);
+        request.credentialOrigin += ":443";
+        assert(ByteReadTransport::validate(desc, request) == ByteReadStatus::InvalidRequest);
+    }
 #if !defined(__EMSCRIPTEN__)
     ByteReadDesc boundedDns;
     boundedDns.maxDnsAddresses = 8;

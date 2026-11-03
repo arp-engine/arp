@@ -1,5 +1,5 @@
 #pragma once
-#include "core/io/versioned_yaml_store.h"
+#include "core/encoding/yaml_contract.h"
 
 namespace arp::survivors {
 struct Record {
@@ -30,6 +30,36 @@ struct RecordSchema {
         using Y = core::YamlContract;
         const auto n = Y::Node::deserialize(
             core::pmr::String(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+        return decodeNode(n);
+    }
+
+    // Validate before publishing a loaded or replacement record. The same
+    // schema remains usable by the existing offline VersionedYamlStore tests.
+    static bool prepare(
+        const core::pmr::String& text, Record& output, core::pmr::String& diagnostic)
+    {
+        using Y = core::YamlContract;
+        try {
+            const auto n = Y::parseSingleDocument(text);
+            if (Y::text(n, "type") != type() || Y::uint32(n, "contractVersion") != version()) {
+                diagnostic = "ARP-SAVE-UNSUPPORTED-CONTRACT";
+                return false;
+            }
+            if (!validate(n, diagnostic))
+                return false;
+            output = decodeNode(n);
+            return true;
+        } catch (const std::bad_alloc&) {
+            throw;
+        } catch (...) {
+            diagnostic = "ARP-SAVE-CORRUPT-YAML";
+            return false;
+        }
+    }
+
+    static Record decodeNode(const core::YamlContract::Node& n)
+    {
+        using Y = core::YamlContract;
         return {Y::uint32(n, "bestKills"),
             Y::uint32(n, "bestSeconds"),
             Y::uint32(n, "wins"),

@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <cstring>
+#include <optional>
 
 using namespace arp::reflection;
 
@@ -225,6 +226,32 @@ private:
     }
 
     arp::core::pmr::String loadDiagnostics_{&arp::core::defaultCpuMemoryResource()};
+};
+
+// Keep an exhausted quota active through manager rollback after metadata/alias
+// mutation. Copy-based restoration would allocate here and corrupt the old epoch.
+class ExhaustedReloadResource final : public arp::resource::ResourceBase {
+public:
+    ExhaustedReloadResource()
+        : ResourceBase({text(kThemeId),
+              text("ReloadableThemeResource"),
+              text("reload/rejected-alias"),
+              text("Prototype Complete"),
+              {}}),
+          quota_(arp::core::makeShared<arp::core::CpuMemoryQuota>(1))
+    {}
+
+    arp::resource::ResourceLoadResult load(arp::resource::ResourceManager& manager,
+        const arp::resource::ResourceLoadContext& context) override
+    {
+        assert(manager.admitResourceMetadata(*this, context.policy).success);
+        scope_.emplace(quota_);
+        throw std::bad_alloc();
+    }
+
+private:
+    arp::core::SharedPtr<arp::core::CpuMemoryQuota> quota_;
+    std::optional<arp::core::CpuMemoryQuotaScope> scope_;
 };
 
 class MetadataMutatingThenFailingReloadResource final : public arp::resource::ResourceBase {
@@ -773,6 +800,45 @@ int main()
         assert(reloadResult.telemetry.invalidatedDependents[0] == text(kAtlasMetaId));
         assert(reloadResult.telemetry.invalidatedDependents[1] == text(kHudThemeBindingId));
         assert(reloadResult.telemetry.invalidatedDependents[2] == text(kDocumentId));
+    }
+
+    // Gate rejection and exceptions restore the complete record and alias map.
+    {
+        using namespace arp;
+        resource::ResourceManager manager;
+        assert(manager.loadResource(core::makeUnique<ReloadableThemeResource>(4)).success);
+        assert(manager.loadResource(core::makeUnique<ReloadableAtlasMetaResource>(1)).success);
+        const auto prior = manager.find<ReloadableThemeResource>(kThemeId);
+        const auto* record = manager.recordSnapshot(kThemeId);
+        const auto generation = prior.generation();
+
+        struct Gate {
+            unsigned calls = 0;
+        } gate;
+
+        resource::ResourceLoadContext context;
+        context.commitGate = {[](void* value) noexcept {
+                                  return ++static_cast<Gate*>(value)->calls == 1;
+                              },
+            &gate};
+        const auto rejected =
+            manager.reloadResource(core::makeUnique<ReloadableThemeResource>(8), context);
+        assert(!rejected.success && rejected.telemetry.rolledBack && gate.calls == 2);
+        assert(manager.recordSnapshot(kThemeId) == record && prior.ready()
+            && prior.generation() == generation && prior.get()->paletteSize() == 4
+            && manager.stateOf(kAtlasMetaId) == resource::ResourceState::Ready);
+        bool threw = false;
+        try {
+            manager.reloadResource(core::makeUnique<ExhaustedReloadResource>());
+        } catch (const std::bad_alloc&) {
+            threw = true;
+        }
+        assert(threw && prior.ready() && manager.recordSnapshot(kThemeId) == record
+            && manager.generationOf(kThemeId) == generation && !record->reloadInProgress);
+        assert(manager.resolveAlias("reload/theme").success
+            && !manager.resolveAlias("reload/rejected-alias").success
+            && manager.stateOf(kAtlasMetaId) == resource::ResourceState::Ready
+            && manager.retainedResourceCount() == 0);
     }
 
     return 0;

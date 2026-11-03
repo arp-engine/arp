@@ -71,12 +71,55 @@ renderer::RendererResult SceneRenderer::create(const core::pmr::String& shaderPa
     rhi::TextureFormat colorFormat,
     rhi::Extent2D extent)
 {
+    return createImpl(shaderPath, characterDirectory, nullptr, colorFormat, extent);
+}
+
+renderer::RendererResult SceneRenderer::create(const core::pmr::String& shaderPath,
+    const CharacterSources& sources,
+    rhi::TextureFormat colorFormat,
+    rhi::Extent2D extent)
+{
+    return createImpl(shaderPath, {}, &sources, colorFormat, extent);
+}
+
+renderer::RendererResult SceneRenderer::create(const NativeShaderSources& shaders,
+    const CharacterSources& sources,
+    rhi::TextureFormat colorFormat,
+    rhi::Extent2D extent)
+{
+    if (!shaders.valid())
+        return fail("ARP-QUEEN-SHADER-SOURCES-INCOMPLETE");
+    return createImpl("queen_scene.slang", {}, &sources, colorFormat, extent, &shaders);
+}
+
+renderer::RendererResult SceneRenderer::createImpl(const core::pmr::String& shaderPath,
+    const core::pmr::String& characterDirectory,
+    const CharacterSources* sources,
+    rhi::TextureFormat colorFormat,
+    rhi::Extent2D extent,
+    const NativeShaderSources* shaders)
+{
     if (pipeline_ || shaderPath.empty() || colorFormat == rhi::TextureFormat::Unknown
         || extent.width == 0 || extent.height == 0)
         return fail("ARP-QUEEN-3D-RENDERER-CONFIG");
     if (device_.backend() == rhi::Backend::Null)
         return fail("ARP-QUEEN-3D-NULL-VALIDATOR-ONLY");
-    const auto content = createContent(characterDirectory);
+    const auto preparePackage = [&](rhi::ShaderPackageDesc& output,
+                                    std::size_t index,
+                                    const core::pmr::String& label,
+                                    const core::pmr::String& path,
+                                    std::uint32_t bytes) {
+        if (shaders) {
+            renderer::ShaderPackagePreparationDesc preparation;
+            preparation.publication = NativeShaderSources::publications[index];
+            preparation.prepared = shaders->programs[index];
+            return renderer::detail::prepareGraphicsShaderPackage(
+                output, label, path, bytes, preparation);
+        }
+        output = renderer::detail::makeGraphicsShaderPackage(label, path, bytes);
+        return renderer::detail::validateGeneratedReflectionHydration(output);
+    };
+    const auto content = sources ? createContent(*sources) : createContent(characterDirectory);
     if (!content.success)
         return content;
     const auto capabilities = device_.capabilities();
@@ -104,10 +147,13 @@ renderer::RendererResult SceneRenderer::create(const core::pmr::String& shaderPa
     if (!layout_)
         return fail("ARP-QUEEN-3D-PIPELINE-LAYOUT");
 
-    shaderPackage_ = renderer::detail::makeGraphicsShaderPackage(
+    const auto preparedProgram0 = preparePackage(shaderPackage_,
+        0,
         core::pmr::String("BuildAQueen3D", &core::defaultCpuMemoryResource()),
         shaderPath,
         sizeof(core::Mat4) * 2u);
+    if (!preparedProgram0.success)
+        return preparedProgram0;
     if (!shaderPackage_.generatedReflectionHydrated
         || shaderPackage_.reflection.pushConstantByteCount != sizeof(core::Mat4) * 2u)
         return fail("ARP-QUEEN-3D-SHADER-REFLECTION");
@@ -172,8 +218,13 @@ renderer::RendererResult SceneRenderer::create(const core::pmr::String& shaderPa
     skyLayout_ = device_.createPipelineLayout(skyLayoutDesc);
     if (!skyLayout_)
         return fail("ARP-QUEEN-3D-SKY-PIPELINE-LAYOUT");
-    skyShaderPackage_ = renderer::detail::makeGraphicsShaderPackage(
-        core::pmr::String("BuildAQueenSky", &core::defaultCpuMemoryResource()), skyShaderPath, 0u);
+    const auto preparedProgram1 = preparePackage(skyShaderPackage_,
+        1,
+        core::pmr::String("BuildAQueenSky", &core::defaultCpuMemoryResource()),
+        skyShaderPath,
+        0u);
+    if (!preparedProgram1.success)
+        return preparedProgram1;
     if (!skyShaderPackage_.generatedReflectionHydrated
         || skyShaderPackage_.reflection.pushConstantByteCount != 0u
         || !skyShaderPackage_.reflection.descriptorBindings.empty())
@@ -228,10 +279,13 @@ renderer::RendererResult SceneRenderer::create(const core::pmr::String& shaderPa
     skinnedLayout_ = device_.createPipelineLayout(skinnedPipelineLayoutDesc);
     if (!skinnedLayout_)
         return fail("ARP-QUEEN-3D-SKINNED-PIPELINE-LAYOUT");
-    skinnedShaderPackage_ = renderer::detail::makeGraphicsShaderPackage(
+    const auto preparedProgram2 = preparePackage(skinnedShaderPackage_,
+        2,
         core::pmr::String("BuildAQueenSkinned", &core::defaultCpuMemoryResource()),
         skinnedShaderPath,
         160u);
+    if (!preparedProgram2.success)
+        return preparedProgram2;
     if (!skinnedShaderPackage_.generatedReflectionHydrated
         || skinnedShaderPackage_.reflection.pushConstantByteCount != 160u)
         return fail("ARP-QUEEN-3D-SKINNED-SHADER-REFLECTION");
@@ -281,10 +335,13 @@ renderer::RendererResult SceneRenderer::create(const core::pmr::String& shaderPa
     if (skinnedShadowName == core::pmr::String::npos)
         return fail("ARP-QUEEN-SKINNED-SHADOW-SHADER-PATH");
     skinnedShadowPath.replace(skinnedShadowName, 13u, "queen_skinned_shadow");
-    skinnedShadowShaderPackage_ = renderer::detail::makeGraphicsShaderPackage(
+    const auto preparedProgram3 = preparePackage(skinnedShadowShaderPackage_,
+        3,
         core::pmr::String("BuildAQueenSkinnedShadow", &core::defaultCpuMemoryResource()),
         skinnedShadowPath,
         160u);
+    if (!preparedProgram3.success)
+        return preparedProgram3;
     if (!skinnedShadowShaderPackage_.generatedReflectionHydrated
         || skinnedShadowShaderPackage_.reflection.pushConstantByteCount != 160u)
         return fail("ARP-QUEEN-SKINNED-SHADOW-REFLECTION");
@@ -330,10 +387,13 @@ renderer::RendererResult SceneRenderer::create(const core::pmr::String& shaderPa
     shadowLayout_ = device_.createPipelineLayout(shadowLayoutDesc);
     if (!shadowLayout_)
         return fail("ARP-QUEEN-SHADOW-PIPELINE-LAYOUT");
-    shadowShaderPackage_ = renderer::detail::makeGraphicsShaderPackage(
+    const auto preparedProgram4 = preparePackage(shadowShaderPackage_,
+        4,
         core::pmr::String("BuildAQueenShadow", &core::defaultCpuMemoryResource()),
         shadowShaderPath,
         64u);
+    if (!preparedProgram4.success)
+        return preparedProgram4;
     if (!shadowShaderPackage_.generatedReflectionHydrated
         || shadowShaderPackage_.reflection.pushConstantByteCount != 64u
         || !shadowShaderPackage_.reflection.descriptorBindings.empty())

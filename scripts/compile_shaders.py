@@ -32,6 +32,28 @@ SHADER_INCLUDE_DIR = os.path.join(ROOT, "shaders")
 # in sync for engine-side contract testing.
 WOCC_SHADER_DIR = os.path.join(ROOT, "shaders", "wocc")
 
+# An explicit CLI selection is inherited by selected-entry child compilations.
+# None retains the existing unmigrated helper interface; no selected IO failure
+# is allowed to retry through that interface.
+_file_inputs = None
+
+
+class ShaderFileInputScope:
+    """Offline compiler helper context; restores the caller's source on exit."""
+
+    def __init__(self, inputs):
+        self.inputs = inputs
+
+    def __enter__(self):
+        global _file_inputs
+        self.previous = _file_inputs
+        _file_inputs = self.inputs
+        return self
+
+    def __exit__(self, *_):
+        global _file_inputs
+        _file_inputs = self.previous
+
 
 # ── utility ────────────────────────────────────────────────────────────────
 
@@ -41,7 +63,22 @@ def write_utf8_no_bom(path, text):
         f.write(text)
 
 
+def read_binary(path):
+    if _file_inputs is not None:
+        return _file_inputs.read_bytes(path)
+    with open(path, "rb") as source:
+        return source.read()
+
+
+def reflection_file_inputs():
+    # Keep old imported helper signatures usable; selected production calls pass
+    # their byte source through the reflection parser boundary explicitly.
+    return {"read_bytes": read_binary} if _file_inputs is not None else {}
+
+
 def read_text(path):
+    if _file_inputs is not None:
+        return _file_inputs.read_text(path)
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
@@ -73,8 +110,7 @@ def shader_artifact_file_roles(prefix, out_dir, wgsl_diagnostic=None, metal_diag
             contract = contracts[wgsl_diagnostic]
             files[role] = {"status": "DiagnosticFailure", "contract": contract, "diagnosticId": wgsl_diagnostic}
             continue
-        with open(os.path.join(out_dir, name), "rb") as file:
-            data = file.read()
+        data = read_binary(os.path.join(out_dir, name))
         if not data:
             raise RuntimeError("SHADER-ENTRY-FILE-EMPTY")
         files[role] = {"path": name, "sha256": hashlib.sha256(data).hexdigest()}
@@ -108,8 +144,7 @@ def publish_generated_shader_artifact_set(prefix, out_dir, metadata):
             files[role] = {"status": "DiagnosticFailure", "diagnosticId": failures[role][reason],
                            "reason": reason}
         else:
-            with open(path, "rb") as source:
-                data = source.read()
+            data = read_binary(path)
             if not data:
                 raise RuntimeError("SHADER-GENERATED-FILE-EMPTY")
             files[role] = {"path": name, "sha256": hashlib.sha256(data).hexdigest()}
@@ -123,8 +158,7 @@ def publish_generated_shader_artifact_set(prefix, out_dir, metadata):
 def publish_graphics_module_artifact(prefix, out_dir, child_publications, metal_diagnostic=None):
     """Original combined bytes with explicit sealed per-stage provenance only."""
     import yaml
-    with open(os.path.join(out_dir, f"{prefix}.reflection.yaml"), encoding="utf-8") as file:
-        reflection = yaml.safe_load(file)
+    reflection = yaml.safe_load(read_text(os.path.join(out_dir, f"{prefix}.reflection.yaml")))
     entries = reflection.get("entryPoints", [])
     if len(entries) != 2 or {e.get("stage") for e in entries} != {"Vertex", "Fragment"}:
         raise RuntimeError("SHADER-MODULE-ENTRY-COVERAGE")
@@ -132,16 +166,14 @@ def publish_graphics_module_artifact(prefix, out_dir, child_publications, metal_
     for stage in ("Vertex", "Fragment"):
         item = next(e for e in entries if e["stage"] == stage)
         path = child_publications[stage]
-        with open(path, "rb") as file:
-            data = file.read()
+        data = read_binary(path)
         child = yaml.safe_load(data)
         if metal_diagnostic and (child["contractVersion"] != 5 or child["files"]["metal"] != {"status": "DiagnosticFailure", "contract": "MetalRuntimeLengthDiagnostic/1", "diagnosticId": metal_diagnostic}):
             raise RuntimeError("SHADER-MODULE-RUNTIME-LENGTH-CHILD-ROLE")
         if child["stage"] != stage or child["entry"] != item["name"]:
             raise RuntimeError("SHADER-MODULE-REFERENCE-ENTRY")
         child_source = os.path.join(os.path.dirname(path), child["files"]["source"]["path"])
-        with open(child_source, "rb") as file:
-            source = file.read()
+        source = read_binary(child_source)
         if hashlib.sha256(source).hexdigest() != reflection["sourceSha256"]:
             raise RuntimeError("SHADER-MODULE-REFERENCE-SOURCE")
         selected.append({"stage": stage, "entry": item["name"], "publication": {
@@ -158,8 +190,7 @@ def publish_single_entry_artifact(prefix, entry, out_dir, wgsl_diagnostic=None, 
     paths = {"source": f"{prefix}.slang", "spirv": f"{prefix}.spv",
              "metal": f"{prefix}.metal", "wgsl": f"{prefix}.wgsl",
              "reflection": f"{prefix}.reflection.yaml"}
-    with open(os.path.join(out_dir, paths["reflection"]), encoding="utf-8") as file:
-        reflection = yaml.safe_load(file)
+    reflection = yaml.safe_load(read_text(os.path.join(out_dir, paths["reflection"])))
     entries = reflection.get("entryPoints", [])
     if len(entries) != 1 or entries[0].get("name") != entry or entries[0].get("stage") not in ("Vertex", "Fragment", "Compute"):
         raise RuntimeError("SHADER-ENTRY-REFLECTION-AMBIGUOUS")
@@ -167,7 +198,7 @@ def publish_single_entry_artifact(prefix, entry, out_dir, wgsl_diagnostic=None, 
     if not spirv_reflect_exe:
         raise RuntimeError("SHADER-ENTRY-BUFFER-LAYOUT-REFLECT-REQUIRED")
     declaration_layouts = _bindings_codegen.reflect_buffer_declaration_layouts(
-        spirv_reflect_exe, os.path.join(out_dir, paths["spirv"]))
+        spirv_reflect_exe, os.path.join(out_dir, paths["spirv"]), **reflection_file_inputs())
     declarations = []
     scalar_fields = ("spirvId", "blockTypeId", "storageClass", "hasRuntimeArray")
     byte_fields = ("descriptorCount", "staticOccupiedExtentBytes", "runtimeArrayOffsetBytes",
@@ -520,8 +551,7 @@ def strip_spirv_debug(spirv_path, vulkan_sdk):
     Vulkan validation layers) to 0 (Unknown).  spirv-opt --strip-debug fails
     on the unrecognized value, so we do a direct binary patch instead."""
     import struct
-    with open(spirv_path, "rb") as f:
-        data = bytearray(f.read())
+    data = bytearray(read_binary(spirv_path))
     if len(data) < 20:
         return
     # SPIR-V header is 5 words (20 bytes). Instructions start at word 5.
@@ -573,9 +603,9 @@ def selected_entry_has_push_constants(spirv_path, spirv_reflect_exe):
     Reflection failure or disagreement is an error, not an inactive result.
     """
     from spirv_layout import SpirvLayoutFacts
-    facts = SpirvLayoutFacts(spirv_path)
+    facts = SpirvLayoutFacts(spirv_path, data=read_binary(spirv_path))
     variables = [v for v in facts.variables if len(v) >= 3 and v[2] == 9]  # PushConstant
-    block = _bindings_codegen.reflect_push_constant_block(spirv_reflect_exe, spirv_path)
+    block = _bindings_codegen.reflect_push_constant_block(spirv_reflect_exe, spirv_path, **reflection_file_inputs())
     if len(variables) > 1 or bool(variables) != (block is not None):
         raise RuntimeError("SHADER-ENTRY-PUSH-REFLECTION-MISMATCH")
     return bool(variables)
@@ -585,7 +615,7 @@ def selected_entry_push_stage(spirv_path, spirv_reflect_exe):
     if not selected_entry_has_push_constants(spirv_path, spirv_reflect_exe):
         return None
     from spirv_layout import SpirvLayoutFacts
-    entries = [ops for _, op, ops in SpirvLayoutFacts(spirv_path).instructions if op == 15]
+    entries = [ops for _, op, ops in SpirvLayoutFacts(spirv_path, data=read_binary(spirv_path)).instructions if op == 15]
     stages = {0: "VS", 4: "FS", 5: "CS"}  # OpEntryPoint execution model
     if len(entries) != 1 or not entries[0] or entries[0][0] not in stages:
         raise RuntimeError("SHADER-ENTRY-PUSH-STAGE")
@@ -3300,6 +3330,9 @@ SHADER_SOURCES = [
     ("CloudCompactComposite", "cloud_compact_composite", "renderer/cloud_compact_composite.slang", ["vertexMain", "fragmentMain"]),
     ("SceneOpaque", "scene_opaque", "renderer/scene_opaque.slang", ["vertexMain", "fragmentMain"]),
     ("SkinnedLayerSurface", "skinned_layer_surface", "renderer/skinned_layer_surface.slang", ["vertexMain", "fragmentMain"]),
+    ("InstancedLayerSurface", "instanced_layer_surface", "renderer/instanced_layer_surface.slang", ["vertexMain", "fragmentMain"]),
+    ("VertexColoredSurface", "vertex_colored_surface", "renderer/vertex_colored_surface.slang", ["vertexMain", "fragmentMain"]),
+    ("DisplayTransfer", "display_transfer", "renderer/display_transfer.slang", ["vertexMain", "fragmentMain"]),
     ("ScenePbr", "scene_pbr", "renderer/scene_pbr.slang", ["vertexMain", "fragmentMain"]),
     ("CloudComposite", "cloud_composite", "renderer/cloud_composite.slang", ["vertexMain", "fragmentMain"]),
     ("CloudDemoPresent", "cloud_demo_present", "samples/fog_demo_present.slang", ["vertexMain", "fragmentMain"]),
@@ -3400,6 +3433,7 @@ SHADER_SHARED_SOURCES = (
     "common/volumetric_fog.slang",
     "core/noise3.slang",
     "core/box_geometry.slang",
+    "core/skinning_geometry.slang",
     "renderer/fog_scatter_common.slang",
     "renderer/ddgi_sampling.slang",
     "renderer/ddgi_visibility.slang",
@@ -3410,6 +3444,10 @@ SHADER_SHARED_SOURCES = (
 
 # Shaders that need WGSL push constant binding annotation (keyed by prefix)
 WGSL_PUSH_CONSTANT_SHADERS = {
+    "instanced_layer_surface",
+    "vertex_colored_surface",
+    "display_transfer",
+    "skinned_layer_surface",
     "gui_unified",
     "queen_portable_shadow",
     "queen_portable",
@@ -3440,6 +3478,10 @@ WGSL_PUSH_CONSTANT_SHADERS = {
 
 # Shaders that need WGSL vertex output location annotation (keyed by prefix)
 WGSL_VERTEX_LOCATION_SHADERS = {
+    "instanced_layer_surface",
+    "vertex_colored_surface",
+    "display_transfer",
+    "skinned_layer_surface",
     "gui_unified",
     "scene_opaque",
     "scene_pbr",
@@ -3599,7 +3641,9 @@ def reflect_descriptor_stage_masks_per_entry(
 
 
 def main():
+    global _file_inputs
     parser = argparse.ArgumentParser(description="arp-engine shader compiler")
+    parser.add_argument("--io-tool", help="Explicit shared FileService input CLI (no local retry on failure)")
     parser.add_argument("--slangc", help="Path to slangc.exe")
     parser.add_argument("--vulkan-sdk", help="Path to Vulkan SDK root")
     parser.add_argument("--spirv-reflect", help="Path to the SPIRV-Reflect CLI")
@@ -3636,6 +3680,12 @@ def main():
                                             "ddgi_atlas_fill", "ddgi_atlas_consumer", "ddgi_sampling_consumer", "ddgi_uniform_consumer", "ddgi_shared_input_consumer", "ddgi_bvh_input_consumer", "ddgi_bvh_trace_consumer", "vertex_stream_instancing", "original_vertex_geometry_execution", "original_general_shader_resources", "original_general_readonly_shader_resources", "original_general_graphics_shader_resources", "original_general_graphics_readonly_shader_resources"],
                         help="Compile a test-only fixture through the normal target/reflection pipeline")
     args = parser.parse_args()
+    _file_inputs = None
+    if args.io_tool:
+        from shader_file_inputs import ShaderFileInputs
+        _file_inputs = ShaderFileInputs(args.io_tool)
+    print("[shaders] file inputs: " + ("FileService/1 (shared ToolFileInventory/2)" if _file_inputs is not None
+                                      else "LegacyHostFile/1 (existing unmigrated interface)"))
     if args.glsl_es_100 and (not (args.single_entry or args.graphics_module) or not args.spirv_cross_library):
         parser.error("--glsl-es-100 requires an original single-entry/graphics module and --spirv-cross-library")
     if args.webgl_optional_uniform and (not args.glsl_es_100 or any(
@@ -3708,10 +3758,10 @@ def main():
             parser.error("Bindless compilation requires variant, source, entries and mode, without --fixture")
         import yaml
         from bindless_codegen import compile_bindless_package
-        with open(args.bindless_variant, encoding="utf-8") as schema:
-            variant = yaml.safe_load(schema)
+        variant = yaml.safe_load(read_text(args.bindless_variant))
         package = compile_bindless_package(variant, args.bindless_source, args.bindless_entry,
-            args.bindless_mode, out_dir, slangc, spirv_reflect_exe, args.bindless_source_library)
+            args.bindless_mode, out_dir, slangc, spirv_reflect_exe, args.bindless_source_library,
+            input_files=_file_inputs)
         print(f"[shaders] Bindless package: {package}")
         return
 
@@ -3839,7 +3889,7 @@ def main():
                 if os.path.isfile(metal_out):
                     os.remove(metal_out)
                 from spirv_layout import SpirvLayoutFacts
-                if not SpirvLayoutFacts(spirv_out).runtime_length_operations:
+                if not SpirvLayoutFacts(spirv_out, data=read_binary(spirv_out)).runtime_length_operations:
                     raise RuntimeError("SHADER-METAL-RUNTIME-LENGTH-OPERATION-REQUIRED")
             metal_ok = run_slangc(slangc, metal_source_path, "metal", "sm_6_0", entries, metal_out,
                 diagnostic_failure_code="E36107" if args.metal_runtime_length_diagnostic else None)
@@ -4064,7 +4114,7 @@ def main():
         if spirv_reflect_exe and get_push_constant_size_bytes(source_text) > 0 and not selected_push_inactive:
             try:
                 block = _bindings_codegen.reflect_push_constant_block(
-                    spirv_reflect_exe, spirv_out)
+                    spirv_reflect_exe, spirv_out, **reflection_file_inputs())
                 if block is None:
                     raise RuntimeError(
                         f"no push-constant block found in {spirv_out}")
@@ -4076,7 +4126,7 @@ def main():
                     header_path = os.path.join(out_dir, f"{prefix}.shader_bindings.h")
                     block = _bindings_codegen.generate_for_shader(
                         spirv_reflect_exe, spirv_out, header_path,
-                        struct_name, source_basename, spv_basename)
+                        struct_name, source_basename, spv_basename, **reflection_file_inputs())
                     print(f"  [codegen] {prefix}: {struct_name} ({len(block.members)} members, {block.size}B) -> {os.path.basename(header_path)}")
             except RuntimeError as err:
                 print(f"  ERROR: codegen failed for {prefix}: {err}", file=sys.stderr)
@@ -4118,20 +4168,18 @@ def main():
             print(f"[shaders] Single entry artifact: {publication}")
             if args.glsl_es_100:
                 from webgl_shader_artifact import WebGlShaderTargetCompiler
-                with open(publication, encoding="utf-8") as entry_file:
-                    import yaml
-                    stage = yaml.safe_load(entry_file)["stage"]
+                import yaml
+                stage = yaml.safe_load(read_text(publication))["stage"]
                 if any(not value.startswith(stage + ':') for value in args.webgl_optional_uniform):
                     raise RuntimeError("SHADER-WEBGL1-OPTIONAL-UNIFORM-STAGE")
                 optional = [value.split(':', 1)[1] for value in args.webgl_optional_uniform if value.startswith(stage + ':')]
-                target = WebGlShaderTargetCompiler(args.spirv_cross_library, slangc).publish(publication, optional)
+                target = WebGlShaderTargetCompiler(args.spirv_cross_library, slangc, input_files=_file_inputs).publish(publication, optional)
                 print(f"[shaders] ES100 target artifact: {target}")
         if args.graphics_module:
             if not wgsl_ok:
                 raise RuntimeError("SHADER-MODULE-WGSL-UNAVAILABLE")
             import yaml
-            with open(refl_out, encoding="utf-8") as file:
-                module_reflection = yaml.safe_load(file)
+            module_reflection = yaml.safe_load(read_text(refl_out))
             selected = module_reflection.get("entryPoints", [])
             if len(selected) != 2 or {entry.get("stage") for entry in selected} != {"Vertex", "Fragment"}:
                 raise RuntimeError("SHADER-MODULE-ENTRY-COVERAGE")
@@ -4140,6 +4188,8 @@ def main():
                 child_dir = os.path.join(out_dir, entry["stage"])
                 child_args = [sys.executable, os.path.abspath(__file__), "--slangc", slangc,
                               "--spirv-reflect", spirv_reflect_exe, "--single-entry", entry["name"], "--out-dir", child_dir]
+                if args.io_tool:
+                    child_args += ["--io-tool", args.io_tool]
                 child_args += ["--fixture", args.fixture] if args.fixture else ["--module", args.module]
                 if args.preserve_implicit_sampling:
                     child_args.append("--preserve-implicit-sampling")
@@ -4159,7 +4209,7 @@ def main():
                 from webgl_shader_artifact import publish_program
                 targets = [Path(child_publications[stage]).with_suffix('.glsl-es-100.yaml')
                            for stage in ('Vertex', 'Fragment')]
-                publish_program(*targets, Path(out_dir) / f'{prefix}.webgl-program.yaml')
+                publish_program(*targets, Path(out_dir) / f'{prefix}.webgl-program.yaml', input_files=_file_inputs)
 
     # Verify all reflection outputs exist
     print("[shaders] Verifying reflection outputs...")

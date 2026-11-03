@@ -6,6 +6,7 @@
 #include "reflection/serialization.h"
 #include "resource/asset_package_closure.h"
 #include "resource/asset_package_payload.h"
+#include "resource/detail/asset_package_output_builder.h"
 #include "resource/prefab_asset_resources.h"
 #include "resource/resource_graph_plan.h"
 #include "resource/resource_source_io.h"
@@ -689,6 +690,89 @@ ResourceEnvelopeBuildResult buildResourceEnvelopeFromYaml(
     result.success = true;
     result.envelopeYaml = std::move(envelope);
     result.contentHash = hash.hash;
+    return result;
+}
+
+AssetPackageOutputResult detail::preparePackageMetadata(
+    const InternalAssetPackageDesc& desc, const AssetPackageOutputBudget& budget)
+{
+    AssetPackageOutputResult result;
+    requirePackageOutput(
+        desc.entries.size() <= budget.maxResources, "PACKAGE-OUTPUT-RESOURCE-BUDGET");
+    requirePackageOutput(desc.entries.size() < budget.maxOutputFiles, "PACKAGE-OUTPUT-FILE-COUNT");
+    std::size_t metadataBytes = 0;
+    for (const auto& entry : desc.entries) {
+        requirePackageOutput(entry.envelopeYaml.size() <= budget.maxMetadataFileBytes
+                && entry.envelopeYaml.size() <= budget.maxMetadataTotalBytes - metadataBytes,
+            "PACKAGE-OUTPUT-METADATA-BUDGET");
+        metadataBytes += entry.envelopeYaml.size();
+        (void)core::YamlContract::parseSingleDocument(entry.envelopeYaml);
+    }
+    if (!validatePackageDesc(desc, result.diagnostics)) {
+        result.diagnosticId = "PACKAGE-OUTPUT-DESCRIPTOR";
+        return result;
+    }
+    if (!desc.closurePath.empty()) {
+        requirePackageOutput(!packageOutputPathsOverlap(desc.closurePath, "manifest.arpkg.yaml"),
+            "PACKAGE-OUTPUT-PATH-COLLISION");
+        for (const auto& entry : desc.entries)
+            requirePackageOutput(!packageOutputPathsOverlap(desc.closurePath, entry.envelopePath),
+                "PACKAGE-OUTPUT-PATH-COLLISION");
+    }
+    AssetPackageOutputBuilder builder(budget);
+    for (const auto& entry : desc.entries)
+        builder.appendText(
+            AssetPackageOutputRole::Envelope, entry.envelopePath, entry.envelopeYaml);
+    const auto manifest = manifestYaml(desc);
+    builder.appendText(AssetPackageOutputRole::Manifest, "manifest.arpkg.yaml", manifest);
+    builder.sort();
+
+    // Verify the actual canonical bytes using the original source-only reader.
+    // The empty lexical root is metadata-relative, never a host filesystem root.
+    ResourceSourceSet sources;
+    for (const auto& file : builder.files()) {
+        (void)core::YamlContract::parseSingleDocument(
+            {reinterpret_cast<const char*>(file.bytes.data()), file.bytes.size()});
+        ResourceSourceBuffer source;
+        source.path = file.path;
+        source.pathScope = core::io::FilePathScope::HostFilesystem;
+        source.bytes = file.bytes;
+        requirePackageOutput(sources.add(std::move(source)), "PACKAGE-OUTPUT-PATH-COLLISION");
+    }
+    AssetPackageSourceContext context;
+    context.resources.sources = &sources;
+    context.resources.requirePreloadedSources = true;
+    const auto verified = InternalAssetPackageReader().readSources(
+        {}, context, budget.maxMetadataFileBytes, budget.maxResources);
+    if (!verified.success) {
+        result.diagnosticId = "PACKAGE-OUTPUT-METADATA-INVALID";
+        result.diagnostics = verified.diagnostics;
+        return result;
+    }
+    requirePackageOutput(
+        manifestYaml(verified.package) == manifest, "PACKAGE-OUTPUT-METADATA-ROUNDTRIP");
+    result.files = builder.take();
+    result.success = true;
+    return result;
+}
+
+AssetPackageOutputResult InternalAssetPackageWriter::prepare(
+    const InternalAssetPackageDesc& desc, const AssetPackageOutputBudget& budget) const
+{
+    AssetPackageOutputResult result;
+    try {
+        detail::validatePackageOutputBudget(budget);
+        detail::PackageOutputPreparationScope scope(budget.maxPreparationBytes);
+        return detail::preparePackageMetadata(desc, budget);
+    } catch (const detail::PackageOutputFailure& error) {
+        result.diagnosticId = error.diagnostic;
+    } catch (const core::YamlContractError& error) {
+        result.diagnosticId = error.diagnostic;
+    } catch (const std::bad_alloc&) {
+        result.diagnosticId = "PACKAGE-OUTPUT-ALLOCATION";
+    } catch (...) {
+        result.diagnosticId = "PACKAGE-OUTPUT-PREPARATION";
+    }
     return result;
 }
 

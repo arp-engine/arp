@@ -185,7 +185,8 @@ class BrowserProgressJournal:
 
 class BrowserContractRunner:
     def __init__(self, browser, directory, entry, output, timeout_seconds, capture_progress=False,
-                 disable_background_timer_throttling=False, cross_origin_isolated=False):
+                 disable_background_timer_throttling=False, cross_origin_isolated=False,
+                 source_files=None):
         if timeout_seconds <= 0:
             raise ValueError("BROWSER-CONTRACT-TIMEOUT-BUDGET")
         self.browser = str(browser)
@@ -198,6 +199,15 @@ class BrowserContractRunner:
             raise ValueError("BROWSER-CONTRACT-TIMER-POLICY")
         self.disable_background_timer_throttling = disable_background_timer_throttling
         self.cross_origin_isolated = cross_origin_isolated
+        # Explicit test routes keep large original system inputs in place. A
+        # declared missing route is a 404 and never falls through to disk.
+        self.source_files = dict(source_files or {})
+        for path, content in self.source_files.items():
+            if (not isinstance(path, str) or not path.startswith('/')
+                    or any(part in ('', '.', '..') for part in path[1:].split('/'))
+                    or any(c in path for c in ('\\', '?', '#', '\0'))
+                    or (content is not None and not isinstance(content, bytes))):
+                raise ValueError('BROWSER-CONTRACT-SOURCE-ROUTE')
 
     def browser_command(self, profile, url):
         # Launch syntax only; backend capability still comes from the real page.
@@ -220,6 +230,7 @@ class BrowserContractRunner:
         output = self.output
         capture_progress = self.capture_progress
         cross_origin_isolated = self.cross_origin_isolated
+        source_files = self.source_files
         class Handler(http.server.SimpleHTTPRequestHandler):
             def end_headers(self):
                 if cross_origin_isolated:
@@ -228,6 +239,18 @@ class BrowserContractRunner:
                 super().end_headers()
             def log_message(self, *unused):
                 pass
+            def do_GET(self):
+                if self.path not in source_files:
+                    return super().do_GET()
+                content = source_files[self.path]
+                if content is None:
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/octet-stream')
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
             def do_POST(self):
                 if self.path == "/progress" and capture_progress:
                     with journal_lock:

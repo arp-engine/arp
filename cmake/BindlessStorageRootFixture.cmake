@@ -26,13 +26,13 @@ else()
     endif()
     set(storage_root_publication "${storage_root_dir}/StorageVector.${storage_root_mode_name}.bindless.yaml")
     add_custom_command(OUTPUT "${storage_root_publication}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_storage_vector.yaml"
             --bindless-source "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_storage_vector.slang"
             --bindless-entry storeMain --bindless-entry readMain --bindless-mode "${storage_root_mode}"
             --out-dir "${storage_root_dir}"
-        DEPENDS tests/fixtures/bindless_storage_vector.yaml tests/fixtures/bindless_storage_vector.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_storage_vector.yaml tests/fixtures/bindless_storage_vector.slang
             scripts/bindless_codegen.py scripts/compile_shaders.py scripts/slang_resource_switch.py
             scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
             "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"

@@ -10,13 +10,13 @@ foreach(depth_mode Native Emulated)
     set(depth_publication "${bindless_graphics_depth_dir}/GraphicsDepthColor.${depth_mode_name}.bindless.yaml")
     list(APPEND bindless_graphics_depth_outputs "${depth_publication}")
     add_custom_command(OUTPUT "${depth_publication}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_graphics_depth_color.yaml"
             --bindless-source "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_graphics_depth_color.slang"
             --bindless-entry vertexMain --bindless-entry cleanFragment --bindless-entry faultFragment
             --bindless-mode "${depth_mode}" --out-dir "${bindless_graphics_depth_dir}"
-        DEPENDS tests/fixtures/bindless_graphics_depth_color.yaml tests/fixtures/bindless_graphics_depth_color.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_graphics_depth_color.yaml tests/fixtures/bindless_graphics_depth_color.slang
             scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
             scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
             "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"

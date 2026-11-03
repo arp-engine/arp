@@ -1,9 +1,15 @@
+#include "../common/native_startup_files.h"
+#include "../common/native_startup_wait.h"
+#include "../common/null_smoke_shader_package.h"
 #include "2d/camera_2d.h"
+#include "content_source_task.h"
 #include "core/diagnostics/frame_time_statistics.h"
+#include "core/hash/sha256.h"
 #include "game.h"
+#include "gameplay_source_task.h"
 #include "platform/render_system.h"
 #include "platform/renderdoc_capture_scope.h"
-#include "records.h"
+#include "record_session.h"
 #include "renderer/scene_2d_pipeline.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/backends/null/null_hidden_frame_smoke.h"
@@ -16,13 +22,128 @@
 #include <thread>
 
 namespace {
-int nullSmoke(std::uint64_t seed)
+bool prepareGameplay(const arp::core::pmr::String& root,
+    bool remote,
+    std::string_view url,
+    arp::survivors::GameConfig& config,
+    arp::survivors::Rules& rules,
+    arp::core::pmr::String& diagnostic)
+try {
+    using namespace arp;
+    examples::NativeStartupFileDesc desc;
+    desc.source =
+        remote ? examples::NativeStartupSource::Http : examples::NativeStartupSource::Directory;
+    if (remote)
+        desc.baseUrl = url;
+    else
+        desc.directory = std::filesystem::path(root.c_str());
+    desc.mountName = "survivors-gameplay";
+    desc.maxFileBytes = survivors::GameplayTextLimits::maxSourceBytes;
+    examples::NativeStartupFiles startup(std::move(desc),
+        {"SURVIVORS-GAMEPLAY-SOURCE-CONFIG",
+            "SURVIVORS-GAMEPLAY-SOURCE-MOUNT",
+            "SURVIVORS-GAMEPLAY-SOURCE-RUNTIME"});
+    auto& runtime = startup.runtime();
+    survivors::GameplaySourceTask task(
+        runtime.fileService(), runtime.completionQueue(), startup.mount());
+    if (!examples::waitForNativeStartup(startup,
+            task,
+            std::chrono::seconds(20),
+            {"SURVIVORS-GAMEPLAY-STARTUP-TIMEOUT",
+                "SURVIVORS-GAMEPLAY-STARTUP-DISPATCH",
+                "SURVIVORS-GAMEPLAY-STARTUP-NOT-RETIRED"},
+            diagnostic))
+        return false;
+    const auto prepared = task.preparation();
+    if (!prepared) {
+        diagnostic = "SURVIVORS-GAMEPLAY-STARTUP-NOT-RETIRED";
+        return false;
+    }
+    // Source owners survive IO shutdown. The game only receives decoded
+    // configuration and the original ordered text, before any GPU creation.
+    config = prepared->config;
+    rules = prepared->rules;
+    const auto sourceHash = core::Sha256::hexDigest(core::StringView(rules.source()));
+    const auto configHash = core::Sha256::hexDigest(core::StringView(rules.configYaml()));
+    std::printf(
+        "gameplaySource: %s\ngameplayReads: %llu\ngameplayIoRetired: true\ngameplayScriptSha256: %s\ngameplayConfigSha256: %s\n",
+        remote ? "HTTP" : "NativeDirectory",
+        static_cast<unsigned long long>(task.readCount()),
+        sourceHash.c_str(),
+        configHash.c_str());
+    return true;
+} catch (const std::exception& error) {
+    diagnostic = error.what();
+    return false;
+} catch (...) {
+    diagnostic = "SURVIVORS-GAMEPLAY-STARTUP-EXCEPTION";
+    return false;
+}
+
+arp::core::SharedPtr<arp::survivors::PreparedContent> prepareContent(
+    const arp::core::pmr::String& root,
+    bool remote,
+    std::string_view url,
+    const arp::survivors::GameConfig& config,
+    arp::core::pmr::String& diagnostic)
+try {
+    using namespace arp;
+    examples::NativeStartupFileDesc desc;
+    desc.source =
+        remote ? examples::NativeStartupSource::Http : examples::NativeStartupSource::Directory;
+    if (remote)
+        desc.baseUrl = url;
+    else
+        desc.directory = std::filesystem::path(root.c_str());
+    desc.mountName = "survivors-content";
+    desc.maxFileBytes = survivors::ContentSourceTask::maxSourceFileBytes;
+    examples::NativeStartupFiles files(std::move(desc),
+        {"SURVIVORS-CONTENT-SOURCE-CONFIG",
+            "SURVIVORS-CONTENT-SOURCE-MOUNT",
+            "SURVIVORS-CONTENT-SOURCE-RUNTIME"});
+    survivors::ContentSourceTask task(
+        files.runtime().fileService(), files.runtime().completionQueue(), files.mount(), config);
+    if (!examples::waitForNativeStartup(files,
+            task,
+            std::chrono::seconds(20),
+            {"SURVIVORS-CONTENT-STARTUP-TIMEOUT",
+                "SURVIVORS-CONTENT-STARTUP-DISPATCH",
+                "SURVIVORS-CONTENT-STARTUP-NOT-RETIRED"},
+            diagnostic))
+        return {};
+    auto prepared = task.preparation();
+    if (!prepared) {
+        diagnostic = "SURVIVORS-CONTENT-PREPARATION";
+        return {};
+    }
+    std::printf(
+        "contentSource: %s\ncontentReads: %llu\ncontentIoRetired: true\ncontentSourceIdentity: %s\n",
+        remote ? "HTTP" : "NativeDirectory",
+        (unsigned long long)task.readCount(),
+        prepared->sourceIdentity().c_str());
+    std::printf("contentAudioDecoderPeakBytes: %llu\n",
+        (unsigned long long)prepared->content().audioDecoderPeakBytes());
+    return prepared;
+} catch (const std::exception& error) {
+    diagnostic = error.what();
+    return {};
+} catch (...) {
+    diagnostic = "SURVIVORS-CONTENT-STARTUP-EXCEPTION";
+    return {};
+}
+
+int nullSmoke(std::uint64_t seed, const std::filesystem::path& executableDirectory)
 {
     auto device = arp::rhi::createNullDevice();
     if (!device)
         return 1;
+    arp::rhi::ShaderPackageDesc package;
+    if (!arp::examples::prepareNullSmokeShaderPackage(executableDirectory, package)) {
+        std::fprintf(stderr, "ARP-SURVIVORS-NULL-SHADER-PACKAGE\n");
+        return 1;
+    }
     const auto report = arp::rhi::NullHiddenFrameSmokeRunner(*device).run(
-        {"SurvivorsP0", {1280, 720}, arp::rhi::TextureFormat::Bgra8Unorm, 2});
+        {"SurvivorsP0", {1280, 720}, arp::rhi::TextureFormat::Bgra8Unorm, 2, &package});
     if (!report.success) {
         std::fprintf(stderr, "%s\n", report.diagnostics.c_str());
         return 1;
@@ -54,12 +175,12 @@ int main(int argc, char** argv)
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     bool null = false, hidden = false, autoplay = false, fixed = false, simulate = false,
          stress = false, integer = false, mute = false, resizeCheck = false,
-         scriptInterpreter = true;
+         scriptInterpreter = true, remoteGameplay = false, remoteContent = false;
     std::uint64_t seed = 42, framesLimit = 0, captureFrame = UINT64_MAX, restarts = 0,
                   normalRestarts = 0, endedFrame = UINT64_MAX;
     std::uint32_t width = 1280, height = 720, resultHold = 0, startDelay = 0, captureEveryMs = 1000;
     double secondsLimit = 0, endedAt = -1;
-    core::pmr::String captureSeries;
+    core::pmr::String captureSeries, gameplayBaseUrl, contentBaseUrl;
     std::uint32_t seriesCount = 0;
     const auto executable = std::filesystem::absolute(std::filesystem::path(argv[0])).parent_path();
     core::pmr::String root((executable / "assets").string().c_str()),
@@ -124,7 +245,13 @@ int main(int argc, char** argv)
             captureSeries = argv[++i];
         else if (arg == "--assets" && i + 1 < argc)
             root = argv[++i];
-        else if (arg == "--save-dir" && i + 1 < argc)
+        else if (arg == "--gameplay-base-url" && i + 1 < argc) {
+            remoteGameplay = true;
+            gameplayBaseUrl = argv[++i];
+        } else if (arg == "--content-base-url" && i + 1 < argc) {
+            remoteContent = true;
+            contentBaseUrl = argv[++i];
+        } else if (arg == "--save-dir" && i + 1 < argc)
             saveRoot = argv[++i];
         else if (arg == "--capture-path" && i + 1 < argc)
             capturePath = argv[++i];
@@ -140,7 +267,7 @@ int main(int argc, char** argv)
         }
     }
     if (null)
-        return nullSmoke(seed);
+        return nullSmoke(seed, executable);
     if (!scenario.empty() && scenario != "death" && scenario != "pause" && scenario != "upgrades"
         && scenario != "evolution")
         return 2;
@@ -159,18 +286,19 @@ int main(int argc, char** argv)
     GameConfig config;
     core::pmr::String diagnostic;
     Rules rules;
-    if (!config.load(root, diagnostic) || !rules.load(root, config.maxSourceBytes, diagnostic)) {
+    if (!prepareGameplay(root, remoteGameplay, gameplayBaseUrl, config, rules, diagnostic)) {
         std::fprintf(stderr, "%s\n", diagnostic.c_str());
         return 1;
     }
     rules.useInterpreter(scriptInterpreter);
     std::printf("scriptExecution: %s\n", scriptInterpreter ? "Interpreter" : "DirectNativeV5");
-    resource::ResourceManager resources;
-    Content content(resources);
-    if (!content.load(root, config, diagnostic)) {
+    auto preparedContent = prepareContent(root, remoteContent, contentBaseUrl, config, diagnostic);
+    if (!preparedContent) {
         std::fprintf(stderr, "%s\n", diagnostic.c_str());
         return 1;
     }
+    auto& resources = preparedContent->resources();
+    auto& content = preparedContent->content();
     std::error_code filesystemError;
     std::filesystem::create_directories(std::filesystem::path(saveRoot.c_str()), filesystemError);
     if (filesystemError) {
@@ -178,26 +306,39 @@ int main(int argc, char** argv)
             stderr, "ARP-SURVIVORS-SAVE-DIRECTORY: %s\n", filesystemError.message().c_str());
         return 1;
     }
-    core::io::AtomicFileService files(2, 65536);
-    core::io::VersionedYamlStore<RecordSchema> store(files);
-    Record record;
-    const auto savePath = saveRoot + "/record.yaml";
-    auto load = store.load(savePath);
-    if (!load)
+    examples::NativeStartupFileDesc recordFilesDesc;
+    recordFilesDesc.directory = std::filesystem::path(saveRoot.c_str());
+    recordFilesDesc.mountName = "survivors-record";
+    recordFilesDesc.maxFileBytes = RecordSession::maxFileBytes;
+    recordFilesDesc.allowObservedBaselineReplace = true;
+    recordFilesDesc.maxBackendSaveScratchBytes = RecordSession::maxBackendSaveScratchBytes;
+    examples::NativeStartupFiles recordFiles(std::move(recordFilesDesc),
+        {"SURVIVORS-RECORD-FILES-CONFIG",
+            "SURVIVORS-RECORD-FILES-MOUNT",
+            "SURVIVORS-RECORD-FILES-RUNTIME"});
+    auto& recordRuntime = recordFiles.runtime();
+    RecordSession store(recordRuntime.fileService(), recordFiles.mount());
+    if (!store.load())
         return 1;
-    core::io::AtomicFileResult loaded;
     const auto loadDeadline = Clock::now() + std::chrono::seconds(10);
-    while (!store.take(load, loaded)) {
-        if (Clock::now() > loadDeadline)
+    while (store.phase() == RecordPhase::Loading) {
+        if (Clock::now() > loadDeadline || !recordRuntime.dispatch().success())
             return 1;
         std::this_thread::yield();
     }
-    if (loaded.success)
-        record = RecordSchema::decode(loaded.bytes);
-    else if (!loaded.missing) {
-        std::fprintf(stderr, "%s (original retained)\n", loaded.diagnostic.c_str());
+    if (store.phase() != RecordPhase::Ready) {
+        std::fprintf(stderr, "%s (original retained)\n", store.diagnostic());
         return 1;
     }
+    Record record = store.record();
+    std::puts("recordSource: NativeDirectory\nrecordIo: FileService");
+    std::printf(
+        "recordLoaded: { bestKills: %u, bestSeconds: %u, wins: %u, unlockPoints: %u, volume: %.17g }\n",
+        record.bestKills,
+        record.bestSeconds,
+        record.wins,
+        record.unlockPoints,
+        record.volume);
     core::UniquePtr<audio::AudioSystem> audio;
     if (!mute) {
         audio = core::makeUnique<audio::AudioSystem>();
@@ -283,18 +424,15 @@ int main(int argc, char** argv)
          evolutionMenu = false;
     double pauseStarted = 0;
     std::uint32_t resizeEvents = 0;
-    core::PoolHandle saving;
-    core::io::AtomicFileResult saved;
     bool saveDirty = false;
     auto save = [&]() {
         saveDirty = true;
         return true;
     };
     auto flushSave = [&]() {
-        if (saving || !saveDirty)
+        if (store.phase() == RecordPhase::Saving || !saveDirty)
             return true;
-        saving = store.save(savePath, RecordSchema::encode(record));
-        if (!saving)
+        if (!store.save(record))
             return false;
         saveDirty = false;
         return true;
@@ -328,15 +466,12 @@ int main(int argc, char** argv)
         const double delta =
             fixed ? 1.0 / 60 : std::chrono::duration<double>(begin - previous).count();
         previous = begin;
-        if (saving && store.take(saving, saved)) {
-            saving = {};
-            if (!saved.success) {
-                std::fprintf(stderr, "%s\n", saved.diagnostic.c_str());
-                return 1;
-            }
-        }
-        if (!flushSave())
+        if (!recordRuntime.dispatch().success())
             return 1;
+        if (store.phase() == RecordPhase::Failed || !flushSave()) {
+            std::fprintf(stderr, "%s\n", store.diagnostic());
+            return 1;
+        }
         RunInput input;
         if (!scenarioStarted && game->telemetry().seconds >= 1) {
             scenarioStarted = true;
@@ -733,16 +868,15 @@ int main(int argc, char** argv)
         cpu95);
     {
         const auto deadline = Clock::now() + std::chrono::seconds(10);
-        while (saving || saveDirty) {
-            if (Clock::now() > deadline || !flushSave())
+        while (store.phase() == RecordPhase::Saving || saveDirty) {
+            if (Clock::now() > deadline || !recordRuntime.dispatch().success()
+                || store.phase() == RecordPhase::Failed || !flushSave())
                 return 1;
-            if (saving && store.take(saving, saved)) {
-                saving = {};
-                if (!saved.success)
-                    return 1;
-            }
             std::this_thread::yield();
         }
+        recordRuntime.shutdown();
+        if (recordRuntime.completionQueue().pending() || recordRuntime.completionQueue().reserved())
+            return 1;
     }
     if (!capturePath.empty() && !captured)
         return 1;

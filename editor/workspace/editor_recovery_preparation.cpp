@@ -1,7 +1,7 @@
 #include "editor/workspace/editor_recovery_preparation.h"
 
-#include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
+#include "editor/io/editor_cold_host_read.h"
 #include "editor/project/project_scene_authoring.h"
 #include "editor/workspace/editor_recovery_digest.h"
 #include "editor/workspace/editor_scene_authoring_codec.h"
@@ -58,7 +58,7 @@ bool observeFile(const std::filesystem::path& path,
     }
     if (error || status.type() != std::filesystem::file_type::regular)
         return fail(diagnostic, "EDITOR-RECOVERY-BASELINE-FILE-TYPE");
-    auto read = core::readTextFile(path, maxBytes);
+    auto read = EditorColdHostRead::readTextBytes(path, maxBytes);
     if (!read.success)
         return fail(diagnostic, "EDITOR-RECOVERY-BASELINE-READ");
     observation.bytes = std::move(read.text);
@@ -113,28 +113,14 @@ bool verifyInputs(const std::filesystem::path& root,
         if (!resolve(
                 root, project.metadata->path, ProjectPathIntent::ExistingFile, path, diagnostic))
             return false;
-        const auto read = core::readTextFile(path, EditorRecoveryCodec::maxMetadataBytes);
+        const auto read =
+            EditorColdHostRead::readTextBytes(path, EditorRecoveryCodec::maxMetadataBytes);
         if (!read.success || read.text != project.metadata->fileBytes)
             return fail(diagnostic, "EDITOR-RECOVERY-METADATA-BASELINE-CONFLICT");
     }
     return ProjectInputSnapshot::verify(root, project.inputFiles, diagnostic);
 }
 
-bool sameSettingsContract(
-    ProjectManifest saved, const ProjectManifest& draft, core::pmr::String& diagnostic)
-{
-    // These are the only currently supported Editor settings draft fields.
-    // Accepting a different physics/module/resource contract would synthesize
-    // owners that were never bound to this recovery record.
-    saved.name = draft.name;
-    saved.entryScene = draft.entryScene;
-    core::pmr::String left, right;
-    ProjectDiagnostic issue;
-    return ProjectManifestCodec::encode(saved, left, issue)
-            && ProjectManifestCodec::encode(draft, right, issue) && left == right
-        ? true
-        : fail(diagnostic, "EDITOR-RECOVERY-PROJECT-DRAFT-CONTRACT");
-}
 } // namespace
 
 bool EditorRecoveryPreparation::capturePackages(const std::filesystem::path& root,
@@ -217,7 +203,8 @@ bool EditorRecoveryPreparation::validateFiles(const Candidate& candidate,
                     path,
                     diagnostic))
                 return false;
-            const auto read = core::readTextFile(path, EditorProjectResources::maxManifestBytes);
+            const auto read =
+                EditorColdHostRead::readTextBytes(path, EditorProjectResources::maxManifestBytes);
             if (!read.success || read.text != snapshot.project->savedFileBytes)
                 return fail(diagnostic, "EDITOR-RECOVERY-PROJECT-BASELINE-CONFLICT");
             if (!verifyInputs(currentRoot, *snapshot.project, diagnostic))
@@ -288,6 +275,10 @@ core::UniquePtr<EditorRecoveryPreparation::Candidate> EditorRecoveryPreparation:
     core::pmr::String& diagnostic,
     EditorRecoveryBudget budget)
 {
+    if (snapshot.source) {
+        fail(diagnostic, "EDITOR-RECOVERY-SOURCE-PREPARATION-REQUIRED");
+        return {};
+    }
     if (!EditorRecoveryCodec::validate(snapshot, diagnostic, budget))
         return {};
     try {
@@ -310,16 +301,19 @@ core::UniquePtr<EditorRecoveryPreparation::Candidate> EditorRecoveryPreparation:
                     manifestPath,
                     diagnostic))
                 return {};
-            const auto current =
-                core::readTextFile(manifestPath, EditorProjectResources::maxManifestBytes);
+            const auto current = EditorColdHostRead::readTextBytes(
+                manifestPath, EditorProjectResources::maxManifestBytes);
             if (!current.success || current.text != project.savedFileBytes) {
                 fail(diagnostic, "EDITOR-RECOVERY-PROJECT-BASELINE-CONFLICT");
                 return {};
             }
             if (!ProjectManifestCodec::decode(project.savedFileBytes, saved, issue)
-                || !ProjectManifestCodec::decode(project.draftYaml, draft, issue)
-                || !sameSettingsContract(saved, draft, diagnostic))
+                || !ProjectManifestCodec::decode(project.draftYaml, draft, issue))
                 return {};
+            if (!ProjectManifestCodec::isSettingsOnlyChange(saved, draft)) {
+                fail(diagnostic, "EDITOR-RECOVERY-PROJECT-DRAFT-CONTRACT");
+                return {};
+            }
             if (!verifyInputs(root, project, diagnostic))
                 return {};
             core::pmr::Vector<EditorRecoveryPackage> packages;
@@ -504,7 +498,7 @@ bool EditorRecoveryPreparation::candidateFingerprint(const Candidate& candidate,
     digest.field(core::FilePath::utf8(candidate.sceneTarget));
     digest.number(candidate.scripts.size());
     for (const auto& script : candidate.scripts) {
-        if (script.id || !script.undo.empty() || !script.redo.empty()
+        if (script.id || script.sourceBound() || !script.undo.empty() || !script.redo.empty()
             || script.text.size() > ScriptDocumentSession::maxScriptBytes
             || script.savedText.size() > ScriptDocumentSession::maxScriptBytes
             || script.savedFileBytes.size() > ScriptDocumentSession::maxScriptBytes)
@@ -556,11 +550,15 @@ bool EditorRecoveryPreparation::candidateFingerprint(const Candidate& candidate,
     return true;
 }
 
-core::UniquePtr<EditorRecoveryPreparation::WorkspaceState> EditorRecoveryPreparation::prepareState(
-    const Candidate& candidate, core::pmr::String& diagnostic)
+core::UniquePtr<EditorRecoveryPreparation::WorkspaceState>
+EditorRecoveryPreparation::prepareWorkspaceState(const EditorRecoverySnapshot& snapshot,
+    const std::filesystem::path& sceneTarget,
+    core::pmr::String& diagnostic,
+    EditorRecoveryBudget budget)
 {
+    if (!EditorRecoveryCodec::validate(snapshot, diagnostic, budget))
+        return {};
     auto result = core::makeUnique<WorkspaceState>();
-    const auto& snapshot = candidate.submitted;
     if (snapshot.project) {
         ProjectManifest saved, draft;
         ProjectDiagnostic issue;
@@ -578,7 +576,7 @@ core::UniquePtr<EditorRecoveryPreparation::WorkspaceState> EditorRecoveryPrepara
     }
     result->sceneAuthoringVersion_ = EditorSceneFileFormat::version(snapshot.scene.yaml);
     result->scenePath_ = snapshot.scene.path;
-    result->sceneTarget_ = candidate.sceneTarget;
+    result->sceneTarget_ = sceneTarget;
     result->sceneSavedHash_ = snapshot.scene.savedContentHash;
     result->sceneSavedBytes_.assign(
         snapshot.scene.savedFileBytes.begin(), snapshot.scene.savedFileBytes.end());
@@ -606,7 +604,8 @@ EditorRecoveryPreparation::prepareForWorkspace(const EditorRecoverySnapshot& sna
         candidate->recovery = prepare(snapshot, shell.projectRoot(), diagnostic, budget);
         if (!candidate->recovery)
             return {};
-        candidate->state_ = prepareState(*candidate->recovery, diagnostic);
+        candidate->state_ = prepareWorkspaceState(
+            candidate->recovery->submitted, candidate->recovery->sceneTarget, diagnostic, budget);
         if (!candidate->state_)
             return {};
         candidate->budget_ = budget;

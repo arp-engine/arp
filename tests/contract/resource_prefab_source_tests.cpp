@@ -7,6 +7,7 @@
 #include "tests/fixtures/prefab_runtime_package_fixture.h"
 #include "tests/fixtures/unified_io_fixture.h"
 
+#include <cmath>
 #include <cstdio>
 
 namespace {
@@ -141,7 +142,17 @@ public:
             assert(manager.find<resource::PrefabResource>(kPrefabId).ready());
             assert(payload.ready() && controller.ready() && payload.get()->runtimeAsset);
             assert(payload.get()->runtimeAsset->mesh.validForIndexedDraw());
+            const auto& bounds = payload.get()->runtimeAsset->mesh.bounds;
+            assert(bounds.valid && bounds.min[0] == -0.66f && bounds.max[0] == 0.66f
+                && bounds.min[1] == -0.62f && bounds.max[1] == 0.54f && bounds.min[2] == 0.f
+                && bounds.max[2] == 0.f);
             assert(payload.get()->runtimeAsset->clips.size() == 2);
+            const auto& clip = payload.get()->runtimeAsset->clips.front();
+            assert(
+                clip.channels.front().interpolation == animation::ChannelInterpolation::GltfLinear);
+            core::pmr::Vector<animation::JointTransform> pose(1);
+            assert(animation::sampleClip(clip, .25f, pose));
+            assert(std::abs(pose.front().rotation.y - .38268343f) < .00001f);
             assert(
                 payload.get()->runtimeAsset->materials.front().baseColorTextureCoordinateSet == 2);
             assert(payload.get()->controllerAsset == controller.get()->controllerAsset);
@@ -315,7 +326,7 @@ int main(int argc, char** argv)
 {
     resource::registerPrefabAssetReflection();
     if (argc == 3 && core::StringView(argv[1]) == "--prepare") {
-        write(std::filesystem::u8path(argv[2]));
+        write(std::filesystem::u8path(argv[2]), animation::ChannelInterpolation::GltfLinear);
         return 0;
     }
     if (argc == 3 && core::StringView(argv[1]) == "--http") {
@@ -333,7 +344,7 @@ int main(int argc, char** argv)
     }
     unified_io_fixture::Workspace workspace;
     const auto root = workspace.root / "snapshot";
-    write(root);
+    write(root, animation::ChannelInterpolation::GltfLinear);
     PrefabSourceFixture::sourceContracts(root);
     for (auto mutation : {PrefabSourceFixture::Mutation::None,
              PrefabSourceFixture::Mutation::Missing,

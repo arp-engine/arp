@@ -20,6 +20,9 @@ public:
         std::shared_ptr<rhi::RenderPipeline> sprite);
     void prepareGeometry(EditorShell&, const EditorSceneViewportFrame&);
     void prepareSprites(EditorShell&, const scene::SceneTraversalSnapshot&, rhi::Extent2D);
+    // Release retained project owners before their application's IO host.
+    // Uses the existing ordered resource-reuse gate, never GPU completion.
+    const char* releaseProjectResourcesAfterOrderedIssue();
     void resize(rhi::GpuDevice&, renderer::GuiOrderedRenderer&, rhi::Extent2D, bool sampleFlipY);
     void addPasses(
         render_graph::FrameGraph&, const EditorSceneViewportCamera&, const EditorSceneViewportSky&);

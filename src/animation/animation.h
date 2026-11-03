@@ -3,6 +3,7 @@
 #include "core/api.h"
 #include "core/memory/cpu_allocator.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -44,11 +45,16 @@ struct JointKeyframe {
     JointTransform transform{};
 };
 
+// Existing channels and blob versions 1-4 retain their original nlerp behavior.
+// GltfLinear is explicit: vector lerp and shortest-arc quaternion slerp.
+enum class ChannelInterpolation : std::uint8_t { LegacyLinear = 0, GltfLinear = 1 };
+
 struct AnimationChannel {
     unsigned int jointIndex = 0;
     std::pmr::vector<JointKeyframe> keyframes;
     std::pmr::string targetPath = "translation";
     std::pmr::string jointName;
+    ChannelInterpolation interpolation = ChannelInterpolation::LegacyLinear;
 };
 
 struct AnimationEvent {
@@ -65,6 +71,10 @@ struct AnimationClip {
 
 ARP_API bool sampleClip(
     const AnimationClip& clip, float timeSeconds, std::pmr::vector<JointTransform>& outPose);
+
+// Cold preparation/persistence validation. Legacy channel content keeps its
+// existing interpretation; unknown modes and invalid explicit glTF data fail.
+ARP_API const char* validateClipSampling(const AnimationClip& clip) noexcept;
 
 ARP_API void collectEvents(const AnimationClip& clip,
     float previousTimeSeconds,

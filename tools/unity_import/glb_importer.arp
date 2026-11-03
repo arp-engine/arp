@@ -4,10 +4,20 @@ import io
 import yaml
 import arp_import_host
 import importer_base
+import glb_source_profile
+
 
 class GlbImporter(Importer):
     def import_path(self, path: string) -> asset.ImportedModelResult:
-        return asset.import_glb(path)
+        var options: asset.GlbSourceOptions = glb_source_profile.make_options()
+        var diagnostic: string = options.validate()
+        if diagnostic != "":
+            raise unity_import_common.DIAGNOSTIC_GLB_IMPORT + ": " + diagnostic
+        var acquired: io.IoBinaryResult = io.read_binary_local(
+            path, options.maxSourceBytes, glb_source_profile.local_acquisition_bytes(options))
+        if not acquired.success:
+            raise unity_import_common.DIAGNOSTIC_GLB_IMPORT + ": " + acquired.diagnostics
+        return asset.import_glb_bytes(path, acquired.data(), options)
 
     def run(self, path: string) -> int:
         var imported: asset.ImportedModelResult = self.import_path(path)

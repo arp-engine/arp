@@ -3,15 +3,15 @@
 #include "assets/asset_pipeline.h"
 #include "core/memory/cpu_allocator.h"
 #include "gui/gui.h"
+#include "tools/asset_importer/document_import.h"
 #include "tools/asset_importer/script_runner.h"
 #include "ui/ui_document.h"
 
 #include <algorithm>
+#include <charconv>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <ostream>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,6 +20,11 @@ namespace arp::tools::asset_importer {
 
 struct Options {
     bool selfTest = false;
+    bool legacyUiJson = false;
+    bool documentOptionsValid = true;
+    std::uint64_t maxDocumentBytes = 4u * 1024u * 1024u;
+    core::pmr::String uiIrPath{&core::defaultCpuMemoryResource()};
+    core::pmr::String documentHttpBase{&core::defaultCpuMemoryResource()};
     std::pmr::string materialJsonPath;
     std::pmr::string gltfJsonPath;
     std::pmr::string uiLayoutJsonPath;
@@ -200,7 +205,34 @@ inline Options parseOptions(int argc, const char* const* argv)
     Options options;
     for (int index = 1; index < argc; ++index) {
         const std::pmr::string arg = argv[index];
-        if (arg == "--self-test") {
+        if (arg == "--ui-ir") {
+            if (index + 1 < argc) {
+                options.uiIrPath = argv[++index];
+                options.documentOptionsValid =
+                    options.documentOptionsValid && !options.uiIrPath.empty();
+            } else
+                options.documentOptionsValid = false;
+        } else if (arg == "--source-http-base") {
+            if (index + 1 < argc) {
+                options.documentHttpBase = argv[++index];
+                options.documentOptionsValid =
+                    options.documentOptionsValid && !options.documentHttpBase.empty();
+            } else
+                options.documentOptionsValid = false;
+        } else if (arg == "--legacy-ui-json") {
+            options.legacyUiJson = true;
+        } else if (arg == "--max-document-bytes") {
+            if (index + 1 >= argc) {
+                options.documentOptionsValid = false;
+                continue;
+            }
+            const std::string_view number(argv[++index]);
+            const auto parsed = std::from_chars(
+                number.data(), number.data() + number.size(), options.maxDocumentBytes);
+            options.documentOptionsValid = options.documentOptionsValid && parsed.ec == std::errc{}
+                && parsed.ptr == number.data() + number.size() && options.maxDocumentBytes
+                && options.maxDocumentBytes < SIZE_MAX;
+        } else if (arg == "--self-test") {
             options.selfTest = true;
         } else if (arg == "--material-json" && index + 1 < argc) {
             options.materialJsonPath = argv[++index];
@@ -757,118 +789,10 @@ inline UiLayoutImportResult importUiLayoutFromJson(const std::pmr::string& json)
     return result;
 }
 
-inline bool readTextFile(const std::pmr::string& path, std::pmr::string& out)
-{
-    std::ifstream file(path.c_str(), std::ios::binary);
-    if (!file.good()) {
-        return false;
-    }
-
-    std::ostringstream buffer;
-    buffer << file.rdbuf();
-    out = arp::core::toPmrString(buffer.str());
-    return true;
-}
-
 inline const char* uiTextureAlphaModeName(arp::ui::UiTextureAlphaMode value);
 inline const char* uiTextureMipIntentName(arp::ui::UiTextureMipIntent value);
 inline const char* uiTextureCompressionIntentName(arp::ui::UiTextureCompressionIntent value);
 inline const char* uiTextureSamplerIntentName(arp::ui::UiTextureSamplerIntent value);
-
-inline bool writeArpUiDocument(const arp::ui::UiDocument& document,
-    const std::pmr::string& path,
-    std::pmr::string& diagnostics)
-{
-    const auto outputPath = std::filesystem::path(path.c_str());
-    std::error_code error;
-    if (outputPath.has_parent_path()) {
-        std::filesystem::create_directories(outputPath.parent_path(), error);
-        if (error) {
-            diagnostics = "failed to create .arpui output directory: ";
-            diagnostics += outputPath.parent_path().generic_string();
-            return false;
-        }
-    }
-
-    std::ofstream output(outputPath, std::ios::binary);
-    if (!output.good()) {
-        diagnostics = "failed to open .arpui output: ";
-        diagnostics += path;
-        return false;
-    }
-
-    output << "{\n";
-    output << "  \"type\": \"ArpUiDocument\",\n";
-    output << "  \"contractVersion\": \"" << document.canvas().contractVersion << "\",\n";
-    output << "  \"canvasId\": \"" << document.canvas().canvasId << "\",\n";
-    output << "  \"stableHash\": " << document.stableHash() << ",\n";
-    output << "  \"canvas\": { \"width\": " << document.canvas().width
-           << ", \"height\": " << document.canvas().height
-           << ", \"dpi\": " << document.canvas().designDpi << " },\n";
-    output << "  \"textures\": [\n";
-    for (std::size_t index = 0; index < document.textures().size(); ++index) {
-        const auto& texture = document.textures()[index];
-        output << "    { \"resourceId\": \"" << texture.resourceId << "\", \"layer\": \""
-               << texture.sourceLayerId << "\", \"atlas\": \"" << texture.atlasId
-               << "\", \"x\": " << texture.sourceRect.x << ", \"y\": " << texture.sourceRect.y
-               << ", \"width\": " << texture.sourceRect.width
-               << ", \"height\": " << texture.sourceRect.height
-               << ", \"pivotX\": " << texture.pivot.x << ", \"pivotY\": " << texture.pivot.y
-               << ", \"sliceLeft\": " << texture.nineSlice.left
-               << ", \"sliceTop\": " << texture.nineSlice.top
-               << ", \"sliceRight\": " << texture.nineSlice.right
-               << ", \"sliceBottom\": " << texture.nineSlice.bottom << ", \"alpha\": \""
-               << uiTextureAlphaModeName(texture.alphaMode) << "\""
-               << ", \"srgb\": " << (texture.srgb ? "true" : "false") << ", \"mips\": \""
-               << uiTextureMipIntentName(texture.mipIntent) << "\""
-               << ", \"compression\": \""
-               << uiTextureCompressionIntentName(texture.compressionIntent) << "\""
-               << ", \"sampler\": \"" << uiTextureSamplerIntentName(texture.samplerIntent) << "\""
-               << " }";
-        if (index + 1u < document.textures().size()) {
-            output << ",";
-        }
-        output << "\n";
-    }
-    output << "  ],\n";
-    output << "  \"nodes\": [\n";
-    for (std::size_t index = 0; index < document.nodes().size(); ++index) {
-        const auto& node = document.nodes()[index];
-        output << "    { \"id\": " << node.nodeId.value()
-               << ", \"parent\": " << node.parentNodeId.value() << ", \"type\": \""
-               << arp::ui::controlTypeName(node.controlType) << "\", \"layer\": \""
-               << node.psdLayerBinding.sourceLayerId << "\", \"x\": " << node.layout.x
-               << ", \"y\": " << node.layout.y << ", \"width\": " << node.layout.width
-               << ", \"height\": " << node.layout.height << ", \"style\": \"" << node.styleId
-               << "\", \"state\": \"" << node.stateId << "\", \"event\": \"" << node.eventRole
-               << "\"";
-        if (!node.text.empty()) {
-            output << ", \"text\": \"" << node.text << "\"";
-        }
-        if (!node.resourceBindings.empty()) {
-            output << ", \"resources\": [";
-            for (std::size_t resourceIndex = 0; resourceIndex < node.resourceBindings.size();
-                ++resourceIndex) {
-                const auto& binding = node.resourceBindings[resourceIndex];
-                output << "{ \"role\": \"" << binding.role << "\", \"resourceId\": \""
-                       << binding.resourceId
-                       << "\", \"required\": " << (binding.required ? "true" : "false") << " }";
-                if (resourceIndex + 1u < node.resourceBindings.size()) {
-                    output << ", ";
-                }
-            }
-            output << "]";
-        }
-        output << " }";
-        if (index + 1u < document.nodes().size()) {
-            output << ",";
-        }
-        output << "\n";
-    }
-    output << "  ]\n";
-    output << "}\n";
-    return true;
-}
 
 inline const char* uiTextureAlphaModeName(arp::ui::UiTextureAlphaMode value)
 {
@@ -926,6 +850,7 @@ inline const char* uiTextureSamplerIntentName(arp::ui::UiTextureSamplerIntent va
 
 inline int runSelfTest(std::ostream& out, std::ostream& err)
 {
+    // clang-format off
     const auto material = assets::importSceneMaterialFromJson(R"json(
     {
       "type": "SceneStylizedPbr",
@@ -933,11 +858,13 @@ inline int runSelfTest(std::ostream& out, std::ostream& err)
       "baseColorTexture": "generated/self_test_base.ktx2"
     }
     )json");
+    // clang-format on
     if (!material.success) {
         err << material.diagnostics << '\n';
         return 1;
     }
 
+    // clang-format off
     const auto mesh = assets::importStaticMeshFromGltfJson(R"json(
     {
       "asset": { "version": "2.0" },
@@ -955,11 +882,13 @@ inline int runSelfTest(std::ostream& out, std::ostream& err)
       ]
     }
     )json");
+    // clang-format on
     if (!mesh.success) {
         err << mesh.diagnostics << '\n';
         return 1;
     }
 
+    // clang-format off
     const auto layout = importUiLayoutFromJson(R"json(
     {
       "type": "GuiLayout",
@@ -970,6 +899,7 @@ inline int runSelfTest(std::ostream& out, std::ostream& err)
       ]
     }
     )json");
+    // clang-format on
     if (!layout.success) {
         err << layout.diagnostics << '\n';
         return 1;
@@ -984,6 +914,10 @@ inline int runSelfTest(std::ostream& out, std::ostream& err)
 inline int runImporter(int argc, const char* const* argv, std::ostream& out, std::ostream& err)
 {
     const auto options = parseOptions(argc, argv);
+    if (!options.documentOptionsValid) {
+        err << "TOOL-DOCUMENT-OPTIONS\n";
+        return 2;
+    }
     if (options.selfTest) {
         return runSelfTest(out, err);
     }
@@ -1147,94 +1081,30 @@ inline int runImporter(int argc, const char* const* argv, std::ostream& out, std
         return 0;
     }
 
-    if (!options.uiPsdPath.empty() || !options.uiManifestPath.empty()
-        || !options.outputUiPath.empty()) {
-        if (options.uiPsdPath.empty() || options.uiManifestPath.empty()
-            || options.outputUiPath.empty()) {
-            err << "UI PSD manifest import requires --ui-psd <file> --ui-manifest <file> --output-ui <file.arpui>\n";
-            return 2;
-        }
-
-        std::pmr::string psdJson;
-        std::pmr::string manifestJson;
-        if (!readTextFile(options.uiPsdPath, psdJson)) {
-            err << "failed to read UI PSD fixture: " << options.uiPsdPath << '\n';
-            return 1;
-        }
-        if (!readTextFile(options.uiManifestPath, manifestJson)) {
-            err << "failed to read UI manifest: " << options.uiManifestPath << '\n';
-            return 1;
-        }
-
-        const auto imported = importUiFromPsdManifest(psdJson, manifestJson);
-        if (!imported.success) {
-            err << imported.diagnostics << '\n';
-            return 1;
-        }
-
-        std::pmr::string diagnostics;
-        if (!writeArpUiDocument(imported.document, options.outputUiPath, diagnostics)) {
-            err << diagnostics << '\n';
-            return 1;
-        }
-        out << "arpui ok: nodes=" << imported.document.nodes().size()
-            << " stableHash=" << imported.document.stableHash()
-            << " output=" << options.outputUiPath << '\n';
-        return 0;
-    }
-
-    if (!options.materialJsonPath.empty()) {
-        std::pmr::string json;
-        if (!readTextFile(options.materialJsonPath, json)) {
-            err << "failed to read material JSON: " << options.materialJsonPath << '\n';
-            return 1;
-        }
-        const auto imported = assets::importSceneMaterialFromJson(json);
-        if (!imported.success) {
-            err << imported.diagnostics << '\n';
-            return 1;
-        }
-        out << "material ok: " << imported.material.name << '\n';
-        return 0;
-    }
-
-    if (!options.gltfJsonPath.empty()) {
-        std::pmr::string json;
-        if (!readTextFile(options.gltfJsonPath, json)) {
-            err << "failed to read glTF JSON: " << options.gltfJsonPath << '\n';
-            return 1;
-        }
-        const auto imported = assets::importStaticMeshFromGltfJson(json);
-        if (!imported.success) {
-            err << imported.diagnostics << '\n';
-            return 1;
-        }
-        out << "mesh ok: vertices=" << imported.mesh.vertices.size()
-            << " indices=" << imported.mesh.indices.size() << '\n';
-        return 0;
-    }
-
-    if (!options.uiLayoutJsonPath.empty()) {
-        std::pmr::string json;
-        if (!readTextFile(options.uiLayoutJsonPath, json)) {
-            err << "failed to read UI layout JSON: " << options.uiLayoutJsonPath << '\n';
-            return 1;
-        }
-        const auto imported = importUiLayoutFromJson(json);
-        if (!imported.success) {
-            err << imported.diagnostics << '\n';
-            return 1;
-        }
-        out << "ui layout ok: " << imported.name << " nodes=" << imported.cache.nodeCount
-            << " textRuns=" << imported.cache.textRunCount << '\n';
-        return 0;
+    if (!options.uiIrPath.empty() || !options.uiPsdPath.empty() || !options.uiManifestPath.empty()
+        || !options.outputUiPath.empty() || !options.materialJsonPath.empty()
+        || !options.gltfJsonPath.empty() || !options.uiLayoutJsonPath.empty()) {
+        DocumentImportOptions documents;
+        documents.material = options.materialJsonPath;
+        documents.gltf = options.gltfJsonPath;
+        documents.legacyLayout = options.uiLayoutJsonPath;
+        documents.legacyPsd = options.uiPsdPath;
+        documents.legacyManifest = options.uiManifestPath;
+        documents.uiIr = options.uiIrPath;
+        documents.outputUi = options.outputUiPath;
+        documents.httpBase = options.documentHttpBase;
+        documents.maxDocumentBytes = options.maxDocumentBytes;
+        documents.legacyUiJson = options.legacyUiJson;
+        return DocumentImporter{}.run(documents, out, err);
     }
 
     err << "usage: arp_asset_importer --self-test | --unity-script <file.arp>"
         << " --script-input <path> [--script-output <file>]"
         << " [--script-aot-package <manifest.yaml> --script-aot-module <id>]"
         << " | --material-json <file> | --gltf-json <file>"
-        << " | --ui-layout-json <file> | --ui-psd <file>"
+        << " | --ui-ir <yaml> --output-ui <file.arpui>"
+        << " [--max-document-bytes B] [--source-http-base URL]"
+        << " | --legacy-ui-json --ui-layout-json <file> | --legacy-ui-json --ui-psd <file>"
         << " --ui-manifest <file> --output-ui <file.arpui>"
         << " | --unity-particle-prefab <file> --output-package <dir>"
         << " | --unity-prefab-folder <dir> --output-package <dir>\n";

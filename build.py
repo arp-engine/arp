@@ -157,6 +157,7 @@ def _auto_discover_modules() -> Dict[str, ModuleDef]:
         "src/network/http/session.cpp",
         "src/network/http/uri.cpp",
         "src/network/http/byte_read_transport.cpp",
+        "src/network/http/byte_transfer_executor.cpp",
         "src/network/http/fetch_byte_transfer.cpp",
         "src/network/io_context.cpp",
         "src/network/io_poller.cpp",

@@ -535,11 +535,12 @@ bool EditorSceneScriptCodec::validateStructure(std::string_view yaml,
     return false;
 }
 
-bool EditorSceneScriptCodec::prepare(std::string_view yaml,
+static bool prepareDocument(std::string_view yaml,
     const EditorSceneDocument& destination,
     const EditorSceneScriptInputs& input,
     core::UniquePtr<EditorSceneDocument>& output,
-    core::pmr::String& diagnostic)
+    core::pmr::String& diagnostic,
+    const EditorSceneDocument* rebindSource = nullptr)
 {
     diagnostic.clear();
     try {
@@ -573,6 +574,15 @@ bool EditorSceneScriptCodec::prepare(std::string_view yaml,
                   input.projectRoot, input.project, input.modules, diagnostic);
         if (!scriptsPrepared)
             return false;
+        if (rebindSource) {
+            EditorScriptComponentArchive previous(*rebindSource, input.fields);
+            EditorScriptComponentArchive next(*candidate, input.fields);
+            for (auto& record : records)
+                for (auto& component : record.object.components)
+                    if (component.script)
+                        component.script = core::makeShared<State>(
+                            next.rebindSources(*component.script, previous));
+        }
         applyObject(candidate->scene(), root);
         {
             Transaction* scope = nullptr;
@@ -651,6 +661,26 @@ bool EditorSceneScriptCodec::prepare(std::string_view yaml,
         diagnostic = error.what();
         return false;
     }
+}
+
+bool EditorSceneScriptCodec::prepare(std::string_view yaml,
+    const EditorSceneDocument& destination,
+    const EditorSceneScriptInputs& input,
+    core::UniquePtr<EditorSceneDocument>& output,
+    core::pmr::String& diagnostic)
+{
+    return prepareDocument(yaml, destination, input, output, diagnostic);
+}
+
+bool EditorSceneScriptCodec::prepareReload(const EditorSceneDocument& document,
+    const EditorSceneScriptInputs& input,
+    core::UniquePtr<EditorSceneDocument>& output,
+    core::pmr::String& diagnostic)
+{
+    core::pmr::String observed;
+    if (!observeSnapshot(document, input, observed, diagnostic))
+        return false;
+    return prepareDocument(observed, document, input, output, diagnostic, &document);
 }
 
 bool EditorSceneScriptCodec::decode(std::string_view yaml,

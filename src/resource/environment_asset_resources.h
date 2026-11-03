@@ -16,8 +16,10 @@
 // Plan reference: complete_procedural_scene_implementation_plan.md P1.
 
 #include "assets/asset_pipeline.h"
+#include "assets/glb_static_mesh_importer.h"
 #include "core/hash/stable_hash.h"
 #include "core/memory/cpu_allocator.h"
+#include "resource/environment_lod_sources.h"
 #include "resource/resource_contract.h"
 #include "resource/resource_manager.h"
 
@@ -25,6 +27,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -217,6 +220,13 @@ inline constexpr ResourceContractDescriptor kNamedMeshVariantSetContract{
     "mesh.variant_set/v1",
 };
 
+struct NamedMeshGlbSourceDesc final {
+    core::pmr::String path;
+    ResourceFileOrigin origin;
+    assets::NamedVariantSourceImportLimits limits;
+    assets::NamedVariantGeometrySpace geometrySpace = assets::NamedVariantGeometrySpace::Scene;
+};
+
 /// A GLB file imported with named-node variant preservation.
 /// Each named mesh-bearing node becomes an independently addressable variant.
 /// PlantAssetSet and RockAssetSet extend this with type-specific validation.
@@ -241,7 +251,34 @@ public:
           expectedVariantCount_(expectedVariantCount), expectedLodCount_(expectedLodCount)
     {}
 
+    NamedMeshVariantSet(core::pmr::String resourceId,
+        core::pmr::String alias,
+        core::pmr::String assetSetId,
+        NamedMeshGlbSourceDesc source,
+        std::uint32_t expectedVariantCount)
+        : ResourceBase({std::move(resourceId),
+              resourceTypeName(),
+              std::move(alias),
+              "Contract Complete",
+              {}}),
+          assetSetId_(std::move(assetSetId)), expectedVariantCount_(expectedVariantCount),
+          expectedLodCount_(1), source_(std::move(source))
+    {}
+
     ResourceLoadResult load(ResourceManager& manager, const ResourceLoadContext& context) override;
+    bool collectFileReadIntents(ResourceManager&,
+        core::pmr::Vector<ResourceFileReadIntent>&,
+        core::pmr::String&) const override;
+
+    assets::NamedVariantTransformLayout transformLayout() const noexcept
+    {
+        return transformLayout_;
+    }
+
+    const NamedMeshGlbSourceDesc* sourceDescriptor() const noexcept
+    {
+        return source_ ? &*source_ : nullptr;
+    }
 
     /// Get a variant by name. Returns nullptr if not found.
     const assets::NamedVariant* findVariant(const std::string& name) const;
@@ -255,7 +292,11 @@ public:
     /// Get the imported materials.
     const std::pmr::vector<assets::ImportedMaterialAsset>& materials() const { return materials_; }
 
-    const std::string& assetSetId() const { return assetSetId_; }
+    const core::pmr::Vector<assets::ImportedTextureAsset>& textures() const { return textures_; }
+
+    const core::pmr::Vector<assets::ImportedImageAsset>& images() const { return images_; }
+
+    const core::pmr::String& assetSetId() const { return assetSetId_; }
 
     const std::filesystem::path& glbPath() const { return glbPath_; }
 
@@ -269,6 +310,10 @@ public:
         for (const auto& v : variants_) {
             total += v.mesh.vertices.size() * sizeof(assets::MeshVertex)
                 + v.mesh.indices.size() * sizeof(std::uint32_t);
+            if (source_)
+                total += v.windWeights.size() * sizeof(float)
+                    + v.materialSlots.size() * sizeof(std::uint32_t)
+                    + v.mesh.submeshes.size() * sizeof(assets::Submesh);
         }
         return total;
     }
@@ -278,17 +323,10 @@ public:
         return ResourceGraphStage::TypedProcessing;
     }
 
-    void appendContentFingerprint(core::StableHash64& hasher) const noexcept override
-    {
-        hasher.appendBytes(assetSetId_.data(), assetSetId_.size());
-        const auto pathStr = glbPath_.string();
-        hasher.appendBytes(pathStr.data(), pathStr.size());
-        hasher.appendU64(expectedVariantCount_);
-        hasher.appendU64(expectedLodCount_);
-    }
+    void appendContentFingerprint(core::StableHash64& hasher) const noexcept override;
 
 protected:
-    std::string assetSetId_;
+    core::pmr::String assetSetId_;
     std::filesystem::path glbPath_;
     std::uint32_t expectedVariantCount_ = 0;
     std::uint32_t expectedLodCount_ = 0;
@@ -296,6 +334,13 @@ protected:
     std::pmr::vector<assets::ImportedMaterialAsset> materials_{&core::defaultCpuMemoryResource()};
     std::pmr::vector<assets::ImportedTextureAsset> textures_{&core::defaultCpuMemoryResource()};
     std::pmr::vector<assets::ImportedImageAsset> images_{&core::defaultCpuMemoryResource()};
+
+private:
+    const char* validateSource() const;
+    std::optional<NamedMeshGlbSourceDesc> source_;
+    std::array<std::uint8_t, 32> sourceDigest_{};
+    assets::NamedVariantTransformLayout transformLayout_ =
+        assets::NamedVariantTransformLayout::LegacyColumnMajor;
 };
 
 // ---------------------------------------------------------------------------
@@ -334,6 +379,29 @@ public:
           initialLodCount_(maxLodCount == 0u ? 1u : maxLodCount)
     {}
 
+    PlantAssetSet(core::pmr::String resourceId,
+        core::pmr::String alias,
+        core::pmr::String assetSetId,
+        EnvironmentLodSourceDesc source,
+        core::pmr::String woodMaterialRole,
+        core::pmr::String foliageMaterialRole);
+
+    const EnvironmentLodSourceDesc* sourceDescriptor() const noexcept
+    {
+        return source_ ? &*source_ : nullptr;
+    }
+
+    core::UniquePtr<PlantAssetSet> makeLodCandidate(std::uint32_t residentLevels) const;
+    bool collectFileReadIntents(ResourceManager&,
+        core::pmr::Vector<ResourceFileReadIntent>&,
+        core::pmr::String&) const override;
+
+    assets::NamedVariantTransformLayout transformLayout() const noexcept
+    {
+        return source_ ? assets::NamedVariantTransformLayout::RowMajor
+                       : assets::NamedVariantTransformLayout::LegacyColumnMajor;
+    }
+
     ResourceLoadResult load(ResourceManager& manager, const ResourceLoadContext& context) override;
 
     /// Incrementally import one additional distance LOD after admission.
@@ -351,11 +419,11 @@ public:
 
     std::uint32_t lodCount() const { return static_cast<std::uint32_t>(lods_.size()); }
 
-    const std::string& assetSetId() const { return assetSetId_; }
+    const core::pmr::String& assetSetId() const { return assetSetId_; }
 
-    const std::string& woodMaterialRole() const { return woodMaterialRole_; }
+    const core::pmr::String& woodMaterialRole() const { return woodMaterialRole_; }
 
-    const std::string& foliageMaterialRole() const { return foliageMaterialRole_; }
+    const core::pmr::String& foliageMaterialRole() const { return foliageMaterialRole_; }
 
     const std::pmr::vector<assets::ImportedMaterialAsset>* materialsForLod(
         std::uint32_t lodIndex) const
@@ -379,6 +447,8 @@ public:
 
     std::size_t processedByteCount() const noexcept override
     {
+        if (source_)
+            return sourceDecodedBytes_;
         std::size_t total = 0u;
         for (const auto& lod : lods_) {
             for (const auto& v : lod.variants) {
@@ -397,6 +467,14 @@ public:
     void appendContentFingerprint(core::StableHash64& hasher) const noexcept override
     {
         hasher.appendBytes(assetSetId_.data(), assetSetId_.size());
+        if (source_) {
+            EnvironmentLodSourceLoader::fingerprint(*source_, hasher);
+            hasher.appendU64(woodMaterialRole_.size());
+            hasher.appendBytes(woodMaterialRole_.data(), woodMaterialRole_.size());
+            hasher.appendU64(foliageMaterialRole_.size());
+            hasher.appendBytes(foliageMaterialRole_.data(), foliageMaterialRole_.size());
+            return;
+        }
         const auto dirStr = runtimeDir_.string();
         hasher.appendBytes(dirStr.data(), dirStr.size());
         hasher.appendU64(expectedVariants_);
@@ -404,44 +482,26 @@ public:
     }
 
 private:
-    struct LodData {
-        std::uint32_t lodIndex = 0;
-        // Equal GLB payloads share the imported CPU representation. This is
-        // important for authored families whose LOD files are intentionally
-        // mirrored until a lower-detail source is available.
-        std::uint32_t sourceLod = 0;
-        std::pmr::vector<assets::NamedVariant> variants{&core::defaultCpuMemoryResource()};
-        std::pmr::vector<assets::ImportedMaterialAsset> materials{
-            &core::defaultCpuMemoryResource()};
-        std::pmr::vector<assets::ImportedTextureAsset> textures{&core::defaultCpuMemoryResource()};
-        std::pmr::vector<assets::ImportedImageAsset> images{&core::defaultCpuMemoryResource()};
-    };
+    using LodData = EnvironmentLodData;
 
-    std::string assetSetId_;
+    core::pmr::String assetSetId_;
     std::filesystem::path runtimeDir_;
     std::uint32_t expectedVariants_ = 0;
-    std::string woodMaterialRole_;
-    std::string foliageMaterialRole_;
+    core::pmr::String woodMaterialRole_;
+    core::pmr::String foliageMaterialRole_;
     // The constructor argument controls the eager startup prefix. The
     // contract still permits the complete three-LOD set to be appended later.
     std::uint32_t initialLodCount_ = 3u;
     std::uint32_t maxLodCount_ = 3u;
-    std::vector<LodData> lods_;
+    core::pmr::Vector<LodData> lods_;
+    std::optional<EnvironmentLodSourceDesc> source_;
+    std::size_t sourceDecodedBytes_ = 0;
 
     ResourceLoadResult loadOneLod(std::uint32_t lodIndex);
 
-    const LodData* resolvedLod(std::uint32_t lodIndex) const
+    const LodData* resolvedLod(std::uint32_t index) const
     {
-        if (lodIndex >= lods_.size())
-            return nullptr;
-        const LodData* lod = &lods_[lodIndex];
-        std::size_t guard = 0;
-        while (lod->sourceLod != lod->lodIndex && guard++ < lods_.size()) {
-            if (lod->sourceLod >= lods_.size())
-                return nullptr;
-            lod = &lods_[lod->sourceLod];
-        }
-        return lod;
+        return EnvironmentLodSourceLoader::resolve(lods_, index);
     }
 };
 
@@ -477,6 +537,27 @@ public:
           initialLodCount_(maxLodCount == 0u ? 1u : maxLodCount)
     {}
 
+    RockAssetSet(core::pmr::String resourceId,
+        core::pmr::String alias,
+        core::pmr::String assetSetId,
+        EnvironmentLodSourceDesc source);
+
+    const EnvironmentLodSourceDesc* sourceDescriptor() const noexcept
+    {
+        return source_ ? &*source_ : nullptr;
+    }
+
+    core::UniquePtr<RockAssetSet> makeLodCandidate(std::uint32_t residentLevels) const;
+    bool collectFileReadIntents(ResourceManager&,
+        core::pmr::Vector<ResourceFileReadIntent>&,
+        core::pmr::String&) const override;
+
+    assets::NamedVariantTransformLayout transformLayout() const noexcept
+    {
+        return source_ ? assets::NamedVariantTransformLayout::RowMajor
+                       : assets::NamedVariantTransformLayout::LegacyColumnMajor;
+    }
+
     ResourceLoadResult load(ResourceManager& manager, const ResourceLoadContext& context) override;
 
     /// Incrementally import one additional distance LOD after admission.
@@ -490,10 +571,31 @@ public:
 
     std::uint32_t lodCount() const { return static_cast<std::uint32_t>(lods_.size()); }
 
-    const std::string& assetSetId() const { return assetSetId_; }
+    const core::pmr::String& assetSetId() const { return assetSetId_; }
+
+    const core::pmr::Vector<assets::ImportedMaterialAsset>* materialsForLod(
+        std::uint32_t index) const
+    {
+        const auto* data = EnvironmentLodSourceLoader::resolve(lods_, index);
+        return data ? &data->materials : nullptr;
+    }
+
+    const core::pmr::Vector<assets::ImportedTextureAsset>* texturesForLod(std::uint32_t index) const
+    {
+        const auto* data = EnvironmentLodSourceLoader::resolve(lods_, index);
+        return data ? &data->textures : nullptr;
+    }
+
+    const core::pmr::Vector<assets::ImportedImageAsset>* imagesForLod(std::uint32_t index) const
+    {
+        const auto* data = EnvironmentLodSourceLoader::resolve(lods_, index);
+        return data ? &data->images : nullptr;
+    }
 
     std::size_t processedByteCount() const noexcept override
     {
+        if (source_)
+            return sourceDecodedBytes_;
         std::size_t total = 0u;
         for (const auto& lod : lods_) {
             for (const auto& v : lod.variants) {
@@ -512,6 +614,10 @@ public:
     void appendContentFingerprint(core::StableHash64& hasher) const noexcept override
     {
         hasher.appendBytes(assetSetId_.data(), assetSetId_.size());
+        if (source_) {
+            EnvironmentLodSourceLoader::fingerprint(*source_, hasher);
+            return;
+        }
         const auto dirStr = runtimeDir_.string();
         hasher.appendBytes(dirStr.data(), dirStr.size());
         hasher.appendU64(expectedVariants_);
@@ -519,19 +625,16 @@ public:
     }
 
 private:
-    struct LodData {
-        std::uint32_t lodIndex = 0;
-        std::pmr::vector<assets::NamedVariant> variants{&core::defaultCpuMemoryResource()};
-        std::pmr::vector<assets::ImportedMaterialAsset> materials{
-            &core::defaultCpuMemoryResource()};
-    };
+    using LodData = EnvironmentLodData;
 
-    std::string assetSetId_;
+    core::pmr::String assetSetId_;
     std::filesystem::path runtimeDir_;
     std::uint32_t expectedVariants_ = 0;
     std::uint32_t initialLodCount_ = 3u;
     std::uint32_t maxLodCount_ = 3u;
-    std::vector<LodData> lods_;
+    core::pmr::Vector<LodData> lods_;
+    std::optional<EnvironmentLodSourceDesc> source_;
+    std::size_t sourceDecodedBytes_ = 0;
 
     ResourceLoadResult loadOneLod(std::uint32_t lodIndex);
 };

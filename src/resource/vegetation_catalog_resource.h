@@ -2,6 +2,7 @@
 
 #include "3d/vegetation/template.h"
 #include "assets/asset_pipeline.h"
+#include "assets/glb_static_mesh_importer.h"
 #include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
 #include "resource/resource_contract.h"
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -102,7 +104,16 @@ struct VegetationCatalogResourceData {
     std::uint16_t templateIdFor(std::string_view id) const noexcept;
 };
 
-enum class VegetationCatalogInput { LegacySourceCatalog, Cooked };
+enum class VegetationCatalogInput { LegacySourceCatalog, Cooked, SourceCatalogV2 };
+
+// Explicit acquisition/processing budget for the existing two-catalog v2 wire
+// format. V1 filename-defined categorization remains a separate native legacy API.
+struct VegetationCatalogSourceLoadLimits final {
+    std::size_t maxCatalogBytes = 0, maxAssets = 0, maxDecodedBytes = 0;
+    std::size_t maxMetadataDepth = 0, maxMetadataValues = 0, maxMetadataCollectionLength = 0;
+    std::uint64_t maxTotalSourceBytes = 0, maxImportBytes = 0;
+    assets::StaticMeshSceneSourceImportLimits mesh;
+};
 
 struct VegetationCatalogResourceLoadDesc {
     std::filesystem::path catalogPath;
@@ -111,6 +122,7 @@ struct VegetationCatalogResourceLoadDesc {
     core::pmr::String status{&core::defaultCpuMemoryResource()};
     VegetationCatalogInput input = VegetationCatalogInput::LegacySourceCatalog;
     ResourceFileOrigin sourceOrigin;
+    std::optional<VegetationCatalogSourceLoadLimits> sourceLimits;
 };
 
 struct VegetationCatalogResource : public ResourceBase {
@@ -148,6 +160,7 @@ struct VegetationCatalogResource : public ResourceBase {
     VegetationCatalogResourceLoadDesc loadDesc;
 
 private:
+    ResourceLoadResult loadCatalog(ResourceManager&, const ResourceLoadContext&);
     std::size_t cookedBytes_ = 0u;
     std::uint64_t cookedFingerprint_ = 0u;
 };

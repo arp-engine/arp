@@ -280,9 +280,23 @@ core::pmr::String readFileText(
 bool loadTypedCatalog(const std::filesystem::path& path,
     const char* label,
     VegetationSourceCatalog& out,
-    core::pmr::String& diagnostics)
+    core::pmr::String& diagnostics,
+    const ResourceLoadContext* context = nullptr,
+    const VegetationCatalogResourceLoadDesc* desc = nullptr)
 {
-    const auto text = readFileText(path, label, diagnostics);
+    core::pmr::String text;
+    if (context) {
+        auto read = readResourceText(core::FilePath::utf8(path),
+            *context,
+            desc->sourceLimits->maxCatalogBytes,
+            &desc->sourceOrigin);
+        if (!read.success) {
+            diagnostics = std::move(read.diagnostics);
+            return false;
+        }
+        text = std::move(read.text);
+    } else
+        text = readFileText(path, label, diagnostics);
     if (text.empty()) {
         return false;
     }
@@ -291,6 +305,11 @@ bool loadTypedCatalog(const std::filesystem::path& path,
     // retry another profile on failure. See the serialization binding contract.
     arp::reflection::SerializationOptions options;
     options.profile = arp::reflection::SerializationProfile::LegacyAllPropertiesV1;
+    if (context) {
+        options.maxDepth = desc->sourceLimits->maxMetadataDepth;
+        options.maxValues = desc->sourceLimits->maxMetadataValues;
+        options.maxCollectionLength = desc->sourceLimits->maxMetadataCollectionLength;
+    }
     const auto result = arp::reflection::deserialize_from_yaml(text, options);
     if (!result.success) {
         diagnostics = makeDiagnostic(label);
@@ -311,110 +330,144 @@ bool loadTypedCatalog(const std::filesystem::path& path,
         diagnostics += std::to_string(catalog->contractVersion);
         return false;
     }
-    std::clog << "[vegetation-catalog-serialization] contractVersion=" << catalog->contractVersion
-              << " profile=LegacyAllPropertiesV1\n";
+    if (!context)
+        std::clog << "[vegetation-catalog-serialization] contractVersion="
+                  << catalog->contractVersion << " profile=LegacyAllPropertiesV1\n";
     out = *catalog;
     return true;
 }
 
-} // namespace
-
-const VegetationCatalogAssetEntry* VegetationCatalogResourceData::findAsset(
-    std::string_view id) const noexcept
+bool runtimeCatalogLocation(const VegetationCatalogResourceLoadDesc& desc,
+    const VegetationSourceCatalog& catalog,
+    std::filesystem::path& output,
+    core::pmr::String& diagnostic)
 {
-    for (const auto& asset : assets) {
-        if (asset.id == id) {
-            return &asset;
+    if (desc.input == VegetationCatalogInput::SourceCatalogV2) {
+        if (!resolveResourceSourcePath(desc.catalogPath.parent_path(),
+                catalog.runtimeCatalog,
+                desc.sourceOrigin,
+                output)) {
+            diagnostic = "VEGETATION-SOURCE-PATH";
+            return false;
         }
-    }
+    } else
+        output = resolveRelativePath(desc.catalogPath.parent_path(), catalog.runtimeCatalog);
+    return true;
+}
+
+const char* validateCatalogSource(const VegetationCatalogResourceLoadDesc& desc)
+{
+    if (!desc.sourceLimits)
+        return "VEGETATION-SOURCE-LIMITS";
+    const auto& limits = *desc.sourceLimits;
+    if (!limits.maxCatalogBytes || limits.maxCatalogBytes == SIZE_MAX || !limits.maxAssets
+        || limits.maxAssets > UINT16_MAX || !limits.maxDecodedBytes
+        || limits.maxDecodedBytes == SIZE_MAX || !limits.maxTotalSourceBytes
+        || limits.maxTotalSourceBytes == UINT64_MAX
+        || limits.maxCatalogBytes > limits.maxTotalSourceBytes || !limits.maxImportBytes
+        || !limits.maxMetadataDepth || limits.maxMetadataDepth > 64 || !limits.maxMetadataValues
+        || limits.maxMetadataValues == SIZE_MAX
+        || limits.maxMetadataCollectionLength < limits.maxAssets
+        || limits.maxMetadataCollectionLength == SIZE_MAX || limits.maxImportBytes == UINT64_MAX
+        || assets::validateStaticMeshSceneSourceImportLimits(limits.mesh)
+        || limits.maxAssets > limits.maxImportBytes / limits.mesh.maxImportBytes
+        || limits.maxAssets * limits.mesh.maxImportBytes >= limits.maxImportBytes)
+        return "VEGETATION-SOURCE-LIMITS";
+    if (validateResourceReadIntent(
+            core::FilePath::utf8(desc.catalogPath), limits.maxCatalogBytes, desc.sourceOrigin)
+            .diagnostic)
+        return "VEGETATION-SOURCE-PATH";
     return nullptr;
 }
 
-const vegetation::VegetationTemplate* VegetationCatalogResourceData::findTemplate(
-    std::string_view id) const noexcept
+std::uint64_t catalogOverhead(const VegetationCatalogSourceLoadLimits& limits) noexcept
 {
-    const auto templateId = templateIdFor(id);
-    if (templateId == 0u || templateId == std::numeric_limits<std::uint16_t>::max()) {
-        return nullptr;
+    return limits.maxImportBytes - limits.maxAssets * limits.mesh.maxImportBytes;
+}
+
+class CatalogSourceIdentity final {
+public:
+    CatalogSourceIdentity(
+        const VegetationCatalogResourceLoadDesc& desc, const ResourceLoadContext& context)
+        : desc_(desc), context_(context)
+    {
+        appendResourceOriginFingerprint(hash_, desc.sourceOrigin);
+        const auto& limits = *desc.sourceLimits;
+        const auto& mesh = limits.mesh;
+        for (const auto value : {std::uint64_t(limits.maxCatalogBytes),
+                 std::uint64_t(limits.maxAssets),
+                 std::uint64_t(limits.maxDecodedBytes),
+                 std::uint64_t(limits.maxMetadataDepth),
+                 std::uint64_t(limits.maxMetadataValues),
+                 std::uint64_t(limits.maxMetadataCollectionLength),
+                 limits.maxTotalSourceBytes,
+                 limits.maxImportBytes,
+                 mesh.maxImportBytes,
+                 mesh.maxDecodedBytes,
+                 std::uint64_t(mesh.maxNodeVisits),
+                 std::uint64_t(mesh.maxNodeDepth),
+                 mesh.geometry.maxSourceBytes,
+                 std::uint64_t(mesh.geometry.maxVertices),
+                 std::uint64_t(mesh.geometry.maxIndices),
+                 std::uint64_t(mesh.geometry.maxPrimitives),
+                 std::uint64_t(mesh.geometry.maxJsonDepth),
+                 std::uint64_t(mesh.geometry.maxJsonValues),
+                 std::uint64_t(mesh.colorPolicy)})
+            hash_.appendU64(value);
     }
-    const auto storageIndex = static_cast<std::size_t>(templateId - 1u);
-    if (storageIndex >= templates.size()) {
-        return nullptr;
+
+    bool append(const std::filesystem::path& path, std::size_t maxBytes)
+    {
+        const auto logical = core::FilePath::utf8(path);
+        if (std::find(paths_.begin(), paths_.end(), logical) != paths_.end())
+            return true;
+        const auto* source = context_.sources ? context_.sources->find(logical) : nullptr;
+        if (!source || source->pathScope != desc_.sourceOrigin.pathScope
+            || !(source->mount == desc_.sourceOrigin.mount) || source->bytes.size() > maxBytes
+            || source->bytes.size() > desc_.sourceLimits->maxTotalSourceBytes - total_)
+            return false;
+        total_ += source->bytes.size();
+        paths_.push_back(logical);
+        hash_.appendU64(logical.size());
+        hash_.appendBytes(logical.data(), logical.size());
+        hash_.appendU64(source->bytes.size());
+        const auto digest = core::Sha256::digest(
+            {reinterpret_cast<const char*>(source->bytes.data()), source->bytes.size()});
+        hash_.appendBytes(digest.data(), digest.size());
+        return true;
     }
-    return &templates[storageIndex];
-}
 
-const VegetationCatalogAssetEntry* VegetationCatalogResourceData::findAssetByTemplateId(
-    std::uint16_t templateId) const noexcept
-{
-    for (const auto& asset : assets) {
-        if (asset.templateId == templateId) {
-            return &asset;
-        }
-    }
-    return nullptr;
-}
+    std::uint64_t value() const noexcept { return hash_.value(); }
 
-std::uint16_t VegetationCatalogResourceData::familyBase(
-    vegetation::TemplateCategory category) const noexcept
-{
-    // TerrainAsset reserves prototype ID zero as invalid. Catalog-facing
-    // family IDs therefore begin at one even though the internal template
-    // storage remains densely zero-indexed.
-    return static_cast<std::uint16_t>(
-        vegetation::familyTemplateBase(templateConfig, category) + 1u);
-}
+private:
+    const VegetationCatalogResourceLoadDesc& desc_;
+    const ResourceLoadContext& context_;
+    core::StableHash64 hash_;
+    core::pmr::Vector<core::pmr::String> paths_;
+    std::uint64_t total_ = 0;
+};
 
-std::uint16_t VegetationCatalogResourceData::familyVariantCount(
-    vegetation::TemplateCategory category) const noexcept
-{
-    return vegetation::familyVariantCount(templateConfig, category);
-}
+struct CatalogInputPair final {
+    VegetationSourceCatalog source, runtime;
+    std::filesystem::path runtimePath;
+    core::pmr::Vector<VegetationCatalogAssetRecord> runtimeAssets;
+    core::pmr::Vector<std::filesystem::path> paths;
+};
 
-std::uint16_t VegetationCatalogResourceData::templateIdFor(std::string_view id) const noexcept
+ResourceLoadResult prepareCatalogPair(const VegetationCatalogResourceLoadDesc& loadDesc,
+    const ResourceLoadContext* context,
+    CatalogInputPair& pair)
 {
-    // C++17 unordered_map lookup cannot consume string_view without creating
-    // an owned key. Keep this noexcept resource lookup allocation-free.
-    for (const auto& entry : templateIdsByAssetId)
-        if (entry.first == id)
-            return entry.second;
-    return std::numeric_limits<std::uint16_t>::max();
-}
-
-ResourceLoadResult VegetationCatalogResource::load(
-    ResourceManager& resourceManager, const ResourceLoadContext& context)
-{
-    if (loadDesc.input == VegetationCatalogInput::Cooked) {
-        auto decoded = VegetationCatalogCookedCodec().decode(
-            reference(), loadDesc.catalogPath, context, loadDesc.sourceOrigin);
-        if (!decoded.success)
-            return {false,
-                ResourceState::Failed,
-                reference().id,
-                reference().type,
-                decoded.diagnostics};
-        for (const auto& dependency : decoded.dependencies) {
-            const auto material = resourceManager.find<MaterialResource>(dependency.id);
-            if (!material.ready())
-                return resourceLoadFailure(*this, "VEGETATION-COOKED-MATERIAL-NOT-READY-OR-TYPE");
-        }
-        for (const auto& dependency : decoded.dependencies)
-            addDependency(dependency);
-        data = std::move(decoded.data);
-        cookedBytes_ = decoded.decodedBytes;
-        cookedFingerprint_ = decoded.contentFingerprint;
-        return ResourceBase::load(resourceManager, context);
-    }
-    if (loadDesc.input != VegetationCatalogInput::LegacySourceCatalog
-        || context.requirePreloadedSources || context.maxDecodedBytes
-        || loadDesc.sourceOrigin.pathScope != core::io::FilePathScope::HostFilesystem
-        || loadDesc.sourceOrigin.mount)
-        return resourceLoadFailure(*this, "VEGETATION-LEGACY-SOURCE-CONTRACT-UNSUPPORTED");
     registerVegetationCatalogReflection();
 
     core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
-    VegetationSourceCatalog sourceCatalog;
-    if (!loadTypedCatalog(loadDesc.catalogPath, "vegetation catalog", sourceCatalog, diagnostics)) {
+    auto& sourceCatalog = pair.source;
+    if (!loadTypedCatalog(loadDesc.catalogPath,
+            "vegetation catalog",
+            sourceCatalog,
+            diagnostics,
+            context,
+            &loadDesc)) {
         return ResourceLoadResult{
             false,
             ResourceState::Failed,
@@ -445,12 +498,27 @@ ResourceLoadResult VegetationCatalogResource::load(
         };
     }
 
-    const auto runtimeCatalogPath =
-        resolveRelativePath(loadDesc.catalogPath.parent_path(), sourceCatalog.runtimeCatalog);
+    if (context && sourceCatalog.contractVersion != 2u)
+        return {false,
+            ResourceState::Failed,
+            loadDesc.resourceId,
+            makeString(kVegetationCatalogResourceContract.type),
+            "VEGETATION-SOURCE-V2-REQUIRED"};
+    if (!runtimeCatalogLocation(loadDesc, sourceCatalog, pair.runtimePath, diagnostics))
+        return {false,
+            ResourceState::Failed,
+            loadDesc.resourceId,
+            makeString(kVegetationCatalogResourceContract.type),
+            diagnostics};
+    const auto& runtimeCatalogPath = pair.runtimePath;
 
-    VegetationSourceCatalog runtimeCatalog;
-    if (!loadTypedCatalog(
-            runtimeCatalogPath, "vegetation runtime catalog", runtimeCatalog, diagnostics)) {
+    auto& runtimeCatalog = pair.runtime;
+    if (!loadTypedCatalog(runtimeCatalogPath,
+            "vegetation runtime catalog",
+            runtimeCatalog,
+            diagnostics,
+            context,
+            &loadDesc)) {
         return ResourceLoadResult{
             false,
             ResourceState::Failed,
@@ -481,6 +549,14 @@ ResourceLoadResult VegetationCatalogResource::load(
         };
     }
 
+    if (context
+        && (sourceCatalog.assets.size() > loadDesc.sourceLimits->maxAssets
+            || runtimeCatalog.assets.size() > loadDesc.sourceLimits->maxAssets))
+        return {false,
+            ResourceState::Failed,
+            loadDesc.resourceId,
+            makeString(kVegetationCatalogResourceContract.type),
+            "VEGETATION-SOURCE-ASSET-BUDGET"};
     const auto hasAssetRecords = [](const auto& catalog) {
         return std::all_of(catalog.assets.begin(), catalog.assets.end(), [](const auto& item) {
             return item.template is<VegetationCatalogAssetRecord>();
@@ -503,7 +579,7 @@ ResourceLoadResult VegetationCatalogResource::load(
         return out;
     }();
 
-    const auto runtimeAssets = [&]() -> core::pmr::Vector<VegetationCatalogAssetRecord> {
+    pair.runtimeAssets = [&]() -> core::pmr::Vector<VegetationCatalogAssetRecord> {
         core::pmr::Vector<VegetationCatalogAssetRecord> out{&core::defaultCpuMemoryResource()};
         out.reserve(runtimeCatalog.assets.size());
         for (const auto& item : runtimeCatalog.assets) {
@@ -511,6 +587,7 @@ ResourceLoadResult VegetationCatalogResource::load(
         }
         return out;
     }();
+    const auto& runtimeAssets = pair.runtimeAssets;
 
     if (sourceAssets.empty() || runtimeAssets.empty()) {
         return ResourceLoadResult{
@@ -608,6 +685,183 @@ ResourceLoadResult VegetationCatalogResource::load(
         }
     }
 
+    if (context) {
+        pair.paths.reserve(runtimeAssets.size());
+        for (std::size_t i = 0; i < runtimeAssets.size(); ++i) {
+            const auto& asset = runtimeAssets[i];
+            if (asset.id.empty() || asset.id.find('\0') != core::pmr::String::npos)
+                return {false,
+                    ResourceState::Failed,
+                    loadDesc.resourceId,
+                    makeString(kVegetationCatalogResourceContract.type),
+                    "VEGETATION-SOURCE-ASSET-ID"};
+            for (std::size_t j = 0; j < i; ++j)
+                if (runtimeAssets[j].id == asset.id)
+                    return {false,
+                        ResourceState::Failed,
+                        loadDesc.resourceId,
+                        makeString(kVegetationCatalogResourceContract.type),
+                        "VEGETATION-SOURCE-ASSET-ID"};
+            vegetation::TemplateCategory category;
+            if (!detail::CatalogFamilyContract::parse(asset.templateCategory, category)
+                || category == vegetation::TemplateCategory::ProceduralGrass)
+                return {false,
+                    ResourceState::Failed,
+                    loadDesc.resourceId,
+                    makeString(kVegetationCatalogResourceContract.type),
+                    "VEGETATION-SOURCE-CATEGORY"};
+            std::filesystem::path path;
+            if (!resolveResourceSourcePath(
+                    runtimeCatalogPath.parent_path(), asset.source, loadDesc.sourceOrigin, path))
+                return {false,
+                    ResourceState::Failed,
+                    loadDesc.resourceId,
+                    makeString(kVegetationCatalogResourceContract.type),
+                    "VEGETATION-SOURCE-PATH"};
+            pair.paths.push_back(std::move(path));
+        }
+    }
+    return {true,
+        ResourceState::Ready,
+        loadDesc.resourceId,
+        makeString(kVegetationCatalogResourceContract.type),
+        {}};
+}
+
+} // namespace
+
+const VegetationCatalogAssetEntry* VegetationCatalogResourceData::findAsset(
+    std::string_view id) const noexcept
+{
+    for (const auto& asset : assets) {
+        if (asset.id == id) {
+            return &asset;
+        }
+    }
+    return nullptr;
+}
+
+const vegetation::VegetationTemplate* VegetationCatalogResourceData::findTemplate(
+    std::string_view id) const noexcept
+{
+    const auto templateId = templateIdFor(id);
+    if (templateId == 0u || templateId == std::numeric_limits<std::uint16_t>::max()) {
+        return nullptr;
+    }
+    const auto storageIndex = static_cast<std::size_t>(templateId - 1u);
+    if (storageIndex >= templates.size()) {
+        return nullptr;
+    }
+    return &templates[storageIndex];
+}
+
+const VegetationCatalogAssetEntry* VegetationCatalogResourceData::findAssetByTemplateId(
+    std::uint16_t templateId) const noexcept
+{
+    for (const auto& asset : assets) {
+        if (asset.templateId == templateId) {
+            return &asset;
+        }
+    }
+    return nullptr;
+}
+
+std::uint16_t VegetationCatalogResourceData::familyBase(
+    vegetation::TemplateCategory category) const noexcept
+{
+    // TerrainAsset reserves prototype ID zero as invalid. Catalog-facing
+    // family IDs therefore begin at one even though the internal template
+    // storage remains densely zero-indexed.
+    return static_cast<std::uint16_t>(
+        vegetation::familyTemplateBase(templateConfig, category) + 1u);
+}
+
+std::uint16_t VegetationCatalogResourceData::familyVariantCount(
+    vegetation::TemplateCategory category) const noexcept
+{
+    return vegetation::familyVariantCount(templateConfig, category);
+}
+
+std::uint16_t VegetationCatalogResourceData::templateIdFor(std::string_view id) const noexcept
+{
+    // C++17 unordered_map lookup cannot consume string_view without creating
+    // an owned key. Keep this noexcept resource lookup allocation-free.
+    for (const auto& entry : templateIdsByAssetId)
+        if (entry.first == id)
+            return entry.second;
+    return std::numeric_limits<std::uint16_t>::max();
+}
+
+ResourceLoadResult VegetationCatalogResource::load(
+    ResourceManager& resourceManager, const ResourceLoadContext& context)
+{
+    if (loadDesc.input == VegetationCatalogInput::Cooked) {
+        auto decoded = VegetationCatalogCookedCodec().decode(
+            reference(), loadDesc.catalogPath, context, loadDesc.sourceOrigin);
+        if (!decoded.success)
+            return {false,
+                ResourceState::Failed,
+                reference().id,
+                reference().type,
+                decoded.diagnostics};
+        for (const auto& dependency : decoded.dependencies) {
+            const auto material = resourceManager.find<MaterialResource>(dependency.id);
+            if (!material.ready())
+                return resourceLoadFailure(*this, "VEGETATION-COOKED-MATERIAL-NOT-READY-OR-TYPE");
+        }
+        for (const auto& dependency : decoded.dependencies)
+            addDependency(dependency);
+        data = std::move(decoded.data);
+        cookedBytes_ = decoded.decodedBytes;
+        cookedFingerprint_ = decoded.contentFingerprint;
+        return ResourceBase::load(resourceManager, context);
+    }
+    if (loadDesc.input == VegetationCatalogInput::SourceCatalogV2) {
+        try {
+            if (const auto* invalid = validateCatalogSource(loadDesc))
+                return resourceLoadFailure(*this, invalid);
+            if (!context.maxDecodedBytes || context.maxDecodedBytes == SIZE_MAX)
+                return resourceLoadFailure(*this, "VEGETATION-SOURCE-DECODE-BUDGET-REQUIRED");
+            auto quota =
+                core::makeShared<core::CpuMemoryQuota>(catalogOverhead(*loadDesc.sourceLimits));
+            core::CpuMemoryQuotaScope scope(quota);
+            auto inputs = context;
+            inputs.requirePreloadedSources = true;
+            return loadCatalog(resourceManager, inputs);
+        } catch (const std::bad_alloc&) {
+            return resourceLoadFailure(*this, "VEGETATION-SOURCE-IMPORT-BUDGET");
+        } catch (const std::exception&) {
+            return resourceLoadFailure(*this, "VEGETATION-SOURCE-INVALID");
+        }
+    }
+    if (loadDesc.input != VegetationCatalogInput::LegacySourceCatalog
+        || context.requirePreloadedSources || context.maxDecodedBytes
+        || loadDesc.sourceOrigin.pathScope != core::io::FilePathScope::HostFilesystem
+        || loadDesc.sourceOrigin.mount)
+        return resourceLoadFailure(*this, "VEGETATION-LEGACY-SOURCE-CONTRACT-UNSUPPORTED");
+    return loadCatalog(resourceManager, context);
+}
+
+ResourceLoadResult VegetationCatalogResource::loadCatalog(
+    ResourceManager& resourceManager, const ResourceLoadContext& context)
+{
+    const bool acquired = loadDesc.input == VegetationCatalogInput::SourceCatalogV2;
+    core::pmr::String diagnostics;
+    CatalogInputPair pair;
+    auto prepared = prepareCatalogPair(loadDesc, acquired ? &context : nullptr, pair);
+    if (!prepared.success)
+        return prepared;
+    const auto& sourceCatalog = pair.source;
+    const auto& runtimeCatalog = pair.runtime;
+    const auto& runtimeCatalogPath = pair.runtimePath;
+    const auto& runtimeAssets = pair.runtimeAssets;
+    std::optional<CatalogSourceIdentity> identity;
+    if (acquired) {
+        identity.emplace(loadDesc, context);
+        if (!identity->append(loadDesc.catalogPath, loadDesc.sourceLimits->maxCatalogBytes)
+            || !identity->append(runtimeCatalogPath, loadDesc.sourceLimits->maxCatalogBytes))
+            return resourceLoadFailure(*this, "VEGETATION-SOURCE-TOTAL-BUDGET");
+    }
     auto resourceData = core::makeShared<VegetationCatalogResourceData>();
     resourceData->sourceCatalogPath = makeString(loadDesc.catalogPath.generic_string());
     resourceData->runtimeCatalogPath = makeString(runtimeCatalogPath.generic_string());
@@ -633,7 +887,8 @@ ResourceLoadResult VegetationCatalogResource::load(
         &core::defaultCpuMemoryResource()};
     classifiedAssets.reserve(runtimeAssets.size());
 
-    for (const auto& runtimeAsset : runtimeAssets) {
+    for (std::size_t assetIndex = 0; assetIndex < runtimeAssets.size(); ++assetIndex) {
+        const auto& runtimeAsset = runtimeAssets[assetIndex];
         VegetationCatalogAssetEntry entry;
         entry.id = runtimeAsset.id;
         entry.source = runtimeAsset.source;
@@ -673,9 +928,26 @@ ResourceLoadResult VegetationCatalogResource::load(
             };
         }
 
-        const auto glbPath =
-            resolveRelativePath(runtimeCatalogPath.parent_path(), runtimeAsset.source);
-        const auto importResult = assets::importStaticMeshFromGlbFile(glbPath);
+        const auto glbPath = acquired
+            ? pair.paths[assetIndex]
+            : resolveRelativePath(runtimeCatalogPath.parent_path(), runtimeAsset.source);
+        assets::StaticMeshImportResult importResult;
+        if (acquired) {
+            const auto& limits = loadDesc.sourceLimits->mesh;
+            auto input = readResourceSource(core::FilePath::utf8(glbPath),
+                context,
+                limits.geometry.maxSourceBytes,
+                false,
+                &loadDesc.sourceOrigin);
+            if (!input.success)
+                return resourceLoadFailure(*this, input.diagnostics.c_str());
+            if (!identity->append(glbPath, limits.geometry.maxSourceBytes))
+                return resourceLoadFailure(*this, "VEGETATION-SOURCE-TOTAL-BUDGET");
+            auto imported = assets::importStaticMeshSceneFromGlbBytes(
+                {input.bytes.data(), input.bytes.size()}, limits);
+            importResult = std::move(imported.geometry);
+        } else
+            importResult = assets::importStaticMeshFromGlbFile(glbPath);
         if (!importResult.success) {
             diagnostics = makeDiagnostic("GLB import failed for ");
             diagnostics += runtimeAsset.source;
@@ -772,6 +1044,17 @@ ResourceLoadResult VegetationCatalogResource::load(
         };
     }
 
+    if (acquired) {
+        std::uint64_t decoded = 0;
+        for (const auto& item : resourceData->templates)
+            decoded += item.vertices.size() * sizeof(vegetation::InstanceVertex)
+                + item.indices.size() * sizeof(std::uint32_t)
+                + item.sections.size() * sizeof(vegetation::VegetationTemplate::Section);
+        if (decoded > loadDesc.sourceLimits->maxDecodedBytes || decoded > context.maxDecodedBytes)
+            return resourceLoadFailure(*this, "VEGETATION-SOURCE-DECODE-BUDGET");
+        cookedBytes_ = static_cast<std::size_t>(decoded);
+        cookedFingerprint_ = identity->value();
+    }
     data = std::move(resourceData);
     return ResourceBase::load(resourceManager, context);
 }
@@ -780,6 +1063,17 @@ bool VegetationCatalogResource::collectFileReadIntents(ResourceManager&,
     core::pmr::Vector<ResourceFileReadIntent>& intents,
     core::pmr::String& diagnostics) const
 {
+    if (loadDesc.input == VegetationCatalogInput::SourceCatalogV2) {
+        if (const auto* invalid = validateCatalogSource(loadDesc)) {
+            diagnostics = invalid;
+            return false;
+        }
+        return appendResourceReadIntent(core::FilePath::utf8(loadDesc.catalogPath),
+            loadDesc.sourceLimits->maxCatalogBytes,
+            intents,
+            diagnostics,
+            loadDesc.sourceOrigin);
+    }
     if (loadDesc.input != VegetationCatalogInput::Cooked) {
         diagnostics = "VEGETATION-LEGACY-SOURCE-CONTRACT-UNSUPPORTED";
         return false;
@@ -800,6 +1094,79 @@ bool VegetationCatalogResource::planFileReadIntents(ResourceManager&,
     core::pmr::Vector<ResourceFileReadIntent>& intents,
     core::pmr::String& diagnostics) const
 {
+    if (loadDesc.input == VegetationCatalogInput::SourceCatalogV2) {
+        try {
+            if (const auto* invalid = validateCatalogSource(loadDesc)) {
+                diagnostics = invalid;
+                return false;
+            }
+            const auto& limits = *loadDesc.sourceLimits;
+            auto quota = core::makeShared<core::CpuMemoryQuota>(catalogOverhead(limits));
+            core::CpuMemoryQuotaScope scope(quota);
+            core::pmr::Vector<ResourceFileReadIntent> candidate;
+            const auto append = [&](const std::filesystem::path& path, std::size_t budget) {
+                const auto logical = core::FilePath::utf8(path);
+                if (std::any_of(candidate.begin(), candidate.end(), [&](const auto& read) {
+                        return read.path == logical;
+                    }))
+                    return true;
+                return appendResourceReadIntent(
+                    logical, budget, candidate, diagnostics, loadDesc.sourceOrigin);
+            };
+            const auto has = [&](const std::filesystem::path& path) {
+                return context.sources && context.sources->find(core::FilePath::utf8(path));
+            };
+            if (!has(loadDesc.catalogPath)) {
+                if (!append(loadDesc.catalogPath, limits.maxCatalogBytes))
+                    return false;
+            } else {
+                registerVegetationCatalogReflection();
+                auto inputs = context;
+                inputs.requirePreloadedSources = true;
+                VegetationSourceCatalog source;
+                if (!loadTypedCatalog(loadDesc.catalogPath,
+                        "vegetation catalog",
+                        source,
+                        diagnostics,
+                        &inputs,
+                        &loadDesc))
+                    return false;
+                if (source.contractVersion != 2) {
+                    diagnostics = "VEGETATION-SOURCE-V2-REQUIRED";
+                    return false;
+                }
+                if (source.assets.size() > limits.maxAssets) {
+                    diagnostics = "VEGETATION-SOURCE-ASSET-BUDGET";
+                    return false;
+                }
+                std::filesystem::path runtime;
+                if (!runtimeCatalogLocation(loadDesc, source, runtime, diagnostics))
+                    return false;
+                if (!has(runtime)) {
+                    if (!append(runtime, limits.maxCatalogBytes))
+                        return false;
+                } else {
+                    CatalogInputPair pair;
+                    auto prepared = prepareCatalogPair(loadDesc, &inputs, pair);
+                    if (!prepared.success) {
+                        diagnostics = std::move(prepared.diagnostics);
+                        return false;
+                    }
+                    for (const auto& path : pair.paths)
+                        if (!append(path, limits.mesh.geometry.maxSourceBytes))
+                            return false;
+                }
+            }
+            intents = std::move(candidate);
+            diagnostics.clear();
+            return true;
+        } catch (const std::bad_alloc&) {
+            diagnostics = "VEGETATION-SOURCE-IMPORT-BUDGET";
+        } catch (const std::exception&) {
+            diagnostics = "VEGETATION-SOURCE-INVALID";
+        }
+        return false;
+    }
     if (loadDesc.input != VegetationCatalogInput::Cooked) {
         diagnostics = "VEGETATION-LEGACY-SOURCE-CONTRACT-UNSUPPORTED";
         return false;

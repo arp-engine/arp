@@ -271,6 +271,7 @@ EditorCommandOutcome EditorScenePanel::show(EditorShell& shell, Mode mode)
 
 void EditorScenePanel::closePresentation(EditorShell& shell) noexcept
 {
+    taskSave_.reset();
     modal_.closePresentation(shell);
     mode_ = Mode::None;
     pending_.reset();

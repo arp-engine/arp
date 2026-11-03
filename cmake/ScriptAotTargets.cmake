@@ -4,6 +4,7 @@ set(ARP_UNITY_IMPORT_AOT_MODULES
     package_writer
     character_validator
     fbx_importer
+    glb_source_profile
     glb_importer
     texture_importer
     model_importer

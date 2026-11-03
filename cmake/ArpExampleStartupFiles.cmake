@@ -1,0 +1,4 @@
+include_guard(GLOBAL)
+add_library(arp_example_startup_files STATIC examples/common/native_startup_files.cpp)
+target_include_directories(arp_example_startup_files PUBLIC src)
+target_link_libraries(arp_example_startup_files PUBLIC arp_core)

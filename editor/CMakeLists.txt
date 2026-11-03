@@ -1,16 +1,116 @@
 get_filename_component(ARP_EDITOR_ENGINE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 
-add_subdirectory(project)
+add_library(arp_editor_cold_host_read STATIC io/editor_cold_host_read.cpp)
+target_include_directories(arp_editor_cold_host_read PUBLIC "${ARP_EDITOR_ENGINE_ROOT}")
+target_link_libraries(arp_editor_cold_host_read PUBLIC arp_core)
+add_executable(arp_editor_cold_host_read_tests tests/cold_host_read_tests.cpp)
+target_link_libraries(arp_editor_cold_host_read_tests PRIVATE arp_editor_cold_host_read)
+target_compile_options(arp_editor_cold_host_read_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_editor_cold_host_read_tests)
+if(EMSCRIPTEN)
+    target_link_options(arp_editor_cold_host_read_tests PRIVATE
+        -sASSERTIONS=1 -sINITIAL_MEMORY=134217728 -sALLOW_MEMORY_GROWTH=0 -sABORTING_MALLOC=0)
+    find_program(ARP_EDITOR_COLD_HOST_NODE NAMES node REQUIRED)
+endif()
+add_test(NAME arp_editor_cold_host_read_tests
+    COMMAND ${ARP_EDITOR_COLD_HOST_NODE} $<TARGET_FILE:arp_editor_cold_host_read_tests>)
+add_test(NAME arp_editor_cold_host_read_smoke
+    COMMAND ${ARP_EDITOR_COLD_HOST_NODE} $<TARGET_FILE:arp_editor_cold_host_read_tests> --smoke)
+set_tests_properties(arp_editor_cold_host_read_tests arp_editor_cold_host_read_smoke PROPERTIES
+    TIMEOUT 60 LABELS "editor;io;cold-host")
 
 if(NOT EMSCRIPTEN)
-    add_executable(arp_editor_browser_workspace_tests tests/browser_workspace_tests.cpp web/browser_workspace.cpp)
-    target_include_directories(arp_editor_browser_workspace_tests PRIVATE "${ARP_EDITOR_ENGINE_ROOT}")
-    target_link_libraries(arp_editor_browser_workspace_tests PRIVATE arp_editor_project)
-    target_compile_definitions(arp_editor_browser_workspace_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
-    target_compile_options(arp_editor_browser_workspace_tests PRIVATE -UNDEBUG)
-    add_test(NAME arp_editor_browser_workspace_tests COMMAND arp_editor_browser_workspace_tests)
-    add_test(NAME arp_editor_browser_workspace_lifecycle_smoke COMMAND arp_editor_browser_workspace_tests --smoke)
+    # Offline converter IO only; no project authoring model enters the engine.
+    add_library(arp_editor_migration_io STATIC tools/migration_io.cpp)
+    target_include_directories(arp_editor_migration_io PUBLIC "${ARP_EDITOR_ENGINE_ROOT}")
+    target_link_libraries(arp_editor_migration_io PUBLIC arp_cold_tool_files)
+    add_executable(arp_editor_migration_io_tests tests/migration_io_tests.cpp)
+    target_link_libraries(arp_editor_migration_io_tests PRIVATE arp_editor_migration_io)
+    target_compile_options(arp_editor_migration_io_tests PRIVATE -UNDEBUG)
+    arp_add_mingw_static_runtime(arp_editor_migration_io_tests)
+    add_test(NAME arp_editor_migration_io_tests COMMAND arp_editor_migration_io_tests)
+    add_test(NAME arp_editor_migration_io_smoke COMMAND arp_editor_migration_io_tests --smoke)
+    set_tests_properties(arp_editor_migration_io_tests arp_editor_migration_io_smoke PROPERTIES
+        TIMEOUT 90 LABELS "editor;tools;io;smoke")
 endif()
+
+add_subdirectory(project)
+
+add_library(arp_editor_workspace_io STATIC remote/editor_workspace_protocol.cpp)
+target_include_directories(arp_editor_workspace_io PUBLIC "${ARP_EDITOR_ENGINE_ROOT}" "${ARP_EDITOR_ENGINE_ROOT}/src")
+target_include_directories(arp_editor_workspace_io PRIVATE "${ARP_EDITOR_ENGINE_ROOT}/3rd/assimp-6.0.5/contrib/rapidjson/include")
+target_link_libraries(arp_editor_workspace_io PUBLIC arp_core arp_network)
+if(NOT EMSCRIPTEN)
+    target_sources(arp_editor_workspace_io PRIVATE remote/editor_workspace_server.cpp)
+    add_executable(arp_editor_workspace_service tools/workspace_service_main.cpp)
+    target_link_libraries(arp_editor_workspace_service PRIVATE arp_editor_workspace_io arp_editor_project)
+    arp_add_mingw_static_runtime(arp_editor_workspace_service)
+endif()
+
+add_executable(arp_editor_workspace_protocol_tests tests/workspace_protocol_tests.cpp)
+target_include_directories(arp_editor_workspace_protocol_tests PRIVATE "${ARP_EDITOR_ENGINE_ROOT}/3rd/fkYAML/include")
+target_link_libraries(arp_editor_workspace_protocol_tests PRIVATE arp_editor_workspace_io)
+target_compile_options(arp_editor_workspace_protocol_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_editor_workspace_protocol_tests)
+if(EMSCRIPTEN)
+    target_link_options(arp_editor_workspace_protocol_tests PRIVATE "-sSTACK_SIZE=1048576"
+        "-sSTACK_OVERFLOW_CHECK=2" "-sINITIAL_MEMORY=67108864" "-sALLOW_MEMORY_GROWTH=0")
+endif()
+add_test(NAME arp_editor_workspace_protocol_tests COMMAND arp_editor_workspace_protocol_tests)
+add_test(NAME arp_editor_workspace_protocol_smoke COMMAND arp_editor_workspace_protocol_tests --smoke)
+set_tests_properties(arp_editor_workspace_protocol_tests arp_editor_workspace_protocol_smoke
+    PROPERTIES TIMEOUT 120 LABELS "editor;io;workspace")
+if(WIN32)
+    add_test(NAME arp_editor_workspace_protocol_native_smoke COMMAND arp_editor_workspace_protocol_tests --native --smoke)
+    set_tests_properties(arp_editor_workspace_protocol_native_smoke PROPERTIES TIMEOUT 120 LABELS "editor;io;workspace;smoke")
+    add_executable(arp_editor_workspace_server_tests tests/workspace_server_tests.cpp)
+    add_executable(arp_editor_workspace_backend_tests tests/workspace_backend_tests.cpp)
+    target_include_directories(arp_editor_workspace_backend_tests PRIVATE
+        "${ARP_EDITOR_ENGINE_ROOT}/3rd/fkYAML/include"
+        "${ARP_EDITOR_ENGINE_ROOT}/3rd/assimp-6.0.5/contrib/rapidjson/include")
+    target_link_libraries(arp_editor_workspace_backend_tests PRIVATE arp_editor_workspace_io)
+    target_compile_options(arp_editor_workspace_backend_tests PRIVATE -UNDEBUG)
+    arp_add_mingw_static_runtime(arp_editor_workspace_backend_tests)
+    add_test(NAME arp_editor_workspace_backend_tests COMMAND arp_editor_workspace_backend_tests)
+    add_test(NAME arp_editor_workspace_backend_smoke COMMAND arp_editor_workspace_backend_tests --smoke)
+    set_tests_properties(arp_editor_workspace_backend_tests arp_editor_workspace_backend_smoke
+        PROPERTIES TIMEOUT 180 LABELS "core;editor;io;workspace;http;smoke")
+    target_include_directories(arp_editor_workspace_server_tests PRIVATE "${ARP_EDITOR_ENGINE_ROOT}/3rd/fkYAML/include")
+    target_link_libraries(arp_editor_workspace_server_tests PRIVATE arp_editor_workspace_io)
+    target_compile_options(arp_editor_workspace_server_tests PRIVATE -UNDEBUG)
+    arp_add_mingw_static_runtime(arp_editor_workspace_server_tests)
+    add_test(NAME arp_editor_workspace_server_tests COMMAND arp_editor_workspace_server_tests)
+    add_test(NAME arp_editor_workspace_server_smoke COMMAND arp_editor_workspace_server_tests --smoke)
+    set_tests_properties(arp_editor_workspace_server_tests arp_editor_workspace_server_smoke
+        PROPERTIES TIMEOUT 120 LABELS "editor;io;workspace;http;smoke")
+    add_test(NAME arp_editor_workspace_service_cli_smoke COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/workspace_service_cli_smoke.py" "$<TARGET_FILE:arp_editor_workspace_service>")
+    set_tests_properties(arp_editor_workspace_service_cli_smoke PROPERTIES TIMEOUT 30 LABELS "editor;io;workspace;cli;smoke")
+    add_test(NAME arp_editor_workspace_service_budget_tests COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/workspace_service_budget_tests.py" "$<TARGET_FILE:arp_editor_workspace_service>")
+    add_test(NAME arp_editor_workspace_service_budget_smoke COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/workspace_service_budget_tests.py" "$<TARGET_FILE:arp_editor_workspace_service>" --smoke)
+    set_tests_properties(arp_editor_workspace_service_budget_tests arp_editor_workspace_service_budget_smoke
+        PROPERTIES TIMEOUT 45 LABELS "editor;io;workspace;cli;budget")
+endif()
+
+add_executable(arp_editor_browser_workspace_tests tests/browser_workspace_tests.cpp web/browser_workspace.cpp)
+target_include_directories(arp_editor_browser_workspace_tests PRIVATE "${ARP_EDITOR_ENGINE_ROOT}")
+target_link_libraries(arp_editor_browser_workspace_tests PRIVATE arp_editor_project arp_editor_cold_host_read)
+target_compile_options(arp_editor_browser_workspace_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_editor_browser_workspace_tests)
+if(EMSCRIPTEN)
+    target_compile_definitions(arp_editor_browser_workspace_tests PRIVATE ARP_SOURCE_DIR="/archive-fixture")
+    target_link_options(arp_editor_browser_workspace_tests PRIVATE
+        -sASSERTIONS=1 -sINITIAL_MEMORY=134217728 -sALLOW_MEMORY_GROWTH=0 -sABORTING_MALLOC=0
+        "SHELL:--preload-file \"${ARP_EDITOR_ENGINE_ROOT}/editor/web/project/project.arp.yaml@/archive-fixture/editor/web/project/project.arp.yaml\"")
+else()
+    target_compile_definitions(arp_editor_browser_workspace_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
+endif()
+add_test(NAME arp_editor_browser_workspace_tests COMMAND arp_editor_browser_workspace_tests)
+add_test(NAME arp_editor_browser_workspace_lifecycle_smoke COMMAND arp_editor_browser_workspace_tests --smoke)
+set_tests_properties(arp_editor_browser_workspace_tests arp_editor_browser_workspace_lifecycle_smoke
+    PROPERTIES TIMEOUT 60 LABELS "editor;io;archive")
 
 add_library(arp_editor_script_authoring STATIC
     workspace/editor_script_modules.cpp workspace/editor_script_component_catalog.cpp
@@ -93,8 +193,13 @@ add_library(arp_editor_shell STATIC
     workspace/editor_project_resource_sources.cpp
     workspace/editor_project_resource_planner.cpp
     workspace/editor_project_io_task.cpp
+    workspace/editor_project_source_save_task.cpp
+    workspace/editor_shell_project_source_save.cpp
     workspace/editor_shell_project_io.cpp
+    workspace/editor_shell_script_reload.cpp
+    workspace/editor_shell_source_receipt.cpp
     workspace/editor_terrain_preview.cpp
+    workspace/editor_terrain_preview_vegetation.cpp
     workspace/editor_terrain_browser.cpp
     workspace/editor_shell_terrain.cpp
     workspace/editor_terrain_build.cpp
@@ -109,14 +214,25 @@ add_library(arp_editor_shell STATIC
     workspace/editor_shell_resource_navigation.cpp
     workspace/editor_shell_inspector_selection.cpp
     workspace/editor_scene_script_codec.cpp
+    workspace/editor_scene_script_reload.cpp
     workspace/editor_scene_script_file_preparation.cpp
     workspace/editor_scene_property_codec.cpp
     workspace/editor_scene_authoring_codec.cpp
     workspace/editor_scene_persistence.cpp
+    workspace/editor_scene_source_task.cpp
+    workspace/editor_scene_source_save_task.cpp
+    workspace/editor_shell_scene_sources.cpp
+    workspace/editor_shell_source_authoring.cpp
     workspace/editor_recovery_codec.cpp
     workspace/editor_recovery_region.cpp
     workspace/editor_recovery_session.cpp
     workspace/editor_recovery_preparation.cpp
+    workspace/editor_source_recovery_preparation.cpp
+    workspace/editor_source_recovery_files.cpp
+    workspace/editor_source_recovery_documents.cpp
+    workspace/editor_source_recovery_capture.cpp
+    workspace/editor_source_recovery_store.cpp
+    workspace/editor_source_recovery_workspace.cpp
     workspace/editor_recovery_admission.cpp
     viewport/editor_scene_viewport_contract.cpp
     validation/editor_viewport_resource_smoke.cpp
@@ -132,6 +248,7 @@ add_library(arp_editor_shell STATIC
     viewport/editor_scene_viewport_texture_admission.cpp
     viewport/editor_scene_viewport_resource_resolver.cpp
     workspace/script_document_session.cpp
+    workspace/script_document_source_recovery.cpp
     workspace/script_document.cpp
     workspace/editor_input.cpp
     workspace/editor_presentation.cpp)
@@ -162,9 +279,59 @@ arp_reflection_generate(
         "${ARP_EDITOR_ENGINE_ROOT}/src/scene/scene_asset_resource.h")
 target_include_directories(arp_editor_shell PUBLIC "${ARP_EDITOR_ENGINE_ROOT}" "${ARP_EDITOR_ENGINE_ROOT}/src")
 target_include_directories(arp_editor_shell PRIVATE "${ARP_EDITOR_ENGINE_ROOT}/3rd/assimp-6.0.5/contrib/rapidjson/include")
+target_link_libraries(arp_editor_shell PRIVATE arp_editor_cold_host_read)
 target_link_libraries(arp_editor_shell PUBLIC
     arp_editor_project arp_editor_script_authoring arp_ui_runtime arp_resource arp_network arp_3d arp_2d arp_physics2d arp_scriptvm_runtime)
+add_library(arp_editor_startup_io STATIC app/editor_startup_resource_host.cpp)
+target_include_directories(arp_editor_startup_io PUBLIC "${ARP_EDITOR_ENGINE_ROOT}" "${ARP_EDITOR_ENGINE_ROOT}/src")
+target_link_libraries(arp_editor_startup_io PUBLIC arp_core arp_resource)
+add_library(arp_editor_ui_sources STATIC ui/editor_ui_content.cpp ui/editor_ui_sources.cpp app/editor_ui_source_host.cpp)
+target_include_directories(arp_editor_ui_sources PUBLIC "${ARP_EDITOR_ENGINE_ROOT}" "${ARP_EDITOR_ENGINE_ROOT}/src")
+target_link_libraries(arp_editor_ui_sources PUBLIC arp_editor_startup_io arp_ui_runtime arp_resource arp_renderer arp_assets)
+add_library(arp_editor_web_startup_sources STATIC web/editor_web_startup_sources.cpp app/editor_web_startup_host.cpp)
+target_include_directories(arp_editor_web_startup_sources PUBLIC "${ARP_EDITOR_ENGINE_ROOT}" "${ARP_EDITOR_ENGINE_ROOT}/src")
+target_link_libraries(arp_editor_web_startup_sources PUBLIC arp_editor_ui_sources)
+include(tests/web_startup_validation.cmake)
+option(ARP_EDITOR_UI_SOURCE_BROWSER_PROBE "Build the independent CPU UI Fetch probe" OFF)
+if(EMSCRIPTEN AND ARP_EDITOR_UI_SOURCE_BROWSER_PROBE)
+    include(tests/ui_source_browser_validation.cmake)
+endif()
+if(WIN32)
+    set(ARP_EDITOR_UI_FONT_ROOT "C:/Windows/Fonts" CACHE PATH "Explicit root for windows-ui.sources.yaml fonts")
+    add_executable(arp_editor_ui_sources_tests tests/ui_sources_tests.cpp ui/editor_ui_assets.cpp)
+    target_link_libraries(arp_editor_ui_sources_tests PRIVATE arp_editor_ui_sources arp_editor_shell
+        arp_editor_cold_host_read
+        "$<LINK_GROUP:RESCAN,arp_rhi,arp_rhi_semantics>")
+    target_compile_options(arp_editor_ui_sources_tests PRIVATE -UNDEBUG)
+    target_compile_definitions(arp_editor_ui_sources_tests PRIVATE
+        ARP_EDITOR_UI_RESOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/resources"
+        ARP_EDITOR_UI_FONT_DIR="${ARP_EDITOR_UI_FONT_ROOT}"
+        ARP_EDITOR_UI_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders")
+    arp_add_mingw_static_runtime(arp_editor_ui_sources_tests)
+    add_dependencies(arp_editor_ui_sources_tests arp_compile_shaders)
+    foreach(mode IN ITEMS tests smoke native_smoke assets_smoke)
+        if(mode STREQUAL "tests")
+            set(ui_source_args)
+        elseif(mode STREQUAL "smoke")
+            set(ui_source_args --smoke)
+        elseif(mode STREQUAL "native_smoke")
+            set(ui_source_args --native)
+        else()
+            set(ui_source_args --assets)
+        endif()
+        add_test(NAME arp_editor_ui_sources_${mode} COMMAND arp_editor_ui_sources_tests ${ui_source_args})
+        set_tests_properties(arp_editor_ui_sources_${mode} PROPERTIES TIMEOUT 180 LABELS "editor;ui;io")
+    endforeach()
+    add_test(NAME arp_editor_ui_sources_http_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui_sources_http_smoke.py"
+            "$<TARGET_FILE:arp_editor_ui_sources_tests>" "${CMAKE_CURRENT_SOURCE_DIR}/resources"
+            "${ARP_EDITOR_UI_FONT_ROOT}" "${CMAKE_BINARY_DIR}/shaders")
+    set_tests_properties(arp_editor_ui_sources_http_smoke PROPERTIES TIMEOUT 120 LABELS "editor;ui;io;http;smoke")
+endif()
+
 add_library(arp_editor_viewport_renderer STATIC
+    viewport/editor_viewport_shader_sources.cpp
+    app/editor_viewport_shader_host.cpp
     viewport/editor_scene_viewport_mesh_cache.cpp
     viewport/editor_scene_viewport_draw_executor.cpp
     viewport/editor_scene_viewport_texture_cache.cpp
@@ -181,7 +348,7 @@ add_library(arp_editor_viewport_renderer STATIC
     viewport/editor_scene_viewport_shader_package.cpp)
 target_include_directories(arp_editor_viewport_renderer PUBLIC
     "${ARP_EDITOR_ENGINE_ROOT}" "${ARP_EDITOR_ENGINE_ROOT}/src")
-target_link_libraries(arp_editor_viewport_renderer PUBLIC arp_editor_shell arp_renderer)
+target_link_libraries(arp_editor_viewport_renderer PUBLIC arp_editor_shell arp_renderer arp_editor_startup_io)
 if(MINGW)
     target_compile_options(arp_editor_shell PRIVATE "-Wa,-mbig-obj")
     target_compile_options(arp_editor_viewport_renderer PRIVATE "-Wa,-mbig-obj")
@@ -767,6 +934,152 @@ if(NOT EMSCRIPTEN)
     set_tests_properties(arp_editor_reflection_metadata_smoke PROPERTIES TIMEOUT 120)
     set_tests_properties(arp_editor_scene_file_safety_smoke PROPERTIES TIMEOUT 60)
 endif()
+add_executable(arp_editor_source_recovery_preparation_tests tests/source_recovery_preparation_tests.cpp)
+target_compile_options(arp_editor_source_recovery_preparation_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_editor_source_recovery_preparation_tests)
+if(EMSCRIPTEN)
+    target_compile_definitions(arp_editor_source_recovery_preparation_tests PRIVATE ARP_SOURCE_DIR="/source-recovery-fixture")
+    target_link_options(arp_editor_source_recovery_preparation_tests PRIVATE
+        "-sSTACK_SIZE=1048576" "-sSTACK_OVERFLOW_CHECK=2"
+        "-sINITIAL_MEMORY=134217728" "-sALLOW_MEMORY_GROWTH=0")
+else()
+    target_compile_definitions(arp_editor_source_recovery_preparation_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
+endif()
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_editor_source_recovery_preparation_tests PRIVATE arp_editor_shell arp_editor_script_authoring)
+else()
+    target_link_libraries(arp_editor_source_recovery_preparation_tests PRIVATE
+        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
+endif()
+add_test(NAME arp_editor_source_recovery_preparation_tests COMMAND arp_editor_source_recovery_preparation_tests)
+add_test(NAME arp_editor_source_recovery_preparation_smoke COMMAND arp_editor_source_recovery_preparation_tests --smoke)
+set_tests_properties(arp_editor_source_recovery_preparation_tests arp_editor_source_recovery_preparation_smoke
+    PROPERTIES TIMEOUT 180 LABELS "editor;io;recovery")
+if(WIN32)
+    add_test(NAME arp_editor_source_recovery_preparation_native_smoke COMMAND arp_editor_source_recovery_preparation_tests --native)
+    set_tests_properties(arp_editor_source_recovery_preparation_native_smoke
+        PROPERTIES TIMEOUT 180 LABELS "editor;io;recovery;smoke")
+endif()
+
+add_executable(arp_editor_source_recovery_file_tests tests/source_recovery_file_tests.cpp)
+target_compile_options(arp_editor_source_recovery_file_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_editor_source_recovery_file_tests)
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_editor_source_recovery_file_tests PRIVATE arp_editor_shell arp_editor_script_authoring)
+else()
+    target_link_libraries(arp_editor_source_recovery_file_tests PRIVATE
+        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
+endif()
+if(EMSCRIPTEN)
+    target_link_options(arp_editor_source_recovery_file_tests PRIVATE
+        "-sSTACK_SIZE=1048576" "-sSTACK_OVERFLOW_CHECK=2"
+        "-sINITIAL_MEMORY=134217728" "-sALLOW_MEMORY_GROWTH=0")
+endif()
+add_test(NAME arp_editor_source_recovery_file_tests COMMAND arp_editor_source_recovery_file_tests)
+add_test(NAME arp_editor_source_recovery_file_smoke COMMAND arp_editor_source_recovery_file_tests --smoke)
+set_tests_properties(arp_editor_source_recovery_file_tests arp_editor_source_recovery_file_smoke
+    PROPERTIES TIMEOUT 120 LABELS "editor;io;recovery")
+if(WIN32)
+    add_test(NAME arp_editor_source_recovery_file_native_smoke COMMAND arp_editor_source_recovery_file_tests --native)
+    set_tests_properties(arp_editor_source_recovery_file_native_smoke
+        PROPERTIES TIMEOUT 120 LABELS "editor;io;recovery;smoke")
+endif()
+
+add_executable(arp_editor_source_recovery_document_tests tests/source_recovery_document_tests.cpp)
+target_compile_options(arp_editor_source_recovery_document_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_editor_source_recovery_document_tests)
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_editor_source_recovery_document_tests PRIVATE arp_editor_shell arp_editor_script_authoring)
+else()
+    target_link_libraries(arp_editor_source_recovery_document_tests PRIVATE
+        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
+endif()
+if(EMSCRIPTEN)
+    target_link_options(arp_editor_source_recovery_document_tests PRIVATE
+        "-sSTACK_SIZE=1048576" "-sSTACK_OVERFLOW_CHECK=2"
+        "-sINITIAL_MEMORY=134217728" "-sALLOW_MEMORY_GROWTH=0")
+endif()
+add_test(NAME arp_editor_source_recovery_document_tests COMMAND arp_editor_source_recovery_document_tests)
+add_test(NAME arp_editor_source_recovery_document_smoke COMMAND arp_editor_source_recovery_document_tests --smoke)
+set_tests_properties(arp_editor_source_recovery_document_tests arp_editor_source_recovery_document_smoke
+    PROPERTIES TIMEOUT 120 LABELS "editor;io;recovery")
+if(WIN32)
+    add_test(NAME arp_editor_source_recovery_document_native_smoke COMMAND arp_editor_source_recovery_document_tests --native)
+    set_tests_properties(arp_editor_source_recovery_document_native_smoke
+        PROPERTIES TIMEOUT 120 LABELS "editor;io;recovery;smoke")
+endif()
+
+add_executable(arp_editor_source_recovery_store_tests tests/source_recovery_store_tests.cpp)
+target_compile_options(arp_editor_source_recovery_store_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_editor_source_recovery_store_tests)
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_editor_source_recovery_store_tests PRIVATE arp_editor_shell arp_editor_script_authoring)
+else()
+    target_link_libraries(arp_editor_source_recovery_store_tests PRIVATE
+        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
+endif()
+if(EMSCRIPTEN)
+    target_link_options(arp_editor_source_recovery_store_tests PRIVATE
+        "-sSTACK_SIZE=1048576" "-sSTACK_OVERFLOW_CHECK=2"
+        "-sINITIAL_MEMORY=134217728" "-sALLOW_MEMORY_GROWTH=0")
+endif()
+add_test(NAME arp_editor_source_recovery_store_tests COMMAND arp_editor_source_recovery_store_tests)
+add_test(NAME arp_editor_source_recovery_store_smoke COMMAND arp_editor_source_recovery_store_tests --smoke)
+set_tests_properties(arp_editor_source_recovery_store_tests arp_editor_source_recovery_store_smoke
+    PROPERTIES TIMEOUT 120 LABELS "editor;io;recovery")
+if(WIN32)
+    add_test(NAME arp_editor_source_recovery_store_native_smoke COMMAND arp_editor_source_recovery_store_tests --native --smoke)
+    set_tests_properties(arp_editor_source_recovery_store_native_smoke
+        PROPERTIES TIMEOUT 120 LABELS "editor;io;recovery;smoke")
+endif()
+
+add_executable(arp_editor_source_recovery_workspace_tests tests/source_recovery_workspace_tests.cpp)
+target_compile_options(arp_editor_source_recovery_workspace_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_editor_source_recovery_workspace_tests)
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_editor_source_recovery_workspace_tests PRIVATE arp_editor_shell arp_editor_script_authoring)
+else()
+    target_link_libraries(arp_editor_source_recovery_workspace_tests PRIVATE
+        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
+endif()
+if(EMSCRIPTEN)
+    target_link_options(arp_editor_source_recovery_workspace_tests PRIVATE
+        "-sSTACK_SIZE=1048576" "-sSTACK_OVERFLOW_CHECK=2"
+        "-sINITIAL_MEMORY=134217728" "-sALLOW_MEMORY_GROWTH=0")
+endif()
+add_test(NAME arp_editor_source_recovery_workspace_tests COMMAND arp_editor_source_recovery_workspace_tests)
+add_test(NAME arp_editor_source_recovery_workspace_smoke COMMAND arp_editor_source_recovery_workspace_tests --smoke)
+set_tests_properties(arp_editor_source_recovery_workspace_tests arp_editor_source_recovery_workspace_smoke
+    PROPERTIES TIMEOUT 120 LABELS "editor;io;recovery")
+if(WIN32)
+    add_test(NAME arp_editor_source_recovery_workspace_native_smoke COMMAND arp_editor_source_recovery_workspace_tests --native --smoke)
+    set_tests_properties(arp_editor_source_recovery_workspace_native_smoke
+        PROPERTIES TIMEOUT 120 LABELS "editor;io;recovery;smoke")
+endif()
+
+add_executable(arp_editor_source_recovery_codec_tests tests/source_recovery_codec_tests.cpp)
+target_compile_options(arp_editor_source_recovery_codec_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_editor_source_recovery_codec_tests)
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_editor_source_recovery_codec_tests PRIVATE arp_editor_shell arp_editor_script_authoring)
+else()
+    target_link_libraries(arp_editor_source_recovery_codec_tests PRIVATE
+        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
+endif()
+if(EMSCRIPTEN)
+    target_link_options(arp_editor_source_recovery_codec_tests PRIVATE
+        "-sSTACK_SIZE=1048576" "-sSTACK_OVERFLOW_CHECK=2"
+        "-sINITIAL_MEMORY=134217728" "-sALLOW_MEMORY_GROWTH=0")
+endif()
+add_test(NAME arp_editor_source_recovery_codec_tests COMMAND arp_editor_source_recovery_codec_tests)
+add_test(NAME arp_editor_source_recovery_codec_smoke COMMAND arp_editor_source_recovery_codec_tests --smoke)
+set_tests_properties(arp_editor_source_recovery_codec_tests arp_editor_source_recovery_codec_smoke
+    PROPERTIES TIMEOUT 120 LABELS "editor;io;recovery")
+if(WIN32)
+    add_test(NAME arp_editor_source_recovery_codec_native_smoke COMMAND arp_editor_source_recovery_codec_tests --native)
+    set_tests_properties(arp_editor_source_recovery_codec_native_smoke
+        PROPERTIES TIMEOUT 120 LABELS "editor;io;recovery;smoke")
+endif()
 if(NOT EMSCRIPTEN)
     add_executable(arp_editor_recovery_codec_tests tests/recovery_codec_tests.cpp)
     target_compile_definitions(arp_editor_recovery_codec_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
@@ -860,6 +1173,47 @@ else()
 endif()
 add_test(NAME arp_editor_project_workflow_tests COMMAND arp_editor_project_workflow_tests)
 add_executable(arp_editor_project_io_shell_tests tests/project_io_shell_tests.cpp)
+add_executable(arp_editor_workspace_connection_profile_tests
+    tests/workspace_connection_profile_tests.cpp app/editor_workspace_connection_profile.cpp)
+target_compile_options(arp_editor_workspace_connection_profile_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_editor_workspace_connection_profile_tests)
+if(MINGW)
+    target_compile_options(arp_editor_workspace_connection_profile_tests PRIVATE -Wa,-mbig-obj)
+endif()
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_editor_workspace_connection_profile_tests PRIVATE arp_editor_shell)
+else()
+    target_link_libraries(arp_editor_workspace_connection_profile_tests PRIVATE
+        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
+endif()
+if(EMSCRIPTEN)
+    target_link_options(arp_editor_workspace_connection_profile_tests PRIVATE
+        "-sSTACK_SIZE=1048576" "-sSTACK_OVERFLOW_CHECK=2"
+        "-sINITIAL_MEMORY=134217728" "-sALLOW_MEMORY_GROWTH=0")
+endif()
+add_test(NAME arp_editor_workspace_connection_profile_tests COMMAND arp_editor_workspace_connection_profile_tests)
+add_test(NAME arp_editor_workspace_connection_profile_smoke COMMAND arp_editor_workspace_connection_profile_tests --smoke)
+set_tests_properties(arp_editor_workspace_connection_profile_tests arp_editor_workspace_connection_profile_smoke
+    PROPERTIES TIMEOUT 60 LABELS "editor;io;workspace")
+if(WIN32)
+    add_executable(arp_editor_workspace_source_host_tests
+        tests/workspace_source_host_tests.cpp tests/workspace_receipt_command_tests.cpp
+        app/editor_project_source_host.cpp app/editor_workspace_connection_profile.cpp)
+    target_compile_definitions(arp_editor_workspace_source_host_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
+    target_include_directories(arp_editor_workspace_source_host_tests PRIVATE
+        "${ARP_EDITOR_ENGINE_ROOT}/3rd/assimp-6.0.5/contrib/rapidjson/include")
+    target_compile_options(arp_editor_workspace_source_host_tests PRIVATE -UNDEBUG)
+    if(MINGW)
+        target_compile_options(arp_editor_workspace_source_host_tests PRIVATE -Wa,-mbig-obj)
+    endif()
+    target_link_libraries(arp_editor_workspace_source_host_tests PRIVATE arp_editor_workspace_io
+        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
+    arp_add_mingw_static_runtime(arp_editor_workspace_source_host_tests)
+    add_test(NAME arp_editor_workspace_source_host_tests COMMAND arp_editor_workspace_source_host_tests)
+    add_test(NAME arp_editor_workspace_source_host_smoke COMMAND arp_editor_workspace_source_host_tests --smoke)
+    set_tests_properties(arp_editor_workspace_source_host_tests arp_editor_workspace_source_host_smoke
+        PROPERTIES TIMEOUT 240 LABELS "editor;io;workspace;http;smoke")
+endif()
 if(EMSCRIPTEN)
     target_compile_definitions(arp_editor_project_io_shell_tests PRIVATE ARP_SOURCE_DIR="/shell-source-fixture")
     target_link_options(arp_editor_project_io_shell_tests PRIVATE
@@ -871,6 +1225,9 @@ else()
     target_compile_definitions(arp_editor_project_io_shell_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
 endif()
 target_compile_options(arp_editor_project_io_shell_tests PRIVATE -UNDEBUG)
+if(MINGW)
+    target_compile_options(arp_editor_project_io_shell_tests PRIVATE -Wa,-mbig-obj)
+endif()
 if(EMSCRIPTEN OR APPLE)
     target_link_libraries(arp_editor_project_io_shell_tests PRIVATE arp_editor_shell)
 else()
@@ -878,6 +1235,10 @@ else()
         "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
 endif()
 add_test(NAME arp_editor_project_io_shell_tests COMMAND arp_editor_project_io_shell_tests)
+add_test(NAME arp_editor_source_script_save_tests COMMAND arp_editor_project_io_shell_tests --source-save-contracts)
+add_test(NAME arp_editor_source_script_save_smoke COMMAND arp_editor_project_io_shell_tests --source-save-smoke)
+set_tests_properties(arp_editor_source_script_save_tests arp_editor_source_script_save_smoke
+    PROPERTIES TIMEOUT 180 LABELS "editor;io;save")
 add_test(NAME arp_editor_project_io_shell_smoke COMMAND arp_editor_project_io_shell_tests --smoke)
 add_test(NAME arp_editor_script_source_input_smoke COMMAND arp_editor_project_io_shell_tests --script-input-smoke)
 set_tests_properties(arp_editor_script_source_input_smoke PROPERTIES TIMEOUT 120 LABELS "editor;io;smoke")
@@ -891,7 +1252,135 @@ if(NOT EMSCRIPTEN)
     set_tests_properties(arp_editor_script_source_http_smoke PROPERTIES TIMEOUT 180 LABELS "editor;io;smoke")
     set_tests_properties(arp_editor_project_io_shell_native_smoke PROPERTIES TIMEOUT 180 LABELS "editor;io")
 endif()
+add_executable(arp_editor_scene_source_shell_tests tests/scene_source_shell_tests.cpp)
+target_compile_options(arp_editor_scene_source_shell_tests PRIVATE -UNDEBUG)
+if(MINGW)
+    target_compile_options(arp_editor_scene_source_shell_tests PRIVATE -Wa,-mbig-obj)
+endif()
+if(EMSCRIPTEN)
+    target_compile_definitions(arp_editor_scene_source_shell_tests PRIVATE ARP_SOURCE_DIR="/scene-source-fixture")
+    target_link_options(arp_editor_scene_source_shell_tests PRIVATE
+        "-sSTACK_SIZE=1048576" "-sSTACK_OVERFLOW_CHECK=2"
+        "-sINITIAL_MEMORY=134217728" "-sALLOW_MEMORY_GROWTH=0"
+        "SHELL:--preload-file \"${ARP_EDITOR_ENGINE_ROOT}/editor/resources@/scene-source-fixture/editor/resources\"")
+else()
+    target_compile_definitions(arp_editor_scene_source_shell_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
+endif()
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_editor_scene_source_shell_tests PRIVATE arp_editor_shell arp_editor_script_authoring)
+else()
+    target_link_libraries(arp_editor_scene_source_shell_tests PRIVATE
+        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
+endif()
+add_test(NAME arp_editor_scene_source_shell_tests COMMAND arp_editor_scene_source_shell_tests)
+add_test(NAME arp_editor_scene_source_shell_smoke COMMAND arp_editor_scene_source_shell_tests --smoke)
+set_tests_properties(arp_editor_scene_source_shell_tests arp_editor_scene_source_shell_smoke
+    PROPERTIES TIMEOUT 180 LABELS "editor;io")
+if(NOT EMSCRIPTEN)
+    add_test(NAME arp_editor_scene_source_shell_native_smoke COMMAND arp_editor_scene_source_shell_tests --native)
+    add_test(NAME arp_editor_scene_source_file_http_smoke
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/editor/tests/scene_source_file_http_smoke.py"
+            "$<TARGET_FILE:arp_editor_scene_source_shell_tests>")
+    set_tests_properties(arp_editor_scene_source_shell_native_smoke arp_editor_scene_source_file_http_smoke
+        PROPERTIES TIMEOUT 180 LABELS "editor;io;smoke")
+endif()
+add_executable(arp_editor_source_scene_save_tests tests/source_scene_save_tests.cpp
+    tests/source_script_reload_tests.cpp)
+target_compile_options(arp_editor_source_scene_save_tests PRIVATE -UNDEBUG)
+if(MINGW)
+    target_compile_options(arp_editor_source_scene_save_tests PRIVATE -Wa,-mbig-obj)
+endif()
+if(EMSCRIPTEN)
+    target_compile_definitions(arp_editor_source_scene_save_tests PRIVATE ARP_SOURCE_DIR="/scene-source-fixture")
+    target_link_options(arp_editor_source_scene_save_tests PRIVATE
+        "-sSTACK_SIZE=1048576" "-sSTACK_OVERFLOW_CHECK=2"
+        "-sINITIAL_MEMORY=134217728" "-sALLOW_MEMORY_GROWTH=0"
+        "SHELL:--preload-file \"${ARP_EDITOR_ENGINE_ROOT}/editor/resources@/scene-source-fixture/editor/resources\"")
+else()
+    target_compile_definitions(arp_editor_source_scene_save_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
+endif()
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_editor_source_scene_save_tests PRIVATE arp_editor_shell arp_editor_script_authoring)
+else()
+    target_link_libraries(arp_editor_source_scene_save_tests PRIVATE
+        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
+endif()
+add_test(NAME arp_editor_source_scene_save_tests COMMAND arp_editor_source_scene_save_tests)
+add_test(NAME arp_editor_source_scene_save_smoke COMMAND arp_editor_source_scene_save_tests --smoke)
+add_test(NAME arp_editor_source_script_reload_tests COMMAND arp_editor_source_scene_save_tests --reload)
+add_test(NAME arp_editor_source_script_reload_smoke COMMAND arp_editor_source_scene_save_tests --reload-smoke)
+set_tests_properties(arp_editor_source_script_reload_tests arp_editor_source_script_reload_smoke
+    PROPERTIES TIMEOUT 300 LABELS "editor;io;script;reload")
+if(WIN32)
+    add_test(NAME arp_editor_source_script_reload_native_smoke COMMAND arp_editor_source_scene_save_tests --reload-native-smoke)
+    set_tests_properties(arp_editor_source_script_reload_native_smoke
+        PROPERTIES TIMEOUT 300 LABELS "editor;io;script;reload;smoke")
+endif()
+add_test(NAME arp_editor_source_project_save_tests COMMAND arp_editor_source_scene_save_tests --project)
+add_test(NAME arp_editor_source_project_save_smoke COMMAND arp_editor_source_scene_save_tests --project-smoke)
+set_tests_properties(arp_editor_source_project_save_tests arp_editor_source_project_save_smoke
+    PROPERTIES TIMEOUT 300 LABELS "editor;io;save")
+set_tests_properties(arp_editor_source_scene_save_tests arp_editor_source_scene_save_smoke
+    PROPERTIES TIMEOUT 300 LABELS "editor;io;save")
+if(WIN32)
+    add_test(NAME arp_editor_source_scene_save_native_smoke COMMAND arp_editor_source_scene_save_tests --native)
+    add_test(NAME arp_editor_source_project_save_native_smoke COMMAND arp_editor_source_scene_save_tests --project-native)
+    set_tests_properties(arp_editor_source_project_save_native_smoke PROPERTIES TIMEOUT 180 LABELS "editor;io;save;smoke")
+    set_tests_properties(arp_editor_source_scene_save_native_smoke PROPERTIES TIMEOUT 180 LABELS "editor;io;save;smoke")
+endif()
+# Compare actual legacy/native scene admission against the existing source save flow.
+if(WIN32)
+    add_executable(arp_editor_scene_save_admission_tests tests/scene_save_admission_tests.cpp)
+    target_compile_options(arp_editor_scene_save_admission_tests PRIVATE -UNDEBUG -Wa,-mbig-obj)
+    target_compile_definitions(arp_editor_scene_save_admission_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
+    target_link_libraries(arp_editor_scene_save_admission_tests PRIVATE
+        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
+    foreach(mode IN ITEMS memory memory-smoke native native-smoke)
+        add_test(NAME arp_editor_scene_save_admission_${mode}
+            COMMAND arp_editor_scene_save_admission_tests --${mode})
+        set_tests_properties(arp_editor_scene_save_admission_${mode}
+            PROPERTIES TIMEOUT 300 LABELS "editor;io;save;admission")
+    endforeach()
+endif()
+
+add_executable(arp_editor_source_script_authoring_tests tests/source_script_authoring_tests.cpp)
+target_compile_options(arp_editor_source_script_authoring_tests PRIVATE -UNDEBUG)
+if(MINGW)
+    target_compile_options(arp_editor_source_script_authoring_tests PRIVATE -Wa,-mbig-obj)
+endif()
+if(EMSCRIPTEN)
+    target_compile_definitions(arp_editor_source_script_authoring_tests PRIVATE ARP_SOURCE_DIR="/scene-source-fixture")
+    target_link_options(arp_editor_source_script_authoring_tests PRIVATE
+        "-sSTACK_SIZE=1048576" "-sSTACK_OVERFLOW_CHECK=2"
+        "-sINITIAL_MEMORY=134217728" "-sALLOW_MEMORY_GROWTH=0"
+        "SHELL:--preload-file \"${ARP_EDITOR_ENGINE_ROOT}/editor/resources@/scene-source-fixture/editor/resources\"")
+else()
+    target_compile_definitions(arp_editor_source_script_authoring_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
+endif()
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_editor_source_script_authoring_tests PRIVATE arp_editor_shell arp_editor_script_authoring)
+else()
+    target_link_libraries(arp_editor_source_script_authoring_tests PRIVATE
+        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
+endif()
+add_test(NAME arp_editor_source_script_authoring_tests COMMAND arp_editor_source_script_authoring_tests)
+add_test(NAME arp_editor_source_script_authoring_smoke COMMAND arp_editor_source_script_authoring_tests --smoke)
+add_test(NAME arp_editor_source_script_preparation_failure_smoke COMMAND arp_editor_source_script_authoring_tests --failure-smoke)
+set_tests_properties(arp_editor_source_script_preparation_failure_smoke PROPERTIES TIMEOUT 300 LABELS "editor;io;smoke")
+set_tests_properties(arp_editor_source_script_authoring_tests arp_editor_source_script_authoring_smoke
+    PROPERTIES TIMEOUT 300 LABELS "editor;io")
+if(NOT EMSCRIPTEN)
+    add_test(NAME arp_editor_source_script_authoring_native_smoke COMMAND arp_editor_source_script_authoring_tests --native)
+    add_test(NAME arp_editor_source_script_authoring_http_smoke
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/editor/tests/scene_source_file_http_smoke.py"
+            "$<TARGET_FILE:arp_editor_source_script_authoring_tests>" --verify-only)
+    set_tests_properties(arp_editor_source_script_authoring_native_smoke arp_editor_source_script_authoring_http_smoke
+        PROPERTIES TIMEOUT 300 LABELS "editor;io;smoke")
+endif()
 add_executable(arp_editor_scene_export_tests tests/scene_export_tests.cpp)
+if(MINGW)
+    target_compile_options(arp_editor_scene_export_tests PRIVATE -Wa,-mbig-obj)
+endif()
 target_compile_definitions(arp_editor_scene_export_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
 target_compile_options(arp_editor_scene_export_tests PRIVATE -UNDEBUG)
 if(EMSCRIPTEN OR APPLE)
@@ -904,6 +1393,14 @@ endif()
 add_test(NAME arp_editor_scene_export_tests COMMAND arp_editor_scene_export_tests)
 add_test(NAME arp_editor_scene_export_smoke COMMAND arp_editor_scene_export_tests --smoke)
 set_tests_properties(arp_editor_scene_export_smoke PROPERTIES TIMEOUT 60)
+if(WIN32)
+    add_test(NAME arp_editor_scene_export_io_bytes_tests
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/editor/tests/scene_export_io_tests.py"
+            --executable "$<TARGET_FILE:arp_editor_scene_export_tests>"
+            --report "${CMAKE_BINARY_DIR}/unified-io-evidence/i5-scene-export-io/byte-comparison.yaml")
+    set_tests_properties(arp_editor_scene_export_io_bytes_tests PROPERTIES
+        TIMEOUT 150 LABELS "editor;io;export")
+endif()
 add_executable(arp_editor_scene_publication_preparation_tests tests/scene_publication_preparation_tests.cpp)
 target_compile_options(arp_editor_scene_publication_preparation_tests PRIVATE -UNDEBUG)
 if(EMSCRIPTEN OR APPLE)
@@ -913,8 +1410,19 @@ else()
     target_link_libraries(arp_editor_scene_publication_preparation_tests PRIVATE
         "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
 endif()
-add_test(NAME arp_editor_scene_publication_preparation_tests COMMAND arp_editor_scene_publication_preparation_tests)
-add_test(NAME arp_editor_scene_publication_preparation_smoke COMMAND arp_editor_scene_publication_preparation_tests --smoke)
+if(EMSCRIPTEN)
+    # The original Native producer needs exclusive directory publication.
+    # Wasm validates its actual diagnostic/cleanup gate, never fake rename success.
+    add_test(NAME arp_editor_scene_publication_preparation_tests
+        COMMAND arp_editor_scene_publication_preparation_tests --native-publication-unavailable)
+    add_test(NAME arp_editor_scene_publication_preparation_smoke
+        COMMAND arp_editor_scene_publication_preparation_tests --native-publication-unavailable-smoke)
+    set_tests_properties(arp_editor_scene_publication_preparation_tests arp_editor_scene_publication_preparation_smoke
+        PROPERTIES LABELS "editor;io;wasm;native-publication-unsupported")
+else()
+    add_test(NAME arp_editor_scene_publication_preparation_tests COMMAND arp_editor_scene_publication_preparation_tests)
+    add_test(NAME arp_editor_scene_publication_preparation_smoke COMMAND arp_editor_scene_publication_preparation_tests --smoke)
+endif()
 set_tests_properties(arp_editor_scene_publication_preparation_smoke PROPERTIES TIMEOUT 60)
 add_test(NAME arp_editor_scene_document_smoke
     COMMAND arp_editor_project_workflow_tests --scene-document-smoke)
@@ -938,6 +1446,7 @@ set_tests_properties(arp_editor_scene_identity_smoke PROPERTIES TIMEOUT 60)
 
 if(NOT EMSCRIPTEN)
     add_executable(arp_editor_scene_migrate tools/scene_migrate.cpp)
+    target_link_libraries(arp_editor_scene_migrate PRIVATE arp_editor_migration_io)
     if(EMSCRIPTEN OR APPLE)
         target_link_libraries(arp_editor_scene_migrate PRIVATE
             arp_editor_shell arp_ui_runtime arp_resource arp_scriptvm_host_plugin_runtime arp_3d arp_2d arp_2d_resources)
@@ -947,6 +1456,15 @@ if(NOT EMSCRIPTEN)
     endif()
     if(MINGW)
         target_link_options(arp_editor_scene_migrate PRIVATE -municode)
+    endif()
+    if(WIN32)
+        add_test(NAME arp_editor_migration_io_cli_smoke COMMAND "${Python3_EXECUTABLE}" -X utf8
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/migration_io_cli_tests.py"
+            --project-tool "$<TARGET_FILE:arp_editor_project_migrate>"
+            --scene-tool "$<TARGET_FILE:arp_editor_scene_migrate>"
+            --output "${CMAKE_CURRENT_BINARY_DIR}/migration-io-cli")
+        set_tests_properties(arp_editor_migration_io_cli_smoke PROPERTIES
+            TIMEOUT 180 LABELS "editor;tools;io;smoke")
     endif()
     add_test(NAME arp_editor_scene_migration_tests
         COMMAND "${Python3_EXECUTABLE}" -X utf8
@@ -966,7 +1484,7 @@ if(EMSCRIPTEN OR APPLE)
         arp_editor_viewport_renderer arp_editor_shell arp_ui_runtime arp_resource arp_scriptvm_host_plugin_runtime arp_3d arp_renderer arp_rhi_semantics arp_rhi arp_2d_resources)
 else()
     target_link_libraries(arp_editor_scene_viewport_contract_tests PRIVATE
-        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_viewport_renderer,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_renderer,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>"
+        "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_viewport_renderer,arp_editor_startup_io,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_renderer,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>"
         arp_rhi_semantics arp_rhi)
 endif()
 target_compile_options(arp_editor_scene_viewport_contract_tests PRIVATE -UNDEBUG)
@@ -977,7 +1495,7 @@ target_compile_options(arp_editor_terrain_preview_tests PRIVATE -UNDEBUG)
 if(EMSCRIPTEN OR APPLE)
     target_link_libraries(arp_editor_terrain_preview_tests PRIVATE arp_editor_viewport_renderer arp_editor_shell arp_ui_runtime arp_resource arp_scriptvm_host_plugin_runtime arp_3d arp_renderer arp_rhi_semantics arp_rhi arp_2d_resources)
 else()
-    target_link_libraries(arp_editor_terrain_preview_tests PRIVATE "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_viewport_renderer,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_renderer,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>" arp_rhi_semantics arp_rhi)
+    target_link_libraries(arp_editor_terrain_preview_tests PRIVATE "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_viewport_renderer,arp_editor_startup_io,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_renderer,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>" arp_rhi_semantics arp_rhi)
 endif()
 add_test(NAME arp_editor_terrain_preview_tests COMMAND arp_editor_terrain_preview_tests)
 add_executable(arp_editor_scene_viewport_sprite_pass_contract_tests
@@ -1039,10 +1557,10 @@ endforeach()
 # conservatively includes every declared graphics entry.
 set(editor_environment_program_dir "${CMAKE_BINARY_DIR}/shaders/editor_environment")
 add_custom_command(OUTPUT "${editor_environment_program_dir}/editor_viewport_environment.graphics.module.yaml"
-    COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/scripts/compile_shaders.py"
+    COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
         --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
         --out-dir "${editor_environment_program_dir}" --module editor_viewport_environment --graphics-module
-    DEPENDS "${ARP_EDITOR_ENGINE_ROOT}/shaders/editor/viewport_environment.slang"
+    DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} "${ARP_EDITOR_ENGINE_ROOT}/shaders/editor/viewport_environment.slang"
         "${ARP_EDITOR_ENGINE_ROOT}/scripts/compile_shaders.py"
     VERBATIM)
 add_custom_target(arp_editor_environment_shader_artifacts
@@ -1054,6 +1572,29 @@ target_link_libraries(arp_editor_scene_viewport_environment_tests PRIVATE arp_ed
 target_compile_options(arp_editor_scene_viewport_environment_tests PRIVATE -UNDEBUG)
 add_dependencies(arp_editor_scene_viewport_environment_tests arp_editor_environment_shader_artifacts)
 add_test(NAME arp_editor_scene_viewport_environment_tests COMMAND arp_editor_scene_viewport_environment_tests)
+if(NOT EMSCRIPTEN)
+    add_executable(arp_editor_viewport_shader_sources_tests tests/viewport_shader_sources_tests.cpp)
+    target_link_libraries(arp_editor_viewport_shader_sources_tests PRIVATE arp_editor_viewport_renderer arp_rhi arp_rhi_semantics)
+    target_compile_options(arp_editor_viewport_shader_sources_tests PRIVATE -UNDEBUG)
+    target_compile_definitions(arp_editor_viewport_shader_sources_tests PRIVATE
+        ARP_EDITOR_SHADER_SOURCE_ROOT="${CMAKE_BINARY_DIR}/shaders")
+    arp_add_mingw_static_runtime(arp_editor_viewport_shader_sources_tests)
+    add_dependencies(arp_editor_viewport_shader_sources_tests arp_compile_shaders arp_editor_environment_shader_artifacts)
+    foreach(mode IN ITEMS tests smoke)
+        if(mode STREQUAL "smoke")
+            set(viewport_source_args --smoke)
+        else()
+            set(viewport_source_args)
+        endif()
+        add_test(NAME arp_editor_viewport_shader_sources_${mode}
+            COMMAND arp_editor_viewport_shader_sources_tests "${CMAKE_BINARY_DIR}/shaders" ${viewport_source_args})
+        set_tests_properties(arp_editor_viewport_shader_sources_${mode} PROPERTIES TIMEOUT 180 LABELS "editor;io;shader")
+    endforeach()
+    add_test(NAME arp_editor_viewport_shader_sources_http_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/viewport_shader_sources_http_smoke.py"
+            "$<TARGET_FILE:arp_editor_viewport_shader_sources_tests>" "${CMAKE_BINARY_DIR}/shaders")
+    set_tests_properties(arp_editor_viewport_shader_sources_http_smoke PROPERTIES TIMEOUT 90 LABELS "editor;io;shader;http;smoke")
+endif()
 add_executable(arp_editor_command_tests tests/command_tests.cpp)
 target_compile_definitions(arp_editor_command_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
 if(EMSCRIPTEN OR APPLE)
@@ -1128,13 +1669,73 @@ if(NOT EMSCRIPTEN)
         PROPERTIES TIMEOUT 180 LABELS "editor;io;smoke")
 endif()
 
+add_executable(arp_editor_terrain_preview_source_tests tests/terrain_preview_source_tests.cpp)
+target_link_libraries(arp_editor_terrain_preview_source_tests PRIVATE arp_editor_shell)
+target_compile_options(arp_editor_terrain_preview_source_tests PRIVATE -UNDEBUG)
+if(EMSCRIPTEN)
+    set(ARP_EDITOR_TERRAIN_SOURCE_FIXTURE_ROOT
+        "${ARP_EDITOR_ENGINE_ROOT}/build/unified-io-evidence/i3-terrain-preview-sources/fixture"
+        CACHE PATH "Native-produced terrain preview source fixture for Wasm CPU validation")
+    target_link_options(arp_editor_terrain_preview_source_tests PRIVATE
+        "SHELL:--preload-file \"${ARP_EDITOR_TERRAIN_SOURCE_FIXTURE_ROOT}@/terrain-preview-source-fixture\"")
+endif()
+add_test(NAME arp_editor_terrain_preview_source_tests COMMAND arp_editor_terrain_preview_source_tests)
+add_test(NAME arp_editor_terrain_preview_source_smoke COMMAND arp_editor_terrain_preview_source_tests --smoke)
+add_test(NAME arp_editor_terrain_preview_source_failure_smoke COMMAND arp_editor_terrain_preview_source_tests --failure-smoke)
+set_tests_properties(arp_editor_terrain_preview_source_tests arp_editor_terrain_preview_source_smoke arp_editor_terrain_preview_source_failure_smoke
+    PROPERTIES TIMEOUT 120 LABELS "editor;io")
+if(WIN32)
+    add_test(NAME arp_editor_terrain_preview_legacy_read_tests COMMAND arp_editor_terrain_preview_source_tests --legacy-read)
+    add_test(NAME arp_editor_terrain_preview_legacy_read_smoke COMMAND arp_editor_terrain_preview_source_tests --legacy-read-smoke)
+    set_tests_properties(arp_editor_terrain_preview_legacy_read_tests arp_editor_terrain_preview_legacy_read_smoke
+        PROPERTIES TIMEOUT 180 LABELS "editor;io;legacy;cpu")
+endif()
+if(NOT EMSCRIPTEN)
+    add_test(NAME arp_editor_terrain_preview_source_native_smoke COMMAND arp_editor_terrain_preview_source_tests --native)
+    add_test(NAME arp_editor_terrain_preview_source_http_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${ARP_EDITOR_ENGINE_ROOT}/editor/tests/terrain_preview_source_http_smoke.py"
+            "$<TARGET_FILE:arp_editor_terrain_preview_source_tests>")
+    set_tests_properties(arp_editor_terrain_preview_source_native_smoke arp_editor_terrain_preview_source_http_smoke
+        PROPERTIES TIMEOUT 180 LABELS "editor;io;smoke")
+    add_test(NAME arp_editor_terrain_preview_source_cli_smoke
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/editor/tests/terrain_preview_source_cli_smoke.py"
+            "$<TARGET_FILE:arp_editor>" "$<TARGET_FILE:arp_editor_cli>" "$<TARGET_FILE:arp_editor_terrain_preview_source_tests>")
+    set_tests_properties(arp_editor_terrain_preview_source_cli_smoke
+        PROPERTIES TIMEOUT 150 LABELS "editor;io;smoke")
+    set(ARP_EDITOR_WOCC_WORKSPACE_ROOT "" CACHE PATH "Explicit staged WOCC verification root with adoption.yaml")
+    if(ARP_EDITOR_WOCC_WORKSPACE_ROOT)
+        if(NOT IS_DIRECTORY "${ARP_EDITOR_WOCC_WORKSPACE_ROOT}")
+            message(FATAL_ERROR "EDITOR-WOCC-EXPLICIT-WORKSPACE-MISSING")
+        endif()
+        add_test(NAME arp_editor_wocc_workspace_cli_smoke
+            COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/editor/tests/wocc_workspace_cli_smoke.py"
+                --editor "$<TARGET_FILE:arp_editor>" --cli "$<TARGET_FILE:arp_editor_cli>"
+                --root "${ARP_EDITOR_WOCC_WORKSPACE_ROOT}"
+                --output "${CMAKE_BINARY_DIR}/editor-wocc-evidence/native-cli")
+        set_tests_properties(arp_editor_wocc_workspace_cli_smoke
+            PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE LABELS "editor;io;wocc;smoke")
+    endif()
+endif()
+
 add_test(NAME arp_editor_build_contract_tests
     COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/tests/tooling/editor_build_contract_tests.py")
 if(NOT EMSCRIPTEN AND NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    add_library(arp_editor_cli_source STATIC cli/cli_source.cpp)
+    target_include_directories(arp_editor_cli_source PUBLIC "${ARP_EDITOR_ENGINE_ROOT}")
+    target_link_libraries(arp_editor_cli_source PUBLIC arp_editor_cold_host_read)
+    add_executable(arp_editor_cli_source_tests tests/cli_source_tests.cpp)
+    target_link_libraries(arp_editor_cli_source_tests PRIVATE arp_editor_cli_source)
+    target_compile_options(arp_editor_cli_source_tests PRIVATE -UNDEBUG)
+    arp_add_mingw_static_runtime(arp_editor_cli_source_tests)
+    add_test(NAME arp_editor_cli_source_tests COMMAND arp_editor_cli_source_tests)
+    add_test(NAME arp_editor_cli_source_smoke COMMAND arp_editor_cli_source_tests --smoke)
+    set_tests_properties(arp_editor_cli_source_tests arp_editor_cli_source_smoke PROPERTIES
+        TIMEOUT 60 LABELS "editor;cli;io;smoke")
     add_executable(arp_editor_cli cli/main.cpp)
     target_include_directories(arp_editor_cli PRIVATE "${ARP_EDITOR_ENGINE_ROOT}" "${ARP_EDITOR_ENGINE_ROOT}/src")
     target_compile_definitions(arp_editor_cli PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
     target_link_libraries(arp_editor_cli PRIVATE
+        arp_editor_cli_source
         arp_scriptvm_editor_runtime
         arp_scriptvm_host_plugin_runtime
         arp_script_plugin_network_static
@@ -1153,6 +1754,27 @@ if(NOT EMSCRIPTEN AND NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL
         COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/editor/tests/project_io_cli_smoke.py"
             "$<TARGET_FILE:arp_editor>" "$<TARGET_FILE:arp_editor_cli>")
     set_tests_properties(arp_editor_project_io_cli_smoke PROPERTIES TIMEOUT 150 LABELS "editor;io;smoke")
+    add_test(NAME arp_editor_source_script_save_cli_smoke
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/editor/tests/source_script_save_cli_smoke.py"
+            "$<TARGET_FILE:arp_editor>" "$<TARGET_FILE:arp_editor_cli>")
+    set_tests_properties(arp_editor_source_script_save_cli_smoke PROPERTIES TIMEOUT 180 LABELS "editor;io;save;smoke")
+    add_test(NAME arp_editor_source_scene_save_cli_smoke
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/editor/tests/source_scene_save_cli_smoke.py"
+            "$<TARGET_FILE:arp_editor>" "$<TARGET_FILE:arp_editor_cli>" "$<TARGET_FILE:arp_editor_source_scene_save_tests>")
+    set_tests_properties(arp_editor_source_scene_save_cli_smoke PROPERTIES TIMEOUT 240 LABELS "editor;io;save;smoke")
+    add_test(NAME arp_editor_source_project_save_cli_smoke
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/editor/tests/source_project_save_cli_smoke.py"
+            "$<TARGET_FILE:arp_editor>" "$<TARGET_FILE:arp_editor_cli>" "$<TARGET_FILE:arp_editor_source_scene_save_tests>"
+            --output "${CMAKE_BINARY_DIR}/unified-io-evidence/i5-project-settings/cli")
+    set_tests_properties(arp_editor_source_project_save_cli_smoke PROPERTIES TIMEOUT 240 LABELS "editor;io;save;smoke")
+    add_test(NAME arp_editor_scene_source_cli_smoke
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/editor/tests/scene_source_cli_smoke.py"
+            "$<TARGET_FILE:arp_editor>" "$<TARGET_FILE:arp_editor_cli>" "$<TARGET_FILE:arp_editor_scene_source_shell_tests>")
+    set_tests_properties(arp_editor_scene_source_cli_smoke PROPERTIES TIMEOUT 150 LABELS "editor;io;smoke")
+    add_test(NAME arp_editor_source_script_authoring_cli_smoke
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${ARP_EDITOR_ENGINE_ROOT}/editor/tests/source_script_authoring_cli_smoke.py"
+            "$<TARGET_FILE:arp_editor>" "$<TARGET_FILE:arp_editor_cli>" "$<TARGET_FILE:arp_editor_source_script_authoring_tests>")
+    set_tests_properties(arp_editor_source_script_authoring_cli_smoke PROPERTIES TIMEOUT 150 LABELS "editor;io;smoke")
 endif()
 if(ARP_EDITOR_WEBGL_PRODUCT)
     add_executable(arp_editor app/editor_webgl_application.cpp
@@ -1187,6 +1809,10 @@ add_executable(arp_editor main.cpp
     ui/editor_ui_assets.cpp
     "${ARP_EDITOR_ENGINE_ROOT}/src/platform/common/platform_lifecycle_state.cpp")
 endif()
+target_link_libraries(arp_editor PRIVATE arp_editor_ui_sources)
+if(WIN32)
+    target_compile_definitions(arp_editor PRIVATE ARP_EDITOR_UI_FONT_ROOT="${ARP_EDITOR_UI_FONT_ROOT}")
+endif()
 if(NOT EMSCRIPTEN)
     add_test(NAME arp_editor_play_launch_cli_tests
         COMMAND "${Python3_EXECUTABLE}" -X utf8
@@ -1203,6 +1829,10 @@ if(NOT EMSCRIPTEN)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/transform_settings_cli_tests.py"
                 "$<TARGET_FILE:arp_editor_cli>")
         set_tests_properties(arp_editor_transform_settings_cli_tests PROPERTIES TIMEOUT 120)
+        add_test(NAME arp_editor_source_receipt_cli_tests
+            COMMAND "${Python3_EXECUTABLE}" -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/tests/source_receipt_cli_tests.py"
+                "$<TARGET_FILE:arp_editor_cli>")
+        set_tests_properties(arp_editor_source_receipt_cli_tests PROPERTIES TIMEOUT 120 LABELS "editor;io;cli")
         add_test(NAME arp_editor_selection_focus_cli_smoke
             COMMAND "${Python3_EXECUTABLE}" -X utf8
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/selection_focus_cli_tests.py"
@@ -1211,6 +1841,7 @@ if(NOT EMSCRIPTEN)
     endif()
 endif()
 target_include_directories(arp_editor PRIVATE "${ARP_EDITOR_ENGINE_ROOT}" "${ARP_EDITOR_ENGINE_ROOT}/src")
+target_sources(arp_editor PRIVATE app/editor_workspace_connection_profile.cpp)
 if(ARP_EDITOR_WEBGL_PRODUCT)
     include(web/EditorWebGl.cmake)
 elseif(EMSCRIPTEN)
@@ -1289,6 +1920,20 @@ else()
         set_tests_properties(arp_platform_window_icon_tests PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
         if(MINGW)
             target_link_options(arp_editor PRIVATE -static-libstdc++ -static-libgcc)
+            # Full static Debug DWARF can exceed the Windows PE file limit.
+            # PE compression is unsupported by this MinGW toolchain; keep the
+            # source-level symbols in a separate, GDB-linked companion file.
+            if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+                if(NOT CMAKE_OBJCOPY)
+                    message(FATAL_ERROR "MinGW Debug Editor requires objcopy for split debug symbols")
+                endif()
+                add_custom_command(TARGET arp_editor POST_BUILD
+                    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/../arp_editor.exe.debug"
+                    COMMAND "${CMAKE_OBJCOPY}" --only-keep-debug "$<TARGET_FILE:arp_editor>" "$<TARGET_FILE:arp_editor>.debug"
+                    COMMAND "${CMAKE_OBJCOPY}" --strip-debug "$<TARGET_FILE:arp_editor>"
+                    COMMAND "${CMAKE_OBJCOPY}" "--add-gnu-debuglink=$<TARGET_FILE:arp_editor>.debug" "$<TARGET_FILE:arp_editor>"
+                    VERBATIM)
+            endif()
         endif()
     endif()
     add_dependencies(arp_editor arp_compile_shaders)
@@ -1321,6 +1966,18 @@ else()
                     --project-root ${ARP_EDITOR_ENGINE_ROOT}/tests/fixtures/editor_tilemap_project)
         set_tests_properties(arp_editor_viewport_runtime_hidden_smoke PROPERTIES
             TIMEOUT 60 RUN_SERIAL TRUE)
+        add_test(NAME arp_editor_viewport_shader_host_http_smoke
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/viewport_shader_host_http_smoke.py"
+                "$<TARGET_FILE:arp_editor>" "${CMAKE_BINARY_DIR}/shaders" "${CMAKE_BINARY_DIR}/editor-viewport-shader-host")
+        set_tests_properties(arp_editor_viewport_shader_host_http_smoke PROPERTIES
+            TIMEOUT 180 RUN_SERIAL TRUE LABELS "editor;io;shader;http;smoke")
+        add_test(NAME arp_editor_ui_source_host_http_smoke
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui_source_host_http_smoke.py"
+                "$<TARGET_FILE:arp_editor>" "${CMAKE_CURRENT_SOURCE_DIR}/resources"
+                "${ARP_EDITOR_UI_FONT_ROOT}" "${CMAKE_BINARY_DIR}/shaders"
+                "${CMAKE_BINARY_DIR}/editor-ui-source-host")
+        set_tests_properties(arp_editor_ui_source_host_http_smoke PROPERTIES
+            TIMEOUT 240 RUN_SERIAL TRUE LABELS "editor;ui;io;http;smoke")
     endif()
     set_tests_properties(arp_editor_hidden_smoke arp_editor_after_hidden_smoke
         arp_editor_script_hidden_smoke PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
@@ -1523,6 +2180,22 @@ add_test(NAME arp_editor_scene_script_file_tests COMMAND arp_editor_scene_script
 add_test(NAME arp_editor_scene_script_file_smoke COMMAND arp_editor_scene_script_file_tests --smoke)
 set_tests_properties(arp_editor_scene_script_file_tests arp_editor_scene_script_file_smoke PROPERTIES TIMEOUT 120)
 
+# Native Scene FileService migration keeps the real filesystem/worker contract.
+if(NOT EMSCRIPTEN)
+    add_executable(arp_editor_scene_persistence_io_tests tests/scene_persistence_io_tests.cpp)
+    target_compile_options(arp_editor_scene_persistence_io_tests PRIVATE -UNDEBUG)
+    if(APPLE)
+        target_link_libraries(arp_editor_scene_persistence_io_tests PRIVATE arp_editor_shell)
+    else()
+        target_link_libraries(arp_editor_scene_persistence_io_tests PRIVATE
+            "$<LINK_GROUP:RESCAN,arp_editor_project,arp_editor_shell,arp_editor_script_authoring,arp_script_components,arp_scene_script_reflection,arp_scene2d_script_reflection,arp_ui_runtime,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d,arp_2d_resources,arp_scene3d_assets,arp_scene_assets>")
+    endif()
+    add_test(NAME arp_editor_scene_persistence_io_tests COMMAND arp_editor_scene_persistence_io_tests)
+    add_test(NAME arp_editor_scene_persistence_io_smoke COMMAND arp_editor_scene_persistence_io_tests --smoke)
+    set_tests_properties(arp_editor_scene_persistence_io_tests arp_editor_scene_persistence_io_smoke
+        PROPERTIES TIMEOUT 120 LABELS "editor;io")
+endif()
+
 add_executable(arp_editor_scene_script_shell_tests tests/scene_script_shell_tests.cpp)
 target_compile_definitions(arp_editor_scene_script_shell_tests PRIVATE ARP_SOURCE_DIR="${ARP_EDITOR_ENGINE_ROOT}")
 target_compile_options(arp_editor_scene_script_shell_tests PRIVATE -UNDEBUG)
@@ -1630,4 +2303,7 @@ endif()
 
 if(TARGET arp_editor)
     add_dependencies(arp_editor arp_editor_environment_shader_artifacts)
+    target_link_libraries(arp_editor PRIVATE arp_editor_cold_host_read)
 endif()
+
+include(tests/legacy_atlas_io_validation.cmake)

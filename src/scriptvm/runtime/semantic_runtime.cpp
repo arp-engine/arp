@@ -402,11 +402,21 @@ SemanticOperationResult ScriptSemanticRuntime::normalizeArgument(
             || argument.is<ScriptMethod>() || argument.is<ReflectedMethod>())
             return success(std::move(argument));
         break;
-    case RuntimeType::Class:
-        if (argument.is_object() && argument.class_() != nullptr
+    case RuntimeType::Class: {
+        // Reflected C++ values use others_t, while script instances use
+        // instance_t. An exact named, owned native value is a valid class
+        // argument too. This does not admit boxed pointers or turn an unnamed
+        // class parameter into an any-value parameter.
+        const auto* type = argument.typeinfo_();
+        const bool nativeValue = !className.empty() && !argument.is_native_reference()
+            && argument.is(arp::reflection::others_t) && type && !type->is_pointer()
+            && !type->is_reference();
+        const bool live = !argument.is_native_reference() || argument.native_reference_alive();
+        if (live && (argument.is_object() || nativeValue) && argument.class_() != nullptr
             && (className.empty() || argument.class_()->name() == className))
             return success(std::move(argument));
         break;
+    }
     }
     return failure(
         ScriptDiagnosticCode::TypeMismatch, "argument does not match the function parameter type");

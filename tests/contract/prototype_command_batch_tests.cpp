@@ -1,6 +1,7 @@
 #include "core/diagnostics/diagnostic_error.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/backends/webgpu/webgpu_prototype_batch.h"
+#include "rhi/semantics/command_lowering.h"
 
 #include <cassert>
 #include <iostream>

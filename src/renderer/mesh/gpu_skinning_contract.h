@@ -49,6 +49,10 @@ struct GpuSkinningPalette {
     // rotate positions, normals and tangents without a CPU vertex bake.
     std::array<float, 4> worldRotation{0.0f, 0.0f, 0.0f, 1.0f};
     std::uint32_t jointCount = 0u;
+    // LayeredSkinnedSurface/3 opt-in: zero keeps the original normal path.
+    // Otherwise this is the first inverse-transpose normal matrix inside
+    // skinMatrices; callers reserve jointCount additional matrices and prove
+    // the two ranges fit kMaxGpuSkinningJoints. Other consumers leave it zero.
     std::uint32_t pad0 = 0u;
     std::uint32_t pad1 = 0u;
     std::uint32_t pad2 = 0u;

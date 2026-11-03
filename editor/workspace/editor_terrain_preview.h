@@ -37,8 +37,8 @@ bool loadEditorTerrainPreview(const std::filesystem::path& projectRoot,
     core::pmr::String& diagnostic,
     ProjectInputSnapshot* inputSnapshot = nullptr);
 
-// Strict preloaded profile: no filesystem fallback. Legacy vegetation source
-// import has no mounted-source contract yet and returns an explicit diagnostic.
+// Strict preloaded profile: v2 vegetation uses its explicit resource source
+// contract; v1 legacy input remains unsupported here, with no filesystem fallback.
 bool loadEditorTerrainPreviewSources(const ProjectResourceSources&,
     std::string_view relativeConfig,
     resource::ResourceManager& candidate,

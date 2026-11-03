@@ -57,6 +57,12 @@ public:
         const EditorSceneScriptInputs&,
         core::UniquePtr<EditorSceneDocument>& candidate,
         core::pmr::String& diagnostic);
+    // Explicit domain reload of the actual retained document. Ordinary prepare
+    // remains strict and never rewrites an input archive's binding evidence.
+    static bool prepareReload(const EditorSceneDocument&,
+        const EditorSceneScriptInputs&,
+        core::UniquePtr<EditorSceneDocument>& candidate,
+        core::pmr::String& diagnostic);
     static bool decode(std::string_view yaml,
         EditorSceneDocument& destination,
         const EditorSceneScriptInputs&,

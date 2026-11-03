@@ -1,0 +1,28 @@
+type: SurvivorsCodegenBaseline
+contractVersion: 1
+toolSha256: 0ee8a373278d6fa5ee1a9b5637ea974215ecbc9778c1f3ff5462a2b36ba7e440
+sourceSha256: 842f035ae9be527d2726d0a5befc54b05ceeda823e9975fc088c690f36b9ef79
+stdout: 'Generated ArpScript DirectNative package (no handwritten gameplay C++)
+
+  '
+outputs:
+  script_aot_v5.gen.h:
+    sizeBytes: 235
+    sha256: ed6c2a6bc933c9a99342cce888f8db9dbe62e9bfc3d35d627a85471765442720
+  survivors.gen.cpp:
+    sizeBytes: 6480672
+    sha256: 0f15b136fbc437ab5f9a0869ddc96f5283ebc5aa6e8688b8dba891db17f41750
+  survivors.manifest.yaml:
+    sizeBytes: 23843
+    sha256: ae421a5b5f11109dd63bef3d261735b9c299be74a9b12dfc86a2cd7d473fff5e
+platform: Windows CRT text-mode LF mapping
+inputsSha256:
+  game.yaml: ce69fdd833b5063de648d1ef8d896034ceb46bdd13297f7b42926f01fa10143d
+  script-package.yaml: 702700ad3fb0fe8738b3becbb519fd4d4f96dc754828869f3ed11debfb46e739
+  scripts/foundation.arp: 9a695bd20c175ee58b58a3e99214bd1551ee5ed6707b9a6a1931e7a6ef52ee78
+  scripts/flow.arp: c984afdf5a4b639f5e495fef57d6fc3c088a85db10932e0787eec11de0a12ee1
+  scripts/combat.arp: 6af1c5ef79d9c8e026251b03c53b88e069cc26164d0b7cc229d5b16cd66b3ff5
+  scripts/weapons.arp: db112e7c64d0987b988084637108813ccc29e7ebc157f42cf90907b4b7eb50ff
+  scripts/waves_hud.arp: c2c9e279540ae902193c74f57b074930f9af553f9c7993a043e576f665851995
+  scripts/physics_area.arp: ad2f4093a01a19d9cc16f9cca8373eb74f5a50ef94822dedbc219353c56c00e6
+  scripts/entrypoints.arp: 20d72e0ba0a49879f0751cbaf24fe5b15063f2a7efa8f287fb4f983f817414b3

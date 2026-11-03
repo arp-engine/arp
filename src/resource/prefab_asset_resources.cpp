@@ -482,7 +482,9 @@ constexpr std::uint32_t kPrefabRuntimeBlobMagic = 0x41525046u;
 constexpr std::uint32_t kPrefabRuntimeBlobLegacyV1 = 1u;
 constexpr std::uint32_t kPrefabRuntimeBlobVersionWithSourceDocument = 2u;
 constexpr std::uint32_t kPrefabRuntimeBlobVersionWithMaterialMetadata = 3u;
-constexpr std::uint32_t kPrefabRuntimeBlobVersion = 4u;
+constexpr std::uint32_t kPrefabRuntimeBlobVersionWithController = 4u;
+constexpr std::uint32_t kPrefabRuntimeBlobVersionWithInterpolation = 5u;
+constexpr std::uint32_t kPrefabRuntimeBlobVersion = kPrefabRuntimeBlobVersionWithInterpolation;
 
 std::uint32_t hashBytes(const arp::core::pmr::Vector<std::uint8_t>& bytes)
 {
@@ -984,6 +986,7 @@ void writeRuntimeBlob(RuntimeBlobWriter& writer, const PrefabRuntimePayloadWrite
             writer.POD(channel.jointIndex);
             writer.string(channel.targetPath);
             writer.string(channel.jointName);
+            writer.POD(channel.interpolation);
             writeVector(writer, channel.keyframes, [&](const animation::JointKeyframe& keyframe) {
                 writer.POD(keyframe.timeSeconds);
                 writeTransform(writer, keyframe.transform);
@@ -1074,7 +1077,7 @@ bool readRuntimeBlob(RuntimeBlobReader& reader, PrefabRuntimePayloadLoadResult& 
         out.diagnostics = makeDiagnostic("runtime payload blob header is invalid");
         return false;
     }
-    if (version != kPrefabRuntimeBlobVersion
+    if (version != kPrefabRuntimeBlobVersion && version != kPrefabRuntimeBlobVersionWithController
         && version != kPrefabRuntimeBlobVersionWithMaterialMetadata
         && version != kPrefabRuntimeBlobVersionWithSourceDocument
         && version != kPrefabRuntimeBlobLegacyV1) {
@@ -1094,7 +1097,7 @@ bool readRuntimeBlob(RuntimeBlobReader& reader, PrefabRuntimePayloadLoadResult& 
         out.diagnostics = makeDiagnostic("runtime payload state bindings are invalid");
         return false;
     }
-    if (version >= kPrefabRuntimeBlobVersion) {
+    if (version >= kPrefabRuntimeBlobVersionWithController) {
         if (!readAnimatorController(reader, out.controllerAsset)) {
             out.diagnostics = makeDiagnostic("runtime payload animator controller is invalid");
             return false;
@@ -1164,9 +1167,24 @@ bool readRuntimeBlob(RuntimeBlobReader& reader, PrefabRuntimePayloadLoadResult& 
                     && readVector(reader,
                         clip.channels,
                         [&](animation::AnimationChannel& channel) {
+                            const auto interpolation = [&] {
+                                channel.interpolation =
+                                    animation::ChannelInterpolation::LegacyLinear;
+                                if (version >= kPrefabRuntimeBlobVersionWithInterpolation
+                                    && !reader.POD(channel.interpolation))
+                                    return false;
+                                if (channel.interpolation
+                                        != animation::ChannelInterpolation::LegacyLinear
+                                    && channel.interpolation
+                                        != animation::ChannelInterpolation::GltfLinear) {
+                                    out.diagnostics = "ANIMATION-INTERPOLATION-UNKNOWN";
+                                    return false;
+                                }
+                                return true;
+                            };
                             return reader.POD(channel.jointIndex)
                                 && reader.string(channel.targetPath)
-                                && reader.string(channel.jointName)
+                                && reader.string(channel.jointName) && interpolation()
                                 && readVector(reader,
                                     channel.keyframes,
                                     [&](animation::JointKeyframe& keyframe) {
@@ -1200,7 +1218,8 @@ bool readRuntimeBlob(RuntimeBlobReader& reader, PrefabRuntimePayloadLoadResult& 
                    && reader.POD(image.alphaIsTransparency)
                    && reader.POD(image.alphaTransparencyReference);
            })) {
-        out.diagnostics = makeDiagnostic("runtime payload blob body is invalid");
+        if (out.diagnostics.empty())
+            out.diagnostics = makeDiagnostic("runtime payload blob body is invalid");
         return false;
     }
     if (!reader.done()) {
@@ -1300,6 +1319,11 @@ PrefabRuntimePayloadWriteResult writePrefabRuntimePayload(const PrefabRuntimePay
         result.diagnostics = makeDiagnostic("Prefab runtime payload asset is incomplete");
         return result;
     }
+    for (const auto& clip : desc.asset->clips)
+        if (const auto* diagnostic = animation::validateClipSampling(clip)) {
+            result.diagnostics = diagnostic;
+            return result;
+        }
     if (!validateAnimatorControllerForPayload(*desc.controllerAsset,
             *desc.asset,
             desc.defaultStateName,
@@ -1360,6 +1384,11 @@ PrefabRuntimePayloadLoadResult decodeRuntimePayloadBytes(
         return result;
     }
     result.decodedBytes = reader.decodedBytes();
+    for (const auto& clip : result.asset.clips)
+        if (const auto* diagnostic = animation::validateClipSampling(clip)) {
+            result.diagnostics = diagnostic;
+            return result;
+        }
     if (result.hasCompleteControllerData
         && !validateAnimatorControllerForPayload(result.controllerAsset,
             result.asset,
@@ -1382,7 +1411,10 @@ PrefabRuntimePayloadLoadResult decodeRuntimePayloadBytes(
         result.diagnostics = "runtime payload default clip metadata mismatch";
         return result;
     }
-    if (!result.asset.mesh.validForIndexedDraw()
+    // Runtime blobs store geometry, not its derived AABB. Rebuild it before
+    // publishing the immutable asset so camera/culling consumers never see
+    // a default zero-sized box for a nonempty model.
+    if (!result.asset.mesh.validForIndexedDraw() || !result.asset.mesh.recomputeBounds()
         || result.asset.skinnedVertices.size() != result.asset.mesh.vertices.size()
         || !result.asset.skeleton.valid()
         || result.asset.bindPose.size() != result.asset.skeleton.jointCount()

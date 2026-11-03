@@ -626,6 +626,8 @@ public:
         return true;
     }
 
+    AFUNC()
+
     bool initialize_joint(RigidBody2DComponent* a, RigidBody2DComponent* b, const JointDesc& desc)
     {
         if (usage_ != ComponentUsage::Simulation)

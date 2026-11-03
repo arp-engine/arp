@@ -1,11 +1,14 @@
 #include "core/io/detail/native_directory_access.h"
 
 #include "core/hash/sha256.h"
+#include "core/io/detail/atomic_file_writer.h"
 #include "core/io/file_query_contract.h"
+#include "core/io/file_save_contract.h"
 
 #include <algorithm>
 #include <atomic>
 #include <climits>
+#include <cstddef>
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -250,6 +253,8 @@ struct NativeDirectoryAccess::Impl {
         const auto module = GetModuleHandleW(L"ntdll.dll");
         if (module) {
             open = reinterpret_cast<decltype(open)>(GetProcAddress(module, "NtCreateFile"));
+            setInformation = reinterpret_cast<decltype(setInformation)>(
+                GetProcAddress(module, "NtSetInformationFile"));
             dosError = reinterpret_cast<decltype(dosError)>(
                 GetProcAddress(module, "RtlNtStatusToDosError"));
         }
@@ -261,6 +266,7 @@ struct NativeDirectoryAccess::Impl {
     std::atomic_uint64_t objects{0};
 #if defined(_WIN32)
     decltype(&NtCreateFile) open = nullptr;
+    decltype(&NtSetInformationFile) setInformation = nullptr;
     ULONG(WINAPI* dosError)(NTSTATUS) = nullptr;
     NativeHandle root;
     bool initialized = false;
@@ -295,8 +301,11 @@ struct NativeDirectoryAccess::Impl {
         return rootError;
     }
 
-    NativeHandle child(
-        HANDLE parent, std::string_view segment, bool directory, NativeError& failure)
+    NativeHandle child(HANDLE parent,
+        std::string_view segment,
+        bool directory,
+        NativeError& failure,
+        bool createTemporary = false)
     {
         auto name = wide(segment);
         if (name.empty() || (name.size() - 1) * sizeof(wchar_t) > USHRT_MAX) {
@@ -314,13 +323,16 @@ struct NativeDirectoryAccess::Impl {
         IO_STATUS_BLOCK result{};
         HANDLE opened = nullptr;
         const auto status = open(&opened,
-            FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            (createTemporary ? FILE_WRITE_DATA | DELETE : FILE_READ_DATA) | FILE_READ_ATTRIBUTES
+                | SYNCHRONIZE,
             &attributes,
             &result,
             nullptr,
             FILE_ATTRIBUTE_NORMAL,
-            directory ? FILE_SHARE_READ | FILE_SHARE_WRITE : FILE_SHARE_READ,
-            FILE_OPEN,
+            createTemporary ? 0
+                : directory ? FILE_SHARE_READ | FILE_SHARE_WRITE
+                            : FILE_SHARE_READ,
+            createTemporary ? FILE_CREATE : FILE_OPEN,
             FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT
                 | (directory ? FILE_DIRECTORY_FILE : 0),
             nullptr,
@@ -332,8 +344,15 @@ struct NativeDirectoryAccess::Impl {
         NativeHandle handle(opened, objects);
         BY_HANDLE_FILE_INFORMATION info{};
         failure = information(handle.get(), info);
-        if (failure.diagnostic)
+        if (failure.diagnostic) {
+            if (createTemporary) {
+                FILE_DISPOSITION_INFO disposition{TRUE};
+                if (!SetFileInformationByHandle(
+                        handle.get(), FileDispositionInfo, &disposition, sizeof(disposition)))
+                    failure = {FileIoStatus::BackendUnavailable, "IO-SAVE-TEMP-CLEANUP-FAILED"};
+            }
             return {};
+        }
         return handle;
     }
 
@@ -404,6 +423,150 @@ void NativeDirectoryAccess::shutdown() noexcept
 std::uint64_t NativeDirectoryAccess::openObjectCount() const noexcept
 {
     return impl_->objects.load();
+}
+
+bool NativeDirectoryAccess::saveSupported() const noexcept
+{
+#if defined(_WIN32)
+    return supported() && impl_->setInformation;
+#else
+    return false;
+#endif
+}
+
+std::uint64_t NativeDirectoryAccess::saveScratchBytes() const noexcept
+{
+#if defined(_WIN32)
+    const auto path = impl_->desc.maxPathBytes;
+    constexpr auto fixed = offsetof(FILE_RENAME_INFORMATION, FileName) + sizeof(std::max_align_t)
+        - 1 + sizeof(AtomicFileWriter::Suffix) * sizeof(wchar_t) + core::Sha256::digestByteCount;
+    // UTF-16 leaf plus aligned rename storage; traversal is earlier and the
+    // temporary basename has its own compile-time bound. Include scan storage.
+    if (path > (UINT64_MAX - fixed) / (2 * sizeof(wchar_t)) - 1)
+        return UINT64_MAX;
+    const auto paths = (path + 1) * 2 * sizeof(wchar_t) + fixed;
+    if (impl_->desc.ioChunkBytes > UINT64_MAX - paths)
+        return UINT64_MAX;
+    return paths + impl_->desc.ioChunkBytes;
+#else
+    return UINT64_MAX;
+#endif
+}
+
+FileSaveResult NativeDirectoryAccess::save(const FileSaveRequest& request)
+{
+    FileSaveResult result;
+    result.backendKind = FileBackendKind::NativeDirectoryFileBackend;
+#if defined(_WIN32)
+    const auto fail = [&](FileIoStatus status, const char* diagnostic) {
+        result.fail(status, diagnostic);
+        return result;
+    };
+    if (!impl_->desc.allowObservedBaselineReplace || !saveSupported())
+        return fail(FileIoStatus::Unsupported, "IO-SAVE-READ-ONLY");
+    if (request.cancellation.cancelled())
+        return fail(FileIoStatus::Cancelled, "IO-SAVE-CANCELLED-BEFORE-COMMIT");
+    const std::string_view path(request.path.data(), request.path.size());
+    const auto separator = path.rfind('/');
+    const auto parentPath =
+        separator == std::string_view::npos ? std::string_view{} : path.substr(0, separator);
+    const auto leaf = separator == std::string_view::npos ? path : path.substr(separator + 1);
+    NativeError failure;
+    auto parent = impl_->resolve(parentPath, true, failure);
+    if (failure.diagnostic)
+        return fail(failure.status, failure.diagnostic);
+    auto previous = impl_->child(parent.get(), leaf, false, failure);
+    if (failure.diagnostic && failure.status != FileIoStatus::MissingFile)
+        return fail(failure.status, failure.diagnostic);
+    if (request.precondition == FileSavePrecondition::MustBeMissing) {
+        if (previous.valid())
+            return fail(FileIoStatus::VersionMismatch, "IO-SAVE-PRECONDITION-EXISTS");
+    } else {
+        if (!previous.valid())
+            return fail(FileIoStatus::VersionMismatch, "IO-SAVE-PRECONDITION-MISSING");
+        BY_HANDLE_FILE_INFORMATION info{};
+        failure = information(previous.get(), info);
+        if (failure.diagnostic)
+            return fail(failure.status, failure.diagnostic);
+        if (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            return fail(FileIoStatus::InvalidRequest, "IO-SAVE-DESTINATION-DIRECTORY");
+        FileVersionToken baseline;
+        failure = scan(previous.get(),
+            metadata(info).sizeBytes,
+            request.maxBaselineBytes,
+            impl_->desc.ioChunkBytes,
+            request.cancellation,
+            baseline);
+        if (failure.diagnostic)
+            return fail(failure.status, failure.diagnostic);
+        if (baseline != request.expectedVersion)
+            return fail(FileIoStatus::VersionMismatch, "IO-SAVE-CONTENT-VERSION-MISMATCH");
+    }
+
+    // Complete all allocating preparation before creating any temporary file.
+    const auto version = FileSaveContract::contentVersion(request);
+    const auto leafName = wide(leaf);
+    if (leafName.empty())
+        return fail(FileIoStatus::InvalidRequest, "IO-SAVE-LEAF-ENCODING");
+    const auto leafBytes = (leafName.size() - 1) * sizeof(wchar_t);
+    const auto renameBytes = offsetof(FILE_RENAME_INFORMATION, FileName) + leafBytes;
+    if (renameBytes > MAXDWORD)
+        return fail(FileIoStatus::BudgetExceeded, "IO-SAVE-RENAME-BUDGET");
+    core::pmr::Vector<std::max_align_t> renameStorage{&core::defaultCpuMemoryResource()};
+    renameStorage.resize((renameBytes + sizeof(std::max_align_t) - 1) / sizeof(std::max_align_t));
+    auto* rename = reinterpret_cast<FILE_RENAME_INFORMATION*>(renameStorage.data());
+    rename->ReplaceIfExists = request.precondition == FileSavePrecondition::ContentSha256;
+    rename->RootDirectory = parent.get();
+    rename->FileNameLength = static_cast<DWORD>(leafBytes);
+    std::memcpy(rename->FileName, leafName.data(), leafBytes);
+    AtomicFileWriter::Suffix suffix;
+    if (!AtomicFileWriter::temporarySuffix(suffix))
+        return fail(FileIoStatus::BackendUnavailable, "IO-SAVE-TEMP-ID-EXHAUSTED");
+    if (request.cancellation.cancelled())
+        return fail(FileIoStatus::Cancelled, "IO-SAVE-CANCELLED-BEFORE-COMMIT");
+    auto temporary = impl_->child(parent.get(), suffix, false, failure, true);
+    if (failure.diagnostic)
+        return fail(failure.status, failure.diagnostic);
+    const auto discard = [&](FileIoStatus status, const char* diagnostic) {
+        FILE_DISPOSITION_INFO disposition{TRUE};
+        if (!SetFileInformationByHandle(
+                temporary.get(), FileDispositionInfo, &disposition, sizeof(disposition)))
+            return fail(FileIoStatus::BackendUnavailable, "IO-SAVE-TEMP-CLEANUP-FAILED");
+        return fail(status, diagnostic);
+    };
+    const auto written = AtomicFileWriter::writeAndFlush(temporary.get(),
+        {reinterpret_cast<const char*>(request.bytes.data()), request.bytes.size()},
+        request.cancellation);
+    if (written != AtomicFileWriter::WriteResult::Flushed)
+        return discard(written == AtomicFileWriter::WriteResult::Cancelled
+                ? FileIoStatus::Cancelled
+                : FileIoStatus::BackendUnavailable,
+            "IO-SAVE-TEMP-WRITE");
+    previous.reset();
+    if (request.cancellation.cancelled())
+        return discard(FileIoStatus::Cancelled, "IO-SAVE-CANCELLED-BEFORE-COMMIT");
+    IO_STATUS_BLOCK renameStatus{};
+    const auto renamed = impl_->setInformation(temporary.get(),
+        &renameStatus,
+        rename,
+        static_cast<ULONG>(renameBytes),
+        FileRenameInformation);
+    if (renamed < 0) {
+        const auto code = impl_->dosError(renamed);
+        const auto status = code == ERROR_ALREADY_EXISTS || code == ERROR_FILE_EXISTS
+            ? FileIoStatus::VersionMismatch
+            : error(code, "IO-SAVE-RENAME").status;
+        return discard(status, "IO-SAVE-RENAME");
+    }
+    // No allocating work or cancellation overwrite after the commit point.
+    result.status = FileIoStatus::Success;
+    result.commitState = FileCommitState::Committed;
+    result.committedVersion = version;
+#else
+    (void)request;
+    result.fail(FileIoStatus::Unsupported, "IO-SAVE-NATIVE-HOST-UNSUPPORTED");
+#endif
+    return result;
 }
 
 FileReadResult NativeDirectoryAccess::read(const FileReadRequest& request)

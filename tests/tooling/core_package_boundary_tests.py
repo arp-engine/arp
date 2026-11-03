@@ -37,9 +37,13 @@ class CorePackageBoundaryTests(unittest.TestCase):
         for path in (ROOT / 'src/core').rglob('*'):
             if path.suffix in SOURCE_SUFFIXES:
                 dependencies = upward_dependencies(path.read_text(encoding='utf-8-sig'))
-                allowed = {'network/http/byte_read_transport.h', 'network/http/fetch_byte_transfer.h'}
+                allowed = {'network/http/byte_read_transport.h', 'network/http/byte_transfer_executor.h'}
                 if path == ROOT / 'src/core/io/http_file_backend.cpp':
                     self.assertEqual(set(dependencies), allowed)
+                elif path == ROOT / 'src/core/io/workspace_file_backend.cpp':
+                    self.assertEqual(dependencies, ['network/http/byte_transfer_executor.h'])
+                elif path == ROOT / 'src/core/io/detail/http_transport_status.h':
+                    self.assertEqual(dependencies, ['network/http/byte_read_transport.h'])
                 else:
                     self.assertEqual(dependencies, [], str(path))
 

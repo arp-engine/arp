@@ -1,13 +1,178 @@
 #include "editor/workspace/editor_scene_persistence.h"
 
 #include "core/io/filesystem_path.h"
+#include "editor/io/editor_cold_host_read.h"
 
 #include <system_error>
 
 namespace arp::editor {
-EditorScenePersistence::EditorScenePersistence()
-    : files_(4u, EditorSceneAuthoringCodec::maxDocumentBytes), store_(files_)
+// One owner-thread request pool covers both reads and writes. Only the
+// coordinator accesses the legacy writer; the UI thread only receives results.
+struct EditorScenePersistence::Impl final {
+    static constexpr std::uint32_t requestCapacity = 4;
+    static constexpr std::size_t maxBytes = EditorSceneAuthoringCodec::maxDocumentBytes;
+
+    struct Request {
+        Impl* owner = nullptr;
+        core::io::AtomicFileOperation operation = core::io::AtomicFileOperation::Read;
+        core::pmr::String path;
+        core::io::FileContentValidator validator = nullptr;
+        std::optional<core::io::FileReplacePrecondition> expected;
+        core::io::AtomicFileResult result;
+        bool complete = false;
+    };
+
+    Impl()
+        : requests(requestCapacity), completions({requestCapacity}), writer(1, maxBytes),
+          worker({&completions, 1, requestCapacity, false})
+    {}
+
+    ~Impl()
+    {
+        // Accepted work advances autonomously. Keep request payloads and the
+        // legacy writer alive until every queued operation has truly finished.
+        worker.shutdown(core::runtime::WorkShutdownPolicy::Drain);
+        completions.dispatch(requestCapacity);
+        completions.shutdown();
+    }
+
+    static bool validate(
+        const core::pmr::Vector<std::uint8_t>& bytes, core::pmr::String& diagnostic)
+    {
+        return core::io::VersionedYamlStore<SceneSchema>::validateContents(
+            bytes, maxBytes, diagnostic);
+    }
+
+    RequestHandle submit(core::io::AtomicFileOperation operation,
+        core::pmr::String path,
+        core::pmr::Vector<std::uint8_t> bytes = {},
+        core::io::FileContentValidator validator = nullptr,
+        std::optional<core::io::FileReplacePrecondition> expected = std::nullopt)
+    {
+        diagnostic = nullptr;
+        if (path.empty() || path.find('\0') != core::pmr::String::npos || bytes.size() > maxBytes
+            || !worker.valid()) {
+            diagnostic = "ARP-FILE-REQUEST-CONFIG";
+            return {};
+        }
+        if (expected
+            && (bytes.capacity() > maxBytes || expected->expectedBytes.capacity() > maxBytes
+                || (expected->kind != core::io::FileReplacePrecondition::Kind::MustBeMissing
+                    && expected->kind != core::io::FileReplacePrecondition::Kind::MatchBytes)
+                || (expected->kind == core::io::FileReplacePrecondition::Kind::MustBeMissing
+                    && !expected->expectedBytes.empty()))) {
+            diagnostic = "ARP-FILE-PRECONDITION-CONFIG";
+            return {};
+        }
+        Request pending;
+        pending.owner = this;
+        pending.operation = operation;
+        pending.path = std::move(path);
+        pending.validator = validator;
+        pending.expected = std::move(expected);
+        pending.result.bytes = std::move(bytes);
+        const auto handle = requests.emplace(std::move(pending));
+        if (!handle) {
+            diagnostic = "ARP-FILE-REQUEST-CAPACITY";
+            return {};
+        }
+        auto* request = requests.get(handle);
+        try {
+            if (worker.submit({execute, request, complete, request, {}}).accepted())
+                return handle;
+            diagnostic = "ARP-FILE-WORK-REJECTED";
+        } catch (...) {
+            diagnostic = "ARP-FILE-WORK-EXCEPTION";
+        }
+        requests.erase(handle);
+        return {};
+    }
+
+    static core::runtime::WorkStatus execute(void* context)
+    {
+        auto& request = *static_cast<Request*>(context);
+        auto& result = request.result;
+        using namespace core::io;
+        try {
+            if (request.operation == AtomicFileOperation::Read) {
+                FileReadRequest read;
+                read.contractVersion = 1;
+                read.pathScope = FilePathScope::HostFilesystem;
+                read.path = std::move(request.path);
+                read.maxBytes = maxBytes;
+                auto acquired = EditorColdHostRead::read(read);
+                if (acquired.status == FileIoStatus::MissingFile) {
+                    result.missing = true;
+                    result.diagnostic = "ARP-FILE-MISSING";
+                } else if (acquired.status != FileIoStatus::Success) {
+                    result.diagnostic =
+                        acquired.diagnosticId ? acquired.diagnosticId : acquired.diagnostics;
+                } else {
+                    result.bytes = std::move(acquired.bytes);
+                    result.success =
+                        !request.validator || request.validator(result.bytes, result.diagnostic);
+                }
+            } else {
+                auto& writer = request.owner->writer;
+                const auto handle = request.expected
+                    ? writer.replaceIfUnchanged(std::move(request.path),
+                          std::move(result.bytes),
+                          std::move(*request.expected))
+                    : writer.replace(
+                          std::move(request.path), std::move(result.bytes), request.validator);
+                if (!handle) {
+                    result.diagnostic = writer.diagnostic();
+                } else {
+                    // Cold background bridge, never an owner/frame wait. The
+                    // next FIFO item starts only after real atomic completion.
+                    while (!writer.take(handle, result))
+                        std::this_thread::yield();
+                }
+            }
+        } catch (...) {
+            result.success = false;
+            result.diagnostic = "ARP-FILE-WORK-EXCEPTION";
+        }
+        return result.success ? core::runtime::WorkStatus::Completed
+                              : core::runtime::WorkStatus::Failed;
+    }
+
+    static void complete(void* context, core::runtime::WorkResult result)
+    {
+        auto& request = *static_cast<Request*>(context);
+        if (result.status == core::runtime::WorkStatus::Cancelled) {
+            request.result.success = false;
+            request.result.diagnostic = "ARP-FILE-CANCELLED";
+        }
+        request.complete = true;
+    }
+
+    bool take(RequestHandle handle, core::io::AtomicFileResult& result)
+    {
+        completions.dispatch(requestCapacity);
+        auto* request = requests.get(handle);
+        if (!request) {
+            diagnostic = "ARP-FILE-REQUEST-STALE";
+            return false;
+        }
+        if (!request->complete)
+            return false;
+        result = std::move(request->result);
+        requests.erase(handle);
+        return true;
+    }
+
+    core::GenerationPool<Request> requests;
+    core::runtime::CompletionQueue completions;
+    core::io::AtomicFileService writer;
+    core::runtime::WorkService worker;
+    const char* diagnostic = nullptr;
+};
+
+EditorScenePersistence::EditorScenePersistence() : impl_(core::makeUnique<Impl>())
 {}
+
+EditorScenePersistence::~EditorScenePersistence() = default;
 
 bool EditorScenePersistence::SceneSchema::validate(
     const core::YamlContract::Node& root, core::pmr::String& diagnostic)
@@ -84,7 +249,10 @@ EditorScenePersistence::RequestHandle EditorScenePersistence::load(
     std::filesystem::path resolved;
     if (!resolvePath(projectRoot, relativePath, true, resolved, diagnostic_))
         return {};
-    const auto request = store_.load(core::FilePath::utf8(resolved));
+    const auto request = impl_->submit(
+        core::io::AtomicFileOperation::Read, core::FilePath::utf8(resolved), {}, Impl::validate);
+    if (!request)
+        diagnostic_ = impl_->diagnostic;
     if (request && resolvedTarget)
         *resolvedTarget = std::move(resolved);
     return request;
@@ -121,7 +289,11 @@ EditorScenePersistence::RequestHandle EditorScenePersistence::readResolved(
     const std::filesystem::path& target)
 {
     diagnostic_ = nullptr;
-    return files_.read(core::FilePath::utf8(target));
+    const auto request =
+        impl_->submit(core::io::AtomicFileOperation::Read, core::FilePath::utf8(target));
+    if (!request)
+        diagnostic_ = impl_->diagnostic;
+    return request;
 }
 
 EditorScenePersistence::RequestHandle EditorScenePersistence::saveResolved(
@@ -132,12 +304,18 @@ EditorScenePersistence::RequestHandle EditorScenePersistence::saveResolved(
         diagnostic_ = "EDITOR-SCENE-DOCUMENT-LIMIT";
         return {};
     }
-    return store_.save(core::FilePath::utf8(target), yaml);
+    const auto request = impl_->submit(core::io::AtomicFileOperation::Replace,
+        core::FilePath::utf8(target),
+        {yaml.begin(), yaml.end()},
+        Impl::validate);
+    if (!request)
+        diagnostic_ = impl_->diagnostic;
+    return request;
 }
 
 bool EditorScenePersistence::take(RequestHandle handle, core::io::AtomicFileResult& result)
 {
-    return store_.take(handle, result);
+    return impl_->take(handle, result);
 }
 
 EditorScenePersistence::RequestHandle EditorScenePersistence::saveScript(
@@ -148,6 +326,11 @@ EditorScenePersistence::RequestHandle EditorScenePersistence::saveScript(
 {
     diagnostic_ = nullptr;
     diagnostic.clear();
+    if (inputs.sources) {
+        diagnostic_ = "EDITOR-SCRIPT-FILE-MOUNTED-SAVE-REQUIRES-SOURCE-HOST";
+        diagnostic = diagnostic_;
+        return {};
+    }
     try {
         // Allocate all worker-owned payloads before final contextual admission.
         auto path = prepared.path();
@@ -158,10 +341,13 @@ EditorScenePersistence::RequestHandle EditorScenePersistence::saveScript(
         expected.expectedBytes = prepared.previousBytes();
         if (!prepared.current(document, inputs, diagnostic))
             return {};
-        const auto handle =
-            files_.replaceIfUnchanged(std::move(path), std::move(bytes), std::move(expected));
+        const auto handle = impl_->submit(core::io::AtomicFileOperation::Replace,
+            std::move(path),
+            std::move(bytes),
+            nullptr,
+            std::move(expected));
         if (!handle) {
-            diagnostic_ = files_.diagnostic();
+            diagnostic_ = impl_->diagnostic;
             diagnostic = diagnostic_ ? diagnostic_ : "EDITOR-SCRIPT-FILE-SUBMIT";
         }
         return handle;
@@ -183,7 +369,7 @@ EditorScenePersistence::RequestHandle EditorScenePersistence::readScript(
         return {};
     const auto request = readResolved(resolved);
     if (!request)
-        diagnostic_ = files_.diagnostic();
+        diagnostic_ = impl_->diagnostic;
     if (request && resolvedTarget)
         resolvedTarget->swap(resolved);
     return request;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor/viewport/editor_scene_viewport_pipeline_contract.h"
+#include "renderer/shader_package_reflection.h"
 #include "rhi/gpu_device.h"
 #include "shader/shader_compiler.h"
 
@@ -15,6 +16,7 @@ struct EditorSceneViewportShaderArtifacts {
     std::string_view mslPath;
     std::string_view wgslPath;
     std::string_view reflectionPath;
+    renderer::ShaderPackagePreparationDesc preparation;
 };
 
 enum class EditorSceneViewportShaderPackageDiagnostic {
@@ -75,6 +77,11 @@ struct EditorSceneViewportDevicePipelineResult {
 };
 
 // Paths are caller-owned artifact identities; none are inferred from the source path.
+// Supplied preparation is strict: incomplete inputs fail before any cold IO/GPU.
+bool hydrateEditorSceneViewportShaderPackage(rhi::ShaderPackageDesc&,
+    const EditorSceneViewportShaderArtifacts&,
+    core::pmr::String& diagnostic);
+
 ARP_API EditorSceneViewportShaderPackageResult loadEditorSceneViewportShaderPackage(
     const EditorSceneViewportShaderArtifacts& artifacts,
     rhi::TextureFormat colorFormat,

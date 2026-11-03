@@ -2,7 +2,7 @@
 
 #include "core/encoding/yaml_contract.h"
 #include "core/hash/sha256.h"
-#include "core/io/file_io.h"
+#include "editor/io/editor_cold_host_read.h"
 #include "editor/project/project_input_snapshot.h"
 #include "editor/project/project_manifest.h"
 #include "resource/asset_package_closure.h"
@@ -145,7 +145,7 @@ bool ProjectPackageSnapshot::captureImpl(const std::filesystem::path& root,
                                                 limit,
                                                 true,
                                                 &sources->origin)
-                                          : core::readBinaryFile(file, limit);
+                                          : EditorColdHostRead::readBinaryBytes(file, limit);
                 if (!read.success)
                     return fail(diagnostic, "EDITOR-RECOVERY-PACKAGE-READ-OR-BUDGET");
                 remaining -= read.bytes.size();

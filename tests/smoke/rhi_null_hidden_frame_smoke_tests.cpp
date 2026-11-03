@@ -83,18 +83,7 @@ int main()
     assert(device);
     arp::test::OriginalWholeDescriptorWriteFixture::verifyValidator(*device);
 
-    ShaderPackageDesc smokePackage;
-    smokePackage.slangModulePath = "null_hidden_frame_smoke.slang";
-    smokePackage.artifacts = {"null_hidden_frame_smoke.spv",
-        "null_hidden_frame_smoke.metal",
-        "null_hidden_frame_smoke.wgsl",
-        "null_hidden_frame_smoke.reflection.yaml"};
-    smokePackage.entrypoints = {{smokePackage.slangModulePath, "vsMain", ShaderStage::Vertex},
-        {smokePackage.slangModulePath, "fsMain", ShaderStage::Fragment}};
-    smokePackage.reflection.descriptorBindings = {
-        {0, 0, DescriptorType::UniformBuffer, ShaderStage::Vertex | ShaderStage::Fragment}};
-    test::GeneratedShaderPackageFixture::prepare(
-        smokePackage, "null_hidden_frame_smoke.artifact-set.yaml");
+    const auto smokePackage = test::GeneratedShaderPackageFixture::nullHiddenFrame();
     NullHiddenFrameSmokeRunner runner(*device);
     const auto report = runner.run({
         "NullHiddenFrameSmoke",

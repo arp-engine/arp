@@ -2,8 +2,10 @@
 
 #include "core/hash/sha256.h"
 #include "core/io/file_read_contract.h"
+#include "core/io/file_save_contract.h"
 
 #include <algorithm>
+#include <stdexcept>
 #include <type_traits>
 
 namespace arp::editor {
@@ -14,15 +16,6 @@ bool validLocation(const ProjectSourceLocation& location)
 {
     return location.mount && location.epoch
         && (location.root.empty() || ProjectInputSnapshot::validLogicalPath(location.root));
-}
-
-core::pmr::String sourcePath(const ProjectSourceLocation& location, std::string_view relative)
-{
-    core::pmr::String path(location.root, &core::defaultCpuMemoryResource());
-    if (!path.empty())
-        path += '/';
-    path.append(relative.data(), relative.size());
-    return path;
 }
 
 const char* statusDiagnostic(FileIoStatus status) noexcept
@@ -56,6 +49,19 @@ const char* ioDiagnostic(const FileReadResult& result) noexcept
     return result.diagnosticId ? result.diagnosticId : statusDiagnostic(result.status);
 }
 } // namespace
+
+core::pmr::String ProjectSourceLocation::pathFor(std::string_view relative) const
+{
+    if (!validLocation(*this) || !ProjectInputSnapshot::validLogicalPath(relative))
+        throw std::invalid_argument("PROJECT-SOURCE-PATH");
+    core::pmr::String path(root, &core::defaultCpuMemoryResource());
+    if (!path.empty())
+        path += '/';
+    path.append(relative.data(), relative.size());
+    if (path.size() > ProjectInputBudget::maxPathBytes)
+        throw std::invalid_argument("PROJECT-SOURCE-PATH-BUDGET");
+    return path;
+}
 
 ProjectSourceSnapshot::ProjectSourceSnapshot(
     ProjectSourceLocation location, ProjectInputBudget budget)
@@ -97,8 +103,7 @@ bool ProjectSourceSnapshot::append(std::string_view relative,
         if (sealed_ || !validLocation(location_) || !ProjectInputSnapshot::validBudget(budget_))
             return fail("PROJECT-SOURCE-CONFIG");
         if (!ProjectInputSnapshot::validLogicalPath(relative)
-            || binding.path != sourcePath(location_, relative)
-            || !(binding.mount == location_.mount)
+            || binding.path != location_.pathFor(relative) || !(binding.mount == location_.mount)
             || binding.pathScope != FilePathScope::MountedResource || binding.contractVersion != 1
             || binding.range.mode != FileReadRangeMode::WholeFile
             || binding.partialPolicy != FilePartialReadPolicy::DenyPartial)
@@ -184,6 +189,204 @@ bool ProjectSourceContext::validate(const char*& diagnostic) const noexcept
         return false;
     }
     return snapshot->validate(*files, epoch, diagnostic);
+}
+
+core::UniquePtr<ProjectSourceSnapshot::PreparedFileSave> ProjectSourceSnapshot::prepareFileSave(
+    FileService& files,
+    std::uint64_t epoch,
+    std::string_view relative,
+    core::pmr::Vector<std::uint8_t> bytes,
+    std::size_t maxBytes,
+    const char*& diagnostic) const noexcept
+{
+    return prepareSave(files, epoch, relative, std::move(bytes), maxBytes, false, diagnostic);
+}
+
+core::UniquePtr<ProjectSourceSnapshot::PreparedFileSave>
+ProjectSourceSnapshot::prepareScopeFileSave(FileService& files,
+    std::uint64_t epoch,
+    std::string_view relative,
+    core::pmr::Vector<std::uint8_t> bytes,
+    std::size_t maxBytes,
+    const char*& diagnostic) const noexcept
+{
+    return prepareSave(files, epoch, relative, std::move(bytes), maxBytes, true, diagnostic);
+}
+
+core::UniquePtr<ProjectSourceSnapshot::PreparedFileSave> ProjectSourceSnapshot::prepareSave(
+    FileService& files,
+    std::uint64_t epoch,
+    std::string_view relative,
+    core::pmr::Vector<std::uint8_t> bytes,
+    std::size_t maxBytes,
+    bool preserveScope,
+    const char*& diagnostic) const noexcept
+{
+    diagnostic = "PROJECT-SOURCE-SAVE-PREPARATION";
+    try {
+        if (!validate(files, epoch, diagnostic))
+            return {};
+        const auto* previous = find(relative);
+        if (!previous) {
+            diagnostic = "PROJECT-SOURCE-SAVE-NO-BASELINE";
+            return {};
+        }
+        if (!maxBytes || maxBytes > ProjectInputBudget{}.maxFileBytes || bytes.capacity() > maxBytes
+            || previous->receipt.bytes.size() > maxBytes
+            || (preserveScope
+                && (maxBytes > budget_.maxFileBytes
+                    || bytes.size() > budget_.maxTotalBytes
+                            - (totalBytes_ - previous->receipt.bytes.size())))) {
+            diagnostic = "PROJECT-SOURCE-SAVE-BUDGET";
+            return {};
+        }
+        if (!files.saveCapability(location_.mount).observedBaselineReplace) {
+            diagnostic = "PROJECT-SOURCE-SAVE-READ-ONLY";
+            return {};
+        }
+        auto result = core::makeUnique<PreparedFileSave>();
+        auto& request = result->request_;
+        request.pathScope = FilePathScope::MountedResource;
+        request.mount = location_.mount;
+        request.path = previous->binding.path;
+        request.bytes = std::move(bytes);
+        request.maxWriteBytes = maxBytes;
+        request.maxBaselineBytes = maxBytes;
+        request.precondition = FileSavePrecondition::ContentSha256;
+        core::Sha256 baseline;
+        baseline.update({reinterpret_cast<const char*>(previous->receipt.bytes.data()),
+            previous->receipt.bytes.size()});
+        request.expectedVersion =
+            FileVersionEncoding::finish(baseline, FileVersionKind::ContentSha256);
+        const auto admission = FileSaveContract::validate(request);
+        if (admission.diagnostic) {
+            diagnostic = admission.diagnostic;
+            return {};
+        }
+        result->committedVersion_ = FileSaveContract::contentVersion(request);
+        ProjectInputBudget budget;
+        budget.maxFiles = 1;
+        budget.maxFileBytes = maxBytes;
+        budget.maxTotalBytes = maxBytes;
+        if (preserveScope)
+            budget = budget_;
+        result->candidate_ = core::makeShared<ProjectSourceSnapshot>(location_, budget);
+        result->preservesScope_ = preserveScope;
+        if (preserveScope)
+            result->baselineIdentities_ = identities_.bindings();
+        const auto appendReplacement = [&] {
+            auto binding = previous->binding;
+            binding.cancellation = {};
+            binding.expectedVersion = result->committedVersion_;
+            binding.maxVersionBytes = request.bytes.size();
+            binding.maxBytes = maxBytes;
+            FileReadResult receipt;
+            receipt.backendKind = previous->receipt.backendKind;
+            receipt.bytes = request.bytes;
+            receipt.version = result->committedVersion_;
+            result->replacementIndex_ = result->candidate_->size();
+            return result->candidate_->append(relative, binding, std::move(receipt), diagnostic);
+        };
+        if (preserveScope) {
+            for (const auto& entry : entries_) {
+                if (&entry == previous) {
+                    if (!appendReplacement())
+                        return {};
+                } else if (!result->candidate_->append(
+                               entry.relative, entry.binding, entry.receipt, diagnostic)) {
+                    return {};
+                }
+            }
+        } else if (!appendReplacement()) {
+            return {};
+        }
+        result->service_ = &files;
+        diagnostic = nullptr;
+        return result;
+    } catch (...) {
+        diagnostic = "PROJECT-SOURCE-SAVE-ALLOCATION";
+        return {};
+    }
+}
+
+FileSaveRequest ProjectSourceSnapshot::PreparedFileSave::takeRequest() noexcept
+{
+    if (taken_ || finished_ || !candidate_) {
+        diagnostic_ = "PROJECT-SOURCE-SAVE-CONSUMED";
+        FileSaveRequest invalid;
+        invalid.contractVersion = 0;
+        return invalid;
+    }
+    taken_ = true;
+    return std::move(request_);
+}
+
+bool ProjectSourceSnapshot::PreparedFileSave::preservesScopeOf(
+    const ProjectSourceSnapshot& baseline) const noexcept
+{
+    return preservesScope_ && candidate_ && baseline.sealed_
+        && candidate_->location_.mount == baseline.location_.mount
+        && candidate_->location_.epoch == baseline.location_.epoch
+        && candidate_->location_.root == baseline.location_.root
+        && ProjectInputSnapshot::equal(baselineIdentities_, baseline.identities());
+}
+
+bool ProjectSourceSnapshot::PreparedFileSave::committedSnapshotIs(
+    const core::SharedPtr<const ProjectSourceSnapshot>& snapshot) const noexcept
+{
+    return preservesScope_ && finished_ && candidate_ && candidate_->sealed_
+        && snapshot == candidate_;
+}
+
+core::SharedPtr<const ProjectSourceSnapshot> ProjectSourceSnapshot::PreparedFileSave::finish(
+    FileService& files, std::uint64_t epoch, const FileSaveResult& receipt) noexcept
+{
+    diagnostic_ = "PROJECT-SOURCE-SAVE-CONSUMED";
+    if (!taken_ || finished_ || !candidate_)
+        return {};
+    finished_ = true;
+    if (receipt.commitState == FileCommitState::OutcomeUnknown) {
+        diagnostic_ = "PROJECT-SOURCE-SAVE-OUTCOME-UNKNOWN";
+        return {};
+    }
+    if (receipt.status != FileIoStatus::Success
+        || receipt.commitState != FileCommitState::Committed) {
+        diagnostic_ =
+            receipt.diagnosticId ? receipt.diagnosticId : "PROJECT-SOURCE-SAVE-NOT-COMMITTED";
+        return {};
+    }
+    if (&files != service_ || epoch != candidate_->location_.epoch
+        || receipt.deliveryStatus != FileIoStatus::Success
+        || !files.saveCapability(candidate_->location_.mount).observedBaselineReplace) {
+        diagnostic_ = "PROJECT-SOURCE-SAVE-STALE-OWNER";
+        return {};
+    }
+    if (receipt.committedVersion != committedVersion_) {
+        diagnostic_ = "PROJECT-SOURCE-SAVE-RECEIPT-MISMATCH";
+        return {};
+    }
+    // Validate every retained binding while the candidate is still private.
+    // A stale unchanged dependency cannot be published by a fresh file receipt.
+    for (const auto& entry : candidate_->entries_) {
+        if (entry.binding.cancellation.cancelled()) {
+            diagnostic_ = "PROJECT-SOURCE-CANCELLED";
+            return {};
+        }
+        try {
+            const auto admission = files.validateRead(entry.binding);
+            if (admission.status != FileIoStatus::Success) {
+                diagnostic_ = ioDiagnostic(admission);
+                return {};
+            }
+        } catch (...) {
+            diagnostic_ = "PROJECT-SOURCE-SAVE-ALLOCATION";
+            return {};
+        }
+    }
+    candidate_->entries_[replacementIndex_].receipt.backendKind = receipt.backendKind;
+    candidate_->sealed_ = true;
+    diagnostic_ = nullptr;
+    return candidate_;
 }
 
 struct ProjectSourceSession::State {
@@ -275,7 +478,7 @@ FileIoStatus ProjectSourceSession::read(std::string_view relative,
         auto& binding = pending->binding;
         binding.contractVersion = 1;
         binding.pathScope = FilePathScope::MountedResource;
-        binding.path = sourcePath(inputs.location_, relative);
+        binding.path = inputs.location_.pathFor(relative);
         binding.mount = inputs.location_.mount;
         binding.maxBytes = maxBytes;
         binding.expectedVersion = expected;

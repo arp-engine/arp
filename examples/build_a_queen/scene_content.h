@@ -8,6 +8,8 @@
 #include "rhi/gpu_resources.h"
 
 namespace arp::build_a_queen {
+class CharacterSources;
+
 class SceneContent {
 public:
     std::size_t previewVertexCapacity() const noexcept
@@ -66,6 +68,7 @@ public:
     };
 
     renderer::RendererResult createContent(const core::pmr::String& directory);
+    renderer::RendererResult createContent(const CharacterSources& sources);
     bool prepareFrame(const Snapshot&,
         const LevelDesc&,
         const Pickup*,
@@ -81,8 +84,8 @@ public:
 
 protected:
     bool buildScene(const Snapshot&, const Pickup*, const bool*, std::uint32_t);
-    bool loadCharacters(const core::pmr::String&);
-    bool loadAnimatedCharacters(const core::pmr::String&);
+    bool loadCharacters(const core::pmr::String&, const CharacterSources* = nullptr);
+    bool loadAnimatedCharacters(const core::pmr::String&, const CharacterSources* = nullptr);
     bool appendCharacter(const CharacterModel& model, float x, float z, const Snapshot* outfit);
     bool appendPickup(const CharacterModel& model,
         Slot slot,
@@ -112,6 +115,7 @@ protected:
     bool sceneBuildValid_ = true;
 
 private:
+    renderer::RendererResult createContent(const core::pmr::String&, const CharacterSources*);
     bool appendAnimated(core::pmr::Vector<Vertex>&,
         AnimatedCharacter&,
         const Snapshot*,

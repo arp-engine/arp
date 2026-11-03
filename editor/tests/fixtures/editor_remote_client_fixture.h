@@ -10,9 +10,9 @@
 
 namespace arp::editor::tests {
 // Real loopback transport; the caller retains the server and pumps its owner thread.
-class EditorRemoteClientFixture final {
+template <class Server> class EditorHttpClientFixture final {
 public:
-    EditorRemoteClientFixture(EditorRemoteServer& server, std::string_view token)
+    EditorHttpClientFixture(Server& server, std::string_view token)
         : server_(server), token_(token), context_(&service_), client_(&context_)
     {
         assert(runtime_.valid() && server_.running());
@@ -21,10 +21,10 @@ public:
         });
     }
 
-    ~EditorRemoteClientFixture() { shutdown(); }
+    ~EditorHttpClientFixture() { shutdown(); }
 
-    EditorRemoteClientFixture(const EditorRemoteClientFixture&) = delete;
-    EditorRemoteClientFixture& operator=(const EditorRemoteClientFixture&) = delete;
+    EditorHttpClientFixture(const EditorHttpClientFixture&) = delete;
+    EditorHttpClientFixture& operator=(const EditorHttpClientFixture&) = delete;
 
     void shutdown()
     {
@@ -33,6 +33,43 @@ public:
         context_.shutdown();
         reactor_.join();
         context_.dispatch();
+    }
+
+    // Abort a real response before consuming its receipt body. The subsequent
+    // request uses another actual connection to query the server's outcome.
+    void disconnectAfterHeaders(std::string_view path, std::string_view body)
+    {
+        network::http::ClientRequest request(network::http::Method::Post,
+            "http://127.0.0.1:" + std::to_string(server_.port()) + std::string(path));
+        assert(request.add_header("Authorization", "Bearer " + token_)
+            == network::http::DiagnosticCode::none);
+        request.set_content_type(network::http::ContentType::Json);
+        request.set_body_text(body);
+        bool headers = false, done = false;
+        unsigned chunks = 0;
+        network::http::ClientStatus outcome;
+        client_.async_stream(
+            request,
+            [&](const network::http::Response& response) {
+                headers = true;
+                assert(response.status().value() == 200);
+                return false;
+            },
+            [&](network::StringView) {
+                ++chunks;
+                return false;
+            },
+            [&](const network::http::ClientStatus& status) {
+                outcome = status;
+                done = true;
+            });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!done && std::chrono::steady_clock::now() < deadline) {
+            server_.pump();
+            context_.dispatch();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        assert(done && headers && chunks == 0 && !outcome.success());
     }
 
     std::pair<std::uint16_t, std::string> send(network::http::Method method,
@@ -78,7 +115,7 @@ public:
     }
 
 private:
-    EditorRemoteServer& server_;
+    Server& server_;
     std::string token_;
     network::SocketRuntime runtime_;
     network::io_service service_;
@@ -86,4 +123,6 @@ private:
     network::http::Client client_;
     std::thread reactor_;
 };
+
+using EditorRemoteClientFixture = EditorHttpClientFixture<EditorRemoteServer>;
 } // namespace arp::editor::tests

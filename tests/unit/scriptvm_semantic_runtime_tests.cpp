@@ -78,6 +78,50 @@ void require(bool condition, const char* message)
     }
 }
 
+struct NativeArgumentValue {
+    int number = 17;
+};
+
+void testOwnedNativeClassArgument()
+{
+    Value value{NativeArgumentValue{}};
+    const auto name = value.class_()->name();
+    require(!value.is_object(), "native value is not a script instance carrier");
+    auto normalized =
+        ScriptSemanticRuntime::normalizeArgument(value, RuntimeType::Class, false, name);
+    require(normalized.ok()
+            && normalized.value.ptr<NativeArgumentValue>() == value.ptr<NativeArgumentValue>(),
+        "exact named native value retains its original owned carrier");
+    require(
+        !ScriptSemanticRuntime::normalizeArgument(value, RuntimeType::Class, false, "wrong-class")
+            .ok(),
+        "native value cannot satisfy a different named class");
+    require(!ScriptSemanticRuntime::normalizeArgument(value, RuntimeType::Class, false, {}).ok(),
+        "an unnamed class does not become an arbitrary native value argument");
+    require(!ScriptSemanticRuntime::normalizeArgument(makeInt(17), RuntimeType::Class, false, name)
+                .ok(),
+        "scalar cannot satisfy a native class parameter");
+    NativeArgumentValue native;
+    require(
+        !ScriptSemanticRuntime::normalizeArgument(Value{&native}, RuntimeType::Class, false, name)
+            .ok(),
+        "boxed raw pointer cannot satisfy a native value class parameter");
+    auto reference = Value::native_reference(&native);
+    require(
+        ScriptSemanticRuntime::normalizeArgument(reference, RuntimeType::Class, false, name).ok(),
+        "live managed native reference class normalization is unchanged");
+    reference.invalidate_native_reference();
+    require(
+        !ScriptSemanticRuntime::normalizeArgument(reference, RuntimeType::Class, false, name).ok(),
+        "invalidated native reference remains rejected");
+    auto instance = ScriptSemanticRuntime::makeScriptInstance("NormalizedScriptInstance", {});
+    require(instance.ok()
+            && ScriptSemanticRuntime::normalizeArgument(
+                instance.value, RuntimeType::Class, false, "NormalizedScriptInstance")
+                .ok(),
+        "ordinary script instance normalization is unchanged");
+}
+
 void testComparisonContract()
 {
     auto equal =
@@ -2370,8 +2414,13 @@ void testUniqueStringAppend()
     }
 }
 
-int main()
+int main(int argc, char** argv)
 {
+    if (argc == 2 && std::string_view(argv[1]) == "--native-class-argument") {
+        testOwnedNativeClassArgument();
+        std::printf("Native value class argument contract passed\n");
+        return 0;
+    }
     testUniqueDictionaryReuse();
     testDictionaryProjectionKeys();
     testUniqueScalarCarrierReplacement();
@@ -2566,6 +2615,7 @@ int main()
     testScalarPointerAlias<int>(100000, 200000);
     testActualScalarReads();
     testCheckedValueCarriers();
+    testOwnedNativeClassArgument();
     testOwnedRuntimeAccessors();
     testScalarPointerAlias<std::int64_t>(std::int64_t(1) << 40, std::int64_t(1) << 41);
     testScalarPointerAlias<double>(-0.0, 2.5);

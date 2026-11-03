@@ -7,12 +7,15 @@
 #include "3d/components.h"
 #include "3d/scene_component_persistence.h"
 #include "core/hash/sha256.h"
-#include "core/io/atomic_file_service.h"
 #include "core/io/filesystem_path.h"
 #include "core/io/staged_directory.h"
 #include "resource/asset_package_closure.h"
 #include "scene/scene_asset_package.h"
 #include "scene/scene_component_persistence.h"
+
+#if !defined(__EMSCRIPTEN__)
+#include "tools/io/native_tool_outputs.h"
+#endif
 
 namespace arp::editor {
 core::SharedPtr<scene::SceneComponentFactory> ProjectSceneAuthoring::factory(
@@ -131,22 +134,12 @@ bool ProjectSceneAuthoring::exportSnapshot(const Snapshot& value,
         diagnostic = "EDITOR-SCENE-EXPORT-DOCUMENT-INVALID";
         return false;
     }
-    // Stage into a sibling directory; closure.publish owns the final exclusive
-    // publication. Temporary preparation never becomes a valid user project.
-    core::io::StagedDirectory staging;
-    auto preparation = output;
-    preparation += ".preparation";
-    if (!staging.begin(preparation)) {
-        diagnostic = staging.diagnostic();
-        return false;
-    }
-    const auto written =
-        core::io::replaceFileAtomically(core::FilePath::utf8(staging.path() / "scene.yaml"),
-            {value.document.begin(), value.document.end()});
-    if (!written.success) {
-        diagnostic = written.diagnostic;
-        return false;
-    }
+#if defined(__EMSCRIPTEN__)
+    // MEMFS cannot supply native exclusive-directory publication. Reject before
+    // building a candidate or updating process-level resource reflection metadata.
+    diagnostic = "ARP-DIRECTORY-EXCLUSIVE-PUBLISH-UNSUPPORTED";
+    return false;
+#else
     auto payload = Y::Node::mapping();
     payload["type"] = "arp.scene-package";
     payload["contractVersion"] = 1;
@@ -179,15 +172,58 @@ bool ProjectSceneAuthoring::exportSnapshot(const Snapshot& value,
     if (!codecs)
         return false;
     resource::AssetPackageClosureService closure(codecs);
-    const auto indexed = closure.prepareIndex(
-        package, staging.path(), {1, 1, maxSceneBytes, maxSceneBytes, maxSceneBytes});
-    if (!indexed.success) {
-        diagnostic = indexed.diagnostics;
+    // Resource preparation consumes only this immutable in-memory source. No
+    // filesystem directory exists until the complete typed candidate validates.
+    const std::filesystem::path logicalRoot("scene-output");
+    resource::ResourceSourceSet sources;
+    resource::ResourceSourceBuffer source;
+    source.path = core::FilePath::utf8(logicalRoot / "scene.yaml");
+    source.pathScope = core::io::FilePathScope::HostFilesystem;
+    source.bytes.assign(value.document.begin(), value.document.end());
+    if (!sources.add(std::move(source))) {
+        diagnostic = "EDITOR-SCENE-EXPORT-SOURCE";
         return false;
     }
-    const auto published = closure.publish(staging.path(), output);
-    diagnostic = published.diagnostics;
-    return published.success;
+    resource::AssetPackageSourceContext context;
+    context.resources.sources = &sources;
+    context.resources.requirePreloadedSources = true;
+    context.resources.maxDecodedBytes = maxSceneBytes;
+    const auto prepared = closure.prepare(package,
+        logicalRoot,
+        context,
+        {1, 1, maxSceneBytes, maxSceneBytes, maxSceneBytes},
+        {1,
+            1,
+            maxPackageMetadataFileBytes,
+            maxPackageMetadataBytes,
+            maxPackageFiles,
+            maxPackageBytes,
+            maxPackagePreparationBytes});
+    if (!prepared.success) {
+        diagnostic = prepared.diagnostics.empty() ? prepared.diagnosticId : prepared.diagnostics;
+        return false;
+    }
+    core::io::StagedDirectory staging;
+    if (!staging.begin(output)) {
+        diagnostic = staging.diagnostic();
+        return false;
+    }
+    core::pmr::Vector<tools::io::NativeToolOutputFile> files{&core::defaultCpuMemoryResource()};
+    files.reserve(prepared.files.size());
+    for (const auto& file : prepared.files)
+        files.push_back(
+            {staging.path() / std::filesystem::u8path(file.path.begin(), file.path.end()),
+                {reinterpret_cast<const char*>(file.bytes.data()), file.bytes.size()}});
+    const auto saved = tools::io::NativeToolOutputWriter{}.save(
+        {files, maxPackageFiles, maxPackageBytes, tools::io::NativeToolOutputEncoding::ExactBytes});
+    if (!saved.success() || saved.committedFiles != prepared.files.size()) {
+        diagnostic = saved.diagnosticId ? saved.diagnosticId : "EDITOR-SCENE-EXPORT-SAVE";
+        return false;
+    }
+    const bool published = staging.publish();
+    diagnostic = staging.diagnostic();
+    return published;
+#endif
 }
 
 bool ProjectSceneAuthoring::prepareTemplate(const std::filesystem::path& root,

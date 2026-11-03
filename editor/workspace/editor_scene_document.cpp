@@ -732,6 +732,13 @@ EditorSceneDocument::ReplacementResult EditorSceneDocument::commitReplacement(
     return ReplacementResult::Committed;
 }
 
+const ProjectSourceContext* EditorSceneDocument::retainedScriptSources() const noexcept
+{
+    return scriptBindings_ && scriptBindings_->sources_ && scriptCatalog()
+        ? &*scriptBindings_->sources_
+        : nullptr;
+}
+
 bool EditorSceneDocument::setRuntimeSceneId(std::string_view identity)
 {
     if (!identity.empty() && !resource::isResourceUuid(identity))

@@ -14,14 +14,16 @@ class RhiAbstractRootInventoryTest(unittest.TestCase):
         "gpu_device.h", "gpu_swapchain.h", "gpu_subpass.h", "gpu_bindless.h",
         "gpu_capabilities.h", "gpu_extensions.h", "gpu_execution_status.h", "gpu_texture_format.h",
         "gpu_frame_capture.h",
-        "gpu_command_sources.h", "buffer_readback_range.h", "prototype_command_batch.h",
+        "gpu_command_sources.h",
     }
 
     def test_root_contains_only_public_abstraction_headers(self):
         root = self.ROOT / "src/rhi"
         self.assertEqual({p.name for p in root.iterdir() if p.is_file() and p.name != ".clang-format"}, self.HEADERS)
         for name in self.HEADERS:
-            self.assertNotRegex((root / name).read_text(encoding="utf-8-sig"), r'#include\s+"rhi/backends/')
+            source = (root / name).read_text(encoding="utf-8-sig")
+            self.assertNotRegex(source, r'#include\s+"rhi/backends/')
+            self.assertNotRegex(source, r'\bclass\s+(?:BufferReadbackRangeContract|PrototypeCommandBatchContract)\b')
 
     def test_domain_implementations_are_colocated_with_domain_headers(self):
         public={"bindless_authorization":"gpu_bindless.h",

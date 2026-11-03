@@ -3,6 +3,7 @@
 #include "core/io/memory_file_backend.h"
 #include "core/io/mounted_file_backend.h"
 #include "core/runtime/async_runtime.h"
+#include "renderer/renderer_common.h"
 #include "renderer/shader_package_reflection.h"
 #include "resource/resource_graph_executor.h"
 #include "resource/shader_artifact_resource.h"
@@ -135,6 +136,25 @@ void verifyPackage(const core::SharedPtr<const shader::GeneratedShaderArtifactSe
     preparation.prepared = owner;
     core::pmr::String diagnostic;
     assert(renderer::hydrateShaderPackageReflectionFromArtifact(package, preparation, diagnostic));
+    rhi::ShaderPackageDesc fromPrepared;
+    assert(renderer::detail::prepareGraphicsShaderPackage(fromPrepared,
+        "PreparedGenerated",
+        package.slangModulePath,
+        package.reflection.pushConstantByteCount,
+        preparation)
+            .success);
+    assert(fromPrepared.generatedArtifactSet == owner
+        && fromPrepared.reflection.sourceSha256 == package.reflection.sourceSha256);
+    for (auto target :
+        {shader::TargetBackend::SpirV, shader::TargetBackend::Msl, shader::TargetBackend::Wgsl}) {
+        rhi::GeneratedShaderTargetInput input;
+        const auto selected = rhi::selectGeneratedShaderPackageTarget(fromPrepared, target, input);
+        if (target == shader::TargetBackend::Wgsl && owner->bytes(Role::Wgsl).empty())
+            assert(
+                !selected.success && selected.diagnostics == owner->targetDiagnostic(Role::Wgsl));
+        else
+            assert(selected.success && input.bytes && !input.bytes->empty());
+    }
     for (const auto& binding : owner->module().reflection.bindings) {
         const auto type = rhi::descriptorTypeFromShaderBinding(binding.type);
         assert(type);

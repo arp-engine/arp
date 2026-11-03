@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 
 namespace arp::resource {
 
@@ -31,6 +32,15 @@ enum class MeshSourceKind {
     CustomMesh,
 };
 
+// Runtime acquisition is declared independently of the imported geometry and
+// working-memory limits. Mounted paths are logical UTF-8 paths, never OS paths.
+struct MeshGlbSourceDesc {
+    core::pmr::String path;
+    ResourceFileOrigin origin;
+    assets::StaticMeshSourceImportLimits limits;
+    std::uint64_t maxImportBytes = 0;
+};
+
 /// MeshAssetResource — a ResourceManager-owned mesh asset.
 ///
 /// Wraps assets::MeshAsset and supports loading from:
@@ -45,16 +55,25 @@ public:
 
     MeshAssetResource() = default;
 
-    /// Construct for GLB file loading.
+    /// Explicit Legacy cold-native file overload. Graph/preloaded loading
+    /// requires MeshGlbSourceDesc instead of inventing an input budget.
     MeshAssetResource(core::pmr::String resourceId, std::filesystem::path sourcePath)
         : ResourceBase(ResourceReference{
               core::pmr::String(std::move(resourceId), &core::defaultCpuMemoryResource()),
               core::pmr::String(resourceTypeName(), &core::defaultCpuMemoryResource()),
               {},
-              core::pmr::String("Contract Complete", &core::defaultCpuMemoryResource()),
+              core::pmr::String("Prototype Complete", &core::defaultCpuMemoryResource()),
               {},
           }),
           sourceKind_(MeshSourceKind::GlbFile), sourcePath_(std::move(sourcePath))
+    {}
+
+    MeshAssetResource(core::pmr::String resourceId, MeshGlbSourceDesc source)
+        : ResourceBase(ResourceReference{
+              std::move(resourceId), resourceTypeName(), {}, "Contract Complete", {}}),
+          sourceKind_(MeshSourceKind::GlbFile),
+          sourcePath_(std::filesystem::u8path(source.path.begin(), source.path.end())),
+          glbSource_(std::move(source))
     {}
 
     /// Explicit Legacy procedural-grid API. Selecting this overload opts into
@@ -131,6 +150,9 @@ public:
     /// Load mesh data from source (GLB file or procedural generation).
     /// Called by ResourceManager::loadResource() before admitting metadata.
     ResourceLoadResult load(ResourceManager& manager, const ResourceLoadContext& context) override;
+    bool collectFileReadIntents(ResourceManager&,
+        core::pmr::Vector<ResourceFileReadIntent>&,
+        core::pmr::String&) const override;
 
     /// Access the loaded mesh data. Returns nullptr if not yet loaded.
     const assets::MeshAsset* mesh() const { return mesh_.get(); }
@@ -187,6 +209,11 @@ public:
     float uvScale() const { return uvScale_; }
 
     const std::filesystem::path& sourcePath() const { return sourcePath_; }
+
+    ResourceFileOrigin sourceOrigin() const
+    {
+        return glbSource_ ? glbSource_->origin : ResourceFileOrigin{};
+    }
 
     std::size_t processedByteCount() const noexcept override
     {
@@ -313,6 +340,7 @@ private:
         &core::defaultCpuMemoryResource()};
     assets::MeshSectionSpatialPartition sectionSpatialPartition_;
     std::filesystem::path sourcePath_;
+    std::optional<MeshGlbSourceDesc> glbSource_;
 
     // Procedural grid parameters
     std::size_t gridX_ = 0;
@@ -342,7 +370,8 @@ private:
     core::pmr::Vector<assets::ImportedImageAsset> images_{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<core::pmr::String> textureResourceIds_{&core::defaultCpuMemoryResource()};
 
-    void loadFromGlb();
+    const char* validateGlbSource() const;
+    void loadFromGlb(const ResourceLoadContext&);
     void generateProceduralGrid();
     void generateProceduralCube();
 };

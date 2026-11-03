@@ -6,8 +6,8 @@
 #include "rhi/frontend/bindless_produced_program.h"
 #include "rhi/frontend/bindless_root_readback_sequence.h"
 #include "rhi/frontend/command_state.h"
-#include "rhi/frontend/visibility/gpu_visibility_root_consumer.h"
-#include "rhi/frontend/visibility/gpu_visibility_root_readback.h"
+#include "rhi/frontend/visibility_root_consumer.h"
+#include "rhi/frontend/visibility_root_readback.h"
 #include "rhi/gpu_extensions.h"
 
 #include <cstdio>

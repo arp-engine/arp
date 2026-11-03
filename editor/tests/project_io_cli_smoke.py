@@ -11,7 +11,8 @@ import urllib.error
 import urllib.request
 
 
-def run(editor, cli, root, output):
+def run(editor, cli, root, output, workflow=None, discard_exit=False, source_writes=False,
+        project_timeout=30):
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -37,7 +38,7 @@ def run(editor, cli, root, output):
         value = request("editor.state.get")
         return value["snapshot"]
     def finish():
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + project_timeout
         while time.monotonic() < deadline:
             current = state()
             if current["projectIoTask"]["status"] != "pending":
@@ -52,8 +53,11 @@ def run(editor, cli, root, output):
             startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startup.wShowWindow = subprocess.SW_HIDE
         with open(Path(logs) / "editor.log", "w", encoding="utf-8") as log:
-            process = subprocess.Popen([str(editor), "--smoke", "--project-root", str(root),
-                "--remote-port", str(port)], env=environment, stdout=log, stderr=log,
+            arguments = [str(editor), "--smoke", "--project-root", str(root),
+                "--remote-port", str(port)]
+            if source_writes:
+                arguments.append("--source-write")
+            process = subprocess.Popen(arguments, env=environment, stdout=log, stderr=log,
                 startupinfo=startup)
             try:
                 deadline = time.monotonic() + 40
@@ -70,40 +74,46 @@ def run(editor, cli, root, output):
                 invoke("project.open.source", "workspace", "workspace")
                 opened = finish()
                 assert opened["projectSource"] == "workspace" and opened["hasProject"], opened
-                invoke("activate", "workspace_3D")
-                invoke("project.directory.open", "scripts")
-                assert finish()["projectDirectory"] == "workspace/scripts"
-                invoke("project.directory.back")
-                assert finish()["projectDirectory"] == "workspace"
-                invoke("project.directory.forward")
-                assert finish()["projectDirectory"] == "workspace/scripts"
-                invoke("project.directory.refresh")
-                assert finish()["projectDirectory"] == "workspace/scripts"
-                invoke("script.open", "scripts/gameplay.arp")
-                document = finish()
-                assert document["hasActiveDocument"] and document["openDocumentCount"] == 1, document
-                assert document["scriptRelativePath"] == "scripts/gameplay.arp", document
-                assert document["scriptText"].startswith("//") and not document["scriptText"].startswith("\ufeff") and "\r" not in document["scriptText"]
-                document_id = str(document["activeDocumentId"])
-                invoke("script.replace", document_id, "// source buffer edited through CLI\n")
-                assert state()["scriptDirty"]
-                invoke("script.open", "scripts/gameplay.arp")
-                assert state()["scriptText"] == "// source buffer edited through CLI\n"
-                invoke("script.undo", document_id)
-                assert state()["scriptText"] == document["scriptText"] and not state()["scriptDirty"]
-                invoke("script.redo", document_id)
-                assert state()["scriptDirty"]
-                invoke("script.reload", document_id, "discard")
-                reloaded = finish()
-                assert reloaded["activeDocumentId"] == document["activeDocumentId"]
-                assert reloaded["scriptText"] == document["scriptText"] and not reloaded["scriptDirty"]
-                invoke("script.undo", document_id)
-                invoke("script.redo", document_id)
-                assert state()["scriptText"] == document["scriptText"] and not state()["scriptDirty"]
-                invoke("script.close", document_id, "discard")
-                assert state()["openDocumentCount"] == 0
+                if workflow is not None:
+                    workflow(invoke, state)
+                else:
+                    invoke("activate", "workspace_3D")
+                    invoke("project.directory.open", "scripts")
+                    assert finish()["projectDirectory"] == "workspace/scripts"
+                    invoke("project.directory.back")
+                    assert finish()["projectDirectory"] == "workspace"
+                    invoke("project.directory.forward")
+                    assert finish()["projectDirectory"] == "workspace/scripts"
+                    invoke("project.directory.refresh")
+                    assert finish()["projectDirectory"] == "workspace/scripts"
+                    invoke("script.open", "scripts/gameplay.arp")
+                    document = finish()
+                    assert document["hasActiveDocument"] and document["openDocumentCount"] == 1, document
+                    assert document["scriptRelativePath"] == "scripts/gameplay.arp", document
+                    assert document["scriptText"].startswith("//") and not document["scriptText"].startswith("\ufeff") and "\r" not in document["scriptText"]
+                    document_id = str(document["activeDocumentId"])
+                    invoke("script.replace", document_id, "// source buffer edited through CLI\n")
+                    assert state()["scriptDirty"]
+                    invoke("script.open", "scripts/gameplay.arp")
+                    assert state()["scriptText"] == "// source buffer edited through CLI\n"
+                    invoke("script.undo", document_id)
+                    assert state()["scriptText"] == document["scriptText"] and not state()["scriptDirty"]
+                    invoke("script.redo", document_id)
+                    assert state()["scriptDirty"]
+                    invoke("script.reload", document_id, "discard")
+                    reloaded = finish()
+                    assert reloaded["activeDocumentId"] == document["activeDocumentId"]
+                    assert reloaded["scriptText"] == document["scriptText"] and not reloaded["scriptDirty"]
+                    invoke("script.undo", document_id)
+                    invoke("script.redo", document_id)
+                    assert state()["scriptText"] == document["scriptText"] and not state()["scriptDirty"]
+                    invoke("script.close", document_id, "discard")
+                    assert state()["openDocumentCount"] == 0
                 invoke("state")
-                invoke("editor.exit")
+                if discard_exit:
+                    invoke("editor.exit", "discard")
+                else:
+                    invoke("editor.exit")
                 assert process.wait(timeout=20) == 0
             finally:
                 if process.poll() is None:
@@ -114,7 +124,7 @@ def run(editor, cli, root, output):
                     output.mkdir(parents=True, exist_ok=True)
                     (output / "native-cli.json").write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
                     (output / "native-cli-editor.log").write_text((Path(logs) / "editor.log").read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
-    print("PASS real native Editor and Interpreter CLI source project/script open/edit/history/close/navigation/exit")
+    print("PASS real native Editor and Interpreter CLI source workflow/exit")
 
 
 if __name__ == "__main__":

@@ -158,20 +158,29 @@ public:
         if (!validated.success) {
             return validated;
         }
-        desc_ = desc;
-
-        const auto layoutDesc = detail::guiPipelineLayoutDesc();
-        pipelineLayout_ = device_.createPipelineLayout(layoutDesc);
-        if (!pipelineLayout_) {
-            return RendererResult{false, "GUI RHI pipeline layout creation failed"};
+        if (!desc.shaderPublication.empty() || desc.preparedShaderArtifacts) {
+            ShaderPackagePreparationDesc preparation;
+            preparation.publication = std::filesystem::u8path(
+                desc.shaderPublication.begin(), desc.shaderPublication.end());
+            preparation.prepared = desc.preparedShaderArtifacts;
+            const auto prepared = detail::prepareGraphicsShaderPackage(
+                shaderPackage_, "GuiRhi", desc.shaderPath, sizeof(GuiPushConstants), preparation);
+            if (!prepared.success)
+                return prepared;
+        } else {
+            shaderPackage_ = detail::makeGraphicsShaderPackage(
+                "GuiRhi", desc.shaderPath, sizeof(GuiPushConstants));
         }
-
-        shaderPackage_ =
-            detail::makeGraphicsShaderPackage("GuiRhi", desc.shaderPath, sizeof(GuiPushConstants));
         const auto reflectionHydration =
             detail::validateGeneratedReflectionHydration(shaderPackage_);
         if (!reflectionHydration.success) {
             return reflectionHydration;
+        }
+        desc_ = desc;
+        const auto layoutDesc = detail::guiPipelineLayoutDesc();
+        pipelineLayout_ = device_.createPipelineLayout(layoutDesc);
+        if (!pipelineLayout_) {
+            return RendererResult{false, "GUI RHI pipeline layout creation failed"};
         }
         // GuiPushConstants is lowered by WebGPU to its reserved group 3;
         // it is not the legacy GuiFrameSet uniform declared by the old RHI

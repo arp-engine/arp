@@ -1,5 +1,7 @@
 #include "assets/avatar_retargeter.h"
 
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/math/math.h"
 #include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
@@ -592,14 +594,30 @@ std::pmr::vector<uint32_t> invertJointMap(
     return sourceToTarget;
 }
 
-animation::AnimationChannel makeChannel(
-    const uint32_t jointIndex, const std::pmr::string& jointName, const char* targetPath)
+animation::AnimationChannel makeChannel(const uint32_t jointIndex,
+    const std::pmr::string& jointName,
+    const char* targetPath,
+    animation::ChannelInterpolation interpolation)
 {
     animation::AnimationChannel channel;
     channel.jointIndex = jointIndex;
     channel.jointName = jointName;
     channel.targetPath = targetPath;
+    channel.interpolation = interpolation;
     return channel;
+}
+
+// Baking keeps the source interpolation family. A mixed family needs a
+// separate resampling/error contract; never silently turn legacy nlerp into slerp.
+animation::ChannelInterpolation bakedInterpolation(const animation::AnimationClip& clip)
+{
+    if (clip.channels.empty())
+        return animation::ChannelInterpolation::LegacyLinear;
+    const auto mode = clip.channels.front().interpolation;
+    for (const auto& channel : clip.channels)
+        if (channel.interpolation != mode)
+            throw core::DiagnosticError("ANIMATION-RETARGET-MIXED-INTERPOLATION");
+    return mode;
 }
 
 animation::Vec3 retargetLocalTranslationDelta(animation::Vec3 sourceDelta,
@@ -652,8 +670,10 @@ animation::AnimationClip retargetAliasedClipToTargetLocalSpace(
             continue;
         }
 
-        auto retargeted = makeChannel(
-            targetIndex, targetSkeleton.joints[targetIndex].name, channel.targetPath.c_str());
+        auto retargeted = makeChannel(targetIndex,
+            targetSkeleton.joints[targetIndex].name,
+            channel.targetPath.c_str(),
+            channel.interpolation);
         retargeted.keyframes.reserve(channel.keyframes.size());
         const auto& sourceReference = sourceReferencePose[channel.jointIndex];
         const auto& targetReference = targetBindPose[targetIndex];
@@ -773,12 +793,15 @@ animation::AnimationClip retargetHumanoidAvatarClip(const animation::AnimationCl
     result.durationSeconds = sourceClip.durationSeconds;
     result.events = sourceClip.events;
 
+    const auto outputInterpolation = bakedInterpolation(sourceClip);
     std::pmr::vector<animation::AnimationChannel> rotationChannels(targetSkeleton.jointCount());
     std::pmr::vector<animation::AnimationChannel> translationChannels(targetSkeleton.jointCount());
     for (uint32_t targetIndex = 0; targetIndex < targetSkeleton.jointCount(); ++targetIndex) {
         const auto& jointName = targetSkeleton.joints[targetIndex].name;
-        rotationChannels[targetIndex] = makeChannel(targetIndex, jointName, "rotation");
-        translationChannels[targetIndex] = makeChannel(targetIndex, jointName, "translation");
+        rotationChannels[targetIndex] =
+            makeChannel(targetIndex, jointName, "rotation", outputInterpolation);
+        translationChannels[targetIndex] =
+            makeChannel(targetIndex, jointName, "translation", outputInterpolation);
     }
 
     for (const auto time : sampleTimes) {
@@ -901,14 +924,18 @@ animation::AnimationClip retargetMatchingNamedClipToTargetLocalSpace(
     result.durationSeconds = sourceClip.durationSeconds;
     result.events = sourceClip.events;
 
+    const auto outputInterpolation = bakedInterpolation(sourceClip);
     std::pmr::vector<animation::AnimationChannel> rotationChannels(targetSkeleton.jointCount());
     std::pmr::vector<animation::AnimationChannel> translationChannels(targetSkeleton.jointCount());
     std::pmr::vector<animation::AnimationChannel> scaleChannels(targetSkeleton.jointCount());
     for (uint32_t targetIndex = 0; targetIndex < targetSkeleton.jointCount(); ++targetIndex) {
         const auto& jointName = targetSkeleton.joints[targetIndex].name;
-        rotationChannels[targetIndex] = makeChannel(targetIndex, jointName, "rotation");
-        translationChannels[targetIndex] = makeChannel(targetIndex, jointName, "translation");
-        scaleChannels[targetIndex] = makeChannel(targetIndex, jointName, "scale");
+        rotationChannels[targetIndex] =
+            makeChannel(targetIndex, jointName, "rotation", outputInterpolation);
+        translationChannels[targetIndex] =
+            makeChannel(targetIndex, jointName, "translation", outputInterpolation);
+        scaleChannels[targetIndex] =
+            makeChannel(targetIndex, jointName, "scale", outputInterpolation);
     }
 
     for (const auto time : sampleTimes) {
@@ -1023,8 +1050,10 @@ animation::AnimationClip retargetGenericAvatarClip(const animation::AnimationCli
             continue;
         }
 
-        auto remapped = makeChannel(
-            targetIndex, targetSkeleton.joints[targetIndex].name, channel.targetPath.c_str());
+        auto remapped = makeChannel(targetIndex,
+            targetSkeleton.joints[targetIndex].name,
+            channel.targetPath.c_str(),
+            channel.interpolation);
         remapped.keyframes.reserve(channel.keyframes.size());
         for (const auto& keyframe : channel.keyframes) {
             animation::JointKeyframe outKey;
@@ -1079,34 +1108,59 @@ animation::AnimationClip retargetClipToSkeleton(animation::AnimationClip clip,
     const std::pmr::vector<animation::LocalTransform>& sourceBindPose,
     const AvatarAsset& avatar)
 {
-    if (avatar.kind == AvatarKind::Humanoid && sourceSkeleton.valid()
-        && sourceBindPose.size() == sourceSkeleton.jointCount()) {
-        auto retargeted = retargetHumanoidAvatarClip(
-            clip, targetSkeleton, targetBindPose, sourceSkeleton, sourceBindPose, avatar);
-        if (!retargeted.channels.empty()) {
-            return retargeted;
-        }
-        return {};
+    if (const auto* diagnostic = animation::validateClipSampling(clip))
+        throw core::DiagnosticError(diagnostic);
+    for (auto& channel : clip.channels) {
+        if (channel.interpolation != animation::ChannelInterpolation::GltfLinear)
+            continue;
+        const auto jointCount =
+            sourceSkeleton.valid() ? sourceSkeleton.jointCount() : targetSkeleton.jointCount();
+        if (channel.jointIndex >= jointCount)
+            throw core::DiagnosticError("ANIMATION-RETARGET-JOINT");
+        if (channel.targetPath == "rotation")
+            for (auto& key : channel.keyframes) {
+                core::Quat value;
+                core::tryNormalize({key.transform.rotation.x,
+                                       key.transform.rotation.y,
+                                       key.transform.rotation.z,
+                                       key.transform.rotation.w},
+                    value);
+                key.transform.rotation = {value.x, value.y, value.z, value.w};
+            }
     }
+    auto result = [&]() -> animation::AnimationClip {
+        if (avatar.kind == AvatarKind::Humanoid && sourceSkeleton.valid()
+            && sourceBindPose.size() == sourceSkeleton.jointCount()) {
+            auto retargeted = retargetHumanoidAvatarClip(
+                clip, targetSkeleton, targetBindPose, sourceSkeleton, sourceBindPose, avatar);
+            if (!retargeted.channels.empty()) {
+                return retargeted;
+            }
+            return {};
+        }
 
-    if (avatar.kind == AvatarKind::Generic && sourceSkeleton.valid()
-        && sourceBindPose.size() == sourceSkeleton.jointCount()) {
-        auto retargeted = retargetGenericAvatarClip(
-            clip, targetSkeleton, targetBindPose, sourceSkeleton, sourceBindPose);
-        if (!retargeted.channels.empty()) {
-            return retargeted;
+        if (avatar.kind == AvatarKind::Generic && sourceSkeleton.valid()
+            && sourceBindPose.size() == sourceSkeleton.jointCount()) {
+            auto retargeted = retargetGenericAvatarClip(
+                clip, targetSkeleton, targetBindPose, sourceSkeleton, sourceBindPose);
+            if (!retargeted.channels.empty()) {
+                return retargeted;
+            }
         }
-    }
-    auto aliasedRetarget = retargetAliasedClipToTargetLocalSpace(
-        clip, targetSkeleton, targetBindPose, sourceSkeleton, sourceBindPose);
-    if (!aliasedRetarget.channels.empty()) {
-        return aliasedRetarget;
-    }
-    auto namedRemap = directlyRemapClipToTargetSkeleton(clip, targetSkeleton, sourceSkeleton);
-    if (!namedRemap.channels.empty()) {
-        return namedRemap;
-    }
-    return retargetLegacyClip(std::move(clip), targetSkeleton, targetBindPose);
+        auto aliasedRetarget = retargetAliasedClipToTargetLocalSpace(
+            clip, targetSkeleton, targetBindPose, sourceSkeleton, sourceBindPose);
+        if (!aliasedRetarget.channels.empty()) {
+            return aliasedRetarget;
+        }
+        auto namedRemap = directlyRemapClipToTargetSkeleton(clip, targetSkeleton, sourceSkeleton);
+        if (!namedRemap.channels.empty()) {
+            return namedRemap;
+        }
+        return retargetLegacyClip(std::move(clip), targetSkeleton, targetBindPose);
+    }();
+    if (const auto* diagnostic = animation::validateClipSampling(result))
+        throw core::DiagnosticError(diagnostic);
+    return result;
 }
 
 } // namespace arp::assets

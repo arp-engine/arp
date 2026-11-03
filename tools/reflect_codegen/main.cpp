@@ -1,9 +1,11 @@
 #include "reflection/registration_contract_format.h"
+#include "tools/reflect_codegen/reflection_tool_io.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <charconv>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <map>
 #include <sstream>
@@ -109,6 +111,9 @@ struct ProgramOptions {
     std::filesystem::path outJson;
     std::filesystem::path outCpp;
     std::vector<std::filesystem::path> headers;
+    arp::tools::reflect_codegen::ReflectionIoLimits limits;
+    arp::core::pmr::String sourceBaseUrl{&arp::core::defaultCpuMemoryResource()};
+    bool httpSource = false;
 };
 
 struct ParseResult {
@@ -728,16 +733,26 @@ void annotateSignature(const std::string& returnType,
     maySuspend = hasFlag(flags, "Async") || hasFlag(flags, "Await") || hasFlag(flags, "MaySuspend");
 }
 
-std::vector<std::string> readLines(const std::filesystem::path& path, std::string& diagnostics)
+std::vector<std::string> readLines(const std::filesystem::path& path,
+    arp::tools::reflect_codegen::ReflectionToolIo& files,
+    std::string& diagnostics)
 {
-    std::ifstream input(path);
-    if (!input.good()) {
-        diagnostics = "failed to open header: " + path.generic_string();
+    auto acquired = files.readHeader(path);
+    if (acquired.status() != arp::core::io::FileIoStatus::Success) {
+        diagnostics = acquired.diagnosticId() ? acquired.diagnosticId() : "REFLECT-IO-READ";
         return {};
     }
+    std::istringstream input(
+        std::string(acquired.decoded.text.data(), acquired.decoded.text.size()));
     std::vector<std::string> lines;
     std::string line;
     while (std::getline(input, line)) {
+#if defined(_WIN32)
+        // Reproduce the original CRT CRLF read mapping, including the
+        // distinction between a terminated line and a final bare CR.
+        if (!input.eof() && !line.empty() && line.back() == '\r')
+            line.pop_back();
+#endif
         lines.push_back(line);
     }
     return lines;
@@ -1348,19 +1363,20 @@ bool parseEnum(const std::vector<std::string>& lines,
     return false;
 }
 
-ParseResult parseHeaders(const std::vector<std::filesystem::path>& paths)
+ParseResult parseHeaders(const std::vector<std::filesystem::path>& paths,
+    arp::tools::reflect_codegen::ReflectionToolIo& files)
 {
     ParseResult result;
     result.success = true;
     for (const auto& path : paths) {
         std::string diagnostics;
-        const auto lines = readLines(path, diagnostics);
+        const auto lines = readLines(path, files, diagnostics);
         if (!diagnostics.empty()) {
             return {false, diagnostics, {}};
         }
 
         HeaderModel header;
-        header.path = path.generic_string();
+        header.path = path.generic_u8string();
         // GeneratedSchemaReuse/1 canonical source is LF-separated logical lines.
         for (auto sourceLine : lines) {
             if (!sourceLine.empty() && sourceLine.back() == '\r')
@@ -1575,7 +1591,8 @@ ParseResult parseHeaders(const std::vector<std::filesystem::path>& paths)
     return result;
 }
 
-bool parseOptions(int argc, char** argv, ProgramOptions& options, std::string& diagnostics)
+bool parseOptions(
+    int argc, const char* const* argv, ProgramOptions& options, std::string& diagnostics)
 {
     for (int index = 1; index < argc; ++index) {
         const std::string arg = argv[index];
@@ -1591,11 +1608,43 @@ bool parseOptions(int argc, char** argv, ProgramOptions& options, std::string& d
         if (arg == "--module") {
             options.module = requireValue("--module");
         } else if (arg == "--out-json") {
-            options.outJson = requireValue("--out-json");
+            options.outJson = std::filesystem::u8path(requireValue("--out-json"));
         } else if (arg == "--out-cpp") {
-            options.outCpp = requireValue("--out-cpp");
+            options.outCpp = std::filesystem::u8path(requireValue("--out-cpp"));
         } else if (arg == "--header") {
-            options.headers.push_back(requireValue("--header"));
+            options.headers.push_back(std::filesystem::u8path(requireValue("--header")));
+        } else if (arg == "--source-base-url") {
+            options.httpSource = true;
+            options.sourceBaseUrl = requireValue("--source-base-url");
+            if (options.sourceBaseUrl.empty()) {
+                diagnostics = "REFLECT-IO-OPTIONS";
+                return false;
+            }
+        } else if (arg == "--max-header-bytes" || arg == "--max-input-bytes"
+            || arg == "--max-output-bytes" || arg == "--max-headers") {
+            const auto value = requireValue(arg.c_str());
+            std::uint64_t number = 0;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || !number) {
+                diagnostics = "REFLECT-IO-OPTIONS";
+                return false;
+            }
+            if (arg == "--max-header-bytes")
+                options.limits.maxHeaderBytes = number;
+            else if (arg == "--max-input-bytes")
+                options.limits.maxInputBytes = number;
+            else if (arg == "--max-output-bytes")
+                options.limits.maxOutputBytes = number;
+            else if (number <= arp::tools::reflect_codegen::ReflectionIoLimits::headerCount)
+                options.limits.maxHeaders = static_cast<std::uint32_t>(number);
+            else {
+                diagnostics = "REFLECT-IO-OPTIONS";
+                return false;
+            }
+            if (!options.limits.valid()) {
+                diagnostics = "REFLECT-IO-OPTIONS";
+                return false;
+            }
         } else {
             diagnostics = "unknown argument: " + arg;
             return false;
@@ -1919,15 +1968,9 @@ bool collectNativeTypeBindings(
 
 bool writeJson(const ProgramOptions& options,
     const std::vector<HeaderModel>& headers,
+    std::ostream& out,
     std::string& diagnostics)
 {
-    std::filesystem::create_directories(options.outJson.parent_path());
-    std::ofstream out(options.outJson);
-    if (!out.good()) {
-        diagnostics = "failed to write JSON: " + options.outJson.generic_string();
-        return false;
-    }
-
     out << "{\n";
     out << "  \"module\": \"" << jsonEscape(options.module) << "\",\n";
     NativeTypeBindings nativeBindings;
@@ -2153,15 +2196,9 @@ bool writeJson(const ProgramOptions& options,
 
 bool writeCpp(const ProgramOptions& options,
     const std::vector<HeaderModel>& headers,
+    std::ostream& out,
     std::string& diagnostics)
 {
-    std::filesystem::create_directories(options.outCpp.parent_path());
-    std::ofstream out(options.outCpp);
-    if (!out.good()) {
-        diagnostics = "failed to write C++: " + options.outCpp.generic_string();
-        return false;
-    }
-
     out << "// Generated by arp_reflect_codegen. Do not edit.\n";
     for (const auto& header : headers) {
         out << "#include \"" << jsonEscape(header.path) << "\"\n";
@@ -2465,7 +2502,7 @@ bool writeCpp(const ProgramOptions& options,
 
 } // namespace
 
-int main(int argc, char** argv)
+int runCodegen(int argc, const char* const* argv)
 {
     if (argc == 2 && std::string(argv[1]) == "--version") {
         std::cout << "arp_reflect_codegen 5\n";
@@ -2478,19 +2515,67 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    ParseResult parseResult = parseHeaders(options.headers);
+    arp::tools::reflect_codegen::ReflectionToolIo files(
+        options.limits, options.httpSource, options.sourceBaseUrl);
+    ParseResult parseResult = parseHeaders(options.headers, files);
+    files.retire();
     if (!parseResult.success) {
         std::cerr << "arp_reflect_codegen: " << parseResult.diagnostics << "\n";
         return 1;
     }
 
-    if (!writeJson(options, parseResult.headers, diagnostics)) {
+    std::ostringstream json;
+    std::ostringstream cpp;
+    if (!writeJson(options, parseResult.headers, json, diagnostics)) {
         std::cerr << "arp_reflect_codegen: " << diagnostics << "\n";
         return 1;
     }
-    if (!writeCpp(options, parseResult.headers, diagnostics)) {
+    if (!writeCpp(options, parseResult.headers, cpp, diagnostics)) {
         std::cerr << "arp_reflect_codegen: " << diagnostics << "\n";
+        return 1;
+    }
+    const auto jsonBytes = json.str();
+    const auto cppBytes = cpp.str();
+    const std::array<arp::tools::io::NativeToolOutputFile, 2> outputs{
+        {{options.outJson, jsonBytes}, {options.outCpp, cppBytes}}};
+    const auto saved = arp::tools::io::NativeToolOutputWriter{}.save({outputs,
+        2,
+        options.limits.maxOutputBytes,
+        arp::tools::io::NativeToolOutputEncoding::LegacyNativeText});
+    if (!saved.success()) {
+        std::cerr << "arp_reflect_codegen: " << saved.diagnosticId << "\n";
         return 1;
     }
     return 0;
+}
+
+#if defined(_WIN32)
+int wmain(int argc, wchar_t** argv)
+#else
+int main(int argc, char** argv)
+#endif
+{
+    try {
+#if defined(_WIN32)
+        arp::core::pmr::Vector<arp::core::pmr::String> arguments{
+            &arp::core::defaultCpuMemoryResource()};
+        arp::core::pmr::Vector<const char*> pointers{&arp::core::defaultCpuMemoryResource()};
+        arguments.reserve(static_cast<std::size_t>(argc));
+        pointers.reserve(static_cast<std::size_t>(argc));
+        for (int i = 0; i < argc; ++i) {
+            const auto bytes = std::filesystem::path(argv[i]).u8string();
+            arguments.emplace_back(bytes.data(), bytes.size());
+        }
+        for (const auto& value : arguments)
+            pointers.push_back(value.c_str());
+        return runCodegen(argc, pointers.data());
+#else
+        return runCodegen(argc, argv);
+#endif
+    } catch (const std::bad_alloc&) {
+        std::cerr << "arp_reflect_codegen: REFLECT-IO-ALLOCATION\n";
+    } catch (const std::exception& error) {
+        std::cerr << "arp_reflect_codegen: " << error.what() << "\n";
+    }
+    return 1;
 }

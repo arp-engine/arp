@@ -1,4 +1,5 @@
 #pragma once
+#include "3d/vegetation/instance_layout.h"
 #include "pcg/gpu_visibility_frozen_inputs.h"
 
 #include <cassert>

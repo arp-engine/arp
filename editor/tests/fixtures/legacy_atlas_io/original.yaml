@@ -1,0 +1,26 @@
+# Frozen before replacing the original cold PNG reader. The two existing
+# platform font profiles intentionally produce different glyph page pixels.
+type: LegacyEditorAtlasIoBaseline
+contractVersion: 1
+originalSourceSha256: e996a1a15ce4a15021a7ec4af7a75017c3871ba9c6d0e6870341e9dba63ac7a8
+profiles:
+  windows:
+    type: LegacyEditorAtlasCpuBytes
+    contractVersion: 1
+    atlasSha256: sha256:e750eaa72eeb523385042dc4ba55acfc94779a957b705742106b551adca90d59
+    pngSha256: sha256:60e0e41e51ab574438e19b04ae6b977137c90fc672547344521270d9c675e276
+    bytes: 25165824
+    height: 3072
+    width: 2048
+    resourceId: texture/editor-reference
+    srgb: false
+  web:
+    type: LegacyEditorAtlasCpuBytes
+    contractVersion: 1
+    atlasSha256: sha256:24ce5d2c4d4b2d7160033c951a4d41495ab83ee32572eb9b004e3e1a1115ce62
+    pngSha256: sha256:60e0e41e51ab574438e19b04ae6b977137c90fc672547344521270d9c675e276
+    bytes: 25165824
+    height: 3072
+    width: 2048
+    resourceId: texture/editor-reference
+    srgb: false

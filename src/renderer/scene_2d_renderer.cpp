@@ -55,6 +55,27 @@ bool Scene2DRenderer::beforeResourceUnload(resource::NameView id) noexcept
 
 RendererResult Scene2DRenderer::create(const Scene2DRendererDesc& d)
 {
+    return createImpl(d, nullptr);
+}
+
+RendererResult Scene2DRenderer::create(
+    const Scene2DRendererDesc& d, const ShaderPackagePreparationDesc& preparation)
+{
+    rhi::ShaderPackageDesc candidate;
+    const auto prepared = detail::prepareGraphicsShaderPackage(candidate,
+        "Scene2D",
+        d.shaderPath,
+        16,
+        preparation,
+        rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment);
+    if (!prepared.success)
+        return prepared;
+    return createImpl(d, &candidate);
+}
+
+RendererResult Scene2DRenderer::createImpl(
+    const Scene2DRendererDesc& d, const rhi::ShaderPackageDesc* preparedPackage)
+{
     if (pipeline_ || ordered_ || !d.maxInstances || !d.maxAtlases || !d.frameSlots
         || d.shaderPath.empty() || d.colorFormat == rhi::TextureFormat::Unknown)
         return failure("ARP-2D-RENDERER-CONFIG");
@@ -72,7 +93,8 @@ RendererResult Scene2DRenderer::create(const Scene2DRendererDesc& d)
     layout_ = device_.createPipelineLayout(layout);
     if (!layout_)
         return failure("ARP-2D-PIPELINE-LAYOUT");
-    package_ = detail::makeGraphicsShaderPackage("Scene2D", d.shaderPath, 16);
+    package_ = preparedPackage ? *preparedPackage
+                               : detail::makeGraphicsShaderPackage("Scene2D", d.shaderPath, 16);
     if (!package_.generatedReflectionHydrated)
         return failure("ARP-2D-SHADER-REFLECTION");
     package_.reflection.descriptorBindings.push_back(

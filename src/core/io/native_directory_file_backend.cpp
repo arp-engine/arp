@@ -2,6 +2,7 @@
 
 #include "core/io/detail/native_directory_access.h"
 #include "core/io/file_query_contract.h"
+#include "core/io/file_save_contract.h"
 
 #include <algorithm>
 #include <atomic>
@@ -23,12 +24,17 @@ struct NativeDirectoryFileBackend::State {
 struct NativeDirectoryFileBackend::Pending {
     core::SharedPtr<State> owner;
     bool query = false;
+    bool save = false;
+    bool saveExecuted = false;
     FileReadRequest readRequest;
     FileQueryRequest queryRequest;
+    FileSaveRequest saveRequest;
     FileReadCompletion readCompletion;
     FileQueryCompletion queryCompletion;
+    FileSaveCompletion saveCompletion;
     FileReadResult readResult;
     FileQueryResult queryResult;
+    FileSaveResult saveResult;
     std::uint64_t budget = 0;
 };
 
@@ -55,12 +61,13 @@ NativeDirectoryFileBackend::~NativeDirectoryFileBackend()
 
 FileBackendCapability NativeDirectoryFileBackend::capability() const noexcept
 {
-    const bool supported = state_->access.supported();
+    const bool supported = state_->access.supported() && !state_->closed;
     return {FileBackendKind::NativeDirectoryFileBackend,
         FileBackendStatus::PrototypeComplete,
         false,
         true,
         true,
+        supported,
         supported,
         supported,
         supported};
@@ -111,8 +118,9 @@ FileIoStatus NativeDirectoryFileBackend::submit(
     if (started != FileIoStatus::Success)
         return started;
     pending->owner = state_;
-    const auto cancellation =
-        pending->query ? pending->queryRequest.cancellation : pending->readRequest.cancellation;
+    const auto cancellation = pending->save ? pending->saveRequest.cancellation
+        : pending->query                    ? pending->queryRequest.cancellation
+                                            : pending->readRequest.cancellation;
     auto submitted = work_->submit({execute, pending.get(), complete, pending.get(), cancellation});
     if (!submitted.accepted())
         return submitted.status == runtime::WorkServiceStatus::QueueFull ? FileIoStatus::QueueFull
@@ -194,11 +202,22 @@ runtime::WorkStatus NativeDirectoryFileBackend::execute(void* context)
 {
     auto& pending = *static_cast<Pending*>(context);
     try {
-        if (pending.query)
+        if (pending.save) {
+            pending.saveResult = pending.owner->access.save(pending.saveRequest);
+            pending.saveExecuted = true;
+            return pending.saveResult.status == FileIoStatus::Success
+                ? runtime::WorkStatus::Completed
+                : runtime::WorkStatus::Failed;
+        } else if (pending.query)
             pending.queryResult = pending.owner->access.query(pending.queryRequest);
         else
             pending.readResult = pending.owner->access.read(pending.readRequest);
     } catch (const std::bad_alloc&) {
+        if (pending.save) {
+            pending.saveResult.fail(FileIoStatus::BudgetExceeded, "IO-SAVE-ALLOCATION-FAILED");
+            pending.saveExecuted = true;
+            return runtime::WorkStatus::Failed;
+        }
         pending.queryResult.fail(FileIoStatus::BudgetExceeded, "IO-LOCAL-ALLOCATION-FAILED");
         pending.readResult.status = FileIoStatus::BudgetExceeded;
         pending.readResult.diagnosticId = "IO-LOCAL-ALLOCATION-FAILED";
@@ -216,6 +235,23 @@ void NativeDirectoryFileBackend::complete(void* context, runtime::WorkResult wor
     auto& state = *pending->owner;
     --state.inFlight;
     state.reservedBytes -= pending->budget;
+    if (pending->save) {
+        auto& result = pending->saveResult;
+        result.backendKind = FileBackendKind::NativeDirectoryFileBackend;
+        if (!pending->saveExecuted)
+            result.fail(work.status == runtime::WorkStatus::Cancelled
+                    ? FileIoStatus::Cancelled
+                    : FileIoStatus::BackendUnavailable,
+                "IO-SAVE-WORK-NOT-EXECUTED");
+        if (pending->saveRequest.cancellation.cancelled())
+            result.deliveryStatus = FileIoStatus::Cancelled;
+        else if (state.closed)
+            result.deliveryStatus = FileIoStatus::ServiceClosed;
+        // WorkService can label a completed task Cancelled after execute. Its
+        // label cannot negate a rename whose actual receipt is already known.
+        pending->saveCompletion.complete(pending->saveCompletion.userData, std::move(result));
+        return;
+    }
     const auto token =
         pending->query ? pending->queryRequest.cancellation : pending->readRequest.cancellation;
     const auto operationStatus =
@@ -258,6 +294,47 @@ void NativeDirectoryFileBackend::shutdown() noexcept
 NativeDirectoryFileBackendTelemetry NativeDirectoryFileBackend::telemetry() const noexcept
 {
     return {state_->inFlight, state_->reservedBytes, state_->access.openObjectCount()};
+}
+
+FileSaveCapability NativeDirectoryFileBackend::saveCapability(core::PoolHandle) const noexcept
+{
+    return {!state_->closed && state_->desc.allowObservedBaselineReplace
+            && state_->access.saveSupported(),
+        false,
+        false};
+}
+
+FileIoStatus NativeDirectoryFileBackend::saveAsync(FileSaveRequest request,
+    FileSaveCompletion completion,
+    runtime::CompletionQueue& queue) noexcept
+{
+    if (state_->closed)
+        return FileIoStatus::ServiceClosed;
+    if (!completion.valid())
+        return FileIoStatus::InvalidRequest;
+    const auto validation = FileSaveContract::validate(request);
+    if (validation.diagnostic)
+        return validation.status;
+    if (!saveCapability(request.mount).observedBaselineReplace)
+        return FileIoStatus::Unsupported;
+    if (request.path.capacity() > state_->desc.maxPathBytes)
+        return FileIoStatus::BudgetExceeded;
+    const auto scratch = state_->access.saveScratchBytes();
+    const auto budget = FileSaveContract::reservationBytes(request);
+    if (scratch == UINT64_MAX || budget > UINT64_MAX - scratch)
+        return FileIoStatus::BudgetExceeded;
+    try {
+        auto pending = core::makeUnique<Pending>();
+        pending->save = true;
+        pending->saveRequest = std::move(request);
+        pending->saveCompletion = completion;
+        pending->budget = budget + scratch;
+        return submit(std::move(pending), queue);
+    } catch (const std::bad_alloc&) {
+        return FileIoStatus::BudgetExceeded;
+    } catch (...) {
+        return FileIoStatus::BackendUnavailable;
+    }
 }
 
 } // namespace arp::core::io

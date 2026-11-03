@@ -40,6 +40,10 @@ public:
     EditorScriptComponentArchive(const EditorSceneDocument&, EditorScriptArchiveBudget);
     EditorScriptComponentState capture(const scene::Component&,
         const scene::Scene::IdentityRestoration* transaction = nullptr) const;
+    // Explicit cold reload only: validate the old binding, then replace solely
+    // source/import evidence. Staging/apply must still validate all new fields.
+    EditorScriptComponentState rebindSources(
+        const EditorScriptComponentState&, const EditorScriptComponentArchive& previous) const;
     // Complete explicit input is decoded into plain inspection storage. No
     // receiver, instance lease, initializer or implicit default is created.
     EditorScriptComponentState prepare(const scriptvm::ScriptComponentIdentity&,

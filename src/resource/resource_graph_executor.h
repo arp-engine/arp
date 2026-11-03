@@ -28,10 +28,15 @@ struct ResourceGraphExecutionTelemetry {
     std::uint64_t locationValidations = 0;
 };
 
+enum class ResourceGraphAdmission { InitialLoad, ReloadSingle };
+
 struct ResourceGraphExecutionRequest {
     ResourceGraphRequest graph;
     ResourceGraphExecutionBudget budget;
     core::runtime::CancellationToken cancellation;
+    // ReloadSingle requires one root node and pins the admitted generation.
+    ResourceGraphAdmission admission = ResourceGraphAdmission::InitialLoad;
+    ResourceGeneration expectedGeneration = 0;
 };
 
 struct ResourceGraphExecutionResult {

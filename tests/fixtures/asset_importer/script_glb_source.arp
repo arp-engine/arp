@@ -1,0 +1,88 @@
+import asset
+import io
+import glb_source_profile
+
+
+# This module executes through the real Interpreter and reflected io/asset
+# plugins. The input is the explicit multi-skin/ancestor-motion GLB fixture.
+def main(input: string, projectRoot: string) -> int:
+    var emptyOptions: asset.GlbSourceOptions = asset.GlbSourceOptions()
+    if emptyOptions.validate() == "":
+        return 1
+    var options: asset.GlbSourceOptions = glb_source_profile.make_options()
+    if options.validate() != "":
+        return 2
+    var acquired: io.IoBinaryResult = io.read_binary_local(
+        input, options.maxSourceBytes, glb_source_profile.local_acquisition_bytes(options))
+    if not acquired.success or acquired.byte_count() <= 0:
+        return 3
+    var source: bytes = acquired.data()
+    acquired = io.read_binary_local(input, 1, 131072)
+    if acquired.success or acquired.diagnostics == "" or acquired.byte_count() != 0:
+        return 4
+    var imported: asset.ImportedModelResult = asset.import_glb_bytes("memory-model", source, options)
+    if not imported.success or imported.source != "memory-model" or imported.diagnostic_id() != "":
+        return 5
+    if imported.vertex_count() != 9 or imported.index_count() != 9 or imported.joint_count() != 7:
+        return 6
+    if imported.clip_count() != 1 or imported.clip_name(0) != "move":
+        return 7
+    var point: asset.ModelSampledVertexInfo = imported.sampled_vertex(0, 0.5, 0)
+    if not point.available:
+        return 8
+    if point.positionX < -26.501 or point.positionX > -26.499:
+        return 9
+    if point.positionY < 49.499 or point.positionY > 49.501:
+        return 10
+    if point.positionZ < 73.749 or point.positionZ > 73.751:
+        return 11
+
+    var rejected: asset.ImportedModelResult = asset.import_glb_bytes("wrong-type", [1, 2, 3], options)
+    if rejected.success or rejected.diagnostic_id() != "SCRIPT-GLB-SOURCE-BYTES-TYPE":
+        return 12
+    options.maxSourceBytes = 1
+    rejected = asset.import_glb_bytes("tiny-source", source, options)
+    if rejected.success or rejected.diagnostic_id() != "ASSET-ANIMATED-SOURCE-BYTES":
+        return 13
+    options = glb_source_profile.make_options()
+    options.maxSourceLabelBytes = 1
+    rejected = asset.import_glb_bytes("label-too-long", source, options)
+    if rejected.success or rejected.diagnostic_id() != "SCRIPT-GLB-SOURCE-LABEL":
+        return 14
+    options = glb_source_profile.make_options()
+    options.selectedScene = -1
+    if options.validate() != "SCRIPT-GLB-SOURCE-OPTIONS":
+        return 15
+    options = glb_source_profile.make_options()
+    options.colorPolicy = "Guess"
+    if options.validate() != "SCRIPT-GLB-SOURCE-COLOR-POLICY":
+        return 16
+    options = glb_source_profile.make_options()
+    options.tangentPolicy = "GenerateIfMissing"
+    if options.validate() != "SCRIPT-GLB-SOURCE-TANGENT-POLICY":
+        return 17
+    options = glb_source_profile.make_options()
+    options.maxImportBytes = 1
+    options.maxSourceLabelBytes = 1
+    rejected = asset.import_glb_bytes("x", source, options)
+    if rejected.success or rejected.diagnostic_id() != "ASSET-ANIMATED-SOURCE-IMPORT-BUDGET":
+        return 18
+    acquired = io.read_binary_local(input, 65536, 1)
+    if acquired.success or acquired.byte_count() != 0 or acquired.diagnostics == "":
+        return 19
+    acquired = io.read_binary_local(input, 0, 131072)
+    if acquired.success or acquired.diagnostics != "SCRIPT-IO-BINARY-BUDGET":
+        return 20
+    return 0
+
+
+# Preparation is compiled once. Each call releases its complete function frame,
+# including acquired bytes, options, result assets and rejected candidates.
+def smoke(input: string, projectRoot: string) -> int:
+    var cycle: int = 0
+    while cycle < 20:
+        var status: int = main(input, projectRoot)
+        if status != 0:
+            return status
+        cycle = cycle + 1
+    return 0

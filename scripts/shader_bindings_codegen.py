@@ -91,6 +91,13 @@ def _run_spirv_reflect(spirv_reflect_exe: str, spv_path: str) -> str:
     return result.stdout
 
 
+def _layout_facts(spv_path, read_bytes):
+    from spirv_layout import SpirvLayoutFacts
+    if read_bytes is None:
+        return SpirvLayoutFacts(spv_path)
+    return SpirvLayoutFacts(spv_path, data=read_bytes(spv_path))
+
+
 class BufferDeclarationLayoutReflector:
     """Strict tooling facts; neither target binding minima nor execution proof.
 
@@ -118,9 +125,8 @@ class BufferDeclarationLayoutReflector:
         return values
 
     @classmethod
-    def parse(cls, yaml_text, spv_path):
+    def parse(cls, yaml_text, spv_path, *, read_bytes=None):
         import yaml
-        from spirv_layout import SpirvLayoutFacts
         try:
             root = yaml.safe_load(yaml_text)
         except yaml.YAMLError as error:
@@ -139,7 +145,7 @@ class BufferDeclarationLayoutReflector:
             known = []
         if not isinstance(known, list) or any(not isinstance(d, dict) for d in known):
             raise RuntimeError("SPIRV-BUFFER-REFLECTION-ALIASES")
-        facts = SpirvLayoutFacts(spv_path)
+        facts = _layout_facts(spv_path, read_bytes)
         layouts = facts.buffer_layouts()
         result, keys = {}, set()
         for descriptor in descriptors:
@@ -238,8 +244,9 @@ class BufferDeclarationLayoutReflector:
                 work.append((child, child_type, False, False))
 
 
-def reflect_buffer_declaration_layouts(spirv_reflect_exe, spv_path):
-    return BufferDeclarationLayoutReflector.parse(_run_spirv_reflect(spirv_reflect_exe, spv_path), spv_path)
+def reflect_buffer_declaration_layouts(spirv_reflect_exe, spv_path, *, read_bytes=None):
+    return BufferDeclarationLayoutReflector.parse(_run_spirv_reflect(spirv_reflect_exe, spv_path),
+                                                spv_path, read_bytes=read_bytes)
 
 
 def reflect_single_entry_vertex_inputs(spirv_reflect_exe, spv_path, entry, stage):
@@ -946,7 +953,7 @@ def _normalize_transparent_push_members(all_entries, type_descs, member_indices,
             all_entries[midx] = dict(current, name=name, offset=offset)
 
 
-def reflect_push_constant_block(spirv_reflect_exe: str, spv_path: str) -> Optional[PushConstantBlock]:
+def reflect_push_constant_block(spirv_reflect_exe: str, spv_path: str, *, read_bytes=None) -> Optional[PushConstantBlock]:
     """Reflect the push-constant block of a SPIR-V binary.
 
     Returns None if the shader has no push-constant block.
@@ -984,9 +991,9 @@ def reflect_push_constant_block(spirv_reflect_exe: str, spv_path: str) -> Option
     if target_eidx is None:
         return None
 
-    from spirv_layout import SpirvLayoutFacts
     _normalize_transparent_push_members(all_entries, type_descs,
-        all_entries[target_eidx].get("members", []), SpirvLayoutFacts(spv_path))
+        all_entries[target_eidx].get("members", []),
+        _layout_facts(spv_path, read_bytes))
 
     block = _build_block(all_entries[target_eidx], all_entries, type_descs)
     # Enrich members with numeric info from the second pass.
@@ -1181,6 +1188,8 @@ def generate_for_shader(
     struct_name: str,
     source_basename: str,
     spv_basename: str,
+    *,
+    read_bytes=None,
 ) -> PushConstantBlock:
     """Reflect a shader and write the .shader_bindings.h header.
 
@@ -1190,7 +1199,7 @@ def generate_for_shader(
     Raises RuntimeError on any contract violation (e.g. ColMajor matrix) so
     the build fails fast rather than emitting a wrong-layout header.
     """
-    block = reflect_push_constant_block(spirv_reflect_exe, spv_path)
+    block = reflect_push_constant_block(spirv_reflect_exe, spv_path, read_bytes=read_bytes)
     if block is None:
         raise RuntimeError(f"no push-constant block found in {spv_path}")
     header_text = emit_shader_bindings_header(block, struct_name, source_basename, spv_basename)

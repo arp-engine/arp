@@ -493,6 +493,17 @@ bool ProjectManifestCodec::validateForLaunch(const ProjectManifest& manifest,
     return true;
 }
 
+bool ProjectManifestCodec::isSettingsOnlyChange(
+    const ProjectManifest& saved, const ProjectManifest& draft)
+{
+    auto allowed = saved;
+    allowed.name = draft.name;
+    allowed.entryScene = draft.entryScene;
+    core::pmr::String left, right;
+    ProjectDiagnostic diagnostic;
+    return encode(allowed, left, diagnostic) && encode(draft, right, diagnostic) && left == right;
+}
+
 bool ProjectManifestCodec::resolvePath(const std::filesystem::path& root,
     std::string_view relative,
     ProjectPathIntent intent,

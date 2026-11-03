@@ -70,6 +70,7 @@ scriptCallArguments: 128
 scriptContinuationFrames: 64
 scriptMemoryBytes: 268435456
 
-maxSceneObjects: 6400
+# Original object ceiling plus one visual child for each of maxPickups=3000.
+maxSceneObjects: 9400
 maxSceneComponents: 32000
 maxScriptInstances: 6400

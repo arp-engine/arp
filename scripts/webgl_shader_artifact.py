@@ -15,17 +15,20 @@ import yaml
 
 from spirv_cross_api import SpirvCrossCompiler as Cross
 from spirv_layout import SpirvLayoutFacts
+from shader_file_inputs import ShaderFileInputs
 
 
-def digest(path):
+def digest(path, input_files=None):
+    if input_files is not None:
+        return input_files.digest(path)
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def file_role(path, parent):
+def file_role(path, parent, input_files=None):
     path = Path(path)
     if not path.is_file() or not path.stat().st_size:
         raise RuntimeError('SHADER-WEBGL1-FILE-EMPTY')
-    return dict(path=path.relative_to(parent).as_posix(), sha256=digest(path))
+    return dict(path=path.relative_to(parent).as_posix(), sha256=digest(path, input_files))
 
 
 class WebGlShaderTargetCompiler:
@@ -45,12 +48,16 @@ class WebGlShaderTargetCompiler:
         19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 32, 33,
         56, 62, 71, 72, 247, 248, 249, 250, 253, 254, 317, 330}
 
-    def __init__(self, library, slangc, max_leaves=256):
+    def __init__(self, library, slangc, max_leaves=256, *, input_files=None):
         self.library = Path(library).resolve()
         self.slangc = Path(slangc).resolve()
         self.max_leaves = max_leaves
+        self.input_files = input_files
         if type(max_leaves) is not int or not 0 < max_leaves <= 65536:
             raise RuntimeError('SHADER-WEBGL1-LEAF-BUDGET')
+
+    def read_bytes(self, path):
+        return self.input_files.read_bytes(path) if self.input_files is not None else Path(path).read_bytes()
 
     @classmethod
     def validate_binary(cls, facts, stage, allow_fragment_depth=False, allow_discard=False):
@@ -181,21 +188,26 @@ class WebGlShaderTargetCompiler:
     def generate(self, original_entry, optional_uniforms=()):
         original_entry = Path(original_entry).resolve()
         parent = original_entry.parent
-        original = yaml.safe_load(original_entry.read_text(encoding='utf-8'))
+        original_bytes = self.read_bytes(original_entry)
+        original = yaml.safe_load(ShaderFileInputs.decode_text(original_bytes))
         if original.get('type') != 'SingleEntryShaderArtifact' or original.get('contractVersion') != 3:
             raise RuntimeError('SHADER-WEBGL1-ORIGINAL-ARTIFACT')
-        for role in original['files'].values():
+        spirv_bytes = None
+        for name, role in original['files'].items():
             if set(role) != {'path', 'sha256'} or not Path(role['path']).name == role['path']:
                 raise RuntimeError('SHADER-WEBGL1-ORIGINAL-ROLE')
-            if digest(parent / role['path']) != role['sha256']:
+            role_bytes = self.read_bytes(parent / role['path'])
+            if hashlib.sha256(role_bytes).hexdigest() != role['sha256']:
                 raise RuntimeError('SHADER-WEBGL1-ORIGINAL-HASH')
+            if name == 'spirv':
+                spirv_bytes = role_bytes
         spirv = parent / original['files']['spirv']['path']
         stage = original['stage']
-        facts = SpirvLayoutFacts(spirv)
+        facts = SpirvLayoutFacts(spirv, data=spirv_bytes)
         fragment_depth = any(op == 71 and a[1:3] == (11, 22) for _, op, a in facts.instructions)
         discard = any(op == 252 for _, op, a in facts.instructions)
         self.validate_binary(facts, stage, allow_fragment_depth=fragment_depth, allow_discard=discard)
-        with Cross(self.library, spirv) as c:
+        with Cross(self.library, spirv, data=spirv_bytes) as c:
             if c.version() != [0, 68, 0]:
                 raise RuntimeError('SHADER-WEBGL1-CONVERTER-API-VERSION')
             c.configure()
@@ -276,10 +288,12 @@ class WebGlShaderTargetCompiler:
                 target='glsl-es-100', status='Available', stage=stage, entry=original['entry'],
                 matrixLayout='SlangRowMajorTransposedLogicalMatrix/1',
                 coordinates='WebGlShaderCoordinates/1', precision='HighpFloatAndInt/1',
-                original=file_role(original_entry, parent), glsl=file_role(path, parent),
-                generatorSha256=digest(__file__), adapterSha256=digest(Path(__file__).with_name('spirv_cross_api.py')),
-                converter=dict(sha256=digest(self.library), apiVersion=c.version()),
-                slang=dict(sha256=digest(self.slangc), version=subprocess.check_output(
+                original=dict(path=original_entry.relative_to(parent).as_posix(),
+                              sha256=hashlib.sha256(original_bytes).hexdigest()),
+                glsl=file_role(path, parent, self.input_files),
+                generatorSha256=digest(__file__, self.input_files), adapterSha256=digest(Path(__file__).with_name('spirv_cross_api.py'), self.input_files),
+                converter=dict(sha256=digest(self.library, self.input_files), apiVersion=c.version()),
+                slang=dict(sha256=digest(self.slangc, self.input_files), version=subprocess.check_output(
                     [str(self.slangc), '-version'], text=True, stderr=subprocess.STDOUT).strip(),
                     matrixLayout='row-major'),
                 options={name: value for name, (_, value) in Cross.OPTIONS.items()},
@@ -302,23 +316,27 @@ class WebGlShaderTargetCompiler:
                 stale.unlink()
             result = dict(type='WebGlShaderTargetArtifact', contractVersion=1,
                 target='glsl-es-100', status='DiagnosticFailure', diagnosticId=str(error),
-                original=file_role(original_entry, original_entry.parent))
+                original=file_role(original_entry, original_entry.parent, self.input_files))
         output.write_text(yaml.safe_dump(result, sort_keys=False), encoding='utf-8')
         return output
 
 
-def publish_program(vertex, fragment, output):
+def publish_program(vertex, fragment, output, *, input_files=None):
     output = Path(output).resolve()
     # A failed composition cannot leave an older executable-looking publication.
     output.unlink(missing_ok=True)
-    stages = [yaml.safe_load(Path(p).read_text(encoding='utf-8')) for p in (vertex, fragment)]
+    stage_paths = [Path(path).resolve() for path in (vertex, fragment)]
+    stage_bytes = [input_files.read_bytes(path) if input_files is not None else path.read_bytes()
+                   for path in stage_paths]
+    stages = [yaml.safe_load(ShaderFileInputs.decode_text(data)) for data in stage_bytes]
     if any(s['status'] != 'Available' for s in stages) or [s['stage'] for s in stages] != ['Vertex', 'Fragment']:
         raise RuntimeError('SHADER-WEBGL1-PROGRAM-TARGET-UNAVAILABLE')
     if stages[0]['interface']['outputs'] != stages[1]['interface']['inputs']:
         raise RuntimeError('SHADER-WEBGL1-VARYING-INTERFACE')
     pairs = sorted({p['name'] for s in stages for p in s['samplerPairs']})
     result = dict(type='WebGlShaderProgramArtifact', contractVersion=1,
-        profile='WebGl1Graphics/1', targets=[file_role(Path(p).resolve(), output.parent) for p in (vertex, fragment)],
+        profile='WebGl1Graphics/1', targets=[dict(path=path.relative_to(output.parent).as_posix(),
+            sha256=hashlib.sha256(data).hexdigest()) for path, data in zip(stage_paths, stage_bytes)],
         textureUnits=[dict(name=name, unit=i) for i,name in enumerate(pairs)],
         nativeExecutionProven=False)
     output.write_text(yaml.safe_dump(result, sort_keys=False), encoding='utf-8')

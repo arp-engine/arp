@@ -8,23 +8,43 @@ header{display:flex;align-items:center;gap:8px;min-height:44px;padding:6px 12px;
 strong{margin-right:12px;color:#d8e8ff} button{background:#393f49;color:#eee;border:1px solid #59606c;border-radius:3px;padding:5px 10px;cursor:pointer}
 button:disabled{opacity:.4;cursor:wait} #status{margin-left:auto;max-width:50vw} #error{color:#ffb6ac;white-space:pre-wrap;padding:0 12px}
 canvas{display:block;width:100vw;height:calc(100vh - 96px);min-height:360px;outline:none}
-footer{padding:8px 12px;color:#b8bdc6;font-size:12px} input{display:none}
+footer{padding:8px 12px;color:#b8bdc6;font-size:12px} input[type=file]{display:none}
+#workspace-connection{padding:8px 12px;background:#292e36} #workspace-connection[hidden]{display:none}
+#workspace-connection form{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+#workspace-token{background:#202329;color:#eee;border:1px solid #59606c;padding:5px;width:280px}
+#workspace-profile-name{max-width:260px;overflow-wrap:anywhere}
 </style></head>
 <body><header><strong>ARP Editor / WebGL</strong>
 <button data-action="save-scene">Save scene</button><button data-action="reopen">Reopen scene</button><button data-action="save-project">Save project</button>
+<button data-action="reload-scripts">Reload script modules</button>
 <button id="import">Import workspace</button><button data-action="export">Export workspace</button>
+<button id="workspace-connect" aria-controls="workspace-connection" aria-expanded="false">Connect workspace</button>
 <button id="cli">Connect CLI</button>
 <span id="status">Loading engine, fonts and UI…</span></header>
 <div id="error" role="alert"></div>
+<section id="workspace-connection" hidden aria-label="Workspace connection">
+<form id="workspace-connection-form" autocomplete="off">
+<button id="workspace-profile-select" type="button">Choose connection YAML</button>
+<span id="workspace-profile-name">No configuration selected</span>
+<label for="workspace-token">Access token</label>
+<input id="workspace-token" type="password" autocomplete="off" spellcheck="false" maxlength="256">
+<button id="workspace-submit" type="submit">Connect</button>
+<span>Configuration and token remain in this page only.</span>
+</form></section>
 <canvas id="canvas" width="1440" height="810" tabindex="0"></canvas>
-<footer>Prototype · Export a YAML archive before refreshing. Connect CLI uses the local --remote server. Play and 3D GPU preview are unavailable.</footer>
+<footer id="workspace-persistence">Virtual workspace · Export a YAML archive before refreshing. Play uses the desktop application.</footer>
 <input id="archive" type="file" accept=".yaml,.yml">
+<input id="workspace-profile" type="file" accept=".yaml,.yml">
 <script>
 var Module = {
   canvas: document.getElementById('canvas'),
   onEditorState(state) {
     document.getElementById('status').textContent = (state.dirty || state.scriptDirty ? '● Unsaved workspace · ' : '') + state.message;
     document.querySelectorAll('header button').forEach(b => b.disabled = state.busy);
+    document.getElementById('workspace-submit').disabled = state.busy;
+    document.getElementById('workspace-persistence').textContent = state.connectedWorkspace
+      ? (state.workspaceReadOnly ? 'Connected workspace · Read-only access.' : 'Connected workspace · Successful saves write to the source. Save changes before closing.')
+      : 'Virtual workspace · Export a YAML archive before refreshing. Play uses the desktop application.';
     window.editorCliBridge?.onEditorReady(state);
   },
   onEditorError(message) {document.getElementById('error').textContent = message;},
@@ -45,8 +65,11 @@ document.getElementById('import').onclick = () => document.getElementById('archi
 document.getElementById('archive').onchange = async event => {
   const file = event.target.files[0]; if (!file) return;
   if (file.size > 48*1024*1024) {Module.onEditorError('Workspace archive exceeds 48 MiB'); return;}
-  if (!Module.ccall('editor_import_workspace','number',['string'],[await file.text()]))
-    Module.onEditorError('Import rejected. Save changes first; only arp.editor.workspace/v1 archives are accepted.');
+  try {
+    const text = new TextDecoder('utf-8', {fatal:true}).decode(await file.arrayBuffer());
+    if (text.includes('\0') || !Module.ccall('editor_import_workspace','number',['string'],[text]))
+      Module.onEditorError('Import rejected. Save changes first; only arp.editor.workspace/v1 archives are accepted.');
+  } catch { Module.onEditorError('Workspace archive must be valid UTF-8.'); }
   event.target.value='';
 };
 const canvas = Module.canvas;
@@ -70,7 +93,11 @@ if (new URLSearchParams(location.search).has('negative')) {
 if (new URLSearchParams(location.search).has('cli-smoke')) {
   const script=document.createElement('script'); script.src='editor_webgl_cli_smoke.js'; document.head.appendChild(script);
 }
+if (new URLSearchParams(location.search).has('workspace-smoke')) {
+  const script=document.createElement('script'); script.src='editor_webgl_workspace_smoke.js'; document.head.appendChild(script);
+}
 </script>
 <script src="editor_cli_bridge.js"></script>
+<script src="editor_workspace_connection.js"></script>
 {{{ SCRIPT }}}
 </body></html>

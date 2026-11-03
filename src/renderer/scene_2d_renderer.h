@@ -39,6 +39,7 @@ public:
 
     ~Scene2DRenderer();
     RendererResult create(const Scene2DRendererDesc&);
+    RendererResult create(const Scene2DRendererDesc&, const ShaderPackagePreparationDesc&);
     RendererResult createOrdered(const Scene2DOrderedRendererDesc&);
     RendererResult addOrderedPass(render_graph::FrameGraph&,
         render_graph::TextureHandle target,
@@ -77,6 +78,7 @@ public:
     bool beforeRetiredResourcesRelease() noexcept override;
 
 private:
+    RendererResult createImpl(const Scene2DRendererDesc&, const rhi::ShaderPackageDesc*);
     struct OrderedState;
     bool readyOrderedFrame(std::uint64_t) const;
     bool releaseOrderedReferences() noexcept;

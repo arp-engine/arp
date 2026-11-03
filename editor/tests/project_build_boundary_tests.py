@@ -24,11 +24,19 @@ class ProjectBuildBoundaryTests(unittest.TestCase):
     def test_authoring_target_obeys_editor_option(self):
         self.assertEqual("arp_editor_project:" in self.targets,
                          arguments.editor == "enabled")
+        self.assertEqual("arp_editor_migration_io:" in self.targets,
+                         arguments.editor == "enabled")
+        self.assertEqual("arp_editor_cold_host_read:" in self.targets,
+                         arguments.editor == "enabled")
         if arguments.editor == "disabled":
             self.assertNotIn("arp_editor_project", self.targets)
+            self.assertNotIn("arp_editor_migration_io", self.targets)
+            self.assertNotIn("arp_editor_cold_host_read", self.targets)
 
     def test_engine_has_no_project_authoring_dependency(self):
         forbidden = ("/editor/project/", "/editor/tools/project_migrate",
+                     "/editor/tools/migration_io", "arp_editor_migration_io",
+                     "/editor/io/", "arp_editor_cold_host_read",
                      "arp_editor_project", "/src/engine/project/")
         inputs = ["/" + line.replace("\\", "/") for line in self.inputs.splitlines()]
         self.assertFalse([line for line in inputs if any(part in line for part in forbidden)])

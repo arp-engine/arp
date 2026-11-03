@@ -3,11 +3,13 @@
 #include "core/hash/sha256.h"
 #include "core/io/file_query_contract.h"
 #include "core/io/file_read_contract.h"
+#include "core/io/file_save_contract.h"
 #include "core/io/filesystem_path.h"
 #include "core/text/utf8.h"
 
 #include <algorithm>
 #include <new>
+#include <type_traits>
 #include <utility>
 
 namespace arp::core::io {
@@ -33,6 +35,14 @@ struct MemoryFileBackend::Pending {
     runtime::CancellationToken cancellation;
     FileReadResult result;
     std::uint64_t bytes = 0;
+};
+
+struct MemoryFileBackend::PendingSave {
+    core::SharedPtr<State> owner;
+    FileSaveCompletion completion;
+    runtime::CancellationToken cancellation;
+    FileSaveResult result;
+    std::uint64_t budget = 0;
 };
 
 MemoryFileBackend::MemoryFileBackend(MemoryFileBackendDesc desc)
@@ -110,21 +120,151 @@ FileIoStatus MemoryFileBackend::registerEntry(
         file.metadata.version.kind = FileVersionKind::ContentSha256;
         std::copy(hash.begin(), hash.end(), file.metadata.version.digest.begin());
     }
+    const auto retained = file.bytes.capacity();
+    if (retained > desc_.maxResidentBytes - residentBytes_) {
+        diagnostic_ = "IO-MEMORY-RESIDENT-BUDGET";
+        return FileIoStatus::BudgetExceeded;
+    }
     files_.push_back(std::move(file));
-    residentBytes_ += size;
+    residentBytes_ += retained;
     return FileIoStatus::Success;
 }
 
 FileBackendCapability MemoryFileBackend::capability() const noexcept
 {
+    const bool active = !state_->closed;
     return {FileBackendKind::MemoryFileBackend,
         FileBackendStatus::PrototypeComplete,
         false,
         true,
         true,
-        true,
-        true,
-        true};
+        active,
+        active,
+        active,
+        active};
+}
+
+FileSaveCapability MemoryFileBackend::saveCapability(core::PoolHandle) const noexcept
+{
+    return {desc_.allowObservedBaselineReplace && !state_->closed, false, false};
+}
+
+FileIoStatus MemoryFileBackend::saveAsync(FileSaveRequest request,
+    FileSaveCompletion completion,
+    runtime::CompletionQueue& queue) noexcept
+{
+    if (state_->closed)
+        return FileIoStatus::ServiceClosed;
+    if (!desc_.allowObservedBaselineReplace)
+        return FileIoStatus::Unsupported;
+    if (!completion.valid())
+        return FileIoStatus::InvalidRequest;
+    const auto validation = FileSaveContract::validate(request);
+    if (validation.diagnostic)
+        return validation.status;
+    if (request.path.size() > desc_.maxPathBytes)
+        return FileIoStatus::BudgetExceeded;
+    if (state_->inFlight >= desc_.maxInFlight)
+        return FileIoStatus::QueueFull;
+    const auto budget = FileSaveContract::reservationBytes(request);
+    if (budget > desc_.maxQueuedBytes - state_->queuedBytes)
+        return FileIoStatus::BudgetExceeded;
+    try {
+        auto reservation = queue.reserve();
+        if (!reservation.valid())
+            return reservation.status() == runtime::CompletionStatus::QueueFull
+                ? FileIoStatus::QueueFull
+                : FileIoStatus::ServiceClosed;
+        auto pending = core::makeUnique<PendingSave>();
+        pending->owner = state_;
+        pending->completion = completion;
+        pending->cancellation = request.cancellation;
+        pending->budget = budget;
+        pending->result.backendKind = FileBackendKind::MemoryFileBackend;
+        auto found = std::find_if(files_.begin(), files_.end(), [&](const File& file) {
+            return file.path == request.path;
+        });
+        File candidate;
+        const auto fail = [&](FileIoStatus status, const char* diagnostic) {
+            pending->result.fail(status, diagnostic);
+        };
+        if (request.cancellation.cancelled()) {
+            fail(FileIoStatus::Cancelled, "IO-MEMORY-CANCELLED");
+        } else if (found != files_.end() && found->metadata.kind != FileEntryKind::RegularFile) {
+            fail(FileIoStatus::InvalidRequest, "IO-MEMORY-SAVE-DIRECTORY");
+        } else if (request.precondition == FileSavePrecondition::MustBeMissing
+            && found != files_.end()) {
+            fail(FileIoStatus::VersionMismatch, "IO-MEMORY-SAVE-EXISTS");
+        } else if (request.precondition == FileSavePrecondition::ContentSha256
+            && (found == files_.end() || found->metadata.version != request.expectedVersion)) {
+            fail(FileIoStatus::VersionMismatch, "IO-MEMORY-SAVE-BASELINE-CHANGED");
+        } else if (found != files_.end() && found->bytes.size() > request.maxBaselineBytes) {
+            fail(FileIoStatus::BudgetExceeded, "IO-MEMORY-VERSION-BUDGET");
+        } else {
+            const auto slash = request.path.rfind('/');
+            const bool parent = slash == core::pmr::String::npos
+                || std::any_of(files_.begin(), files_.end(), [&](const File& entry) {
+                       return entry.metadata.kind == FileEntryKind::Directory
+                           && entry.path == std::string_view(request.path.data(), slash);
+                   });
+            const auto oldCapacity = found == files_.end() ? 0 : found->bytes.capacity();
+            if (!parent)
+                fail(FileIoStatus::MissingFile, "IO-MEMORY-PARENT-NOT-REGISTERED");
+            else if ((found == files_.end() && files_.size() >= desc_.maxFiles)
+                || request.bytes.capacity()
+                    > desc_.maxResidentBytes - (residentBytes_ - oldCapacity))
+                fail(FileIoStatus::BudgetExceeded, "IO-MEMORY-RESIDENT-BUDGET");
+            else {
+                candidate.path.swap(request.path);
+                candidate.metadata.kind = FileEntryKind::RegularFile;
+                candidate.metadata.sizeBytes = request.bytes.size();
+                candidate.metadata.version = FileSaveContract::contentVersion(request);
+                candidate.bytes.swap(request.bytes);
+                pending->result.status = FileIoStatus::Success;
+            }
+        }
+        // All fallible work, including queue publication, precedes mutation.
+        // Owner-thread dispatch cannot interleave this no-throw commit.
+        static_assert(std::is_nothrow_move_constructible_v<File>);
+        const auto post = queue.postReserved(std::move(reservation), {deliverSave, pending.get()});
+        if (!post.accepted())
+            return FileIoStatus::ServiceClosed;
+        if (pending->result.status == FileIoStatus::Success) {
+            pending->result.committedVersion = candidate.metadata.version;
+            if (found == files_.end()) {
+                residentBytes_ += candidate.bytes.capacity();
+                files_.push_back(std::move(candidate));
+            } else {
+                residentBytes_ =
+                    residentBytes_ - found->bytes.capacity() + candidate.bytes.capacity();
+                found->bytes.swap(candidate.bytes);
+                found->metadata = candidate.metadata;
+            }
+            pending->result.commitState = FileCommitState::Committed;
+        }
+        ++state_->inFlight;
+        state_->queuedBytes += budget;
+        pending.release();
+        return FileIoStatus::Accepted;
+    } catch (const std::bad_alloc&) {
+        return FileIoStatus::BudgetExceeded;
+    } catch (...) {
+        return FileIoStatus::InvalidRequest;
+    }
+}
+
+void MemoryFileBackend::deliverSave(void* context) noexcept
+{
+    core::UniquePtr<PendingSave> pending{static_cast<PendingSave*>(context),
+        core::CpuAllocatedDeleter<PendingSave>{
+            context, &core::destroyCpuAllocatedUnique<PendingSave>}};
+    --pending->owner->inFlight;
+    pending->owner->queuedBytes -= pending->budget;
+    if (pending->cancellation.cancelled() || pending->owner->closed)
+        pending->result.deliveryStatus = pending->cancellation.cancelled()
+            ? FileIoStatus::Cancelled
+            : FileIoStatus::ServiceClosed;
+    pending->completion.complete(pending->completion.userData, pending->result);
 }
 
 FileReadResult MemoryFileBackend::validateRead(const FileReadRequest& request) const

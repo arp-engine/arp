@@ -9,6 +9,7 @@
 #include "rhi/gpu_pipeline.h"
 #include "rhi/gpu_resources.h"
 #include "rhi/gpu_swapchain.h"
+#include "rhi/semantics/command_lowering.h"
 #include "rhi/semantics/webgpu_timestamp_command_point.h"
 
 #include <atomic>

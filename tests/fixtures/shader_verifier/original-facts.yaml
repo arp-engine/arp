@@ -1,0 +1,59 @@
+type: ShaderVerifierCliBaseline
+contractVersion: 1
+source: tests/fixtures/ordinary_graphics_storage_write.slang
+sourceSha256: 002dc59482dddcdab69ad82984174b2cf3dcb22e7d91b2b62dad2c7d6cceda8d
+spirvBytes: 828
+spirvSha256: e560e9a643636122a0d30d828e20660de8101979de869a3566c998fb2ce0334a
+oldToolSha256: b12897dda235dfc6279e724a5fbcda26293a53aea4449a65133e1ef14ee13525
+cases:
+- name: proof
+  mode:
+  - fragmentMain
+  stdout: 'type: FragmentAtomicWriteProof
+
+    contractVersion: 1
+
+    set: 0
+
+    binding: 3
+
+    replacement: 305419896
+
+    byteOffset: 0
+
+    byteCount: 4
+
+    '
+  facts:
+    type: FragmentAtomicWriteProof
+    contractVersion: 1
+    set: 0
+    binding: 3
+    replacement: 305419896
+    byteOffset: 0
+    byteCount: 4
+- name: layout
+  mode:
+  - --buffer-declarations
+  - '16'
+  stdout: "type: SpirvBufferDeclarationLayouts\ncontractVersion: 1\nstatus: DeclarationOnly\n\
+    bindings:\n  - set: 0\n    binding: 3\n    spirvId: 13\n    blockTypeId: 10\n\
+    \    storageClass: 12\n    descriptorCount: 1\n    staticOccupiedExtentBytes:\
+    \ 0\n    hasRuntimeArray: true\n    runtimeArrayOffsetBytes: 0\n    runtimeArrayStrideBytes:\
+    \ 4\n    runtimeElementOccupiedExtentBytes: 4\n"
+  facts:
+    type: SpirvBufferDeclarationLayouts
+    contractVersion: 1
+    status: DeclarationOnly
+    bindings:
+    - set: 0
+      binding: 3
+      spirvId: 13
+      blockTypeId: 10
+      storageClass: 12
+      descriptorCount: 1
+      staticOccupiedExtentBytes: 0
+      hasRuntimeArray: true
+      runtimeArrayOffsetBytes: 0
+      runtimeArrayStrideBytes: 4
+      runtimeElementOccupiedExtentBytes: 4

@@ -3,6 +3,9 @@ import pathlib
 import struct
 
 
+_LEGACY_PATH_INPUT = object()
+
+
 class SpirvLayoutFacts:
     MAGIC = 0x07230203
     OP_MEMBER_DECORATE = 72
@@ -10,8 +13,13 @@ class SpirvLayoutFacts:
     DECORATION_ROW_MAJOR = 4
     DECORATION_MATRIX_STRIDE = 7
 
-    def __init__(self, path):
-        data = pathlib.Path(path).read_bytes()
+    def __init__(self, path, *, data=_LEGACY_PATH_INPUT):
+        # The caller can supply its owned source; only the retained legacy
+        # interface opens a path. Empty bytes must be validated, never reread.
+        if data is _LEGACY_PATH_INPUT:
+            data = pathlib.Path(path).read_bytes()
+        if not isinstance(data, (bytes, bytearray)):
+            raise RuntimeError("SPIRV-LAYOUT-INVALID-BINARY")
         if len(data) < 20 or len(data) % 4:
             raise RuntimeError("SPIRV-LAYOUT-INVALID-BINARY")
         words = struct.unpack(f"<{len(data) // 4}I", data)

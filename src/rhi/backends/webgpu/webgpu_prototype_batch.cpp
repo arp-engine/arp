@@ -5,6 +5,7 @@
 #include "rhi/backends/webgpu/webgpu_native_string_view.h"
 #include "rhi/frontend/command_attachment_validation.h"
 #include "rhi/frontend/prototype_command_batch_validation.h"
+#include "rhi/semantics/command_lowering.h"
 
 #include <chrono>
 

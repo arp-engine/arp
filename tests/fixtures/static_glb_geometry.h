@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/encoding/unsigned_element_span.h"
+#include "core/memory/cpu_allocator.h"
 
 #include <cassert>
 #include <cstring>
@@ -30,23 +31,23 @@ public:
         // clang-format on
     }
 
-    static void write(const std::filesystem::path& path, std::string json = document())
+    static core::pmr::Vector<std::uint8_t> bytes(std::string json = document())
     {
         while (json.size() % 4u)
             json += ' ';
-        std::ofstream out(path, std::ios::binary);
+        core::pmr::Vector<std::uint8_t> out;
         const auto word = [&](std::uint32_t value) {
             std::uint8_t bytes[4];
             assert(core::UnsignedElementSpan::writeLittleEndian(
                 value, core::UnsignedElementSpan::Width::Uint32, bytes, sizeof(bytes)));
-            out.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+            out.insert(out.end(), bytes, bytes + sizeof(bytes));
         };
         word(0x46546c67u);
         word(2u);
         word(static_cast<std::uint32_t>(28u + json.size() + 152u));
         word(static_cast<std::uint32_t>(json.size()));
         word(0x4e4f534au);
-        out.write(json.data(), json.size());
+        out.insert(out.end(), json.begin(), json.end());
         word(152u);
         word(0x004e4942u);
         for (float value : {1.25f,
@@ -90,7 +91,15 @@ public:
             word(bits);
         }
         const char indices[] = {0, 0, 1, 0, 2, 0, 0, 0};
-        out.write(indices, sizeof(indices));
+        out.insert(out.end(), indices, indices + sizeof(indices));
+        return out;
+    }
+
+    static void write(const std::filesystem::path& path, std::string json = document())
+    {
+        const auto encoded = bytes(std::move(json));
+        std::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(encoded.data()), encoded.size());
         assert(out.good());
     }
 };

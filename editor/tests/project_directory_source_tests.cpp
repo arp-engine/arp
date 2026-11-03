@@ -3,6 +3,7 @@
 #include "core/io/memory_file_backend.h"
 #include "core/io/mounted_file_backend.h"
 #include "editor/project/project_directory_session.h"
+#include "editor/project/project_file_save_task.h"
 #include "editor/tests/fixtures/project_fixture.h"
 #include "editor/workspace/project_browser_model.h"
 #include "tests/fixtures/unified_io_fixture.h"
@@ -117,10 +118,10 @@ public:
         assert(file.good());
     }
 
-    core::SharedPtr<MemoryFileBackend> memory() const
+    core::SharedPtr<MemoryFileBackend> memory(bool writable = false) const
     {
-        auto backend =
-            core::makeShared<MemoryFileBackend>(MemoryFileBackendDesc{32, 65536, 1, 65536, 1024});
+        auto backend = core::makeShared<MemoryFileBackend>(
+            MemoryFileBackendDesc{32, 65536, 1, 65536, 1024, writable});
         for (const char* directory : {"workspace", "workspace/nested", "workspace/nested/child"})
             assert(backend->registerDirectory(directory) == FileIoStatus::Success);
         for (const auto* path : {"project.arp.yaml", "Z.arp", "a.arp", "nested/content.arp"}) {
@@ -227,6 +228,78 @@ void browserContracts(Harness& host)
     assert(!browser.prepareSources(child, host.files, epoch, Navigation::Navigate, browser, 2));
     assert(browser.prepareSources(root, host.files, epoch, Navigation::Navigate, browser, 2));
     assert(browser.sourceSnapshot() == child);
+}
+
+void browserRebindContracts(Harness& host)
+{
+    using Navigation = ProjectBrowserModel::SourceNavigation;
+    ProjectBrowserModel empty, browser;
+    const auto root = host.directory();
+    const auto nested = host.directory("nested");
+    const auto child = host.directory("nested/child");
+    assert(!empty.prepareSources(root, host.files, epoch, Navigation::Navigate, browser, 8));
+    assert(!browser.prepareSources(nested, host.files, epoch, Navigation::Navigate, browser, 8));
+    assert(!browser.prepareSources(child, host.files, epoch, Navigation::Navigate, browser, 8));
+    assert(!browser.prepareSources(nested, host.files, epoch, Navigation::Back, browser, 8));
+    browser.setSearch("CONTENT");
+    const auto oldSource = browser.sourceSnapshot();
+    const auto current = browser.currentDirectory();
+    const auto visible = browser.visibleEntryIndices();
+    core::pmr::String back, forward;
+    assert(browser.sourceTarget(Navigation::Back, {}, back) && back.empty());
+    assert(browser.sourceTarget(Navigation::Forward, {}, forward) && forward == "nested/child");
+    const char* issue = nullptr;
+    const auto* manifest = host.project->find("project.arp.yaml");
+    assert(manifest);
+    // A real same-byte save changes the acquired scope owner while keeping the
+    // fixture's disk bytes stable across ordinary native lifecycle iterations.
+    auto save = host.project->prepareScopeFileSave(
+        host.files, epoch, "project.arp.yaml", manifest->receipt.bytes, 4096, issue);
+    assert(save && !issue);
+    assert(!empty.prepareProjectRebind(*save, issue));
+    const auto quota = core::makeShared<core::CpuMemoryQuota>(1);
+    {
+        core::CpuMemoryQuotaScope denyAllocations(quota);
+        assert(!browser.prepareProjectRebind(*save, issue));
+    }
+    assert(issue && browser.sourceSnapshot() == oldSource);
+    auto prepared = browser.prepareProjectRebind(*save, issue);
+    assert(prepared && !issue);
+    assert(!prepared->finish(*save, host.project, browser));
+    ProjectFileSaveTask write(host.files, save->takeRequest());
+    assert(!browser.prepareProjectRebind(*save, issue));
+    write.advance();
+    unified_io_fixture::wait(host.queue, [&] {
+        return write.terminal();
+    });
+    assert(write.result().commitState == FileCommitState::Committed);
+    auto committed = save->finish(host.files, epoch, write.result());
+    assert(committed);
+    auto foreign = browser;
+    assert(!prepared->finish(*save, committed, foreign));
+    browser.setSearch("newer search");
+    assert(!prepared->finish(*save, committed, browser));
+    assert(browser.search() == "newer search" && browser.sourceSnapshot() == oldSource);
+    browser.setSearch("CONTENT");
+    {
+        core::CpuMemoryQuotaScope denyAllocations(quota);
+        assert(prepared->canFinish(*save, committed, browser));
+        assert(prepared->canFinish(*save, committed, browser));
+        assert(prepared->finish(*save, committed, browser));
+    }
+    assert(quota->liveBytes() == 0 && !prepared->finish(*save, committed, browser));
+    assert(browser.sourceSnapshot()->project() == committed);
+    assert(oldSource->project() == host.project && browser.currentDirectory() == current);
+    assert(browser.search() == "CONTENT" && browser.visibleEntryIndices() == visible);
+    core::pmr::String target;
+    assert(browser.sourceTarget(Navigation::Back, {}, target) && target == back);
+    assert(browser.sourceTarget(Navigation::Forward, {}, target) && target == forward);
+    // New navigation must consume the committed scope instead of failing the
+    // browser's exact project-owner gate against the pre-save snapshot.
+    host.project = committed;
+    const auto refreshed = host.directory("nested");
+    assert(!browser.prepareSources(refreshed, host.files, epoch, Navigation::Refresh, browser, 8));
+    assert(browser.sourceSnapshot()->project() == committed && browser.search() == "CONTENT");
 }
 
 void negatives(Fixture& fixture)
@@ -359,11 +432,13 @@ int main(int argc, char** argv)
         if (native) {
             auto desc = fixture.workspace.descriptor();
             desc.ioChunkBytes = 4096;
+            desc.allowObservedBaselineReplace = true;
             backend = core::makeShared<NativeDirectoryFileBackend>(desc);
         } else
-            backend = fixture.memory();
+            backend = fixture.memory(true);
         Harness host(std::move(backend));
         browserContracts(host);
+        browserRebindContracts(host);
     };
     if (!native && !smoke) {
         run();

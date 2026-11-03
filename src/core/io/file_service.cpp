@@ -2,6 +2,8 @@
 
 #include "core/io/file_query_contract.h"
 #include "core/io/file_read_contract.h"
+#include "core/io/file_save_contract.h"
+#include "core/io/file_save_receipt_contract.h"
 #include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
@@ -137,6 +139,56 @@ FileService::FileService(runtime::CompletionQueue& completions, FileBackend& bac
 FileBackendCapability FileService::capability() const noexcept
 {
     return backend_.capability();
+}
+
+FileBackendCapability FileService::capability(core::PoolHandle mount) const noexcept
+{
+    return closed_ ? FileBackendCapability{} : backend_.locationCapability(mount);
+}
+
+FileSaveCapability FileService::saveCapability(core::PoolHandle mount) const noexcept
+{
+    return closed_ ? FileSaveCapability{} : backend_.saveCapability(mount);
+}
+
+FileIoStatus FileService::save(FileSaveRequest request, FileSaveCompletion completion) noexcept
+{
+    const SubmitLatency latency(telemetry_);
+    FileIoStatus status = FileIoStatus::Success;
+    if (closed_)
+        status = FileIoStatus::ServiceClosed;
+    else if (!completion.valid())
+        status = FileIoStatus::InvalidRequest;
+    else
+        status = FileSaveContract::validate(request).status;
+    if (status == FileIoStatus::Success) {
+        // Backend admission validates the exact location before its capability
+        // gate, preserving StaleLocation instead of masking it as Unsupported.
+        status = backend_.saveAsync(std::move(request), completion, completions_);
+    }
+    if (status == FileIoStatus::Accepted)
+        ++telemetry_.submitted;
+    else
+        ++telemetry_.rejected;
+    return status;
+}
+
+FileIoStatus FileService::receipt(
+    const FileSaveReceiptRequest& request, FileSaveReceiptCompletion completion) noexcept
+{
+    const SubmitLatency latency(telemetry_);
+    auto status = closed_     ? FileIoStatus::ServiceClosed
+        : !completion.valid() ? FileIoStatus::InvalidRequest
+                              : FileSaveReceiptContract::validate(request).status;
+    if (status == FileIoStatus::Success && request.cancellation.cancelled())
+        status = FileIoStatus::Cancelled;
+    if (status == FileIoStatus::Success)
+        status = backend_.receiptAsync(request, completion, completions_);
+    if (status == FileIoStatus::Accepted)
+        ++telemetry_.submitted;
+    else
+        ++telemetry_.rejected;
+    return status;
 }
 
 FileIoStatus FileService::readText(

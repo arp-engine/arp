@@ -14,6 +14,8 @@ public:
     }
 
     static constexpr std::uint64_t documentPreparationBytes = 64 * 1024 * 1024;
+    // Exact public Scene script configuration limits shared with REST/MCP.
+    static constexpr std::size_t resourceIdentityBytes = 36, scriptTypeBytes = 128;
 
     static EditorSceneScriptInputs inputs(
         const std::filesystem::path& root, const ProjectManifest& project)

@@ -2069,8 +2069,8 @@ float4 fragmentMain(float4 position : SV_Position) : SV_Target0 {
                     ("mapping.z != 3u", "mapping.z != 2u"),
                     ("physicalInstance >= mapping.y", "physicalInstance > mapping.y"),
                     ("mapping.y > mapping.z - mapping.x", "mapping.y < mapping.z - mapping.x")):
-                def changed_generator(document, mode):
-                    generated = generate(document, mode)
+                def changed_generator(document, mode, *, input_files=None):
+                    generated = generate(document, mode, input_files=input_files)
                     self.assertIn(before, generated.source)
                     source = generated.source.replace(before, after)
                     reflection = dict(generated.reflection, sourceSha256=hashlib.sha256(source.encode()).hexdigest())

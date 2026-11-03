@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rhi/frontend/resource_state_sequence.h"
+#include "rhi/gpu_commands.h"
 
 namespace arp::rhi::semantics {
 

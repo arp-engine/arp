@@ -167,6 +167,8 @@ public:
             throw std::runtime_error("ARP-TWEEN-AUTHORING-START-FAILED");
     }
 
+    AFUNC()
+
     float value() const { return tween_.value(); }
     AFUNC()
 

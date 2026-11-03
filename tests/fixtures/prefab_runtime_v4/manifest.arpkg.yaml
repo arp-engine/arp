@@ -1,0 +1,30 @@
+format: ArpInternalAssetPackage
+version: 1
+name: runtime
+status: Prototype Complete
+entries:
+  - resourceId: c8591a23-0f99-4070-a4d0-d79ab87379eb
+    resourceType: PrefabRuntimePayloadResource
+    alias: prefab/runtime/runtime-payload
+    envelopePath: resources/runtime-payload.arpres.yaml
+    status: Prototype Complete
+    contentHash: 3507094486
+    dependencies: []
+  - resourceId: 3c71905f-6c79-42d9-a8e1-69549913fc23
+    resourceType: AnimatorControllerResource
+    alias: prefab/runtime/animator
+    envelopePath: resources/animator.arpres.yaml
+    status: Prototype Complete
+    contentHash: 1477385735
+    dependencies: []
+  - resourceId: 0b5f7a2d-78a7-47d2-91f5-4ab0f8b827e1
+    resourceType: PrefabResource
+    alias: prefab/runtime
+    envelopePath: resources/prefab.arpres.yaml
+    status: Prototype Complete
+    contentHash: 3675654629
+    dependencies:
+      - id: c8591a23-0f99-4070-a4d0-d79ab87379eb
+        usage: runtime-payload
+      - id: 3c71905f-6c79-42d9-a8e1-69549913fc23
+        usage: animator-controller

@@ -15,7 +15,9 @@ function(arp_add_queen_content)
     add_library(arp_queen_content STATIC
         "${queen_root}/examples/build_a_queen/game.cpp"
         "${queen_root}/examples/build_a_queen/scene_content.cpp"
+        "${queen_root}/examples/build_a_queen/character_sources.cpp"
         "${queen_root}/src/assets/glb_animated_mesh_importer.cpp"
+        "${queen_root}/src/assets/animated_mesh_source_import.cpp"
         "${queen_root}/src/assets/glb_static_mesh_importer.cpp"
         "${queen_root}/src/assets/glb_importer_common.cpp"
         "${queen_root}/src/assets/animated_mesh_coordinate_conversion.cpp"

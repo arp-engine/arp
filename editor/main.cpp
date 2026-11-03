@@ -8,7 +8,10 @@ int main(int argc, char** argv)
     bool hidden = false, after = false, hover = false, viewportPipelineSmoke = false;
     bool viewportRuntimeSmoke = false, terrainResourceSmoke = false;
     bool terrainAssets = false;
+    bool sourceWrites = false;
     bool remoteBindAddressSpecified = false, legacyWoccSpecified = false;
+    std::optional<std::string_view> viewportShaderBaseUrl;
+    std::optional<std::string_view> uiBaseUrl;
     std::uint16_t remotePort = 0;
     std::string_view remoteBindAddress = "127.0.0.1";
     std::filesystem::path projectRoot, openScript, legacyWoccExecutable;
@@ -35,8 +38,22 @@ int main(int argc, char** argv)
             terrainAssets = true;
         } else if (std::strcmp(argv[i], "--viewport-runtime-smoke") == 0)
             viewportRuntimeSmoke = true;
-        else if (std::strcmp(argv[i], "--project-root") == 0 && i + 1 < argc)
+        else if (std::strcmp(argv[i], "--ui-base-url") == 0 && i + 1 < argc) {
+            if (uiBaseUrl) {
+                std::fprintf(stderr, "EDITOR-UI-SOURCE-URL-DUPLICATE\n");
+                return 2;
+            }
+            uiBaseUrl = argv[++i];
+        } else if (std::strcmp(argv[i], "--viewport-shader-base-url") == 0 && i + 1 < argc) {
+            if (viewportShaderBaseUrl) {
+                std::fprintf(stderr, "EDITOR-VIEWPORT-SHADER-URL-DUPLICATE\n");
+                return 2;
+            }
+            viewportShaderBaseUrl = argv[++i];
+        } else if (std::strcmp(argv[i], "--project-root") == 0 && i + 1 < argc)
             projectRoot = argv[++i];
+        else if (std::strcmp(argv[i], "--source-write") == 0)
+            sourceWrites = true;
         else if (std::strcmp(argv[i], "--open-script") == 0 && i + 1 < argc)
             openScript = argv[++i];
         else if (std::strcmp(argv[i], "--legacy-wocc-executable") == 0 && i + 1 < argc) {
@@ -64,8 +81,8 @@ int main(int argc, char** argv)
             std::fprintf(stderr,
                 "Usage: arp_editor [--smoke] [--after] [--hover] [--viewport-pipeline-smoke] "
                 "[--viewport-runtime-smoke] [--terrain-resource-smoke] [--inspector-safety-smoke drag_hover|drag_assigned|drag_rejected|drag_cancelled|nav_valid|nav_current|nav_missing|nav_unmapped|nav_failed|nav_retry|focus_valid|focus_current|focus_missing|focus_failed|focus_retry|normal|failed|retry|ref_unassigned|ref_missing|ref_type|ref_repaired|res_unassigned|res_missing|res_type|res_not_ready|res_capacity|res_repaired|res_stale|picker_first|picker_last|picker_repaired|picker_invalid|picker_objects|picker_object_repaired|selection_same|selection_mixed|selection_incompatible|selection_ambiguous|selection_failed|selection_retry|selection_single] [--transform-gesture-smoke before|move|scale|rotate|undo|redo|world_axes|local_axes|local_move|local_scale|world_scale_rejected|local_rotate|world_rotate|local_undo|local_redo|snap_before|snap_move|snap_negative|snap_scale|snap_rotate|snap_undo|snap_redo|batch_move|batch_undo|batch_redo|group_move|group_rotate|group_scale|group_individual|group_undo|group_redo|settings_open|settings_draft|settings_invalid|settings_failed|settings_applied|settings_cancel|input_tool|input_text|input_modal|input_recovery] [--project-root PATH] "
-                "[--open-script PATH] [--open-terrain PREVIEW_MATERIAL_UUID] [--terrain-assets] [--remote-port PORT] "
-                "[--remote-bind-address IPv4] [--legacy-wocc-executable ABSOLUTE_PATH]\n");
+                "[--source-write] [--open-script PATH] [--open-terrain PREVIEW_MATERIAL_UUID] [--terrain-assets] [--remote-port PORT] "
+                "[--remote-bind-address IPv4] [--legacy-wocc-executable ABSOLUTE_PATH] [--viewport-shader-base-url URL] [--ui-base-url URL]\n");
             return 2;
         }
     }
@@ -77,6 +94,10 @@ int main(int argc, char** argv)
     }
     if (remoteBindAddressSpecified && remotePort == 0) {
         std::fprintf(stderr, "--remote-bind-address requires --remote-port\n");
+        return 2;
+    }
+    if (sourceWrites && !projectRoot.is_absolute()) {
+        std::fprintf(stderr, "--source-write requires an explicit absolute --project-root\n");
         return 2;
     }
     if (viewportPipelineSmoke && !hidden) {
@@ -120,5 +141,8 @@ int main(int argc, char** argv)
         terrainAssets,
         legacyWoccExecutable,
         transformGestureSmoke,
-        inspectorSafetySmoke);
+        inspectorSafetySmoke,
+        sourceWrites,
+        viewportShaderBaseUrl,
+        uiBaseUrl);
 }

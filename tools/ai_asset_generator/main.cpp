@@ -5,8 +5,7 @@
 int main(int argc, char** argv)
 {
     const auto options = arp::tools::ai_asset_generator::parseOptions(argc, argv);
-    const auto result = arp::tools::ai_asset_generator::runGenerator(
-        options, arp::tools::ai_asset_generator::Environment::fromProcess());
+    const auto result = arp::tools::ai_asset_generator::PromptManifestApplication{}.run(options);
     if (!result.diagnostics.empty()) {
         (result.success ? std::cout : std::cerr) << result.diagnostics << '\n';
     }

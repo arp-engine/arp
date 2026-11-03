@@ -301,11 +301,7 @@ public:
         if (!isSupportedFrontFace(d.frontFace))
             return "RHI-ORIGINAL-TABLE-EMISSION-STATE";
         const auto blend = [](const BlendComponent& b) noexcept {
-            return b.sourceFactor >= BlendFactor::Zero
-                && b.sourceFactor <= BlendFactor::OneMinusDstAlpha
-                && b.destinationFactor >= BlendFactor::Zero
-                && b.destinationFactor <= BlendFactor::OneMinusDstAlpha
-                && b.operation >= BlendOp::Add && b.operation <= BlendOp::Max;
+            return BlendStateContract::validate(b) == nullptr;
         };
         for (std::uint32_t i = 0u; i < effectiveColorTargetCount(d); ++i) {
             const auto t = effectiveColorTargetAt(d, i);

@@ -214,6 +214,28 @@ void cycle(Fixture& files)
     check(!result.success && !result.committed
         && result.diagnostic == "ARP-SAVE-UNSUPPORTED-CONTRACT");
     check(core::readTextFile(files.root / "scene.yaml").text == saved);
+    // The actual native SceneSchema shares the strict single-document worker
+    // validator. Neither an existing stream nor a stream replacement is admitted.
+    for (const auto* suffix : {"\n---\nother: document\n", "\n---\n"}) {
+        const auto stream = nativeYaml + suffix;
+        files.write("native.yaml", stream);
+        const auto rejectedLoad = finish(persistence, persistence.load(files.root, "native.yaml"));
+        check(!rejectedLoad.success && rejectedLoad.diagnostic == "ARP-SAVE-CORRUPT-YAML");
+        auto rejectedSave =
+            finish(persistence, persistence.save(files.root, "native.yaml", nativeYaml));
+        check(!rejectedSave.success && !rejectedSave.committed
+            && rejectedSave.diagnostic == "ARP-SAVE-CORRUPT-YAML");
+        check(core::readTextFile(files.root / "native.yaml").text == stream);
+        files.write("native.yaml", nativeYaml);
+        rejectedSave = finish(persistence, persistence.save(files.root, "native.yaml", stream));
+        check(!rejectedSave.success && !rejectedSave.committed
+            && rejectedSave.diagnostic == "ARP-SAVE-CORRUPT-YAML");
+        check(core::readTextFile(files.root / "native.yaml").text == nativeYaml);
+    }
+    result = finish(persistence, persistence.save(files.root, "native.yaml", nativeYaml));
+    check(result.success && result.committed);
+    result = finish(persistence, persistence.load(files.root, "native.yaml"));
+    check(result.success && text(result.bytes) == nativeYaml);
     const auto oldCatalog = document.scriptCatalog();
     const auto reopenedCatalog = reopened.scriptCatalog();
     auto receiver = document.scene().findComponent(graph.rootScript)->scriptInstance();

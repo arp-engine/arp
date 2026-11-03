@@ -10,6 +10,8 @@ endif()
 
 project(AnimeRenderPipeline LANGUAGES C CXX)
 
+include(cmake/ShaderFileInputs.cmake)
+
 include(cmake/ArpWebRhiSelection.cmake)
 set(ARP_WEB_RHI "" CACHE STRING "Web RHI product: empty preserves platform default; none, webgpu or webgl1")
 set_property(CACHE ARP_WEB_RHI PROPERTY STRINGS "" none webgpu webgl1)
@@ -421,11 +423,13 @@ add_library(arp_core
     src/core/io/file_query_contract.cpp
     src/core/io/http_file_contract.cpp
     src/core/io/http_file_backend.cpp
+    src/core/io/workspace_file_backend.cpp
     src/core/io/native_directory_file_backend.cpp
     src/core/io/detail/native_directory_access.cpp
     src/core/runtime/async_runtime.cpp
 )
 target_include_directories(arp_core PUBLIC src)
+target_include_directories(arp_core PRIVATE 3rd/assimp-6.0.5/contrib/rapidjson/include)
 target_link_libraries(arp_core PUBLIC arp_core_foundation arp_network_http_transport)
 
 # Compiler installation and build-input snapshots belong to ScriptVM plugins.
@@ -604,10 +608,10 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE
         "${graphics_module_fixture}/Vertex/ordinary_graphics_storage_read.vertexMain.entry.yaml"
         "${graphics_module_fixture}/Fragment/ordinary_graphics_storage_read.fragmentMain.entry.yaml")
     add_custom_command(OUTPUT ${graphics_module_outputs}
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --fixture ordinary_graphics_storage_read --graphics-module --out-dir "${graphics_module_fixture}"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/shader_bindings_codegen.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ordinary_graphics_storage_read.slang"
         VERBATIM)
@@ -749,10 +753,10 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE
             BYPRODUCTS "${entry_dir}/${fixture}.slang" "${entry_dir}/${fixture}.spv"
                 "${entry_dir}/${fixture}.metal" ${entry_wgsl_byproduct} "${entry_dir}/${fixture}.reflection.yaml"
                 ${entry_header_byproduct}
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 ${entry_source_args} ${entry_target_policy_args} --single-entry "${entry}" --slangc "${SLANGC_EXECUTABLE}"
                 --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}" --out-dir "${entry_dir}"
-            DEPENDS ${entry_source_dependency} scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py arp_fragment_atomic_write_verifier
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} ${entry_source_dependency} scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py arp_fragment_atomic_write_verifier
             VERBATIM)
         list(APPEND single_entry_publications "${publication}")
         if(NOT entry_case MATCHES "^scalar")
@@ -823,6 +827,7 @@ target_include_directories(arp_animation PUBLIC src)
 target_link_libraries(arp_animation PUBLIC arp_core)
 
 add_library(arp_assets
+    src/assets/animated_mesh_source_import.cpp
     src/assets/animated_mesh_coordinate_conversion.cpp
     src/assets/assimp_model_importer.cpp
     src/assets/avatar_retargeter.cpp
@@ -1005,6 +1010,7 @@ add_library(arp_resource
     src/resource/audio_package.cpp
     src/resource/audio_playback_registry.cpp
     src/resource/environment_asset_resources.cpp
+    src/resource/environment_lod_sources.cpp
     src/resource/internal_asset_package.cpp
     src/resource/internal_asset_package_loader.cpp
     src/resource/shader_artifact_resource.cpp
@@ -1610,6 +1616,17 @@ if(NOT ARP_SCRIPT_AOT_ONLY_RELEASE
         tests/unit/asset_importer_script_module_tests.cpp
         tools/asset_importer/script_runner.cpp
     )
+    add_executable(arp_script_source_dependency_tests
+        tests/unit/script_source_dependency_tests.cpp
+        tools/asset_importer/script_runner.cpp)
+    target_include_directories(arp_script_source_dependency_tests PRIVATE . src 3rd/fkYAML/include)
+    target_link_libraries(arp_script_source_dependency_tests PRIVATE arp_scriptvm_runtime)
+    target_compile_definitions(arp_script_source_dependency_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    if(MINGW)
+        target_link_options(arp_script_source_dependency_tests PRIVATE -static-libstdc++ -static-libgcc)
+    endif()
+    add_test(NAME arp_script_source_dependency_tests COMMAND arp_script_source_dependency_tests)
+    set_tests_properties(arp_script_source_dependency_tests PROPERTIES TIMEOUT 30 LABELS "scriptvm;source-modules")
     target_include_directories(arp_asset_importer_script_unit_tests PRIVATE
         . src 3rd/fkYAML/include)
     target_link_libraries(arp_asset_importer_script_unit_tests PRIVATE arp_engine)
@@ -1666,6 +1683,10 @@ add_executable(arp_vegetation_catalog_serialization_tests
     tests/contract/vegetation_catalog_serialization_tests.cpp)
 target_include_directories(arp_vegetation_catalog_serialization_tests PRIVATE . src)
 target_link_libraries(arp_vegetation_catalog_serialization_tests PRIVATE arp_resource)
+if(EMSCRIPTEN OR APPLE)
+    target_link_libraries(arp_vegetation_catalog_serialization_tests PRIVATE
+        arp_scriptvm_host_plugin_runtime arp_3d)
+endif()
 if(MSVC)
     target_compile_options(arp_vegetation_catalog_serialization_tests PRIVATE /UNDEBUG)
 else()
@@ -1682,8 +1703,13 @@ else()
     target_compile_options(arp_static_glb_geometry_contract_tests PRIVATE -UNDEBUG)
 endif()
 add_test(NAME arp_static_glb_geometry_contract_tests COMMAND arp_static_glb_geometry_contract_tests)
+if(EMSCRIPTEN)
+    set(arp_static_glb_smoke_path "/tmp/strict-geometry-smoke.glb")
+else()
+    set(arp_static_glb_smoke_path "${CMAKE_CURRENT_BINARY_DIR}/strict-geometry-smoke.glb")
+endif()
 add_test(NAME arp_static_glb_geometry_smoke COMMAND arp_static_glb_geometry_contract_tests
-    "${CMAKE_CURRENT_BINARY_DIR}/strict-geometry-smoke.glb")
+    "${arp_static_glb_smoke_path}")
 
 add_executable(arp_vegetation_catalog_cooked_tests tests/contract/vegetation_catalog_cooked_tests.cpp)
 target_include_directories(arp_vegetation_catalog_cooked_tests PRIVATE . src)
@@ -1697,7 +1723,12 @@ if(MSVC)
 else()
     target_compile_options(arp_vegetation_catalog_cooked_tests PRIVATE -UNDEBUG)
 endif()
-add_test(NAME arp_vegetation_catalog_cooked_tests COMMAND arp_vegetation_catalog_cooked_tests)
+if(EMSCRIPTEN)
+    add_test(NAME arp_vegetation_catalog_publication_gate_tests
+        COMMAND arp_vegetation_catalog_cooked_tests --publication-gate)
+else()
+    add_test(NAME arp_vegetation_catalog_cooked_tests COMMAND arp_vegetation_catalog_cooked_tests)
+endif()
 if(NOT EMSCRIPTEN)
     add_test(NAME arp_vegetation_cooked_package_smoke
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/vegetation_cooked_package_smoke.py"
@@ -2041,6 +2072,9 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
 endif()
 
 add_executable(arp_rhi_swapchain_contract_tests tests/contract/rhi_swapchain_contract_tests.cpp)
+add_executable(arp_rhi_color_blend_tests tests/contract/rhi_color_blend_tests.cpp)
+target_link_libraries(arp_rhi_color_blend_tests PRIVATE arp_rhi arp_rhi_semantics)
+arp_add_mingw_static_runtime(arp_rhi_color_blend_tests)
 target_include_directories(arp_rhi_swapchain_contract_tests PRIVATE . src)
 target_link_libraries(arp_rhi_swapchain_contract_tests PRIVATE arp_rhi arp_rhi_semantics)
 add_executable(arp_rhi_frame_slot_state_machine_tests
@@ -2106,6 +2140,7 @@ foreach(recorded_staging_test IN ITEMS
 endforeach()
 
 add_executable(arp_core_atomic_file_precondition_tests tests/unit/atomic_file_precondition_tests.cpp)
+target_include_directories(arp_core_atomic_file_precondition_tests PRIVATE .)
 target_link_libraries(arp_core_atomic_file_precondition_tests PRIVATE arp_core arp_fkyaml_headers)
 target_compile_options(arp_core_atomic_file_precondition_tests PRIVATE -UNDEBUG)
 add_test(NAME arp_core_atomic_file_precondition_tests COMMAND arp_core_atomic_file_precondition_tests)
@@ -2233,13 +2268,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" AND Python3_EXECUTABLE AND SLANGC_EXE
     set(root_composed_publication "${ARP_BINDLESS_WEBGPU_RHI_FIXTURE_DIR}/original-root/MetalComputeDomains.emulated.bindless.yaml")
     list(APPEND ARP_BINDLESS_WEBGPU_ROOT_GRAPHICS_PUBLICATIONS "${root_composed_publication}")
     add_custom_command(OUTPUT "${root_composed_publication}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_metal_domains.yaml"
             --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_pipeline_domains.slang"
             --bindless-entry computeMain --bindless-entry faultMain --bindless-mode Emulated
             --out-dir "${ARP_BINDLESS_WEBGPU_RHI_FIXTURE_DIR}/original-root"
-        DEPENDS tests/fixtures/bindless_metal_domains.yaml tests/fixtures/bindless_pipeline_domains.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_metal_domains.yaml tests/fixtures/bindless_pipeline_domains.slang
             scripts/bindless_codegen.py scripts/buffer_vector_record.py scripts/slang_resource_switch.py
             scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
             "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -2247,13 +2282,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" AND Python3_EXECUTABLE AND SLANGC_EXE
     set(root_domains_publication "${ARP_BINDLESS_WEBGPU_RHI_FIXTURE_DIR}/original-root/GraphicsDomains.emulated.bindless.yaml")
     list(APPEND ARP_BINDLESS_WEBGPU_ROOT_GRAPHICS_PUBLICATIONS "${root_domains_publication}")
     add_custom_command(OUTPUT "${root_domains_publication}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_graphics_domains.yaml"
             --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_graphics_domains.slang"
             --bindless-entry vertexMain --bindless-entry cleanFragment --bindless-entry faultFragment --bindless-mode Emulated
             --out-dir "${ARP_BINDLESS_WEBGPU_RHI_FIXTURE_DIR}/original-root"
-        DEPENDS tests/fixtures/bindless_graphics_domains.yaml tests/fixtures/bindless_graphics_domains.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_graphics_domains.yaml tests/fixtures/bindless_graphics_domains.slang
             scripts/bindless_codegen.py scripts/buffer_vector_record.py scripts/slang_resource_switch.py
             scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
             "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -2267,13 +2302,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" AND Python3_EXECUTABLE AND SLANGC_EXE
         set(root_graphics_publication "${ARP_BINDLESS_WEBGPU_RHI_FIXTURE_DIR}/original-root/${root_graphics_name}.emulated.bindless.yaml")
         list(APPEND ARP_BINDLESS_WEBGPU_ROOT_GRAPHICS_PUBLICATIONS "${root_graphics_publication}")
         add_custom_command(OUTPUT "${root_graphics_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_original_fragment_${root_graphics_fixture}.yaml"
                 --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_original_graphics_${root_graphics_fixture}.slang"
                 --bindless-entry vertexUnindexed --bindless-entry cleanFragment --bindless-entry faultFragment
                 --bindless-mode Emulated --out-dir "${ARP_BINDLESS_WEBGPU_RHI_FIXTURE_DIR}/original-root"
-            DEPENDS "tests/fixtures/bindless_original_fragment_${root_graphics_fixture}.yaml"
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} "tests/fixtures/bindless_original_fragment_${root_graphics_fixture}.yaml"
                 "tests/fixtures/bindless_original_graphics_${root_graphics_fixture}.slang"
                 scripts/bindless_codegen.py scripts/buffer_vector_record.py scripts/slang_resource_switch.py
                 scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
@@ -2291,12 +2326,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" AND Python3_EXECUTABLE AND SLANGC_EXE
         set(sampled_publication "${ARP_BINDLESS_WEBGPU_RHI_FIXTURE_DIR}/original-root/${sampled_name}.emulated.bindless.yaml")
         list(APPEND ARP_BINDLESS_WEBGPU_ROOT_GRAPHICS_PUBLICATIONS "${sampled_publication}")
         add_custom_command(OUTPUT "${sampled_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_${sampled_fixture}.yaml"
                 --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_${sampled_fixture}.slang"
                 ${sampled_entries} --bindless-mode Emulated --out-dir "${ARP_BINDLESS_WEBGPU_RHI_FIXTURE_DIR}/original-root"
-            DEPENDS "tests/fixtures/bindless_${sampled_fixture}.yaml" "tests/fixtures/bindless_${sampled_fixture}.slang"
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} "tests/fixtures/bindless_${sampled_fixture}.yaml" "tests/fixtures/bindless_${sampled_fixture}.slang"
                 scripts/bindless_codegen.py scripts/buffer_vector_record.py scripts/slang_resource_switch.py
                 scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
                 "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -2318,13 +2353,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" AND Python3_EXECUTABLE AND SLANGC_EXE
             VERBATIM)
     endforeach()
     add_custom_command(OUTPUT "${ARP_BINDLESS_WEBGPU_ROOT_PREPARATION_PUBLICATION}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_metal_compute.yaml"
             --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_metal_compute.slang"
             --bindless-entry cleanMain --bindless-entry faultMain --bindless-mode Emulated
             --out-dir "${ARP_BINDLESS_WEBGPU_RHI_FIXTURE_DIR}/original-root"
-        DEPENDS tests/fixtures/bindless_metal_compute.yaml tests/fixtures/bindless_metal_compute.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_metal_compute.yaml tests/fixtures/bindless_metal_compute.slang
             scripts/bindless_codegen.py scripts/buffer_vector_record.py scripts/slang_resource_switch.py
             scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
             "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -2383,10 +2418,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" AND Python3_EXECUTABLE AND SLANGC_EXE
                 "${ARP_ORDINARY_WEBGPU_PIPELINE_FIXTURE_DIR}/${fixture}/Fragment/${fixture}.fragmentMain.entry.yaml")
         endif()
         add_custom_command(OUTPUT ${fixture_outputs}
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --fixture "${fixture}" ${fixture_entry_args}
                 --out-dir "${ARP_ORDINARY_WEBGPU_PIPELINE_FIXTURE_DIR}/${fixture}"
-            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/${fixture}.slang"
             VERBATIM)
         list(APPEND ARP_ORDINARY_WEBGPU_PIPELINE_OUTPUTS ${fixture_outputs})
@@ -2440,11 +2475,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" AND Python3_EXECUTABLE AND SLANGC_EXE
         set(implicit_publication "${implicit_directory}/${implicit_fixture}.graphics.module.yaml")
         list(APPEND ARP_IMPLICIT_REFERENCE_PUBLICATIONS "${implicit_publication}")
         add_custom_command(OUTPUT "${implicit_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --fixture "${implicit_fixture}" --graphics-module --preserve-implicit-sampling
                 --out-dir "${implicit_directory}"
-            DEPENDS "tests/fixtures/${implicit_fixture}.slang" scripts/compile_shaders.py
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} "tests/fixtures/${implicit_fixture}.slang" scripts/compile_shaders.py
                 scripts/shader_bindings_codegen.py scripts/spirv_layout.py
                 "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
             VERBATIM)
@@ -2510,10 +2545,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" AND Python3_EXECUTABLE AND SLANGC_EXE
     set(ARP_WEBGPU_SHARED_GRAPHICS_DIR "${CMAKE_CURRENT_BINARY_DIR}/shared-conformance-graphics")
     set(ARP_WEBGPU_SHARED_GRAPHICS_MODULE "${ARP_WEBGPU_SHARED_GRAPHICS_DIR}/webgl1_graphics.graphics.module.yaml")
     add_custom_command(OUTPUT "${ARP_WEBGPU_SHARED_GRAPHICS_MODULE}"
-        COMMAND ${Python3_EXECUTABLE} -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND ${Python3_EXECUTABLE} -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --fixture webgl1_graphics --graphics-module
             --out-dir "${ARP_WEBGPU_SHARED_GRAPHICS_DIR}"
-        DEPENDS tests/fixtures/webgl1_graphics.slang scripts/compile_shaders.py
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/webgl1_graphics.slang scripts/compile_shaders.py
         VERBATIM)
     add_custom_target(arp_webgpu_shared_graphics_fixture DEPENDS "${ARP_WEBGPU_SHARED_GRAPHICS_MODULE}")
     add_dependencies(arp_rhi_webgpu_shared_conformance_browser_smoke arp_webgpu_shared_graphics_fixture)
@@ -2521,13 +2556,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" AND Python3_EXECUTABLE AND SLANGC_EXE
     set(ARP_WEBGPU_SHARED_STORAGE_MODULE "${ARP_WEBGPU_SHARED_STORAGE_DIR}/conformance_storage_mrt.graphics.module.yaml")
     set(ARP_WEBGPU_SHARED_STORAGE_COMPUTE "${ARP_WEBGPU_SHARED_STORAGE_DIR}/Compute/conformance_storage_fill.computeMain.entry.yaml")
     add_custom_command(OUTPUT "${ARP_WEBGPU_SHARED_STORAGE_MODULE}" "${ARP_WEBGPU_SHARED_STORAGE_COMPUTE}"
-        COMMAND ${Python3_EXECUTABLE} -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND ${Python3_EXECUTABLE} -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --fixture conformance_storage_mrt --graphics-module
             --out-dir "${ARP_WEBGPU_SHARED_STORAGE_DIR}"
-        COMMAND ${Python3_EXECUTABLE} -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND ${Python3_EXECUTABLE} -X utf8 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --fixture conformance_storage_fill --single-entry computeMain
             --out-dir "${ARP_WEBGPU_SHARED_STORAGE_DIR}/Compute"
-        DEPENDS scripts/compile_shaders.py tests/fixtures/conformance_storage_mrt.slang tests/fixtures/conformance_storage_fill.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} scripts/compile_shaders.py tests/fixtures/conformance_storage_mrt.slang tests/fixtures/conformance_storage_fill.slang
         VERBATIM)
     add_custom_target(arp_webgpu_shared_storage_fixture
         DEPENDS "${ARP_WEBGPU_SHARED_STORAGE_MODULE}" "${ARP_WEBGPU_SHARED_STORAGE_COMPUTE}")
@@ -3442,13 +3477,13 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(depth_publication "${ARP_SAMPLED_DEPTH_FIXTURE_DIR}/SampledDepth.${depth_mode_name}.bindless.yaml")
         list(APPEND ARP_SAMPLED_DEPTH_PUBLICATIONS "${depth_publication}")
         add_custom_command(OUTPUT "${depth_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_sampled_depth.yaml"
                 --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_sampled_depth.slang"
                 --bindless-entry cleanMain --bindless-entry faultMain --bindless-entry publicCleanMain --bindless-entry nativeSingleCellMain --bindless-mode "${depth_mode}"
                 --out-dir "${ARP_SAMPLED_DEPTH_FIXTURE_DIR}"
-            DEPENDS tests/fixtures/bindless_sampled_depth.yaml tests/fixtures/bindless_sampled_depth.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_sampled_depth.yaml tests/fixtures/bindless_sampled_depth.slang
                 scripts/bindless_codegen.py scripts/compile_shaders.py scripts/slang_resource_switch.py
                 scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
                 "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -3487,13 +3522,13 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(images_publication "${ARP_METAL_IMAGES_FIXTURE_DIR}/MetalComputeImages.${images_mode_name}.bindless.yaml")
         list(APPEND ARP_METAL_IMAGES_PUBLICATIONS "${images_publication}")
         add_custom_command(OUTPUT "${images_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_metal_images.yaml"
                 --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_metal_images.slang"
                 --bindless-entry cleanMain --bindless-entry faultMain --bindless-mode "${images_mode}"
                 --out-dir "${ARP_METAL_IMAGES_FIXTURE_DIR}"
-            DEPENDS tests/fixtures/bindless_metal_images.yaml tests/fixtures/bindless_metal_images.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_metal_images.yaml tests/fixtures/bindless_metal_images.slang
                 scripts/bindless_codegen.py scripts/buffer_vector_record.py scripts/slang_resource_switch.py scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
                 "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
             VERBATIM)
@@ -3517,13 +3552,13 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(color_publication "${ARP_COMPLETED_COLOR_FIXTURE_DIR}/${color_name}.native.bindless.yaml")
         list(APPEND ARP_COMPLETED_COLOR_PUBLICATIONS "${color_publication}")
         add_custom_command(OUTPUT "${color_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_completed_${color_shape}_root.yaml"
                 --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_completed_${color_shape}_root.slang"
                 --bindless-entry cleanMain --bindless-entry faultMain --bindless-mode Native
                 --out-dir "${ARP_COMPLETED_COLOR_FIXTURE_DIR}"
-            DEPENDS "tests/fixtures/bindless_completed_${color_shape}_root.yaml"
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} "tests/fixtures/bindless_completed_${color_shape}_root.yaml"
                 "tests/fixtures/bindless_completed_${color_shape}_root.slang"
                 scripts/bindless_codegen.py scripts/buffer_vector_record.py scripts/slang_resource_switch.py
                 scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
@@ -3559,13 +3594,13 @@ if(APPLE AND Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTAB
     set(ARP_METAL_BINDLESS_PUBLICATION
         "${ARP_METAL_BINDLESS_FIXTURE_DIR}/MetalComputeBuffers.native.bindless.yaml")
     add_custom_command(OUTPUT "${ARP_METAL_BINDLESS_PUBLICATION}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_metal_compute.yaml"
             --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_metal_compute.slang"
             --bindless-entry cleanMain --bindless-entry faultMain --bindless-mode Native
             --out-dir "${ARP_METAL_BINDLESS_FIXTURE_DIR}"
-        DEPENDS tests/fixtures/bindless_metal_compute.yaml tests/fixtures/bindless_metal_compute.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_metal_compute.yaml tests/fixtures/bindless_metal_compute.slang
             scripts/bindless_codegen.py scripts/buffer_vector_record.py scripts/slang_resource_switch.py scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
             "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
         VERBATIM)
@@ -3588,13 +3623,13 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(domains_publication "${ARP_PIPELINE_DOMAINS_FIXTURE_DIR}/PipelineDomains.${domains_mode_name}.bindless.yaml")
         list(APPEND ARP_PIPELINE_DOMAINS_PUBLICATIONS "${domains_publication}")
         add_custom_command(OUTPUT "${domains_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_pipeline_domains.yaml"
                 --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_pipeline_domains.slang"
                 --bindless-entry computeMain --bindless-entry fragmentMain --bindless-mode "${domains_mode}"
                 --out-dir "${ARP_PIPELINE_DOMAINS_FIXTURE_DIR}"
-            DEPENDS tests/fixtures/bindless_pipeline_domains.yaml tests/fixtures/bindless_pipeline_domains.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_pipeline_domains.yaml tests/fixtures/bindless_pipeline_domains.slang
                 scripts/bindless_codegen.py scripts/buffer_vector_record.py scripts/slang_resource_switch.py
                 scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
                 "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -3603,13 +3638,13 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
     add_custom_target(arp_bindless_pipeline_domains_fixture DEPENDS ${ARP_PIPELINE_DOMAINS_PUBLICATIONS})
     set(ARP_METAL_DOMAINS_PUBLICATION "${ARP_PIPELINE_DOMAINS_FIXTURE_DIR}/MetalComputeDomains.native.bindless.yaml")
     add_custom_command(OUTPUT "${ARP_METAL_DOMAINS_PUBLICATION}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_metal_domains.yaml"
             --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_pipeline_domains.slang"
             --bindless-entry computeMain --bindless-mode Native
             --out-dir "${ARP_PIPELINE_DOMAINS_FIXTURE_DIR}"
-        DEPENDS tests/fixtures/bindless_metal_domains.yaml tests/fixtures/bindless_pipeline_domains.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_metal_domains.yaml tests/fixtures/bindless_pipeline_domains.slang
             scripts/bindless_codegen.py scripts/buffer_vector_record.py scripts/slang_resource_switch.py
             scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
             "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -3634,13 +3669,13 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(domains_publication "${ARP_PIPELINE_DOMAINS_FIXTURE_DIR}/GraphicsDomains.${domains_mode_name}.bindless.yaml")
         list(APPEND ARP_GRAPHICS_DOMAINS_PUBLICATIONS "${domains_publication}")
         add_custom_command(OUTPUT "${domains_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_graphics_domains.yaml"
                 --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_graphics_domains.slang"
                 --bindless-entry vertexMain --bindless-entry cleanFragment --bindless-entry faultFragment
                 --bindless-mode "${domains_mode}" --out-dir "${ARP_PIPELINE_DOMAINS_FIXTURE_DIR}"
-            DEPENDS tests/fixtures/bindless_graphics_domains.yaml tests/fixtures/bindless_graphics_domains.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_graphics_domains.yaml tests/fixtures/bindless_graphics_domains.slang
                 scripts/bindless_codegen.py scripts/buffer_vector_record.py scripts/slang_resource_switch.py
                 scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
                 "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -3672,13 +3707,13 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(domains_publication "${ARP_PIPELINE_DOMAINS_FIXTURE_DIR}/ColorGi.${domains_mode_name}.bindless.yaml")
         list(APPEND ARP_COLOR_GI_PUBLICATIONS "${domains_publication}")
         add_custom_command(OUTPUT "${domains_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_color_gi.yaml"
                 --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_color_gi.slang"
                 --bindless-entry cleanMain --bindless-entry faultMain
                 --bindless-mode "${domains_mode}" --out-dir "${ARP_PIPELINE_DOMAINS_FIXTURE_DIR}"
-            DEPENDS tests/fixtures/bindless_color_gi.yaml tests/fixtures/bindless_color_gi.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_color_gi.yaml tests/fixtures/bindless_color_gi.slang
                 scripts/bindless_codegen.py scripts/buffer_vector_record.py scripts/slang_resource_switch.py
                 scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
                 "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -3697,13 +3732,13 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(graphics_publication "${ARP_METAL_GRAPHICS_FIXTURE_DIR}/MetalGraphicsBuffers.${graphics_mode_name}.bindless.yaml")
         list(APPEND ARP_METAL_GRAPHICS_FIXTURE_PUBLICATIONS "${graphics_publication}")
         add_custom_command(OUTPUT "${graphics_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_metal_graphics.yaml"
                 --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_metal_graphics.slang"
                 --bindless-entry vertexMain --bindless-entry cleanFragment --bindless-entry faultFragment
                 --bindless-mode "${graphics_mode}" --out-dir "${ARP_METAL_GRAPHICS_FIXTURE_DIR}"
-            DEPENDS tests/fixtures/bindless_metal_graphics.yaml tests/fixtures/bindless_metal_graphics.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_metal_graphics.yaml tests/fixtures/bindless_metal_graphics.slang
                 scripts/bindless_codegen.py scripts/buffer_vector_record.py scripts/slang_resource_switch.py scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
                 "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
             VERBATIM)
@@ -4130,10 +4165,10 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
                 "${fixture_dir}/Fragment/${fixture}.fragmentMain.entry.yaml")
         endif()
         add_custom_command(OUTPUT ${fixture_outputs}
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --fixture "${fixture}" ${fixture_entry_args} --out-dir "${fixture_dir}"
-            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/shader_bindings_codegen.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/spirv_layout.py"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/${fixture}.slang"
@@ -4162,10 +4197,10 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         list(APPEND descriptor_state_slots_outputs "${descriptor_state_slots_dir}/descriptor_state_slots.${role}")
     endforeach()
     add_custom_command(OUTPUT ${descriptor_state_slots_outputs}
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --fixture descriptor_state_slots --single-entry computeMain --out-dir "${descriptor_state_slots_dir}"
-        DEPENDS tests/fixtures/descriptor_state_slots.slang scripts/compile_shaders.py
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/descriptor_state_slots.slang scripts/compile_shaders.py
             scripts/shader_bindings_codegen.py scripts/spirv_layout.py "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
         VERBATIM)
     add_custom_target(arp_descriptor_state_slots_fixture DEPENDS ${descriptor_state_slots_outputs})
@@ -4261,10 +4296,10 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         list(APPEND buffer_layout_probe_outputs "${buffer_layout_probe_dir}/buffer_layout_probe.${role}")
     endforeach()
     add_custom_command(OUTPUT ${buffer_layout_probe_outputs}
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --fixture buffer_layout_probe --single-entry computeMain --out-dir "${buffer_layout_probe_dir}"
-        DEPENDS scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
             tests/fixtures/buffer_layout_probe.slang "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
         VERBATIM)
     add_custom_target(arp_buffer_layout_probe_fixture DEPENDS ${buffer_layout_probe_outputs})
@@ -4274,19 +4309,19 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         list(APPEND buffer_matrix_probe_outputs "${buffer_matrix_probe_dir}/buffer_matrix_probe.${role}")
     endforeach()
     add_custom_command(OUTPUT ${buffer_matrix_probe_outputs}
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --fixture buffer_matrix_probe --single-entry computeMain --out-dir "${buffer_matrix_probe_dir}"
-        DEPENDS scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
             tests/fixtures/buffer_matrix_probe.slang "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
         VERBATIM)
     add_custom_target(arp_buffer_matrix_probe_fixture DEPENDS ${buffer_matrix_probe_outputs})
     set(matrix_push_dir "${CMAKE_BINARY_DIR}/matrix-push-graphics")
     add_custom_command(OUTPUT "${matrix_push_dir}/ordinary_graphics_matrix_push.graphics.module.yaml"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --fixture ordinary_graphics_matrix_push --graphics-module --out-dir "${matrix_push_dir}"
-        DEPENDS tests/fixtures/ordinary_graphics_matrix_push.slang scripts/compile_shaders.py
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/ordinary_graphics_matrix_push.slang scripts/compile_shaders.py
             scripts/shader_bindings_codegen.py scripts/spirv_layout.py
             "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
         VERBATIM)
@@ -4300,12 +4335,12 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(matrix_publication "${bindless_matrix_memory_dir}/MatrixOrdinary.${matrix_mode_name}.bindless.yaml")
         list(APPEND bindless_matrix_memory_outputs "${matrix_publication}")
         add_custom_command(OUTPUT "${matrix_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_matrix_ordinary.yaml"
                 --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_matrix_ordinary.slang"
                 --bindless-entry computeMain --bindless-mode "${matrix_mode}" --out-dir "${bindless_matrix_memory_dir}"
-            DEPENDS tests/fixtures/bindless_matrix_ordinary.yaml tests/fixtures/bindless_matrix_ordinary.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_matrix_ordinary.yaml tests/fixtures/bindless_matrix_ordinary.slang
                 scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
                 scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
                 "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -4320,13 +4355,13 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(push_publication "${bindless_push_memory_dir}/GraphicsMatrixPush.${push_mode_name}.bindless.yaml")
         list(APPEND bindless_push_memory_outputs "${push_publication}")
         add_custom_command(OUTPUT "${push_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_graphics_matrix_push.yaml"
                 --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_graphics_matrix_push.slang"
                 --bindless-entry vertexMain --bindless-entry fragmentMain
                 --bindless-mode "${push_mode}" --out-dir "${bindless_push_memory_dir}"
-            DEPENDS tests/fixtures/bindless_graphics_matrix_push.yaml tests/fixtures/bindless_graphics_matrix_push.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_graphics_matrix_push.yaml tests/fixtures/bindless_graphics_matrix_push.slang
                 scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
                 scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
                 "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -4370,13 +4405,13 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(matrix_publication "${bindless_graphics_matrix_dir}/GraphicsMatrixOrdinary.${matrix_mode_name}.bindless.yaml")
         list(APPEND bindless_graphics_matrix_outputs "${matrix_publication}")
         add_custom_command(OUTPUT "${matrix_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_graphics_matrix_ordinary.yaml"
                 --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_graphics_matrix_ordinary.slang"
                 --bindless-entry vertexMain --bindless-entry cleanFragment --bindless-entry faultFragment
                 --bindless-mode "${matrix_mode}" --out-dir "${bindless_graphics_matrix_dir}"
-            DEPENDS tests/fixtures/bindless_graphics_matrix_ordinary.yaml tests/fixtures/bindless_graphics_matrix_ordinary.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_graphics_matrix_ordinary.yaml tests/fixtures/bindless_graphics_matrix_ordinary.slang
                 scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
                 scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
                 "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -4390,14 +4425,14 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
         set(skinning_publication "${bindless_skinning256_dir}/GraphicsSkinning256.${skinning_mode_name}.bindless.yaml")
         list(APPEND bindless_skinning256_outputs "${skinning_publication}")
         add_custom_command(OUTPUT "${skinning_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_graphics_skinning256.yaml"
                 --bindless-source-library "${CMAKE_CURRENT_SOURCE_DIR}/shaders/core/skinning_geometry.slang"
                 --bindless-source "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bindless_graphics_skinning256.slang"
                 --bindless-entry vertexMain --bindless-entry cleanFragment --bindless-entry faultFragment
                 --bindless-mode "${skinning_mode}" --out-dir "${bindless_skinning256_dir}"
-            DEPENDS tests/fixtures/bindless_graphics_skinning256.yaml tests/fixtures/bindless_graphics_skinning256.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_graphics_skinning256.yaml tests/fixtures/bindless_graphics_skinning256.slang
                 shaders/core/skinning_geometry.slang
                 scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
                 scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
@@ -4627,10 +4662,10 @@ if(Python3_EXECUTABLE AND SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
             list(APPEND fixture_outputs "${fixture_dir}/Vertex/${fixture}.vertexMain.entry.yaml"
                 "${fixture_dir}/Fragment/${fixture}.fragmentMain.entry.yaml")
             add_custom_command(OUTPUT ${fixture_outputs}
-                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                     --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                     --fixture "${fixture}" --graphics-module --out-dir "${fixture_dir}"
-                DEPENDS scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
+                DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
                     "tests/fixtures/${fixture}.slang" "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
                 VERBATIM)
             list(APPEND target_memory_graphics_outputs ${fixture_outputs})
@@ -4966,10 +5001,10 @@ if(TARGET arp_rhi_metal)
                         "${descriptor_fixture_dir}/${descriptor_fixture}.spv"
                         "${descriptor_fixture_dir}/${descriptor_fixture}.metal"
                         "${descriptor_fixture_dir}/${descriptor_fixture}.wgsl"
-                    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+                    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                         --fixture ${descriptor_fixture} --slangc "${SLANGC_EXECUTABLE}"
                         --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}" --out-dir "${descriptor_fixture_dir}"
-                    DEPENDS tests/fixtures/${descriptor_fixture}.slang scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
+                    DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/${descriptor_fixture}.slang scripts/compile_shaders.py scripts/shader_bindings_codegen.py scripts/spirv_layout.py
                         shaders/renderer/ddgi_scene_bvh_trace.slang
                         shaders/renderer/ddgi_scene_materials.slang
                         shaders/renderer/ddgi_depth_cache.slang
@@ -5560,13 +5595,13 @@ if(TARGET arp_bindless_color_gi_fixture)
         set(gi_publication "${graphics_color_gi_dir}/GraphicsColorGi.${gi_mode_name}.bindless.yaml")
         list(APPEND graphics_color_gi_outputs "${gi_publication}")
         add_custom_command(OUTPUT "${gi_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_graphics_color_gi.yaml"
                 --bindless-source "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_color_gi.slang"
                 --bindless-entry vertexMain --bindless-entry cleanFragment --bindless-entry faultFragment
                 --bindless-mode "${gi_mode}" --out-dir "${graphics_color_gi_dir}"
-            DEPENDS tests/fixtures/bindless_graphics_color_gi.yaml tests/fixtures/bindless_color_gi.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_graphics_color_gi.yaml tests/fixtures/bindless_color_gi.slang
                 scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
                 scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
                 "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -5602,13 +5637,13 @@ if(TARGET arp_bindless_graphics_color_gi_fixture)
         set(gi_publication "${graphics_hdr_gi_dir}/GraphicsHdrGi.${gi_mode_name}.bindless.yaml")
         list(APPEND graphics_hdr_gi_outputs "${gi_publication}")
         add_custom_command(OUTPUT "${gi_publication}"
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
                 --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
                 --bindless-variant "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_graphics_hdr_gi.yaml"
                 --bindless-source "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_hdr_gi.slang"
                 --bindless-entry vertexMain --bindless-entry cleanFragment --bindless-entry faultFragment
                 --bindless-mode "${gi_mode}" --out-dir "${graphics_hdr_gi_dir}"
-            DEPENDS tests/fixtures/bindless_graphics_hdr_gi.yaml tests/fixtures/bindless_hdr_gi.slang
+            DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_graphics_hdr_gi.yaml tests/fixtures/bindless_hdr_gi.slang
                 scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
                 scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
                 "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -6143,12 +6178,17 @@ target_link_libraries(arp_rhi_null_hidden_frame_smoke_tests PRIVATE
 arp_add_mingw_static_runtime(arp_rhi_null_hidden_frame_smoke_tests)
 if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     # Null validates the same authored package through the Wasm filesystem.
-    foreach(null_smoke_artifact IN ITEMS slang spv metal reflection.yaml)
-        target_link_options(arp_rhi_null_hidden_frame_smoke_tests PRIVATE
-            "--preload-file=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/null_hidden_frame_smoke.${null_smoke_artifact}@/null_hidden_frame_smoke.${null_smoke_artifact}")
-        set_property(TARGET arp_rhi_null_hidden_frame_smoke_tests APPEND PROPERTY
-            LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/null_hidden_frame_smoke.${null_smoke_artifact}")
-    endforeach()
+    # UnifiedIoValidation adds the complete generated publication when native
+    # compiler tools are configured. Never overlay it with stale checked-in
+    # files at the same virtual paths: that violates its exact-byte hashes.
+    if(NOT (SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE))
+        foreach(null_smoke_artifact IN ITEMS slang spv metal reflection.yaml)
+            target_link_options(arp_rhi_null_hidden_frame_smoke_tests PRIVATE
+                "--preload-file=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/null_hidden_frame_smoke.${null_smoke_artifact}@/null_hidden_frame_smoke.${null_smoke_artifact}")
+            set_property(TARGET arp_rhi_null_hidden_frame_smoke_tests APPEND PROPERTY
+                LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/null_hidden_frame_smoke.${null_smoke_artifact}")
+        endforeach()
+    endif()
     add_test(NAME arp_rhi_null_hidden_frame_smoke_tests
         COMMAND arp_rhi_null_hidden_frame_smoke_tests)
 endif()
@@ -6243,10 +6283,10 @@ if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
         "${ARP_CONFORMANCE_STORAGE_MODULE_DIR}/Fragment/conformance_storage_mrt.fragmentMain.entry.yaml")
     add_custom_command(OUTPUT "${ARP_CONFORMANCE_STORAGE_MODULE}"
         BYPRODUCTS ${ARP_CONFORMANCE_STORAGE_SHADER_BYPRODUCTS}
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --fixture conformance_storage_mrt --graphics-module
             --out-dir "${ARP_CONFORMANCE_STORAGE_MODULE_DIR}"
-        DEPENDS scripts/compile_shaders.py tests/fixtures/conformance_storage_mrt.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} scripts/compile_shaders.py tests/fixtures/conformance_storage_mrt.slang
         VERBATIM)
     set(ARP_CONFORMANCE_STORAGE_COMPUTE "${ARP_CONFORMANCE_STORAGE_MODULE_DIR}/Compute/conformance_storage_fill.computeMain.entry.yaml")
     set(ARP_CONFORMANCE_STORAGE_COMPUTE_BYPRODUCTS)
@@ -6255,10 +6295,10 @@ if(NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     endforeach()
     add_custom_command(OUTPUT "${ARP_CONFORMANCE_STORAGE_COMPUTE}"
         BYPRODUCTS ${ARP_CONFORMANCE_STORAGE_COMPUTE_BYPRODUCTS}
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --fixture conformance_storage_fill --single-entry computeMain
             --out-dir "${ARP_CONFORMANCE_STORAGE_MODULE_DIR}/Compute"
-        DEPENDS scripts/compile_shaders.py tests/fixtures/conformance_storage_fill.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} scripts/compile_shaders.py tests/fixtures/conformance_storage_fill.slang
         VERBATIM)
     add_custom_target(arp_conformance_storage_shader DEPENDS "${ARP_CONFORMANCE_STORAGE_MODULE}" "${ARP_CONFORMANCE_STORAGE_COMPUTE}")
     add_test(NAME arp_conformance_storage_mrt_shader_artifact_tests
@@ -6490,6 +6530,7 @@ add_executable(arp_audio_importer_tests
 )
 target_include_directories(arp_audio_importer_tests PRIVATE . src)
 target_link_libraries(arp_audio_importer_tests PRIVATE arp_audio)
+include(cmake/ArpAudioMemoryImportValidation.cmake)
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     target_compile_definitions(arp_audio_importer_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
@@ -7742,12 +7783,12 @@ if(SLANGC_EXECUTABLE)
             "${CMAKE_BINARY_DIR}/shaders/webgpu_compute_smoke.metal"
             "${CMAKE_BINARY_DIR}/shaders/webgpu_compute_smoke.wgsl"
             "${CMAKE_BINARY_DIR}/shaders/webgpu_compute_smoke.reflection.yaml"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}"
             --vulkan-sdk "${ARP_VULKAN_SDK}"
             --out-dir "${CMAKE_BINARY_DIR}/shaders"
             ${ARP_SHADER_COMPILER_PLATFORM_ARGS}
-        DEPENDS
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES}
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/compile_shaders.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/shader_bindings_codegen.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/spirv_layout.py"
@@ -7768,6 +7809,9 @@ if(SLANGC_EXECUTABLE)
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/common/volumetric_fog.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/core/noise3.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/core/box_geometry.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/core/skinning_geometry.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/skinned_layer_surface.slang"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/display_transfer.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/fog_inject.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/fog_scatter.slang"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/renderer/fog_scatter_spatial.slang"
@@ -8009,6 +8053,16 @@ endif()
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     enable_testing()
+    if(TARGET arp_compile_shaders)
+        add_test(NAME arp_display_transfer_shader_tests
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/contract/display_transfer_shader_tests.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/shaders")
+        add_test(NAME arp_skinned_layer_surface_shader_tests
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/contract/skinned_layer_surface_shader_tests.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/shaders")
+    endif()
     add_test(NAME arp_cpu_allocator_lifetime_tests
         COMMAND arp_cpu_allocator_lifetime_tests)
     add_test(NAME arp_core_process_runner_tests
@@ -8076,6 +8130,8 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     endif()
     add_test(NAME arp_render_thread_contract_tests COMMAND arp_render_thread_contract_tests)
     add_test(NAME arp_rhi_swapchain_contract_tests COMMAND arp_rhi_swapchain_contract_tests)
+    add_test(NAME arp_rhi_color_blend_tests COMMAND arp_rhi_color_blend_tests)
+    set_tests_properties(arp_rhi_color_blend_tests PROPERTIES TIMEOUT 60 LABELS "rhi;color-blend;contract")
     add_test(NAME arp_rhi_frame_slot_state_machine_tests COMMAND arp_rhi_frame_slot_state_machine_tests)
     add_test(NAME arp_rhi_command_contract_tests COMMAND arp_rhi_command_contract_tests)
     add_test(NAME arp_rhi_upload_staging_budget_tests COMMAND arp_rhi_upload_staging_budget_tests)
@@ -8187,7 +8243,7 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
             "$<TARGET_FILE:arp_reflect_codegen>"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/reflection_codegen_constructor_fixture.h"
             "${CMAKE_CURRENT_BINARY_DIR}/generated/reflection/reflection_codegen_constructor_negative"
-            "multiple reflected constructors")
+            "multiple reflected constructor paths")
     add_test(NAME arp_direct_object_boundary_contract
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/tooling/direct_object_boundary_contract.py"
@@ -8386,6 +8442,7 @@ include(cmake/ArpEditor.cmake)
 include(cmake/ArpHttpServer.cmake)
 include(cmake/ArpBuildAQueen.cmake)
 include(cmake/ArpSurvivors.cmake)
+include(cmake/ArpPackageOutputValidation.cmake)
 
 add_executable(arp_ui_control_events_example examples/ui/control_events.cpp)
 target_include_directories(arp_ui_control_events_example PRIVATE . src)
@@ -8490,5 +8547,14 @@ add_test(NAME arp_core_package_boundary_tests
 set_tests_properties(arp_core_package_boundary_tests PROPERTIES LABELS "architecture;core")
 
 include(cmake/CorePackageValidation.cmake)
+include(cmake/ToolFileHost.cmake)
+include(cmake/ToolFileInventory.cmake)
+include(cmake/SurvivorsPackageInventory.cmake)
+include(cmake/ReflectionToolIo.cmake)
+include(cmake/AotCliSources.cmake)
+include(cmake/PromptManifestTool.cmake)
+include(cmake/ShaderVerifierSources.cmake)
+include(cmake/ToolDocumentImport.cmake)
+include(cmake/ToolScriptSourceValidation.cmake)
 include(cmake/UnifiedIoValidation.cmake)
 include(cmake/ArpMetalDispatchProbe.cmake)

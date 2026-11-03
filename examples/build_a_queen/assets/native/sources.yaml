@@ -1,0 +1,29 @@
+type: arp.asset-provenance
+contractVersion: 1
+font:
+  file: DroidSans.ttf
+  family: Droid Sans
+  style: Regular
+  version: Version 1.00 build 113
+  source: 3rd/box2d-3.1.1/samples/data/droid_sans.ttf
+  sourceProject: https://github.com/erincatto/box2d
+  sourceVersion: 3.1.1
+  sha256: 4e2371bc0e4cf6983342e150412f140da79d674c9be0b56458401f581072ecd3
+  copyright: Digitized data copyright © 2007, Google Corporation.
+  license: Apache-2.0
+  licenseEvidence: TTF name table records 13 and 14
+  licenseUrl: http://www.apache.org/licenses/LICENSE-2.0
+  licenseFile: Apache-2.0.txt
+  noticeFile: NOTICE.txt
+  modified: false
+inspectionTool: fontTools 4.68.0 (tooling only)
+baseAtlas:
+  colorSpace: srgb
+  file: white.png
+  rgba8:
+  - 255
+  - 255
+  - 255
+  - 255
+  width: 1
+  height: 1

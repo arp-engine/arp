@@ -248,7 +248,7 @@ class RunFlow(ScriptComponent):
             self.rejected += 1
             return
         var obj: GameObject = scene.create_object_ref("experience")
-        pose(obj, x, y, 0.7, 0.7, 0.0)
+        pose(obj, x, y, 1.0, 1.0, 0.0)
         var pickup: ExperiencePickup = obj.add_component("ExperiencePickup")
         pickup.setup(self, x, y)
         self.pickups[obj.object_id() as int] = pickup

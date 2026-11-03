@@ -137,6 +137,48 @@ void contract(Fixture& fixture)
         "PASS exact disk conflict, same size/mtime, newline/deletion, failed atomic replacement, encoded byte budget and explicit reload");
 }
 
+void byteContract(Fixture& fixture)
+{
+    // Transport preserves bytes; the document owns decoding and normalization.
+    fixture.write("");
+    Session session;
+    fixture.open(session);
+    const auto id = session.activeId();
+    assert(session.active()->text.empty() && session.active()->savedFileBytes.empty());
+    assert(session.saveActiveFile(fixture.root).code == Code::Saved);
+    fixture.write("\xEF\xBB\xBF# source\r\n");
+    assert(session.reloadActiveFile(fixture.root, true).code == Code::Opened);
+    assert(session.activeId() == id && session.active()->text == "# source\n");
+    assert(session.active()->savedFileBytes == "\xEF\xBB\xBF# source\r\n");
+    assert(session.replaceActiveRange(
+               0, session.active()->text.size(), "# local\n", Session::maxScriptBytes)
+        == Session::EditResult::Applied);
+    session.setActiveSelection(4, 2);
+    session.setActiveScrollLine(3);
+    const auto savedBytes = session.active()->savedFileBytes;
+    const auto epoch = session.stateTicket();
+    for (const auto invalid :
+        {std::string_view("# nul\0\n", 7), std::string_view("# \xC0\xAF\n")}) {
+        fixture.write(invalid);
+        assert(session.reloadActiveFile(fixture.root, true).code == Code::ReadFailed);
+        assert(session.saveActiveFile(fixture.root).code == Code::ExternalConflict);
+        assert(epoch.isCurrent() && session.activeId() == id);
+        assert(session.active()->text == "# local\n" && session.active()->dirty());
+        assert(session.active()->savedFileBytes == savedBytes);
+        assert(session.activeCursor() == 4 && session.activeAnchor() == 2
+            && session.activeScrollLine() == 3);
+        assert(session.active()->undo.size() == 1 && session.active()->redo.empty());
+        Session rejected;
+        assert(rejected.openFile(fixture.root, fixture.path).code == Code::ReadFailed);
+        assert(rejected.documents().empty());
+    }
+    fixture.write(savedBytes);
+    assert(session.saveActiveFile(fixture.root).code == Code::Saved);
+    assert(fixture.read() == "\xEF\xBB\xBF# local\r\n" && !session.active()->dirty());
+    std::puts(
+        "PASS empty/BOM/CRLF bytes, invalid UTF-8/NUL rejection, failed reload retains document and retry");
+}
+
 void shellContract(Fixture& fixture)
 {
     fixture.write("# original\n");
@@ -300,6 +342,7 @@ int main(int argc, char** argv)
         lifetime(fixture);
     else {
         contract(fixture);
+        byteContract(fixture);
         documentIsolation(fixture);
         shellContract(fixture);
         remoteContract(fixture);

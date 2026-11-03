@@ -79,6 +79,7 @@ public:
     static void validateRemoval(const EditorSceneDocument&, const scene::Component&);
     static void validateRestoration(EditorSceneDocument&, scene::GameObjectId, const Component&);
     enum class ScriptPolicy { Reject, Archive };
+    static bool containsScripts(const Subtree&) noexcept;
     static Subtree captureSubtree(
         const EditorSceneDocument&, scene::GameObjectId, ScriptPolicy = ScriptPolicy::Reject);
     static bool matchesSubtree(const EditorSceneDocument&, const Subtree&);

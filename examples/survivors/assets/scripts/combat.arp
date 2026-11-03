@@ -260,7 +260,11 @@ class ExperiencePickup(ScriptComponent):
         self.flow = flow
         self.x = x
         self.y = y
-        add_sprite(self.game_object, "tile_0116", 1, false)
+        # Collision dimensions are world units; keep the body at unit scale.
+        var visual: GameObject = scene.create_object_ref("experience-visual")
+        require(visual.set_parent_object(self.game_object))
+        pose(visual, 0.0, 0.0, 0.7, 0.7, 0.0)
+        add_sprite(visual, "tile_0116", 1, false)
         add_body(self.game_object, 0, 0.2, 8, 1, true)
 
     def on_fixed_update(self, dt: float):

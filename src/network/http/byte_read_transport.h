@@ -19,6 +19,7 @@ enum class ByteReadStatus {
     BudgetExceeded,
     InvalidRequest,
     ProtocolError,
+    QueueFull,
 };
 
 struct ByteReadDesc {
@@ -35,6 +36,19 @@ struct ByteReadRequest {
     core::pmr::String range{&core::defaultCpuMemoryResource()};
     core::runtime::CancellationToken cancellation;
     std::uint64_t maxBodyBytes = 0;
+
+    // V1 remains an anonymous GET. V2 is an explicit, origin-bound JSON POST;
+    // reading response bytes does not imply that the request is side-effect free.
+    enum class Operation { AnonymousGet, BearerJsonPost };
+    std::uint32_t contractVersion = 1;
+    Operation operation = Operation::AnonymousGet;
+    core::pmr::String credentialOrigin{&core::defaultCpuMemoryResource()};
+    core::pmr::String bearerToken{&core::defaultCpuMemoryResource()};
+    core::pmr::String requestBody{&core::defaultCpuMemoryResource()};
+    std::uint64_t maxRequestBytes = 0;
+    // Required for v2: the caller's application protocol must tolerate an
+    // identical wire replay. Fetch does not expose control over UA retries.
+    bool replayProtected = false;
 };
 
 // Transport has no file location, mount, version or resource semantics.
@@ -49,9 +63,11 @@ public:
     virtual void onFailure(ByteReadStatus status, const char* diagnostic) noexcept = 0;
 };
 
-// Read-only HTTP/1 transport with explicit no-redirect/no-credentials/identity
-// encoding policy. Native read reuses Client/Session/parser/socket/reactor on
-// an IO worker; Fetch is the browser adapter. No OS HTTP client is substituted.
+// Response-byte HTTP/1 transport. V1 is anonymous GET; V2 explicitly opts into
+// an origin-bound, replay-protected Bearer JSON POST. The engine never retries;
+// a browser network stack can replay the identical request. No redirects.
+// Native IO reuses Client/Session/parser/socket/reactor on a worker; Fetch is
+// the browser adapter. No OS HTTP client is substituted.
 class ARP_API ByteReadTransport final {
 public:
     static bool supported() noexcept;

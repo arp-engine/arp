@@ -1,0 +1,22 @@
+type: arp.editor-ui-sources
+contractVersion: 1
+document: editor.arpui
+atlas: editor_atlas.png
+guiShader: gui_overlay.artifact-set.yaml
+fonts:
+  - token: font.editor
+    family: Segoe UI
+    path: segoeui.ttf
+    maxBytes: 1048576
+  - token: font.editor.semibold
+    family: Segoe UI Semibold
+    path: seguisb.ttf
+    maxBytes: 1048576
+  - token: font.code
+    family: Consolas
+    path: consola.ttf
+    maxBytes: 1048576
+  - token: font.code.cjk
+    family: DengXian
+    path: Deng.ttf
+    maxBytes: 16777216

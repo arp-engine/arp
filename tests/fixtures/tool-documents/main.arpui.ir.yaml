@@ -1,0 +1,63 @@
+type: ArpUiAuthoringIR
+contractVersion: arpui.ir.v1
+canvas:
+  id: "tool-document-画布"
+  width: 720
+  height: 220
+  dpi: 96
+textures:
+  - resourceId: ui/button_atlas
+    layer: layer_button
+    atlas: hud_atlas
+    rect: {x: 8, y: 16, width: 64, height: 24}
+    pivotX: 0.5
+    pivotY: 0.5
+    sliceLeft: 4
+    sliceTop: 4
+    sliceRight: 4
+    sliceBottom: 4
+    alpha: straight
+    srgb: true
+    mips: none
+    compression: ui-lossless
+    sampler: linear-clamp
+nodes:
+  - id: 1
+    parent: 0
+    type: Panel
+    layer: layer_root
+    rect: {x: 0, y: 0, width: 720, height: 220}
+    style: background
+    state: normal
+    event: none
+  - id: 2
+    parent: 1
+    type: Label
+    layer: layer_title
+    rect: {x: 36, y: 28, width: 640, height: 64}
+    style: text
+    state: normal
+    event: none
+    fontToken: font.visual.alpha
+    text: 'Imported YAML: "ARP" & typed metadata'
+  - id: 3
+    parent: 1
+    type: Button
+    layer: layer_button
+    rect: {x: 36, y: 112, width: 180, height: 36}
+    style: control
+    state: normal
+    event: submit
+    fontToken: font.visual.alpha
+    text: Start
+  - id: 4
+    parent: 1
+    type: TextInput
+    layer: layer_input
+    rect: {x: 252, y: 112, width: 360, height: 36}
+    style: control
+    state: normal
+    event: edit
+    fontToken: font.visual.alpha
+    maxTextBytes: 128
+    text: Value from CLI

@@ -7,6 +7,7 @@
 #include "renderer/volumetric_fog/volumetric_fog_feature.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/gpu_extensions.h"
+#include "rhi/semantics/command_lowering.h"
 #include "rhi/semantics/render_target_coordinates.h"
 
 #include <array>

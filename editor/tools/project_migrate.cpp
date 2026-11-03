@@ -1,10 +1,9 @@
 #include "core/encoding/yaml_contract.h"
-#include "core/io/atomic_file_service.h"
-#include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
 #include "core/io/staged_directory.h"
 #include "editor/project/project_manifest.h"
 #include "editor/project/project_metadata.h"
+#include "editor/tools/migration_io.h"
 
 #include <cstdio>
 #include <exception>
@@ -24,13 +23,14 @@ using namespace arp;
 using Yaml = core::YamlContract;
 using Node = Yaml::Node;
 
-bool write(const std::filesystem::path& path, std::string_view text)
+bool write(const std::filesystem::path& directory, core::StringView path, core::StringView text)
 {
-    core::pmr::Vector<std::uint8_t> bytes(text.begin(), text.end());
-    const auto result = core::io::replaceFileAtomically(core::FilePath::utf8(path), bytes);
-    if (!result.success)
-        std::fprintf(stderr, "%s\n", result.diagnostic.c_str());
-    return result.success;
+    const auto result = editor::EditorMigrationIo::writeNewFile(
+        directory, path, text, editor::ProjectManifestBudget{}.maxDocumentBytes);
+    if (result.status != core::io::FileIoStatus::Success)
+        std::fprintf(
+            stderr, "%s\n", result.diagnosticId ? result.diagnosticId : "EDITOR-MIGRATION-SAVE");
+    return result.status == core::io::FileIoStatus::Success;
 }
 
 int migrate(int argc, char** argv)
@@ -42,7 +42,8 @@ int migrate(int argc, char** argv)
             "--entry-scene <uuid|none> [--editor-metadata <relative-yaml>]\n");
         return 2;
     }
-    core::pmr::UnorderedMap<core::pmr::String, core::pmr::String> options;
+    core::pmr::UnorderedMap<core::pmr::String, core::pmr::String> options{
+        &core::defaultCpuMemoryResource()};
     for (int i = 3; i < argc; i += 2) {
         const std::string_view key(argv[i]);
         if ((key != "--project-id" && key != "--name" && key != "--engine-contract"
@@ -53,18 +54,21 @@ int migrate(int argc, char** argv)
         }
     }
     for (const auto* key : {"--project-id", "--name", "--engine-contract", "--entry-scene"})
-        if (options.find(core::pmr::String(key)) == options.end()) {
+        if (options.find(core::pmr::String(key, &core::defaultCpuMemoryResource()))
+            == options.end()) {
             std::fprintf(stderr, "PROJECT-MIGRATION-ARGUMENT-REQUIRED: %s\n", key);
             return 2;
         }
-    const auto source = core::readTextFile(
+    const auto source = editor::EditorMigrationIo::readSource(
         std::filesystem::u8path(argv[1]), editor::ProjectManifestBudget{}.maxDocumentBytes);
-    if (!source.success) {
-        std::fprintf(stderr, "%s\n", source.diagnostics.c_str());
+    if (source.status() != core::io::FileIoStatus::Success) {
+        std::fprintf(stderr,
+            "%s\n",
+            source.diagnosticId() ? source.diagnosticId() : "EDITOR-MIGRATION-SOURCE-READ");
         return 1;
     }
     try {
-        const auto legacy = Yaml::parseSingleDocument(source.text);
+        const auto legacy = Yaml::parseSingleDocument(source.decoded.text);
         Yaml::onlyKeys(
             legacy, {"format", "version", "assetPackages", "physics2d", "terrainPreviews"});
         if (Yaml::text(legacy, "format") != "ArpEditorProject"
@@ -75,19 +79,27 @@ int migrate(int argc, char** argv)
         auto converted = Node::mapping();
         converted["type"] = "arp.project";
         converted["contractVersion"] = editor::ProjectManifestCodec::contractVersion;
-        converted["id"] = options.at(core::pmr::String("--project-id")).c_str();
-        converted["name"] = options.at(core::pmr::String("--name")).c_str();
-        converted["engineContract"] = options.at(core::pmr::String("--engine-contract")).c_str();
-        const auto& scene = options.at(core::pmr::String("--entry-scene"));
+        converted["id"] =
+            options.at(core::pmr::String("--project-id", &core::defaultCpuMemoryResource()))
+                .c_str();
+        converted["name"] =
+            options.at(core::pmr::String("--name", &core::defaultCpuMemoryResource())).c_str();
+        converted["engineContract"] =
+            options.at(core::pmr::String("--engine-contract", &core::defaultCpuMemoryResource()))
+                .c_str();
+        const auto& scene =
+            options.at(core::pmr::String("--entry-scene", &core::defaultCpuMemoryResource()));
         converted["entryScene"] = scene == "none" ? Node() : Node(scene.c_str());
         converted["execution"] = "Interpreter";
         converted["assetPackages"] = Yaml::required(legacy, "assetPackages");
         converted["scriptModules"] = Node::sequence();
         converted["physics2d"] = legacy.contains("physics2d") ? legacy["physics2d"] : Node();
         converted["editorMetadata"] = Node();
-        core::pmr::String metadataPath, metadataText;
+        core::pmr::String metadataPath{&core::defaultCpuMemoryResource()};
+        core::pmr::String metadataText{&core::defaultCpuMemoryResource()};
         if (legacy.contains("terrainPreviews")) {
-            const auto path = options.find(core::pmr::String("--editor-metadata"));
+            const auto path = options.find(
+                core::pmr::String("--editor-metadata", &core::defaultCpuMemoryResource()));
             if (path == options.end()) {
                 std::fprintf(stderr, "PROJECT-MIGRATION-EDITOR-METADATA-REQUIRED\n");
                 return 1;
@@ -115,7 +127,9 @@ int migrate(int argc, char** argv)
                 return 1;
             }
             converted["editorMetadata"] = metadataPath.c_str();
-        } else if (options.find(core::pmr::String("--editor-metadata")) != options.end()) {
+        } else if (options.find(
+                       core::pmr::String("--editor-metadata", &core::defaultCpuMemoryResource()))
+            != options.end()) {
             std::fprintf(stderr, "PROJECT-MIGRATION-EDITOR-METADATA-UNUSED\n");
             return 1;
         }
@@ -126,7 +140,7 @@ int migrate(int argc, char** argv)
             std::fprintf(stderr, "%s: %s\n", diagnostic.code, diagnostic.field.c_str());
             return 1;
         }
-        core::pmr::String output;
+        core::pmr::String output{&core::defaultCpuMemoryResource()};
         if (!editor::ProjectManifestCodec::encode(manifest, output, diagnostic)) {
             std::fprintf(stderr, "%s: %s\n", diagnostic.code, diagnostic.field.c_str());
             return 1;
@@ -152,10 +166,12 @@ int migrate(int argc, char** argv)
                     editor::ProjectPathIntent::NewFile,
                     resolved,
                     diagnostic)
-                || !write(resolved, metadataText))
+                || !write(staging.path(),
+                    core::FilePath::utf8(resolved.lexically_relative(staging.path())),
+                    metadataText))
                 return 1;
         }
-        if (!write(staging.path() / "project.arp.yaml", output) || !staging.publish()) {
+        if (!write(staging.path(), "project.arp.yaml", output) || !staging.publish()) {
             std::fprintf(stderr, "%s\n", staging.diagnostic().c_str());
             return 1;
         }
@@ -177,8 +193,9 @@ int migrate(int argc, char** argv)
 // identities, names and filesystem paths share the engine's UTF-8 contract.
 int wmain(int argc, wchar_t** argv)
 {
-    arp::core::pmr::Vector<arp::core::pmr::String> arguments;
-    arp::core::pmr::Vector<char*> pointers;
+    arp::core::pmr::Vector<arp::core::pmr::String> arguments{
+        &arp::core::defaultCpuMemoryResource()};
+    arp::core::pmr::Vector<char*> pointers{&arp::core::defaultCpuMemoryResource()};
     arguments.reserve(argc);
     pointers.reserve(argc);
     for (int i = 0; i < argc; ++i) {
@@ -188,7 +205,8 @@ int wmain(int argc, wchar_t** argv)
             std::fprintf(stderr, "PROJECT-MIGRATION-ARGUMENT-ENCODING\n");
             return 2;
         }
-        arp::core::pmr::String value(static_cast<std::size_t>(length), '\0');
+        arp::core::pmr::String value(
+            static_cast<std::size_t>(length), '\0', &arp::core::defaultCpuMemoryResource());
         if (WideCharToMultiByte(
                 CP_UTF8, WC_ERR_INVALID_CHARS, argv[i], -1, value.data(), length, nullptr, nullptr)
             != length) {

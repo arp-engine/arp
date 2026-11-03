@@ -1,7 +1,12 @@
+#include "character_source_task.h"
 #include "core/diagnostics/diagnostic_error.h"
+#include "core/io/http_file_backend.h"
+#include "core/io/mounted_file_backend.h"
+#include "core/runtime/async_runtime.h"
 #include "platform/render_system.h"
 #include "platform/render_system_ordered_profile.h"
 #include "portable_renderer.h"
+#include "web_shader_source_task.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -24,15 +29,39 @@ EM_JS(void, publishPlatform, (int backend, int ordered, int lifecycle, int compl
     Module.queenPlatform={engineRenderSystem:true,backend,orderedGraphics:!!ordered,
         surfaceLifecycle:!!lifecycle,gpuCompletionClaimed:!!completion};
 });
+EM_JS(void, publishSources, (int phase, int reads, int retired, const char* manifest, const char* player, const char* rival), {
+    Module.queenSources={phase,reads,retired:!!retired,backend:'Fetch',
+        manifest:manifest?UTF8ToString(manifest):null,
+        player:player?UTF8ToString(player):null,rival:rival?UTF8ToString(rival):null};
+});
+EM_JS(void, publishFonts, (int phase, int reads, int retired), {
+    Module.queenFonts={phase,reads,retired:!!retired,backend:"Fetch"};
+});
+EM_JS(void, publishShaders, (int phase, int reads, int files, int retired), {
+    Module.queenShaders={phase,reads,files,retired:!!retired,backend:'Fetch'};
+});
 // clang-format on
 
 class QueenBrowser final {
 public:
-    void create();
+    void create(std::string_view characterBaseUrl,
+        std::string_view shaderBaseUrl,
+        std::string_view fontBaseUrl);
     void tick();
 
     void action(int command)
     {
+        if (sourceTask_ || shaderTask_ || fontTask_) {
+            if (command == 4) {
+                if (sourceTask_)
+                    sourceTask_->cancel();
+                if (shaderTask_)
+                    shaderTask_->cancel();
+                if (fontTask_)
+                    fontTask_->cancel();
+            }
+            return;
+        }
         if (command == 0)
             input_.start = input_.advance = true;
         if (command == 1)
@@ -52,24 +81,37 @@ public:
     }
 
 private:
-    std::shared_ptr<RenderPipeline> pipeline(const char*, int);
+    void createGraphics(const CharacterSources& sources,
+        const shader::ShaderArtifactSource& shaders,
+        core::SharedPtr<const WebFontResources> fonts);
+    bool prepareSources();
+    void retireSources() noexcept;
+    std::shared_ptr<RenderPipeline> pipeline(const char*, int, const shader::ShaderArtifactSource&);
     platform::RenderSystem system_;
     core::UniquePtr<PortableQueenRenderer> renderer_;
     Game game_;
     Input input_;
+    core::UniquePtr<core::runtime::AsyncRuntime> sourceRuntime_;
+    core::UniquePtr<CharacterSourceTask> sourceTask_;
+    core::UniquePtr<WebShaderSourceTask> shaderTask_;
+    core::UniquePtr<WebFontSourceTask> fontTask_;
+    core::UniquePtr<CharacterSources> characterSources_;
+    core::SharedPtr<core::io::MountedFileBackend> sourceMounts_;
+    core::PoolHandle characterMount_;
+    double sourceDeadline_ = 0;
     double previous_ = 0, seconds_ = 0;
     int frames_ = 0;
 };
 
 core::UniquePtr<QueenBrowser> app;
 
-std::shared_ptr<RenderPipeline> QueenBrowser::pipeline(const char* name, int kind)
+std::shared_ptr<RenderPipeline> QueenBrowser::pipeline(
+    const char* publication, int kind, const shader::ShaderArtifactSource& source)
 {
     platform::OrderedPipelineLoadDesc request;
-    request.artifactPath = "/artifacts/";
-    request.artifactPath += name;
-    request.artifactPath += ".webgl-program.yaml";
+    request.artifactPath = publication;
     request.artifactBudget = {4 * 1024 * 1024, 32 * 1024 * 1024, 32 * 1024 * 1024, 32};
+    request.artifactBudget.source = &source;
     request.maxUniformLeaves = 256;
     request.maxInterfaces = 32;
     request.maxTypeNodes = 1024;
@@ -133,7 +175,169 @@ std::shared_ptr<RenderPipeline> QueenBrowser::pipeline(const char* name, int kin
     return result;
 }
 
-void QueenBrowser::create()
+void QueenBrowser::create(
+    std::string_view characterBaseUrl, std::string_view shaderBaseUrl, std::string_view fontBaseUrl)
+{
+    using namespace core::io;
+    HttpFileBackendDesc desc;
+    desc.baseUrl = characterBaseUrl;
+    desc.maxInFlight = 1;
+    desc.maxBytesInFlight = 2 * CharacterSources::maxCharacterBytes;
+    desc.maxPathBytes = 512;
+    desc.maxHeaderBytes = 8192;
+    desc.ioChunkBytes = 16384;
+    desc.timeoutMs = 5000;
+    desc.cancellationPollMs = 10;
+    auto mounts = core::makeShared<MountedFileBackend>(
+        MountedFileBackendDesc{3, 1, WebShaderSourceTask::maxFileBytes, 32, 512});
+    const auto mount =
+        mounts->mount("queen-inputs", core::makeShared<HttpFileBackend>(std::move(desc)));
+    if (!mount)
+        throw core::DiagnosticError("QUEEN-SOURCE-MOUNT");
+    desc = {};
+    desc.baseUrl = shaderBaseUrl;
+    desc.maxInFlight = 1;
+    desc.maxBytesInFlight = WebShaderSourceTask::maxFileBytes + 2 * 1024 * 1024;
+    desc.maxPathBytes = 512;
+    desc.maxHeaderBytes = 8192;
+    desc.ioChunkBytes = 16384;
+    desc.timeoutMs = 5000;
+    desc.cancellationPollMs = 10;
+    const auto shaderMount =
+        mounts->mount("queen-shaders", core::makeShared<HttpFileBackend>(std::move(desc)));
+    if (!shaderMount)
+        throw core::DiagnosticError("QUEEN-SHADER-MOUNT");
+    desc = {};
+    desc.baseUrl = fontBaseUrl;
+    desc.maxInFlight = 1;
+    desc.maxBytesInFlight = 2 * WebFontResources::maxFileBytes;
+    desc.maxPathBytes = 512;
+    desc.maxHeaderBytes = 8192;
+    desc.ioChunkBytes = 16384;
+    desc.timeoutMs = 5000;
+    desc.cancellationPollMs = 10;
+    const auto fontMount =
+        mounts->mount("queen-fonts", core::makeShared<HttpFileBackend>(std::move(desc)));
+    if (!fontMount)
+        throw core::DiagnosticError("QUEEN-FONT-MOUNT");
+    sourceMounts_ = mounts;
+    characterMount_ = mount;
+    core::runtime::AsyncRuntimeDesc runtime;
+    runtime.completionQueueCapacity = 2;
+    runtime.completionBudget = 2;
+    runtime.enableWork = false;
+    runtime.enableThreadPoolFileBackend = false;
+    runtime.fileBackend = std::move(mounts);
+    sourceRuntime_ = core::makeUnique<core::runtime::AsyncRuntime>(std::move(runtime));
+    if (!sourceRuntime_->valid())
+        throw core::DiagnosticError("QUEEN-SOURCE-RUNTIME");
+    FileReadRequest binding;
+    binding.contractVersion = 1;
+    binding.pathScope = FilePathScope::MountedResource;
+    binding.mount = mount;
+    binding.path = CharacterSources::manifestFile;
+    binding.maxBytes = CharacterSources::maxManifestBytes;
+    sourceTask_ =
+        core::makeUnique<CharacterSourceTask>(sourceRuntime_->fileService(), std::move(binding));
+    shaderTask_ = core::makeUnique<WebShaderSourceTask>(
+        sourceRuntime_->fileService(), sourceRuntime_->completionQueue(), shaderMount);
+    fontTask_ = core::makeUnique<WebFontSourceTask>(
+        sourceRuntime_->fileService(), sourceRuntime_->completionQueue(), fontMount);
+    sourceDeadline_ = emscripten_get_now() + 60000;
+    publishSources(0, 0, 0, nullptr, nullptr, nullptr);
+    publishShaders(0, 0, 0, 0);
+    publishFonts(0, 0, 0);
+}
+
+void QueenBrowser::retireSources() noexcept
+{
+    sourceTask_.reset();
+    shaderTask_.reset();
+    fontTask_.reset();
+    if (sourceRuntime_)
+        sourceRuntime_->shutdown();
+    sourceRuntime_.reset();
+    sourceMounts_.reset();
+    characterSources_.reset();
+}
+
+bool QueenBrowser::prepareSources()
+{
+    if (!sourceTask_ && !shaderTask_ && !fontTask_)
+        return true;
+    if (emscripten_get_now() >= sourceDeadline_)
+        throw core::DiagnosticError("QUEEN-SOURCE-STARTUP-TIMEOUT");
+    if (!sourceRuntime_->dispatch().success())
+        throw core::DiagnosticError("QUEEN-SOURCE-DISPATCH");
+    if (shaderTask_ && characterSources_) {
+        shaderTask_->advance();
+        const auto reads = static_cast<int>(shaderTask_->phase() == WebShaderSourcePhase::Ready
+                ? shaderTask_->readCount()
+                : sourceRuntime_->telemetry().fileService.submitted - 3);
+        if (shaderTask_->phase() == WebShaderSourcePhase::Pending) {
+            publishShaders(0, reads, 0, 0);
+            return false;
+        }
+        if (shaderTask_->phase() != WebShaderSourcePhase::Ready) {
+            const core::DiagnosticError error(shaderTask_->diagnostic());
+            retireSources();
+            publishShaders(2, reads, 0, 1);
+            throw error;
+        }
+        const auto files = static_cast<int>(shaderTask_->fileCount());
+        publishShaders(1, reads, files, 0);
+        fontTask_->advance();
+        const auto fontReads =
+            static_cast<int>(sourceRuntime_->telemetry().fileService.submitted - 3 - reads);
+        if (fontTask_->phase() == WebFontSourcePhase::Pending) {
+            publishFonts(0, fontReads, 0);
+            return false;
+        }
+        if (fontTask_->phase() != WebFontSourcePhase::Ready) {
+            const core::DiagnosticError error(fontTask_->diagnostic());
+            retireSources();
+            publishFonts(2, fontReads, 1);
+            throw error;
+        }
+        auto fonts = fontTask_->resources();
+        auto shaders = std::move(shaderTask_);
+        auto characters = std::move(characterSources_);
+        retireSources();
+        publishShaders(1, reads, files, 1);
+        publishFonts(1, fontReads, 1);
+        createGraphics(*characters, *shaders->source(), std::move(fonts));
+        return true;
+    }
+    sourceTask_->advance();
+    const auto reads = static_cast<int>(sourceRuntime_->telemetry().fileService.submitted);
+    if (sourceTask_->phase() == CharacterSourcePhase::Pending) {
+        publishSources(0, reads, 0, nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (sourceTask_->phase() != CharacterSourcePhase::Ready) {
+        core::pmr::String diagnostic(sourceTask_->diagnostic());
+        retireSources();
+        publishSources(2, reads, 1, nullptr, nullptr, nullptr);
+        throw core::DiagnosticError(diagnostic);
+    }
+    characterSources_ = sourceTask_->takeSources();
+    const auto hash = [](const core::io::FileReadResult& input) {
+        return core::Sha256::hexDigest(
+            {reinterpret_cast<const char*>(input.bytes.data()), input.bytes.size()});
+    };
+    const auto manifest = hash(*characterSources_->manifestSource());
+    const auto player = hash(*characterSources_->characterSource(0));
+    const auto rival = hash(*characterSources_->characterSource(1));
+    sourceTask_.reset();
+    if (!sourceMounts_->unmount(characterMount_))
+        throw core::DiagnosticError("QUEEN-CHARACTER-SOURCE-RETIRE");
+    publishSources(1, reads, 1, manifest.c_str(), player.c_str(), rival.c_str());
+    return false;
+}
+
+void QueenBrowser::createGraphics(const CharacterSources& sources,
+    const shader::ShaderArtifactSource& shaders,
+    core::SharedPtr<const WebFontResources> fonts)
 {
     constexpr std::uint64_t MiB = 1024 * 1024;
     platform::RenderSystemOrderedProfile profile;
@@ -179,19 +383,20 @@ void QueenBrowser::create()
         capabilities.surfaceLifecycle,
         capabilities.gpuCompletion);
     PortableQueenDesc desc;
+    desc.fontResources = std::move(fonts);
     desc.execution = system_.orderedGraphicsExecution();
-    const std::array<const char*, 4> names{
-        "queen_portable_sky", "queen_portable_shadow", "queen_portable", "gui_bitmap"};
     for (int i = 0; i < 4; ++i)
-        desc.pipelines[i] = pipeline(names[i], i);
+        desc.pipelines[i] = pipeline(WebShaderSourceTask::publications[i], i, shaders);
     desc.attachmentSampleFlipY = capabilities.attachmentSampleFlipY;
     renderer_ = core::makeUnique<PortableQueenRenderer>(*system_.gpuDevice(), std::move(desc));
-    core::requireSuccessfulResult(renderer_->create("/assets/characters"), "QUEEN-CONTENT");
+    core::requireSuccessfulResult(renderer_->create(sources), "QUEEN-CONTENT");
     readyPage();
 }
 
 void QueenBrowser::tick()
 try {
+    if (!prepareSources())
+        return;
     core::requireSuccessfulResult(system_.synchronizeSurfaceLifecycle(), "QUEEN-SURFACE");
     const double now = emscripten_get_now();
     if (!system_.capabilities().canRender) {
@@ -229,6 +434,22 @@ try {
         equipped,
         resolved);
 } catch (const std::exception& error) {
+    if (sourceTask_) {
+        const auto reads = static_cast<int>(sourceRuntime_->telemetry().fileService.submitted);
+        retireSources();
+        publishSources(2, reads, 1, nullptr, nullptr, nullptr);
+    } else if (fontTask_ && shaderTask_ && shaderTask_->phase() == WebShaderSourcePhase::Ready) {
+        const auto reads = static_cast<int>(
+            sourceRuntime_->telemetry().fileService.submitted - 3 - shaderTask_->readCount());
+        retireSources();
+        publishFonts(2, reads, 1);
+    } else if (shaderTask_) {
+        const auto reads = static_cast<int>(shaderTask_->phase() == WebShaderSourcePhase::Ready
+                ? shaderTask_->readCount()
+                : sourceRuntime_->telemetry().fileService.submitted - 3);
+        retireSources();
+        publishShaders(2, reads, 0, 1);
+    }
     failPage(error.what());
     emscripten_cancel_main_loop();
 }
@@ -244,6 +465,8 @@ EM_BOOL keyboard(int, const EmscriptenKeyboardEvent* event, void*)
         app->action(2);
     else if (key == "Enter" || key == " ")
         app->action(0);
+    else if (key == "Escape")
+        app->action(4);
     else if (key == "r" || key == "R")
         app->action(3);
     else
@@ -280,10 +503,14 @@ extern "C" EMSCRIPTEN_KEEPALIVE void queen_action(int command)
         app->action(command);
 }
 
-int main()
+int main(int argc, char** argv)
 try {
+    if (argc != 7 || std::string_view(argv[1]) != "--character-base-url"
+        || std::string_view(argv[3]) != "--shader-base-url"
+        || std::string_view(argv[5]) != "--font-base-url")
+        throw core::DiagnosticError("QUEEN-SOURCE-ARGUMENT");
     app = core::makeUnique<QueenBrowser>();
-    app->create();
+    app->create(argv[2], argv[4], argv[6]);
     emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, nullptr, true, keyboard);
     emscripten_set_mousedown_callback("#canvas", nullptr, true, mouse);
     emscripten_set_mousemove_callback("#canvas", nullptr, true, mouse);
@@ -297,6 +524,7 @@ try {
         false);
     return 0;
 } catch (const std::exception& error) {
+    app.reset();
     failPage(error.what());
     return 1;
 }

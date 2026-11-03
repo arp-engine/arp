@@ -28,6 +28,7 @@ struct ExecutionState {
     core::pmr::Vector<ResourceFileReadIntent> intents{&core::defaultCpuMemoryResource()};
     std::size_t intentIndex = 0u;
     ResourceSourceSet sources;
+    std::uint64_t retainedSourceCapacity = 0;
     std::chrono::steady_clock::time_point startedAt = std::chrono::steady_clock::now();
     bool completed = false;
     bool finishing = false;
@@ -130,6 +131,13 @@ bool activeSources(ExecutionState* state) noexcept
     };
     if (state->request.cancellation.cancelled())
         return refuse(core::io::FileIoStatus::Cancelled, "ARP-RESOURCE-GRAPH-CANCELLED");
+    if (state->request.admission == ResourceGraphAdmission::ReloadSingle) {
+        const auto budget = state->manager->telemetry().budget;
+        if (!budget.maxReloadGenerations || budget.maxReloadGenerations == SIZE_MAX
+            || !budget.maxRetainedRecoveryBytes || budget.maxRetainedRecoveryBytes == SIZE_MAX)
+            return refuse(
+                core::io::FileIoStatus::BudgetExceeded, "ARP-RESOURCE-GRAPH-RELOAD-BUDGET");
+    }
     if (state->fileService->closed() || state->completionQueue->closed())
         return refuse(core::io::FileIoStatus::ServiceClosed, "ARP-RESOURCE-GRAPH-CLOSED");
     try {
@@ -192,9 +200,27 @@ void processNode(void* userData) noexcept
         // a successful candidate must not be followed by a fallible copy.
         state->result.resource.resourceId = resource->reference().id;
         state->result.resource.resourceType = resource->reference().type;
-        core::pmr::Vector<core::UniquePtr<ResourceBase>> candidates;
-        candidates.push_back(std::move(node.resource));
-        auto batch = state->manager->loadResourcesAtomically(std::move(candidates), context);
+        ResourceBatchLoadResult batch;
+        if (state->request.admission == ResourceGraphAdmission::ReloadSingle) {
+            if (state->manager->generationOf(resource->reference().id)
+                    != state->request.expectedGeneration
+                || state->manager->stateOf(resource->reference().id) != ResourceState::Ready) {
+                batch.diagnostics = "ARP-RESOURCE-GRAPH-RELOAD-GENERATION";
+            } else {
+                auto reloaded = state->manager->reloadResource(std::move(node.resource), context);
+                batch.success = reloaded.success;
+                batch.rolledBack = reloaded.telemetry.rolledBack;
+                batch.diagnostics = std::move(reloaded.diagnostics);
+                // An unchanged candidate is destroyed by reloadResource.
+                if (batch.success)
+                    resource = state->manager->recordSnapshot(state->request.graph.rootResourceId)
+                                   ->ownedResource.get();
+            }
+        } else {
+            core::pmr::Vector<core::UniquePtr<ResourceBase>> candidates;
+            candidates.push_back(std::move(node.resource));
+            batch = state->manager->loadResourcesAtomically(std::move(candidates), context);
+        }
         state->result.telemetry.stageOrder.push_back(ResourceGraphStage::Admission);
         state->result.resource.success = batch.success;
         state->result.resource.state = batch.success ? ResourceState::Ready : ResourceState::Failed;
@@ -270,7 +296,25 @@ void completeFileReadImpl(void* userData, core::io::FileReadResult read)
     source.pathScope = intent.pathScope;
     source.mount = intent.mount;
     source.version = read.version;
-    source.bytes = std::move(read.bytes);
+    // Backend output can reserve the whole request bound (HTTP does so before
+    // receiving headers). Retain payload-sized storage rather than multiplying
+    // that transient reservation by every dependency in the graph.
+    if (read.bytes.capacity() > read.bytes.size()) {
+        core::ByteBuffer payload(
+            read.bytes.begin(), read.bytes.end(), &core::defaultCpuMemoryResource());
+        source.bytes = std::move(payload);
+    } else {
+        source.bytes = std::move(read.bytes);
+    }
+    const auto capacity = source.bytes.capacity();
+    if (capacity > state->request.budget.maxSourceBytes - state->retainedSourceCapacity) {
+        state->result.fileStatus = core::io::FileIoStatus::BudgetExceeded;
+        state->result.diagnosticId = "ARP-RESOURCE-GRAPH-SOURCE-RESIDENT-BUDGET";
+        state->result.resource = failure(
+            state->request.graph, "resource graph retained source capacity exceeds source budget");
+        finishFromDispatch(state);
+        return;
+    }
     state->result.telemetry.bytesRead += source.bytes.size();
     state->result.telemetry.stageOrder.push_back(ResourceGraphStage::FileRead);
     if (!state->sources.add(std::move(source))) {
@@ -280,6 +324,7 @@ void completeFileReadImpl(void* userData, core::io::FileReadResult read)
         finishFromDispatch(state);
         return;
     }
+    state->retainedSourceCapacity += capacity;
     ++state->intentIndex;
     if (state->intentIndex < state->intents.size()) {
         const auto status = startFileRead(state);
@@ -427,6 +472,7 @@ ResourceGraphSubmitStatus startNode(ExecutionState* state)
         return ResourceGraphSubmitStatus::Accepted;
     }
     state->sources.clear();
+    state->retainedSourceCapacity = 0;
     return planNodeSources(state);
 }
 
@@ -466,6 +512,15 @@ ResourceGraphSubmitStatus ResourceGraphExecutor::submit(
     if (std::this_thread::get_id() != ownerThread_ || !manager_.isOwnerThread()
         || request.graph.context.sources)
         return ResourceGraphSubmitStatus::InvalidRequest;
+    if ((request.admission != ResourceGraphAdmission::InitialLoad
+            && request.admission != ResourceGraphAdmission::ReloadSingle)
+        || (request.admission == ResourceGraphAdmission::InitialLoad && request.expectedGeneration)
+        || (request.admission == ResourceGraphAdmission::ReloadSingle
+            && (request.graph.nodes.size() != 1 || !request.expectedGeneration
+                || !request.graph.nodes[0].resource
+                || request.graph.nodes[0].resource->reference().id
+                    != request.graph.rootResourceId)))
+        return ResourceGraphSubmitStatus::InvalidRequest;
     if (!completion.valid() || request.budget.maxNodes == 0u || request.budget.maxFileReads == 0u
         || request.budget.maxSourceBytes == 0u || request.budget.maxDecodedBytes == 0u
         || request.budget.completionDispatchBudget == 0u) {
@@ -485,6 +540,15 @@ ResourceGraphSubmitStatus ResourceGraphExecutor::submit(
         || request.budget.maxSourceBytes == SIZE_MAX || request.budget.maxDecodedBytes == SIZE_MAX)
         return ResourceGraphSubmitStatus::InvalidRequest;
     try {
+        if (request.admission == ResourceGraphAdmission::ReloadSingle) {
+            const auto* current = manager_.recordSnapshot(request.graph.rootResourceId);
+            const auto budget = manager_.telemetry().budget;
+            if (!current || !current->ownedResource || current->state != ResourceState::Ready
+                || current->generation != request.expectedGeneration || !budget.maxReloadGenerations
+                || budget.maxReloadGenerations == SIZE_MAX || !budget.maxRetainedRecoveryBytes
+                || budget.maxRetainedRecoveryBytes == SIZE_MAX)
+                return ResourceGraphSubmitStatus::InvalidRequest;
+        }
         auto state = core::makeUnique<ExecutionState>();
         state->manager = &manager_;
         state->fileService = &fileService_;

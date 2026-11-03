@@ -6,11 +6,11 @@ set(bindless_terrain27_dir "${CMAKE_BINARY_DIR}/bindless-terrain27")
 set(terrain_reference_dir "${CMAKE_BINARY_DIR}/bindless-implicit-reference/ordinary_terrain27")
 set(terrain_reference_publication "${terrain_reference_dir}/ordinary_terrain27.graphics.module.yaml")
 add_custom_command(OUTPUT "${terrain_reference_publication}"
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
         --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
         --fixture ordinary_terrain27 --graphics-module --preserve-implicit-sampling
         --out-dir "${terrain_reference_dir}"
-    DEPENDS tests/fixtures/ordinary_terrain27.slang scripts/compile_shaders.py
+    DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/ordinary_terrain27.slang scripts/compile_shaders.py
         scripts/shader_bindings_codegen.py scripts/spirv_layout.py
         "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
     VERBATIM)
@@ -34,13 +34,13 @@ foreach(terrain_mode Native Emulated)
     set(terrain_publication "${bindless_terrain27_dir}/GraphicsTerrain27.${terrain_mode_name}.bindless.yaml")
     list(APPEND bindless_terrain27_outputs "${terrain_publication}")
     add_custom_command(OUTPUT "${terrain_publication}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_graphics_terrain27.yaml"
             --bindless-source "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_graphics_terrain27.slang"
             --bindless-entry vertexMain --bindless-entry cleanFragment --bindless-entry faultFragment
             --bindless-mode "${terrain_mode}" --out-dir "${bindless_terrain27_dir}"
-        DEPENDS tests/fixtures/bindless_graphics_terrain27.yaml tests/fixtures/bindless_graphics_terrain27.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_graphics_terrain27.yaml tests/fixtures/bindless_graphics_terrain27.slang
             scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
             scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
             "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"

@@ -41,18 +41,6 @@ constexpr std::uint32_t kResourceVersion = 1;
 constexpr std::uint32_t kFnvOffset = 2166136261u;
 constexpr std::uint32_t kFnvPrime = 16777619u;
 
-struct ResourceRecordReloadSnapshot {
-    core::pmr::String alias{&core::defaultCpuMemoryResource()};
-    core::pmr::String displayName{&core::defaultCpuMemoryResource()};
-    core::pmr::String status{&core::defaultCpuMemoryResource()};
-    core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
-    core::pmr::Vector<ResourceDependency> dependencies{&core::defaultCpuMemoryResource()};
-    ResourceState state = ResourceState::Declared;
-    bool metadataAdmitted = false;
-    ResourceGeneration generation = 0u;
-    std::uint32_t contentHash = 0u;
-};
-
 bool isHex(const char ch)
 {
     return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
@@ -410,21 +398,6 @@ void completeLegacyEnvelopeRead(void* context, core::io::FileReadResult source)
     completeAsyncEnvelopeLoad(context, std::move(result));
 }
 
-ResourceRecordReloadSnapshot captureReloadSnapshot(const ResourceRecord& record)
-{
-    ResourceRecordReloadSnapshot snapshot;
-    snapshot.alias = record.alias;
-    snapshot.displayName = record.displayName;
-    snapshot.status = record.status;
-    snapshot.diagnostics = record.diagnostics;
-    snapshot.dependencies = record.dependencies;
-    snapshot.state = record.state;
-    snapshot.metadataAdmitted = record.metadataAdmitted;
-    snapshot.generation = record.generation;
-    snapshot.contentHash = record.contentHash;
-    return snapshot;
-}
-
 // Both records are registry-owned and use the same core memory resource.
 // Preserve the public record address without allocating during publication.
 void swapRecordContents(ResourceRecord& left, ResourceRecord& right) noexcept
@@ -450,19 +423,6 @@ void swapRecordContents(ResourceRecord& left, ResourceRecord& right) noexcept
     std::swap(left.generation, right.generation);
     std::swap(left.contentHash, right.contentHash);
     std::swap(left.reloadInProgress, right.reloadInProgress);
-}
-
-void restoreReloadSnapshot(ResourceRecord& record, const ResourceRecordReloadSnapshot& snapshot)
-{
-    record.alias = snapshot.alias;
-    record.displayName = snapshot.displayName;
-    record.status = snapshot.status;
-    record.diagnostics = snapshot.diagnostics;
-    record.dependencies = snapshot.dependencies;
-    record.state = snapshot.state;
-    record.metadataAdmitted = snapshot.metadataAdmitted;
-    record.generation = snapshot.generation;
-    record.contentHash = snapshot.contentHash;
 }
 
 } // namespace
@@ -1480,8 +1440,12 @@ ResourceGeneration ResourceManager::generationOf(NameView resourceId) const
 ResourceManager::ResourceReloadResult ResourceManager::reloadResource(
     core::UniquePtr<ResourceBase> resource, ResourceLoadContext context)
 {
-    applyBudgetConfig(context);
     ResourceReloadResult result;
+    if (!isOwnerThread()) {
+        result.diagnostics = "RESOURCE-RELOAD-OWNER-THREAD";
+        return result;
+    }
+    applyBudgetConfig(context);
     if (!resource || !resource->reference().valid()) {
         result.diagnostics = makeDiagnostic("invalid ResourceBase reload request");
         return result;
@@ -1530,129 +1494,136 @@ ResourceManager::ResourceReloadResult ResourceManager::reloadResource(
         }
     }
 
-    record->reloadInProgress = true;
-
-    const std::uint32_t oldContentHash = record->contentHash;
-    const ResourceGeneration oldGeneration = record->generation;
-
-    // Capture old ready state for rollback
-    const auto recordSnapshot = captureReloadSnapshot(*record);
-    core::UniquePtr<ResourceBase> oldOwnedResource = std::move(record->ownedResource);
-
-    // Temporarily reset state so admitResourceMetadata allows the update
-    record->metadataAdmitted = false;
-    record->state = ResourceState::Declared;
-
-    // Mark dependents as stale before attempting reload
-    core::pmr::Vector<core::pmr::String> dependentsToInvalidate{&core::defaultCpuMemoryResource()};
-    core::pmr::Vector<core::pmr::String> visited{&core::defaultCpuMemoryResource()};
-    collectDependentsTopological(resourceId, dependentsToInvalidate, visited);
-
-    // Mark dependents as stale
-    for (const auto& depId : dependentsToInvalidate) {
-        ResourceRecord* depRecord = findRecord(depId);
-        if (depRecord != nullptr && depRecord->state == ResourceState::Ready) {
-            depRecord->state = ResourceState::Stale;
-        }
+    if (record->generation == std::numeric_limits<ResourceGeneration>::max()) {
+        result.diagnostics = "RESOURCE-TRANSACTION-GENERATION-EXHAUSTED";
+        return result;
+    }
+    const auto allowed = [&] {
+        return !context.commitGate.allow || context.commitGate.allow(context.commitGate.userData);
+    };
+    if (!allowed()) {
+        result.diagnostics = "RESOURCE-TRANSACTION-ADMISSION-REJECTED";
+        return result;
     }
 
-    // Attempt to load the new resource
-    ResourceLoadResult loaded = resource->load(*this, context);
-
-    // Re-lookup the record in case admitResourceMetadata replaced it during load
-    record = findRecord(resourceId);
-
-    if (!loaded.success) {
-        // Rollback: restore old state
-        record->ownedResource = std::move(oldOwnedResource);
-        restoreReloadSnapshot(*record, recordSnapshot);
-        record->reloadInProgress = false;
-
-        // Restore dependents to ready
-        for (const auto& depId : dependentsToInvalidate) {
-            ResourceRecord* depRecord = findRecord(depId);
-            if (depRecord != nullptr && depRecord->state == ResourceState::Stale) {
-                depRecord->state = ResourceState::Ready;
-            }
-        }
-
-        result.success = false;
-        result.state = ResourceState::Failed;
-        result.diagnostics = loaded.diagnostics;
+    const auto oldContentHash = record->contentHash;
+    const auto oldGeneration = record->generation;
+    core::pmr::Vector<core::pmr::String> dependents;
+    core::pmr::Vector<core::pmr::String> visited;
+    collectDependentsTopological(resourceId, dependents, visited);
+    // Prepare every allocation needed by rollback/publication before removing
+    // the old node. The old record and its payload remain untouched throughout.
+    records_.reserve(records_.size() + 1);
+    retainedResources_.reserve(retainedResources_.size() + 1);
+    ResourceAliasMap aliasesBefore(aliases_, &core::defaultCpuMemoryResource());
+    ResourceRecordMap candidateNodes{&core::defaultCpuMemoryResource()};
+    auto candidateRecord = core::makeUnique<ResourceRecord>();
+    candidateRecord->id = resourceId;
+    candidateRecord->type = resourceType;
+    candidateRecord->generation = oldGeneration;
+    candidateRecord->reloadInProgress = true;
+    candidateNodes.emplace(resourceId, std::move(candidateRecord));
+    auto candidateNode = candidateNodes.extract(resourceId);
+    auto originalNode = records_.extract(resourceId);
+    records_.insert(std::move(candidateNode));
+    bool published = false;
+    const auto rollback = [&]() noexcept {
+        if (published || originalNode.empty())
+            return;
+        records_.erase(resourceId);
+        records_.insert(std::move(originalNode));
+        aliases_.swap(aliasesBefore);
         result.telemetry.rolledBack = true;
         result.telemetry.oldContentHash = oldContentHash;
-        return result;
-    }
-
-    // Check if content actually changed
-    const std::uint32_t newContentHash = computeContentHash(resource.get());
-    if (newContentHash == oldContentHash && oldGeneration > 0u) {
-        // No-op reload: content unchanged
-        record->ownedResource = std::move(oldOwnedResource);
-        restoreReloadSnapshot(*record, recordSnapshot);
-        record->reloadInProgress = false;
-
-        // Restore dependents to ready
-        for (const auto& depId : dependentsToInvalidate) {
-            ResourceRecord* depRecord = findRecord(depId);
-            if (depRecord != nullptr && depRecord->state == ResourceState::Stale) {
-                depRecord->state = ResourceState::Ready;
-            }
-        }
-
-        result.success = true;
-        result.unchangedContent = true;
-        result.state = ResourceState::Ready;
-        result.telemetry.generation = record->generation;
-        result.telemetry.oldContentHash = oldContentHash;
-        result.telemetry.newContentHash = newContentHash;
-        result.telemetry.committed = false;
-        return result;
-    }
-
-    // Commit: replace with new resource, retire old for in-flight consumers
-    if (oldOwnedResource) {
-        if (!retainedRecoveryBudgetAllows(oldOwnedResource.get())) {
-            restoreReloadSnapshot(*record, recordSnapshot);
-            record->ownedResource = std::move(oldOwnedResource);
-            record->reloadInProgress = false;
-            for (const auto& depId : dependentsToInvalidate) {
-                ResourceRecord* depRecord = findRecord(depId);
-                if (depRecord != nullptr && depRecord->state == ResourceState::Stale) {
-                    depRecord->state = ResourceState::Ready;
-                }
-            }
-            ++budgetExhaustionEvents_;
-            result.success = false;
-            result.state = ResourceState::Failed;
-            result.diagnostics =
-                makeDiagnostic("retained recovery byte budget exhausted: ", resourceId);
-            result.telemetry.rolledBack = true;
-            result.telemetry.oldContentHash = oldContentHash;
-            result.telemetry.newContentHash = newContentHash;
-            result.telemetry.diagnostics = result.diagnostics;
+    };
+    try {
+        auto loaded = resource->load(*this, context);
+        if (!loaded.success) {
+            rollback();
+            result.diagnostics = std::move(loaded.diagnostics);
             return result;
         }
-        retainedResources_.push_back(std::move(oldOwnedResource));
-        result.telemetry.retiredCount = 1u;
+        auto current = records_.find(resourceId);
+        if (current == records_.end() || !current->second->metadataAdmitted
+            || current->second->type != resourceType) {
+            rollback();
+            result.diagnostics = "RESOURCE-RELOAD-METADATA-INVALID";
+            return result;
+        }
+        const auto newContentHash = computeContentHash(resource.get());
+        const bool unchanged = newContentHash == oldContentHash && oldGeneration > 0;
+        if (!unchanged
+            && !retainedRecoveryBudgetAllows(originalNode.mapped()->ownedResource.get())) {
+            rollback();
+            ++budgetExhaustionEvents_;
+            result.diagnostics =
+                makeDiagnostic("retained recovery byte budget exhausted: ", resourceId);
+            result.telemetry.newContentHash = newContentHash;
+            return result;
+        }
+        // Completion payload preparation must not allocate after the final gate.
+        result.telemetry.diagnostics = current->second->diagnostics;
+        if (!allowed()) {
+            rollback();
+            result.diagnostics = "RESOURCE-TRANSACTION-ADMISSION-REJECTED";
+            return result;
+        }
+        if (!unchanged
+            && (!retainedRecoveryBudgetAllows(originalNode.mapped()->ownedResource.get())
+                || (budgetConfig_.maxReloadGenerations
+                    && oldGeneration >= budgetConfig_.maxReloadGenerations))) {
+            rollback();
+            result.diagnostics = "RESOURCE-RELOAD-COMMIT-BUDGET";
+            return result;
+        }
+        if (unchanged) {
+            rollback();
+            result.telemetry.rolledBack = false;
+            result.success = true;
+            result.unchangedContent = true;
+            result.state = ResourceState::Ready;
+            result.telemetry.generation = oldGeneration;
+            result.telemetry.newContentHash = newContentHash;
+            return result;
+        }
+        // No failing operations remain: preserve the public record address,
+        // retire its old typed payload and publish exactly one new generation.
+        auto& candidate = *current->second;
+        auto& original = *originalNode.mapped();
+        candidate.ownedResource = std::move(resource);
+        candidate.generation = oldGeneration + 1;
+        candidate.contentHash = newContentHash;
+        candidate.state = ResourceState::Ready;
+        candidate.reloadInProgress = false;
+        if (original.alias != candidate.alias && !original.alias.empty()) {
+            const auto alias = aliases_.find(original.alias);
+            if (alias != aliases_.end() && alias->second == resourceId)
+                aliases_.erase(alias);
+        }
+        swapRecordContents(original, candidate);
+        current->second.swap(originalNode.mapped());
+        if (originalNode.mapped()->ownedResource) {
+            retainedResources_.push_back(std::move(originalNode.mapped()->ownedResource));
+            result.telemetry.retiredCount = 1;
+        }
+        for (const auto& id : dependents) {
+            const auto found = records_.find(id);
+            if (found != records_.end() && found->second->state == ResourceState::Ready)
+                found->second->state = ResourceState::Stale;
+        }
+        published = true;
+        result.success = true;
+        result.state = ResourceState::Ready;
+        result.telemetry.generation = oldGeneration + 1;
+        result.telemetry.oldContentHash = oldContentHash;
+        result.telemetry.newContentHash = newContentHash;
+        result.telemetry.committed = true;
+        result.telemetry.invalidatedDependents = std::move(dependents);
+        return result;
+    } catch (...) {
+        rollback();
+        throw;
     }
-    record->ownedResource = std::move(resource);
-    record->generation = oldGeneration + 1u;
-    record->contentHash = newContentHash;
-    record->state = ResourceState::Ready;
-    record->reloadInProgress = false;
-
-    result.success = true;
-    result.unchangedContent = false;
-    result.state = ResourceState::Ready;
-    result.telemetry.generation = record->generation;
-    result.telemetry.oldContentHash = oldContentHash;
-    result.telemetry.newContentHash = newContentHash;
-    result.telemetry.committed = true;
-    result.telemetry.diagnostics = record->diagnostics;
-    result.telemetry.invalidatedDependents = std::move(dependentsToInvalidate);
-
-    return result;
 }
 
 void ResourceManager::collectDependentsTopological(NameView resourceId,

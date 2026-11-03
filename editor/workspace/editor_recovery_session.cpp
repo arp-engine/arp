@@ -1,7 +1,7 @@
 #include "editor/workspace/editor_recovery_session.h"
 
-#include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
+#include "editor/io/editor_cold_host_read.h"
 
 #include <algorithm>
 #include <limits>
@@ -100,6 +100,10 @@ EditorRecoverySubmitStatus EditorRecoverySession::submit(
 {
     if (pending())
         return EditorRecoverySubmitStatus::Busy;
+    if (snapshot.source) {
+        fail("EDITOR-RECOVERY-SOURCE-SESSION-REQUIRED");
+        return EditorRecoverySubmitStatus::Rejected;
+    }
     if (discarding_) {
         fail("EDITOR-RECOVERY-DISCARD-IN-PROGRESS");
         return EditorRecoverySubmitStatus::Rejected;
@@ -212,7 +216,8 @@ bool EditorRecoverySession::discardOwned(core::pmr::String& diagnostic)
             if (slotBytes_[i].empty())
                 continue;
             const auto path = owned_.directory / std::filesystem::u8path(region_.slotName(i));
-            const auto current = core::readBinaryFile(path, region_.budget().maxEnvelopeBytes);
+            const auto current =
+                EditorColdHostRead::readBinaryBytes(path, region_.budget().maxEnvelopeBytes);
             if (!current.success || current.bytes != slotBytes_[i]) {
                 diagnostic = "EDITOR-RECOVERY-SLOT-CONTENT-CHANGED";
                 return false;

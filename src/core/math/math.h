@@ -111,6 +111,20 @@ inline Vec3 normalize(Vec3 value)
     return normalizeOr(value, Vec3{0.0f, 0.0f, 1.0f});
 }
 
+// Checked direction normalization: finite nonzero input only, no default axis.
+inline bool tryNormalize(Vec3 value, Vec3& output)
+{
+    if (!std::isfinite(value.x) || !std::isfinite(value.y) || !std::isfinite(value.z))
+        return false;
+    const auto largest = std::max({std::abs(value.x), std::abs(value.y), std::abs(value.z)});
+    if (largest == 0)
+        return false;
+    value = {value.x / largest, value.y / largest, value.z / largest};
+    const auto size = std::sqrt(dot(value, value));
+    output = {value.x / size, value.y / size, value.z / size};
+    return true;
+}
+
 /// Component-wise linear interpolation between two vectors.
 /// t is clamped to [0,1]: t=0 returns a, t=1 returns b.
 inline Vec3 lerp(Vec3 a, Vec3 b, float t)
@@ -246,6 +260,28 @@ inline Quat normalize(Quat value)
     }
     return Quat{
         value.x / valueLength, value.y / valueLength, value.z / valueLength, value.w / valueLength};
+}
+
+// Checked normalization preserves output on invalid input. Scaling first keeps
+// finite subnormal/large components away from squared-length underflow/overflow.
+inline bool tryNormalize(Quat value, Quat& output)
+{
+    if (!std::isfinite(value.x) || !std::isfinite(value.y) || !std::isfinite(value.z)
+        || !std::isfinite(value.w))
+        return false;
+    const auto largest =
+        std::max({std::abs(value.x), std::abs(value.y), std::abs(value.z), std::abs(value.w)});
+    if (largest == 0)
+        return false;
+    output =
+        normalize(Quat{value.x / largest, value.y / largest, value.z / largest, value.w / largest});
+    return true;
+}
+
+// Convex interpolation of finite float endpoints without overflowing b-a.
+inline float lerpStable(float a, float b, float amount)
+{
+    return static_cast<float>((1.0 - double(amount)) * double(a) + double(amount) * double(b));
 }
 
 /// Named alias for normalize() — same semantics, discoverable by callers
@@ -397,27 +433,11 @@ inline Quat quatFromToRotation(Vec3 from, Vec3 to)
     return normalize(q);
 }
 
-/// Build a rotation whose local +Z (or a caller-chosen forward) maps to the
-/// desired forward direction, with roll stabilized by `up`.
-/// Returns identity when `forward` is parallel to `up` (gimbal lock guard).
-/// Note: unlike Mat4::lookAt (which builds a view matrix with -Z forward),
-/// this returns a rotation that orients an object's local forward axis
-/// toward `forward`. Used by Look-at IK.
-inline Quat quatLookAt(Vec3 forward, Vec3 up = Vec3{0.0f, 1.0f, 0.0f})
+namespace detail {
+// Shared basis-to-quaternion algebra. Callers own basis validation and final
+// normalization; no default orientation is substituted by this conversion.
+inline Quat quatFromBasisColumnsUnchecked(Vec3 right, Vec3 realUp, Vec3 f)
 {
-    const Vec3 f = normalizeOr(forward, Vec3{0.0f, 0.0f, 1.0f});
-    Vec3 u = normalizeOr(up, Vec3{0.0f, 1.0f, 0.0f});
-    // If forward is parallel to up, pick an alternate up.
-    const float fd = std::fabs(dot(f, u));
-    if (fd > 0.9999f) {
-        u = (std::fabs(f.x) < 0.9f) ? Vec3{1.0f, 0.0f, 0.0f} : Vec3{0.0f, 0.0f, 1.0f};
-        u = normalizeOr(u, Vec3{0.0f, 1.0f, 0.0f});
-    }
-    const Vec3 right = normalize(cross(u, f));
-    const Vec3 realUp = cross(f, right);
-    // Build rotation matrix (row-major in core::Mat4 convention) whose
-    // columns are right, up, forward, then convert to quaternion.
-    // core::Mat4 is row-major: m[row*4+col]. We set the 3x3 basis.
     Quat q;
     const float r0 = right.x, r1 = right.y, r2 = right.z;
     const float u0 = realUp.x, u1 = realUp.y, u2 = realUp.z;
@@ -448,7 +468,32 @@ inline Quat quatLookAt(Vec3 forward, Vec3 up = Vec3{0.0f, 1.0f, 0.0f})
         q.y = (f1 + u2) / s;
         q.z = 0.25f * s;
     }
-    return normalize(q);
+    return q;
+}
+} // namespace detail
+
+/// Build a rotation whose local +Z (or a caller-chosen forward) maps to the
+/// desired forward direction, with roll stabilized by `up`.
+/// Returns identity when `forward` is parallel to `up` (gimbal lock guard).
+/// Note: unlike Mat4::lookAt (which builds a view matrix with -Z forward),
+/// this returns a rotation that orients an object's local forward axis
+/// toward `forward`. Used by Look-at IK.
+inline Quat quatLookAt(Vec3 forward, Vec3 up = Vec3{0.0f, 1.0f, 0.0f})
+{
+    const Vec3 f = normalizeOr(forward, Vec3{0.0f, 0.0f, 1.0f});
+    Vec3 u = normalizeOr(up, Vec3{0.0f, 1.0f, 0.0f});
+    // If forward is parallel to up, pick an alternate up.
+    const float fd = std::fabs(dot(f, u));
+    if (fd > 0.9999f) {
+        u = (std::fabs(f.x) < 0.9f) ? Vec3{1.0f, 0.0f, 0.0f} : Vec3{0.0f, 0.0f, 1.0f};
+        u = normalizeOr(u, Vec3{0.0f, 1.0f, 0.0f});
+    }
+    const Vec3 right = normalize(cross(u, f));
+    const Vec3 realUp = cross(f, right);
+    // Build rotation matrix (row-major in core::Mat4 convention) whose
+    // columns are right, up, forward, then convert to quaternion.
+    // core::Mat4 is row-major: m[row*4+col]. We set the 3x3 basis.
+    return normalize(detail::quatFromBasisColumnsUnchecked(right, realUp, f));
 }
 
 ASTRUCT(Construct = Default, Ownership = Value, Lifecycle = Value)

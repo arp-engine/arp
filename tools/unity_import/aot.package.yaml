@@ -11,7 +11,7 @@ budget:
   continuation-frames: 256
   memory-bytes: 67108864
 contracts:
-  dependency-graph-hash: sha256:16a561701f1312c6fc899ff45fad9957539b5b8183ba53c8a5e229fdb51e2135
+  dependency-graph-hash: sha256:0e61e7b8fdd5fb4d0afc3f806a07b9c6f1a8c127f5b5ce4b025ea2556aeab99a
   reflection-registry-hash: sha256:1c33e95c55828b4e93de6157f8450c05aa49d279eb073a0e74a84a79097f4284
   host-contract-hash: sha256:0a1f17e0c8a3b6fe7138d085813340c2da265607b1b982da0fe6390eb455d99c
   callables:
@@ -113,11 +113,16 @@ modules:
     source: fbx_importer.arp
     entries: [FbxImporter.export_path]
     dependencies: [unity_import_common, importer_base, character_validator]
+  - id: glb_source_profile
+    version: 1
+    source: glb_source_profile.arp
+    entries: [make_options, local_acquisition_bytes]
+    dependencies: []
   - id: glb_importer
     version: 1
     source: glb_importer.arp
     entries: [GlbImporter.export_path]
-    dependencies: [unity_import_common, importer_base]
+    dependencies: [unity_import_common, importer_base, glb_source_profile]
   - id: texture_importer
     version: 1
     source: texture_importer.arp
@@ -182,4 +187,4 @@ modules:
     version: 1
     source: unity_import.arp
     entries: [main, export]
-    dependencies: [unity_import_common, importer_base, package_writer, glb_importer, fbx_importer, character_validator, texture_importer, yaml_importer, model_importer, meta_importer, material_importer, animator_controller_importer, character_folder_importer, prefab_importer, scene_importer, character_package_importer, particle_importer, particle_package_importer]
+    dependencies: [unity_import_common, importer_base, package_writer, glb_importer, glb_source_profile, fbx_importer, character_validator, texture_importer, yaml_importer, model_importer, meta_importer, material_importer, animator_controller_importer, character_folder_importer, prefab_importer, scene_importer, character_package_importer, particle_importer, particle_package_importer]

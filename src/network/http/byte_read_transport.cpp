@@ -1,5 +1,6 @@
 #include "network/http/byte_read_transport.h"
 
+#include "core/text/number_format.h"
 #include "network/http/uri.h"
 #if !defined(__EMSCRIPTEN__)
 #include "network/http/client.h"
@@ -63,6 +64,46 @@ ByteReadStatus ByteReadTransport::validate(
         if (!parsed.success() || !parsed.uri.is_absolute()
             || (parsed.uri.scheme() != "http" && parsed.uri.scheme() != "https")
             || !parsed.uri.fragment().empty())
+            return ByteReadStatus::InvalidRequest;
+        if (request.contractVersion == 1) {
+            if (request.operation != ByteReadRequest::Operation::AnonymousGet
+                || !request.credentialOrigin.empty() || !request.bearerToken.empty()
+                || !request.requestBody.empty() || request.maxRequestBytes
+                || request.replayProtected)
+                return ByteReadStatus::InvalidRequest;
+        } else if (request.contractVersion == 2) {
+            if (request.operation != ByteReadRequest::Operation::BearerJsonPost
+                || !request.replayProtected || !request.range.empty()
+                || request.bearerToken.size() < 32 || request.bearerToken.size() > 256
+                || request.requestBody.empty() || !request.maxRequestBytes
+                || request.maxRequestBytes > SIZE_MAX || request.requestBody.size() > INT32_MAX
+                || request.requestBody.size() > request.maxRequestBytes)
+                return ByteReadStatus::InvalidRequest;
+            for (const unsigned char c : request.bearerToken)
+                if (c < 33 || c > 126)
+                    return ByteReadStatus::InvalidRequest;
+            core::pmr::String origin(parsed.uri.scheme());
+            origin += "://";
+            const bool ipv6 = parsed.uri.host().find(':') != std::string_view::npos;
+            if (ipv6)
+                origin += '[';
+            for (auto c : parsed.uri.host()) {
+                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+                        || c == '.' || c == '-' || (ipv6 && c == ':')))
+                    return ByteReadStatus::InvalidRequest;
+                origin += c >= 'A' && c <= 'Z' ? char(c + ('a' - 'A')) : c;
+            }
+            if (ipv6)
+                origin += ']';
+            if (parsed.uri.port() != (parsed.uri.scheme() == "https" ? 443 : 80)) {
+                origin += ':';
+                origin += core::formatUnsigned(parsed.uri.port());
+            }
+            // Exact configuration, rather than an implicit allowlist derived
+            // from backend/OS names. Fetch additionally checks URL.origin.
+            if (request.credentialOrigin != origin)
+                return ByteReadStatus::InvalidRequest;
+        } else
             return ByteReadStatus::InvalidRequest;
     } catch (...) {
         return ByteReadStatus::BudgetExceeded;
@@ -155,7 +196,8 @@ void ByteReadTransport::read(const ByteReadDesc& desc,
         observer.onFailure(ByteReadStatus::TransportError, "NET-HTTP-SOCKET-RUNTIME");
         return;
     }
-    auto wire = ClientRequest::get(request.url);
+    const bool post = request.operation == ByteReadRequest::Operation::BearerJsonPost;
+    auto wire = post ? ClientRequest::post(request.url) : ClientRequest::get(request.url);
     const auto prepared = Client::prepareTransport(wire.uri());
     if (!wire.success() || !prepared.success()) {
         observer.onFailure(ByteReadStatus::Unsupported, "NET-HTTP-ENGINE-TRANSPORT-UNAVAILABLE");
@@ -213,6 +255,15 @@ void ByteReadTransport::read(const ByteReadDesc& desc,
             && wire.add_header("Range", request.range) != DiagnosticCode::none)) {
         observer.onFailure(ByteReadStatus::InvalidRequest, "NET-HTTP-REQUEST-HEADERS");
         return;
+    }
+    if (post) {
+        if (wire.add_header("Authorization", core::pmr::String("Bearer ") + request.bearerToken)
+                != DiagnosticCode::none
+            || wire.set_content_type(ContentType::Json) != DiagnosticCode::none) {
+            observer.onFailure(ByteReadStatus::InvalidRequest, "NET-HTTP-REQUEST-HEADERS");
+            return;
+        }
+        wire.set_body_text(request.requestBody);
     }
     SessionConfig config;
     config.read_buffer_size = desc.ioChunkBytes;

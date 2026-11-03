@@ -27,6 +27,7 @@ struct HttpFileResponseHeaders {
     std::string_view contentLength;
     std::string_view contentRange;
     std::string_view contentEncoding;
+    std::string_view contentType;
 };
 
 class ARP_API HttpFileContract final {

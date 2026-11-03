@@ -29,13 +29,13 @@ foreach(gi_mode Native Emulated)
     set(gi_publication "${graphics_wocc_ibl_reference_dir}/GraphicsWoccIblReference.${gi_mode_name}.bindless.yaml")
     list(APPEND graphics_wocc_ibl_reference_outputs "${gi_publication}")
     add_custom_command(OUTPUT "${gi_publication}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_graphics_wocc_ibl_reference.yaml"
             --bindless-source "${CMAKE_SOURCE_DIR}/tests/fixtures/ordinary_wocc_ibl_reference.slang"
             --bindless-entry vertexMain --bindless-entry cleanFragment --bindless-entry faultFragment
             --bindless-mode "${gi_mode}" --out-dir "${graphics_wocc_ibl_reference_dir}"
-        DEPENDS tests/fixtures/bindless_graphics_wocc_ibl_reference.yaml tests/fixtures/ordinary_wocc_ibl_reference.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_graphics_wocc_ibl_reference.yaml tests/fixtures/ordinary_wocc_ibl_reference.slang
             scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
             scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
             "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"
@@ -49,13 +49,13 @@ foreach(gi_mode Native Emulated)
     set(gi_publication "${graphics_wocc_ibl_dir}/GraphicsWoccIbl.${gi_mode_name}.bindless.yaml")
     list(APPEND graphics_wocc_ibl_outputs "${gi_publication}")
     add_custom_command(OUTPUT "${gi_publication}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_graphics_wocc_ibl.yaml"
             --bindless-source "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_wocc_ibl.slang"
             --bindless-entry vertexMain --bindless-entry cleanFragment --bindless-entry faultFragment
             --bindless-mode "${gi_mode}" --out-dir "${graphics_wocc_ibl_dir}"
-        DEPENDS tests/fixtures/bindless_graphics_wocc_ibl.yaml tests/fixtures/bindless_wocc_ibl.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_graphics_wocc_ibl.yaml tests/fixtures/bindless_wocc_ibl.slang
             scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
             scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py
             "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"

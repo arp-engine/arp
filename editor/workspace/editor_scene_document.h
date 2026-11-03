@@ -37,6 +37,8 @@ struct SceneHierarchyEntry {
 enum class SceneInspectorWriteResult : std::uint8_t { Rejected, Unchanged, Changed };
 
 class EditorSceneDocument final {
+    friend class EditorProjectSourceSaveTask;
+
     struct ServiceEpochs {
         core::LifetimeEpoch::Ticket resources, physics;
     };
@@ -100,6 +102,9 @@ public:
         EditorScriptBindingBudget,
         core::pmr::String& diagnostic);
     core::SharedPtr<const EditorScriptComponentCatalog> scriptCatalog() const noexcept;
+    // Retained acquired bytes for an explicit cold reload's old-domain proof.
+    // This observes the canonical domain; it does not assert current disk bytes.
+    const ProjectSourceContext* retainedScriptSources() const noexcept;
     bool replaceWith(EditorSceneDocument&& candidate);
     core::UniquePtr<PreparedReplacement> prepareReplacement(EditorSceneDocument& candidate,
         core::pmr::String& diagnostic,

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "assets/glb_animated_mesh_importer.h"
+#include "assets/animated_mesh_source_import.h"
 #include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
 #include "reflection/reflection_macros.h"
@@ -13,6 +13,113 @@ namespace arp::scriptvm::plugins::asset {
 
 using arp::core::pmr::String;
 using arp::reflection::hlist;
+
+// Script authoring owns every admission limit. Zero/empty defaults are
+// intentionally invalid; the native importer never selects a game profile.
+ASTRUCT(Name = "GlbSourceOptions", Construct = Default)
+
+struct GlbSourceOptions final {
+    APROP()
+    std::int64_t maxSourceBytes = 0;
+    APROP()
+    std::int64_t maxImportBytes = 0;
+    APROP()
+    std::int64_t maxDecodedBytes = 0;
+    APROP()
+    std::int64_t maxSourceLabelBytes = 0;
+    APROP()
+    int maxJsonDepth = 0;
+    APROP()
+    int maxJsonValues = 0;
+    APROP()
+    int selectedScene = -1;
+
+    APROP()
+    int maxBufferViews = 0;
+    APROP()
+    int maxAccessors = 0;
+    APROP()
+    std::int64_t maxElements = 0;
+    APROP()
+    std::int64_t maxScalars = 0;
+    APROP()
+    std::int64_t maxDescriptorBytes = 0;
+
+    APROP()
+    int maxNodes = 0;
+    APROP()
+    int maxEdges = 0;
+    APROP()
+    int maxScenes = 0;
+    APROP()
+    int maxSceneRoots = 0;
+    APROP()
+    int maxSkins = 0;
+    APROP()
+    int maxSkinJoints = 0;
+    APROP()
+    int maxMeshInstances = 0;
+    APROP()
+    std::int64_t maxGraphWorkingBytes = 0;
+
+    APROP()
+    int maxClips = 0;
+    APROP()
+    int maxSamplers = 0;
+    APROP()
+    int maxChannels = 0;
+    APROP()
+    int maxTimeKeys = 0;
+    APROP()
+    int maxOutputKeys = 0;
+    APROP()
+    int maxValueScalars = 0;
+    APROP()
+    std::int64_t maxAnimationWorkingBytes = 0;
+
+    APROP()
+    int maxJoints = 0;
+    APROP()
+    int maxKeyframes = 0;
+    APROP()
+    std::int64_t maxNameBytes = 0;
+    APROP()
+    float matrixElementError = -1.0f;
+
+    APROP()
+    int maxVertices = 0;
+    APROP()
+    int maxIndices = 0;
+    APROP()
+    int maxPrimitives = 0;
+    APROP()
+    String colorPolicy{&arp::core::defaultCpuMemoryResource()};
+    APROP()
+    String tangentPolicy{&arp::core::defaultCpuMemoryResource()};
+    APROP()
+    float unitVectorError = -1.0f;
+    APROP()
+    float orthogonalityError = -1.0f;
+    APROP()
+    float weightSumError = -1.0f;
+
+    APROP()
+    int maxMaterials = 0;
+    APROP()
+    int maxTextures = 0;
+    APROP()
+    int maxImages = 0;
+    APROP()
+    std::int64_t maxMaterialMetadataBytes = 0;
+    APROP()
+    std::int64_t maxEncodedImageBytes = 0;
+
+    // Native projection performs checked signed/size conversions first and
+    // delegates all semantic validation to the actual assets importer.
+    const char* project(arp::assets::AnimatedMeshSourceImportLimits& output) const noexcept;
+    AFUNC(Name = "validate")
+    String validate() const;
+};
 
 struct AvatarHumanBoneBinding final {
     String sourceBoneName{&arp::core::defaultCpuMemoryResource()};
@@ -158,6 +265,11 @@ struct ImportedModel final {
     APROP()
     String diagnostics{&arp::core::defaultCpuMemoryResource()};
     arp::assets::AnimatedMeshAsset asset;
+    // Static identifier from the source API; survives diagnostic allocation failure.
+    const char* sourceDiagnosticId = nullptr;
+
+    AFUNC(Name = "diagnostic_id")
+    String diagnosticId() const;
 
     AFUNC(Name = "vertex_count")
     int vertexCount() const;
@@ -342,8 +454,13 @@ struct AssetPackageWriteResult final {
     String diagnostics{&arp::core::defaultCpuMemoryResource()};
 };
 
+// Explicit Legacy path entrypoint; new callers submit acquired immutable bytes.
 AFUNC(Name = "import_glb")
 ImportedModel importGlb(const String& path);
+
+AFUNC(Name = "import_glb_bytes")
+ImportedModel importGlbBytes(
+    const String& sourceLabel, Value bytes, const GlbSourceOptions& options);
 
 AFUNC(Name = "import_fbx")
 ImportedModel importFbx(const String& path);

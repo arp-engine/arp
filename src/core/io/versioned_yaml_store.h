@@ -2,6 +2,8 @@
 #include "core/encoding/yaml_contract.h"
 #include "core/io/atomic_file_service.h"
 
+#include <limits>
+
 namespace arp::core::io {
 // Schema supplies type(), version(), validate(Node, diagnostic). Validation of
 // both replacement and existing data executes on the file worker. A corrupt or
@@ -20,12 +22,27 @@ public:
 
     bool take(PoolHandle handle, AtomicFileResult& result) { return files_.take(handle, result); }
 
+    // Borrowed, finite input admission. Shares the exact schema validator used
+    // by the worker; input storage is never modified or retained by this call.
+    static bool validateContents(
+        const pmr::Vector<std::uint8_t>& bytes, std::size_t maxBytes, pmr::String& diagnostic)
+    {
+        diagnostic.clear();
+        if (!maxBytes || maxBytes == std::numeric_limits<std::size_t>::max()
+            || bytes.size() > maxBytes) {
+            diagnostic = "ARP-SAVE-CONTENT-BUDGET";
+            return false;
+        }
+        return validate(bytes, diagnostic);
+    }
+
 private:
     static bool validate(const pmr::Vector<std::uint8_t>& bytes, pmr::String& diagnostic)
     {
         try {
-            auto root = YamlContract::Node::deserialize(
-                pmr::String(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+            auto root = YamlContract::parseSingleDocument(bytes.empty()
+                    ? StringView{}
+                    : StringView(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
             if (YamlContract::text(root, "type") != Schema::type()
                 || YamlContract::uint32(root, "contractVersion") != Schema::version()) {
                 diagnostic = "ARP-SAVE-UNSUPPORTED-CONTRACT";

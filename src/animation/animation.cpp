@@ -1,6 +1,7 @@
 #include "animation/animation.h"
 
 #include "animation/pose_blend.h"
+#include "core/math/math.h"
 #include "core/memory/cpu_allocator.h"
 
 #include <algorithm>
@@ -70,10 +71,36 @@ Quat nlerp(Quat a, const Quat b, const float t)
 
 JointTransform interpolateTransform(const JointTransform& previous,
     const JointTransform& next,
-    const std::pmr::string& targetPath,
+    const AnimationChannel& channel,
     const float t)
 {
     auto result = previous;
+    const auto& targetPath = channel.targetPath;
+    if (channel.interpolation == ChannelInterpolation::GltfLinear) {
+        if (targetPath == "rotation") {
+            arp::core::Quat a, b;
+            arp::core::tryNormalize({previous.rotation.x,
+                                        previous.rotation.y,
+                                        previous.rotation.z,
+                                        previous.rotation.w},
+                a);
+            arp::core::tryNormalize(
+                {next.rotation.x, next.rotation.y, next.rotation.z, next.rotation.w}, b);
+            const auto value = arp::core::quatSlerp(a, b, t);
+            result.rotation = {value.x, value.y, value.z, value.w};
+        } else {
+            const auto& a = targetPath == "scale" ? previous.scale : previous.translation;
+            const auto& b = targetPath == "scale" ? next.scale : next.translation;
+            const Vec3 value{arp::core::lerpStable(a.x, b.x, t),
+                arp::core::lerpStable(a.y, b.y, t),
+                arp::core::lerpStable(a.z, b.z, t)};
+            if (targetPath == "scale")
+                result.scale = value;
+            else
+                result.translation = value;
+        }
+        return result;
+    }
     if (targetPath == "rotation") {
         result.rotation = nlerp(previous.rotation, next.rotation, t);
     } else if (targetPath == "scale") {
@@ -101,7 +128,7 @@ JointTransform sampleChannel(const AnimationChannel& channel, const float timeSe
         const auto& next = channel.keyframes[i];
         if (timeSeconds <= next.timeSeconds) {
             const auto t = normalizedBetween(previous.timeSeconds, next.timeSeconds, timeSeconds);
-            return interpolateTransform(previous.transform, next.transform, channel.targetPath, t);
+            return interpolateTransform(previous.transform, next.transform, channel, t);
         }
     }
     return channel.keyframes.back().transform;
@@ -109,9 +136,57 @@ JointTransform sampleChannel(const AnimationChannel& channel, const float timeSe
 
 } // namespace
 
+const char* validateClipSampling(const AnimationClip& clip) noexcept
+{
+    for (const auto& channel : clip.channels) {
+        if (channel.interpolation != ChannelInterpolation::LegacyLinear
+            && channel.interpolation != ChannelInterpolation::GltfLinear)
+            return "ANIMATION-INTERPOLATION-UNKNOWN";
+        if (channel.interpolation == ChannelInterpolation::LegacyLinear)
+            continue;
+        if (!std::isfinite(clip.durationSeconds) || clip.durationSeconds < 0)
+            return "ANIMATION-GLTF-LINEAR-DURATION";
+        if (channel.targetPath != "translation" && channel.targetPath != "rotation"
+            && channel.targetPath != "scale")
+            return "ANIMATION-GLTF-LINEAR-TARGET";
+        if (channel.keyframes.empty())
+            return "ANIMATION-GLTF-LINEAR-KEYFRAMES";
+        float previous = -1;
+        for (const auto& key : channel.keyframes) {
+            if (!std::isfinite(key.timeSeconds) || key.timeSeconds < 0
+                || key.timeSeconds <= previous || key.timeSeconds > clip.durationSeconds)
+                return "ANIMATION-GLTF-LINEAR-TIME";
+            previous = key.timeSeconds;
+            if (channel.targetPath == "rotation") {
+                const auto& q = key.transform.rotation;
+                arp::core::Quat normalized;
+                if (!arp::core::tryNormalize({q.x, q.y, q.z, q.w}, normalized))
+                    return "ANIMATION-GLTF-LINEAR-VALUE";
+            } else {
+                const auto& v =
+                    channel.targetPath == "scale" ? key.transform.scale : key.transform.translation;
+                if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z))
+                    return "ANIMATION-GLTF-LINEAR-VALUE";
+            }
+        }
+    }
+    return nullptr;
+}
+
 bool sampleClip(
     const AnimationClip& clip, const float timeSeconds, std::pmr::vector<JointTransform>& outPose)
 {
+    if (validateClipSampling(clip))
+        return false;
+    for (const auto& channel : clip.channels) {
+        if (channel.interpolation == ChannelInterpolation::GltfLinear
+            && !std::isfinite(timeSeconds))
+            return false;
+        const auto active = channel.targetPath.empty() || channel.targetPath == "translation"
+            || channel.targetPath == "rotation" || channel.targetPath == "scale";
+        if (active && channel.jointIndex >= outPose.size())
+            return false;
+    }
     const auto sampledTime = clampTime(clip, timeSeconds);
     for (const auto& channel : clip.channels) {
         if (!channel.targetPath.empty() && channel.targetPath != "translation"
@@ -123,7 +198,16 @@ bool sampleClip(
         }
         const auto sampled = sampleChannel(channel, sampledTime);
         if (channel.targetPath == "rotation") {
-            outPose[channel.jointIndex].rotation = sampled.rotation;
+            if (channel.interpolation == ChannelInterpolation::GltfLinear) {
+                arp::core::Quat value;
+                arp::core::tryNormalize({sampled.rotation.x,
+                                            sampled.rotation.y,
+                                            sampled.rotation.z,
+                                            sampled.rotation.w},
+                    value);
+                outPose[channel.jointIndex].rotation = {value.x, value.y, value.z, value.w};
+            } else
+                outPose[channel.jointIndex].rotation = sampled.rotation;
         } else if (channel.targetPath == "scale") {
             outPose[channel.jointIndex].scale = sampled.scale;
         } else {
@@ -246,7 +330,7 @@ void collectEvents(const AnimationClip& clip,
 
 bool AnimationStateMachine::play(const AnimationClip& clip)
 {
-    if (clip.durationSeconds <= 0.0f) {
+    if (clip.durationSeconds <= 0.0f || validateClipSampling(clip)) {
         return false;
     }
     current_ = &clip;
@@ -263,7 +347,7 @@ bool AnimationStateMachine::play(const AnimationClip& clip)
 
 bool AnimationStateMachine::transitionTo(const AnimationClip& clip, const float durationSeconds)
 {
-    if (clip.durationSeconds <= 0.0f) {
+    if (clip.durationSeconds <= 0.0f || validateClipSampling(clip)) {
         return false;
     }
     previous_ = current_;

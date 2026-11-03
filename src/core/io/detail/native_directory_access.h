@@ -10,8 +10,12 @@ public:
     explicit NativeDirectoryAccess(const NativeDirectoryFileBackendDesc& desc);
     ~NativeDirectoryAccess();
     bool supported() const noexcept;
+    bool saveSupported() const noexcept;
     FileReadResult read(const FileReadRequest& request);
     FileQueryResult query(const FileQueryRequest& request);
+    FileSaveResult save(const FileSaveRequest& request);
+    // UINT64_MAX denotes an unrepresentable reservation, never an unlimited budget.
+    std::uint64_t saveScratchBytes() const noexcept;
     void shutdown() noexcept;
     std::uint64_t openObjectCount() const noexcept;
 

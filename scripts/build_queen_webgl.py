@@ -45,21 +45,35 @@ class QueenWebGlBuilder:
                 ('ARP_WEBGL1_PROTOTYPE_PRODUCT','ON'),('CMAKE_BUILD_TYPE','Release')):
             if cache.value(key)!=value:raise ValueError('QUEEN-CACHE-SELECTION: '+key)
         self.run(['cmake','--build',self.output,'--target','arp_build_a_queen_webgl','arp_webgl_platform_smoke',
+            'arp_queen_character_source_lifecycle',
+            'arp_queen_web_shader_sources_tests',
+            'arp_queen_web_font_sources_tests',
+            'arp_queen_web_font_source_lifecycle',
+            'arp_queen_web_shader_source_lifecycle',
+            'arp_survivors_gameplay_sources_tests',
+            'arp_audio_memory_import_tests',
+            'arp_audio_memory_source_lifecycle',
+            'arp_survivors_gameplay_source_lifecycle',
             '--parallel',str(self.args.jobs)])
         link=(self.output/'build.ninja').read_text()+(self.output/'CMakeFiles/rules.ninja').read_text()
         if any(x in link for x in ('emdawnwebgpu','USE_WEBGPU','libarp_rhi_webgpu','libarp_rhi_vulkan','libarp_rhi_metal')):
             raise ValueError('QUEEN-FOREIGN-BACKEND-LINK')
         if not all(x in link for x in ('-sMIN_WEBGL_VERSION=1','-sMAX_WEBGL_VERSION=1')):
             raise ValueError('QUEEN-WEBGL1-CONTEXT-SELECTION')
+        self.publish_manifest()
+        print('Serve: python -m http.server 8092 --bind 127.0.0.1 --directory "{}"'.format(self.output))
+        print('Open: http://127.0.0.1:8092/arp_build_a_queen_webgl.html')
+
+    def publish_manifest(self):
         manifest=dict(type='QueenWebGlBuild',contractVersion=1,status='Prototype Complete',
             backend='WebGL1',gameplayValidated=False,productionReady=False,
-            artifacts={p.name:WebGl1RuntimeBuilder.sha(p) for suffix in ('html','js','wasm','data')
+            artifacts={p.name:WebGl1RuntimeBuilder.sha(p) for suffix in ('html','js','wasm')
                 for p in [self.output/('arp_build_a_queen_webgl.'+suffix)]},
+            sources={p.relative_to(self.output).as_posix():WebGl1RuntimeBuilder.sha(p)
+                for folder in ('characters','artifacts','fonts') for p in sorted((self.output/folder).rglob('*')) if p.is_file()},
             programs={name:WebGl1RuntimeBuilder.sha(self.programs/(name+'.webgl-program.yaml'))
                 for name in self.modules})
         (self.output/'queen-build.yaml').write_text(yaml.safe_dump(manifest,sort_keys=False),encoding='utf8')
-        print('Serve: python -m http.server 8092 --bind 127.0.0.1 --directory "{}"'.format(self.output))
-        print('Open: http://127.0.0.1:8092/arp_build_a_queen_webgl.html')
 
 
 if __name__=='__main__':

@@ -13,6 +13,7 @@ function(arp_add_network_http_transport root)
         "${root}/src/network/http/session.cpp"
         "${root}/src/network/http/uri.cpp"
         "${root}/src/network/http/byte_read_transport.cpp"
+        "${root}/src/network/http/byte_transfer_executor.cpp"
         "${root}/src/network/http/fetch_byte_transfer.cpp"
         "${root}/src/network/io_context.cpp"
         "${root}/src/network/io_poller.cpp"

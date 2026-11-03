@@ -1,7 +1,8 @@
 #include "editor/workspace/editor_project_resources.h"
 
 #include "2d/sprite_resources.h"
-#include "core/io/file_io.h"
+#include "core/io/filesystem_path.h"
+#include "editor/io/editor_cold_host_read.h"
 #include "editor/project/project_scene_authoring.h"
 #include "editor/workspace/editor_scene_document.h"
 #include "editor/workspace/editor_terrain_preview.h"
@@ -38,7 +39,7 @@ bool readManifest(const std::filesystem::path& path,
     core::pmr::String& text,
     EditorProjectResourceLoadResult& result)
 {
-    const auto read = core::readTextFile(path, kMaxManifestBytes);
+    const auto read = EditorColdHostRead::readTextBytes(path, kMaxManifestBytes);
     if (!read.success) {
         result.diagnostics = "EDITOR-PROJECT-MANIFEST-READ: ";
         result.diagnostics += read.diagnostics;
@@ -203,7 +204,7 @@ EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
             lastLoad_ = result;
             return result;
         }
-        const auto read = core::readTextFile(path, kMaxManifestBytes);
+        const auto read = EditorColdHostRead::readTextBytes(path, kMaxManifestBytes);
         if (!read.success) {
             result.diagnostics = "EDITOR-PROJECT-METADATA-READ: ";
             result.diagnostics += read.diagnostics;
@@ -231,7 +232,8 @@ EditorProjectResourceLoadResult EditorProjectResources::loadManifest(
             lastLoad_ = result;
             return result;
         }
-        const auto read = core::readTextFile(source, ScriptDocumentSession::maxScriptBytes);
+        const auto read =
+            EditorColdHostRead::readTextBytes(source, ScriptDocumentSession::maxScriptBytes);
         if (!read.success || !inputs.record(source, read.text, result.diagnostics)) {
             if (result.diagnostics.empty())
                 result.diagnostics = "EDITOR-PROJECT-MODULE-SOURCE-READ-OR-BUDGET";

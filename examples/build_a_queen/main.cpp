@@ -1,10 +1,18 @@
+#include "../common/native_startup_files.h"
+#include "../common/null_smoke_shader_package.h"
+#include "character_source_task.h"
+#include "core/diagnostics/diagnostic_error.h"
+#include "core/runtime/async_runtime.h"
 #include "game.h"
 #include "hud_renderer.h"
+#include "native_hud_source_task.h"
+#include "native_shader_source_task.h"
 #include "platform/render_system.h"
 #include "platform/renderdoc_capture_scope.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/backends/null/null_hidden_frame_smoke.h"
 #include "scene_renderer.h"
+#include "ui/ui_font_source.h"
 
 #include <algorithm>
 #include <array>
@@ -13,6 +21,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <string_view>
+#include <thread>
 
 namespace {
 using namespace arp;
@@ -24,13 +33,143 @@ bool parseUnsigned(const char* value, std::uint64_t& output)
     return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
 }
 
-int runNullSmoke()
+examples::NativeStartupFiles startupFiles(
+    const std::filesystem::path& directory, std::string_view url, std::size_t maxFileBytes)
+{
+    examples::NativeStartupFileDesc desc;
+    desc.source = url.empty() ? examples::NativeStartupSource::Directory
+                              : examples::NativeStartupSource::Http;
+    if (desc.source == examples::NativeStartupSource::Directory)
+        desc.directory = directory;
+    else
+        desc.baseUrl = url;
+    desc.mountName = "queen-inputs";
+    desc.maxFileBytes = maxFileBytes;
+    return examples::NativeStartupFiles(std::move(desc),
+        {"ARP-QUEEN-SOURCE-CONFIG", "ARP-QUEEN-SOURCE-MOUNT", "ARP-QUEEN-SOURCE-RUNTIME"});
+}
+
+template <class Task>
+bool waitStartup(platform::WindowSystem& windows, core::runtime::AsyncRuntime& runtime, Task& task)
+{
+    using Phase = decltype(task.phase());
+    using Clock = std::chrono::steady_clock;
+    const auto deadline = Clock::now() + std::chrono::seconds(20);
+    platform::WindowEventBatch events;
+    while (task.phase() == Phase::Pending) {
+        windows.pumpEvents(events);
+        for (const auto& event : events.windowEvents)
+            if (event.type == platform::WindowEventType::CloseRequested)
+                task.cancel();
+        for (const auto& event : events.inputEvents)
+            if (event.kind == platform::WindowInputEvent::Kind::KeyDown
+                && event.key == platform::WindowKey::Escape)
+                task.cancel();
+        events.windowEvents.clear();
+        events.inputEvents.clear();
+        if (Clock::now() >= deadline) {
+            std::fputs("ARP-QUEEN-SOURCE-STARTUP-TIMEOUT\n", stderr);
+            task.cancel();
+        }
+        if (!runtime.dispatch().success())
+            task.cancel();
+        task.advance();
+        std::this_thread::yield();
+    }
+    return task.phase() == Phase::Ready;
+}
+
+core::UniquePtr<build_a_queen::CharacterSources> prepareCharacters(
+    platform::WindowSystem& windows, const std::filesystem::path& directory, std::string_view url)
+{
+    using namespace core::io;
+    using Sources = build_a_queen::CharacterSources;
+    auto startup = startupFiles(directory, url, Sources::maxCharacterBytes);
+    auto& runtime = startup.runtime();
+    const auto mount = startup.mount();
+    FileReadRequest binding;
+    binding.contractVersion = 1;
+    binding.pathScope = FilePathScope::MountedResource;
+    binding.mount = mount;
+    binding.path = Sources::manifestFile;
+    binding.maxBytes = Sources::maxManifestBytes;
+    build_a_queen::CharacterSourceTask task(runtime.fileService(), std::move(binding));
+    if (!waitStartup(windows, runtime, task)) {
+        std::fprintf(stderr,
+            "%s (FileIoStatus=%u)\n",
+            task.diagnostic(),
+            static_cast<unsigned>(task.ioStatus()));
+        return {};
+    }
+    auto sources = task.takeSources();
+    // All IO owners retire before creating the GPU context. The prepared bytes
+    // remain alive until content import has copied the domain-owned data.
+    runtime.shutdown();
+    std::printf("characterSource: %s\ncharacterReads: %llu\n",
+        url.empty() ? "NativeDirectory" : "HTTP",
+        static_cast<unsigned long long>(runtime.telemetry().fileService.submitted));
+    return sources;
+}
+
+template <class Task>
+auto prepareResourceInputs(platform::WindowSystem& windows,
+    const std::filesystem::path& directory,
+    std::string_view url,
+    std::size_t fileBytes,
+    const char* label)
+{
+    auto startup = startupFiles(directory, url, fileBytes);
+    auto& runtime = startup.runtime();
+    Task task(runtime.fileService(), runtime.completionQueue(), startup.mount());
+    if (!waitStartup(windows, runtime, task))
+        throw core::DiagnosticError(task.diagnostic());
+    auto result = task.sources();
+    runtime.shutdown();
+    std::printf("%sSource: %s\n%sReads: %llu\n",
+        label,
+        url.empty() ? "NativeDirectory" : "HTTP",
+        label,
+        static_cast<unsigned long long>(task.readCount()));
+    return result;
+}
+
+build_a_queen::NativeShaderSources prepareShaders(
+    platform::WindowSystem& windows, const std::filesystem::path& directory, std::string_view url)
+{
+    auto result = prepareResourceInputs<build_a_queen::NativeShaderSourceTask>(
+        windows, directory, url, build_a_queen::NativeShaderSources::maxFileBytes, "shader");
+    if (!result.valid())
+        throw core::DiagnosticError("QUEEN-NATIVE-SHADER-SOURCES-INCOMPLETE");
+    return result;
+}
+
+core::SharedPtr<const build_a_queen::NativeHudSources> prepareHud(
+    platform::WindowSystem& windows, const std::filesystem::path& directory, std::string_view url)
+{
+    auto result = prepareResourceInputs<build_a_queen::NativeHudSourceTask>(
+        windows, directory, url, build_a_queen::NativeHudSources::maxFileBytes, "hud");
+    if (!result || !result->valid())
+        throw core::DiagnosticError("QUEEN-NATIVE-HUD-SOURCES-INCOMPLETE");
+    const auto bytes = result->face.desc.source->bytes();
+    const auto hash =
+        core::Sha256::hexDigest({reinterpret_cast<const char*>(bytes.data()), bytes.size()});
+    std::printf(
+        "hudFontFamily: %s\nhudFontSha256: %s\n", result->face.desc.family.c_str(), hash.c_str());
+    return result;
+}
+
+int runNullSmoke(const std::filesystem::path& executableDirectory)
 {
     auto device = rhi::createNullDevice();
     if (!device)
         return 1;
+    rhi::ShaderPackageDesc package;
+    if (!examples::prepareNullSmokeShaderPackage(executableDirectory, package)) {
+        std::fprintf(stderr, "ARP-QUEEN-NULL-SHADER-PACKAGE\n");
+        return 1;
+    }
     const auto report = rhi::NullHiddenFrameSmokeRunner(*device).run(
-        {"BuildAQueenContract", {1280, 720}, rhi::TextureFormat::Bgra8Unorm, 2});
+        {"BuildAQueenContract", {1280, 720}, rhi::TextureFormat::Bgra8Unorm, 2, &package});
     if (!report.success) {
         std::fprintf(stderr, "%s\n", report.diagnostics.c_str());
         return 1;
@@ -54,7 +193,7 @@ int runNullSmoke()
 } // namespace
 
 int main(int argc, char** argv)
-{
+try {
     using namespace arp;
     using Clock = std::chrono::steady_clock;
     bool hidden = false;
@@ -63,6 +202,9 @@ int main(int argc, char** argv)
     std::uint64_t frameLimit = 0;
     std::uint64_t captureFrame = UINT64_MAX;
     core::pmr::String capturePath;
+    core::pmr::String characterBaseUrl;
+    core::pmr::String shaderBaseUrl;
+    core::pmr::String hudBaseUrl;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
         if (argument == "--hidden")
@@ -83,27 +225,41 @@ int main(int argc, char** argv)
                 captureFrame = value;
         } else if (argument == "--capture-path" && index + 1 < argc) {
             capturePath = argv[++index];
+        } else if (argument == "--character-base-url" && index + 1 < argc) {
+            characterBaseUrl = argv[++index];
+            if (characterBaseUrl.empty())
+                return 2;
+        } else if (argument == "--shader-base-url" && index + 1 < argc) {
+            shaderBaseUrl = argv[++index];
+            if (shaderBaseUrl.empty())
+                return 2;
+        } else if (argument == "--hud-base-url" && index + 1 < argc) {
+            hudBaseUrl = argv[++index];
+            if (hudBaseUrl.empty())
+                return 2;
         } else {
             std::fprintf(stderr, "ARP-QUEEN-ARGUMENT: %s\n", argv[index]);
             return 2;
         }
     }
     if (nullSmoke)
-        return runNullSmoke();
+        return runNullSmoke(std::filesystem::absolute(argv[0]).parent_path());
     if (!frameLimit && captureFrame != UINT64_MAX && capturePath.empty())
         return 2;
 
     const auto executableDir = std::filesystem::absolute(argv[0]).parent_path();
-    const auto shaderPath =
-        core::pmr::String((executableDir / "shaders/queen_scene.slang").string().c_str());
-    const auto hudShaderPath =
-        core::pmr::String((executableDir / "shaders/gui_overlay.slang").string().c_str());
     platform::WindowSystem windows;
     if (!windows.initialize().success)
         return 1;
     auto window = windows.createWindow({"Build A Queen", 1280, 720, hidden, true});
     if (!window.valid())
         return 1;
+    auto characterSources =
+        prepareCharacters(windows, executableDir / "assets/characters", characterBaseUrl);
+    if (!characterSources)
+        return 1;
+    auto shaderSources = prepareShaders(windows, executableDir / "shaders", shaderBaseUrl);
+    auto hudSources = prepareHud(windows, executableDir / "assets/native", hudBaseUrl);
     auto renderSystem = platform::createDefaultRenderSystem(
         windows, window, "Build A Queen", rhi::PresentationMode::VSync);
     if (!renderSystem.valid()) {
@@ -112,16 +268,17 @@ int main(int argc, char** argv)
     }
 
     build_a_queen::SceneRenderer renderer(*renderSystem.gpuDevice());
-    const auto characterDirectory =
-        core::pmr::String((executableDir / "assets/characters").string().c_str());
     auto result = renderer.create(
-        shaderPath, characterDirectory, renderSystem.colorFormat(), renderSystem.extent());
+        shaderSources, *characterSources, renderSystem.colorFormat(), renderSystem.extent());
+    characterSources.reset();
     if (!result.success) {
         std::fprintf(stderr, "%s\n", result.diagnostics.c_str());
         return 1;
     }
     build_a_queen::HudRenderer hud(*renderSystem.gpuDevice());
-    result = hud.create(hudShaderPath, renderSystem.colorFormat(), renderSystem.extent());
+    result =
+        hud.create(shaderSources, *hudSources, renderSystem.colorFormat(), renderSystem.extent());
+    hudSources.reset();
     if (!result.success) {
         std::fprintf(stderr, "%s\n", result.diagnostics.c_str());
         return 1;
@@ -274,4 +431,7 @@ int main(int argc, char** argv)
         renderer.lastVertexCount(),
         hud.lastDrawCount());
     return frames > 0 ? 0 : 1;
+} catch (const std::exception& error) {
+    std::fprintf(stderr, "%s\n", error.what());
+    return 1;
 }

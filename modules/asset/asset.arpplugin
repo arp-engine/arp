@@ -1,8 +1,8 @@
 type: arp.script.cpp-plugin
 contractVersion: 2
 module: asset
-moduleVersion: 1
-exportContractHash: sha256:asset-v2
+moduleVersion: 2
+exportContractHash: sha256:7e72285cf74639e83a1a5e5ce83403c1309216660f24b97d18db0851f2713658
 source: asset_module.cpp
 entry: arp_register_asset
 reflectionModule: asset

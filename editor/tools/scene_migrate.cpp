@@ -1,7 +1,6 @@
-#include "core/io/atomic_file_service.h"
-#include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
 #include "core/io/staged_directory.h"
+#include "editor/tools/migration_io.h"
 #include "editor/workspace/editor_scene_authoring_codec.h"
 
 #include <cstdio>
@@ -16,14 +15,17 @@ public:
         const std::filesystem::path& destination,
         std::string_view identity)
     {
-        const auto input =
-            core::readTextFile(source, editor::EditorSceneAuthoringCodec::maxDocumentBytes);
-        if (!input.success) {
-            std::fprintf(stderr, "%s\n", input.diagnostics.c_str());
+        const auto input = editor::EditorMigrationIo::readSource(
+            source, editor::EditorSceneAuthoringCodec::maxDocumentBytes);
+        if (input.status() != core::io::FileIoStatus::Success) {
+            std::fprintf(stderr,
+                "%s\n",
+                input.diagnosticId() ? input.diagnosticId() : "EDITOR-MIGRATION-SOURCE-READ");
             return 1;
         }
-        core::pmr::String output, diagnostic;
-        if (!editor::EditorSceneAuthoringCodec::migrateVersion2(input.text,
+        core::pmr::String output{&core::defaultCpuMemoryResource()};
+        core::pmr::String diagnostic{&core::defaultCpuMemoryResource()};
+        if (!editor::EditorSceneAuthoringCodec::migrateVersion2(input.decoded.text,
                 identity == "none" ? std::string_view{} : identity,
                 output,
                 diagnostic)) {
@@ -37,13 +39,16 @@ public:
             std::fprintf(stderr, "%s\n", staging.diagnostic().c_str());
             return 1;
         }
-        const auto written =
-            core::io::replaceFileAtomically(core::FilePath::utf8(staging.path() / "scene.arp.yaml"),
-                {output.begin(), output.end()});
-        if (!written.success || !staging.publish()) {
+        const auto written = editor::EditorMigrationIo::writeNewFile(staging.path(),
+            "scene.arp.yaml",
+            output,
+            editor::EditorSceneAuthoringCodec::maxDocumentBytes);
+        if (written.status != core::io::FileIoStatus::Success || !staging.publish()) {
             std::fprintf(stderr,
                 "%s\n",
-                written.success ? staging.diagnostic().c_str() : written.diagnostic.c_str());
+                written.status == core::io::FileIoStatus::Success ? staging.diagnostic().c_str()
+                    : written.diagnosticId                        ? written.diagnosticId
+                                                                  : "EDITOR-MIGRATION-SAVE");
             return 1;
         }
         std::puts("Editor scene v2 -> v3 migrated; resource readiness is checked on project load.");
@@ -70,7 +75,7 @@ int wmain(int argc, wchar_t** argv)
     const std::wstring_view input(argv[4]);
     if (input.empty() || input.size() > 36)
         return SceneMigration::usage();
-    arp::core::pmr::String identity;
+    arp::core::pmr::String identity{&arp::core::defaultCpuMemoryResource()};
     for (wchar_t c : input) {
         if (c > 127) {
             std::fprintf(stderr, "EDITOR-SCENE-RUNTIME-IDENTITY-INVALID\n");

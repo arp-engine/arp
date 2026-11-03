@@ -276,7 +276,7 @@ struct ResourceLoadContext {
     const ResourceSourceSet* sources = nullptr;
     bool requirePreloadedSources = false;
     std::size_t maxDecodedBytes = 0u;
-    // Checked inside atomic admission, including after the final resource load.
+    // Checked inside atomic admission/reload, including after the final resource load.
     ResourceCommitGate commitGate;
 };
 

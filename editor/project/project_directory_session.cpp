@@ -33,6 +33,50 @@ bool ProjectDirectorySnapshot::validate(
     return project_->validate(files, epoch, diagnostic);
 }
 
+core::UniquePtr<ProjectDirectorySnapshot::PreparedProjectRebind>
+ProjectDirectorySnapshot::prepareProjectRebind(
+    const ProjectSourceSnapshot::PreparedFileSave& replacement,
+    const char*& diagnostic) const noexcept
+{
+    diagnostic = "PROJECT-DIRECTORY-REBIND-BASELINE";
+    if (!sealed_ || !project_ || !replacement.prepared()
+        || !replacement.preservesScopeOf(*project_))
+        return {};
+    try {
+        auto prepared = core::makeUnique<PreparedProjectRebind>();
+        prepared->candidate_ = core::makeShared<ProjectDirectorySnapshot>(*this);
+        prepared->candidate_->sealed_ = false;
+        prepared->expected_ = replacement.candidate_;
+        diagnostic = nullptr;
+        return prepared;
+    } catch (...) {
+        diagnostic = "PROJECT-DIRECTORY-REBIND-ALLOCATION";
+        return {};
+    }
+}
+
+bool ProjectDirectorySnapshot::PreparedProjectRebind::canFinish(
+    const ProjectSourceSnapshot::PreparedFileSave& replacement,
+    const core::SharedPtr<const ProjectSourceSnapshot>& committed) const noexcept
+{
+    return !consumed_ && candidate_ && committed == expected_
+        && replacement.committedSnapshotIs(committed)
+        && replacement.preservesScopeOf(*candidate_->project_);
+}
+
+core::SharedPtr<const ProjectDirectorySnapshot>
+ProjectDirectorySnapshot::PreparedProjectRebind::finish(
+    const ProjectSourceSnapshot::PreparedFileSave& replacement,
+    core::SharedPtr<const ProjectSourceSnapshot> committed) noexcept
+{
+    if (!canFinish(replacement, committed))
+        return {};
+    consumed_ = true;
+    candidate_->project_ = std::move(committed);
+    candidate_->sealed_ = true;
+    return candidate_;
+}
+
 struct ProjectDirectorySession::State {
     core::SharedPtr<ProjectDirectorySnapshot> snapshot;
     core::runtime::CancellationSource cancellation;

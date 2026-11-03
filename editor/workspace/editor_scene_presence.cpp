@@ -10,6 +10,17 @@
 #include <stdexcept>
 
 namespace arp::editor {
+
+bool EditorScenePresence::containsScripts(const Subtree& subtree) noexcept
+{
+    return std::any_of(subtree.objects.begin(), subtree.objects.end(), [](const auto& object) {
+        return std::any_of(
+            object.components.begin(), object.components.end(), [](const auto& component) {
+                return bool(component.script);
+            });
+    });
+}
+
 namespace {
 using Presence = EditorScenePresence;
 using Kind = SceneInspectorPropertyKind;

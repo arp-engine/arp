@@ -9,12 +9,16 @@ struct ProjectSourceLocation {
     core::PoolHandle mount;
     core::pmr::String root{&core::defaultCpuMemoryResource()};
     std::uint64_t epoch = 0;
+    // Pure validated logical join; never interprets this as a host path.
+    core::pmr::String pathFor(std::string_view relative) const;
 };
 
 // Immutable acquired bytes. Binding freshness means mount/epoch admission,
 // not an atomic filesystem snapshot or proof that backing files never changed.
 class ProjectSourceSnapshot final {
 public:
+    class PreparedFileSave;
+
     struct Entry {
         core::pmr::String relative{&core::defaultCpuMemoryResource()};
         core::io::FileReadRequest binding;
@@ -32,6 +36,24 @@ public:
     bool validate(
         core::io::FileService&, std::uint64_t currentEpoch, const char*& diagnostic) const noexcept;
 
+    // Prepare both the IO payload and an unpublished one-file receipt before
+    // mutation. The byte baseline is this snapshot's acquired file, not metadata.
+    core::UniquePtr<PreparedFileSave> prepareFileSave(core::io::FileService&,
+        std::uint64_t currentEpoch,
+        std::string_view relative,
+        core::pmr::Vector<std::uint8_t> bytes,
+        std::size_t maxBytes,
+        const char*& diagnostic) const noexcept;
+
+    // Preserve the complete acquired dependency scope, replacing one entry.
+    // The original scope budget also bounds the unpublished replacement.
+    core::UniquePtr<PreparedFileSave> prepareScopeFileSave(core::io::FileService&,
+        std::uint64_t currentEpoch,
+        std::string_view relative,
+        core::pmr::Vector<std::uint8_t> bytes,
+        std::size_t maxBytes,
+        const char*& diagnostic) const noexcept;
+
     const ProjectSourceLocation& location() const noexcept { return location_; }
 
     const core::pmr::Vector<ProjectInputBinding>& identities() const noexcept
@@ -45,6 +67,13 @@ public:
 
 private:
     friend class ProjectSourceSession;
+    core::UniquePtr<PreparedFileSave> prepareSave(core::io::FileService&,
+        std::uint64_t currentEpoch,
+        std::string_view relative,
+        core::pmr::Vector<std::uint8_t> bytes,
+        std::size_t maxBytes,
+        bool preserveScope,
+        const char*& diagnostic) const noexcept;
     bool append(std::string_view relative,
         const core::io::FileReadRequest& binding,
         core::io::FileReadResult receipt,
@@ -56,6 +85,42 @@ private:
     core::pmr::Vector<Entry> entries_{&core::defaultCpuMemoryResource()};
     std::size_t totalBytes_ = 0;
     bool sealed_ = false;
+};
+
+// Domain publication candidate. A committed IO outcome alone is insufficient:
+// mount freshness, owner epoch and the exact submitted byte identity must match.
+class ProjectSourceSnapshot::PreparedFileSave final {
+public:
+    PreparedFileSave() = default;
+    PreparedFileSave(const PreparedFileSave&) = delete;
+    PreparedFileSave& operator=(const PreparedFileSave&) = delete;
+    core::io::FileSaveRequest takeRequest() noexcept;
+    core::SharedPtr<const ProjectSourceSnapshot> finish(core::io::FileService&,
+        std::uint64_t currentEpoch,
+        const core::io::FileSaveResult&) noexcept;
+
+    // Preparation/publication proofs for recipients of a full-scope replacement.
+    // Matching content does not replace the caller's live owner identity gate.
+    bool prepared() const noexcept { return candidate_ && !taken_ && !finished_; }
+
+    bool preservesScopeOf(const ProjectSourceSnapshot&) const noexcept;
+    bool committedSnapshotIs(const core::SharedPtr<const ProjectSourceSnapshot>&) const noexcept;
+
+    const char* diagnostic() const noexcept { return diagnostic_; }
+
+private:
+    friend class ProjectSourceSnapshot;
+    friend class ProjectDirectorySnapshot;
+    core::io::FileService* service_ = nullptr;
+    core::SharedPtr<ProjectSourceSnapshot> candidate_;
+    core::io::FileSaveRequest request_;
+    core::io::FileVersionToken committedVersion_;
+    core::pmr::Vector<ProjectInputBinding> baselineIdentities_;
+    std::size_t replacementIndex_ = 0;
+    bool preservesScope_ = false;
+    bool taken_ = false;
+    bool finished_ = false;
+    const char* diagnostic_ = nullptr;
 };
 
 // Explicit owner-thread source input. Service/queue outlive this context and all

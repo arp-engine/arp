@@ -1,0 +1,33 @@
+<!doctype html><meta charset="utf-8"><title>Editor UI typed source lifecycle</title>
+<script src="browser_progress_transport.js"></script>
+<script>
+var mode=new URLSearchParams(location.search).get('mode')||'ok';
+var uiRoot=new URL('ui-fixture/'+mode+'/',location.href).href;
+var Module={arguments:[uiRoot,mode],uiRequests:{},
+    onAbort:reason=>fetch('/result',{method:'POST',body:JSON.stringify({success:false,error:String(reason)})})};
+Module.uiProgress=[];
+Module.uiJournal=new BrowserProgressTransport(Module.uiProgress,
+    {contractVersion:1,batchMessages:128,maxMessages:16384,maxMessageCodeUnits:65536,maxCodeUnits:4194304},
+    batch=>fetch('/progress',{method:'POST',body:JSON.stringify(batch)}),
+    error=>globalThis.reportUi({success:false,error:String(error)}));
+globalThis.reportUi=report=>{
+    report.messages=Module.uiProgress;
+    Module.uiJournal.flush().catch(error=>{report.success=false;report.error=String(error);})
+        .then(()=>fetch('/result',{method:'POST',body:JSON.stringify(report)}));
+};
+Module.preRun=[()=>Module.uiJournal.append('preRun')];
+Module.onRuntimeInitialized=()=>Module.uiJournal.append('runtimeReady');
+Module.onAbort=reason=>globalThis.reportUi({success:false,error:String(reason)});
+addEventListener('error',event=>globalThis.reportUi({success:false,error:event.message}));
+addEventListener('unhandledrejection',event=>globalThis.reportUi({success:false,error:String(event.reason)}));
+const originalFetch=globalThis.fetch;
+globalThis.fetch=function(input,...options){
+    const url=typeof input==='string'?input:input.url;
+    if(url && url.startsWith(uiRoot)){
+        const name=url.slice(uiRoot.length);
+        Module.uiRequests[name]=(Module.uiRequests[name]||0)+1;
+        if(Module.uiRequests[name]===1)Module.uiJournal.append('source '+name);
+    }
+    return originalFetch.call(this,input,...options);
+};
+</script><script src="arp_editor_ui_source_lifecycle.js"></script>

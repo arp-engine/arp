@@ -31,6 +31,28 @@ bool sameImports(const core::pmr::Vector<EditorScriptModules::Import>& a,
            });
 }
 
+// Reload compatibility is stricter than YAML's numeric conversions. Keep the
+// declared field order/types and reference identities; do not infer migrations.
+bool sameReloadSchema(
+    const Descriptor& a, const Descriptor& b, std::size_t depth, std::size_t& values)
+{
+    if (!depth || !values || a.kind != b.kind || a.scalarType != b.scalarType
+        || a.referenceType != b.referenceType || a.referenceClass != b.referenceClass
+        || bool(a.element) != bool(b.element) || a.fields.size() != b.fields.size())
+        return false;
+    --values;
+    if (a.element && !sameReloadSchema(*a.element, *b.element, depth - 1, values))
+        return false;
+    for (std::size_t i = 0; i < a.fields.size(); ++i) {
+        const auto& x = a.fields[i];
+        const auto& y = b.fields[i];
+        if (x.name != y.name || !x.type || !y.type
+            || !sameReloadSchema(*x.type, *y.type, depth - 1, values))
+            return false;
+    }
+    return true;
+}
+
 class ExactReferences final : public reflection::SerializationContext {
 public:
     ExactReferences(const scene::Scene& scene,
@@ -295,6 +317,26 @@ void EditorScriptComponentArchive::validateBinding(
     require(!state.fields.empty() && state.fields.size() <= budget_.maxYamlBytes
             && state.references.size() <= budget_.maxReferences,
         "EDITOR-SCRIPT-ARCHIVE-STATE-BUDGET");
+}
+
+State EditorScriptComponentArchive::rebindSources(
+    const State& state, const EditorScriptComponentArchive& previous) const
+{
+    const auto oldCatalog = previous.catalog();
+    const auto newCatalog = catalog();
+    previous.validateBinding(*oldCatalog, state);
+    auto result = binding(state.identity, state.enabled);
+    require(result.moduleId == state.moduleId && result.sourcePath == state.sourcePath,
+        "EDITOR-SCRIPT-RELOAD-MODULE-IDENTITY");
+    auto values = budget_.fields.maxValues;
+    require(sameReloadSchema(*oldCatalog->find(state.identity)->fields,
+                *newCatalog->find(state.identity)->fields,
+                budget_.fields.maxDepth,
+                values),
+        "EDITOR-SCRIPT-RELOAD-FIELD-SCHEMA");
+    result.fields = state.fields;
+    result.references = state.references;
+    return result;
 }
 
 State EditorScriptComponentArchive::capture(

@@ -1,0 +1,5 @@
+type: SurvivorsAuthoringOriginalProducer
+contractVersion: 1
+fixture: original_build_survivors_assets.py
+sha256: d028ad40403e044a15c61e203533e67856c570627a42c2ed8aee67e9fa557925
+scope: Original CPU producer oracle only; never a production fallback

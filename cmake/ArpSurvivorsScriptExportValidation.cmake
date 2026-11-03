@@ -1,0 +1,10 @@
+add_executable(arp_scene2d_gameplay_exports_tests tests/contract/scene2d_gameplay_exports_tests.cpp)
+target_include_directories(arp_scene2d_gameplay_exports_tests PRIVATE . src)
+target_link_libraries(arp_scene2d_gameplay_exports_tests PRIVATE
+    arp_script_components arp_scene_script_reflection arp_scene2d_script_reflection)
+target_compile_options(arp_scene2d_gameplay_exports_tests PRIVATE -UNDEBUG)
+arp_add_mingw_static_runtime(arp_scene2d_gameplay_exports_tests)
+add_test(NAME arp_scene2d_gameplay_exports_tests COMMAND arp_scene2d_gameplay_exports_tests)
+add_test(NAME arp_scene2d_gameplay_exports_smoke COMMAND arp_scene2d_gameplay_exports_tests --smoke)
+set_tests_properties(arp_scene2d_gameplay_exports_tests arp_scene2d_gameplay_exports_smoke PROPERTIES
+    TIMEOUT 60 LABELS "script;reflection;physics2d;contract")

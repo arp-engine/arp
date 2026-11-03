@@ -8,8 +8,6 @@ namespace arp::build_a_queen {
 using namespace rhi;
 
 namespace {
-constexpr const char* kFontAtlas = "00000000-0000-4000-8000-000000000311";
-constexpr const char* kFont = "00000000-0000-4000-8000-000000000312";
 
 template <class Result> void require(const Result& r)
 {
@@ -36,8 +34,19 @@ std::shared_ptr<GpuTexture> PortableQueenRenderer::target(
 }
 
 renderer::RendererResult PortableQueenRenderer::create(const core::pmr::String& directory)
+{
+    return createImpl(directory, nullptr);
+}
+
+renderer::RendererResult PortableQueenRenderer::create(const CharacterSources& sources)
+{
+    return createImpl({}, &sources);
+}
+
+renderer::RendererResult PortableQueenRenderer::createImpl(
+    const core::pmr::String& directory, const CharacterSources* sources)
 try {
-    auto result = content_.createContent(directory);
+    auto result = sources ? content_.createContent(*sources) : content_.createContent(directory);
     if (!result.success)
         return result;
     result = hud_.createHud(PortableQueenDesc::kExtent);
@@ -105,20 +114,9 @@ try {
         {1, false, false}});
     if (!result.success)
         return result;
-    core::requireSuccessfulResult(resources_.load<scene2d::SpriteAtlasResource>({},
-                                      core::pmr::String(kFontAtlas),
-                                      core::pmr::String("/assets/web/font.atlas.yaml"),
-                                      core::pmr::String("/assets/web/font.png"),
-                                      1024 * 1024),
-        "QUEEN-FONT-ATLAS");
-    core::requireSuccessfulResult(resources_.load<ui::UiBitmapFontResource>({},
-                                      core::pmr::String(kFont),
-                                      core::pmr::String("/assets/web/font.yaml"),
-                                      core::pmr::String(kFontAtlas),
-                                      128 * 1024,
-                                      95),
-        "QUEEN-FONT");
-    font_ = resources_.find<ui::UiBitmapFontResource>(kFont).get();
+    font_ = config_.fontResources ? config_.fontResources->font() : nullptr;
+    if (!font_ || !font_->valid())
+        return {false, "QUEEN-FONT-NOT-PREPARED"};
     result = gui_.registerBitmapFont(*font_);
     if (!result.success)
         return result;

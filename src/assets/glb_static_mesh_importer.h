@@ -2,6 +2,7 @@
 
 #include "assets/asset_pipeline.h"
 #include "core/api.h"
+#include "core/container/array_view.h"
 
 #include <array>
 #include <filesystem>
@@ -55,11 +56,66 @@ struct StaticMeshSourceImportLimits {
 ARP_API StaticMeshSourceImportResult importStaticMeshWithSourceIdentityFromGlbFile(
     const std::filesystem::path& path, StaticMeshSourceImportLimits limits = {});
 
+// Raw binary acquisition is owned by the caller. Requires a finite positive
+// source/geometry/JSON budgets, performs no IO and shares the file adapter's
+// identity parser. Unlimited legacy file defaults do not select this entry.
+ARP_API StaticMeshSourceImportResult importStaticMeshWithSourceIdentityFromGlbBytes(
+    core::ArrayView<const std::uint8_t> bytes, StaticMeshSourceImportLimits limits);
+
+// Full static mesh/material import without source-identity retention. Uses the
+// same bounded binary parser, preserving ordinary repeated-node semantics.
+ARP_API StaticMeshImportResult importStaticMeshFromGlbBytes(
+    core::ArrayView<const std::uint8_t> bytes, StaticMeshSourceImportLimits limits);
+
+enum class StaticMeshVertexColorPolicy { Unspecified, RejectColor0, DiscardValidatedRgba };
+
+// static-glb-scene-source/1: all selected scene nodes, including unnamed ones.
+// Geometry limits must be finite and strictGeometryOnly=false; that other
+// profile intentionally admits only identity-node, metadata-free geometry.
+struct StaticMeshSceneSourceImportLimits final {
+    StaticMeshSourceImportLimits geometry;
+    std::uint64_t maxImportBytes = 0, maxDecodedBytes = 0;
+    std::uint32_t maxNodeVisits = 0, maxNodeDepth = 0;
+    StaticMeshVertexColorPolicy colorPolicy = StaticMeshVertexColorPolicy::Unspecified;
+};
+
+struct StaticMeshSceneSourceImportResult final {
+    StaticMeshImportResult geometry;
+    std::uint64_t decodedBytes = 0, importPeakBytes = 0;
+};
+
+ARP_API const char* validateStaticMeshSceneSourceImportLimits(
+    const StaticMeshSceneSourceImportLimits& limits) noexcept;
+ARP_API StaticMeshSceneSourceImportResult importStaticMeshSceneFromGlbBytes(
+    core::ArrayView<const std::uint8_t> bytes, const StaticMeshSceneSourceImportLimits& limits);
+
 /// Import a GLB file preserving named-node variants.
 /// Each mesh-bearing named node becomes a separate NamedVariant entry,
 /// and COLOR_0 (wind weights) is read where present.
 /// This is the path used by PlantAssetSet and RockAssetSet loaders.
 enum class NamedVariantGeometrySpace { Scene, RootRelative };
+
+enum class NamedVariantColorPolicy { Unspecified, RejectColor0, PreserveRgbaWind };
+
+// named-glb-source/1 budgets apply to emitted occurrences, including shared DAGs.
+struct NamedVariantSourceImportLimits final {
+    std::uint64_t maxSourceBytes = 0, maxImportBytes = 0;
+    std::uint32_t maxVertices = 0, maxIndices = 0, maxPrimitives = 0, maxVariants = 0;
+    std::uint32_t maxNodeVisits = 0, maxNodeDepth = 0, maxJsonDepth = 0, maxJsonValues = 0;
+    NamedVariantColorPolicy colorPolicy = NamedVariantColorPolicy::Unspecified;
+};
+
+ARP_API const char* validateNamedVariantSourceImportLimits(
+    NamedVariantSourceImportLimits limits) noexcept;
+
+// Pure, bounded source profile. Converts node matrices to core row-major output;
+// the old file adapter below retains its explicit Legacy transform convention.
+ARP_API NamedVariantImportResult importNamedVariantsFromGlbBytes(
+    core::ArrayView<const std::uint8_t> bytes,
+    NamedVariantGeometrySpace geometrySpace,
+    NamedVariantSourceImportLimits limits);
+
+// Legacy cold-host import; it does not select the bounded source contract.
 ARP_API NamedVariantImportResult importNamedVariantsFromGlbFile(const std::filesystem::path& path,
     NamedVariantGeometrySpace geometrySpace = NamedVariantGeometrySpace::Scene);
 

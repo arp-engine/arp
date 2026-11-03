@@ -57,12 +57,17 @@ struct JsonParseLimits final {
     bool strictAscii = false;
 };
 
-// Opt-in bounded, duplicate-free ASCII JSON for deterministic source contracts.
-// Unicode escapes are rejected explicitly by this subset, never replaced.
+// Nonzero limits opt into bounded, duplicate-free UTF-8 JSON. strictAscii is
+// the geometry-only subset and explicitly rejects all Unicode escapes.
 ARP_API bool parseJson(const std::pmr::string& text, JsonValue& out, JsonParseLimits limits);
 ARP_API bool readFile(const std::filesystem::path& path, std::pmr::string& out);
 ARP_API bool readGlbChunks(
     const std::pmr::string& bytes, GlbChunks& chunks, std::pmr::string& diagnostics);
+enum class GlbChunkPolicy { Legacy, EmbeddedSourceV1 };
+ARP_API bool readGlbChunks(const std::pmr::string& bytes,
+    GlbChunks& chunks,
+    std::pmr::string& diagnostics,
+    GlbChunkPolicy policy);
 ARP_API std::pmr::vector<GlbBufferViewRange> parseGlbBufferViewRanges(const JsonValue& root);
 ARP_API ImportedGlbMaterialAssets parseImportedGlbMaterialAssets(const JsonValue& root,
     const std::pmr::string& bin,

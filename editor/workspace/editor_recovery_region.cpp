@@ -1,8 +1,8 @@
 #include "core/encoding/yaml_contract.h"
-#include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
 #include "core/io/staged_directory.h"
 #include "core/text/utf8.h"
+#include "editor/io/editor_cold_host_read.h"
 #include "editor/project/project_identity.h"
 #include "editor/workspace/editor_recovery_session.h"
 #include "resource/resource_manager.h"
@@ -149,7 +149,8 @@ bool EditorRecoveryRegion::open(const std::filesystem::path& directory,
                 != std::filesystem::file_type::regular
             || error)
             return fail(diagnostic, "EDITOR-RECOVERY-REGION-METADATA-PATH");
-        const auto read = core::readTextFile(file, EditorRecoveryBudget::maxRegionMetadataBytes);
+        const auto read =
+            EditorColdHostRead::readTextBytes(file, EditorRecoveryBudget::maxRegionMetadataBytes);
         if (!read.success || !validMetadata(read.text, budget))
             return fail(diagnostic, "EDITOR-RECOVERY-REGION-METADATA-INVALID");
         directory_ = directory;
@@ -181,8 +182,8 @@ bool EditorRecoveryRegion::inspect(
         if (std::filesystem::symlink_status(metadataPath).type()
             != std::filesystem::file_type::regular)
             return fail(diagnostic, "EDITOR-RECOVERY-REGION-METADATA-PATH");
-        const auto current =
-            core::readTextFile(metadataPath, EditorRecoveryBudget::maxRegionMetadataBytes);
+        const auto current = EditorColdHostRead::readTextBytes(
+            metadataPath, EditorRecoveryBudget::maxRegionMetadataBytes);
         if (!current.success || current.text != metadataBytes_)
             return fail(diagnostic, "EDITOR-RECOVERY-REGION-METADATA-CHANGED");
         core::pmr::Vector<EditorRecoveryRegionEntry> candidate;

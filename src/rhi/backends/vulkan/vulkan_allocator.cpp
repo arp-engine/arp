@@ -3,7 +3,7 @@
 #include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 #include "rhi/frontend/buffer_placement.h"
-#include "rhi/frontend/detail/allocator_backing_ledger.h"
+#include "rhi/frontend/memory_allocator_backing_ledger.h"
 #include "rhi/frontend/memory_budget_ledger.h"
 
 #ifndef ARP_RHI_NO_VMA

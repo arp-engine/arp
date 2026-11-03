@@ -24,7 +24,7 @@ foreach(instance_mode Native Emulated)
     set(instance_publication "${bindless_instance64_dir}/GraphicsInstance64.${instance_mode_name}.bindless.yaml")
     list(APPEND bindless_instance64_outputs "${instance_publication}")
     add_custom_command(OUTPUT "${instance_publication}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_graphics_instance64.yaml"
             --bindless-source-library "${CMAKE_SOURCE_DIR}/shaders/core/instance_transform.slang"
@@ -32,7 +32,7 @@ foreach(instance_mode Native Emulated)
             --bindless-source "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_graphics_instance64.slang"
             --bindless-entry vertexMain --bindless-entry cleanFragment --bindless-entry faultFragment
             --bindless-mode "${instance_mode}" --out-dir "${bindless_instance64_dir}"
-        DEPENDS tests/fixtures/bindless_graphics_instance64.yaml tests/fixtures/bindless_graphics_instance64.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_graphics_instance64.yaml tests/fixtures/bindless_graphics_instance64.slang
             shaders/core/instance_transform.slang shaders/core/foliage_geometry.slang scripts/compile_shaders.py scripts/bindless_codegen.py
             scripts/slang_resource_switch.py scripts/buffer_vector_record.py scripts/spirv_layout.py
             scripts/shader_bindings_codegen.py "${SLANGC_EXECUTABLE}" "${SPIRV_REFLECT_EXECUTABLE}"

@@ -40,11 +40,13 @@ function(arp_add_webgl_component_libraries)
         "${arp_component_root}/src/core/io/file_query_contract.cpp"
         "${arp_component_root}/src/core/io/http_file_contract.cpp"
         "${arp_component_root}/src/core/io/http_file_backend.cpp"
+        "${arp_component_root}/src/core/io/workspace_file_backend.cpp"
         "${arp_component_root}/src/core/io/native_directory_file_backend.cpp"
         "${arp_component_root}/src/core/io/detail/native_directory_access.cpp"
         "${arp_component_root}/src/core/runtime/async_runtime.cpp"
     )
     target_include_directories(arp_core PUBLIC "${arp_component_root}/src")
+    target_include_directories(arp_core PRIVATE "${arp_component_root}/3rd/assimp-6.0.5/contrib/rapidjson/include")
     target_link_libraries(arp_core PUBLIC arp_core_foundation arp_network_http_transport)
     target_compile_features(arp_core PUBLIC cxx_std_17)
     target_compile_definitions(arp_core PUBLIC ARP_STATIC_LINK=1)
@@ -102,6 +104,8 @@ function(arp_add_webgl_component_libraries)
         "${arp_component_root}/src/resource/resource_contract.cpp"
         "${arp_component_root}/src/resource/resource_manager.cpp"
         "${arp_component_root}/src/resource/resource_graph_plan.cpp"
+        "${arp_component_root}/src/resource/resource_graph_executor.cpp"
+        "${arp_component_root}/src/resource/shader_artifact_resource.cpp"
         "${arp_component_root}/src/2d/sprite_resources.cpp"
         "${arp_component_root}/src/renderer/scene_2d_renderer.cpp"
         "${arp_component_root}/src/renderer/scene_2d_ordered.cpp")

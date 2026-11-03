@@ -1,6 +1,6 @@
 #pragma once
 #include "rhi/backends/webgpu/webgpu_native_buffer_map_state.h"
-#include "rhi/buffer_readback_range.h"
+#include "rhi/frontend/transfer_validation.h"
 
 #include <cstddef>
 #include <cstdint>

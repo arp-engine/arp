@@ -1,8 +1,8 @@
 #pragma once
 
 #include "core/math/unsigned_range.h"
-#include "rhi/buffer_readback_range.h"
 #include "rhi/frontend/resource_leases.h"
+#include "rhi/frontend/transfer_validation.h"
 #include "rhi/gpu_device.h"
 #include "rhi/gpu_extensions.h"
 #include "rhi/semantics/transfer_lowering.h"

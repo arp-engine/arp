@@ -81,6 +81,9 @@ public:
         core::pmr::String& destination,
         ProjectDiagnostic& diagnostic,
         ProjectManifestBudget budget = {});
+    // Settings drafts may change only name/entryScene. The complete encoded
+    // dependency/identity contract must otherwise remain identical.
+    static bool isSettingsOnlyChange(const ProjectManifest& saved, const ProjectManifest& draft);
     static bool moduleOrder(const ProjectManifest& manifest,
         core::pmr::Vector<std::size_t>& destination,
         ProjectDiagnostic& diagnostic);

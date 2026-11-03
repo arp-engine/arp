@@ -111,23 +111,9 @@ private:
         return compare(f.compare) && op(f.failOp) && op(f.depthFailOp) && op(f.passOp);
     }
 
-    static bool factor(BlendFactor v) noexcept
-    {
-        switch (v) {
-        case BlendFactor::Zero:
-        case BlendFactor::One:
-        case BlendFactor::SrcAlpha:
-        case BlendFactor::OneMinusSrcAlpha:
-        case BlendFactor::DstAlpha:
-        case BlendFactor::OneMinusDstAlpha:
-            return true;
-        }
-        return false;
-    }
-
     static bool blend(const BlendComponent& b) noexcept
     {
-        return factor(b.sourceFactor) && factor(b.destinationFactor)
+        return BlendStateContract::validate(b) == nullptr
             && (b.operation == BlendOp::Add || b.operation == BlendOp::Subtract
                 || b.operation == BlendOp::ReverseSubtract);
     }

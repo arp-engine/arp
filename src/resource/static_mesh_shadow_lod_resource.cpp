@@ -53,6 +53,61 @@ std::filesystem::path checkedFile(
     return path;
 }
 
+core::StringView rawText(const core::pmr::Vector<std::uint8_t>& bytes)
+{
+    return {bytes.empty() ? "" : reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+Node sourceDocument(const core::pmr::Vector<std::uint8_t>& bytes, std::size_t budget)
+{
+    auto decoded = decodeResourceText({bytes.data(), bytes.size()}, budget);
+    if (!decoded.success)
+        throw core::DiagnosticError(decoded.diagnostics);
+    return Yaml::parseSingleDocument(decoded.text);
+}
+
+Node sourceManifest(const core::pmr::Vector<std::uint8_t>& bytes, std::size_t budget)
+{
+    auto manifest = sourceDocument(bytes, budget);
+    const auto version = Yaml::uint32(manifest, "contractVersion");
+    require(Yaml::text(manifest, "type") == "StaticMeshShadowLodAsset"
+            && (version == 1 || version == 2)
+            && Yaml::text(manifest, "status") == "Prototype Complete",
+        "SHADOW-LOD-MANIFEST-CONTRACT-INVALID");
+    return manifest;
+}
+
+std::filesystem::path sourceBindingPath(const std::filesystem::path& root,
+    const Node& binding,
+    std::size_t budget,
+    ResourceFileOrigin origin)
+{
+    byteCount(binding, "bytes", budget);
+    require(
+        core::Sha256::isHexDigest(Yaml::text(binding, "sha256")), "SHADOW-LOD-FILE-HASH-MISMATCH");
+    std::filesystem::path path;
+    require(resolveResourceSourcePath(root, Yaml::text(binding, "source"), origin, path),
+        "SHADOW-LOD-SOURCE-PATH");
+    return path;
+}
+
+core::BinaryFileReadResult sourceBytes(const std::filesystem::path& root,
+    const Node& binding,
+    std::size_t budget,
+    ResourceFileOrigin origin,
+    const ResourceLoadContext& context)
+{
+    const auto path = sourceBindingPath(root, binding, budget, origin);
+    const auto count = byteCount(binding, "bytes", budget);
+    auto read = readResourceSource(core::FilePath::utf8(path), context, count, false, &origin);
+    if (!read.success)
+        throw core::DiagnosticError(read.diagnostics);
+    require(read.bytes.size() == count, "SHADOW-LOD-FILE-SIZE-MISMATCH");
+    require(core::Sha256::matchesHexDigest(rawText(read.bytes), Yaml::text(binding, "sha256")),
+        "SHADOW-LOD-FILE-HASH-MISMATCH");
+    return read;
+}
+
 std::uint64_t prototypeKey(std::uint32_t mesh, std::uint32_t primitive)
 {
     return (std::uint64_t(mesh) << 32u) | primitive;
@@ -71,13 +126,118 @@ StaticMeshShadowLodResource::StaticMeshShadowLodResource(core::pmr::String id,
     addDependency({sourceResourceId_, "shadow-lod-original-generation"});
 }
 
+StaticMeshShadowLodResource::StaticMeshShadowLodResource(
+    core::pmr::String id, core::pmr::String sourceId, StaticMeshShadowLodSourceDesc source)
+    : ResourceBase({std::move(id), resourceTypeName(), {}, "Prototype Complete", {}}),
+      sourceResourceId_(std::move(sourceId)), sourceDesc_(std::move(source)),
+      importQuota_(core::makeShared<core::CpuMemoryQuota>(sourceDesc_->maxImportBytes))
+{
+    addDependency({sourceResourceId_, "shadow-lod-original-generation"});
+}
+
+void StaticMeshShadowLodResource::validateSourceDesc() const
+{
+    require(sourceDesc_.has_value(), "SHADOW-LOD-PREPARATION-ONLY");
+    const auto& source = *sourceDesc_;
+    require(source.maxImportBytes && source.maxImportBytes != UINT64_MAX && source.maxJsonDepth
+            && source.maxJsonDepth <= 64 && source.maxJsonValues,
+        "SHADOW-LOD-SOURCE-BUDGET");
+    require(!core::Utf8Decoder::validate(source.projectRoot)
+            && source.projectRoot.find('\0') == core::pmr::String::npos
+            && (source.origin.pathScope != core::io::FilePathScope::MountedResource
+                || source.projectRoot.empty()
+                || core::FilePath::isSafeRelativePath(source.projectRoot)),
+        "SHADOW-LOD-SOURCE-ROOT");
+    const auto validation =
+        validateResourceReadIntent(source.manifestPath, source.maxSourceBytes, source.origin);
+    require(validation.status == core::io::FileIoStatus::Success, "SHADOW-LOD-SOURCE-CONFIG");
+}
+
+void StaticMeshShadowLodResource::observeOriginal(ResourceManager& manager) const
+{
+    const auto handle = manager.find<MeshAssetResource>(sourceResourceId_);
+    require(handle.ready(), "SHADOW-LOD-ORIGINAL-NOT-READY");
+    require(handle.get()->immutableMeshGeometry() && handle.get()->sourceIdentityVersion() == 1,
+        "SHADOW-LOD-ORIGINAL-IDENTITY-REQUIRED");
+    if (plannedManager_)
+        require(plannedManager_ == &manager && plannedGeneration_ == handle.generation(),
+            "SHADOW-LOD-ORIGINAL-GENERATION-CHANGED");
+    else {
+        plannedManager_ = &manager;
+        plannedGeneration_ = handle.generation();
+    }
+}
+
+bool StaticMeshShadowLodResource::planFileReadIntents(ResourceManager& manager,
+    const ResourceLoadContext& context,
+    core::pmr::Vector<ResourceFileReadIntent>& out,
+    core::pmr::String& diagnostic) const
+{
+    try {
+        validateSourceDesc();
+        observeOriginal(manager);
+        core::CpuMemoryQuotaScope scope(importQuota_);
+        const auto& source = *sourceDesc_;
+        if (!appendResourceReadIntent(
+                source.manifestPath, source.maxSourceBytes, out, diagnostic, source.origin))
+            return false;
+        if (!context.sources || !context.sources->find(source.manifestPath))
+            return true;
+        auto inputs = context;
+        inputs.requirePreloadedSources = true;
+        auto raw = readResourceSource(
+            source.manifestPath, inputs, source.maxSourceBytes, false, &source.origin);
+        if (!raw.success)
+            throw core::DiagnosticError(raw.diagnostics);
+        const auto manifest = sourceManifest(raw.bytes, source.maxSourceBytes);
+        const auto& levels = Yaml::sequence(manifest, "levels");
+        require(levels.size() == 2, "SHADOW-LOD-LEVEL-COUNT-INVALID");
+        const auto append = [&](const Node& binding) {
+            const auto path = sourceBindingPath(
+                std::filesystem::u8path(source.manifestPath.begin(), source.manifestPath.end())
+                    .parent_path(),
+                binding,
+                source.maxSourceBytes,
+                source.origin);
+            return appendResourceReadIntent(core::FilePath::utf8(path),
+                byteCount(binding, "bytes", source.maxSourceBytes),
+                out,
+                diagnostic,
+                source.origin);
+        };
+        for (const auto& level : levels)
+            if (!append(level))
+                return false;
+        if (!append(Yaml::required(manifest, "certificates")))
+            return false;
+        if (Yaml::uint32(manifest, "contractVersion") == 2
+            && !append(Yaml::required(manifest, "indexOrder")))
+            return false;
+        return true;
+    } catch (const core::YamlContractError& error) {
+        diagnostic = error.diagnostic;
+    } catch (const std::bad_alloc&) {
+        diagnostic = "SHADOW-LOD-SOURCE-IMPORT-BUDGET";
+    } catch (const std::exception& error) {
+        diagnostic = error.what();
+    }
+    return false;
+}
+
 ResourceLoadResult StaticMeshShadowLodResource::load(
     ResourceManager& manager, const ResourceLoadContext& context)
 {
     resetPrepared();
     try {
-        require(!context.requirePreloadedSources, "SHADOW-LOD-PREPARATION-ONLY");
+        require(sourceDesc_ || (!context.requirePreloadedSources && !context.sources),
+            "SHADOW-LOD-PREPARATION-ONLY");
         require(context.maxDecodedBytes != 0, "SHADOW-LOD-EXPLICIT-BUDGET-REQUIRED");
+        std::optional<core::CpuMemoryQuotaScope> scope;
+        if (sourceDesc_) {
+            validateSourceDesc();
+            observeOriginal(manager);
+            scope.emplace(importQuota_);
+        }
         prepare(manager, context);
         auto result = ResourceBase::load(manager, context);
         if (!result.success)
@@ -86,6 +246,9 @@ ResourceLoadResult StaticMeshShadowLodResource::load(
     } catch (const core::YamlContractError& error) {
         resetPrepared();
         return resourceLoadFailure(*this, error.diagnostic);
+    } catch (const std::bad_alloc&) {
+        resetPrepared();
+        return resourceLoadFailure(*this, "SHADOW-LOD-SOURCE-IMPORT-BUDGET");
     } catch (const std::exception& error) {
         resetPrepared();
         return resourceLoadFailure(*this, error.what());
@@ -107,16 +270,37 @@ void StaticMeshShadowLodResource::resetPrepared()
 void StaticMeshShadowLodResource::prepare(
     ResourceManager& manager, const ResourceLoadContext& context)
 {
+    const auto manifestPath = sourceDesc_
+        ? std::filesystem::u8path(
+              sourceDesc_->manifestPath.begin(), sourceDesc_->manifestPath.end())
+        : manifestPath_;
+    const auto projectRoot = sourceDesc_
+        ? std::filesystem::u8path(sourceDesc_->projectRoot.begin(), sourceDesc_->projectRoot.end())
+        : projectRoot_;
     const auto handle = manager.find<MeshAssetResource>(sourceResourceId_);
     require(handle.ready(), "SHADOW-LOD-ORIGINAL-NOT-READY");
     const auto& original = *handle.get();
     require(original.immutableMeshGeometry() && original.sourceIdentityVersion() == 1,
         "SHADOW-LOD-ORIGINAL-IDENTITY-REQUIRED");
-    const auto read = core::readTextFile(manifestPath_, context.maxDecodedBytes);
-    require(read.success, "SHADOW-LOD-MANIFEST-READ-FAILED");
-    const auto digest = core::Sha256::digest(read.text);
-    std::copy(digest.begin(), digest.end(), manifestDigest_.begin());
-    const auto manifest = Yaml::parseSingleDocument(read.text);
+    Node manifest;
+    if (sourceDesc_) {
+        auto read = readResourceSource(sourceDesc_->manifestPath,
+            context,
+            sourceDesc_->maxSourceBytes,
+            false,
+            &sourceDesc_->origin);
+        if (!read.success)
+            throw core::DiagnosticError(read.diagnostics);
+        const auto digest = core::Sha256::digest(rawText(read.bytes));
+        std::copy(digest.begin(), digest.end(), manifestDigest_.begin());
+        manifest = sourceManifest(read.bytes, sourceDesc_->maxSourceBytes);
+    } else {
+        const auto read = core::readTextFile(manifestPath, context.maxDecodedBytes);
+        require(read.success, "SHADOW-LOD-MANIFEST-READ-FAILED");
+        const auto digest = core::Sha256::digest(read.text);
+        std::copy(digest.begin(), digest.end(), manifestDigest_.begin());
+        manifest = Yaml::parseSingleDocument(read.text);
+    }
     const auto version = Yaml::uint32(manifest, "contractVersion");
     require(Yaml::text(manifest, "type") == "StaticMeshShadowLodAsset"
             && (version == 1 || version == 2)
@@ -125,11 +309,22 @@ void StaticMeshShadowLodResource::prepare(
     require(core::Sha256::matchesRawHexDigest(
                 original.sourceContentDigest(), Yaml::text(manifest, "sourceSha256")),
         "SHADOW-LOD-ORIGINAL-HASH-MISMATCH");
-    const auto sourcePath =
-        projectRoot_ / std::filesystem::path(Yaml::text(manifest, "source").c_str());
-    std::error_code error;
-    require(std::filesystem::equivalent(sourcePath, original.sourcePath(), error) && !error,
-        "SHADOW-LOD-ORIGINAL-PATH-MISMATCH");
+    if (sourceDesc_) {
+        std::filesystem::path path;
+        const auto origin = original.sourceOrigin();
+        require(origin.pathScope == sourceDesc_->origin.pathScope
+                && origin.mount == sourceDesc_->origin.mount
+                && resolveResourceSourcePath(
+                    projectRoot, Yaml::text(manifest, "source"), sourceDesc_->origin, path)
+                && path.lexically_normal() == original.sourcePath().lexically_normal(),
+            "SHADOW-LOD-ORIGINAL-PATH-MISMATCH");
+    } else {
+        const auto path =
+            projectRoot / std::filesystem::path(Yaml::text(manifest, "source").c_str());
+        std::error_code error;
+        require(std::filesystem::equivalent(path, original.sourcePath(), error) && !error,
+            "SHADOW-LOD-ORIGINAL-PATH-MISMATCH");
+    }
     const auto count = Yaml::uint32(manifest, "sourceCount");
     require(count == original.sourceIdentities().size()
             && count <= context.maxDecodedBytes / sizeof(StaticMeshShadowLodSource),
@@ -153,10 +348,20 @@ void StaticMeshShadowLodResource::prepare(
     core::pmr::Vector<std::uint32_t> sourceOrder{&core::defaultCpuMemoryResource()};
     if (version == 2) {
         const auto& orderBinding = Yaml::required(manifest, "indexOrder");
-        const auto orderPath =
-            checkedFile(manifestPath_.parent_path(), orderBinding, context.maxDecodedBytes);
-        const auto document =
-            readDocument(orderPath, context.maxDecodedBytes, Yaml::text(orderBinding, "sha256"));
+        Node document;
+        if (sourceDesc_) {
+            const auto read = sourceBytes(manifestPath.parent_path(),
+                orderBinding,
+                sourceDesc_->maxSourceBytes,
+                sourceDesc_->origin,
+                context);
+            document = sourceDocument(read.bytes, sourceDesc_->maxSourceBytes);
+        } else {
+            const auto path =
+                checkedFile(manifestPath.parent_path(), orderBinding, context.maxDecodedBytes);
+            document =
+                readDocument(path, context.maxDecodedBytes, Yaml::text(orderBinding, "sha256"));
+        }
         require(Yaml::text(document, "type") == "MeshSourceIndexOrder"
                 && Yaml::uint32(document, "contractVersion") == 1
                 && Yaml::text(document, "sourceSha256") == Yaml::text(manifest, "sourceSha256"),
@@ -200,13 +405,28 @@ void StaticMeshShadowLodResource::prepare(
             + std::uint64_t(count) * sizeof(assets::MeshSourceRange);
         require(bytes <= context.maxDecodedBytes - retained, "SHADOW-LOD-LOAD-BUDGET-EXCEEDED");
         retained += bytes;
-        const auto path = checkedFile(manifestPath_.parent_path(), spec, context.maxDecodedBytes);
         auto& imported = imports[level - 1];
-        imported = assets::importStaticMeshWithSourceIdentityFromGlbFile(path,
-            {byteCount(spec, "bytes", context.maxDecodedBytes),
-                static_cast<std::uint32_t>(vertices),
-                static_cast<std::uint32_t>(indices),
-                count});
+        assets::StaticMeshSourceImportLimits limits{
+            byteCount(
+                spec, "bytes", sourceDesc_ ? sourceDesc_->maxSourceBytes : context.maxDecodedBytes),
+            static_cast<std::uint32_t>(vertices),
+            static_cast<std::uint32_t>(indices),
+            count};
+        if (sourceDesc_) {
+            limits.maxJsonDepth = sourceDesc_->maxJsonDepth;
+            limits.maxJsonValues = sourceDesc_->maxJsonValues;
+            const auto read = sourceBytes(manifestPath.parent_path(),
+                spec,
+                sourceDesc_->maxSourceBytes,
+                sourceDesc_->origin,
+                context);
+            imported = assets::importStaticMeshWithSourceIdentityFromGlbBytes(
+                {read.bytes.data(), read.bytes.size()}, limits);
+        } else {
+            const auto path =
+                checkedFile(manifestPath.parent_path(), spec, context.maxDecodedBytes);
+            imported = assets::importStaticMeshWithSourceIdentityFromGlbFile(path, limits);
+        }
         if (!imported.geometry.success)
             throw core::DiagnosticError(imported.geometry.diagnostics);
         require(imported.identityVersion == 1, "SHADOW-LOD-CANDIDATE-IMPORT-FAILED");
@@ -230,12 +450,21 @@ void StaticMeshShadowLodResource::prepare(
                 "SHADOW-LOD-CANDIDATE-IDENTITY-DUPLICATE");
     }
 
-    const auto certificatePath = checkedFile(manifestPath_.parent_path(),
-        Yaml::required(manifest, "certificates"),
-        context.maxDecodedBytes);
-    const auto certificates = readDocument(certificatePath,
-        context.maxDecodedBytes,
-        Yaml::text(Yaml::required(manifest, "certificates"), "sha256"));
+    Node certificates;
+    const auto& certificateBinding = Yaml::required(manifest, "certificates");
+    if (sourceDesc_) {
+        const auto read = sourceBytes(manifestPath.parent_path(),
+            certificateBinding,
+            sourceDesc_->maxSourceBytes,
+            sourceDesc_->origin,
+            context);
+        certificates = sourceDocument(read.bytes, sourceDesc_->maxSourceBytes);
+    } else {
+        const auto path =
+            checkedFile(manifestPath.parent_path(), certificateBinding, context.maxDecodedBytes);
+        certificates =
+            readDocument(path, context.maxDecodedBytes, Yaml::text(certificateBinding, "sha256"));
+    }
     require(Yaml::text(certificates, "type") == "TriangleSurfaceCertificates"
             && Yaml::uint32(certificates, "contractVersion") == 1
             && Yaml::text(certificates, "sourceSha256") == Yaml::text(manifest, "sourceSha256")

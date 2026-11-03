@@ -22,13 +22,13 @@ foreach(mode Native Emulated)
     set(publication "${bindless_terrain_geometry_dir}/TerrainGeometryFamily.${mode_name}.bindless.yaml")
     list(APPEND bindless_terrain_geometry_outputs "${publication}")
     add_custom_command(OUTPUT "${publication}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_terrain_geometry_family.yaml"
             ${bindless_terrain_geometry_arguments}
             --bindless-source "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_terrain_geometry_family.slang"
             --bindless-mode "${mode}" --out-dir "${bindless_terrain_geometry_dir}"
-        DEPENDS tests/fixtures/bindless_terrain_geometry_family.yaml tests/fixtures/bindless_terrain_geometry_family.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_terrain_geometry_family.yaml tests/fixtures/bindless_terrain_geometry_family.slang
             ${bindless_terrain_geometry_libraries}
             scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
             scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py

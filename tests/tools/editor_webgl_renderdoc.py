@@ -145,6 +145,7 @@ def replay(path,phase):
 try:
     options=rd.GetDefaultCaptureOptions();options.hookIntoChildren=True
     query='capture=1&capture-workspace=1' if config.get('workspace') else 'capture=1'
+    if config.get('sourceWorkspace'):query+='&capture-source=1'
     if config.get('viewportSmoke'):query+='&viewport-smoke=1'
     command='--no-sandbox --disable-gpu-sandbox --in-process-gpu --no-first-run --no-default-browser-check --disable-background-networking --disable-renderer-backgrounding --disable-background-timer-throttling --disable-backgrounding-occluded-windows --window-size=1440,960 --user-data-dir="{}" --app="http://127.0.0.1:{}/arp_editor.html?{}"'.format(output/'browser-profile',config['port'],query)
     launch=rd.ExecuteAndInject(config['browser'],config['root'],command,[],str(output/'editor'),options,False)

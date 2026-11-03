@@ -1,17 +1,23 @@
 #pragma once
 
 #include "renderer/ui/ui_atlas_runtime.h"
+#include "ui/ui_font.h"
 
+#include <array>
 #include <filesystem>
 #include <optional>
 
 namespace arp::editor {
 class EditorShell;
+struct EditorUiContent;
 
 class EditorUiAssets final {
 public:
     static EditorUiAssets build(EditorShell& shell,
         const std::filesystem::path& root,
+        const core::pmr::Vector<renderer::ui::UiDrawCommand>& commands);
+    static EditorUiAssets buildPrepared(EditorShell&,
+        const EditorUiContent&,
         const core::pmr::Vector<renderer::ui::UiDrawCommand>& commands);
 
     bool ok() const { return atlas_.has_value(); }
@@ -25,6 +31,10 @@ public:
     void applyTextMetrics(EditorShell&) const;
 
 private:
+    static EditorUiAssets buildInputs(EditorShell&,
+        renderer::GuiAtlasTextureDesc,
+        std::array<ui::UiFontFaceDesc, 4>,
+        const core::pmr::Vector<renderer::ui::UiDrawCommand>&);
     static EditorUiAssets failure(const char* stage, const core::pmr::String& diagnostic);
     std::optional<renderer::ui::UnifiedUiAtlasRuntime> atlas_;
     const char* stage_ = "ASSETS";

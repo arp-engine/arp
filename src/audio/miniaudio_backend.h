@@ -7,16 +7,20 @@
 namespace arp::audio {
 
 class AudioSystem;
+struct AudioMemoryImportDesc;
 
 struct DecodedAudioPcm {
     core::pmr::Vector<float> samples{&core::defaultCpuMemoryResource()};
     std::uint32_t channels = 0u;
     core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
+    const char* diagnosticId = nullptr;
+    std::uint64_t decoderLiveBytes = 0, decoderPeakBytes = 0;
 
     bool success() const noexcept { return !samples.empty() && channels != 0u; }
 };
 
 ARP_API DecodedAudioPcm decodeAudioFileToRuntimePcm(const char* path, std::size_t maxBytes);
+ARP_API DecodedAudioPcm decodeAudioMemoryToRuntimePcm(const AudioMemoryImportDesc&);
 
 class MiniaudioBackend final {
 public:

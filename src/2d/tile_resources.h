@@ -14,7 +14,10 @@ struct TileDefinition {
 
 class TileSetResource final : public resource::ResourceBase {
 public:
-    TileSetResource(core::pmr::String id, core::pmr::String path, std::size_t maxBytes);
+    TileSetResource(core::pmr::String id,
+        core::pmr::String path,
+        std::size_t maxBytes,
+        resource::ResourceFileOrigin origin = {});
     resource::ResourceLoadResult load(
         resource::ResourceManager&, const resource::ResourceLoadContext&) override;
     bool collectFileReadIntents(resource::ResourceManager&,
@@ -27,6 +30,7 @@ public:
 private:
     core::pmr::String path_;
     std::size_t maxBytes_;
+    resource::ResourceFileOrigin sourceOrigin_;
     float worldSize_ = 0;
     core::pmr::Vector<TileDefinition> tiles_{&core::defaultCpuMemoryResource()};
 };
@@ -52,7 +56,8 @@ public:
     TileMapResource(core::pmr::String id,
         core::pmr::String tileSetId,
         core::pmr::String path,
-        std::size_t maxBytes);
+        std::size_t maxBytes,
+        resource::ResourceFileOrigin origin = {});
     resource::ResourceLoadResult load(
         resource::ResourceManager&, const resource::ResourceLoadContext&) override;
     bool collectFileReadIntents(resource::ResourceManager&,
@@ -70,6 +75,7 @@ public:
 private:
     core::pmr::String tileSetId_, path_;
     std::size_t maxBytes_;
+    resource::ResourceFileOrigin sourceOrigin_;
     std::uint32_t chunkTiles_ = 0;
     core::Vec2 origin_{};
     core::pmr::Vector<TileChunk> chunks_{&core::defaultCpuMemoryResource()};

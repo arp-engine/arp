@@ -1,7 +1,7 @@
 #include "editor/workspace/editor_scene_publication_preparation.h"
 
 #include "core/hash/sha256.h"
-#include "core/io/file_io.h"
+#include "editor/io/editor_cold_host_read.h"
 #include "editor/project/project_scene_authoring.h"
 #include "resource/asset_package_closure.h"
 #include "resource/resource_contract.h"
@@ -34,7 +34,8 @@ bool manifestUnchanged(const Preparation::Request& request, core::pmr::String& d
         diagnostic = "EDITOR-SCENE-PUBLICATION-MANIFEST-PATH";
         return false;
     }
-    const auto current = core::readTextFile(path, EditorProjectResources::maxManifestBytes);
+    const auto current =
+        EditorColdHostRead::readTextBytes(path, EditorProjectResources::maxManifestBytes);
     if (!current.success || current.text != request.manifestSnapshot) {
         diagnostic = "EDITOR-SCENE-PUBLICATION-MANIFEST-CONFLICT";
         return false;
@@ -122,7 +123,7 @@ bool EditorScenePublicationPreparation::inspectPackage(const std::filesystem::pa
                         path,
                         pathDiagnostic))
                     return false;
-                const auto read = core::readTextFile(path, limit);
+                const auto read = EditorColdHostRead::readTextBytes(path, limit);
                 if (!read.success)
                     return false;
                 value = read.text;

@@ -8,6 +8,12 @@
 var Module={canvas:document.getElementById('canvas'),print:console.log,printErr:console.error,
 setStatus:text=>document.getElementById('status').textContent=text,
 onAbort:reason=>queenFail(String(reason))};
+const characterSource=new URLSearchParams(location.search).get('character-base-url');
+const shaderSource=new URLSearchParams(location.search).get('shader-base-url');
+const fontSource=new URLSearchParams(location.search).get('font-base-url');
+Module.arguments=['--character-base-url',characterSource===null?new URL('characters/',location.href).href:characterSource,
+    '--shader-base-url',shaderSource===null?new URL('artifacts/',location.href).href:shaderSource,
+    '--font-base-url',fontSource===null?new URL('fonts/',location.href).href:fontSource];
 function queenFail(reason){Module.queenError=reason;const box=document.getElementById('error');box.textContent=reason;box.style.display='block';}
 function queenReady(){document.getElementById('status').textContent='点击开始 · ← → / A D 移动 · 拖动或触屏选跑道 · R 重来';Module.canvas.focus();}
 window.addEventListener('error',event=>queenFail(event.message));

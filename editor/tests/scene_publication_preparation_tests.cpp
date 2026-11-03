@@ -26,7 +26,7 @@ void write(const std::filesystem::path& path, std::string_view text)
 // Real scene packages and a live Passive draft. Preparation never owns files.
 class Fixture final {
 public:
-    Fixture()
+    explicit Fixture([[maybe_unused]] bool expectNativePublicationUnavailable = false)
     {
         root = std::filesystem::temp_directory_path()
             / ("arp-publication-"
@@ -41,8 +41,28 @@ public:
         manifest.entryScene = resource::deriveResourceUuid("publication-test", "entry");
         manifest.physics2d =
             physics2d::WorldConfig{{0, -9.8f}, 8, 8, 4, 8, 16, 8, 8, 4, 1.f / 60.f};
-        assert(ProjectSceneAuthoring::prepareTemplate(
-            root, manifest, ProjectTemplateKind::Game2D, diagnostic));
+        const bool prepared = ProjectSceneAuthoring::prepareTemplate(
+            root, manifest, ProjectTemplateKind::Game2D, diagnostic);
+        if (!prepared && !expectNativePublicationUnavailable) {
+            const auto memory = core::defaultCpuAllocator().stats();
+            std::fprintf(stderr,
+                "publication fixture template: %s core_live=%llu core_peak=%llu\n",
+                diagnostic.c_str(),
+                (unsigned long long)memory.liveBytes,
+                (unsigned long long)memory.peakBytes);
+        }
+#if defined(__EMSCRIPTEN__)
+        if (expectNativePublicationUnavailable) {
+            assert(!prepared && diagnostic == "ARP-DIRECTORY-EXCLUSIVE-PUBLISH-UNSUPPORTED");
+            assert(manifest.assetPackages.empty());
+            assert(!std::filesystem::exists(root / "assets/main")
+                && !std::filesystem::exists(root / "assets/main.arp-staging")
+                && !std::filesystem::exists(root / "assets/main.preparation.arp-staging")
+                && !std::filesystem::exists(root / "project.arp.yaml"));
+            return;
+        }
+#endif
+        assert(prepared);
         assert(ProjectManifestCodec::encode(manifest, originalManifest, issue));
         write(root / "project.arp.yaml", originalManifest);
         assert(live.load(root).success);
@@ -402,6 +422,29 @@ void lifetime(Fixture& fixture)
 
 int main(int argc, char** argv)
 {
+#if defined(__EMSCRIPTEN__)
+    if (argc == 2
+        && (std::string_view(argv[1]) == "--native-publication-unavailable"
+            || std::string_view(argv[1]) == "--native-publication-unavailable-smoke")) {
+        {
+            Fixture unavailable(true);
+        }
+        if (std::string_view(argv[1]) == "--native-publication-unavailable-smoke") {
+            const auto before = core::defaultCpuAllocator().stats();
+            for (unsigned i = 0; i < 20; ++i) {
+                Fixture unavailable(true);
+            }
+            const auto after = core::defaultCpuAllocator().stats();
+            assert(before.liveBytes == after.liveBytes
+                && before.allocationCount - before.deallocationCount
+                    == after.allocationCount - after.deallocationCount);
+            std::puts(
+                "PASS Wasm native publication rejection ordinary20 core live bytes/count delta=0");
+        }
+        std::puts("PASS Wasm explicit Native directory publication failure and staging cleanup");
+        return 0;
+    }
+#endif
     Fixture fixture;
     if (argc == 2 && std::string_view(argv[1]) == "--smoke") {
         lifetime(fixture);

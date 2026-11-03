@@ -11,6 +11,22 @@ namespace arp::rhi::test {
 // test-owned cold IO; no backend lookup, parser or execution bypass is added.
 class GeneratedShaderPackageFixture final {
 public:
+    static ShaderPackageDesc nullHiddenFrame()
+    {
+        ShaderPackageDesc package;
+        package.slangModulePath = "null_hidden_frame_smoke.slang";
+        package.artifacts = {"null_hidden_frame_smoke.spv",
+            "null_hidden_frame_smoke.metal",
+            "null_hidden_frame_smoke.wgsl",
+            "null_hidden_frame_smoke.reflection.yaml"};
+        package.entrypoints = {{package.slangModulePath, "vsMain", ShaderStage::Vertex},
+            {package.slangModulePath, "fsMain", ShaderStage::Fragment}};
+        package.reflection.descriptorBindings = {
+            {0, 0, DescriptorType::UniformBuffer, ShaderStage::Vertex | ShaderStage::Fragment}};
+        prepare(package, "null_hidden_frame_smoke.artifact-set.yaml");
+        return package;
+    }
+
     static void prepare(ShaderPackageDesc& package, const char* publication)
     {
         shader::GeneratedShaderArtifactSetBudget budget{

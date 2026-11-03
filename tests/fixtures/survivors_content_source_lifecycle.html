@@ -1,0 +1,16 @@
+<!doctype html><meta charset="utf-8"><title>Survivors Content source lifecycle</title>
+<script>
+var mode=new URLSearchParams(location.search).get('mode')||'ok';
+var contentRoot=new URL('survivors-content-fixture/'+mode+'/',location.href).href;
+var Module={arguments:[contentRoot,mode],contentRequests:{},
+    onAbort:reason=>fetch('/result',{method:'POST',body:JSON.stringify({success:false,error:String(reason)})})};
+const contentFetch=globalThis.fetch;
+globalThis.fetch=function(input,...options){
+    const url=typeof input==='string'?input:input.url;
+    if(url && url.startsWith(contentRoot)){
+        const path=url.slice(contentRoot.length);
+        Module.contentRequests[path]=(Module.contentRequests[path]||0)+1;
+    }
+    return contentFetch.call(this,input,...options);
+};
+</script><script src="arp_survivors_content_source_lifecycle.js"></script>

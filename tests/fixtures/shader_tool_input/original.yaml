@@ -1,0 +1,14 @@
+type: OriginalShaderInputFixture
+contractVersion: 1
+source: scripts/compile_shaders.py
+sha256: de7bb360f73ee688dd19b50809f21f39c0b65329f54beee3b7909f9bfb9aa02f
+bytes: 204804
+scope: Original parent compiler snapshot; original Slang sources and compiler options
+  retained
+dependencies:
+- source: scripts/shader_bindings_codegen.py
+  fixture: original_shader_bindings_codegen.py
+  sha256: 372fc1e958c3bf2e6033c2c63c684fd4fe8888d24c3036c5751976eba5147654
+- source: scripts/spirv_layout.py
+  fixture: original_spirv_layout.py
+  sha256: ffb51ec393df8bbe746a6d49f12e0ba97a9806c46151df8926ab8720ad5ddc1a

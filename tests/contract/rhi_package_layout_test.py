@@ -28,9 +28,7 @@ class RhiPackageLayoutTest(unittest.TestCase):
         rhi = self.ROOT / "src/rhi"
         self.assertEqual({p.name for p in rhi.iterdir() if p.is_dir() and has_files(p)},
                          {"frontend", "semantics", "backends", "conformance"})
-        self.assertEqual({p.name for p in (rhi / "frontend").iterdir() if p.is_dir() and has_files(p)},
-                         {"detail", "visibility"})
-        for name in ("semantics", "conformance"):
+        for name in ("frontend", "semantics", "conformance"):
             self.assertFalse(any(p.is_dir() for p in (rhi / name).iterdir()), name)
         self.assertEqual({p.name for p in (rhi / "backends").iterdir() if p.is_dir()},
                          {"null", "vulkan", "metal", "webgpu", "webgl"})

@@ -7,6 +7,10 @@
 
 #include <cstdint>
 
+namespace arp::renderer {
+struct ShaderPackagePreparationDesc;
+}
+
 namespace arp::rhi {
 class Swapchain;
 }
@@ -33,8 +37,13 @@ struct DdgiFrameEvidence {
     int readSlot = 0;
 };
 
+// Explicit capture-only fixture mode: records real GPU work but leaves pixel
+// metrics unavailable. RenderDoc replay must supply the acceptance evidence.
+enum class FixtureReadbackPolicy { NativeHost, RenderDocReplay };
+
 struct PostProcessFixtureResult {
     bool success = false;
+    bool readbackDeferredToRenderDoc = false;
     core::pmr::Vector<core::pmr::String> passTrace;
     core::pmr::Vector<FeatureLabAttachmentMetric> attachmentMetrics;
     std::uint32_t graphPassCount = 0u;
@@ -78,7 +87,15 @@ struct PostProcessFixtureResult {
 PostProcessFixtureResult runSsaoFeatureFixture(rhi::Extent2D extent);
 PostProcessFixtureResult runTaaFeatureFixture(rhi::Extent2D extent);
 PostProcessFixtureResult runSsaoFeatureFixture(rhi::GpuDevice& device, rhi::Extent2D extent);
+PostProcessFixtureResult runSsaoFeatureFixture(rhi::GpuDevice& device,
+    rhi::Extent2D extent,
+    const renderer::ShaderPackagePreparationDesc* preparation,
+    FixtureReadbackPolicy policy);
 PostProcessFixtureResult runTaaFeatureFixture(rhi::GpuDevice& device, rhi::Extent2D extent);
+PostProcessFixtureResult runTaaFeatureFixture(rhi::GpuDevice& device,
+    rhi::Extent2D extent,
+    const renderer::ShaderPackagePreparationDesc* preparation,
+    FixtureReadbackPolicy policy);
 
 // Exercises the production WoCC post chain (bloom high-pass/blur/composite,
 // ACES tonemap, grade, and the engine FXAA renderer) with deterministic HDR
@@ -86,6 +103,10 @@ PostProcessFixtureResult runTaaFeatureFixture(rhi::GpuDevice& device, rhi::Exten
 // shader artifacts and RHI lowering vary by backend.
 PostProcessFixtureResult runPostFeatureFixture(rhi::Extent2D extent);
 PostProcessFixtureResult runPostFeatureFixture(rhi::GpuDevice& device, rhi::Extent2D extent);
+PostProcessFixtureResult runPostFeatureFixture(rhi::GpuDevice& device,
+    rhi::Extent2D extent,
+    const renderer::ShaderPackagePreparationDesc* preparation,
+    FixtureReadbackPolicy policy);
 
 // Exercises the production SSR trace/composite shader pair with a synthetic
 // depth plane and known color pattern.  The hit metric is derived from the

@@ -1,0 +1,28 @@
+<!doctype html><meta charset="utf-8"><title>Cloud cook CPU lifecycle</title>
+<script src="browser_progress_transport.js"></script>
+<script>
+var mode=new URLSearchParams(location.search).get('mode')||'ok';
+var sourceRoot=new URL('cloud-cook-sources/'+mode+'/',location.href).href;
+var Module={arguments:[sourceRoot,mode],sourceRequests:{},messages:[]};
+globalThis.reportCloudCook=report=>{
+    report.messages=Module.messages;
+    Module.journal.flush().catch(error=>{report.success=false;report.error=String(error);})
+        .then(()=>fetch('/result',{method:'POST',body:JSON.stringify(report)}));
+};
+Module.journal=new BrowserProgressTransport(Module.messages,
+    {contractVersion:1,batchMessages:128,maxMessages:16384,maxMessageCodeUnits:65536,maxCodeUnits:4194304},
+    batch=>fetch('/progress',{method:'POST',body:JSON.stringify(batch)}),
+    error=>globalThis.reportCloudCook({success:false,error:String(error)}));
+Module.onAbort=reason=>globalThis.reportCloudCook({success:false,error:String(reason)});
+addEventListener('error',event=>globalThis.reportCloudCook({success:false,error:event.message}));
+addEventListener('unhandledrejection',event=>globalThis.reportCloudCook({success:false,error:String(event.reason)}));
+const originalFetch=globalThis.fetch;
+globalThis.fetch=function(input,...options){
+    const url=typeof input==='string'?input:input.url;
+    if(url && url.startsWith(sourceRoot)){
+        const name=url.slice(sourceRoot.length);
+        Module.sourceRequests[name]=(Module.sourceRequests[name]||0)+1;
+    }
+    return originalFetch.call(this,input,...options);
+};
+</script><script src="arp_cloud_cook_tool_fetch_lifecycle.js"></script>

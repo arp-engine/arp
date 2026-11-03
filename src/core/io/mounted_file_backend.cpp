@@ -2,6 +2,8 @@
 
 #include "core/io/file_query_contract.h"
 #include "core/io/file_read_contract.h"
+#include "core/io/file_save_contract.h"
+#include "core/io/file_save_receipt_contract.h"
 #include "core/io/filesystem_path.h"
 #include "core/text/utf8.h"
 
@@ -23,6 +25,10 @@ struct MountedFileBackend::State {
         runtime::CancellationToken cancellation;
         std::uint64_t budget = 0;
         FileQueryCompletion queryCompletion;
+        FileSaveCompletion saveCompletion;
+        FileSaveReceiptCompletion receiptCompletion;
+        FileSaveReceipt receipt;
+        FileSaveReceiptOperation receiptOperation = FileSaveReceiptOperation::Query;
     };
 
     State(std::uint32_t mountsCount, std::uint32_t requestsCount)
@@ -111,7 +117,14 @@ FileBackendCapability MountedFileBackend::capability() const noexcept
         true,
         true,
         true,
+        true,
         true};
+}
+
+FileBackendCapability MountedFileBackend::locationCapability(core::PoolHandle handle) const noexcept
+{
+    const auto* mount = state_->closed ? nullptr : state_->mounts.get(handle);
+    return mount ? mount->backend->locationCapability(handle) : FileBackendCapability{};
 }
 
 FileReadResult MountedFileBackend::validateRead(const FileReadRequest& request) const
@@ -242,6 +255,178 @@ void MountedFileBackend::shutdown() noexcept
 MountedFileBackendTelemetry MountedFileBackend::telemetry() const noexcept
 {
     return {state_->mounts.liveCount(), state_->pending.liveCount(), state_->reservedReadBytes};
+}
+
+FileSaveCapability MountedFileBackend::saveCapability(core::PoolHandle handle) const noexcept
+{
+    const auto* mount = state_->closed ? nullptr : state_->mounts.get(handle);
+    return mount ? mount->backend->saveCapability(handle) : FileSaveCapability{};
+}
+
+FileIoStatus MountedFileBackend::saveAsync(FileSaveRequest request,
+    FileSaveCompletion completion,
+    runtime::CompletionQueue& queue) noexcept
+{
+    if (state_->closed)
+        return FileIoStatus::ServiceClosed;
+    if (!completion.valid())
+        return FileIoStatus::InvalidRequest;
+    const auto validation = FileSaveContract::validate(request);
+    if (validation.diagnostic)
+        return validation.status;
+    if (request.path.capacity() > desc_.maxPathBytes)
+        return FileIoStatus::BudgetExceeded;
+    const auto* mount = state_->mounts.get(request.mount);
+    if (!mount)
+        return FileIoStatus::StaleLocation;
+    if (!mount->backend->saveCapability(request.mount).observedBaselineReplace)
+        return FileIoStatus::Unsupported;
+    if (state_->pending.liveCount() >= desc_.maxInFlight)
+        return FileIoStatus::QueueFull;
+    const auto budget = FileSaveContract::reservationBytes(request);
+    if (budget > desc_.maxReadBytesInFlight - state_->reservedReadBytes)
+        return FileIoStatus::BudgetExceeded;
+    core::PoolHandle ticket;
+    try {
+        auto callback = core::makeUnique<Completion>();
+        callback->owner = state_;
+        State::Pending pending;
+        pending.mount = request.mount;
+        pending.backend = mount->backend;
+        pending.saveCompletion = completion;
+        pending.cancellation = request.cancellation;
+        pending.budget = budget;
+        ticket = state_->pending.emplace(std::move(pending));
+        if (!ticket)
+            return FileIoStatus::QueueFull;
+        callback->pending = ticket;
+        state_->reservedReadBytes += budget;
+        const auto status =
+            mount->backend->saveAsync(std::move(request), {completeSave, callback.get()}, queue);
+        if (status == FileIoStatus::Accepted) {
+            callback.release();
+            return status;
+        }
+        state_->pending.erase(ticket);
+        state_->reservedReadBytes -= budget;
+        return status;
+    } catch (...) {
+        if (ticket) {
+            state_->pending.erase(ticket);
+            state_->reservedReadBytes -= budget;
+        }
+        return FileIoStatus::BudgetExceeded;
+    }
+}
+
+void MountedFileBackend::completeSave(void* context, FileSaveResult result)
+{
+    core::UniquePtr<Completion> callback{static_cast<Completion*>(context),
+        core::CpuAllocatedDeleter<Completion>{
+            context, &core::destroyCpuAllocatedUnique<Completion>}};
+    auto& state = *callback->owner;
+    const auto* pending = state.pending.get(callback->pending);
+    if (!pending)
+        return;
+    const auto completion = pending->saveCompletion;
+    if (pending->cancellation.cancelled())
+        result.deliveryStatus = FileIoStatus::Cancelled;
+    else if (state.closed)
+        result.deliveryStatus = FileIoStatus::ServiceClosed;
+    else if (!state.mounts.get(pending->mount))
+        result.deliveryStatus = FileIoStatus::StaleLocation;
+    // A committed/unknown outcome belongs to the original location. Never
+    // rewrite it as a failed/cancelled operation against a replacement mount.
+    state.reservedReadBytes -= pending->budget;
+    state.pending.erase(callback->pending);
+    completion.complete(completion.userData, std::move(result));
+}
+
+FileIoStatus MountedFileBackend::receiptAsync(const FileSaveReceiptRequest& request,
+    FileSaveReceiptCompletion completion,
+    runtime::CompletionQueue& queue) noexcept
+{
+    if (state_->closed)
+        return FileIoStatus::ServiceClosed;
+    if (!completion.valid())
+        return FileIoStatus::InvalidRequest;
+    const auto validation = FileSaveReceiptContract::validate(request);
+    if (validation.diagnostic)
+        return validation.status;
+    const auto* mount = state_->mounts.get(request.mount);
+    if (!mount)
+        return FileIoStatus::StaleLocation;
+    if (!mount->backend->saveCapability(request.mount).operationReceipts)
+        return FileIoStatus::Unsupported;
+    if (request.cancellation.cancelled())
+        return FileIoStatus::Cancelled;
+    if (state_->pending.liveCount() >= desc_.maxInFlight)
+        return FileIoStatus::QueueFull;
+    if (request.maxResultBytes > desc_.maxReadBytesInFlight - state_->reservedReadBytes)
+        return FileIoStatus::BudgetExceeded;
+    core::PoolHandle ticket;
+    try {
+        auto callback = core::makeUnique<Completion>();
+        callback->owner = state_;
+        State::Pending pending;
+        pending.mount = request.mount;
+        pending.backend = mount->backend;
+        pending.cancellation = request.cancellation;
+        pending.budget = request.maxResultBytes;
+        pending.receiptCompletion = completion;
+        pending.receipt = request.receipt;
+        pending.receiptOperation = request.operation;
+        ticket = state_->pending.emplace(std::move(pending));
+        if (!ticket)
+            return FileIoStatus::QueueFull;
+        callback->pending = ticket;
+        state_->reservedReadBytes += request.maxResultBytes;
+        const auto status =
+            mount->backend->receiptAsync(request, {completeReceipt, callback.get()}, queue);
+        if (status == FileIoStatus::Accepted) {
+            callback.release();
+            return status;
+        }
+        state_->pending.erase(ticket);
+        state_->reservedReadBytes -= request.maxResultBytes;
+        return status;
+    } catch (...) {
+        if (ticket) {
+            state_->pending.erase(ticket);
+            state_->reservedReadBytes -= request.maxResultBytes;
+        }
+        return FileIoStatus::BudgetExceeded;
+    }
+}
+
+void MountedFileBackend::completeReceipt(void* context, FileSaveReceiptResult result)
+{
+    core::UniquePtr<Completion> callback{static_cast<Completion*>(context),
+        core::CpuAllocatedDeleter<Completion>{
+            context, &core::destroyCpuAllocatedUnique<Completion>}};
+    auto& state = *callback->owner;
+    const auto* pending = state.pending.get(callback->pending);
+    if (!pending)
+        return;
+    const auto completion = pending->receiptCompletion;
+    FileSaveReceiptRequest request;
+    request.receipt = pending->receipt;
+    request.operation = pending->receiptOperation;
+    const auto validation = FileSaveReceiptContract::validateResult(request, result);
+    if (validation.diagnostic) {
+        result = {};
+        result.status = validation.status;
+        result.diagnosticId = validation.diagnostic;
+    }
+    if (pending->cancellation.cancelled())
+        result.deliveryStatus = FileIoStatus::Cancelled;
+    else if (state.closed)
+        result.deliveryStatus = FileIoStatus::ServiceClosed;
+    else if (!state.mounts.get(pending->mount))
+        result.deliveryStatus = FileIoStatus::StaleLocation;
+    state.reservedReadBytes -= pending->budget;
+    state.pending.erase(callback->pending);
+    completion.complete(completion.userData, std::move(result));
 }
 
 FileIoStatus MountedFileBackend::queryAsync(const FileQueryRequest& request,

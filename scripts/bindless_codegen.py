@@ -273,7 +273,7 @@ void arpZeroBaseIndirectMain() {
 """
 
 
-def generate_bindless(document, mode):
+def generate_bindless(document, mode, *, input_files=None):
     """Generate one finite Native or Emulated variant; publication is caller-owned.
 
     The base helper ABI deliberately supports float4 sampled 2D textures, r32float
@@ -317,7 +317,7 @@ def generate_bindless(document, mode):
         from gpu_visibility_codegen import schema as visibility_schema
         visibility_version = integer(document["gpuVisibilityKernelContractVersion"],
                                      "gpu-visibility-kernel-version", 1)
-        if visibility_version != 1 or document != visibility_schema(bool(visibility_consumer)):
+        if visibility_version != 1 or document != visibility_schema(bool(visibility_consumer), input_files=input_files):
             reject("GPU-VISIBILITY-KERNEL-SCHEMA")
     elif visibility_consumer:
         reject("GPU-VISIBILITY-CONSUMER-PRODUCER")
@@ -859,7 +859,18 @@ def initialized_graphics_profiles(document, entry_stage_masks):
 
 
 def compile_bindless_package(document, source_path, entries, mode, out_dir,
-                             slangc, spirv_reflect, source_libraries=()):
+                             slangc, spirv_reflect, source_libraries=(), *, input_files=None):
+    # A direct CLI imports the helper module separately from __main__. Make the
+    # selected source explicit for every lowering/reflection helper and restore
+    # the previous context even when compilation or validation fails.
+    import compile_shaders as compiler
+    with compiler.ShaderFileInputScope(input_files):
+        return _compile_bindless_package(document, source_path, entries, mode, out_dir,
+                                         slangc, spirv_reflect, source_libraries, input_files)
+
+
+def _compile_bindless_package(document, source_path, entries, mode, out_dir,
+                              slangc, spirv_reflect, source_libraries, input_files):
     """Compile a finite variant through Arp's target/reflection helpers.
 
     Publication is the final manifest rename, after every target and stage has
@@ -883,7 +894,7 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
     prefix = variant_name + "." + mode.lower()
     manifest_path = output / (prefix + ".bindless.yaml")
     manifest_path.unlink(missing_ok=True)
-    generated = generate_bindless(document, mode)
+    generated = generate_bindless(document, mode, input_files=input_files)
     lowering_yaml = yaml.safe_dump(generated.reflection, sort_keys=False)
     lowering_sha256 = hashlib.sha256(lowering_yaml.encode("utf-8")).hexdigest()
     if source_path is None:
@@ -894,7 +905,7 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
         authored = ""
     else:
         source_path = pathlib.Path(source_path).resolve()
-        authored = source_path.read_text(encoding="utf-8")
+        authored = compiler.read_text(source_path)
     library_inputs = []
     library_paths = set()
     library_sources = []
@@ -904,7 +915,7 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
             reject("SOURCE-LIBRARY-DUPLICATE")
         library_paths.add(library_path)
         try:
-            library_source = library_path.read_text(encoding="utf-8")
+            library_source = compiler.read_text(library_path)
         except (OSError, UnicodeError):
             reject("SOURCE-LIBRARY-INPUT")
         library_sources.append(library_source)
@@ -916,7 +927,7 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
         import gpu_visibility_codegen as visibility
         consumer = bool(generated.reflection.get("gpuVisibilityConsumerContractVersion"))
         expected_entries = visibility.CONSUMER_ENTRIES if consumer else visibility.ENTRIES
-        if authored != visibility.authored_source(consumer) or tuple(entries) != expected_entries:
+        if authored != visibility.authored_source(consumer, input_files=input_files) or tuple(entries) != expected_entries:
             reject("GPU-VISIBILITY-KERNEL-ENTRY-OWNERSHIP")
     if generated.reflection.get("zeroBaseIndirectProducerContractVersion"):
         if authored != "" or entries != [_ZERO_BASE_INDIRECT_ENTRY]:
@@ -1019,7 +1030,7 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
             # Independently inspect emitted image declarations; neither source
             # spelling nor a rehashed YAML dimension proves the target ABI.
             from spirv_layout import SpirvLayoutFacts
-            binary_facts = SpirvLayoutFacts(paths["spirv"])
+            binary_facts = SpirvLayoutFacts(paths["spirv"], data=compiler.read_binary(paths["spirv"]))
             if mode == "Native":
                 binary_facts.validate_nonuniform_descriptor_accesses(
                     {(b["set"], b["binding"]) for b in active
@@ -1087,7 +1098,7 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
                 push_contract = BindlessPushConstantContract.verify_targets(
                     compiler, push_intent, paths, logical, binary_facts, mode)
                 block = compiler._bindings_codegen.reflect_push_constant_block(
-                    str(spirv_reflect), str(paths["spirv"]))
+                    str(spirv_reflect), str(paths["spirv"]), **compiler.reflection_file_inputs())
                 if block is None or block.size != push_intent["sizeBytes"]:
                     reject("PUSH-REFLECTED-SIZE")
                 push_members_yaml = compiler._bindings_codegen.emit_push_constant_members_yaml(block)
@@ -1107,7 +1118,7 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
                 # is authoritative; unused atomic operations may be eliminated.
                 compiler.lower_wgsl_atomic_storage_buffers(
                     str(paths["wgsl"]), atomic_contract, entry_filtered=True)
-                wgsl = paths["wgsl"].read_text(encoding="utf-8")
+                wgsl = compiler.read_text(paths["wgsl"])
                 if entry_stage_masks[entry] == _STAGES["vertex"] and (
                         re.search(r"var\s*<\s*storage\s*,\s*read_write\s*>", wgsl)
                         or re.search(r"\batomic\w*\b", wgsl)):
@@ -1151,10 +1162,10 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
                 # entry names; the legacy vertexMain source heuristic drops
                 # those inputs and can copy inputs onto fragment modules.
                 single_entry=True)
-            reflection = yaml.safe_load(reflection_path.read_text(encoding="utf-8"))
+            reflection = yaml.safe_load(compiler.read_text(reflection_path))
             if mode == "Emulated" and entry_stage_masks[entry] == _STAGES["vertex"]:
                 compiler.validate_wgsl_vertex_input_interface(
-                    paths["wgsl"].read_text(encoding="utf-8"), entry, reflection["vertexAttributes"])
+                    compiler.read_text(paths["wgsl"]), entry, reflection["vertexAttributes"])
             if push_intent and not entry_push:
                 # Binary absence and the declared stage intent agree. Shared
                 # authored source contains the other entries' block; it is not
@@ -1198,7 +1209,7 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
                 modules[-1]["initializedGraphics"] = reflection["initializedGraphics"]
             for path in [persisted_source, reflection_path, paths["spirv"], paths["metal"]] + (
                     [paths["wgsl"]] if mode == "Emulated" else []):
-                artifact_files[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+                artifact_files[path.name] = hashlib.sha256(compiler.read_binary(path)).hexdigest()
     for key, binding in expected.items():
         if reflected_stages.get(key) != binding["stageMask"]:
             reject("REFLECTION-STAGE-MISMATCH")
@@ -1211,8 +1222,8 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
     manifest.update(validationStatus="TargetReflectionValidated",
                     matrixLayout="row-major", compilerVersion=(version.stdout + version.stderr).strip(),
                     authoredSourceSha256=hashlib.sha256(authored.encode()).hexdigest(),
-                    compilerHelperSha256=hashlib.sha256(pathlib.Path(compiler.__file__).read_bytes()).hexdigest(),
-                    generatorSha256=hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
+                    compilerHelperSha256=hashlib.sha256(compiler.read_binary(compiler.__file__)).hexdigest(),
+                    generatorSha256=hashlib.sha256(compiler.read_binary(__file__)).hexdigest(),
                     modules=modules, artifacts=artifact_files)
     manifest["loweringSha256"] = lowering_sha256
     manifest["loweringYaml"] = lowering_yaml
@@ -1230,18 +1241,24 @@ def compile_bindless_package(document, source_path, entries, mode, out_dir,
     return manifest_path
 
 
-def read_bindless_publication(path):
+def read_bindless_publication(path, *, input_files=None):
+    import compile_shaders as compiler
+    with compiler.ShaderFileInputScope(input_files):
+        return _read_bindless_publication(path, compiler)
+
+
+def _read_bindless_publication(path, compiler):
     """Tooling reader for the same byte-hashed YAML publication used at runtime."""
     import pathlib
     import yaml
     path = pathlib.Path(path)
-    publication = yaml.safe_load(path.read_text(encoding="utf-8"))
+    publication = yaml.safe_load(compiler.read_text(path))
     if publication.get("type") != "BindlessPackagePublication" or publication.get("contractVersion") != 1:
         reject("PACKAGE-PUBLICATION-VERSION")
     name = publication.get("payload", "")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", name) or name in (".", ".."):
         reject("PACKAGE-FILENAME")
-    payload = (path.parent / name).read_bytes()
+    payload = compiler.read_binary(path.parent / name)
     if hashlib.sha256(payload).hexdigest() != publication.get("shaderPackageIdentity"):
         reject("PACKAGE-HASH-MISMATCH")
     manifest = yaml.safe_load(payload)

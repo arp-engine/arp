@@ -599,6 +599,21 @@ ui::UiResult EditorShell::load(const std::filesystem::path& path, std::filesyste
 {
     ui::UiArpuiRuntimeLoadDesc desc;
     desc.path = path;
+    return loadUi(std::move(desc), std::move(projectRoot));
+}
+
+ui::UiResult EditorShell::loadPreparedUi(
+    const ui::UiArpuiRuntimeLoadDesc& source, std::filesystem::path projectRoot)
+{
+    if (!source.sourceYamlProvided || !source.sourceContext.requirePreloadedSources
+        || source.factories)
+        return ui::UiResult::failure(
+            ui::UiDiagnosticCode::RuntimeLoadFailed, "EDITOR-UI-SOURCE-DESC");
+    return loadUi(source, std::move(projectRoot));
+}
+
+ui::UiResult EditorShell::loadUi(ui::UiArpuiRuntimeLoadDesc desc, std::filesystem::path projectRoot)
+{
     auto document = ui::UiArpuiRuntimeLoader().load(desc);
     if (!document.ok())
         return ui::UiResult::failure(document.diagnostic().code, document.diagnostic().message);
@@ -1908,6 +1923,12 @@ bool EditorShell::acceptsInspectorInput(std::string_view source, ui::WidgetId wi
 void EditorShell::synchronizeInspectorAvailability() noexcept
 {
     const bool sceneMode = presentationState_.workspace() == "3D";
+    // A cold Scene replacement can rebuild these controls while Script is
+    // active. Newly created scene fields must obey the current workspace too.
+    if (!sceneMode)
+        for (const auto widgetId : sceneInspectorWidgetIds_)
+            if (auto* widget = runtime().canvas().findWidget(widgetId))
+                widget->setVisible(false);
     const bool ready = sceneInspectorState_ == InspectorState::Ready;
     const bool single = sceneViewportAdditionalSelection_.empty();
     const bool editable = sceneObjectEditable(sceneDocument_.selectedObject());
@@ -1999,7 +2020,7 @@ void EditorShell::refreshSceneInspector()
 {
     // A nested typed field command refreshes synchronously. Keep its caller's
     // draft alive until the command receipt has returned and publication ends.
-    if (scriptInspector_.applying())
+    if (scriptInspector_.applying() || sourceSceneApplying_)
         return;
     const auto selected = sceneDocument_.selectedObject();
     if (sceneInspectorReferenceFailureOwner_ != selected

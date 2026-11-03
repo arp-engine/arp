@@ -389,6 +389,14 @@ MTLBlendFactor metalBlendFactor(rhi::BlendFactor factor)
         return MTLBlendFactorDestinationAlpha;
     case rhi::BlendFactor::OneMinusDstAlpha:
         return MTLBlendFactorOneMinusDestinationAlpha;
+    case rhi::BlendFactor::SrcColor:
+        return MTLBlendFactorSourceColor;
+    case rhi::BlendFactor::OneMinusSrcColor:
+        return MTLBlendFactorOneMinusSourceColor;
+    case rhi::BlendFactor::DstColor:
+        return MTLBlendFactorDestinationColor;
+    case rhi::BlendFactor::OneMinusDstColor:
+        return MTLBlendFactorOneMinusDestinationColor;
     }
     return MTLBlendFactorOne;
 }

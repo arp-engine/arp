@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/concurrency/callback.h"
 #include "editor/project/project_source_session.h"
 #include "editor/workspace/editor_project_resource_planner.h"
 #include "tests/fixtures/unified_io_fixture.h"

@@ -3,6 +3,7 @@
 #include "core/api.h"
 #include "core/memory/cpu_allocator.h"
 #include "reflection/reflection.h"
+#include "resource/asset_package_output.h"
 #include "resource/resource_manager.h"
 
 #include <cstdint>
@@ -86,6 +87,8 @@ ARP_API ResourceEnvelopeBuildResult buildResourceEnvelopeFromYaml(
 
 class ARP_API InternalAssetPackageWriter final {
 public:
+    AssetPackageOutputResult prepare(
+        const InternalAssetPackageDesc& desc, const AssetPackageOutputBudget& budget) const;
     InternalAssetPackageValidationResult write(
         const InternalAssetPackageDesc& desc, const std::filesystem::path& outputDirectory) const;
 };

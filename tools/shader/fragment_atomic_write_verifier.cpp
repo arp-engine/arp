@@ -1,10 +1,11 @@
-#include "core/io/file_io.h"
 #include "core/text/ascii_token_cursor.h"
 #include "shader/fragment_atomic_write_proof.h"
 #include "shader/spirv_buffer_declaration_layout.h"
+#include "tools/shader/spirv_verifier_source.h"
 
 #include <charconv>
 #include <cstdio>
+#include <exception>
 #include <string_view>
 
 namespace {
@@ -12,6 +13,13 @@ class VerifierApplication final {
 public:
     int run(int argc, char** argv) const
     {
+        std::string_view httpBase;
+        if (argc >= 3 && std::string_view(argv[argc - 2]) == "--source-http-base") {
+            httpBase = argv[argc - 1];
+            if (httpBase.empty())
+                return fail("SHADER-VERIFIER-SOURCE-BASE");
+            argc -= 2;
+        }
         if (argc != 4 && argc != 5)
             return fail("SHADER-GRAPHICS-WRITE-TOOL-ARGUMENTS");
         std::uint64_t limit = 0u;
@@ -19,9 +27,14 @@ public:
         const auto parsed = std::from_chars(value.data(), value.data() + value.size(), limit);
         if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || !limit)
             return fail("SHADER-GRAPHICS-WRITE-TOOL-BUDGET");
-        const auto file = arp::core::readBinaryFile(argv[1], limit);
-        if (!file.success)
-            return fail("SHADER-GRAPHICS-WRITE-TOOL-READ");
+        const auto file =
+            arp::tools::shader::SpirvVerifierSource::acquire({argv[1], httpBase, limit});
+        if (file.status != arp::core::io::FileIoStatus::Success) {
+            std::fprintf(stderr,
+                "SHADER-GRAPHICS-WRITE-TOOL-READ: %s\n",
+                file.diagnosticId ? file.diagnosticId : "SHADER-VERIFIER-SOURCE-FAILURE");
+            return 1;
+        }
         if (argc == 5) {
             if (std::string_view(argv[3]) != "--buffer-declarations")
                 return fail("SHADER-BUFFER-LAYOUT-TOOL-MODE");
@@ -85,6 +98,9 @@ int main(int argc, char** argv)
         return VerifierApplication{}.run(argc, argv);
     } catch (const std::bad_alloc&) {
         std::fputs("SHADER-GRAPHICS-WRITE-TOOL-ALLOCATION\n", stderr);
+        return 1;
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "SHADER-GRAPHICS-WRITE-TOOL-READ: %s\n", error.what());
         return 1;
     }
 }

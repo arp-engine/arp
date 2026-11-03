@@ -2,10 +2,11 @@
 
 #include "assets/terrain/terrain_surface_preview.h"
 #include "core/encoding/yaml_contract.h"
-#include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
+#include "editor/io/editor_cold_host_read.h"
 #include "editor/project/project_input_snapshot.h"
 #include "editor/project/project_resource_sources.h"
+#include "editor/workspace/editor_terrain_preview_vegetation.h"
 #include "resource/resource_source_io.h"
 #include "resource/terrain_asset_resource.h"
 #include "resource/vegetation_catalog_resource.h"
@@ -39,8 +40,9 @@ void validatePreviewConfig(const Yaml::Node& config)
             "maxDecodedBytes",
             "maxPreviewBytes",
             "vegetationPreview"});
+    const auto version = Yaml::text(config, "contractVersion");
     require(Yaml::text(config, "type") == "EditorTerrainPreview"
-            && Yaml::text(config, "contractVersion") == "editor.terrain-preview/v1"
+            && (version == "editor.terrain-preview/v1" || version == "editor.terrain-preview/v2")
             && Yaml::text(config, "vegetationPreview") == "omit-with-diagnostic",
         "EDITOR-TERRAIN-PREVIEW-CONTRACT");
 }
@@ -88,14 +90,14 @@ public:
         return path;
     }
 
-    core::ByteBuffer read(core::StringView relative, std::size_t maxBytes)
+    core::ByteBuffer read(core::StringView relative, std::size_t maxBytes, bool allowEmpty = false)
     {
         const auto path = contained(relative);
         const auto sourceContext = context();
         auto result = resource::readResourceSource(core::FilePath::utf8(path),
             sourceContext.resources,
             std::min(maxBytes, remainingFileBytes),
-            false,
+            allowEmpty,
             &sourceContext.origin);
         require(result.success, "EDITOR-TERRAIN-PREVIEW-READ-BUDGET");
         if (snapshot) {
@@ -127,7 +129,10 @@ public:
         if (sources) {
             const auto relative = core::FilePath::utf8(path.lexically_relative(root));
             require(contained(relative) == path, "EDITOR-TERRAIN-PREVIEW-PATH");
-            (void)read(relative, remainingFileBytes);
+            // Byte admission mirrors native file_size, including zero bytes.
+            // TerrainAsset's validated block descriptors and decoder own which
+            // formats may be empty (e.g. a tile with no vegetation instances).
+            (void)read(relative, remainingFileBytes, true);
             return;
         }
         const auto resolved = std::filesystem::canonical(path);
@@ -187,6 +192,59 @@ void materialFields(resource::MaterialResource& material,
     material.roughnessFactor = 1;
     material.emissiveR = material.emissiveG = material.emissiveB = 0;
 }
+
+bool loadVegetationSources(PreviewInput& input,
+    const EditorTerrainPreviewVegetation& config,
+    resource::ResourceManager& candidate,
+    core::pmr::String& diagnostic)
+{
+    const auto origin = input.context().origin;
+    auto value = config.sourceResource(input.root, origin);
+    const auto& limits = *value->loadDesc.sourceLimits;
+    resource::ResourceSourceSet acquired;
+    auto context = input.context().resources;
+    context.sources = &acquired;
+    context.requirePreloadedSources = true;
+    std::size_t reads = 0;
+    std::uint64_t bytes = 0;
+    for (;;) {
+        core::pmr::Vector<resource::ResourceFileReadIntent> plan;
+        if (!value->planFileReadIntents(candidate, context, plan, diagnostic))
+            return false;
+        const auto valid = resource::pendingResourceReads(plan, acquired, input.remainingFileBytes);
+        require(valid.status == resource::ResourceSourcePlanStatus::Valid,
+            "EDITOR-TERRAIN-VEGETATION-SOURCE-CONFLICT");
+        if (plan.empty())
+            break;
+        for (const auto& read : plan) {
+            require(++reads <= limits.maxAssets + 2 && bytes < limits.maxTotalSourceBytes,
+                "EDITOR-TERRAIN-VEGETATION-SOURCE-BUDGET");
+            const auto path = std::filesystem::u8path(read.path);
+            const auto relative = core::FilePath::utf8(path.lexically_relative(input.root));
+            require(input.contained(relative) == path, "EDITOR-TERRAIN-PREVIEW-PATH");
+            auto raw = input.read(relative,
+                static_cast<std::size_t>(
+                    std::min<std::uint64_t>(read.maxBytes, limits.maxTotalSourceBytes - bytes)));
+            bytes += raw.size();
+            resource::ResourceSourceBuffer source;
+            source.path = read.path;
+            source.pathScope = read.pathScope;
+            source.mount = read.mount;
+            source.bytes = std::move(raw);
+            require(acquired.add(std::move(source)), "EDITOR-TERRAIN-VEGETATION-SOURCE-CONFLICT");
+        }
+    }
+    const auto* resource = value.get();
+    const auto loaded = candidate.loadResource(std::move(value), context);
+    if (!loaded.success) {
+        diagnostic = loaded.diagnostics;
+        return false;
+    }
+    require(resource->processedByteCount() <= input.remainingDecodedBytes,
+        "EDITOR-TERRAIN-PREVIEW-DECODE-BUDGET");
+    input.remainingDecodedBytes -= resource->processedByteCount();
+    return true;
+}
 } // namespace
 
 static bool prepareEditorTerrainPreview(const std::filesystem::path& projectRoot,
@@ -228,7 +286,7 @@ static bool prepareEditorTerrainPreview(const std::filesystem::path& projectRoot
         auto source = core::makeUnique<resource::ExternalAssetSourceResource>();
         source->configureMetadata(reference(sourceId, "ExternalAssetSourceResource"));
         source->sourcePath = relativeConfig;
-        source->importerKind = "editor.terrain-preview/v1";
+        source->importerKind = Yaml::text(config, "contractVersion");
         publish(candidate, std::move(source));
         auto shader = core::makeUnique<resource::ShaderPackageResource>();
         shader->configureMetadata(reference(shaderId, "ShaderPackageResource"));
@@ -277,24 +335,23 @@ static bool prepareEditorTerrainPreview(const std::filesystem::path& projectRoot
         const auto terrainManifest = input.yaml(terrainPath);
         require(Yaml::text(terrainManifest, "resourceId") == terrainId,
             "EDITOR-TERRAIN-PREVIEW-IDENTITY");
-        const auto& vegetation = Yaml::required(config, "vegetation");
-        Yaml::onlyKeys(vegetation, {"resourceId", "catalog", "input"});
-        const auto vegetationId = Yaml::text(vegetation, "resourceId");
+        const auto vegetation = EditorTerrainPreviewVegetation::decode(
+            Yaml::required(config, "vegetation"), Yaml::text(config, "contractVersion"));
+        const auto& vegetationId = vegetation.resourceId;
         require(vegetationId == Yaml::text(terrainManifest, "vegetationCatalogResourceId"),
             "EDITOR-TERRAIN-PREVIEW-VEGETATION-CONTRACT");
-        if (vegetationId.empty()) {
-            require(Yaml::text(vegetation, "input") == "absent"
-                    && Yaml::text(vegetation, "catalog").empty(),
-                "EDITOR-TERRAIN-PREVIEW-VEGETATION-CONTRACT");
-        } else {
+        if (vegetation.input == EditorTerrainPreviewVegetation::Input::SourcesV2) {
+            require(candidate.recordSnapshot(vegetationId) == nullptr,
+                "EDITOR-TERRAIN-PREVIEW-DUPLICATE-ID");
+            if (!loadVegetationSources(input, vegetation, candidate, diagnostic))
+                return false;
+        } else if (vegetation.input == EditorTerrainPreviewVegetation::Input::LegacyV2) {
             // The legacy importer still opens model files synchronously. Mounted
             // projects cannot invoke it until its source profile is migrated.
             require(!sources, "EDITOR-TERRAIN-PREVIEW-LEGACY-VEGETATION-SOURCE-UNSUPPORTED");
             require(candidate.recordSnapshot(vegetationId) == nullptr,
                 "EDITOR-TERRAIN-PREVIEW-DUPLICATE-ID");
-            require(Yaml::text(vegetation, "input") == "legacy-source/v2",
-                "EDITOR-TERRAIN-PREVIEW-VEGETATION-CONTRACT");
-            const auto catalogPath = Yaml::text(vegetation, "catalog");
+            const auto& catalogPath = vegetation.catalog;
             // Validate the legacy catalog's complete, explicit model input set before
             // invoking the existing importer. No directory search or guessed path.
             const auto catalog = input.yaml(catalogPath);
@@ -304,7 +361,7 @@ static bool prepareEditorTerrainPreview(const std::filesystem::path& projectRoot
             const auto runtimePath = input.contained(catalogPath).parent_path()
                 / std::filesystem::path(Yaml::text(fields, "runtimeCatalog"));
             input.admitFile(runtimePath);
-            const auto runtimeText = core::readTextFile(runtimePath, 1024u * 1024u);
+            const auto runtimeText = EditorColdHostRead::readTextBytes(runtimePath, 1024u * 1024u);
             require(runtimeText.success, "EDITOR-TERRAIN-PREVIEW-READ-BUDGET");
             const auto runtime = Yaml::parseSingleDocument(runtimeText.text);
             for (const auto& asset : Yaml::sequence(Yaml::required(runtime, "fields"), "assets"))
@@ -312,7 +369,7 @@ static bool prepareEditorTerrainPreview(const std::filesystem::path& projectRoot
                     / std::filesystem::path(Yaml::text(Yaml::required(asset, "fields"), "source")));
             resource::VegetationCatalogResourceLoadDesc catalogDesc;
             catalogDesc.catalogPath = input.contained(catalogPath);
-            catalogDesc.resourceId = Yaml::text(vegetation, "resourceId");
+            catalogDesc.resourceId = vegetationId;
             catalogDesc.status = "Prototype Complete";
             const auto catalogLoaded =
                 resource::loadVegetationCatalogResource(candidate, catalogDesc);
@@ -481,12 +538,22 @@ resource::AssetPackageReadPlan planEditorTerrainPreviewSources(const std::filesy
         require(text.success, "EDITOR-TERRAIN-PREVIEW-TEXT");
         const auto config = Yaml::parseSingleDocument(text.text);
         validatePreviewConfig(config);
-        const auto& vegetation = Yaml::required(config, "vegetation");
-        Yaml::onlyKeys(vegetation, {"resourceId", "catalog", "input"});
-        require(Yaml::text(vegetation, "resourceId").empty()
-                && Yaml::text(vegetation, "catalog").empty()
-                && Yaml::text(vegetation, "input") == "absent",
+        const auto vegetation = EditorTerrainPreviewVegetation::decode(
+            Yaml::required(config, "vegetation"), Yaml::text(config, "contractVersion"));
+        require(vegetation.input != EditorTerrainPreviewVegetation::Input::LegacyV2,
             "EDITOR-TERRAIN-PREVIEW-LEGACY-VEGETATION-SOURCE-UNSUPPORTED");
+        if (vegetation.input == EditorTerrainPreviewVegetation::Input::SourcesV2) {
+            resource::ResourceManager planning;
+            auto catalog = vegetation.sourceResource(root, context.origin);
+            core::pmr::Vector<resource::ResourceFileReadIntent> reads;
+            if (!catalog->planFileReadIntents(
+                    planning, context.resources, reads, result.diagnostics)) {
+                result.reads.clear();
+                return result;
+            }
+            for (auto& read : reads)
+                result.reads.push_back(std::move(read));
+        }
         const auto& layers = Yaml::sequence(config, "layers");
         require(layers.size() == 6, "EDITOR-TERRAIN-PREVIEW-LAYERS");
         for (const auto& layer : layers)
@@ -504,6 +571,7 @@ resource::AssetPackageReadPlan planEditorTerrainPreviewSources(const std::filesy
                                       .inspectManifest(context.resources);
             if (!manifest.success) {
                 result.diagnostics = manifest.diagnostics;
+                result.reads.clear();
                 return result;
             }
             for (const auto& file : manifest.files)
@@ -515,6 +583,8 @@ resource::AssetPackageReadPlan planEditorTerrainPreviewSources(const std::filesy
     } catch (...) {
         result.diagnostics = "EDITOR-TERRAIN-PREVIEW-READ-PLAN-PREPARATION";
     }
+    if (!result.success)
+        result.reads.clear();
     return result;
 }
 

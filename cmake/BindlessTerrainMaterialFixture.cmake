@@ -9,7 +9,7 @@ foreach(record_mode Native Emulated)
     set(record_publication "${bindless_terrain_record_dir}/TerrainMaterialRecord.${record_mode_name}.bindless.yaml")
     list(APPEND bindless_terrain_record_outputs "${record_publication}")
     add_custom_command(OUTPUT "${record_publication}"
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/compile_shaders.py" ${ARP_SHADER_TOOL_INPUT_ARGS}
             --slangc "${SLANGC_EXECUTABLE}" --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
             --bindless-variant "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_terrain_material_record.yaml"
             --bindless-source-library "${CMAKE_SOURCE_DIR}/shaders/core/terrain_surface.slang"
@@ -17,7 +17,7 @@ foreach(record_mode Native Emulated)
             --bindless-source "${CMAKE_SOURCE_DIR}/tests/fixtures/bindless_terrain_material_record.slang"
             --bindless-entry vertexMain --bindless-entry colorMain --bindless-entry depthMain --bindless-entry shadowMain
             --bindless-mode "${record_mode}" --out-dir "${bindless_terrain_record_dir}"
-        DEPENDS tests/fixtures/bindless_terrain_material_record.yaml tests/fixtures/bindless_terrain_material_record.slang
+        DEPENDS ${ARP_SHADER_TOOL_INPUT_DEPENDENCIES} tests/fixtures/bindless_terrain_material_record.yaml tests/fixtures/bindless_terrain_material_record.slang
             shaders/core/terrain_surface.slang shaders/renderer/bindless_terrain_material.slang
             scripts/compile_shaders.py scripts/bindless_codegen.py scripts/slang_resource_switch.py
             scripts/buffer_vector_record.py scripts/spirv_layout.py scripts/shader_bindings_codegen.py

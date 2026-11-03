@@ -1,6 +1,8 @@
 #include "assets/glb_static_mesh_importer.h"
 
 #include "assets/glb_importer_common.h"
+#include "assets/mesh/glb_scene_source_contract.h"
+#include "assets/mesh/named_variant_source_contract.h"
 #include "assets/mesh/static_glb_geometry_contract.h"
 #include "assets/tangent_generation.h"
 #include "assets/triangle_surface_digest.h"
@@ -12,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <sstream>
 
 namespace arp::assets {
@@ -631,6 +634,34 @@ std::pmr::vector<AccessorDesc> parseAccessors(const std::pmr::string& json)
     return accessors;
 }
 
+core::pmr::Vector<BufferViewDesc> parseBufferViews(const detail::JsonValue& root)
+{
+    core::pmr::Vector<BufferViewDesc> result;
+    for (const auto& value : root.find("bufferViews")->arrayValue)
+        result.push_back({jsonUInt(value.find("buffer"), 0),
+            jsonUInt(value.find("byteOffset"), 0),
+            jsonUInt(value.find("byteLength"), 0),
+            jsonUInt(value.find("byteStride"), 0)});
+    return result;
+}
+
+core::pmr::Vector<AccessorDesc> parseAccessors(const detail::JsonValue& root)
+{
+    core::pmr::Vector<AccessorDesc> result;
+    for (const auto& value : root.find("accessors")->arrayValue) {
+        AccessorDesc accessor;
+        accessor.bufferView = jsonUInt(value.find("bufferView"), 0);
+        accessor.byteOffset = jsonUInt(value.find("byteOffset"), 0);
+        accessor.componentType = jsonUInt(value.find("componentType"), 0);
+        accessor.count = jsonUInt(value.find("count"), 0);
+        accessor.type = value.find("type")->stringValue;
+        const auto* normalized = value.find("normalized");
+        accessor.normalized = normalized && normalized->boolValue;
+        result.push_back(std::move(accessor));
+    }
+    return result;
+}
+
 float readF32(const std::pmr::string& bytes, const std::size_t offset)
 {
     float value = 0.0f;
@@ -804,6 +835,11 @@ bool readIndexAccessor(const std::pmr::string& bin,
     return true;
 }
 
+struct StaticSceneSourceState final {
+    const StaticMeshSceneSourceImportLimits& limits;
+    std::uint64_t visits = 0;
+};
+
 bool appendPrimitiveToMesh(const std::pmr::string& bin,
     const std::pmr::vector<BufferViewDesc>& bufferViews,
     const std::pmr::vector<AccessorDesc>& accessors,
@@ -812,7 +848,8 @@ bool appendPrimitiveToMesh(const std::pmr::string& bin,
     MeshAsset& mesh,
     std::pmr::string& diagnostics,
     StaticMeshSourceIdentity* identity = nullptr,
-    const StaticMeshSourceImportLimits* limits = nullptr)
+    const StaticMeshSourceImportLimits* limits = nullptr,
+    StaticSceneSourceState* source = nullptr)
 {
     if (primitive.mode != 4u) {
         diagnostics = "GLB static mesh only supports triangle primitives";
@@ -874,6 +911,26 @@ bool appendPrimitiveToMesh(const std::pmr::string& bin,
     if (indices.size() % 3u != 0u) {
         diagnostics = "triangle primitive index count must be a multiple of three";
         return false;
+    }
+
+    if (source) {
+        core::pmr::Vector<float> colors;
+        if (primitive.color0Accessor != UINT32_MAX
+            && !readVec4Accessor(bin, bufferViews, accessors[primitive.color0Accessor], colors)) {
+            diagnostics = "ASSET-STATIC-SCENE-COLOR-INVALID";
+            return false;
+        }
+        for (const auto* values : {&positions, &normals, &uvs, &tangents, &colors})
+            for (const auto value : *values)
+                if (!std::isfinite(value)) {
+                    diagnostics = "ASSET-STATIC-SCENE-NONFINITE";
+                    return false;
+                }
+        for (const auto value : colors)
+            if (value < 0 || value > 1) {
+                diagnostics = "ASSET-STATIC-SCENE-COLOR-INVALID";
+                return false;
+            }
     }
 
     const auto baseVertex = static_cast<uint32_t>(mesh.vertices.size());
@@ -986,8 +1043,15 @@ bool appendMeshNode(const std::pmr::string& bin,
     MeshAsset& mesh,
     std::pmr::string& diagnostics,
     core::pmr::Vector<StaticMeshSourceIdentity>* identities = nullptr,
-    const StaticMeshSourceImportLimits* limits = nullptr)
+    const StaticMeshSourceImportLimits* limits = nullptr,
+    StaticSceneSourceState* source = nullptr)
 {
+    if (source
+        && (++source->visits > source->limits.maxNodeVisits
+            || recursionStack.size() >= source->limits.maxNodeDepth)) {
+        diagnostics = "ASSET-STATIC-SCENE-NODE-BUDGET";
+        return false;
+    }
     if (nodeIndex >= nodes.size()) {
         diagnostics = "GLB Node index is out of range";
         return false;
@@ -1005,6 +1069,12 @@ bool appendMeshNode(const std::pmr::string& bin,
 
     float worldTransform[16]{};
     multiplyMatrix(parentTransform, Node.matrix, worldTransform);
+    if (source)
+        for (const auto value : worldTransform)
+            if (!std::isfinite(value)) {
+                diagnostics = "ASSET-STATIC-SCENE-NONFINITE";
+                return false;
+            }
     recursionStack.push_back(nodeIndex);
     if (Node.mesh != UINT32_MAX) {
         if (Node.mesh >= meshes.size()) {
@@ -1017,7 +1087,9 @@ bool appendMeshNode(const std::pmr::string& bin,
             return false;
         }
         for (std::size_t ordinal = 0; ordinal < sourceMesh.primitives.size(); ++ordinal) {
-            if (limits && identities && identities->size() >= limits->maxPrimitives) {
+            if (limits
+                && ((identities && identities->size() >= limits->maxPrimitives)
+                    || (source && mesh.submeshes.size() >= limits->maxPrimitives))) {
                 diagnostics = "GLB-SOURCE-IDENTITY-PRIMITIVE-BUDGET-EXCEEDED";
                 return false;
             }
@@ -1034,7 +1106,8 @@ bool appendMeshNode(const std::pmr::string& bin,
                     mesh,
                     diagnostics,
                     identities ? &identity : nullptr,
-                    limits)) {
+                    limits,
+                    source)) {
                 return false;
             }
             if (identities)
@@ -1053,7 +1126,8 @@ bool appendMeshNode(const std::pmr::string& bin,
                 mesh,
                 diagnostics,
                 identities,
-                limits)) {
+                limits,
+                source)) {
             return false;
         }
     }
@@ -1063,26 +1137,23 @@ bool appendMeshNode(const std::pmr::string& bin,
 
 } // namespace
 
-static StaticMeshImportResult importStaticMeshFromGlbFileImpl(const std::filesystem::path& path,
+static bool validStaticMeshSourceLimits(const StaticMeshSourceImportLimits& limits)
+{
+    return !limits.strictGeometryOnly
+        || (limits.maxSourceBytes && limits.maxSourceBytes <= UINT32_MAX && limits.maxVertices
+            && limits.maxIndices && limits.maxPrimitives && limits.maxJsonDepth
+            && limits.maxJsonDepth <= 64u && limits.maxJsonValues);
+}
+
+static StaticMeshImportResult importStaticMeshFromGlbBytesImpl(const core::pmr::String& bytes,
     core::pmr::Vector<StaticMeshSourceIdentity>* identities,
     std::array<std::uint8_t, 32>* sourceContentDigest = nullptr,
-    const StaticMeshSourceImportLimits* limits = nullptr)
+    const StaticMeshSourceImportLimits* limits = nullptr,
+    StaticSceneSourceState* source = nullptr)
 {
     const bool strict = limits && limits->strictGeometryOnly;
-    if (strict
-        && (!limits->maxSourceBytes || limits->maxSourceBytes > UINT32_MAX || !limits->maxVertices
-            || !limits->maxIndices || !limits->maxPrimitives || !limits->maxJsonDepth
-            || limits->maxJsonDepth > 64u || !limits->maxJsonValues))
+    if (limits && !validStaticMeshSourceLimits(*limits))
         return fail("ASSET-GLB-GEOMETRY-LIMITS");
-    core::pmr::String bytes{&core::defaultCpuMemoryResource()};
-    if (limits) {
-        auto read = core::readTextFile(path, limits->maxSourceBytes);
-        if (!read.success)
-            return fail("GLB-SOURCE-IDENTITY-SOURCE-READ-FAILED");
-        bytes = std::move(read.text);
-    } else if (!readFile(path, bytes)) {
-        return fail("failed to read GLB file");
-    }
     if (sourceContentDigest) {
         const auto digest = core::Sha256::digest(bytes);
         std::copy(digest.begin(), digest.end(), sourceContentDigest->begin());
@@ -1095,44 +1166,31 @@ static StaticMeshImportResult importStaticMeshFromGlbFileImpl(const std::filesys
     }
 
     detail::JsonValue root;
-    if (!(strict ? detail::parseJson(
-                       chunks.json, root, {limits->maxJsonDepth, limits->maxJsonValues, true})
-                 : detail::parseJson(chunks.json, root))) {
+    const bool boundedJson = limits && (limits->maxJsonDepth || limits->maxJsonValues);
+    if (!(boundedJson ? detail::parseJson(chunks.json,
+                            root,
+                            {limits->maxJsonDepth, limits->maxJsonValues, strict || source})
+                      : detail::parseJson(chunks.json, root))) {
         return fail("GLB JSON could not be parsed");
     }
 
-    if (strict) {
+    if (strict || source) {
         if (chunks.json.size() % 4u || chunks.bin.size() % 4u
             || bytes.size() != 28u + chunks.json.size() + chunks.bin.size())
             return fail("ASSET-GLB-GEOMETRY-CHUNKS");
         const std::uint32_t endianProbe = 1u;
         if (*reinterpret_cast<const std::uint8_t*>(&endianProbe) != 1u)
             return fail("ASSET-GLB-GEOMETRY-HOST-ENDIAN-UNSUPPORTED");
-        if (const auto* diagnostic =
-                detail::StaticGlbGeometryContract::validate(root, chunks.bin, *limits))
+        const auto* diagnostic = source
+            ? detail::GlbSceneSourceContract::validate(root,
+                  chunks.bin,
+                  source->limits.colorPolicy == StaticMeshVertexColorPolicy::DiscardValidatedRgba)
+            : detail::StaticGlbGeometryContract::validate(root, chunks.bin, *limits);
+        if (diagnostic)
             return fail(diagnostic);
     }
-    auto bufferViews = strict ? core::pmr::Vector<BufferViewDesc>{&core::defaultCpuMemoryResource()}
-                              : parseBufferViews(chunks.json);
-    auto accessors = strict ? core::pmr::Vector<AccessorDesc>{&core::defaultCpuMemoryResource()}
-                            : parseAccessors(chunks.json);
-    if (strict) {
-        // Consume the validated parse tree, never the legacy text-search parser.
-        for (const auto& value : root.find("bufferViews")->arrayValue)
-            bufferViews.push_back({jsonUInt(value.find("buffer"), 0u),
-                jsonUInt(value.find("byteOffset"), 0u),
-                jsonUInt(value.find("byteLength"), 0u),
-                0u});
-        for (const auto& value : root.find("accessors")->arrayValue) {
-            AccessorDesc accessor;
-            accessor.bufferView = jsonUInt(value.find("bufferView"), 0u);
-            accessor.byteOffset = jsonUInt(value.find("byteOffset"), 0u);
-            accessor.componentType = jsonUInt(value.find("componentType"), 0u);
-            accessor.count = jsonUInt(value.find("count"), 0u);
-            accessor.type = value.find("type")->stringValue;
-            accessors.push_back(std::move(accessor));
-        }
-    }
+    auto bufferViews = strict || source ? parseBufferViews(root) : parseBufferViews(chunks.json);
+    auto accessors = strict || source ? parseAccessors(root) : parseAccessors(chunks.json);
     const auto meshes = parseMeshes(root);
     const auto nodes = parseNodes(root);
     if (meshes.empty()) {
@@ -1163,13 +1221,16 @@ static StaticMeshImportResult importStaticMeshFromGlbFileImpl(const std::filesys
                 mesh,
                 diagnostics,
                 identities,
-                limits)) {
+                limits,
+                source)) {
             return fail(diagnostics);
         }
     }
     if (!mesh.validForIndexedDraw()) {
         return fail("imported GLB mesh is not valid for indexed draw");
     }
+    if (source && !mesh.recomputeBounds())
+        return fail("ASSET-STATIC-SCENE-NONFINITE");
 
     StaticMeshImportResult result;
     result.success = true;
@@ -1188,16 +1249,19 @@ static StaticMeshImportResult importStaticMeshFromGlbFileImpl(const std::filesys
 
 StaticMeshImportResult importStaticMeshFromGlbFile(const std::filesystem::path& path)
 {
-    return importStaticMeshFromGlbFileImpl(path, nullptr);
+    core::pmr::String bytes{&core::defaultCpuMemoryResource()};
+    if (!readFile(path, bytes))
+        return fail("failed to read GLB file");
+    return importStaticMeshFromGlbBytesImpl(bytes, nullptr);
 }
 
-StaticMeshSourceImportResult importStaticMeshWithSourceIdentityFromGlbFile(
-    const std::filesystem::path& path, StaticMeshSourceImportLimits limits)
+static StaticMeshSourceImportResult importStaticMeshSourceIdentityBytes(
+    const core::pmr::String& bytes, StaticMeshSourceImportLimits limits)
 {
     StaticMeshSourceImportResult result;
     try {
-        result.geometry = importStaticMeshFromGlbFileImpl(
-            path, &result.identities, &result.sourceContentDigest, &limits);
+        result.geometry = importStaticMeshFromGlbBytesImpl(
+            bytes, &result.identities, &result.sourceContentDigest, &limits);
     } catch (const core::DiagnosticError& error) {
         result.geometry = fail(error.what());
     }
@@ -1217,6 +1281,118 @@ StaticMeshSourceImportResult importStaticMeshWithSourceIdentityFromGlbFile(
     return result;
 }
 
+StaticMeshSourceImportResult importStaticMeshWithSourceIdentityFromGlbFile(
+    const std::filesystem::path& path, StaticMeshSourceImportLimits limits)
+{
+    StaticMeshSourceImportResult result;
+    if (!validStaticMeshSourceLimits(limits)) {
+        result.geometry = fail("ASSET-GLB-GEOMETRY-LIMITS");
+        return result;
+    }
+    core::pmr::String bytes;
+    {
+        const auto input = core::readBinaryFile(path, limits.maxSourceBytes);
+        if (!input.success) {
+            result.geometry = fail("GLB-SOURCE-IDENTITY-SOURCE-READ-FAILED");
+            return result;
+        }
+        if (!input.bytes.empty())
+            bytes.assign(reinterpret_cast<const char*>(input.bytes.data()), input.bytes.size());
+    }
+    return importStaticMeshSourceIdentityBytes(bytes, limits);
+}
+
+static const char* validateGlbByteInput(
+    core::ArrayView<const std::uint8_t> input, StaticMeshSourceImportLimits limits)
+{
+    if (!input.data() || input.empty() || !limits.maxSourceBytes
+        || limits.maxSourceBytes == UINT64_MAX || input.size() > limits.maxSourceBytes) {
+        return "ASSET-GLB-SOURCE-BYTES-BUDGET-OR-INPUT";
+    }
+    if (!limits.maxVertices || !limits.maxIndices || !limits.maxPrimitives || !limits.maxJsonDepth
+        || limits.maxJsonDepth > 64 || !limits.maxJsonValues)
+        return "ASSET-GLB-GEOMETRY-LIMITS";
+    return validStaticMeshSourceLimits(limits) ? nullptr : "ASSET-GLB-GEOMETRY-LIMITS";
+}
+
+StaticMeshSourceImportResult importStaticMeshWithSourceIdentityFromGlbBytes(
+    core::ArrayView<const std::uint8_t> input, StaticMeshSourceImportLimits limits)
+{
+    if (const auto* diagnostic = validateGlbByteInput(input, limits)) {
+        StaticMeshSourceImportResult result;
+        result.geometry = fail(diagnostic);
+        return result;
+    }
+    const core::pmr::String bytes(reinterpret_cast<const char*>(input.data()), input.size());
+    return importStaticMeshSourceIdentityBytes(bytes, limits);
+}
+
+StaticMeshImportResult importStaticMeshFromGlbBytes(
+    core::ArrayView<const std::uint8_t> input, StaticMeshSourceImportLimits limits)
+{
+    if (const auto* diagnostic = validateGlbByteInput(input, limits))
+        return fail(diagnostic);
+    const core::pmr::String bytes(reinterpret_cast<const char*>(input.data()), input.size());
+    return importStaticMeshFromGlbBytesImpl(bytes, nullptr, nullptr, &limits);
+}
+
+const char* validateStaticMeshSceneSourceImportLimits(
+    const StaticMeshSceneSourceImportLimits& limits) noexcept
+{
+    const auto& geometry = limits.geometry;
+    if (!geometry.maxSourceBytes || geometry.maxSourceBytes > UINT32_MAX
+        || geometry.strictGeometryOnly || !geometry.maxVertices
+        || geometry.maxVertices == UINT32_MAX || !geometry.maxIndices
+        || geometry.maxIndices == UINT32_MAX || !geometry.maxPrimitives
+        || geometry.maxPrimitives == UINT32_MAX || !geometry.maxJsonDepth
+        || geometry.maxJsonDepth > 64 || !geometry.maxJsonValues || !limits.maxImportBytes
+        || limits.maxImportBytes == UINT64_MAX || !limits.maxDecodedBytes
+        || limits.maxDecodedBytes == UINT64_MAX || !limits.maxNodeVisits || !limits.maxNodeDepth
+        || limits.maxNodeDepth > 64
+        || (limits.colorPolicy != StaticMeshVertexColorPolicy::RejectColor0
+            && limits.colorPolicy != StaticMeshVertexColorPolicy::DiscardValidatedRgba))
+        return "ASSET-STATIC-SCENE-LIMITS";
+    return nullptr;
+}
+
+StaticMeshSceneSourceImportResult importStaticMeshSceneFromGlbBytes(
+    core::ArrayView<const std::uint8_t> bytes, const StaticMeshSceneSourceImportLimits& limits)
+{
+    const auto failure = [](const char* diagnostic) {
+        StaticMeshSceneSourceImportResult result;
+        result.geometry.diagnostics = diagnostic;
+        return result;
+    };
+    if (const auto* diagnostic = validateStaticMeshSceneSourceImportLimits(limits))
+        return failure(diagnostic);
+    if (const auto* diagnostic = validateGlbByteInput(bytes, limits.geometry))
+        return failure(diagnostic);
+    try {
+        auto quota = core::makeShared<core::CpuMemoryQuota>(limits.maxImportBytes);
+        core::CpuMemoryQuotaScope scope(quota);
+        const core::pmr::String input(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        StaticSceneSourceState state{limits};
+        StaticMeshSceneSourceImportResult result;
+        result.geometry =
+            importStaticMeshFromGlbBytesImpl(input, nullptr, nullptr, &limits.geometry, &state);
+        if (!result.geometry.success)
+            return failure(result.geometry.diagnostics.c_str());
+        const auto& mesh = result.geometry.mesh;
+        result.decodedBytes = std::uint64_t(mesh.vertices.size()) * sizeof(MeshVertex)
+            + mesh.indices.size() * sizeof(std::uint32_t) + mesh.submeshes.size() * sizeof(Submesh);
+        for (const auto& image : result.geometry.images)
+            result.decodedBytes += image.encodedBytes.size();
+        if (result.decodedBytes > limits.maxDecodedBytes)
+            return failure("ASSET-STATIC-SCENE-DECODE-BUDGET");
+        result.importPeakBytes = quota->peakBytes();
+        return result;
+    } catch (const std::bad_alloc&) {
+        return failure("ASSET-STATIC-SCENE-IMPORT-BUDGET");
+    } catch (const std::exception&) {
+        return failure("ASSET-STATIC-SCENE-INVALID");
+    }
+}
+
 // ─── Named variant import ────────────────────────────────────────────
 //
 // Walks the GLB node tree and extracts each mesh-bearing named node as a
@@ -1231,6 +1407,11 @@ StaticMeshSourceImportResult importStaticMeshWithSourceIdentityFromGlbFile(
 
 namespace {
 
+struct NamedVariantSourceState final {
+    const NamedVariantSourceImportLimits& limits;
+    std::uint64_t vertices = 0, indices = 0, primitives = 0, visits = 0;
+};
+
 /// Append a single primitive to a variant's mesh, reading COLOR_0 if present.
 /// Returns true if the primitive had COLOR_0 data.
 bool appendPrimitiveToVariant(const std::pmr::string& bin,
@@ -1241,7 +1422,8 @@ bool appendPrimitiveToVariant(const std::pmr::string& bin,
     MeshAsset& mesh,
     std::pmr::vector<float>& windWeights,
     bool& hasColor0,
-    std::pmr::string& diagnostics)
+    std::pmr::string& diagnostics,
+    NamedVariantSourceState* source = nullptr)
 {
     if (primitive.mode != 4u) {
         diagnostics = "named variant import only supports triangle primitives";
@@ -1254,6 +1436,17 @@ bool appendPrimitiveToVariant(const std::pmr::string& bin,
         return false;
     }
 
+    if (source) {
+        source->vertices += accessors[primitive.positionAccessor].count;
+        source->indices += accessors[primitive.indicesAccessor].count;
+        ++source->primitives;
+        if (source->vertices > source->limits.maxVertices
+            || source->indices > source->limits.maxIndices
+            || source->primitives > source->limits.maxPrimitives) {
+            diagnostics = "ASSET-NAMED-VARIANT-GEOMETRY-BUDGET";
+            return false;
+        }
+    }
     std::pmr::vector<float> positions;
     std::pmr::vector<float> normals;
     std::pmr::vector<float> uvs;
@@ -1295,7 +1488,11 @@ bool appendPrimitiveToVariant(const std::pmr::string& bin,
             && colors.size() / 4u == positions.size() / 3u) {
             hasColor0 = true;
         }
-        // If COLOR_0 read fails or mismatches, we just skip wind data.
+        // Legacy callers skip malformed colors. The source contract rejects them.
+        else if (source) {
+            diagnostics = "ASSET-NAMED-VARIANT-COLOR-INVALID";
+            return false;
+        }
     }
     if (!readIndexAccessor(bin, bufferViews, accessors[primitive.indicesAccessor], indices)) {
         diagnostics = "indices accessor must be scalar u16/u32 binary data";
@@ -1304,6 +1501,19 @@ bool appendPrimitiveToVariant(const std::pmr::string& bin,
     if (indices.size() % 3u != 0u) {
         diagnostics = "triangle primitive index count must be a multiple of three";
         return false;
+    }
+    if (source) {
+        for (const auto* values : {&positions, &normals, &uvs, &tangents, &colors})
+            for (const auto value : *values)
+                if (!std::isfinite(value)) {
+                    diagnostics = "ASSET-NAMED-VARIANT-NONFINITE";
+                    return false;
+                }
+        for (const auto value : colors)
+            if (value < 0 || value > 1) {
+                diagnostics = "ASSET-NAMED-VARIANT-COLOR-INVALID";
+                return false;
+            }
     }
 
     const auto baseVertex = static_cast<uint32_t>(mesh.vertices.size());
@@ -1386,8 +1596,15 @@ bool extractNamedVariants(const std::pmr::string& bin,
     NamedVariantGeometrySpace geometrySpace,
     std::pmr::vector<uint32_t>& recursionStack,
     std::pmr::vector<NamedVariant>& variants,
-    std::pmr::string& diagnostics)
+    std::pmr::string& diagnostics,
+    NamedVariantSourceState* source = nullptr)
 {
+    if (source
+        && (++source->visits > source->limits.maxNodeVisits
+            || recursionStack.size() >= source->limits.maxNodeDepth)) {
+        diagnostics = "ASSET-NAMED-VARIANT-NODE-BUDGET";
+        return false;
+    }
     if (nodeIndex >= nodes.size()) {
         diagnostics = "GLB Node index is out of range";
         return false;
@@ -1405,6 +1622,12 @@ bool extractNamedVariants(const std::pmr::string& bin,
 
     float worldTransform[16]{};
     multiplyMatrix(parentTransform, node.matrix, worldTransform);
+    if (source)
+        for (const auto value : worldTransform)
+            if (!std::isfinite(value)) {
+                diagnostics = "ASSET-NAMED-VARIANT-NONFINITE";
+                return false;
+            }
     recursionStack.push_back(nodeIndex);
 
     // Extract this node as a variant if it has a name and a mesh.
@@ -1415,6 +1638,16 @@ bool extractNamedVariants(const std::pmr::string& bin,
         }
         const auto& sourceMesh = meshes[node.mesh];
         if (!sourceMesh.primitives.empty()) {
+            if (source && variants.size() >= source->limits.maxVariants) {
+                diagnostics = "ASSET-NAMED-VARIANT-COUNT-BUDGET";
+                return false;
+            }
+            if (source && std::any_of(variants.begin(), variants.end(), [&](const auto& value) {
+                    return value.name == node.name;
+                })) {
+                diagnostics = "ASSET-NAMED-VARIANT-NAME-DUPLICATE";
+                return false;
+            }
             NamedVariant variant;
             variant.name = node.name;
             std::memcpy(variant.worldTransform, worldTransform, sizeof(float) * 16);
@@ -1435,10 +1668,15 @@ bool extractNamedVariants(const std::pmr::string& bin,
                         variant.mesh,
                         variant.windWeights,
                         hasColor0,
-                        diagnostics)) {
+                        diagnostics,
+                        source)) {
                     return false;
                 }
                 variant.materialSlots.push_back(primitive.material);
+            }
+            if (source && !variant.mesh.recomputeBounds()) {
+                diagnostics = "ASSET-NAMED-VARIANT-NONFINITE";
+                return false;
             }
             if (variant.mesh.validForIndexedDraw()) {
                 variant.hasWindData = hasColor0;
@@ -1459,7 +1697,8 @@ bool extractNamedVariants(const std::pmr::string& bin,
                 geometrySpace,
                 recursionStack,
                 variants,
-                diagnostics)) {
+                diagnostics,
+                source)) {
             return false;
         }
     }
@@ -1470,22 +1709,10 @@ bool extractNamedVariants(const std::pmr::string& bin,
 
 } // anonymous namespace
 
-NamedVariantImportResult importNamedVariantsFromGlbFile(
-    const std::filesystem::path& path, NamedVariantGeometrySpace geometrySpace)
+static NamedVariantImportResult importNamedVariantsBytesImpl(const core::pmr::String& bytes,
+    NamedVariantGeometrySpace geometrySpace,
+    const NamedVariantSourceImportLimits* limits)
 {
-    if (geometrySpace != NamedVariantGeometrySpace::Scene
-        && geometrySpace != NamedVariantGeometrySpace::RootRelative) {
-        NamedVariantImportResult fail;
-        fail.diagnostics = "ASSET-NAMED-VARIANT-SPACE-INVALID";
-        return fail;
-    }
-    std::pmr::string bytes;
-    if (!readFile(path, bytes)) {
-        NamedVariantImportResult fail;
-        fail.diagnostics = "failed to read GLB file";
-        return fail;
-    }
-
     GlbChunks chunks;
     std::pmr::string diagnostics;
     if (!readGlbChunks(bytes, chunks, diagnostics)) {
@@ -1495,14 +1722,30 @@ NamedVariantImportResult importNamedVariantsFromGlbFile(
     }
 
     detail::JsonValue root;
-    if (!detail::parseJson(chunks.json, root)) {
+    if (!(limits ? detail::parseJson(
+                       chunks.json, root, {limits->maxJsonDepth, limits->maxJsonValues, false})
+                 : detail::parseJson(chunks.json, root))) {
         NamedVariantImportResult fail;
         fail.diagnostics = "GLB JSON could not be parsed";
         return fail;
     }
 
-    const auto bufferViews = parseBufferViews(chunks.json);
-    const auto accessors = parseAccessors(chunks.json);
+    if (limits) {
+        if (chunks.json.size() % 4 || chunks.bin.size() % 4
+            || bytes.size() != 28u + chunks.json.size() + chunks.bin.size()) {
+            NamedVariantImportResult fail;
+            fail.diagnostics = "ASSET-NAMED-VARIANT-CHUNKS";
+            return fail;
+        }
+        if (const auto* diagnostic =
+                detail::NamedVariantSourceContract::validate(root, chunks.bin, *limits)) {
+            NamedVariantImportResult fail;
+            fail.diagnostics = diagnostic;
+            return fail;
+        }
+    }
+    const auto bufferViews = limits ? parseBufferViews(root) : parseBufferViews(chunks.json);
+    const auto accessors = limits ? parseAccessors(root) : parseAccessors(chunks.json);
     const auto meshes = parseMeshes(root);
     const auto nodes = parseNodes(root);
     if (meshes.empty()) {
@@ -1524,6 +1767,9 @@ NamedVariantImportResult importNamedVariantsFromGlbFile(
     }
 
     std::pmr::vector<NamedVariant> variants;
+    std::optional<NamedVariantSourceState> source;
+    if (limits)
+        source.emplace(NamedVariantSourceState{*limits});
     float identity[16]{};
     setIdentity(identity);
     for (const auto rootNode : sceneRoots) {
@@ -1538,7 +1784,8 @@ NamedVariantImportResult importNamedVariantsFromGlbFile(
                 geometrySpace,
                 recursionStack,
                 variants,
-                diagnostics)) {
+                diagnostics,
+                source ? &*source : nullptr)) {
             NamedVariantImportResult fail;
             fail.diagnostics = diagnostics;
             return fail;
@@ -1562,6 +1809,82 @@ NamedVariantImportResult importNamedVariantsFromGlbFile(
     result.textures = std::move(materialAssets.textures);
     result.images = std::move(materialAssets.images);
     return result;
+}
+
+const char* validateNamedVariantSourceImportLimits(NamedVariantSourceImportLimits limits) noexcept
+{
+    if (!limits.maxSourceBytes || limits.maxSourceBytes > UINT32_MAX || !limits.maxImportBytes
+        || limits.maxImportBytes == UINT64_MAX || !limits.maxVertices || !limits.maxIndices
+        || !limits.maxPrimitives || !limits.maxVariants || !limits.maxNodeVisits
+        || !limits.maxNodeDepth || limits.maxNodeDepth > 64 || !limits.maxJsonDepth
+        || limits.maxJsonDepth > 64 || !limits.maxJsonValues
+        || (limits.colorPolicy != NamedVariantColorPolicy::RejectColor0
+            && limits.colorPolicy != NamedVariantColorPolicy::PreserveRgbaWind))
+        return "ASSET-NAMED-VARIANT-LIMITS";
+    return nullptr;
+}
+
+NamedVariantImportResult importNamedVariantsFromGlbBytes(core::ArrayView<const std::uint8_t> bytes,
+    NamedVariantGeometrySpace geometrySpace,
+    NamedVariantSourceImportLimits limits)
+{
+    const auto failure = [](const char* diagnostic) {
+        NamedVariantImportResult result;
+        result.diagnostics = diagnostic;
+        return result;
+    };
+    if (const auto* diagnostic = validateNamedVariantSourceImportLimits(limits))
+        return failure(diagnostic);
+    if (!bytes.data() || bytes.empty() || bytes.size() > limits.maxSourceBytes)
+        return failure("ASSET-NAMED-VARIANT-SOURCE-BUDGET");
+    if (geometrySpace != NamedVariantGeometrySpace::Scene
+        && geometrySpace != NamedVariantGeometrySpace::RootRelative)
+        return failure("ASSET-NAMED-VARIANT-SPACE-INVALID");
+    const std::uint32_t endian = 1;
+    if (*reinterpret_cast<const std::uint8_t*>(&endian) != 1)
+        return failure("ASSET-NAMED-VARIANT-ENDIAN-UNSUPPORTED");
+    try {
+        auto quota = core::makeShared<core::CpuMemoryQuota>(limits.maxImportBytes);
+        core::CpuMemoryQuotaScope scope(quota);
+        const core::pmr::String input(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        auto result = importNamedVariantsBytesImpl(input, geometrySpace, &limits);
+        if (!result.success)
+            return failure(result.diagnostics.c_str());
+        // This is the explicit glTF column-major -> core row-major import boundary.
+        for (auto& variant : result.variants) {
+            float columnMajor[16];
+            std::copy_n(variant.worldTransform, 16, columnMajor);
+            for (unsigned row = 0; row < 4; ++row)
+                for (unsigned column = 0; column < 4; ++column)
+                    variant.worldTransform[row * 4 + column] = columnMajor[column * 4 + row];
+        }
+        result.transformLayout = NamedVariantTransformLayout::RowMajor;
+        result.importPeakBytes = quota->peakBytes();
+        return result;
+    } catch (const std::bad_alloc&) {
+        return failure("ASSET-NAMED-VARIANT-IMPORT-BUDGET");
+    } catch (const std::exception&) {
+        return failure("ASSET-NAMED-VARIANT-INVALID");
+    }
+}
+
+NamedVariantImportResult importNamedVariantsFromGlbFile(
+    const std::filesystem::path& path, NamedVariantGeometrySpace geometrySpace)
+{
+    if (geometrySpace != NamedVariantGeometrySpace::Scene
+        && geometrySpace != NamedVariantGeometrySpace::RootRelative) {
+        NamedVariantImportResult fail;
+        fail.diagnostics = "ASSET-NAMED-VARIANT-SPACE-INVALID";
+        return fail;
+    }
+    std::pmr::string bytes;
+    if (!readFile(path, bytes)) {
+        NamedVariantImportResult fail;
+        fail.diagnostics = "failed to read GLB file";
+        return fail;
+    }
+
+    return importNamedVariantsBytesImpl(bytes, geometrySpace, nullptr);
 }
 
 } // namespace arp::assets

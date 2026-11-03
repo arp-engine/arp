@@ -3,8 +3,8 @@
 #include "core/diagnostics/diagnostic_error.h"
 #include "core/encoding/yaml_contract.h"
 #include "core/io/atomic_file_service.h"
-#include "core/io/file_io.h"
 #include "core/io/filesystem_path.h"
+#include "editor/io/editor_cold_host_read.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -134,7 +134,7 @@ core::pmr::String BrowserWorkspace::encode(
     std::sort(paths.begin(), paths.end());
     std::size_t bytes = 0;
     for (const auto& path : paths) {
-        auto contents = core::readBinaryFile(path, maxDecodedBytes - bytes);
+        auto contents = EditorColdHostRead::readBinaryBytes(path, maxDecodedBytes - bytes);
         require(contents.success, "EDITOR-WEB-ARCHIVE-READ");
         bytes += contents.bytes.size();
         Node file = Node::mapping();

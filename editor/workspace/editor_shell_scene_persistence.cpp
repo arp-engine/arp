@@ -1,4 +1,4 @@
-#include "core/io/file_io.h"
+#include "editor/io/editor_cold_host_read.h"
 #include "editor/workspace/editor_scene_file_format.h"
 #include "editor/workspace/editor_scene_script_policy.h"
 #include "editor/workspace/editor_scene_transaction.h"
@@ -41,7 +41,8 @@ bool EditorShell::sceneFileContextCurrent(const std::filesystem::path& root,
         diagnostic = "EDITOR-SCENE-FILE-MANIFEST-UNAVAILABLE";
         return false;
     }
-    const auto disk = core::readTextFile(path, EditorProjectResources::maxManifestBytes);
+    const auto disk =
+        EditorColdHostRead::readTextBytes(path, EditorProjectResources::maxManifestBytes);
     if (!disk.success || disk.text != manifestBytes) {
         diagnostic = "EDITOR-SCENE-FILE-MANIFEST-CHANGED";
         return false;
@@ -73,12 +74,17 @@ EditorCommandOutcome EditorShell::scenePersistenceTaskSnapshot(std::uint64_t tas
     result.snapshot.scenePersistenceTaskStatus = found->status;
     result.snapshot.scenePersistenceTaskDiagnostic = found->diagnostic;
     result.snapshot.scenePersistenceTaskCommitted = found->committed;
+    result.snapshot.sceneSaveReceipt = found->saveReceipt;
     return result;
 }
 
 EditorCommandOutcome EditorShell::beginScenePersistence(
     bool loading, std::string_view relativePath, bool discardChanges, bool overwriteExisting)
 try {
+    if (!loading && projectBrowser_.sourceSnapshot())
+        return beginSourceSceneSave(relativePath, overwriteExisting);
+    if (!nextScenePersistenceTaskId_)
+        return {false, false, EditorDiagnosticCode::CommandPreparationFailed};
     if (sceneExport_.pending())
         return {false, false, EditorDiagnosticCode::WorkspaceBusy};
     if (loading) {
@@ -110,6 +116,8 @@ try {
     prepared.loading = loading;
     prepared.documentEpoch = sceneDocumentEpoch_;
     prepared.owner = sceneDocument_.ownerTicket();
+    prepared.scripts = scriptDocuments_.stateTicket();
+    prepared.resourceRevision = resourceRevision_;
     prepared.projectRoot = projectRoot();
     core::pmr::String diagnostic;
     if (!observeSceneHash(prepared.contentHash, diagnostic)) {
@@ -132,8 +140,25 @@ try {
     if (loading) {
         // Raw bytes are not admission. The owner dispatches the explicit wire
         // version and prepares a complete candidate before changing live state.
-        prepared.request =
-            scenePersistence_.readScript(projectRoot(), relativePath, &prepared.resolvedTarget);
+        if (const auto& directory = projectBrowser_.sourceSnapshot()) {
+            if (!projectSourceFiles_ || !projectManifest_
+                || !ProjectInputSnapshot::validLogicalPath(relativePath))
+                return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
+            prepared.diagnostic.reserve(projectIoBudget_.maxDiagnosticBytes);
+            prepared.sourceTask =
+                core::makeUnique<EditorSceneSourceTask>(ProjectSourceContext{directory->project(),
+                                                            projectSourceFiles_,
+                                                            directory->project()->location().epoch},
+                    relativePath,
+                    projectIoBudget_.inputs,
+                    EditorSceneAuthoringCodec::maxDocumentBytes);
+            if (prepared.sourceTask->state() != SceneSourceState::Pending) {
+                feedback(prepared.sourceTask->diagnostic());
+                return {false, false, EditorDiagnosticCode::ProjectOperationFailed};
+            }
+        } else
+            prepared.request =
+                scenePersistence_.readScript(projectRoot(), relativePath, &prepared.resolvedTarget);
     } else {
         const char* issue = nullptr;
         if (!EditorScenePersistence::resolvePath(
@@ -223,15 +248,49 @@ try {
         } else
             return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
     }
-    if (!prepared.request) {
+    if (!prepared.request && !prepared.sourceTask) {
         if (diagnostic.empty() && scenePersistence_.diagnostic())
             diagnostic = scenePersistence_.diagnostic();
         feedback(diagnostic.empty() ? "EDITOR-SCENE-FILE-SUBMIT" : diagnostic);
         return {false, false, EditorDiagnosticCode::InvalidCommandPayload};
     }
-    prepared.id = nextScenePersistenceTaskId_++;
+    prepared.id = nextScenePersistenceTaskId_;
     prepared.status = ScenePersistenceTaskStatus::Pending;
-    *available = std::move(prepared);
+    if (prepared.sourceTask) {
+        // All owned values/response are prepared before this no-allocation
+        // publication. Do not rely on PMR move assignment's noexcept status.
+        if (available->result
+            || available->projectModel.get_allocator() != prepared.projectModel.get_allocator()
+            || available->manifestBytes.get_allocator() != prepared.manifestBytes.get_allocator()
+            || available->contentHash.get_allocator() != prepared.contentHash.get_allocator()
+            || available->relativePath.get_allocator() != prepared.relativePath.get_allocator()
+            || available->diagnostic.get_allocator() != prepared.diagnostic.get_allocator()
+            || available->saveYaml.get_allocator() != prepared.saveYaml.get_allocator())
+            return {false, false, EditorDiagnosticCode::CommandPreparationFailed};
+        available->projectRoot.swap(prepared.projectRoot);
+        available->resolvedTarget.swap(prepared.resolvedTarget);
+        available->projectModel.swap(prepared.projectModel);
+        available->manifestBytes.swap(prepared.manifestBytes);
+        available->contentHash.swap(prepared.contentHash);
+        available->relativePath.swap(prepared.relativePath);
+        available->saveYaml.swap(prepared.saveYaml);
+        available->diagnostic.swap(prepared.diagnostic);
+        available->sourceTask.swap(prepared.sourceTask);
+        available->id = prepared.id;
+        available->status = prepared.status;
+        available->owner = prepared.owner;
+        available->scripts = prepared.scripts;
+        available->resourceRevision = prepared.resourceRevision;
+        available->documentEpoch = prepared.documentEpoch;
+        available->loading = true;
+        available->checkingFile = false;
+        available->committed = false;
+        available->version = prepared.version;
+        available->request = {};
+        available->saveReceipt = {};
+    } else
+        *available = std::move(prepared);
+    ++nextScenePersistenceTaskId_;
     result.snapshot.sceneIoPending = true;
     result.snapshot.scenePersistenceTaskId = available->id;
     result.snapshot.scenePersistenceTaskStatus = available->status;
@@ -247,7 +306,7 @@ void EditorShell::pollScenePersistence()
             continue;
         // An internal command rejected before execution must remain retryable;
         // never consume an already taken result a second time.
-        if (!task.result) {
+        if (!task.sourceTask && !task.sourceSave && !task.result) {
             core::io::AtomicFileResult result;
             if (!scenePersistence_.take(task.request, result))
                 continue;
@@ -271,6 +330,12 @@ EditorCommandOutcome EditorShell::completeScenePersistence(std::uint64_t taskId)
         scenePersistenceTasks_.begin(), scenePersistenceTasks_.end(), [taskId](const auto& task) {
             return task.id == taskId;
         });
+    if (found != scenePersistenceTasks_.end() && found->sourceSave
+        && found->status == ScenePersistenceTaskStatus::Pending)
+        return completeSourceSceneSave(taskId);
+    if (found != scenePersistenceTasks_.end() && found->sourceTask
+        && found->status == ScenePersistenceTaskStatus::Pending)
+        return completeSourceScenePersistence(taskId);
     if (found == scenePersistenceTasks_.end() || !found->result
         || found->status != ScenePersistenceTaskStatus::Pending)
         return {false, false, EditorDiagnosticCode::InvalidCommandPayload};

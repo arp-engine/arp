@@ -1,10 +1,12 @@
+#include "../fixtures/generated_shader_package_fixture.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/backends/null/null_hidden_frame_smoke.h"
-#include "rhi/frontend/detail/allocator_backing_ledger.h"
 #include "rhi/frontend/memory_allocator_backing.h"
+#include "rhi/frontend/memory_allocator_backing_ledger.h"
 
 #include <array>
 #include <cassert>
+#include <cstdio>
 #include <cstring>
 #include <thread>
 
@@ -125,7 +127,13 @@ int main(int argc, char** argv)
     assert(device->observeAllocatorBacking().state == AllocatorBackingState::Unsupported);
     assert(device->observeAllocatorBacking(0u).state == AllocatorBackingState::DiagnosticFailure);
     if (argc == 2 && !std::strcmp(argv[1], "--null-hidden-frame")) {
-        assert(NullHiddenFrameSmokeRunner(*device).run({}).success);
+        const auto package = test::GeneratedShaderPackageFixture::nullHiddenFrame();
+        NullHiddenFrameSmokeConfig config;
+        config.shaderPackage = &package;
+        const auto smoke = NullHiddenFrameSmokeRunner(*device).run(config);
+        if (!smoke.success)
+            std::fprintf(stderr, "Allocator Null smoke failed: %s\n", smoke.diagnostics.c_str());
+        assert(smoke.success);
         assert(device->observeAllocatorBacking().state == AllocatorBackingState::Unsupported);
     }
 }

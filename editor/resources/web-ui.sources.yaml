@@ -1,0 +1,22 @@
+type: arp.editor-ui-sources
+contractVersion: 1
+document: editor.arpui
+atlas: editor_atlas.png
+guiShader: gui_unified.webgl-program.yaml
+fonts:
+  - token: font.editor
+    family: Roboto
+    path: editor.ttf
+    maxBytes: 1048576
+  - token: font.editor.semibold
+    family: Roboto
+    path: editor.ttf
+    maxBytes: 1048576
+  - token: font.code
+    family: Consolas
+    path: code.ttf
+    maxBytes: 1048576
+  - token: font.code.cjk
+    family: DengXian
+    path: cjk.ttf
+    maxBytes: 16777216

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rhi/gpu_commands.h"
+#include "rhi/semantics/command_lowering.h"
 
 namespace arp::rhi::semantics {
 

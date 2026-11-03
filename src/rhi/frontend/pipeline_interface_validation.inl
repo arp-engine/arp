@@ -1021,6 +1021,14 @@ inline PipelineStateValidationResult validateRenderPipelineState(const RenderPip
     }
     for (std::uint32_t index = 0; index < result.colorTargetCount; ++index) {
         const auto target = effectiveColorTargetAt(desc, index);
+        const auto* blendDiagnostic = BlendStateContract::validate(target.colorBlend);
+        if (!blendDiagnostic)
+            blendDiagnostic = BlendStateContract::validate(target.alphaBlend);
+        if (blendDiagnostic) {
+            result.diagnostics = blendDiagnostic;
+            result.unsupportedStateDiagnosed = true;
+            return result;
+        }
         if (!isColorRenderTargetFormat(target.format)) {
             result.diagnostics = "render pipeline color target format is unsupported";
             result.unsupportedStateDiagnosed = true;

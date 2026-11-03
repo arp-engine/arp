@@ -30,16 +30,6 @@ void require(bool condition)
         throw std::invalid_argument("EDITOR-SCENE-HISTORY-REJECTED");
 }
 
-bool containsScripts(const Presence::Subtree& subtree)
-{
-    return std::any_of(subtree.objects.begin(), subtree.objects.end(), [](const auto& object) {
-        return std::any_of(
-            object.components.begin(), object.components.end(), [](const auto& component) {
-                return bool(component.script);
-            });
-    });
-}
-
 SceneInspectorProperty initialValue(const SetSceneComponentPropertyCommand& command,
     const core::pmr::Vector<SceneInspectorProperty>& schema)
 {
@@ -135,7 +125,7 @@ EditorCommandOutcome EditorShell::destroySceneObjectWithHistory()
             sceneAuthoringVersion_ == EditorSceneScriptCodec::contractVersion
                 ? Presence::ScriptPolicy::Archive
                 : Presence::ScriptPolicy::Reject));
-        if (containsScripts(*snapshot))
+        if (Presence::containsScripts(*snapshot))
             requireSceneScriptContext();
         for (const auto& links : snapshot->externalLinks) {
             const auto gate = sceneObjectWriteGate(links.owner.value(), false);
@@ -310,7 +300,7 @@ EditorCommandOutcome EditorShell::applyPresenceHistory(const SceneHistoryEntry& 
             }
         } else {
             require(bool(entry.subtree) && !entry.subtree->objects.empty());
-            if (containsScripts(*entry.subtree))
+            if (Presence::containsScripts(*entry.subtree))
                 requireSceneScriptContext();
             const bool restoring = undo ? entry.objectPresentBefore : entry.objectPresentAfter;
             const auto selection =

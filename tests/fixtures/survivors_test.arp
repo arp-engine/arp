@@ -38,3 +38,16 @@ def test_remove_enemy(s: RunFlow, id: int):
     var enemy: Enemy = s.enemies[id]
     delete(s.enemies, id)
     enemy.game_object.destroy_self()
+
+
+def test_pickup(s: RunFlow, x: float, y: float) -> int:
+    s.pickup(x, y)
+    for id, pickup in s.pickups:
+        return id
+    return -1
+
+
+def test_remove_pickup(s: RunFlow, id: int):
+    var pickup: ExperiencePickup = s.pickups[id]
+    delete(s.pickups, id)
+    pickup.game_object.destroy_self()
