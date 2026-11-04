@@ -55,6 +55,22 @@ int main()
         const std::filesystem::path engine(ARP_SOURCE_DIR);
         arp::tools::asset_importer::ScriptToolRunner runner(
             workspace.root, engine / "modules", workspace.root / "cache", {}, {}, workspace.root);
+        workspace.write("signed_constants.arp",
+            "const NEGATIVE: int = -2\nconst POSITIVE: int = +3\n"
+            "const WIDE_NEGATIVE: int64 = -5000000000L\n"
+            "const WIDE_POSITIVE: int64 = +5000000000L\n"
+            "const FRACTION: float = -0.5\nconst POSITIVE_FRACTION: float = +1.5\n");
+        workspace.write("signed_entry.arp",
+            "import signed_constants\n\ndef main() -> bool:\n"
+            "    return signed_constants.NEGATIVE == -2 and signed_constants.POSITIVE == 3 and "
+            "signed_constants.WIDE_NEGATIVE == -5000000000L and "
+            "signed_constants.WIDE_POSITIVE == 5000000000L and "
+            "signed_constants.FRACTION == -0.5 and signed_constants.POSITIVE_FRACTION == 1.5\n");
+        const auto signedConstants = runner.runFile(workspace.root / "signed_entry.arp");
+        bool signedValues = false;
+        require(signedConstants.success, signedConstants.diagnostics.c_str());
+        require(arp::scriptvm::tryGetBool(signedConstants.value, signedValues) && signedValues,
+            "Cross-module signed numeric literal constants were omitted or changed type");
         require(!arp::tools::asset_importer::ToolScriptSourceHost::prepareNative({}, workspace.root)
                     .sources
                 && !arp::tools::asset_importer::ToolScriptSourceHost::prepareNative(

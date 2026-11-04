@@ -2,6 +2,7 @@
 
 #include "3d/camera_parameters.h"
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 
@@ -38,44 +39,100 @@ Scene3DVisibilityResult Scene3DVisibilityResult::failure(Scene3DDiagnosticCode c
 Scene3DVisibilityResult Scene3DVisibilitySystem::filterVisible(
     const Scene3DRenderQueue& sourceQueue, const Scene3DCameraBinding& camera) const
 {
-    Scene3DRenderQueue visibleQueue;
-    if (sourceQueue.hasCloud())
-        visibleQueue.setCloud(sourceQueue.cloud());
-    if (sourceQueue.hasFog())
-        visibleQueue.setFog(sourceQueue.fog());
-    for (const auto& volume : sourceQueue.fogVolumes())
-        visibleQueue.addFogVolume(volume);
-    for (const auto& light : sourceQueue.lights())
-        visibleQueue.addLight(light);
-    for (const auto& cameraBinding : sourceQueue.cameras()) {
-        visibleQueue.addCamera(cameraBinding);
-    }
-    for (const auto& animation : sourceQueue.animations()) {
-        visibleQueue.addAnimation(animation);
-    }
-    visibleQueue.recordDisabledComponents(sourceQueue.disabledComponentCount());
+    const auto& c = camera.camera;
+    const auto projection = camera.projection == scene::CameraProjection::Orthographic
+        ? core::orthographic(camera.orthographicWidth * .5f,
+              camera.orthographicHeight * .5f,
+              c.nearPlane,
+              c.farPlane)
+        : core::perspective(c.verticalFovDegrees, c.aspectRatio, c.nearPlane, c.farPlane);
+    const auto view = core::Mat4::translation(core::scale(c.position, -1));
+    return filterSpatial(sourceQueue, camera, core::multiply(projection, view).m, true);
+}
 
+Scene3DVisibilityResult Scene3DVisibilitySystem::filterVisible(const Scene3DRenderQueue& source,
+    const Scene3DCameraBinding& camera,
+    const std::array<float, 16>& matrix) const
+{
+    return filterSpatial(source, camera, matrix, false);
+}
+
+Scene3DVisibilityResult Scene3DVisibilitySystem::filterSpatial(const Scene3DRenderQueue& source,
+    const Scene3DCameraBinding& camera,
+    const std::array<float, 16>& matrix,
+    bool preserveParameterCamera) const
+{
     Scene3DVisibilityTelemetry telemetry;
-    telemetry.totalRenderables = sourceQueue.items().size();
-    telemetry.disabledRenderables = sourceQueue.disabledComponentCount();
-
-    for (const auto& item : sourceQueue.items()) {
-        if (!item.worldBounds.valid()) {
+    telemetry.totalRenderables = source.items().size();
+    telemetry.disabledRenderables = source.disabledComponentCount();
+    // Preflight before retiring any published proxy.
+    for (const auto& item : source.items())
+        if (!item.worldBounds.valid() || !item.objectId.valid()) {
             ++telemetry.invalidRenderables;
             return Scene3DVisibilityResult::failure(Scene3DDiagnosticCode::InvalidBounds,
-                "Scene3DVisibilitySystem requires explicit valid world bounds.",
+                "Scene3D spatial visibility requires an object identity and explicit world bounds.",
                 telemetry);
         }
-
-        if (visibleToCamera(item, camera)) {
-            visibleQueue.addItem(item);
-            ++telemetry.visibleRenderables;
-        } else {
-            ++telemetry.culledRenderables;
+    try {
+        while (indexed_.size() > source.items().size()) {
+            spatial_.erase(indexed_.back().handle);
+            indexed_.pop_back();
         }
+        for (std::size_t i = 0; i < source.items().size(); ++i) {
+            const auto& item = source.items()[i];
+            auto extents = item.worldBounds.extents;
+            if (preserveParameterCamera) {
+                const auto radius = boundsRadius(item.worldBounds);
+                extents = {radius, radius, radius};
+            }
+            const auto bounds = Aabb::fromCenterExtents(item.worldBounds.center, extents);
+            if (i < indexed_.size()
+                && (indexed_[i].object != item.objectId || indexed_[i].kind != item.kind)) {
+                spatial_.erase(indexed_[i].handle);
+                indexed_[i].handle = {};
+            }
+            if (i == indexed_.size())
+                indexed_.push_back({item.objectId, item.kind, {}});
+            auto& entry = indexed_[i];
+            if (!entry.handle.valid()) {
+                entry.object = item.objectId;
+                entry.kind = item.kind;
+                entry.handle = spatial_.insert({item.objectId, {}},
+                    bounds,
+                    item.kind == Scene3DRenderItemKind::Terrain ? SpatialMobility::Static
+                                                                : SpatialMobility::Dynamic);
+            } else
+                spatial_.update(entry.handle, bounds);
+        }
+        spatial_.query(&matrix);
+    } catch (const core::DiagnosticError& error) {
+        ++telemetry.invalidRenderables;
+        return Scene3DVisibilityResult::failure(Scene3DDiagnosticCode::InvalidBounds,
+            core::pmr::String(error.what(), &core::defaultCpuMemoryResource()),
+            telemetry);
     }
-
-    return Scene3DVisibilityResult::success(std::move(visibleQueue), telemetry);
+    Scene3DRenderQueue visible;
+    if (source.hasCloud())
+        visible.setCloud(source.cloud());
+    if (source.hasFog())
+        visible.setFog(source.fog());
+    for (const auto& fog : source.fogVolumes())
+        visible.addFogVolume(fog);
+    for (const auto& light : source.lights())
+        visible.addLight(light);
+    for (const auto& binding : source.cameras())
+        visible.addCamera(binding);
+    for (const auto& animation : source.animations())
+        visible.addAnimation(animation);
+    visible.recordDisabledComponents(source.disabledComponentCount());
+    for (std::size_t i = 0; i < indexed_.size(); ++i)
+        if (spatial_.visible(indexed_[i].handle)
+            && (!preserveParameterCamera || visibleToCamera(source.items()[i], camera))) {
+            visible.addItem(source.items()[i]);
+            ++telemetry.visibleRenderables;
+        }
+    telemetry.culledRenderables = telemetry.totalRenderables - telemetry.visibleRenderables;
+    return Scene3DVisibilityResult::success(std::move(visible), telemetry);
 }
 
 bool Scene3DVisibilitySystem::visibleToCamera(

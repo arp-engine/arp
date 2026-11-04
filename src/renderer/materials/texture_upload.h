@@ -78,8 +78,11 @@ inline RendererResult uploadTextureRgba8(rhi::GpuDevice& device,
     std::uint32_t width,
     std::uint32_t height,
     std::uint32_t bytesPerRow,
-    std::uint32_t rowsPerImage)
+    std::uint32_t rowsPerImage,
+    core::SharedPtr<const rhi::GpuFence>* completion = nullptr)
 {
+    if (completion)
+        completion->reset();
     if (rgba8 == nullptr || width == 0u || height == 0u || bytesPerRow == 0u
         || rowsPerImage == 0u) {
         return RendererResult{
@@ -145,7 +148,19 @@ inline RendererResult uploadTextureRgba8(rhi::GpuDevice& device,
     if (!commands) {
         return RendererResult{false, encoder->lastValidation().diagnostics};
     }
-    const auto submitted = device.queue().submit(*commands);
+    const auto ownedCompletion = completion ? commands->ownedSubmissionFence() : nullptr;
+    // Both are existing L2 native-completion contracts. Some command paths
+    // own their fence; other paths require an explicitly supplied queue fence.
+    auto suppliedCompletion = completion && !ownedCompletion
+        ? core::shareUnique(device.createFence())
+        : core::SharedPtr<rhi::GpuFence>{};
+    if (completion && !ownedCompletion && !suppliedCompletion)
+        return RendererResult{false, "RGBA8 texture upload command completion is unavailable"};
+    const auto submitted = suppliedCompletion
+        ? device.queue().submit(*commands, suppliedCompletion.get())
+        : device.queue().submit(*commands);
+    if (submitted.success && completion)
+        *completion = ownedCompletion ? ownedCompletion : suppliedCompletion;
     return RendererResult{submitted.success, submitted.diagnostics};
 }
 

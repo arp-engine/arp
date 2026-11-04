@@ -96,6 +96,37 @@ void unified_ui_atlas_runtime_lowers_text_to_glyph_quads()
     assert(!runtime.exposesNativeBackendHandles());
 }
 
+void asset_declared_han_font_does_not_depend_on_editor_token_name()
+{
+    using namespace arp::renderer::ui;
+    auto faces = arp::tests::preparedUiFontFaces("font.game.body");
+    faces[0].supportedScripts = {"Latin", "Han"};
+    arp::renderer::GuiAtlasTextureDesc base;
+    base.resourceId = "texture/script-metadata";
+    base.extent = {4, 4};
+    base.rgba8.resize(64, 255);
+    UiDrawCommand command;
+    command.kind = UiDrawCommandKind::Text;
+    command.fontToken = "font.game.body";
+    command.styleId = "text.body";
+    command.text = u8"Loading…";
+    command.rect = command.clipRect = arp::ui::LayoutRect::fromOriginSize(0, 0, 200, 24);
+    arp::core::pmr::Vector<UiDrawCommand> commands{command};
+    UnifiedUiAtlasRuntimeBuildDesc desc;
+    desc.baseAtlas = base;
+    desc.fontFaces = &faces;
+    desc.commands = &commands;
+    desc.shapingCapability = TextShapingCapability::BasicUnicodeUtf8;
+    auto runtime = UnifiedUiAtlasRuntime::build(desc);
+    if (!runtime.ok())
+        std::fprintf(stderr, "%s\n", runtime.diagnostics().c_str());
+    assert(runtime.ok());
+    assert(runtime.resolve(commands).ok());
+    faces[0].supportedScripts.clear();
+    const auto undeclared = UnifiedUiAtlasRuntime::build(desc);
+    assert(!undeclared.ok());
+}
+
 void glyph_cells_do_not_clip_wide_uppercase_letters()
 {
     arp::renderer::GuiAtlasTextureDesc baseAtlas;
@@ -722,6 +753,7 @@ void pika_visible_runtime_uses_atlas_runtime_service()
 
 int main()
 {
+    asset_declared_han_font_does_not_depend_on_editor_token_name();
     unified_ui_atlas_runtime_lowers_text_to_glyph_quads();
     glyph_cells_do_not_clip_wide_uppercase_letters();
     glyph_quads_are_clipped_to_command_clip_rect();

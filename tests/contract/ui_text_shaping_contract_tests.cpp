@@ -51,6 +51,19 @@ void ascii_text_shapes_to_one_glyph_per_codepoint()
     assert(result.run().widthPx > 0.0f);
 }
 
+void han_labels_accept_latin_digits_and_common_punctuation()
+{
+    using namespace arp::renderer::ui;
+    auto key = layoutKey(u8"IMBA 1.6 加载…");
+    key.script = TextScript::Han;
+    const auto shaped = TextShapingService(TextShapingCapability::BasicUnicodeUtf8).shape(key);
+    assert(shaped.success && shaped.glyphs.size() == 12);
+    key.text = u8"加载ع";
+    assert(!TextShapingService(TextShapingCapability::BasicUnicodeUtf8).shape(key).success);
+    key.text = u8"加载e\u0301";
+    assert(!TextShapingService(TextShapingCapability::BasicUnicodeUtf8).shape(key).success);
+}
+
 // Contract audit: UTF-8 Latin text decodes to codepoints and requires explicit capability.
 void utf8_latin_decodes_codepoints_and_requires_capability()
 {
@@ -284,6 +297,7 @@ void glyph_upload_schedule_is_deterministic_across_frames()
 
 int main()
 {
+    han_labels_accept_latin_digits_and_common_punctuation();
     ascii_text_shapes_to_one_glyph_per_codepoint();
     utf8_latin_decodes_codepoints_and_requires_capability();
     invalid_utf8_rejected_with_deterministic_diagnostics();

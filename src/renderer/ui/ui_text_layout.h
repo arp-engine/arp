@@ -68,6 +68,9 @@ struct TextLayoutRun {
     TextLayoutKey key;
     float widthPx = 0.0f;
     float heightPx = 0.0f;
+    // Visible glyph bounds relative to the line origin, including bearings.
+    // Font size and pen advance are not the visible ink's height or origin.
+    arp::ui::LayoutRect inkBounds;
     arp::core::pmr::Vector<GlyphQuad> glyphQuads{&arp::core::defaultCpuMemoryResource()};
 };
 
@@ -180,7 +183,12 @@ public:
                     text("UI text layout requires complex shaping support for combining marks.");
                 return result;
             }
-            if (hanText ? !isHanCodepoint(codepoint) : codepoint > 0x024Fu) {
+            // Han labels commonly contain Latin digits and neutral punctuation.
+            // These ranges need no contextual shaping; combining marks and other
+            // scripts still fail above/below rather than being silently accepted.
+            const bool hanLabelCodepoint = codepoint <= 0x024Fu || isHanCodepoint(codepoint)
+                || (codepoint >= 0x2000u && codepoint <= 0x206Fu);
+            if (hanText ? !hanLabelCodepoint : codepoint > 0x024Fu) {
                 result.diagnostics = hanText
                     ? text("UI text layout shaping supports Han codepoints only.")
                     : text("UI text layout shaping supports declared Latin text only.");
@@ -317,6 +325,7 @@ public:
             if (!metrics.ok) {
                 return TextLayoutResolveResult::failure(metrics.diagnostics);
             }
+            run.heightPx = std::max(run.heightPx, static_cast<float>(metrics.face.lineHeightPx));
             if (fontFaceCache_ != nullptr && previousCodepoint != 0u
                 && previousFontToken == metrics.fontToken) {
                 float kerningX = 0.0f;
@@ -345,6 +354,18 @@ public:
                 quad.advanceX = metrics.advanceX;
                 quad.rasterOriginX = metrics.inkRect.x;
                 quad.rasterOriginY = metrics.inkRect.y;
+                if (run.glyphQuads.empty()) {
+                    run.inkBounds = quad.localRect;
+                } else {
+                    const auto left = std::min(run.inkBounds.x, quad.localRect.x);
+                    const auto top = std::min(run.inkBounds.y, quad.localRect.y);
+                    const auto right = std::max(run.inkBounds.x + run.inkBounds.width,
+                        quad.localRect.x + quad.localRect.width);
+                    const auto bottom = std::max(run.inkBounds.y + run.inkBounds.height,
+                        quad.localRect.y + quad.localRect.height);
+                    run.inkBounds =
+                        arp::ui::LayoutRect::fromOriginSize(left, top, right - left, bottom - top);
+                }
                 run.glyphQuads.push_back(std::move(quad));
             }
             cursorX += metrics.advanceX > 0.0f ? metrics.advanceX : std::max(1.0f, glyph.advanceX);
@@ -461,8 +482,10 @@ private:
                     arp::ui::UiFontDiagnosticCode::InvalidFontMetadata, lastDiagnostic);
                 continue;
             }
-            face.sizePx = key.sizePx;
-            face.lineHeightPx = std::max(key.sizePx, face.lineHeightPx);
+            if (!face.resizePixels(key.sizePx)) {
+                metrics.diagnostics = text("UI text layout font size or line height is invalid.");
+                return metrics;
+            }
             face.renderMode = key.renderMode == GlyphRenderMode::Sdf ? "sdf" : "alpha";
             rasterDesc.face = std::move(face);
             rasterDesc.maxY = static_cast<float>(rasterDesc.face.lineHeightPx);

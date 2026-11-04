@@ -867,17 +867,33 @@ UiArpuiRuntimeLoadResult createRuntimeFromDocument(UiDocument document,
         controlDesc.widget.layoutParticipation = node.layoutParticipation;
         for (const auto& binding : node.resourceBindings) {
             if (binding.role == "texture" && !binding.resourceId.empty()) {
-                const auto texture = std::find_if(document.textures().begin(),
-                    document.textures().end(),
-                    [&](const UiDocumentTextureEntry& entry) {
-                        return entry.resourceId == binding.resourceId;
-                    });
-                if (texture == document.textures().end()) {
+                const UiDocumentTextureEntry* texture = nullptr;
+                const UiDocumentTextureEntry* layerTexture = nullptr;
+                std::size_t resourceMatches = 0, layerMatches = 0;
+                for (const auto& entry : document.textures()) {
+                    if (entry.resourceId != binding.resourceId)
+                        continue;
+                    texture = &entry;
+                    ++resourceMatches;
+                    if (entry.sourceLayerId == node.psdLayerBinding.sourceLayerId) {
+                        layerTexture = &entry;
+                        ++layerMatches;
+                    }
+                }
+                if (!texture) {
                     return UiArpuiRuntimeLoadResult::failure(UiDiagnosticCode::RuntimeLoadFailed,
                         diagnosticText(
                             ".arpui texture resource binding has no matching texture metadata: ",
                             binding.resourceId));
                 }
+                // One atlas resource can expose several explicitly authored slices.
+                // A repeated resource ID requires the node's declared layer binding;
+                // single-slice documents retain their existing resource-only contract.
+                if (layerMatches > 1 || (resourceMatches > 1 && layerMatches != 1))
+                    return UiArpuiRuntimeLoadResult::failure(UiDiagnosticCode::RuntimeLoadFailed,
+                        diagnosticText("UI-DOCUMENT-TEXTURE-SLICE-AMBIGUOUS: ", node.sourceId));
+                if (layerTexture)
+                    texture = layerTexture;
                 controlDesc.widget.textureResourceId = binding.resourceId;
                 controlDesc.widget.textureSourceRect = texture->sourceRect;
                 controlDesc.widget.hasTextureSourceRect = true;
@@ -2023,7 +2039,8 @@ DocumentComponentMountResult DocumentComponentMounter::mount(
 
     auto drawPlan = planned.plan();
     for (auto& record : drawPlan.mutableRecords()) {
-        if (record.kind != DrawRecordKind::Image || record.textureResourceId.empty()) {
+        if (record.kind != DrawRecordKind::Image || record.textureResourceId.empty()
+            || record.hasTextureSourceRect) {
             continue;
         }
         const auto found = std::find_if(loaded.document().textures().begin(),

@@ -307,7 +307,7 @@ public:
                     text("Unified UI atlas runtime has no font face for token: ")
                     + command.fontToken);
             }
-            const std::uint32_t sizePx = face->sizePx;
+            const std::uint32_t sizePx = command.fontSizePx ? command.fontSizePx : face->sizePx;
             const bool sdfFont = face->renderMode == "sdf";
             // SDF fonts rasterize at a fixed sample size so one glyph entry
             // serves all render sizes. AlphaMask uses the face's sizePx.
@@ -593,6 +593,8 @@ public:
                     if (const auto* face = fontFaceFor(quad.glyph.fontToken)) {
                         renderSizePx = face->sizePx;
                     }
+                    if (command.fontSizePx)
+                        renderSizePx = command.fontSizePx;
                     renderScale =
                         static_cast<float>(renderSizePx) / static_cast<float>(quad.glyph.sizePx);
                 }
@@ -685,7 +687,7 @@ private:
         key.locale = "en-US";
         key.sizePx = dimensionFor(command.rect.height);
         if (const auto* face = fontFaceFor(command.fontToken)) {
-            key.sizePx = face->sizePx;
+            key.sizePx = command.fontSizePx ? command.fontSizePx : face->sizePx;
             // SDF fonts: the GlyphKey (and thus the atlas entry) must use the
             // fixed SDF sample size so one glyph serves all render sizes.
             // The renderMode is propagated to the GlyphQuad -> GlyphKey.
@@ -697,6 +699,14 @@ private:
         key.maxWidthPx = dimensionFor(command.rect.width);
         key.scaleBucket = 1u;
         key.script = command.fontToken == "font.code.cjk" ? TextScript::Han : TextScript::Latin;
+        // Asset-declared script support is independent from product token names.
+        // Keep the existing editor token above for its legacy untyped font source.
+        if (const auto* face = fontFaceFor(command.fontToken)) {
+            if (std::find(face->supportedScripts.begin(), face->supportedScripts.end(), "Han")
+                != face->supportedScripts.end()) {
+                key.script = TextScript::Han;
+            }
+        }
         key.direction = TextDirection::LeftToRight;
         return key;
     }
@@ -743,8 +753,11 @@ private:
             // rasterize at the actual on-screen size.
             const auto rasterSizePx =
                 (resolved.renderMode == "sdf") ? kSdfSampleSizePx : quad.glyph.sizePx;
-            resolved.sizePx = rasterSizePx;
-            resolved.lineHeightPx = std::max(rasterSizePx, resolved.lineHeightPx);
+            if (!resolved.resizePixels(rasterSizePx)) {
+                result.success = false;
+                result.message = text("UI atlas font size or line height is invalid.");
+                return {};
+            }
             return resolved;
         }
         result.success = false;
@@ -769,28 +782,29 @@ private:
             return true;
         }
 
-        // Clip horizontally (line wrapping) but NOT vertically: glyph ink
-        // (ascenders/descenders) legitimately extends above/below the text
-        // widget's bounding box. Vertical clipping would truncate the tops of
-        // tall glyphs (T, l, capitals) and the bottoms of descenders (g, p, y).
-        // This matches Unity/TextMeshPro behaviour where the text box only
-        // constrains horizontal extent, not vertical.
+        // An explicit clip rectangle constrains ink on both axes. Preserve
+        // texel mapping when cropping instead of squeezing the entire glyph.
         const auto left = std::max(command.rect.x, command.clipRect.x);
+        const auto top = std::max(command.rect.y, command.clipRect.y);
         const auto right = std::min(
             command.rect.x + command.rect.width, command.clipRect.x + command.clipRect.width);
-        if (right <= left || command.rect.width <= 0.0f || command.rect.height <= 0.0f) {
+        const auto bottom = std::min(
+            command.rect.y + command.rect.height, command.clipRect.y + command.clipRect.height);
+        if (right <= left || bottom <= top || command.rect.width <= 0.0f
+            || command.rect.height <= 0.0f) {
             return false;
         }
 
         const auto u0 = (left - command.rect.x) / command.rect.width;
         const auto u1 = (right - command.rect.x) / command.rect.width;
+        const auto v0 = (top - command.rect.y) / command.rect.height;
+        const auto v1 = (bottom - command.rect.y) / command.rect.height;
         command.textureSourceRect = arp::ui::LayoutRect::fromOriginSize(
             command.textureSourceRect.x + command.textureSourceRect.width * u0,
-            command.textureSourceRect.y,
+            command.textureSourceRect.y + command.textureSourceRect.height * v0,
             command.textureSourceRect.width * (u1 - u0),
-            command.textureSourceRect.height);
-        command.rect = arp::ui::LayoutRect::fromOriginSize(
-            left, command.rect.y, right - left, command.rect.height);
+            command.textureSourceRect.height * (v1 - v0));
+        command.rect = arp::ui::LayoutRect::fromOriginSize(left, top, right - left, bottom - top);
         return command.textureSourceRect.valid();
     }
 

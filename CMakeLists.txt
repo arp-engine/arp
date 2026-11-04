@@ -962,6 +962,8 @@ add_library(arp_3d
     src/3d/animator_component.cpp
     src/3d/bounds.cpp
     src/3d/bvh.cpp
+    src/3d/dynamic_aabb_tree.cpp
+    src/3d/scene_3d_spatial_index.cpp
     src/3d/collider_component.cpp
     src/3d/components.cpp
     src/3d/fog_components.cpp
@@ -6497,6 +6499,11 @@ add_executable(arp_bvh_serialize_tests
 )
 target_include_directories(arp_bvh_serialize_tests PRIVATE . src)
 target_link_libraries(arp_bvh_serialize_tests PRIVATE arp_3d)
+
+add_executable(arp_scene_spatial_tests tests/unit/scene_spatial_tests.cpp)
+target_link_libraries(arp_scene_spatial_tests PRIVATE arp_3d)
+add_test(NAME arp_scene_spatial_tests COMMAND arp_scene_spatial_tests)
+set_tests_properties(arp_scene_spatial_tests PROPERTIES TIMEOUT 30)
 
 add_executable(arp_audio_system_tests
     tests/unit/audio_system_tests.cpp

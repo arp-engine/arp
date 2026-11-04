@@ -40,6 +40,9 @@ struct UiDrawCommand {
     bool sdfMode = false;
     std::uint64_t sortKey = 0;
     UiTextureSource textureSource = UiTextureSource::Atlas;
+    // Zero uses the font token's authored size; otherwise rasterize/render at
+    // this physical pixel size. Does not scale an already rasterized bitmap.
+    std::uint32_t fontSizePx = 0u;
 };
 
 struct UiDrawStyleColor {

@@ -408,10 +408,53 @@ void test_ordinary_read_import_retains_dependency()
     require(rejected, "Null cannot fabricate a completed upload import");
 }
 
+void test_handle_allocation_after_sparse_reset()
+{
+    using namespace arp;
+    auto device = rhi::createNullDevice();
+    render_graph::FrameGraph graph(*device);
+    const auto desc = textureDesc("HandlePopulation",
+        {4u, 4u, 1u},
+        rhi::TextureFormat::Rgba8Unorm,
+        rhi::TextureUsage::Sampled,
+        rhi::ResourceState::ShaderRead);
+    // Transient records disappear on reset; shared imports survive in the
+    // middle of the ID range. New allocations must not overwrite survivors.
+    graph.createTransientTexture(desc);
+    auto persistent = core::shareUnique(device->createTexture(desc));
+    const auto retained = graph.importTextureRef(persistent);
+    for (unsigned i = 0; i < 2048; ++i)
+        graph.createTransientTexture(desc);
+    graph.reset();
+    const auto fresh = graph.createTransientTexture(desc);
+    require(fresh.id != 0 && fresh.id != retained.id,
+        "allocation collided with a shared texture retained across reset");
+    require(graph.importTextureRef(persistent).id == retained.id
+            && &graph.texture(retained) == persistent.get(),
+        "allocation changed persistent texture identity");
+    const rhi::BufferDesc bufferDesc{"HandleBuffer",
+        16,
+        rhi::ResourceUsage::StorageBuffer,
+        rhi::MemoryUsage::CpuToGpu,
+        rhi::ResourceState::ShaderRead};
+    graph.createTransientBuffer(bufferDesc);
+    auto buffer = core::shareUnique(device->createBuffer(bufferDesc));
+    const auto retainedBuffer = graph.importBufferRef(buffer);
+    for (unsigned i = 0; i < 128; ++i)
+        graph.createTransientBuffer(bufferDesc);
+    graph.reset();
+    const auto freshBuffer = graph.createTransientBuffer(bufferDesc);
+    require(freshBuffer.id != 0 && freshBuffer.id != retainedBuffer.id
+            && graph.importBufferRef(buffer).id == retainedBuffer.id
+            && &graph.buffer(retainedBuffer) == buffer.get(),
+        "buffer allocation damaged a retained import after reset");
+}
+
 } // namespace
 
 int main()
 {
+    test_handle_allocation_after_sparse_reset();
     test_persistent_buffer_import();
     test_ordinary_read_import_retains_dependency();
     test_lifecycle_keepalive();

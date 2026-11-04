@@ -466,10 +466,72 @@ void missing_arpui_file_fails_deterministically()
     assert(loaded.diagnostic().code == arp::ui::UiDiagnosticCode::RuntimeLoadFailed);
 }
 
+void shared_atlas_slices_use_explicit_node_layers()
+{
+    arp::ui::UiArpuiRuntimeLoadDesc desc;
+    desc.sourceYamlProvided = true;
+    desc.sourceYaml = R"yaml(type: ui.document
+contractVersion: ui.document/v1
+canvas: { id: slices, width: 320, height: 180, dpi: 96 }
+textures:
+  - { resourceId: atlas, layer: frame, atlas: shared, rect: { x: 0, y: 32, width: 64, height: 24 }, pivotX: 0, pivotY: 0, sliceLeft: 0, sliceTop: 0, sliceRight: 0, sliceBottom: 0, alpha: straight, srgb: true, mips: none, compression: ui-lossless, sampler: linear-clamp }
+  - { resourceId: atlas, layer: fill, atlas: shared, rect: { x: 64, y: 64, width: 48, height: 8 }, pivotX: 0, pivotY: 0, sliceLeft: 0, sliceTop: 0, sliceRight: 0, sliceBottom: 0, alpha: straight, srgb: true, mips: none, compression: ui-lossless, sampler: linear-clamp }
+root:
+  id: root
+  type: Panel
+  layer: root
+  rect: { x: 0, y: 0, width: 320, height: 180 }
+  style: panel
+  state: enabled
+  event: none
+  children:
+    - { id: frame, type: Image, layer: frame, rect: { x: 8, y: 16, width: 64, height: 24 }, style: image, state: enabled, event: none, resourceRole: texture, resourceId: atlas }
+    - { id: fill, type: Image, layer: fill, rect: { x: 12, y: 20, width: 48, height: 8 }, style: image, state: enabled, event: none, resourceRole: texture, resourceId: atlas }
+)yaml";
+    auto loaded = arp::ui::UiArpuiRuntimeLoader{}.load(desc);
+    assert(loaded.ok());
+    const auto* frame =
+        loaded.runtime().canvas().findWidget(loaded.widgetIdForSourceNodeId("frame"));
+    const auto* fill = loaded.runtime().canvas().findWidget(loaded.widgetIdForSourceNodeId("fill"));
+    assert(frame->desc().textureSourceRect == arp::ui::LayoutRect::fromOriginSize(0, 32, 64, 24));
+    assert(fill->desc().textureSourceRect == arp::ui::LayoutRect::fromOriginSize(64, 64, 48, 8));
+    arp::ui::DocumentComponentDesc componentDesc;
+    componentDesc.documentSource = "slices.arpui";
+    componentDesc.resourceId = "ui.slices";
+    componentDesc.inputRoute = "input";
+    componentDesc.renderRoute = "ui";
+    arp::ui::DocumentComponent component(componentDesc);
+    assert(arp::ui::DocumentComponentMounter{}.mount(component, loaded).ok());
+    unsigned images = 0;
+    for (const auto& record : component.mountedDrawPlan().records()) {
+        if (record.widgetId == frame->id())
+            assert(record.textureSourceRect == frame->desc().textureSourceRect);
+        if (record.widgetId == fill->id())
+            assert(record.textureSourceRect == fill->desc().textureSourceRect);
+        if (record.kind == arp::ui::DrawRecordKind::Image)
+            ++images;
+    }
+    assert(images == 2);
+    auto* cropped = loaded.runtime().canvas().findWidget(fill->id());
+    cropped->setTextureSourceRect(arp::ui::LayoutRect::fromOriginSize(64, 64, 24, 8));
+    assert(arp::ui::DocumentComponentMounter{}.mount(component, loaded).ok());
+    for (const auto& record : component.mountedDrawPlan().records())
+        if (record.widgetId == fill->id())
+            assert(record.textureSourceRect == cropped->desc().textureSourceRect);
+    const auto at = desc.sourceYaml.find("layer: fill, rect: { x: 12");
+    assert(at != arp::core::pmr::String::npos);
+    desc.sourceYaml.replace(at, 11, "layer: lost");
+    const auto ambiguous = arp::ui::UiArpuiRuntimeLoader{}.load(desc);
+    assert(!ambiguous.ok());
+    assert(ambiguous.diagnostic().message.find("UI-DOCUMENT-TEXTURE-SLICE-AMBIGUOUS")
+        != arp::core::pmr::String::npos);
+}
+
 } // namespace
 
 int main()
 {
+    shared_atlas_slices_use_explicit_node_layers();
     loads_arpui_into_document_control_tree_and_render_queue();
     legacy_arpui_contract_is_rejected_deterministically();
     json_arpui_is_rejected_deterministically();

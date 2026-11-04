@@ -1504,9 +1504,13 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         throw core::DiagnosticError(id);
     if (const auto* id = graph.sharedImportSourceDiagnostic())
         throw core::DiagnosticError(id);
+    // Compiler-only nodes never escape this call. Allocate their map/vector
+    // storage in one domain-local arena; published records retain their own
+    // normal allocator and preserve all existing dependency/state checks.
+    std::pmr::monotonic_buffer_resource scratch(&core::defaultCpuMemoryResource());
     CompiledFrameGraph compiled;
     compiled.setCommandEncoderDesc(graph.commandEncoderDesc_);
-    std::pmr::vector<bool> culled(graph.passes_.size(), false);
+    std::pmr::vector<bool> culled(graph.passes_.size(), false, &scratch);
 
     validateGraph(graph);
 
@@ -1642,8 +1646,8 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         std::pmr::vector<size_t> pendingReadsBeforeFirstWrite;
     };
 
-    std::pmr::vector<std::pmr::vector<size_t>> edges(graph.passes_.size());
-    std::pmr::vector<size_t> indegree(graph.passes_.size(), 0);
+    std::pmr::vector<std::pmr::vector<size_t>> edges(graph.passes_.size(), &scratch);
+    std::pmr::vector<size_t> indegree(graph.passes_.size(), 0, &scratch);
     auto addEdge = [&](size_t before,
                        size_t after,
                        const std::pmr::string& resourceName,
@@ -1724,8 +1728,8 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         state.lastWrite = passIndex;
     };
 
-    std::pmr::map<uint32_t, ResourceDependencyState> textureStates;
-    std::pmr::map<uint32_t, ResourceDependencyState> bufferStates;
+    std::pmr::map<uint32_t, ResourceDependencyState> textureStates{&scratch};
+    std::pmr::map<uint32_t, ResourceDependencyState> bufferStates{&scratch};
     for (const auto& texture : graph.textures_) {
         textureStates.emplace(texture.handle.id, ResourceDependencyState{noPass, {}, {}});
     }
@@ -1781,7 +1785,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         }
     }
 
-    std::pmr::vector<bool> emitted(graph.passes_.size(), false);
+    std::pmr::vector<bool> emitted(graph.passes_.size(), false, &scratch);
     for (;;) {
         size_t next = graph.passes_.size();
         for (size_t passIndex = 0; passIndex < graph.passes_.size(); ++passIndex) {
@@ -1894,8 +1898,8 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         });
     }
 
-    std::pmr::map<uint32_t, ResourceLifetimeRecord> textureLifetimes;
-    std::pmr::map<uint32_t, ResourceLifetimeRecord> bufferLifetimes;
+    std::pmr::map<uint32_t, ResourceLifetimeRecord> textureLifetimes{&scratch};
+    std::pmr::map<uint32_t, ResourceLifetimeRecord> bufferLifetimes{&scratch};
     auto touchLifetime =
         [](ResourceLifetimeRecord& lifetime, const std::pmr::string& passName, size_t order) {
             if (lifetime.firstUsePassName.empty()) {
@@ -1998,7 +2002,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
             std::pmr::vector<TextureHandle> members;
         };
 
-        std::pmr::vector<AliasGroupState> aliasGroups;
+        std::pmr::vector<AliasGroupState> aliasGroups{&scratch};
         uint32_t nextAliasGroup = 1;
         auto textureQueue = [&](TextureHandle handle) {
             QueueRole queue = QueueRole::Graphics;
@@ -2143,9 +2147,9 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
     }
 
     using Scope = rhi::semantics::ResourceAccessScope;
-    core::pmr::Map<std::uint32_t, Scope> textureHistory, bufferHistory;
-    core::pmr::Map<std::uint32_t, Scope> textureAllUses, bufferAllUses;
-    core::pmr::Set<std::pair<ResourceKind, std::uint32_t>> seenResources;
+    core::pmr::Map<std::uint32_t, Scope> textureHistory{&scratch}, bufferHistory{&scratch};
+    core::pmr::Map<std::uint32_t, Scope> textureAllUses{&scratch}, bufferAllUses{&scratch};
+    core::pmr::Set<std::pair<ResourceKind, std::uint32_t>> seenResources{&scratch};
     for (const auto& texture : graph.textures_) {
         // A pooled owner keeps its original recorded state. Graph ownership
         // does not imply a newly allocated or discarded native resource.
@@ -2235,7 +2239,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         }
         PassBarrierBatch batch;
         batch.passOriginalIndex = static_cast<std::uint32_t>(compiledPass.originalPassIndex);
-        core::pmr::Map<std::pair<ResourceKind, std::uint32_t>, Scope> passScopes;
+        core::pmr::Map<std::pair<ResourceKind, std::uint32_t>, Scope> passScopes{&scratch};
         for (const auto& use : compiled.passResourceUses()[compiledPassIndex]) {
             const auto key = std::make_pair(use.kind, use.handleId);
             auto inserted =
@@ -2302,12 +2306,12 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
     if (!frameEndBatch.prePassBarriers.empty()) {
         compiled.addPassBarrierBatch(std::move(frameEndBatch));
     }
-    core::pmr::Map<std::uint32_t, std::uint32_t> aliasGroupByHandle;
+    core::pmr::Map<std::uint32_t, std::uint32_t> aliasGroupByHandle{&scratch};
     for (const auto& alias : compiled.aliasPlan()) {
         aliasGroupByHandle[alias.handle.id] = alias.aliasGroup;
     }
-    core::pmr::Map<std::uint32_t, std::uint64_t> aliasGroupBytes;
-    core::pmr::Map<std::uint32_t, std::uint64_t> aliasGroupAlignment;
+    core::pmr::Map<std::uint32_t, std::uint64_t> aliasGroupBytes{&scratch};
+    core::pmr::Map<std::uint32_t, std::uint64_t> aliasGroupAlignment{&scratch};
     std::uint64_t transientPeakBytes = 0;
     std::uint32_t transientResourceCount = 0;
     for (const auto& texture : graph.textures_) {
@@ -3335,42 +3339,33 @@ TextureHandle FrameGraph::allocateTextureHandle() const
 {
     invalidateCompiledRetirementSource();
     uint32_t candidate = 1;
-    while (true) {
-        bool used = false;
-        for (const auto& record : textures_) {
-            if (record.handle.id == candidate) {
-                used = true;
-                break;
-            }
-        }
-        if (!used) {
-            return TextureHandle{candidate};
-        }
-        ++candidate;
+    // reset retains imported records, and composed graphs can leave gaps.
+    // Scan the live IDs once instead of restarting for every occupied ID.
+    for (const auto& record : textures_) {
+        if (record.handle.id == std::numeric_limits<uint32_t>::max())
+            throw core::DiagnosticError("RG-TEXTURE-HANDLE-EXHAUSTED");
+        candidate = std::max(candidate, record.handle.id + 1u);
     }
+    return TextureHandle{candidate};
 }
 
 BufferHandle FrameGraph::allocateBufferHandle() const
 {
     invalidateCompiledRetirementSource();
     uint32_t candidate = 1;
-    while (true) {
-        bool used = false;
-        for (const auto& record : buffers_) {
-            if (record.handle.id == candidate) {
-                used = true;
-                break;
-            }
-        }
-        if (!used) {
-            return BufferHandle{candidate};
-        }
-        ++candidate;
+    for (const auto& record : buffers_) {
+        if (record.handle.id == std::numeric_limits<uint32_t>::max())
+            throw core::DiagnosticError("RG-BUFFER-HANDLE-EXHAUSTED");
+        candidate = std::max(candidate, record.handle.id + 1u);
     }
+    return BufferHandle{candidate};
 }
 
 const FrameGraph::TextureRecord& FrameGraph::textureRecord(TextureHandle handle) const
 {
+    if (handle.id > 0 && handle.id <= textures_.size()
+        && textures_[handle.id - 1].handle.id == handle.id)
+        return textures_[handle.id - 1];
     for (const auto& record : textures_) {
         if (record.handle.id == handle.id) {
             return record;
@@ -3382,6 +3377,9 @@ const FrameGraph::TextureRecord& FrameGraph::textureRecord(TextureHandle handle)
 
 FrameGraph::TextureRecord& FrameGraph::textureRecord(TextureHandle handle)
 {
+    if (handle.id > 0 && handle.id <= textures_.size()
+        && textures_[handle.id - 1].handle.id == handle.id)
+        return textures_[handle.id - 1];
     for (auto& record : textures_) {
         if (record.handle.id == handle.id) {
             return record;
@@ -3393,6 +3391,9 @@ FrameGraph::TextureRecord& FrameGraph::textureRecord(TextureHandle handle)
 
 const FrameGraph::BufferRecord& FrameGraph::bufferRecord(BufferHandle handle) const
 {
+    if (handle.id > 0 && handle.id <= buffers_.size()
+        && buffers_[handle.id - 1].handle.id == handle.id)
+        return buffers_[handle.id - 1];
     for (const auto& record : buffers_) {
         if (record.handle.id == handle.id) {
             return record;

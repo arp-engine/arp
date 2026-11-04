@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 
 namespace arp::ui {
 
@@ -43,6 +44,20 @@ struct UiFontFaceDesc {
     arp::core::pmr::String renderMode{"alpha", &arp::core::defaultCpuMemoryResource()};
     core::SharedPtr<const UiFontSource> source;
     std::size_t maxSourceBytes = 64u * 1024u * 1024u;
+
+    // Preserve the authored line-height ratio when rasterizing at another
+    // physical pixel size. Reject invalid/overflowing metadata without mutation.
+    bool resizePixels(std::uint32_t pixels) noexcept
+    {
+        if (!sizePx || !lineHeightPx || !pixels)
+            return false;
+        const auto height = (std::uint64_t(lineHeightPx) * pixels + sizePx - 1u) / sizePx;
+        if (height > std::numeric_limits<std::uint32_t>::max())
+            return false;
+        lineHeightPx = height < pixels ? pixels : static_cast<std::uint32_t>(height);
+        sizePx = pixels;
+        return true;
+    }
 };
 
 struct UiFontFace {

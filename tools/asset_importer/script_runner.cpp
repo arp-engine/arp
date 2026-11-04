@@ -17,6 +17,7 @@
 #endif
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -581,21 +582,43 @@ bool constantValue(const scriptvm::StmtPtr& declaration, scriptvm::Value& value)
         || !declaration->expr) {
         return false;
     }
-    switch (declaration->expr->kind) {
+    auto literal = declaration->expr;
+    const bool signedLiteral = literal->kind == scriptvm::ExprKind::Unary;
+    bool negative = false;
+    if (signedLiteral) {
+        if ((literal->op != "-" && literal->op != "+") || !literal->left)
+            return false;
+        negative = literal->op == "-";
+        literal = literal->left;
+    }
+    switch (literal->kind) {
     case scriptvm::ExprKind::IntLit:
-        value = scriptvm::makeInt(static_cast<int>(declaration->expr->intVal));
-        return true;
+        if (negative && literal->intVal == std::numeric_limits<std::int64_t>::min())
+            return false;
+        if (const auto number = negative ? -literal->intVal : literal->intVal;
+            number >= std::numeric_limits<int>::min()
+            && number <= std::numeric_limits<int>::max()) {
+            value = scriptvm::makeInt(static_cast<int>(number));
+            return true;
+        }
+        return false;
     case scriptvm::ExprKind::Int64Lit:
-        value = scriptvm::makeInt64(declaration->expr->intVal);
+        if (negative && literal->intVal == std::numeric_limits<std::int64_t>::min())
+            return false;
+        value = scriptvm::makeInt64(negative ? -literal->intVal : literal->intVal);
         return true;
     case scriptvm::ExprKind::FloatLit:
-        value = scriptvm::makeFloat(declaration->expr->floatVal);
+        value = scriptvm::makeFloat(negative ? -literal->floatVal : literal->floatVal);
         return true;
     case scriptvm::ExprKind::StringLit:
-        value = scriptvm::Value{declaration->expr->strVal};
+        if (signedLiteral)
+            return false;
+        value = scriptvm::Value{literal->strVal};
         return true;
     case scriptvm::ExprKind::BoolLit:
-        value = scriptvm::Value{declaration->expr->boolVal};
+        if (signedLiteral)
+            return false;
+        value = scriptvm::Value{literal->boolVal};
         return true;
     default:
         return false;
