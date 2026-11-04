@@ -1113,8 +1113,67 @@ void test_cycle_diagnosis_lists_passes()
 
 } // namespace
 
+void test_sparse_handles_after_reset_and_compiler_scratch_lifetime()
+{
+    auto device = arp::rhi::createNullDevice();
+    arp::render_graph::FrameGraph graph(*device);
+    const auto desc = textureDesc("SparseImported",
+        {32, 32, 1},
+        arp::rhi::TextureFormat::Rgba8Unorm,
+        arp::rhi::TextureUsage::RenderAttachment | arp::rhi::TextureUsage::Sampled,
+        arp::rhi::ResourceState::ShaderRead);
+    const auto removed = graph.createTexture(desc);
+    auto imported = arp::core::shareUnique(device->createTexture(desc));
+    const auto retained = graph.importTextureRef(imported);
+    const auto bd = bufferDesc("SparseBuffer",
+        64,
+        arp::rhi::ResourceUsage::UniformBuffer,
+        arp::rhi::ResourceState::ShaderRead);
+    const auto removedBuffer = graph.createBuffer(bd);
+    auto importedBuffer = arp::core::shareUnique(device->createBuffer(bd));
+    const auto retainedBuffer = graph.importBufferRef(importedBuffer);
+    graph.reset();
+    assert(&graph.texture(retained) == imported.get());
+    assert(&graph.buffer(retainedBuffer) == importedBuffer.get());
+    const auto next = graph.createTexture(desc);
+    assert(next.id > retained.id && &graph.texture(next) != imported.get());
+    bool rejected = false;
+    try {
+        (void)graph.texture(removed);
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    assert(rejected);
+    rejected = false;
+    try {
+        (void)graph.buffer(removedBuffer);
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    assert(rejected);
+    graph.addPass("PersistentCompilerOutput")
+        .read(retained, arp::rhi::ResourceState::ShaderRead)
+        .read(retainedBuffer, arp::rhi::ResourceState::ShaderRead)
+        .writeAttachment(next,
+            arp::rhi::ResourceState::ColorAttachment,
+            arp::rhi::LoadOp::Clear,
+            arp::rhi::StoreOp::Store)
+        .execute([](arp::render_graph::RenderContext&) {});
+    const auto compiled = graph.compile();
+    // Force multiple subsequent scratch arenas to be released before using the
+    // original output. Published strings, vectors and barriers must own data.
+    for (unsigned i = 0; i < 16; ++i) {
+        const auto other = graph.compile();
+        assert(other.passCount() == 1);
+    }
+    assert(compiled.passes()[0].name == "PersistentCompilerOutput");
+    assert(!compiled.resourceLifetimes().empty() && !compiled.barrierPlan().empty());
+    graph.execute(compiled);
+}
+
 int main()
 {
+    test_sparse_handles_after_reset_and_compiler_scratch_lifetime();
     test_texture_pass_order_and_transitions();
     test_compile_orders_passes_by_resource_dependencies();
     test_imported_read_before_write_preserves_external_contents();
