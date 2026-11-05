@@ -319,6 +319,11 @@ public:
 
     VkImage backendVulkanImageHandle() const override { return image_; }
 
+    std::weak_ptr<void> backendVulkanImageStorageIdentity() const noexcept override
+    {
+        return lifetime_;
+    }
+
     VkFormat backendVulkanImageFormat() const override { return format_; }
 
     rhi::Extent3D backendVulkanImageExtent() const override { return extent_; }

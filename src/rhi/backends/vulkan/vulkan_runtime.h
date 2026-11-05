@@ -129,6 +129,28 @@ struct VulkanRhiRuntimeInspection {
     std::pmr::string diagnostics;
 };
 
+// Immutable, device-owned dispatch. Missing optional entrypoints stay null;
+// command recording retains its existing diagnostic and capability gates.
+struct VulkanRhiCommandDispatch {
+    PFN_vkCmdBindPipeline bindPipeline = nullptr;
+    PFN_vkCmdBindDescriptorSets bindDescriptorSets = nullptr;
+    PFN_vkCmdBindVertexBuffers bindVertexBuffers = nullptr;
+    PFN_vkCmdBindIndexBuffer bindIndexBuffer = nullptr;
+    PFN_vkCmdPushConstants pushConstants = nullptr;
+    PFN_vkCmdDraw draw = nullptr;
+    PFN_vkCmdDrawIndexed drawIndexed = nullptr;
+    PFN_vkCmdDrawIndexedIndirect drawIndexedIndirect = nullptr;
+    PFN_vkCmdDrawIndexedIndirectCount drawIndexedIndirectCount = nullptr;
+    PFN_vkCmdDispatch dispatch = nullptr;
+    PFN_vkCmdDispatchIndirect dispatchIndirect = nullptr;
+    PFN_vkCmdSetViewport setViewport = nullptr;
+    PFN_vkCmdSetScissor setScissor = nullptr;
+    PFN_vkCmdPipelineBarrier pipelineBarrier = nullptr;
+    PFN_vkCmdBeginRenderPass beginRenderPass = nullptr;
+    PFN_vkCmdNextSubpass nextSubpass = nullptr;
+    PFN_vkCmdEndRenderPass endRenderPass = nullptr;
+};
+
 class VulkanRhiRuntime final {
 public:
     explicit VulkanRhiRuntime(const VulkanRhiRuntimeDesc& desc);
@@ -146,6 +168,8 @@ public:
     PFN_vkGetInstanceProcAddr getInstanceProcAddr() const;
     PFN_vkGetDeviceProcAddr getDeviceProcAddr() const;
     PFN_vkVoidFunction getDeviceProcAddr(const char* name) const;
+    const VulkanRhiCommandDispatch& commandDispatch() const noexcept;
+    bool descriptorTracingEnabled() const noexcept;
     VkPhysicalDevice physicalDevice() const;
     VkDevice logicalDevice() const;
     VkQueue graphicsQueue() const;

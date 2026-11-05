@@ -122,6 +122,151 @@ arp::reflection::object AnimatorComponent::editorAuthoringProperties() const
     return arp::reflection::object(editorProperties_);
 }
 
+namespace {
+bool validateRuntimePayload(const arp::resource::PrefabRuntimePayloadResource* runtime,
+    arp::core::StringView requestedState,
+    arp::core::pmr::String& diagnostics)
+{
+    if (!runtime) {
+        diagnostics = "ANIMATOR-RUNTIME-RESOURCE-NOT-READY";
+        return false;
+    }
+    const auto* mesh = runtime->runtimeAsset.get();
+    const auto* controller = runtime->controllerAsset.get();
+    if (!mesh || !controller || mesh->skeleton.jointCount() == 0u) {
+        diagnostics = "ANIMATOR-RUNTIME-PAYLOAD-INCOMPLETE";
+        return false;
+    }
+    if (!runtime->defaultStateName.empty() && !controller->defaultStateName.empty()
+        && runtime->defaultStateName != controller->defaultStateName) {
+        diagnostics = "ANIMATOR-DEFAULT-STATE-MISMATCH";
+        return false;
+    }
+    const auto stateName = requestedState.empty()
+        ? arp::core::StringView(controller->defaultStateName)
+        : requestedState;
+    const auto state = std::find_if(
+        controller->states.begin(), controller->states.end(), [&](const auto& candidate) {
+            return candidate.name == stateName;
+        });
+    if (stateName.empty() || state == controller->states.end()) {
+        diagnostics = "ANIMATOR-DEFAULT-STATE-UNKNOWN";
+        return false;
+    }
+    const auto clip =
+        std::find_if(mesh->clips.begin(), mesh->clips.end(), [&](const auto& candidate) {
+            return candidate.name == state->clipName;
+        });
+    if (clip == mesh->clips.end()) {
+        diagnostics = "ANIMATOR-STATE-CLIP-MISSING";
+        return false;
+    }
+    const animation::SkinnedMeshPlayer candidatePlayer(*mesh);
+    if (!candidatePlayer.valid()) {
+        diagnostics = "ANIMATOR-SKINNED-MESH-INVALID";
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+struct AnimatorComponent::ResolvedEditorBinding {
+    arp::resource::ResourceManager* manager = nullptr;
+    arp::resource::ResourceHandle<arp::resource::PrefabRuntimePayloadResource> runtime;
+    arp::resource::ResourceGeneration prefabGeneration = 0;
+};
+
+const AnimatorComponentDesc& AnimatorComponent::desc() const
+{
+    const_cast<AnimatorComponent*>(this)->refreshResourceBinding();
+    return desc_;
+}
+
+bool AnimatorComponent::bindResource(
+    arp::resource::ResourceLease lease, arp::core::StringView defaultStateName)
+{
+    arp::core::pmr::String diagnostics(&arp::core::defaultCpuMemoryResource());
+    if (defaultStateName.size() > 128u) {
+        editorBindingDiagnostic_ = "ANIMATOR-DEFAULT-STATE-TOO-LONG";
+        return false;
+    }
+    const auto* runtime = lease.get<arp::resource::PrefabRuntimePayloadResource>();
+    if (!validateRuntimePayload(runtime, defaultStateName, diagnostics)) {
+        editorBindingDiagnostic_ = std::move(diagnostics);
+        return false;
+    }
+    installBorrowedViews(
+        runtime->runtimeAsset.get(), runtime->controllerAsset.get(), defaultStateName);
+    resourceLease_ = std::move(lease);
+    leasedBinding_ = true;
+    editorProperties_ = {};
+    boundResourceManager_ = nullptr;
+    boundPrefabResourceId_.clear();
+    boundPrefabGeneration_ = boundRuntimeGeneration_ = 0;
+    editorBindingDiagnostic_.clear();
+    return true;
+}
+
+void AnimatorComponent::clearBorrowedViews()
+{
+    animator_.reset();
+    player_.reset();
+    desc_.character = nullptr;
+    desc_.controller = nullptr;
+    desc_.clip = nullptr;
+    desc_.materialCount = 0;
+    desc_.defaultStateName.clear();
+    currentStateName_.clear();
+}
+
+void AnimatorComponent::clearResourceBinding()
+{
+    clearBorrowedViews();
+    resourceLease_.reset();
+    leasedBinding_ = false;
+    editorProperties_ = {};
+    boundResourceManager_ = nullptr;
+    boundPrefabResourceId_.clear();
+    boundPrefabGeneration_ = boundRuntimeGeneration_ = 0;
+    editorBindingDiagnostic_.clear();
+}
+
+void AnimatorComponent::installBorrowedViews(const arp::assets::AnimatedMeshAsset* mesh,
+    const animation::AnimatorControllerAsset* controller,
+    arp::core::StringView requestedState)
+{
+    arp::core::UniquePtr<animation::AnimatorControllerRuntime> animator;
+    arp::core::UniquePtr<animation::SkinnedMeshPlayer> player;
+    arp::core::pmr::String state(&arp::core::defaultCpuMemoryResource());
+    const animation::AnimationClip* clip = nullptr;
+    if (mesh && controller) {
+        state = requestedState.empty() ? arp::core::StringView(controller->defaultStateName)
+                                       : requestedState;
+        const auto selected = std::find_if(
+            controller->states.begin(), controller->states.end(), [&](const auto& candidate) {
+                return candidate.name == state;
+            });
+        if (selected != controller->states.end()) {
+            const auto found =
+                std::find_if(mesh->clips.begin(), mesh->clips.end(), [&](const auto& candidate) {
+                    return candidate.name == selected->clipName;
+                });
+            if (found != mesh->clips.end())
+                clip = &*found;
+        }
+        animator = arp::core::makeUnique<animation::AnimatorControllerRuntime>(*controller);
+        player = arp::core::makeUnique<animation::SkinnedMeshPlayer>(*mesh);
+    }
+    clearBorrowedViews();
+    animator_ = std::move(animator);
+    player_ = std::move(player);
+    desc_.character = mesh;
+    desc_.controller = controller;
+    desc_.clip = clip;
+    desc_.materialCount = mesh ? mesh->materials.size() : 0;
+    desc_.defaultStateName = std::move(state);
+}
+
 bool AnimatorComponent::applyEditorAuthoringProperties(const arp::reflection::object& value)
 {
     if (!value.is<AnimatorEditorProperties>())
@@ -129,131 +274,83 @@ bool AnimatorComponent::applyEditorAuthoringProperties(const arp::reflection::ob
     const auto& properties = value.cast<const AnimatorEditorProperties&>();
     if (properties.prefabResourceId.size() > 512u || properties.defaultStateName.size() > 128u)
         return false;
-
-    arp::core::SharedPtr<const arp::assets::AnimatedMeshAsset> meshOwner;
-    arp::core::SharedPtr<const animation::AnimatorControllerAsset> controllerOwner;
+    ResolvedEditorBinding binding;
     arp::core::pmr::String diagnostics(&arp::core::defaultCpuMemoryResource());
-    if (!resolveEditorBinding(properties, meshOwner, controllerOwner, diagnostics)) {
+    if (!resolveEditorBinding(properties, binding, diagnostics)) {
         editorBindingDiagnostic_ = std::move(diagnostics);
         return false;
     }
-
-    editorProperties_ = properties;
-    installEditorBinding(std::move(meshOwner), std::move(controllerOwner));
+    auto stagedProperties = properties;
+    installEditorBinding(binding, stagedProperties);
+    editorProperties_ = std::move(stagedProperties);
     editorBindingDiagnostic_.clear();
     return true;
 }
 
 bool AnimatorComponent::resolveEditorBinding(const AnimatorEditorProperties& properties,
-    arp::core::SharedPtr<const arp::assets::AnimatedMeshAsset>& meshOwner,
-    arp::core::SharedPtr<const animation::AnimatorControllerAsset>& controllerOwner,
+    ResolvedEditorBinding& binding,
     arp::core::pmr::String& diagnostics) const
 {
     if (properties.prefabResourceId.empty())
         return true;
     auto* manager = resourceManagerProvider_ ? resourceManagerProvider_() : nullptr;
-    if (!manager) {
+    if (!manager || !manager->isOwnerThread()) {
         diagnostics = "ANIMATOR-RESOURCE-MANAGER-UNAVAILABLE";
         return false;
     }
-    const auto prefab = manager->find<arp::resource::PrefabResource>(
-        {properties.prefabResourceId.data(), properties.prefabResourceId.size()});
+    const auto prefab = manager->find<arp::resource::PrefabResource>(properties.prefabResourceId);
     if (!prefab.ready()) {
-        diagnostics = prefab.diagnostics().empty() ? "ANIMATOR-PREFAB-NOT-READY"
-                                                   : prefab.diagnostics();
+        diagnostics =
+            prefab.diagnostics().empty() ? "ANIMATOR-PREFAB-NOT-READY" : prefab.diagnostics();
         return false;
     }
     if (prefab.get()->runtimePayloadId.empty()) {
         diagnostics = "ANIMATOR-RUNTIME-PAYLOAD-ID-MISSING";
         return false;
     }
-    const auto runtime = manager->find<arp::resource::PrefabRuntimePayloadResource>(
-        {prefab.get()->runtimePayloadId.data(), prefab.get()->runtimePayloadId.size()});
+    const auto runtime =
+        manager->find<arp::resource::PrefabRuntimePayloadResource>(prefab.get()->runtimePayloadId);
     if (!runtime.ready()) {
         diagnostics = runtime.diagnostics().empty() ? "ANIMATOR-RUNTIME-PAYLOAD-NOT-READY"
                                                     : runtime.diagnostics();
         return false;
     }
-    meshOwner = runtime.get()->runtimeAsset;
-    controllerOwner = runtime.get()->controllerAsset;
-    if (!meshOwner || !controllerOwner || meshOwner->skeleton.jointCount() == 0u) {
-        diagnostics = "ANIMATOR-RUNTIME-PAYLOAD-INCOMPLETE";
+    if (!validateRuntimePayload(runtime.get(), properties.defaultStateName, diagnostics))
         return false;
-    }
-
-    if (!runtime.get()->defaultStateName.empty()
-        && !controllerOwner->defaultStateName.empty()
-        && runtime.get()->defaultStateName != controllerOwner->defaultStateName) {
-        diagnostics = "ANIMATOR-DEFAULT-STATE-MISMATCH";
-        meshOwner.reset();
-        controllerOwner.reset();
-        return false;
-    }
-    const auto& stateName = properties.defaultStateName.empty()
-        ? controllerOwner->defaultStateName
-        : properties.defaultStateName;
-    const auto state = std::find_if(controllerOwner->states.begin(),
-        controllerOwner->states.end(), [&](const auto& candidate) {
-            return candidate.name == stateName;
-        });
-    if (stateName.empty() || state == controllerOwner->states.end()) {
-        diagnostics = "ANIMATOR-DEFAULT-STATE-UNKNOWN";
-        meshOwner.reset();
-        controllerOwner.reset();
-        return false;
-    }
-    const auto clip = std::find_if(meshOwner->clips.begin(), meshOwner->clips.end(),
-        [&](const auto& candidate) { return candidate.name == state->clipName; });
-    if (clip == meshOwner->clips.end()) {
-        diagnostics = "ANIMATOR-STATE-CLIP-MISSING";
-        meshOwner.reset();
-        controllerOwner.reset();
-        return false;
-    }
-    const animation::SkinnedMeshPlayer candidatePlayer(*meshOwner);
-    if (!candidatePlayer.valid()) {
-        diagnostics = "ANIMATOR-SKINNED-MESH-INVALID";
-        meshOwner.reset();
-        controllerOwner.reset();
-        return false;
-    }
+    binding.manager = manager;
+    binding.runtime = runtime;
+    binding.prefabGeneration = prefab.generation();
     return true;
 }
 
 void AnimatorComponent::installEditorBinding(
-    arp::core::SharedPtr<const arp::assets::AnimatedMeshAsset> meshOwner,
-    arp::core::SharedPtr<const animation::AnimatorControllerAsset> controllerOwner)
+    const ResolvedEditorBinding& binding, const AnimatorEditorProperties& properties)
 {
-    animator_.reset();
-    player_.reset();
-    meshOwner_ = std::move(meshOwner);
-    controllerOwner_ = std::move(controllerOwner);
-    boundResourceManager_ = nullptr;
-    boundPrefabGeneration_ = 0u;
-    boundRuntimeGeneration_ = 0u;
-    boundPrefabResourceId_.clear();
-    desc_.character = meshOwner_.get();
-    desc_.controller = controllerOwner_.get();
-    desc_.clip = nullptr;
-    desc_.materialCount = meshOwner_ ? meshOwner_->materials.size() : 0u;
-    desc_.defaultStateName = editorProperties_.defaultStateName;
-    if (!meshOwner_ || !controllerOwner_)
-        return;
+    const auto* runtime = binding.runtime.get();
+    arp::core::pmr::String prefabId(
+        runtime ? arp::core::StringView(properties.prefabResourceId) : arp::core::StringView{},
+        &arp::core::defaultCpuMemoryResource());
+    installBorrowedViews(runtime ? runtime->runtimeAsset.get() : nullptr,
+        runtime ? runtime->controllerAsset.get() : nullptr,
+        properties.defaultStateName);
+    resourceLease_.reset();
+    leasedBinding_ = false;
+    boundResourceManager_ = binding.manager;
+    boundPrefabGeneration_ = binding.prefabGeneration;
+    boundRuntimeGeneration_ = binding.runtime.generation();
+    boundPrefabResourceId_ = std::move(prefabId);
+}
 
-    if (desc_.defaultStateName.empty())
-        desc_.defaultStateName = controllerOwner_->defaultStateName;
-    const auto state = std::find_if(controllerOwner_->states.begin(),
-        controllerOwner_->states.end(), [&](const auto& candidate) {
-            return candidate.name == desc_.defaultStateName;
-        });
-    if (state != controllerOwner_->states.end()) {
-        const auto clip = std::find_if(meshOwner_->clips.begin(), meshOwner_->clips.end(),
-            [&](const auto& candidate) { return candidate.name == state->clipName; });
-        if (clip != meshOwner_->clips.end())
-            desc_.clip = &*clip;
+bool AnimatorComponent::refreshResourceBinding()
+{
+    if (leasedBinding_) {
+        if (resourceLease_.get<arp::resource::PrefabRuntimePayloadResource>())
+            return true;
+        clearBorrowedViews();
+        editorBindingDiagnostic_ = "ANIMATOR-RUNTIME-RESOURCE-NOT-READY";
+        return false;
     }
-    animator_ = arp::core::makeUnique<animation::AnimatorControllerRuntime>(*controllerOwner_);
-    player_ = arp::core::makeUnique<animation::SkinnedMeshPlayer>(*meshOwner_);
+    return refreshEditorBinding();
 }
 
 bool AnimatorComponent::refreshEditorBinding()
@@ -261,53 +358,30 @@ bool AnimatorComponent::refreshEditorBinding()
     if (editorProperties_.prefabResourceId.empty())
         return true;
     auto* manager = resourceManagerProvider_ ? resourceManagerProvider_() : nullptr;
-    if (!manager) {
-        installEditorBinding({}, {});
+    if (!manager || !manager->isOwnerThread()) {
+        installEditorBinding({}, editorProperties_);
         editorBindingDiagnostic_ = "ANIMATOR-RESOURCE-MANAGER-UNAVAILABLE";
         return false;
     }
-    if (manager != boundResourceManager_)
-        installEditorBinding({}, {});
-
-    const auto prefab = manager->find<arp::resource::PrefabResource>(
-        {editorProperties_.prefabResourceId.data(), editorProperties_.prefabResourceId.size()});
-    if (!prefab.ready() || prefab.get()->runtimePayloadId.empty()) {
-        installEditorBinding({}, {});
-        editorBindingDiagnostic_ = prefab.ready() ? "ANIMATOR-RUNTIME-PAYLOAD-ID-MISSING"
-                                                  : prefab.diagnostics();
-        return false;
-    }
-    const auto runtime = manager->find<arp::resource::PrefabRuntimePayloadResource>(
-        {prefab.get()->runtimePayloadId.data(), prefab.get()->runtimePayloadId.size()});
-    if (!runtime.ready()) {
-        installEditorBinding({}, {});
-        editorBindingDiagnostic_ = runtime.diagnostics();
-        return false;
-    }
-    if (boundResourceManager_ == manager
+    const auto prefab =
+        manager->find<arp::resource::PrefabResource>(editorProperties_.prefabResourceId);
+    const auto runtime = prefab.ready()
+        ? manager->find<arp::resource::PrefabRuntimePayloadResource>(prefab.get()->runtimePayloadId)
+        : arp::resource::ResourceHandle<arp::resource::PrefabRuntimePayloadResource>{};
+    if (prefab.ready() && runtime.ready() && boundResourceManager_ == manager
         && boundPrefabResourceId_ == editorProperties_.prefabResourceId
         && boundPrefabGeneration_ == prefab.generation()
-        && boundRuntimeGeneration_ == runtime.generation()
-        && (editorProperties_.defaultStateName.empty()
-            || editorProperties_.defaultStateName == desc_.defaultStateName)) {
-        editorBindingDiagnostic_.clear();
+        && boundRuntimeGeneration_ == runtime.generation())
         return true;
-    }
 
-    installEditorBinding({}, {});
-    arp::core::SharedPtr<const arp::assets::AnimatedMeshAsset> meshOwner;
-    arp::core::SharedPtr<const animation::AnimatorControllerAsset> controllerOwner;
+    ResolvedEditorBinding binding;
     arp::core::pmr::String diagnostics(&arp::core::defaultCpuMemoryResource());
-    if (!resolveEditorBinding(editorProperties_, meshOwner, controllerOwner, diagnostics)) {
-        installEditorBinding({}, {});
+    if (!resolveEditorBinding(editorProperties_, binding, diagnostics)) {
+        installEditorBinding({}, editorProperties_);
         editorBindingDiagnostic_ = std::move(diagnostics);
         return false;
     }
-    installEditorBinding(std::move(meshOwner), std::move(controllerOwner));
-    boundResourceManager_ = manager;
-    boundPrefabGeneration_ = prefab.generation();
-    boundRuntimeGeneration_ = runtime.generation();
-    boundPrefabResourceId_ = editorProperties_.prefabResourceId;
+    installEditorBinding(binding, editorProperties_);
     editorBindingDiagnostic_.clear();
     return true;
 }
@@ -322,8 +396,7 @@ void AnimatorComponent::extract(
         sink.accept(ctx, marker);
         return;
     }
-    if (!editorProperties_.prefabResourceId.empty()
-        && !const_cast<AnimatorComponent*>(this)->refreshEditorBinding()) {
+    if (!const_cast<AnimatorComponent*>(this)->refreshResourceBinding()) {
         arp::scene::RenderExtractPayload marker;
         marker.kind = arp::scene::RenderExtractKind::Custom;
         marker.typeId = "scene3d.animation.unavailable";
@@ -340,9 +413,9 @@ void AnimatorComponent::extract(
 
 AnimatorEvaluationResult AnimatorComponent::evaluate(const AnimatorEvaluationRequest& request)
 {
-    if (!editorProperties_.prefabResourceId.empty() && !refreshEditorBinding()) {
+    if (!refreshResourceBinding()) {
         return AnimatorEvaluationResult::failure(AnimatorEvaluationDiagnosticCode::MissingAsset,
-            "AnimatorComponent editor resource binding is unavailable.");
+            "AnimatorComponent resource binding is unavailable.");
     }
     if (desc_.character == nullptr) {
         return AnimatorEvaluationResult::failure(AnimatorEvaluationDiagnosticCode::MissingAsset,

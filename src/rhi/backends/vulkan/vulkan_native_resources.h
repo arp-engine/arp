@@ -112,6 +112,10 @@ public:
 
     virtual VkImage backendVulkanImageHandle() const { return VK_NULL_HANDLE; }
 
+    // An explicit shared physical storage epoch (swapchain generation). Ordinary
+    // images use their immutable payload/control block when this is empty.
+    virtual std::weak_ptr<void> backendVulkanImageStorageIdentity() const noexcept { return {}; }
+
     virtual bool backendVulkanOriginalContentExclusive() const noexcept { return false; }
 
     virtual VkFormat backendVulkanImageFormat() const { return VK_FORMAT_UNDEFINED; }

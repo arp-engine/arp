@@ -1,5 +1,7 @@
 #pragma once
 
+#include "rhi/backends/vulkan/vulkan_framebuffer_cache.h"
+#include "rhi/backends/vulkan/vulkan_render_pass_cache.h"
 #include "rhi/gpu_common.h"
 
 #include <array>
@@ -50,6 +52,8 @@ public:
 
     std::array<ReusableCommandResources, reuseCapacity> reusableCommands{};
     std::array<VkFence, reuseCapacity> reusableFences{};
+    VulkanRhiRenderPassCache renderPassCache;
+    VulkanRhiFramebufferCache framebufferCache;
     std::array<std::shared_ptr<VulkanRhiNativeCommandPayload>, kVulkanMaxAsyncSubmittedCommands>
         submitted{};
     std::uint64_t completedFrameSerial = 0u;

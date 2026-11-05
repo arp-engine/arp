@@ -49,7 +49,7 @@ public:
         ResourceRegistryPtr registry,
         const core::LifetimeEpoch& generation)
         : desc_(std::move(desc)), allocation_(std::move(allocation)),
-          registry_(std::move(registry)), generation_(generation.ticket()),
+          registry_(std::move(registry)), generation_(generation.observe()),
           bindings_(allocation_.descriptorCapacity, &core::defaultCpuMemoryResource())
     {}
 
@@ -162,17 +162,19 @@ public:
             if (layoutBinding.binding != binding) {
                 continue;
             }
-            if (!hasWrittenBinding(binding)) {
-                return {false, "descriptor binding is not written before draw or dispatch"};
-            }
+            const auto offset = descriptorElementIndex(desc_.layout, binding, 0u);
+            bool written = false;
             for (std::uint32_t element = 0u; element < layoutBinding.arrayCount; ++element) {
-                if (!hasWrittenBindingElement(binding, element))
+                if (!bindings_[offset + element].written)
                     continue;
-                const auto result = validateBindingElement(binding, element);
+                written = true;
+                const auto result = validateCurrentBindingElement(binding, element);
                 if (!result.success)
                     return result;
             }
-            return {true, {}};
+            return written ? ValidationResult{true, {}}
+                           : ValidationResult{false,
+                                 "descriptor binding is not written before draw or dispatch"};
         }
         return {false, "descriptor binding is not declared by descriptor set layout"};
     }
@@ -183,6 +185,12 @@ public:
         if (!isCurrentAllocation())
             return {false,
                 "RHI-DESCRIPTOR-ALLOCATION-STALE: descriptor array validation after arena reset"};
+        return validateCurrentBindingElement(binding, element);
+    }
+
+    ValidationResult validateCurrentBindingElement(
+        std::uint32_t binding, std::uint32_t element) const
+    {
         const auto offset = descriptorElementIndex(desc_.layout, binding, element);
         if (offset == UINT32_MAX || offset >= bindings_.size() || !bindings_[offset].written)
             return {false, "descriptor array element is not written"};
@@ -218,7 +226,7 @@ public:
 
     core::LifetimeEpoch::Ticket allocationEpochTicket() const noexcept override
     {
-        return generation_;
+        return generation_.ticket();
     }
 
     std::optional<DescriptorBindingWrite> successfulBindingWrite(
@@ -235,7 +243,7 @@ private:
     DescriptorSetDesc desc_;
     DescriptorSetAllocation allocation_;
     ResourceRegistryPtr registry_;
-    core::LifetimeEpoch::Ticket generation_;
+    core::LifetimeEpoch::Observation generation_;
     core::pmr::Vector<StoredDescriptorBinding<DescriptorBindingWrite>> bindings_;
 };
 
@@ -246,7 +254,7 @@ public:
         ResourceRegistryPtr registry,
         const core::LifetimeEpoch& generation)
         : desc_(std::move(desc)), allocation_(std::move(allocation)),
-          registry_(std::move(registry)), generation_(generation.ticket()),
+          registry_(std::move(registry)), generation_(generation.observe()),
           descriptors_(desc_.capacity, &core::defaultCpuMemoryResource())
     {}
 
@@ -343,7 +351,7 @@ public:
 
     core::LifetimeEpoch::Ticket allocationEpochTicket() const noexcept override
     {
-        return generation_;
+        return generation_.ticket();
     }
 
     std::optional<DescriptorTableWrite> successfulDescriptorWrite(
@@ -358,7 +366,7 @@ private:
     DescriptorTableDesc desc_;
     DescriptorTableAllocation allocation_;
     ResourceRegistryPtr registry_;
-    core::LifetimeEpoch::Ticket generation_;
+    core::LifetimeEpoch::Observation generation_;
     core::pmr::Vector<StoredDescriptorBinding<DescriptorTableWrite>> descriptors_;
 };
 

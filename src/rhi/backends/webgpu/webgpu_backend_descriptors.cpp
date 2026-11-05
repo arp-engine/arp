@@ -132,7 +132,7 @@ public:
         const core::LifetimeEpoch& generation)
         : allocation_(std::move(allocation)), layout_(std::move(layout)),
           registry_(std::move(registry)), nativePayloadPolicy_(nativePayloadPolicy),
-          generation_(generation.ticket())
+          generation_(generation.observe())
     {
         // Canonicalize the backend-owned copy so dynamic offsets are always
         // ordered by binding number, independent of source declaration order.
@@ -444,7 +444,7 @@ public:
             if (write.binding != binding)
                 continue;
             written = true;
-            const auto validation = validateBindingElement(binding, write.arrayElement);
+            const auto validation = validateCurrentBindingElement(binding, write.arrayElement);
             if (!validation.success)
                 return validation;
         }
@@ -471,6 +471,12 @@ public:
                 "RHI-DESCRIPTOR-ALLOCATION-STALE: WebGPU RHI descriptor set validation rejected "
                 "after descriptor arena reset"};
         }
+        return validateCurrentBindingElement(binding, arrayElement);
+    }
+
+    rhi::ValidationResult validateCurrentBindingElement(
+        std::uint32_t binding, std::uint32_t arrayElement) const
+    {
         const auto* desc = findBinding(binding);
         for (const auto& write : writes_) {
             if (write.binding != binding || write.arrayElement != arrayElement)
@@ -636,7 +642,7 @@ public:
 
     core::LifetimeEpoch::Ticket allocationEpochTicket() const noexcept override
     {
-        return generation_;
+        return generation_.ticket();
     }
 
     std::optional<rhi::DescriptorBindingWrite> successfulBindingWrite(
@@ -1080,7 +1086,7 @@ private:
     rhi::DescriptorLayoutDesc layout_;
     std::shared_ptr<WebGpuRhiResourceRegistry> registry_;
     WebGpuRhiNativePayloadPolicy nativePayloadPolicy_;
-    core::LifetimeEpoch::Ticket generation_;
+    core::LifetimeEpoch::Observation generation_;
     core::pmr::Vector<rhi::DescriptorBindingWrite> writes_{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<WebGpuNativeDescriptorBindingPayload> nativeBindingPayloads_{
         &core::defaultCpuMemoryResource()};
@@ -1101,7 +1107,7 @@ public:
         const core::LifetimeEpoch& generation)
         : allocation_(std::move(allocation)), desc_(std::move(desc)),
           registry_(std::move(registry)), nativePayloadPolicy_(nativePayloadPolicy),
-          generation_(generation.ticket()),
+          generation_(generation.observe()),
           descriptors_(desc_.capacity, &core::defaultCpuMemoryResource())
     {}
 
@@ -1210,7 +1216,7 @@ public:
 
     core::LifetimeEpoch::Ticket allocationEpochTicket() const noexcept override
     {
-        return generation_;
+        return generation_.ticket();
     }
 
     std::optional<rhi::DescriptorTableWrite> successfulDescriptorWrite(
@@ -1396,7 +1402,7 @@ private:
     rhi::DescriptorTableDesc desc_;
     std::shared_ptr<WebGpuRhiResourceRegistry> registry_;
     WebGpuRhiNativePayloadPolicy nativePayloadPolicy_;
-    core::LifetimeEpoch::Ticket generation_;
+    core::LifetimeEpoch::Observation generation_;
     core::pmr::Vector<std::uint32_t> writtenDescriptors_{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<Descriptor> descriptors_{&core::defaultCpuMemoryResource()};
     std::shared_ptr<WebGpuNativeDescriptorGroupPayload> nativePayload_;

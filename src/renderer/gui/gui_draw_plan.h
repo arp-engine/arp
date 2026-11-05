@@ -236,32 +236,36 @@ inline GuiDrawPlan buildGuiDrawPlan(const gui::DebugDrawData& DebugDrawData,
     return plan;
 }
 
-inline GuiDrawPlan buildGuiDrawPlan(
+inline void updateGuiDrawPlan(
     const arp::core::pmr::Vector<arp::renderer::ui::UiDrawCommand>& commands,
     const rhi::Extent2D& extent,
-    const GuiCoordinateMapping& coordinates)
+    const GuiCoordinateMapping& coordinates,
+    GuiDrawPlan& plan)
 {
+    plan.success = false;
+    plan.diagnostics.clear();
+    std::size_t written = 0;
     if (coordinates.contractVersion != 1) {
-        GuiDrawPlan plan;
+        plan.commands.clear();
         plan.diagnostics = "GUI-COORDINATE-MAPPING-VERSION";
-        return plan;
+        return;
     }
     if (commands.empty()) {
-        GuiDrawPlan plan;
+        plan.commands.clear();
         plan.diagnostics = "UI draw command list is empty";
-        return plan;
+        return;
     }
 
-    GuiDrawPlan plan;
     plan.success = true;
-    plan.commands.reserve(commands.size());
+    plan.commands.resize(commands.size());
     for (const auto& command : commands) {
         if (command.kind == arp::renderer::ui::UiDrawCommandKind::Text
             && (command.textureResourceId.empty() || !command.hasTextureSourceRect
                 || !command.textureSourceRect.valid())) {
             plan.success = false;
             plan.diagnostics = "UI text command requires a cached text atlas source rect";
-            return plan;
+            plan.commands.resize(written);
+            return;
         }
         if (command.kind == arp::renderer::ui::UiDrawCommandKind::GlyphQuad
             && (command.textureResourceId.empty() || !command.hasTextureSourceRect
@@ -269,7 +273,8 @@ inline GuiDrawPlan buildGuiDrawPlan(
             plan.success = false;
             plan.diagnostics =
                 "UI glyph quad command requires explicit atlas resource, source rect, and page index";
-            return plan;
+            plan.commands.resize(written);
+            return;
         }
         if (command.textureSource == arp::renderer::ui::UiTextureSource::External
             && (command.kind != arp::renderer::ui::UiDrawCommandKind::Image
@@ -278,31 +283,57 @@ inline GuiDrawPlan buildGuiDrawPlan(
             plan.success = false;
             plan.diagnostics =
                 "external UI texture requires an image, resource identity, and valid source rect";
-            return plan;
+            plan.commands.resize(written);
+            return;
         }
         const auto textured = command.kind == arp::renderer::ui::UiDrawCommandKind::Image
             || command.kind == arp::renderer::ui::UiDrawCommandKind::Text
             || command.kind == arp::renderer::ui::UiDrawCommandKind::GlyphQuad;
-        plan.commands.push_back(GuiDrawCommand{
-            6,
-            1,
-            0,
-            0,
-            command.kind == arp::renderer::ui::UiDrawCommandKind::Text
-                || command.kind == arp::renderer::ui::UiDrawCommandKind::GlyphQuad,
-            textured,
-            textured ? command.textureResourceId
-                     : std::pmr::string(&arp::core::defaultCpuMemoryResource()),
-            buildUiPushConstants(command, extent, coordinates),
-            command.textureSource == arp::renderer::ui::UiTextureSource::External,
-        });
+        auto& draw = plan.commands[written++];
+        draw.vertexCount = 6;
+        draw.instanceCount = 1;
+        draw.firstVertex = draw.firstInstance = 0;
+        draw.text = command.kind == arp::renderer::ui::UiDrawCommandKind::Text
+            || command.kind == arp::renderer::ui::UiDrawCommandKind::GlyphQuad;
+        draw.textured = textured;
+        if (textured)
+            draw.textureResourceId.assign(command.textureResourceId);
+        else
+            draw.textureResourceId.clear();
+        draw.pushConstants = buildUiPushConstants(command, extent, coordinates);
+        draw.externalTexture =
+            command.textureSource == arp::renderer::ui::UiTextureSource::External;
     }
     if (plan.commands.empty()) {
         plan.success = false;
         plan.diagnostics =
             "UI draw command list contains no renderable box, image, or cached text commands";
     }
+    return;
+}
+
+inline GuiDrawPlan buildGuiDrawPlan(
+    const arp::core::pmr::Vector<arp::renderer::ui::UiDrawCommand>& commands,
+    const rhi::Extent2D& extent,
+    const GuiCoordinateMapping& coordinates)
+{
+    GuiDrawPlan plan;
+    updateGuiDrawPlan(commands, extent, coordinates, plan);
     return plan;
+}
+
+inline void updateGuiDrawPlan(
+    const arp::core::pmr::Vector<arp::renderer::ui::UiDrawCommand>& commands,
+    const rhi::Extent2D& extent,
+    rhi::Backend backend,
+    GuiDrawPlan& plan)
+{
+    float origin = 0, size = 1;
+    rhi::semantics::applyCpuRasterTextureUvYConvention(&origin, &size, backend);
+    updateGuiDrawPlan(commands,
+        extent,
+        GuiCoordinateMapping{1, rhi::semantics::uiCoordinatesRequireYFlip(backend), size < 0},
+        plan);
 }
 
 inline GuiDrawPlan buildGuiDrawPlan(

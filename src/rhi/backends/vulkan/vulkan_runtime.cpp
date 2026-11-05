@@ -5,6 +5,7 @@
 #include "rhi/backends/vulkan/vulkan_original_device_native_loss.h"
 #include "rhi/semantics/query_lowering.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -101,6 +102,7 @@ struct VulkanRhiRuntime::Impl {
                 return;
             }
             nativeAdmitted = true;
+            queryCommandDispatch();
             queryNativeRuntimeDetails();
             return;
         }
@@ -133,6 +135,20 @@ struct VulkanRhiRuntime::Impl {
     {
         if (!nativeAdmitted)
             return;
+        commands.framebufferCache.clearIdle([&](auto& resources) {
+            (void)destroyVulkanRhiUncachedRenderPassResources(logicalDevice,
+                functionFrom<PFN_vkDestroyFramebuffer>(
+                    desc.getDeviceProcAddr(logicalDevice, "vkDestroyFramebuffer")),
+                functionFrom<PFN_vkDestroyImageView>(
+                    desc.getDeviceProcAddr(logicalDevice, "vkDestroyImageView")),
+                functionFrom<PFN_vkDestroyRenderPass>(
+                    desc.getDeviceProcAddr(logicalDevice, "vkDestroyRenderPass")),
+                commands.renderPassCache,
+                resources);
+        });
+        commands.renderPassCache.clearIdle(logicalDevice,
+            functionFrom<PFN_vkDestroyRenderPass>(
+                desc.getDeviceProcAddr(logicalDevice, "vkDestroyRenderPass")));
         const auto destroyFence =
             functionFrom<PFN_vkDestroyFence>(desc.getDeviceProcAddr && logicalDevice
                     ? desc.getDeviceProcAddr(logicalDevice, "vkDestroyFence")
@@ -398,7 +414,48 @@ struct VulkanRhiRuntime::Impl {
         return true;
     }
 
+    void queryCommandDispatch()
+    {
+        commandDispatch.bindPipeline = functionFrom<PFN_vkCmdBindPipeline>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdBindPipeline"));
+        commandDispatch.bindDescriptorSets = functionFrom<PFN_vkCmdBindDescriptorSets>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdBindDescriptorSets"));
+        commandDispatch.bindVertexBuffers = functionFrom<PFN_vkCmdBindVertexBuffers>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdBindVertexBuffers"));
+        commandDispatch.bindIndexBuffer = functionFrom<PFN_vkCmdBindIndexBuffer>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdBindIndexBuffer"));
+        commandDispatch.pushConstants = functionFrom<PFN_vkCmdPushConstants>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdPushConstants"));
+        commandDispatch.draw =
+            functionFrom<PFN_vkCmdDraw>(desc.getDeviceProcAddr(logicalDevice, "vkCmdDraw"));
+        commandDispatch.drawIndexed = functionFrom<PFN_vkCmdDrawIndexed>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdDrawIndexed"));
+        commandDispatch.drawIndexedIndirect = functionFrom<PFN_vkCmdDrawIndexedIndirect>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdDrawIndexedIndirect"));
+        commandDispatch.drawIndexedIndirectCount = functionFrom<PFN_vkCmdDrawIndexedIndirectCount>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdDrawIndexedIndirectCount"));
+        commandDispatch.dispatch =
+            functionFrom<PFN_vkCmdDispatch>(desc.getDeviceProcAddr(logicalDevice, "vkCmdDispatch"));
+        commandDispatch.dispatchIndirect = functionFrom<PFN_vkCmdDispatchIndirect>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdDispatchIndirect"));
+        commandDispatch.setViewport = functionFrom<PFN_vkCmdSetViewport>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdSetViewport"));
+        commandDispatch.setScissor = functionFrom<PFN_vkCmdSetScissor>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdSetScissor"));
+        commandDispatch.pipelineBarrier = functionFrom<PFN_vkCmdPipelineBarrier>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdPipelineBarrier"));
+        commandDispatch.beginRenderPass = functionFrom<PFN_vkCmdBeginRenderPass>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdBeginRenderPass"));
+        commandDispatch.nextSubpass = functionFrom<PFN_vkCmdNextSubpass>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdNextSubpass"));
+        commandDispatch.endRenderPass = functionFrom<PFN_vkCmdEndRenderPass>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCmdEndRenderPass"));
+        descriptorTracing = std::getenv("ARP_FORWARD_PLUS_DESCRIPTOR_TRACE") != nullptr;
+    }
+
     VulkanRhiRuntimeDesc desc;
+    VulkanRhiCommandDispatch commandDispatch;
+    bool descriptorTracing = false;
     VulkanRhiCommandDomain commands;
     bool nativeAdmitted = false;
     const char* admissionDiagnostic = nullptr;
@@ -557,6 +614,17 @@ PFN_vkVoidFunction VulkanRhiRuntime::getDeviceProcAddr(const char* name) const
     return impl_ && impl_->nativeAdmitted && name
         ? impl_->desc.getDeviceProcAddr(impl_->logicalDevice, name)
         : nullptr;
+}
+
+const VulkanRhiCommandDispatch& VulkanRhiRuntime::commandDispatch() const noexcept
+{
+    static const VulkanRhiCommandDispatch empty;
+    return impl_ && impl_->nativeAdmitted ? impl_->commandDispatch : empty;
+}
+
+bool VulkanRhiRuntime::descriptorTracingEnabled() const noexcept
+{
+    return impl_ && impl_->nativeAdmitted && impl_->descriptorTracing;
 }
 
 VkPhysicalDevice VulkanRhiRuntime::physicalDevice() const

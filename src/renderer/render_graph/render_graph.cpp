@@ -110,13 +110,14 @@ BarrierTraceRecord makeTextureBarrierTrace(const std::pmr::string& passName,
     const rhi::TextureDesc& desc,
     TextureHandle handle,
     rhi::ResourceState before,
-    rhi::ResourceState after)
+    rhi::ResourceState after,
+    std::pmr::memory_resource* textMemory)
 {
     const auto aspect = rhi::isDepthTextureFormat(desc.format) ? rhi::TextureAspect::Depth
                                                                : rhi::TextureAspect::Color;
     return BarrierTraceRecord{
-        passName,
-        desc.label,
+        core::pmr::String(passName, textMemory),
+        core::pmr::String(desc.label, textMemory),
         ResourceKind::Texture,
         before,
         after,
@@ -124,8 +125,8 @@ BarrierTraceRecord makeTextureBarrierTrace(const std::pmr::string& passName,
         stageFor(after),
         accessFor(before),
         accessFor(after),
-        resourceStateName(before),
-        resourceStateName(after),
+        core::pmr::String(resourceStateName(before), textMemory),
+        core::pmr::String(resourceStateName(after), textMemory),
         aspect,
         handle.id,
     };
@@ -135,11 +136,12 @@ BarrierTraceRecord makeBufferBarrierTrace(const std::pmr::string& passName,
     const rhi::GpuBuffer& buffer,
     BufferHandle handle,
     rhi::ResourceState before,
-    rhi::ResourceState after)
+    rhi::ResourceState after,
+    std::pmr::memory_resource* textMemory)
 {
     return BarrierTraceRecord{
-        passName,
-        buffer.desc().label,
+        core::pmr::String(passName, textMemory),
+        core::pmr::String(buffer.desc().label, textMemory),
         ResourceKind::Buffer,
         before,
         after,
@@ -152,6 +154,30 @@ BarrierTraceRecord makeBufferBarrierTrace(const std::pmr::string& passName,
         rhi::TextureAspect::Color,
         handle.id,
     };
+}
+
+BarrierTraceRecord copyBarrierTraceText(
+    const BarrierTraceRecord& value, std::pmr::memory_resource* memory)
+{
+    const auto text = [memory](const core::pmr::String& v) {
+        return core::pmr::String(v, memory);
+    };
+    return {text(value.passName),
+        text(value.resourceName),
+        value.kind,
+        value.before,
+        value.after,
+        value.srcStage,
+        value.dstStage,
+        value.srcAccess,
+        value.dstAccess,
+        text(value.oldLayout),
+        text(value.newLayout),
+        value.aspect,
+        value.handleId,
+        value.memoryOnly,
+        value.replaySourceStages,
+        value.replaySourceAccess};
 }
 
 } // namespace
@@ -371,7 +397,7 @@ FrameGraph::FrameGraph(rhi::GpuDevice& device, std::shared_ptr<FrameGraphResourc
       resourcePool_(resourcePool ? std::move(resourcePool)
                                  : arp::core::makeShared<FrameGraphResourcePool>(device)),
       graphPoolLease_(resourcePool_->retainGraphOwner(resourcePool_, device)),
-      timestampQueriesSupported_(device.capabilities().features.timestampQueries)
+      timestampQueriesSupported_(device.timestampQueriesSupported())
 {
     if (!graphPoolLease_.charged())
         throw core::DiagnosticError("RG-POOL-GRAPH-OWNER-CAPACITY");
@@ -662,23 +688,33 @@ TextureHandle FrameGraph::importTextureRef(std::shared_ptr<rhi::GpuTexture> text
         throw std::runtime_error("cannot import null frame graph texture reference");
     }
 
-    for (const auto& record : textures_) {
-        if (record.textureRef.get() == texture.get()) {
-            return record.handle;
-        }
-    }
+    const auto position = std::lower_bound(importedTextureIndex_.begin(),
+        importedTextureIndex_.end(),
+        texture.get(),
+        [](const auto& entry, const auto* object) {
+            return std::less<const rhi::GpuTexture*>{}(entry.first, object);
+        });
+    if (position != importedTextureIndex_.end() && position->first == texture.get())
+        return position->second;
+    const auto index = position - importedTextureIndex_.begin();
 
     const auto handle = allocateTextureHandle();
-    const auto desc = texture->desc();
     TextureRecord record;
     record.handle = handle;
-    record.desc = desc;
+    record.desc = texture->desc();
     record.canonicalSharedOwnerAtImport = texture->sharedOwnerMatches(texture);
     record.textureRef = std::move(texture);
     record.transient = false;
     record.imported = true;
     record.placed = false;
     textures_.push_back(std::move(record));
+    try {
+        importedTextureIndex_.insert(
+            importedTextureIndex_.begin() + index, {textures_.back().textureRef.get(), handle});
+    } catch (...) {
+        textures_.pop_back();
+        throw;
+    }
     return handle;
 }
 
@@ -751,15 +787,28 @@ BufferHandle FrameGraph::importBufferRef(std::shared_ptr<rhi::GpuBuffer> buffer)
     rejectUnjoinedGraphImport(true);
     if (!buffer)
         throw std::runtime_error("RG-IMPORT-BUFFER-NULL");
-    for (const auto& record : buffers_)
-        if (record.bufferRef.get() == buffer.get())
-            return record.handle;
+    const auto position = std::lower_bound(importedBufferIndex_.begin(),
+        importedBufferIndex_.end(),
+        buffer.get(),
+        [](const auto& entry, const auto* object) {
+            return std::less<const rhi::GpuBuffer*>{}(entry.first, object);
+        });
+    if (position != importedBufferIndex_.end() && position->first == buffer.get())
+        return position->second;
+    const auto index = position - importedBufferIndex_.begin();
     BufferRecord record;
     record.handle = allocateBufferHandle();
     record.canonicalSharedOwnerAtImport = buffer->sharedOwnerMatches(buffer);
     record.bufferRef = std::move(buffer);
     const auto handle = record.handle;
     buffers_.push_back(std::move(record));
+    try {
+        importedBufferIndex_.insert(
+            importedBufferIndex_.begin() + index, {buffers_.back().bufferRef.get(), handle});
+    } catch (...) {
+        buffers_.pop_back();
+        throw;
+    }
     return handle;
 }
 
@@ -811,27 +860,14 @@ BufferHandle FrameGraph::importSnapshotFaultReadback(
 
 rhi::GpuTexture& FrameGraph::texture(TextureHandle handle)
 {
-    for (auto& record : textures_) {
-        if (record.handle.id == handle.id) {
-            auto* resolved = record.resolveTexture();
-            if (resolved != nullptr) {
-                return *resolved;
-            }
-        }
-    }
-
+    if (auto* resolved = textureRecord(handle).resolveTexture())
+        return *resolved;
     throw std::runtime_error("invalid frame graph texture handle " + std::to_string(handle.id));
 }
 
 rhi::GpuBuffer& FrameGraph::buffer(BufferHandle handle)
 {
-    for (auto& record : buffers_) {
-        if (record.handle.id == handle.id) {
-            return *record.resolveBuffer();
-        }
-    }
-
-    throw std::runtime_error("invalid frame graph buffer handle");
+    return *bufferRecord(handle).resolveBuffer();
 }
 
 const rhi::TextureDesc& FrameGraph::textureDesc(TextureHandle handle) const
@@ -846,6 +882,9 @@ rhi::ResourceState FrameGraph::textureState(TextureHandle handle) const
 
 bool FrameGraph::isTransient(TextureHandle handle) const
 {
+    if (handle.id > 0 && handle.id <= textures_.size()
+        && textures_[handle.id - 1].handle.id == handle.id)
+        return textures_[handle.id - 1].transient;
     for (const auto& record : textures_) {
         if (record.handle.id == handle.id) {
             return record.transient;
@@ -857,6 +896,9 @@ bool FrameGraph::isTransient(TextureHandle handle) const
 
 bool FrameGraph::isTransient(BufferHandle handle) const
 {
+    if (handle.id > 0 && handle.id <= buffers_.size()
+        && buffers_[handle.id - 1].handle.id == handle.id)
+        return buffers_[handle.id - 1].transient;
     for (const auto& record : buffers_) {
         if (record.handle.id == handle.id) {
             return record.transient;
@@ -877,7 +919,12 @@ PassBuilder FrameGraph::addPass(std::pmr::string name)
     invalidateCompiledRetirementSource();
     const auto passId = static_cast<uint32_t>(passes_.size());
     PassRecord record;
-    record.name = std::move(name);
+    if (!retirementSourceState_ && !originalIntentEpoch_ && !resourcePool_->ownsGraphResources()
+        && !reusablePassStorage_.empty()) {
+        record = std::move(reusablePassStorage_.back());
+        reusablePassStorage_.pop_back();
+    }
+    record.name.assign(name);
     passes_.push_back(std::move(record));
     return PassBuilder(*this, passId);
 }
@@ -1355,10 +1402,11 @@ void FrameGraph::lowerSubpassGraph(SubpassGraph& group)
 
 void FrameGraphCompiler::validateGraph(const FrameGraph& graph) const
 {
-    std::pmr::map<uint32_t, std::pmr::string> textureProducers;
-    std::pmr::map<uint32_t, std::pmr::string> bufferProducers;
-    std::pmr::map<uint32_t, bool> textureWritten;
-    std::pmr::map<uint32_t, bool> bufferWritten;
+    std::pmr::monotonic_buffer_resource scratch(&core::defaultCpuMemoryResource());
+    core::pmr::Map<uint32_t, core::pmr::String> textureProducers{&scratch};
+    core::pmr::Map<uint32_t, core::pmr::String> bufferProducers{&scratch};
+    core::pmr::Map<uint32_t, bool> textureWritten{&scratch};
+    core::pmr::Map<uint32_t, bool> bufferWritten{&scratch};
 
     for (const auto& pass : graph.passes_) {
         for (const auto& write : pass.writes) {
@@ -1505,10 +1553,16 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
     if (const auto* id = graph.sharedImportSourceDiagnostic())
         throw core::DiagnosticError(id);
     // Compiler-only nodes never escape this call. Allocate their map/vector
-    // storage in one domain-local arena; published records retain their own
-    // normal allocator and preserve all existing dependency/state checks.
+    // storage in a local arena. Published text uses a separate retained arena
+    // in ordinary graphs; explicit source/quota domains keep their allocator.
     std::pmr::monotonic_buffer_resource scratch(&core::defaultCpuMemoryResource());
     CompiledFrameGraph compiled;
+    auto* publishedMemory = &core::defaultCpuMemoryResource();
+    if (!graph.retirementSourceState_ && !graph.originalIntentEpoch_ && !graph.orderedExecution_) {
+        compiled.textMemory_ =
+            core::makeShared<std::pmr::monotonic_buffer_resource>(publishedMemory);
+        publishedMemory = compiled.textMemory_.get();
+    }
     compiled.setCommandEncoderDesc(graph.commandEncoderDesc_);
     std::pmr::vector<bool> culled(graph.passes_.size(), false, &scratch);
 
@@ -1568,7 +1622,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         const auto& passRecord = graph.passes_[passIndex];
         CompiledPass compiledPass{
             passIndex,
-            passRecord.name,
+            core::pmr::String(passRecord.name, publishedMemory),
             passRecord.kind,
             passRecord.queue,
             passRecord.asyncComputeEligible,
@@ -1580,7 +1634,9 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         compiled.addPass(std::move(compiledPass));
         for (const auto& read : passRecord.reads) {
             compiled.addPassResourceUse(passIndex,
-                CompiledResourceUse{graph.textureRecord(read.handle).resolvedDesc().label,
+                CompiledResourceUse{
+                    core::pmr::String(
+                        graph.textureRecord(read.handle).resolvedDesc().label, publishedMemory),
                     ResourceKind::Texture,
                     ResourceAccess::Read,
                     read.state,
@@ -1593,7 +1649,9 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         }
         for (const auto& read : passRecord.bufferReads) {
             compiled.addPassResourceUse(passIndex,
-                CompiledResourceUse{graph.bufferRecord(read.handle).resolveBuffer()->desc().label,
+                CompiledResourceUse{
+                    core::pmr::String(graph.bufferRecord(read.handle).resolveBuffer()->desc().label,
+                        publishedMemory),
                     ResourceKind::Buffer,
                     ResourceAccess::Read,
                     read.state,
@@ -1608,7 +1666,9 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         }
         for (const auto& write : passRecord.writes) {
             compiled.addPassResourceUse(passIndex,
-                CompiledResourceUse{graph.textureRecord(write.handle).resolvedDesc().label,
+                CompiledResourceUse{
+                    core::pmr::String(
+                        graph.textureRecord(write.handle).resolvedDesc().label, publishedMemory),
                     ResourceKind::Texture,
                     ResourceAccess::Write,
                     write.state,
@@ -1622,7 +1682,10 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         }
         for (const auto& write : passRecord.bufferWrites) {
             compiled.addPassResourceUse(passIndex,
-                CompiledResourceUse{graph.bufferRecord(write.handle).resolveBuffer()->desc().label,
+                CompiledResourceUse{
+                    core::pmr::String(
+                        graph.bufferRecord(write.handle).resolveBuffer()->desc().label,
+                        publishedMemory),
                     ResourceKind::Buffer,
                     ResourceAccess::Write,
                     write.state,
@@ -1657,8 +1720,12 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         if (before == after || culled[before] || culled[after]) {
             return;
         }
-        compiled.addDependency(CompiledDependencyRecord{
-            before, after, resourceName, resourceKind, dependency, renderTargetDependency});
+        compiled.addDependency(CompiledDependencyRecord{before,
+            after,
+            core::pmr::String(resourceName, publishedMemory),
+            resourceKind,
+            dependency,
+            renderTargetDependency});
         if (std::find(edges[before].begin(), edges[before].end(), after) != edges[before].end()) {
             return;
         }
@@ -1731,10 +1798,14 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
     std::pmr::map<uint32_t, ResourceDependencyState> textureStates{&scratch};
     std::pmr::map<uint32_t, ResourceDependencyState> bufferStates{&scratch};
     for (const auto& texture : graph.textures_) {
-        textureStates.emplace(texture.handle.id, ResourceDependencyState{noPass, {}, {}});
+        textureStates.emplace(texture.handle.id,
+            ResourceDependencyState{
+                noPass, core::pmr::Vector<size_t>(&scratch), core::pmr::Vector<size_t>(&scratch)});
     }
     for (const auto& buffer : graph.buffers_) {
-        bufferStates.emplace(buffer.handle.id, ResourceDependencyState{noPass, {}, {}});
+        bufferStates.emplace(buffer.handle.id,
+            ResourceDependencyState{
+                noPass, core::pmr::Vector<size_t>(&scratch), core::pmr::Vector<size_t>(&scratch)});
     }
 
     for (size_t passIndex = 0; passIndex < graph.passes_.size(); ++passIndex) {
@@ -1822,7 +1893,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
     for (size_t passIndex = 0; passIndex < graph.passes_.size(); ++passIndex) {
         const auto& passRecord = graph.passes_[passIndex];
         for (const auto& attachment : passRecord.attachmentWrites) {
-            CompiledRenderTargetFlow flow;
+            CompiledRenderTargetFlow flow{0, core::pmr::String(publishedMemory)};
             flow.writerPass = passIndex;
             flow.targetName = graph.textureRecord(attachment.handle).resolvedDesc().label;
             flow.role = attachment.state == rhi::ResourceState::DepthAttachment
@@ -1871,7 +1942,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
     for (const auto& compiledPassIndex : compiled.executionOrder()) {
         const auto& pass = compiled.passes()[compiledPassIndex];
         compiled.addQueuePlan(QueuePlanRecord{
-            pass.name,
+            core::pmr::String(pass.name, publishedMemory),
             pass.kind,
             pass.queue,
             pass.asyncComputeEligible,
@@ -1888,7 +1959,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         // importSwapchainTexture can establish that native ownership fact.
         const auto requiredFinal = texture.externalFinalState;
         compiled.addExternalResource(ExternalResourceRecord{
-            texture.resolvedDesc().label,
+            core::pmr::String(texture.resolvedDesc().label, publishedMemory),
             ResourceKind::Texture,
             texture.handle.id,
             texture.resolvedState(),
@@ -1900,6 +1971,23 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
 
     std::pmr::map<uint32_t, ResourceLifetimeRecord> textureLifetimes{&scratch};
     std::pmr::map<uint32_t, ResourceLifetimeRecord> bufferLifetimes{&scratch};
+    const auto lifetimeFor = [publishedMemory](auto& table, std::uint32_t handle) -> auto& {
+        const auto found = table.find(handle);
+        if (found != table.end())
+            return found->second;
+        return table
+            .emplace(handle,
+                ResourceLifetimeRecord{core::pmr::String(publishedMemory),
+                    ResourceKind::Texture,
+                    0,
+                    0,
+                    0,
+                    core::pmr::String(publishedMemory),
+                    core::pmr::String(publishedMemory),
+                    core::pmr::String(publishedMemory),
+                    core::pmr::Vector<core::pmr::String>(publishedMemory)})
+            .first->second;
+    };
     auto touchLifetime =
         [](ResourceLifetimeRecord& lifetime, const std::pmr::string& passName, size_t order) {
             if (lifetime.firstUsePassName.empty()) {
@@ -1915,7 +2003,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         const auto& passRecord =
             graph.passes_[compiled.passes()[compiledPassIndex].originalPassIndex];
         for (const auto& write : passRecord.writes) {
-            auto& lifetime = textureLifetimes[write.handle.id];
+            auto& lifetime = lifetimeFor(textureLifetimes, write.handle.id);
             if (lifetime.resourceName.empty()) {
                 lifetime.resourceName = graph.textureRecord(write.handle).resolvedDesc().label;
                 lifetime.kind = ResourceKind::Texture;
@@ -1927,7 +2015,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
             touchLifetime(lifetime, passRecord.name, executionOrder);
         }
         for (const auto& write : passRecord.bufferWrites) {
-            auto& lifetime = bufferLifetimes[write.handle.id];
+            auto& lifetime = lifetimeFor(bufferLifetimes, write.handle.id);
             if (lifetime.resourceName.empty()) {
                 lifetime.resourceName =
                     graph.bufferRecord(write.handle).resolveBuffer()->desc().label;
@@ -1940,7 +2028,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
             touchLifetime(lifetime, passRecord.name, executionOrder);
         }
         for (const auto& read : passRecord.reads) {
-            auto& lifetime = textureLifetimes[read.handle.id];
+            auto& lifetime = lifetimeFor(textureLifetimes, read.handle.id);
             if (lifetime.resourceName.empty()) {
                 lifetime.resourceName = graph.textureRecord(read.handle).resolvedDesc().label;
                 lifetime.kind = ResourceKind::Texture;
@@ -1950,7 +2038,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
             lifetime.consumerPassNames.push_back(passRecord.name);
         }
         for (const auto& read : passRecord.bufferReads) {
-            auto& lifetime = bufferLifetimes[read.handle.id];
+            auto& lifetime = lifetimeFor(bufferLifetimes, read.handle.id);
             if (lifetime.resourceName.empty()) {
                 lifetime.resourceName =
                     graph.bufferRecord(read.handle).resolveBuffer()->desc().label;
@@ -1978,7 +2066,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
     // time rather than deferring the decision to execution. The env var
     // override is checked here too, so the compiled graph reflects the
     // debug decision (empty alias plan = pool allocation).
-    const bool aliasingEnabled = graph.device_.capabilities().features.transientAliasing
+    const bool aliasingEnabled = graph.device_.transientAliasingSupported()
         && std::getenv("WOCC_DISABLE_TRANSIENT_HEAP_ALIASING") == nullptr;
 
     if (aliasingEnabled) {
@@ -2084,7 +2172,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
                 });
             }
             compiled.addAlias(AliasTraceRecord{
-                texture.resolvedDesc().label,
+                core::pmr::String(texture.resolvedDesc().label, publishedMemory),
                 texture.handle,
                 group,
             });
@@ -2138,7 +2226,8 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
                     afterState.access});
                 compiled.addDependency(CompiledDependencyRecord{producerPass,
                     consumerPass,
-                    graph.textureRecord(after).resolvedDesc().label,
+                    core::pmr::String(
+                        graph.textureRecord(after).resolvedDesc().label, publishedMemory),
                     ResourceKind::Texture,
                     TopologyDependencyKind::Waw,
                     false});
@@ -2194,12 +2283,14 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
                       graph.textureDesc(TextureHandle{handle}),
                       TextureHandle{handle},
                       previous.state,
-                      next.state)
+                      next.state,
+                      publishedMemory)
                 : makeBufferBarrierTrace(passName,
                       *graph.bufferRecord(BufferHandle{handle}).resolveBuffer(),
                       BufferHandle{handle},
                       previous.state,
-                      next.state);
+                      next.state,
+                      publishedMemory);
             barrier.srcStage = previous.stages;
             barrier.srcAccess = previous.access;
             barrier.dstStage = next.stages;
@@ -2225,8 +2316,8 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
         for (const auto& attachment : passRecord.attachmentWrites) {
             const auto& record = graph.textureRecord(attachment.handle);
             compiled.addLoadStore(AttachmentTraceRecord{
-                passRecord.name,
-                record.resolvedDesc().label,
+                core::pmr::String(passRecord.name, publishedMemory),
+                core::pmr::String(record.resolvedDesc().label, publishedMemory),
                 attachment.state,
                 attachment.loadOp,
                 attachment.storeOp,
@@ -2278,7 +2369,7 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
                 item.first.second,
                 item.second);
         for (const auto& barrier : batch.prePassBarriers) {
-            compiled.addBarrier(barrier);
+            compiled.addBarrier(copyBarrierTraceText(barrier, publishedMemory));
         }
         compiled.addPassBarrierBatch(std::move(batch));
     }
@@ -2301,7 +2392,8 @@ CompiledFrameGraph FrameGraphCompiler::compile(const FrameGraph& graph) const
             Scope{external.requiredFinalState,
                 stageFor(external.requiredFinalState),
                 accessFor(external.requiredFinalState)});
-        compiled.addBarrier(frameEndBatch.prePassBarriers.back());
+        compiled.addBarrier(
+            copyBarrierTraceText(frameEndBatch.prePassBarriers.back(), publishedMemory));
     }
     if (!frameEndBatch.prePassBarriers.empty()) {
         compiled.addPassBarrierBatch(std::move(frameEndBatch));
@@ -2494,6 +2586,10 @@ void FrameGraphExecutor::executeImpl(const CompiledFrameGraph& compiled,
         graph_.resourceTrace_.clear();
         graph_.attachmentTrace_.clear();
         graph_.barrierTrace_.clear();
+        if (!graph_.retirementSourceState_ && !graph_.originalIntentEpoch_) {
+            graph_.resourceTrace_.reserve(compiled.barrierPlan().size());
+            graph_.barrierTrace_.reserve(compiled.barrierPlan().size());
+        }
     }
     if (firstCompiledExecution) {
         graph_.passTrace_.clear();
@@ -3157,7 +3253,24 @@ void FrameGraph::allocateTransientTextures(const CompiledFrameGraph& compiled)
         transientAliasedTextureHandles_.push_back(record->handle.id);
 }
 
+void FrameGraph::reserveBuildStorage(std::size_t textures, std::size_t buffers, std::size_t passes)
+{
+    if (retirementSourceState_ || originalIntentEpoch_ || resourcePool_->ownsGraphResources())
+        throw core::DiagnosticError("RG-FRAME-REUSE-ORIGINAL-DOMAIN");
+    textures_.reserve(textures);
+    importedTextureIndex_.reserve(textures);
+    buffers_.reserve(buffers);
+    importedBufferIndex_.reserve(buffers);
+    passes_.reserve(passes);
+    reusablePassStorage_.reserve(passes);
+}
+
 void FrameGraph::reset()
+{
+    resetImpl(false);
+}
+
+void FrameGraph::resetImpl(bool reusePassStorage)
 {
     invalidateCompiledRetirementSource();
     lastExecutionSubmitted_ = false;
@@ -3167,6 +3280,38 @@ void FrameGraph::reset()
     resourceTraceCursor_ = 0u;
     attachmentTraceCursor_ = 0u;
     barrierTraceCursor_ = 0u;
+    if (reusePassStorage) {
+        reusablePassStorage_.reserve(std::max(
+            reusablePassStorage_.capacity(), reusablePassStorage_.size() + passes_.size()));
+        for (auto& record : passes_) {
+            // Release every frame's ownership/callback before retaining only
+            // empty authoring storage. No prior declaration remains active.
+            record.name.clear();
+            record.kind = PassKind::Graphics;
+            record.queue = QueueRole::Graphics;
+            record.asyncComputeEligible = false;
+            record.externalSideEffects = false;
+            record.reads.clear();
+            record.writes.clear();
+            record.attachmentWrites.clear();
+            record.bufferReads.clear();
+            record.bufferWrites.clear();
+            record.callback = {};
+            record.renderPassCallback = {};
+            record.submissionObserver = nullptr;
+            record.submissionToken = {};
+            record.subpassGroup.reset();
+            record.subpassInputBindings.clear();
+            record.rhiDrawCommands.clear();
+            record.rhiDispatchCommands.clear();
+            record.rhiTransferCommands.clear();
+            record.originalIntent.reset();
+            record.originalRenderPass.reset();
+            reusablePassStorage_.push_back(std::move(record));
+        }
+    } else {
+        reusablePassStorage_.clear();
+    }
     passes_.clear();
     executionTrace_.clear();
     resourceTrace_.clear();
@@ -3174,6 +3319,7 @@ void FrameGraph::reset()
     attachmentTrace_.clear();
     aliasTrace_.clear();
     barrierTrace_.clear();
+    traceTextMemory_.reset();
     subpassInputLowerings_.clear();
     subpassInputViews_.clear();
 
@@ -3284,6 +3430,25 @@ void FrameGraph::reset()
     // It remains empty until the next allocation plan is materialized.
 }
 
+void FrameGraph::resetForNextFrame()
+{
+    if (retirementSourceState_ || originalIntentEpoch_ || resourcePool_->ownsGraphResources())
+        throw core::DiagnosticError("RG-FRAME-REUSE-ORIGINAL-DOMAIN");
+    resetImpl(true);
+    subgraphs_.clear();
+    subpassGraphs_.clear();
+    passes_.clear();
+    importedTextureIndex_.clear();
+    importedBufferIndex_.clear();
+    textures_.clear();
+    buffers_.clear();
+    gpuTimingPassScopes_.clear();
+    markerTrace_.clear();
+    timestampQueriesSupported_ = device_.timestampQueriesSupported();
+    commandEncoderDesc_ = rhi::CommandEncoderDesc{"FrameGraph"};
+    passCullingEnabled_ = false;
+}
+
 const std::pmr::vector<std::pmr::string>& FrameGraph::executionTrace() const
 {
     return executionTrace_;
@@ -3338,27 +3503,25 @@ FrameGraph::PassRecord& FrameGraph::pass(uint32_t id)
 TextureHandle FrameGraph::allocateTextureHandle() const
 {
     invalidateCompiledRetirementSource();
-    uint32_t candidate = 1;
-    // reset retains imported records, and composed graphs can leave gaps.
-    // Scan the live IDs once instead of restarting for every occupied ID.
-    for (const auto& record : textures_) {
-        if (record.handle.id == std::numeric_limits<uint32_t>::max())
-            throw core::DiagnosticError("RG-TEXTURE-HANDLE-EXHAUSTED");
-        candidate = std::max(candidate, record.handle.id + 1u);
-    }
-    return TextureHandle{candidate};
+    // All insertion paths append a newly allocated handle. reset() only
+    // erases records, preserving their increasing order even across gaps.
+    if (textures_.empty())
+        return TextureHandle{1};
+    const auto last = textures_.back().handle.id;
+    if (last == std::numeric_limits<uint32_t>::max())
+        throw core::DiagnosticError("RG-TEXTURE-HANDLE-EXHAUSTED");
+    return TextureHandle{last + 1u};
 }
 
 BufferHandle FrameGraph::allocateBufferHandle() const
 {
     invalidateCompiledRetirementSource();
-    uint32_t candidate = 1;
-    for (const auto& record : buffers_) {
-        if (record.handle.id == std::numeric_limits<uint32_t>::max())
-            throw core::DiagnosticError("RG-BUFFER-HANDLE-EXHAUSTED");
-        candidate = std::max(candidate, record.handle.id + 1u);
-    }
-    return BufferHandle{candidate};
+    if (buffers_.empty())
+        return BufferHandle{1};
+    const auto last = buffers_.back().handle.id;
+    if (last == std::numeric_limits<uint32_t>::max())
+        throw core::DiagnosticError("RG-BUFFER-HANDLE-EXHAUSTED");
+    return BufferHandle{last + 1u};
 }
 
 const FrameGraph::TextureRecord& FrameGraph::textureRecord(TextureHandle handle) const
@@ -3537,6 +3700,19 @@ void FrameGraph::replayPassBarriers(rhi::CommandEncoder& commands,
     std::uint32_t passOriginalIndex,
     bool transitionDependencies)
 {
+    auto* textMemory = &core::defaultCpuMemoryResource();
+    if (!transitionDependencies && !retirementSourceState_ && !originalIntentEpoch_) {
+        if (!traceTextMemory_)
+            traceTextMemory_ = core::makeUnique<std::pmr::unsynchronized_pool_resource>(
+                std::pmr::pool_options{}, &core::defaultCpuMemoryResource());
+        textMemory = traceTextMemory_.get();
+    }
+    const auto text = [textMemory](const core::pmr::String& value) {
+        return core::pmr::String(value, textMemory);
+    };
+    const auto appendTrace = [&](const BarrierTraceRecord& value) {
+        barrierTrace_.push_back(copyBarrierTraceText(value, textMemory));
+    };
     for (const auto& handoff : compiled.aliasHandoffs()) {
         if (handoff.consumerPass != passOriginalIndex) {
             continue;
@@ -3581,8 +3757,8 @@ void FrameGraph::replayPassBarriers(rhi::CommandEncoder& commands,
                     trace.state = barrier.after;
                 } else {
                     resourceTrace_.push_back(ResourceTraceRecord{
-                        barrier.passName,
-                        target.desc().label,
+                        text(barrier.passName),
+                        text(target.desc().label),
                         ResourceKind::Texture,
                         access,
                         barrier.after,
@@ -3605,7 +3781,7 @@ void FrameGraph::replayPassBarriers(rhi::CommandEncoder& commands,
                     trace.srcStage = runtimeSourceStages;
                     trace.srcAccess = runtimeSourceAccess;
                 } else {
-                    barrierTrace_.push_back(barrier);
+                    appendTrace(barrier);
                     auto& trace = barrierTrace_.back();
                     trace.before = runtimeBefore;
                     trace.memoryOnly = runtimeMemoryOnly;
@@ -3651,8 +3827,8 @@ void FrameGraph::replayPassBarriers(rhi::CommandEncoder& commands,
                     trace.state = barrier.after;
                 } else {
                     resourceTrace_.push_back(ResourceTraceRecord{
-                        barrier.passName,
-                        target.desc().label,
+                        text(barrier.passName),
+                        text(target.desc().label),
                         ResourceKind::Buffer,
                         access,
                         barrier.after,
@@ -3675,7 +3851,7 @@ void FrameGraph::replayPassBarriers(rhi::CommandEncoder& commands,
                     trace.srcStage = runtimeSourceStages;
                     trace.srcAccess = runtimeSourceAccess;
                 } else {
-                    barrierTrace_.push_back(barrier);
+                    appendTrace(barrier);
                     auto& trace = barrierTrace_.back();
                     trace.before = runtimeBefore;
                     trace.memoryOnly = runtimeMemoryOnly;

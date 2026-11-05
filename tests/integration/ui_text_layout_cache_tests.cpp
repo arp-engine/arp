@@ -41,6 +41,34 @@ void repeated_layout_requests_hit_cache()
     assert(!first.exposesNativeBackendHandles());
 }
 
+void borrowed_runs_avoid_owned_copies_and_keep_snapshot_semantics()
+{
+    arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
+    const auto key = layoutKey("A repeated long label with many visible glyphs");
+    const auto first = cache.resolveBorrowed(key);
+    assert(first.ok() && !first.cacheHit());
+    const auto* glyphs = first.run().glyphQuads.data();
+    const auto id = first.run().runId;
+    const auto start = arp::core::defaultCpuAllocator().stats().allocationCount;
+    for (unsigned i = 0; i < 100u; ++i) {
+        const auto hit = cache.resolveBorrowed(key);
+        assert(hit.ok() && hit.cacheHit() && hit.run().runId == id);
+        assert(hit.run().glyphQuads.data() == glyphs);
+    }
+    assert(arp::core::defaultCpuAllocator().stats().allocationCount == start);
+    const auto owned = cache.resolve(key);
+    assert(owned.ok() && owned.run().glyphQuads.data() != glyphs);
+    cache.setShapingCapability(arp::renderer::ui::TextShapingCapability::BasicLatinUtf8);
+    assert(cache.runCount() == 0u);
+    assert(owned.run().runId == id && !owned.run().glyphQuads.empty());
+    auto invalid = key;
+    invalid.locale.clear();
+    const auto failure = cache.resolveBorrowed(invalid);
+    assert(!failure.ok()
+        && failure.diagnostics() == text("UI text layout requires an explicit locale."));
+    assert(cache.resolveBorrowed(key).ok());
+}
+
 void style_width_and_text_changes_produce_distinct_runs()
 {
     arp::renderer::ui::TextLayoutCache cache(arp::tests::preparedUiFontFaces("font.ui.body"));
@@ -161,6 +189,7 @@ void combining_marks_and_complex_scripts_fail_deterministically()
 int main()
 {
     repeated_layout_requests_hit_cache();
+    borrowed_runs_avoid_owned_copies_and_keep_snapshot_semantics();
     style_width_and_text_changes_produce_distinct_runs();
     font_metrics_drive_advance_without_clipping_cell_width();
     unsupported_text_layout_semantics_fail_deterministically();

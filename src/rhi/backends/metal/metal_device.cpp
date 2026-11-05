@@ -1047,6 +1047,20 @@ public:
 
     rhi::Backend backend() const override { return rhi::Backend::Metal; }
 
+    bool timestampQueriesSupported() const override
+    {
+        return describeMetalRhiNativeRuntimeBoundary().runtimeAvailableOnThisPlatform
+            && probeMetalRhiNativeFeatures().timestampQueries
+            && rhi::semantics::hasExecutableOptionalNativeFeature(
+                desc_.capabilityContract, rhi::semantics::NativeBackendFeature::TimestampQueries);
+    }
+
+    bool transientAliasingSupported() const override
+    {
+        return describeMetalRhiNativeRuntimeBoundary().runtimeAvailableOnThisPlatform
+            && metalTransientAliasingContractAvailable(desc_.capabilityContract);
+    }
+
     rhi::DeviceCapabilities capabilities() const override
     {
         auto caps =
@@ -1115,14 +1129,10 @@ public:
             && compute.maxStorageBufferBindingSizeBytes != 0u;
         compute.mode =
             complete ? rhi::CapabilityMode::Native : rhi::CapabilityMode::DiagnosticFailure;
-        const bool nativeAliasing =
-            metalTransientAliasingContractAvailable(desc_.capabilityContract);
+        const bool nativeAliasing = transientAliasingSupported();
         caps.memory.transientAliasing = nativeAliasing;
         caps.features.transientAliasing = nativeAliasing;
-        caps.features.timestampQueries = runtime.runtimeAvailableOnThisPlatform
-            && nativeFeatures.timestampQueries
-            && rhi::semantics::hasExecutableOptionalNativeFeature(
-                desc_.capabilityContract, rhi::semantics::NativeBackendFeature::TimestampQueries);
+        caps.features.timestampQueries = timestampQueriesSupported();
         caps.features.pipelineStatisticsQueries = runtime.runtimeAvailableOnThisPlatform
             && nativeFeatures.pipelineStatisticsQueries
             && rhi::semantics::hasExecutableOptionalNativeFeature(desc_.capabilityContract,

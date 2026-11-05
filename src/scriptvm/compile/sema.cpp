@@ -434,13 +434,21 @@ struct Sema {
         if (type->kind == TypeKind::Dict) {
             return validateType(type->key, pos) && validateType(type->value, pos);
         }
-        if (type->kind != TypeKind::Class || moduleRegistry == nullptr) {
+        if (type->kind == TypeKind::Func) {
+            for (const auto& parameter : type->params)
+                if (!validateType(parameter, pos))
+                    return false;
+            return validateType(type->result, pos);
+        }
+        if (type->kind != TypeKind::Class) {
             return true;
         }
         if (findClass(type->name) != nullptr) {
             type->baseType = classType(type->name)->baseType;
             return true;
         }
+        if (moduleRegistry == nullptr)
+            return true;
         if (const auto* reflectedType = findImportedType(type->name)) {
             type->reflectedClass = reflectedType;
             // Keep the spelling for diagnostics, but use the exported
@@ -1103,7 +1111,7 @@ TypePtr Sema::inferExprImpl(const ExprPtr& expr)
     }
     case ExprKind::Index: {
         TypePtr baseType = inferExpr(expr->left);
-        if (!baseType)
+        if (!baseType || !inferExpr(expr->right))
             return nullptr;
         if (baseType->kind == TypeKind::List)
             return baseType->elem;
@@ -1200,6 +1208,9 @@ TypePtr Sema::inferExprImpl(const ExprPtr& expr)
             t->elem->name = "int"; // default for empty list
         } else {
             t->elem = inferExpr(expr->args[0]);
+            for (std::size_t index = 1; index < expr->args.size(); ++index)
+                if (!inferExpr(expr->args[index]))
+                    return nullptr;
         }
         return t;
     }
@@ -1213,6 +1224,9 @@ TypePtr Sema::inferExprImpl(const ExprPtr& expr)
         } else {
             t->key = inferExpr(expr->dictKeys[0]);
             t->value = inferExpr(expr->dictValues[0]);
+            for (std::size_t index = 1; index < expr->dictKeys.size(); ++index)
+                if (!inferExpr(expr->dictKeys[index]) || !inferExpr(expr->dictValues[index]))
+                    return nullptr;
         }
         return t;
     }

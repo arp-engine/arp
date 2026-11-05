@@ -409,6 +409,7 @@ public:
             }
             TypedIrScriptClassSchema schema;
             schema.className = declaration->className;
+            schema.baseClassName = declaration->baseClassName;
             core::pmr::Set<core::pmr::String> visiting{&core::defaultCpuMemoryResource()};
             const auto collectMethods =
                 [&](auto&& self,
@@ -2271,6 +2272,25 @@ private:
         for (const auto& arg : expr->args)
             compileExpr(function, arg);
         const int count = static_cast<int>(expr->args.size());
+        if (!named && expr->left->kind == ExprKind::Field && expr->left->name == "append"
+            && count == 1 && expr->left->left && expr->left->left->inferredType
+            && expr->left->left->inferredType->kind == TypeKind::List) {
+            // CallValue evaluates arguments before the receiver. Preserve that
+            // order, including a receiver expression that itself mutates state.
+            function.pushScope();
+            const int valueSlot = function.alloc("$append", false, expr->args[0]->inferredType);
+            emit(function, TypedIrOpcode::StoreLocal, valueSlot, 0, 0, {}, expr->pos);
+            function.pop();
+            compileExpr(function, expr->left->left);
+            emit(function, TypedIrOpcode::LoadLocal, valueSlot, 0, 0, {}, expr->pos);
+            function.push();
+            function.pop(2);
+            emit(function, TypedIrOpcode::BuiltinAppend, 0, 0, 0, {}, expr->pos);
+            function.push();
+            function.popScope();
+            clearAllCallableContainerBindings();
+            return;
+        }
         if (fnIt == functionIndex_.end() && expr->left->inferredType != nullptr
             && expr->left->inferredType->kind == TypeKind::Func) {
             const auto& parameters = expr->left->inferredType->params;
@@ -2555,6 +2575,19 @@ private:
                 function.operations.back().closureCaptureCount =
                     kScriptMethodProvenanceCaptureCount;
             }
+        }
+        auto& call = function.operations.back();
+        const auto& callableType = expr->left->inferredType;
+        if (call.callableBindingId.empty() && call.closureTargetFunctionId.empty() && callableType
+            && callableType->kind == TypeKind::Func && !callableType->isVariadic
+            && !callableType->isGenerator
+            && static_cast<int>(callableType->params.size()) == count) {
+            TypedIrSignature signature;
+            signature.fixedParameterCount = count;
+            for (const auto& parameter : callableType->params)
+                signature.parameters.push_back(directType(parameter));
+            signature.result = directType(callableType->result);
+            call.checkedCallableSignature = std::move(signature);
         }
         function.push();
         invalidateCallableLists();

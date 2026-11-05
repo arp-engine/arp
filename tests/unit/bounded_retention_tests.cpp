@@ -979,6 +979,22 @@ void testMappedOwnerBatches()
     completion.clear();
     assert(observed.expired());
     assert(defaultCpuAllocator().stats().allocationCount == allocations);
+
+    // Move admission transfers custody; a full retainer must leave a rejected
+    // candidate intact, with no hot allocation or premature owner release.
+    BoundedRetainer<unsigned> movedOwners(1u);
+    std::shared_ptr<const unsigned> candidate = makeShared<unsigned>(17u);
+    std::shared_ptr<const unsigned> rejected = makeShared<unsigned>(19u);
+    const auto candidateIdentity = candidate.get();
+    std::weak_ptr<const unsigned> movedObservation = candidate;
+    const auto moveAllocations = defaultCpuAllocator().stats().allocationCount;
+    assert(movedOwners.retain(std::move(candidate)) && !candidate);
+    assert(movedOwners.values().front().get() == candidateIdentity);
+    assert(!movedOwners.retain(std::move(rejected)) && rejected && *rejected == 19u);
+    assert(!movedObservation.expired());
+    movedOwners.clear();
+    assert(movedObservation.expired());
+    assert(defaultCpuAllocator().stats().allocationCount == moveAllocations);
 }
 } // namespace
 

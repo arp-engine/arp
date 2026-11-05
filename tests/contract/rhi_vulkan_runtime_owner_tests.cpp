@@ -12,6 +12,31 @@ using namespace arp::rhi_vulkan;
 
 unsigned instanceResolutions = 0u;
 unsigned deviceResolutions = 0u;
+unsigned cachedDrawResolutions = 0u, cachedMissingResolutions = 0u;
+
+VKAPI_ATTR void VKAPI_CALL firstDraw(
+    VkCommandBuffer, std::uint32_t, std::uint32_t, std::uint32_t, std::int32_t, std::uint32_t)
+{}
+
+VKAPI_ATTR void VKAPI_CALL secondDraw(
+    VkCommandBuffer, std::uint32_t, std::uint32_t, std::uint32_t, std::int32_t, std::uint32_t)
+{}
+
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL commandProcedure(VkDevice device, const char* name)
+{
+    if (std::strcmp(name, "vkCmdDrawIndexed") == 0) {
+        ++cachedDrawResolutions;
+        const PFN_vkCmdDrawIndexed draw =
+            device == syntheticHandle<VkDevice>(3u) ? &firstDraw : &secondDraw;
+        PFN_vkVoidFunction result = nullptr;
+        static_assert(sizeof(result) == sizeof(draw));
+        std::memcpy(&result, &draw, sizeof(result));
+        return result;
+    }
+    if (std::strcmp(name, "vkCmdBindDescriptorSets") == 0)
+        ++cachedMissingResolutions;
+    return nullptr;
+}
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL instanceProcedure(VkInstance, const char*)
 {
@@ -56,6 +81,8 @@ void assertRejected(VulkanRhiRuntimeDesc desc, const char* diagnostic)
         assert(!runtime.getInstanceProcAddr() && !runtime.getDeviceProcAddr());
         assert(!runtime.getDeviceProcAddr("vkDestroyDevice"));
         assert(!runtime.getDeviceProcAddr(nullptr));
+        assert(!runtime.commandDispatch().drawIndexed);
+        assert(!runtime.descriptorTracingEnabled());
         assert(!runtime.refreshSurfaceDetails());
         assert(!runtime.presentFenceEnabled());
         assert(
@@ -136,12 +163,37 @@ void syntheticDoesNotDispatch()
         assert(runtime.valid() && runtime.syntheticRuntime());
         assert(!runtime.getInstanceProcAddr() && !runtime.getDeviceProcAddr());
         assert(!runtime.getDeviceProcAddr("vkDestroyFence"));
+        assert(!runtime.commandDispatch().drawIndexed);
         assert(!runtime.presentFenceEnabled());
         assert(runtime.refreshSurfaceDetails());
         const auto report = inspectVulkanRhiRuntime(runtime);
         assert(!report.nativeDeviceAvailable && !report.nativeSurfaceAvailable);
     }
     assert(instanceResolutions == 0u && deviceResolutions == 0u);
+}
+
+void commandDispatchIsDeviceOwned()
+{
+    auto desc = queryOnlyDescriptor();
+    desc.surface = VK_NULL_HANDLE;
+    desc.getDeviceProcAddr = &commandProcedure;
+    desc.nativeOwner = arp::core::makeShared<arp::tests::VulkanQueryOnlyRuntimeOwner>(desc);
+    cachedDrawResolutions = cachedMissingResolutions = 0u;
+    VulkanRhiRuntime first(desc);
+    assert(first.valid());
+    assert(cachedDrawResolutions == 1u && cachedMissingResolutions == 1u);
+    for (unsigned i = 0u; i < 1000u; ++i) {
+        assert(first.commandDispatch().drawIndexed == &firstDraw);
+        assert(!first.commandDispatch().bindDescriptorSets);
+    }
+    assert(cachedDrawResolutions == 1u && cachedMissingResolutions == 1u);
+    desc.logicalDevice = syntheticHandle<VkDevice>(6u);
+    desc.nativeOwner = arp::core::makeShared<arp::tests::VulkanQueryOnlyRuntimeOwner>(desc);
+    VulkanRhiRuntime second(desc);
+    assert(second.valid());
+    assert(second.commandDispatch().drawIndexed == &secondDraw);
+    assert(first.commandDispatch().drawIndexed == &firstDraw);
+    assert(cachedDrawResolutions == 2u && cachedMissingResolutions == 2u);
 }
 
 void allocatorFacadeSharesOriginalLedger()
@@ -225,6 +277,7 @@ int main()
     missingAndMismatchedOwners();
     queryFixtureRetention();
     syntheticDoesNotDispatch();
+    commandDispatchIsDeviceOwned();
     timelineAdmissionRefusesUnsupportedRuntime();
     allocatorFacadeSharesOriginalLedger();
     std::puts("NativeRuntimeOwner/1 CPU admission/retention: PASS (query fixture only)");

@@ -1,5 +1,6 @@
 #include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_attachment_operations.h"
+#include "rhi/backends/vulkan/vulkan_command_domain.h"
 #include "rhi/backends/vulkan/vulkan_conformance_clear.h"
 #include "rhi/backends/vulkan/vulkan_native_commands_impl.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
@@ -141,29 +142,98 @@ bool adoptSwapchainFrameSync(VulkanRhiNativeCommandPayload::Impl& impl,
     return true;
 }
 
+bool framebufferKey(const VulkanRhiNativeCommandPayload::Impl& impl,
+    const std::pmr::vector<std::shared_ptr<VulkanRhiNativeResourcePayload>>& colors,
+    const VulkanRhiNativeResourcePayload* depth,
+    rhi::Extent3D extent,
+    VulkanRhiFramebufferKey& key)
+{
+    key.count = static_cast<std::uint32_t>(colors.size()) + (depth ? 1u : 0u);
+    key.width = extent.width;
+    key.height = extent.height;
+    if (key.count > key.attachments.size())
+        return false;
+    const auto project = [](const auto& owner, auto& output, bool depthAttachment) {
+        if (!owner)
+            return false;
+        output.owner = owner->backendVulkanImageStorageIdentity();
+        const std::weak_ptr<void> empty;
+        if (!output.owner.owner_before(empty) && !empty.owner_before(output.owner)) {
+            output.owner = owner;
+            output.object = owner.get();
+        }
+        if (output.owner.expired())
+            return false;
+        output.image = owner->backendVulkanImageHandle();
+        output.format = owner->backendVulkanImageFormat();
+        output.range = {
+            depthAttachment ? depthStencilAspectMaskFor(output.format) : VK_IMAGE_ASPECT_COLOR_BIT,
+            0u,
+            1u,
+            0u,
+            1u};
+        return true;
+    };
+    for (std::size_t i = 0u; i < colors.size(); ++i)
+        if (!project(colors[i], key.attachments[i], false))
+            return false;
+    if (depth) {
+        // The existing raw depth borrow is authenticated by its already
+        // retained owner. Ambiguous ownership stays on the uncached path.
+        const auto found = std::lower_bound(impl.retainedResources.begin(),
+            impl.retainedResources.end(),
+            depth,
+            [](const auto& owner, const auto* object) {
+                return std::less<const VulkanRhiNativeResourcePayload*>{}(owner.get(), object);
+            });
+        if (found == impl.retainedResources.end() || found->get() != depth
+            || (found + 1 != impl.retainedResources.end() && (found + 1)->get() == depth)
+            || !project(*found, key.attachments[colors.size()], true))
+            return false;
+    }
+    return true;
+}
+
+bool reuseFramebuffer(VulkanRhiNativeCommandPayload::Impl& impl,
+    const VulkanRhiFramebufferKey& key,
+    VulkanRhiNativeRenderPassResources& resources)
+{
+    VulkanRhiNativeRenderPassResources reused;
+    if (!impl.device.commandDomain().framebufferCache.acquire(key, resources.renderPass, reused))
+        return false;
+    // The bundle owns its pass lease. Release this lookup's additional lease.
+    destroyVulkanRhiNativeRenderPassResources(impl.device, resources);
+    resources = std::move(reused);
+    return true;
+}
+
 } // namespace
 
 void destroyVulkanRhiNativeRenderPassResources(
     const VulkanRhiRuntime& device, VulkanRhiNativeRenderPassResources& resources)
 {
+    if (resources.framebufferCacheSlot != VulkanRhiRenderPassCache::uncached) {
+        if (!device.commandDomain().framebufferCache.release(
+                resources.framebufferCacheSlot, resources.framebuffer))
+            rhi::RhiErrorHandler::get().report(
+                rhi::RhiSeverity::Error, "RHI-VULKAN-FRAMEBUFFER-CACHE-LEASE");
+        resources = {};
+        return;
+    }
     auto* destroyFramebuffer =
         functionFrom<PFN_vkDestroyFramebuffer>(device.getDeviceProcAddr("vkDestroyFramebuffer"));
     auto* destroyImageView =
         functionFrom<PFN_vkDestroyImageView>(device.getDeviceProcAddr("vkDestroyImageView"));
     auto* destroyRenderPass =
         functionFrom<PFN_vkDestroyRenderPass>(device.getDeviceProcAddr("vkDestroyRenderPass"));
-    if (destroyFramebuffer && resources.framebuffer) {
-        destroyFramebuffer(device.logicalDevice(), resources.framebuffer, nullptr);
-    }
-    if (destroyImageView) {
-        for (std::uint32_t index = 0; index < resources.imageViewCount; ++index) {
-            destroyImageView(device.logicalDevice(), resources.imageViews[index], nullptr);
-        }
-    }
-    if (destroyRenderPass && resources.renderPass) {
-        destroyRenderPass(device.logicalDevice(), resources.renderPass, nullptr);
-    }
-    resources = {};
+    if (!destroyVulkanRhiUncachedRenderPassResources(device.logicalDevice(),
+            destroyFramebuffer,
+            destroyImageView,
+            destroyRenderPass,
+            device.commandDomain().renderPassCache,
+            resources))
+        rhi::RhiErrorHandler::get().report(
+            rhi::RhiSeverity::Error, "RHI-VULKAN-RENDER-PASS-CACHE-LEASE");
 }
 
 bool VulkanRhiNativeCommandPayload::recordRenderPassBegin(const rhi::RenderPassDesc& desc,
@@ -271,8 +341,7 @@ bool VulkanRhiNativeCommandPayload::recordRenderPassBegin(const rhi::RenderPassD
         functionFrom<PFN_vkCreateImageView>(impl_->device.getDeviceProcAddr("vkCreateImageView"));
     auto* createFramebuffer = functionFrom<PFN_vkCreateFramebuffer>(
         impl_->device.getDeviceProcAddr("vkCreateFramebuffer"));
-    auto* cmdBeginRenderPass = functionFrom<PFN_vkCmdBeginRenderPass>(
-        impl_->device.getDeviceProcAddr("vkCmdBeginRenderPass"));
+    auto* cmdBeginRenderPass = impl_->device.commandDispatch().beginRenderPass;
     if (!createRenderPass || !createImageView || !createFramebuffer || !cmdBeginRenderPass) {
         diagnostics = "Vulkan RHI native render pass missing Vulkan entrypoints";
         return false;
@@ -463,69 +532,95 @@ bool VulkanRhiNativeCommandPayload::recordRenderPassBegin(const rhi::RenderPassD
         VulkanRhiNativeRenderPassResources resources;
         resources.subpassCount = subpassCount;
         resources.currentSubpassIndex = 0;
-        const auto renderPassCreated = createRenderPass(
-            impl_->device.logicalDevice(), &renderPassInfo, nullptr, &resources.renderPass);
+        const auto destroyRenderPass = functionFrom<PFN_vkDestroyRenderPass>(
+            impl_->device.getDeviceProcAddr("vkDestroyRenderPass"));
+        bool renderPassNew = false;
+        const auto renderPassCreated =
+            impl_->device.commandDomain().renderPassCache.acquire(impl_->device.logicalDevice(),
+                createRenderPass,
+                destroyRenderPass,
+                renderPassInfo,
+                resources.renderPass,
+                resources.renderPassCacheSlot,
+                renderPassNew);
         if (renderPassCreated != VK_SUCCESS) {
             diagnostics = vkFailure("vkCreateRenderPass", renderPassCreated);
             return false;
         }
+        if (impl_->stats && renderPassNew)
+            ++impl_->stats->nativeRenderPassCreateCount;
 
-        // Create image views for all color attachments + depth.
-        for (std::uint32_t i = 0; i < colorCount; ++i) {
-            VkImageViewCreateInfo viewInfo{};
-            viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            viewInfo.image = colorTargets[i]->backendVulkanImageHandle();
-            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            viewInfo.format = colorTargets[i]->backendVulkanImageFormat();
-            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            viewInfo.subresourceRange.levelCount = 1;
-            viewInfo.subresourceRange.layerCount = 1;
-            VkImageView imageView = VK_NULL_HANDLE;
-            const auto viewCreated =
-                createImageView(impl_->device.logicalDevice(), &viewInfo, nullptr, &imageView);
-            if (viewCreated != VK_SUCCESS) {
+        VulkanRhiFramebufferKey cacheKey;
+        const bool cacheable = framebufferKey(
+            *impl_, colorTargets, hasDepth ? depthTarget : nullptr, extent, cacheKey);
+        if (!cacheable || !reuseFramebuffer(*impl_, cacheKey, resources)) {
+            // Create image views for all color attachments + depth.
+            for (std::uint32_t i = 0; i < colorCount; ++i) {
+                VkImageViewCreateInfo viewInfo{};
+                viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                viewInfo.image = colorTargets[i]->backendVulkanImageHandle();
+                viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                viewInfo.format = colorTargets[i]->backendVulkanImageFormat();
+                viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                viewInfo.subresourceRange.levelCount = 1;
+                viewInfo.subresourceRange.layerCount = 1;
+                VkImageView imageView = VK_NULL_HANDLE;
+                const auto viewCreated =
+                    createImageView(impl_->device.logicalDevice(), &viewInfo, nullptr, &imageView);
+                if (viewCreated != VK_SUCCESS) {
+                    destroyVulkanRhiNativeRenderPassResources(impl_->device, resources);
+                    diagnostics = vkFailure("vkCreateImageView", viewCreated);
+                    return false;
+                }
+                resources.imageViews[resources.imageViewCount] = imageView;
+                ++resources.imageViewCount;
+            }
+            if (hasDepth) {
+                VkImageViewCreateInfo depthViewInfo{};
+                depthViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                depthViewInfo.image = depthImage;
+                depthViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                depthViewInfo.format = depthFormat;
+                depthViewInfo.subresourceRange.aspectMask = depthStencilAspectMaskFor(depthFormat);
+                depthViewInfo.subresourceRange.levelCount = 1;
+                depthViewInfo.subresourceRange.layerCount = 1;
+                VkImageView depthImageView = VK_NULL_HANDLE;
+                const auto depthViewCreated = createImageView(
+                    impl_->device.logicalDevice(), &depthViewInfo, nullptr, &depthImageView);
+                if (depthViewCreated != VK_SUCCESS) {
+                    destroyVulkanRhiNativeRenderPassResources(impl_->device, resources);
+                    diagnostics = vkFailure("vkCreateImageView", depthViewCreated);
+                    return false;
+                }
+                resources.imageViews[resources.imageViewCount] = depthImageView;
+                ++resources.imageViewCount;
+            }
+
+            VkFramebufferCreateInfo framebufferInfo{};
+            framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            framebufferInfo.renderPass = resources.renderPass;
+            framebufferInfo.attachmentCount = totalAttachments;
+            framebufferInfo.pAttachments = resources.imageViews.data();
+            framebufferInfo.width = extent.width;
+            framebufferInfo.height = extent.height;
+            framebufferInfo.layers = 1;
+            const auto framebufferCreated = createFramebuffer(
+                impl_->device.logicalDevice(), &framebufferInfo, nullptr, &resources.framebuffer);
+            if (framebufferCreated != VK_SUCCESS) {
                 destroyVulkanRhiNativeRenderPassResources(impl_->device, resources);
-                diagnostics = vkFailure("vkCreateImageView", viewCreated);
+                diagnostics = vkFailure("vkCreateFramebuffer", framebufferCreated);
                 return false;
             }
-            resources.imageViews[resources.imageViewCount] = imageView;
-            ++resources.imageViewCount;
-        }
-        if (hasDepth) {
-            VkImageViewCreateInfo depthViewInfo{};
-            depthViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            depthViewInfo.image = depthImage;
-            depthViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            depthViewInfo.format = depthFormat;
-            depthViewInfo.subresourceRange.aspectMask = depthStencilAspectMaskFor(depthFormat);
-            depthViewInfo.subresourceRange.levelCount = 1;
-            depthViewInfo.subresourceRange.layerCount = 1;
-            VkImageView depthImageView = VK_NULL_HANDLE;
-            const auto depthViewCreated = createImageView(
-                impl_->device.logicalDevice(), &depthViewInfo, nullptr, &depthImageView);
-            if (depthViewCreated != VK_SUCCESS) {
-                destroyVulkanRhiNativeRenderPassResources(impl_->device, resources);
-                diagnostics = vkFailure("vkCreateImageView", depthViewCreated);
-                return false;
-            }
-            resources.imageViews[resources.imageViewCount] = depthImageView;
-            ++resources.imageViewCount;
-        }
 
-        VkFramebufferCreateInfo framebufferInfo{};
-        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebufferInfo.renderPass = resources.renderPass;
-        framebufferInfo.attachmentCount = totalAttachments;
-        framebufferInfo.pAttachments = resources.imageViews.data();
-        framebufferInfo.width = extent.width;
-        framebufferInfo.height = extent.height;
-        framebufferInfo.layers = 1;
-        const auto framebufferCreated = createFramebuffer(
-            impl_->device.logicalDevice(), &framebufferInfo, nullptr, &resources.framebuffer);
-        if (framebufferCreated != VK_SUCCESS) {
-            destroyVulkanRhiNativeRenderPassResources(impl_->device, resources);
-            diagnostics = vkFailure("vkCreateFramebuffer", framebufferCreated);
-            return false;
+            if (impl_->stats) {
+                impl_->stats->nativeRenderAttachmentViewCreateCount += totalAttachments;
+                ++impl_->stats->nativeFramebufferCreateCount;
+            }
+            if (cacheable)
+                impl_->device.commandDomain().framebufferCache.admit(
+                    cacheKey, resources, [&](auto& retired) {
+                        destroyVulkanRhiNativeRenderPassResources(impl_->device, retired);
+                    });
         }
 
         // Clear values: one per attachment, copied from complete L2 intent.
@@ -554,9 +649,6 @@ bool VulkanRhiNativeCommandPayload::recordRenderPassBegin(const rhi::RenderPassD
 
         impl_->activeRenderPass = std::move(resources);
         if (impl_->stats) {
-            ++impl_->stats->nativeRenderPassCreateCount;
-            impl_->stats->nativeRenderAttachmentViewCreateCount += totalAttachments;
-            ++impl_->stats->nativeFramebufferCreateCount;
             ++impl_->stats->nativeCommandBufferRecordCount;
             ++impl_->stats->nativeRenderPassBeginRecordCount;
         }
@@ -624,68 +716,97 @@ bool VulkanRhiNativeCommandPayload::recordRenderPassBegin(const rhi::RenderPassD
     renderPassInfo.pSubpasses = &subpass;
 
     VulkanRhiNativeRenderPassResources resources;
-    const auto renderPassCreated = createRenderPass(
-        impl_->device.logicalDevice(), &renderPassInfo, nullptr, &resources.renderPass);
+    const auto destroyRenderPass = functionFrom<PFN_vkDestroyRenderPass>(
+        impl_->device.getDeviceProcAddr("vkDestroyRenderPass"));
+    bool renderPassNew = false;
+    const auto renderPassCreated =
+        impl_->device.commandDomain().renderPassCache.acquire(impl_->device.logicalDevice(),
+            createRenderPass,
+            destroyRenderPass,
+            renderPassInfo,
+            resources.renderPass,
+            resources.renderPassCacheSlot,
+            renderPassNew);
     if (renderPassCreated != VK_SUCCESS) {
         diagnostics = vkFailure("vkCreateRenderPass", renderPassCreated);
         return false;
     }
+    if (impl_->stats && renderPassNew)
+        ++impl_->stats->nativeRenderPassCreateCount;
 
-    for (std::uint32_t index = 0; index < colorCount; ++index) {
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = colorTargets[index]->backendVulkanImageHandle();
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = colorTargets[index]->backendVulkanImageFormat();
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.layerCount = 1;
-        VkImageView imageView = VK_NULL_HANDLE;
-        const auto viewCreated =
-            createImageView(impl_->device.logicalDevice(), &viewInfo, nullptr, &imageView);
-        if (viewCreated != VK_SUCCESS) {
+    VulkanRhiFramebufferKey cacheKey;
+    const bool cacheable = framebufferKey(*impl_,
+        colorTargets,
+        desc.hasDepthStencilAttachment ? depthTarget : nullptr,
+        extent,
+        cacheKey);
+    if (!cacheable || !reuseFramebuffer(*impl_, cacheKey, resources)) {
+        for (std::uint32_t index = 0; index < colorCount; ++index) {
+            VkImageViewCreateInfo viewInfo{};
+            viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            viewInfo.image = colorTargets[index]->backendVulkanImageHandle();
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            viewInfo.format = colorTargets[index]->backendVulkanImageFormat();
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            viewInfo.subresourceRange.levelCount = 1;
+            viewInfo.subresourceRange.layerCount = 1;
+            VkImageView imageView = VK_NULL_HANDLE;
+            const auto viewCreated =
+                createImageView(impl_->device.logicalDevice(), &viewInfo, nullptr, &imageView);
+            if (viewCreated != VK_SUCCESS) {
+                destroyVulkanRhiNativeRenderPassResources(impl_->device, resources);
+                diagnostics = vkFailure("vkCreateImageView", viewCreated);
+                return false;
+            }
+            resources.imageViews[resources.imageViewCount++] = imageView;
+        }
+
+        if (desc.hasDepthStencilAttachment) {
+            VkImageViewCreateInfo depthViewInfo{};
+            depthViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            depthViewInfo.image = depthImage;
+            depthViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            depthViewInfo.format = depthFormat;
+            depthViewInfo.subresourceRange.aspectMask = depthStencilAspectMaskFor(depthFormat);
+            depthViewInfo.subresourceRange.levelCount = 1;
+            depthViewInfo.subresourceRange.layerCount = 1;
+            VkImageView depthImageView = VK_NULL_HANDLE;
+            const auto depthViewCreated = createImageView(
+                impl_->device.logicalDevice(), &depthViewInfo, nullptr, &depthImageView);
+            if (depthViewCreated != VK_SUCCESS) {
+                destroyVulkanRhiNativeRenderPassResources(impl_->device, resources);
+                diagnostics = vkFailure("vkCreateImageView", depthViewCreated);
+                return false;
+            }
+            resources.imageViews[resources.imageViewCount] = depthImageView;
+            ++resources.imageViewCount;
+        }
+
+        VkFramebufferCreateInfo framebufferInfo{};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferInfo.renderPass = resources.renderPass;
+        framebufferInfo.attachmentCount = attachmentCount;
+        framebufferInfo.pAttachments = resources.imageViews.data();
+        framebufferInfo.width = extent.width;
+        framebufferInfo.height = extent.height;
+        framebufferInfo.layers = 1;
+        const auto framebufferCreated = createFramebuffer(
+            impl_->device.logicalDevice(), &framebufferInfo, nullptr, &resources.framebuffer);
+        if (framebufferCreated != VK_SUCCESS) {
             destroyVulkanRhiNativeRenderPassResources(impl_->device, resources);
-            diagnostics = vkFailure("vkCreateImageView", viewCreated);
+            diagnostics = vkFailure("vkCreateFramebuffer", framebufferCreated);
             return false;
         }
-        resources.imageViews[resources.imageViewCount++] = imageView;
-    }
 
-    if (desc.hasDepthStencilAttachment) {
-        VkImageViewCreateInfo depthViewInfo{};
-        depthViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        depthViewInfo.image = depthImage;
-        depthViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        depthViewInfo.format = depthFormat;
-        depthViewInfo.subresourceRange.aspectMask = depthStencilAspectMaskFor(depthFormat);
-        depthViewInfo.subresourceRange.levelCount = 1;
-        depthViewInfo.subresourceRange.layerCount = 1;
-        VkImageView depthImageView = VK_NULL_HANDLE;
-        const auto depthViewCreated = createImageView(
-            impl_->device.logicalDevice(), &depthViewInfo, nullptr, &depthImageView);
-        if (depthViewCreated != VK_SUCCESS) {
-            destroyVulkanRhiNativeRenderPassResources(impl_->device, resources);
-            diagnostics = vkFailure("vkCreateImageView", depthViewCreated);
-            return false;
+        if (impl_->stats) {
+            impl_->stats->nativeRenderAttachmentViewCreateCount += attachmentCount;
+            ++impl_->stats->nativeFramebufferCreateCount;
         }
-        resources.imageViews[resources.imageViewCount] = depthImageView;
-        ++resources.imageViewCount;
-    }
-
-    VkFramebufferCreateInfo framebufferInfo{};
-    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    framebufferInfo.renderPass = resources.renderPass;
-    framebufferInfo.attachmentCount = attachmentCount;
-    framebufferInfo.pAttachments = resources.imageViews.data();
-    framebufferInfo.width = extent.width;
-    framebufferInfo.height = extent.height;
-    framebufferInfo.layers = 1;
-    const auto framebufferCreated = createFramebuffer(
-        impl_->device.logicalDevice(), &framebufferInfo, nullptr, &resources.framebuffer);
-    if (framebufferCreated != VK_SUCCESS) {
-        destroyVulkanRhiNativeRenderPassResources(impl_->device, resources);
-        diagnostics = vkFailure("vkCreateFramebuffer", framebufferCreated);
-        return false;
+        if (cacheable)
+            impl_->device.commandDomain().framebufferCache.admit(
+                cacheKey, resources, [&](auto& retired) {
+                    destroyVulkanRhiNativeRenderPassResources(impl_->device, retired);
+                });
     }
 
     std::array<VkClearValue, VulkanRhiNativeRenderPassResources::kMaxImageViews> clearValues{};
@@ -713,9 +834,6 @@ bool VulkanRhiNativeCommandPayload::recordRenderPassBegin(const rhi::RenderPassD
 
     impl_->activeRenderPass = std::move(resources);
     if (impl_->stats) {
-        ++impl_->stats->nativeRenderPassCreateCount;
-        impl_->stats->nativeRenderAttachmentViewCreateCount += attachmentCount;
-        ++impl_->stats->nativeFramebufferCreateCount;
         ++impl_->stats->nativeCommandBufferRecordCount;
         ++impl_->stats->nativeRenderPassBeginRecordCount;
     }
@@ -748,8 +866,7 @@ bool VulkanRhiNativeCommandPayload::recordGraphicsPipelineBind(
         diagnostics = "Vulkan RHI native graphics bind requires a native pipeline payload";
         return false;
     }
-    auto* cmdBindPipeline =
-        functionFrom<PFN_vkCmdBindPipeline>(impl_->device.getDeviceProcAddr("vkCmdBindPipeline"));
+    auto* cmdBindPipeline = impl_->device.commandDispatch().bindPipeline;
     if (!cmdBindPipeline) {
         diagnostics = "Vulkan RHI native command buffer missing vkCmdBindPipeline";
         return false;
@@ -757,7 +874,7 @@ bool VulkanRhiNativeCommandPayload::recordGraphicsPipelineBind(
     cmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, handle);
     impl_->boundGraphicsPipelineLayout = pipeline.backendVulkanRenderPipelineLayoutHandle();
     impl_->boundGraphicsPushConstantStages = pipeline.backendVulkanPushConstantStageFlags();
-    if (std::getenv("ARP_FORWARD_PLUS_DESCRIPTOR_TRACE") != nullptr) {
+    if (impl_->device.descriptorTracingEnabled()) {
         std::cerr << "[vulkan-graphics-pipeline-trace] pipeline=" << handle
                   << " layout=" << impl_->boundGraphicsPipelineLayout << '\n';
     }
@@ -784,8 +901,7 @@ bool VulkanRhiNativeCommandPayload::recordSetViewport(
         }
         return true;
     }
-    auto* cmdSetViewport =
-        functionFrom<PFN_vkCmdSetViewport>(impl_->device.getDeviceProcAddr("vkCmdSetViewport"));
+    auto* cmdSetViewport = impl_->device.commandDispatch().setViewport;
     if (!cmdSetViewport) {
         diagnostics = "Vulkan RHI native command buffer missing vkCmdSetViewport";
         return false;
@@ -819,8 +935,7 @@ bool VulkanRhiNativeCommandPayload::recordSetScissor(
         }
         return true;
     }
-    auto* cmdSetScissor =
-        functionFrom<PFN_vkCmdSetScissor>(impl_->device.getDeviceProcAddr("vkCmdSetScissor"));
+    auto* cmdSetScissor = impl_->device.commandDispatch().setScissor;
     if (!cmdSetScissor) {
         diagnostics = "Vulkan RHI native command buffer missing vkCmdSetScissor";
         return false;
@@ -860,8 +975,7 @@ bool VulkanRhiNativeCommandPayload::recordVertexBufferBind(std::uint32_t slot,
         diagnostics = "Vulkan RHI native vertex buffer bind requires a native buffer payload";
         return false;
     }
-    auto* cmdBindVertexBuffers = functionFrom<PFN_vkCmdBindVertexBuffers>(
-        impl_->device.getDeviceProcAddr("vkCmdBindVertexBuffers"));
+    auto* cmdBindVertexBuffers = impl_->device.commandDispatch().bindVertexBuffers;
     if (!cmdBindVertexBuffers) {
         diagnostics = "Vulkan RHI native command buffer missing vkCmdBindVertexBuffers";
         return false;
@@ -899,8 +1013,7 @@ bool VulkanRhiNativeCommandPayload::recordIndexBufferBind(
         diagnostics = "Vulkan RHI native index buffer bind requires a native buffer payload";
         return false;
     }
-    auto* cmdBindIndexBuffer = functionFrom<PFN_vkCmdBindIndexBuffer>(
-        impl_->device.getDeviceProcAddr("vkCmdBindIndexBuffer"));
+    auto* cmdBindIndexBuffer = impl_->device.commandDispatch().bindIndexBuffer;
     if (!cmdBindIndexBuffer) {
         diagnostics = "Vulkan RHI native command buffer missing vkCmdBindIndexBuffer";
         return false;
@@ -940,8 +1053,7 @@ bool VulkanRhiNativeCommandPayload::recordPushConstants(rhi::ShaderStage stages,
         diagnostics = "Vulkan RHI native push constants require a bound graphics pipeline layout";
         return false;
     }
-    auto* cmdPushConstants =
-        functionFrom<PFN_vkCmdPushConstants>(impl_->device.getDeviceProcAddr("vkCmdPushConstants"));
+    auto* cmdPushConstants = impl_->device.commandDispatch().pushConstants;
     if (!cmdPushConstants) {
         diagnostics = "Vulkan RHI native command buffer missing vkCmdPushConstants";
         return false;
@@ -991,10 +1103,8 @@ bool VulkanRhiNativeCommandPayload::recordDrawIndexed(std::uint32_t indexCount,
     if (!impl_->indexBufferBound && !ensureScratchIndexBuffer(*impl_, indexCount, diagnostics)) {
         return false;
     }
-    auto* cmdBindIndexBuffer = functionFrom<PFN_vkCmdBindIndexBuffer>(
-        impl_->device.getDeviceProcAddr("vkCmdBindIndexBuffer"));
-    auto* cmdDrawIndexed =
-        functionFrom<PFN_vkCmdDrawIndexed>(impl_->device.getDeviceProcAddr("vkCmdDrawIndexed"));
+    auto* cmdBindIndexBuffer = impl_->device.commandDispatch().bindIndexBuffer;
+    auto* cmdDrawIndexed = impl_->device.commandDispatch().drawIndexed;
     if (!cmdBindIndexBuffer || !cmdDrawIndexed) {
         diagnostics = "Vulkan RHI native indexed draw missing Vulkan entrypoints";
         return false;
@@ -1041,8 +1151,7 @@ bool VulkanRhiNativeCommandPayload::recordDrawIndexedIndirect(
         diagnostics = "Vulkan RHI native indirect draw requires a bound index buffer";
         return false;
     }
-    auto* cmdDrawIndexedIndirect = functionFrom<PFN_vkCmdDrawIndexedIndirect>(
-        impl_->device.getDeviceProcAddr("vkCmdDrawIndexedIndirect"));
+    auto* cmdDrawIndexedIndirect = impl_->device.commandDispatch().drawIndexedIndirect;
     if (!cmdDrawIndexedIndirect) {
         diagnostics = "Vulkan RHI native indirect draw missing vkCmdDrawIndexedIndirect entrypoint";
         return false;
@@ -1087,8 +1196,7 @@ bool VulkanRhiNativeCommandPayload::recordDrawIndexedIndirectCount(
         diagnostics = "Vulkan RHI native indirect draw count requires a bound index buffer";
         return false;
     }
-    auto* cmdDrawIndexedIndirectCount = functionFrom<PFN_vkCmdDrawIndexedIndirectCount>(
-        impl_->device.getDeviceProcAddr("vkCmdDrawIndexedIndirectCount"));
+    auto* cmdDrawIndexedIndirectCount = impl_->device.commandDispatch().drawIndexedIndirectCount;
     if (!cmdDrawIndexedIndirectCount) {
         diagnostics = "Vulkan RHI native indirect draw count missing vkCmdDrawIndexedIndirectCount "
                       "entrypoint (requires Vulkan 1.2+ or VK_KHR_draw_indirect_count)";
@@ -1129,7 +1237,7 @@ bool VulkanRhiNativeCommandPayload::recordDraw(std::uint32_t vertexCount,
         }
         return true;
     }
-    auto* cmdDraw = functionFrom<PFN_vkCmdDraw>(impl_->device.getDeviceProcAddr("vkCmdDraw"));
+    auto* cmdDraw = impl_->device.commandDispatch().draw;
     if (!cmdDraw) {
         diagnostics = "Vulkan RHI native draw missing vkCmdDraw entrypoint";
         return false;
@@ -1163,8 +1271,7 @@ bool VulkanRhiNativeCommandPayload::recordRenderPassEnd(std::pmr::string& diagno
         }
         return true;
     }
-    auto* cmdEndRenderPass =
-        functionFrom<PFN_vkCmdEndRenderPass>(impl_->device.getDeviceProcAddr("vkCmdEndRenderPass"));
+    auto* cmdEndRenderPass = impl_->device.commandDispatch().endRenderPass;
     if (!cmdEndRenderPass) {
         diagnostics = "Vulkan RHI native command buffer missing vkCmdEndRenderPass";
         return false;
@@ -1209,8 +1316,7 @@ bool VulkanRhiNativeCommandPayload::recordNextSubpass(std::pmr::string& diagnost
         }
         return true;
     }
-    auto* cmdNextSubpass =
-        functionFrom<PFN_vkCmdNextSubpass>(impl_->device.getDeviceProcAddr("vkCmdNextSubpass"));
+    auto* cmdNextSubpass = impl_->device.commandDispatch().nextSubpass;
     if (!cmdNextSubpass) {
         diagnostics = "Vulkan RHI native command buffer missing vkCmdNextSubpass";
         return false;

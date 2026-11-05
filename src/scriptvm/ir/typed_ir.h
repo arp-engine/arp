@@ -9,6 +9,7 @@
 #include "scriptvm/runtime/source_pos.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace arp::scriptvm {
 
@@ -268,6 +269,10 @@ struct TypedIrOperationRecord {
     // by kScriptMethodProvenanceCaptureCount.
     core::pmr::String closureTargetFunctionId{&core::defaultCpuMemoryResource()};
     int closureCaptureCount = -1;
+    // CheckedCallback/1: a typed value call dispatches only to same-module
+    // native functions with this signature or an explicitly synchronous host
+    // callable. Untyped values and interpreter bridges are never admitted.
+    std::optional<TypedIrSignature> checkedCallableSignature;
     // `yield from` is not recoverable from the RangeNext CFG shape: a plain
     // generator for-loop can be byte-for-byte identical. Only the typed
     // frontend may assert this source-level delegation contract.
@@ -292,6 +297,7 @@ struct TypedIrCallableBinding {
 // constructor.
 struct TypedIrScriptClassSchema {
     core::pmr::String className{&core::defaultCpuMemoryResource()};
+    core::pmr::String baseClassName{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<core::pmr::String> fields{&core::defaultCpuMemoryResource()};
     // Method names are part of the artifact contract. The function id is
     // stable across function-vector reordering and is resolved by the AOT

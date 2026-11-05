@@ -79,12 +79,13 @@ inline RendererResult uploadTextureRgba8(rhi::GpuDevice& device,
     std::uint32_t height,
     std::uint32_t bytesPerRow,
     std::uint32_t rowsPerImage,
-    core::SharedPtr<const rhi::GpuFence>* completion = nullptr)
+    core::SharedPtr<const rhi::GpuFence>* completion = nullptr,
+    std::uint32_t arrayLayer = 0)
 {
     if (completion)
         completion->reset();
-    if (rgba8 == nullptr || width == 0u || height == 0u || bytesPerRow == 0u
-        || rowsPerImage == 0u) {
+    if (rgba8 == nullptr || width == 0u || height == 0u || bytesPerRow == 0u || rowsPerImage == 0u
+        || arrayLayer >= texture.desc().arrayLayerCount) {
         return RendererResult{
             false,
             "RGBA8 texture upload requires explicit RGBA8 pixels and upload metadata",
@@ -105,7 +106,7 @@ inline RendererResult uploadTextureRgba8(rhi::GpuDevice& device,
         return RendererResult{false, "RGBA8 texture upload encoder creation failed"};
     }
 
-    rhi::TextureSubresourceRange range;
+    const rhi::TextureSubresourceRange range{0, 1, arrayLayer, 1, rhi::TextureAspect::Color};
     const auto transitionedToCopy = encoder->transition(
         texture, range, rhi::ResourceState::Undefined, rhi::ResourceState::CopyDst);
     if (!transitionedToCopy.success) {
@@ -125,6 +126,7 @@ inline RendererResult uploadTextureRgba8(rhi::GpuDevice& device,
     uploadDesc.bytesPerRow = bytesPerRow;
     uploadDesc.rowsPerImage = rowsPerImage;
     uploadDesc.subresources = range;
+    uploadDesc.arrayLayer = arrayLayer;
     uploadDesc.pixelData = rgba8;
     uploadDesc.pixelDataSize = static_cast<std::uint32_t>(uploadSizeBytes);
     uploadDesc.backendOwnedStaging = true;

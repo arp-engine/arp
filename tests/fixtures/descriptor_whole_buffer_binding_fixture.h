@@ -39,11 +39,17 @@ public:
             unavailable = limits;
             unavailable.maxUniformBindingBytes = unavailable.maxStorageBindingBytes = 0u;
             assert(Policy::validate(type, 1u, 0u, unavailable) == Failure::LimitsUnavailable);
-            for (const auto version : {0u, 2u, UINT32_MAX}) {
+            for (const auto version : {0u, 3u, UINT32_MAX}) {
                 auto wrong = limits;
                 wrong.contractVersion = version;
                 assert(Policy::validate(type, 1u, 0u, wrong) == Failure::Version);
             }
+            auto coverage = limits;
+            coverage.contractVersion = 2u;
+            assert(Policy::validate(type, 1u, 0u, coverage) == Failure::LimitsUnavailable);
+            coverage.bufferKindCoverageVersion = 1u;
+            coverage.bufferKindMask = Policy::uniformKind | Policy::storageKind;
+            assert(Policy::validate(type, 1u, 0u, coverage) == Failure::None);
         }
         for (const auto type : {Type::SampledTexture,
                  Type::StorageTexture,

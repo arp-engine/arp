@@ -4,11 +4,10 @@
 # consumer's root and miss the engine's bundled 3rd/ dependencies.
 set(ARP_THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/3rd" CACHE PATH "Third-party dependency directory")
 
-if(MINGW AND EXISTS "C:/mingw64/bin/windres.exe")
-    set(CMAKE_RC_COMPILER "C:/mingw64/bin/windres.exe" CACHE FILEPATH "MinGW resource compiler" FORCE)
+if(MINGW AND CMAKE_RC_COMPILER)
     set(
         CMAKE_RC_COMPILE_OBJECT
-        "\"C:/mingw64/bin/windres.exe\" -O coff <DEFINES> <INCLUDES> <FLAGS> <SOURCE> <OBJECT>"
+        "\"${CMAKE_RC_COMPILER}\" -O coff <DEFINES> <INCLUDES> <FLAGS> <SOURCE> <OBJECT>"
     )
 endif()
 

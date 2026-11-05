@@ -387,3 +387,90 @@ def native_iterated_key_owner(n: int) -> int:
     for keys in sources:
         total = total + dictionary[keys[0]]
     return total
+class CallbackBase:
+    def value(self, number: int) -> int:
+        return number + 1
+
+
+class CallbackDerived(CallbackBase):
+    def __init__(self):
+        return
+
+    def value(self, number: int) -> int:
+        return number + 2
+
+
+class CallbackHolder:
+    callback: (int) -> int
+    values: [int]
+
+    def __init__(self, callback: (int) -> int):
+        self.callback = callback
+        self.values = []
+
+
+def checked_callback_invoke(callback: (int) -> int) -> int:
+    var results: [int] = [callback(40), callback(40)]
+    var indexed: {string: int} = {"first": results[0], "second": callback(40)}
+    return indexed["second"]
+
+
+def checked_callback_method(item: CallbackBase) -> int:
+    var holder: CallbackHolder = CallbackHolder(item.value)
+    holder.values.append(holder.callback(40))
+    return holder.values[0]
+
+
+def checked_callback_main() -> int:
+    var item: CallbackDerived = CallbackDerived()
+    return checked_callback_method(item)
+
+
+def checked_callback_closure() -> int:
+    var extra: int = 2
+    def callback_captured_add(number: int) -> int:
+        return number + extra
+    return checked_callback_invoke(callback_captured_add)
+
+
+def checked_callback_export() -> (int) -> int:
+    var extra: int = 2
+    def owned_callback(number: int) -> int:
+        return number + extra
+    return owned_callback
+
+
+def checked_method_export() -> (int) -> int:
+    var item: CallbackDerived = CallbackDerived()
+    return item.value
+
+
+def checked_callback_local_append() -> int:
+    var values: [int] = []
+    values.append(42)
+    return values[0]
+
+
+class AppendEvaluationOrder:
+    state: int
+    values: [int]
+
+    def __init__(self):
+        self.state = 0
+        self.values = []
+
+    def argument(self) -> int:
+        self.state = self.state * 10 + 1
+        return 42
+
+    def receiver(self) -> [int]:
+        self.state = self.state * 10 + 2
+        return self.values
+
+
+def checked_append_order() -> int:
+    var order: AppendEvaluationOrder = AppendEvaluationOrder()
+    order.receiver().append(order.argument())
+    if order.values[0] != 42:
+        raise "append lost value"
+    return order.state

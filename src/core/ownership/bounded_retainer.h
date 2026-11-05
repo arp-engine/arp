@@ -47,10 +47,25 @@ public:
 
     bool retain(const std::shared_ptr<const T>& object)
     {
-        if (!canRetain(object))
+        if (!object)
             return false;
-        if (!contains(object))
-            values_.push_back(object);
+        if (contains(object))
+            return true;
+        if (values_.size() == capacity_)
+            return false;
+        values_.push_back(object);
+        return true;
+    }
+
+    bool retain(std::shared_ptr<const T>&& object)
+    {
+        if (!object)
+            return false;
+        if (contains(object))
+            return true;
+        if (values_.size() == capacity_)
+            return false;
+        values_.push_back(std::move(object));
         return true;
     }
 
@@ -71,7 +86,7 @@ public:
             "Owner projection must expose exact shared owners");
         std::size_t additional = 0u;
         for (std::size_t i = 0u; i < count; ++i) {
-            const auto object = ownerAt(i);
+            const auto& object = ownerAt(i);
             if (!object)
                 return false;
             if (contains(object))

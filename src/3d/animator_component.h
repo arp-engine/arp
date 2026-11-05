@@ -4,7 +4,7 @@
 #include "core/concurrency/callback.h"
 #include "core/memory/cpu_allocator.h"
 #include "reflection/reflection_macros.h"
-#include "resource/resource_manager.h"
+#include "resource/resource_domain.h"
 #include "scene/component.h"
 #include "scene/render_extract.h"
 
@@ -58,6 +58,8 @@ struct AnimatorEvaluationDiagnostic {
 };
 
 struct AnimatorComponentDesc {
+    // Legacy borrowed-Asset adapter: caller owns immutable inputs. New runtime
+    // callers acquire a typed Resource lease, then use bindResource().
     const animation::AnimationClip* clip = nullptr;
     const arp::assets::AnimatedMeshAsset* character = nullptr;
     const animation::AnimatorControllerAsset* controller = nullptr;
@@ -135,7 +137,11 @@ public:
         arp::core::SharedCallback<arp::resource::ResourceManager*()> resourceManagerProvider = {});
     ~AnimatorComponent() override;
 
-    const AnimatorComponentDesc& desc() const { return desc_; }
+    // Borrowed views, valid until the resource owner mutates/closes or rebinds.
+    const AnimatorComponentDesc& desc() const;
+
+    bool bindResource(arp::resource::ResourceLease, arp::core::StringView defaultStateName = {});
+    void clearResourceBinding();
 
     arp::reflection::object editorAuthoringProperties() const override;
     bool applyEditorAuthoringProperties(const arp::reflection::object& value) override;
@@ -156,13 +162,17 @@ public:
         arp::scene::RenderExtractSink& sink) const override;
 
 private:
+    struct ResolvedEditorBinding;
     bool resolveEditorBinding(const AnimatorEditorProperties& properties,
-        arp::core::SharedPtr<const arp::assets::AnimatedMeshAsset>& meshOwner,
-        arp::core::SharedPtr<const animation::AnimatorControllerAsset>& controllerOwner,
+        ResolvedEditorBinding&,
         arp::core::pmr::String& diagnostics) const;
+    bool refreshResourceBinding();
     bool refreshEditorBinding();
-    void installEditorBinding(arp::core::SharedPtr<const arp::assets::AnimatedMeshAsset> meshOwner,
-        arp::core::SharedPtr<const animation::AnimatorControllerAsset> controllerOwner);
+    void installEditorBinding(const ResolvedEditorBinding&, const AnimatorEditorProperties&);
+    void clearBorrowedViews();
+    void installBorrowedViews(const arp::assets::AnimatedMeshAsset*,
+        const animation::AnimatorControllerAsset*,
+        arp::core::StringView);
 
     AnimatorComponentDesc desc_;
     AnimatorEditorProperties editorProperties_;
@@ -171,8 +181,8 @@ private:
     arp::resource::ResourceGeneration boundPrefabGeneration_ = 0u;
     arp::resource::ResourceGeneration boundRuntimeGeneration_ = 0u;
     arp::core::pmr::String boundPrefabResourceId_{&arp::core::defaultCpuMemoryResource()};
-    arp::core::SharedPtr<const arp::assets::AnimatedMeshAsset> meshOwner_;
-    arp::core::SharedPtr<const animation::AnimatorControllerAsset> controllerOwner_;
+    arp::resource::ResourceLease resourceLease_;
+    bool leasedBinding_ = false;
     arp::core::UniquePtr<animation::AnimatorControllerRuntime> animator_;
     arp::core::UniquePtr<animation::SkinnedMeshPlayer> player_;
     arp::core::pmr::String currentStateName_{&arp::core::defaultCpuMemoryResource()};

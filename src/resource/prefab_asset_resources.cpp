@@ -17,6 +17,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <sstream>
 #include <type_traits>
 #include <utility>
@@ -2060,7 +2061,13 @@ ResourceLoadResult PreviewStudioResource::loadInto(
 
 void registerPrefabAssetReflection()
 {
-    arp::reflection::generated::register_prefab_asset_resources_reflection();
+    // The native schema is immutable for this process. Publish it once before
+    // independent package owners read it; repeated registration mutates the
+    // shared property dictionaries and cannot race with deserialization.
+    static std::once_flag registered;
+    std::call_once(registered, [] {
+        arp::reflection::generated::register_prefab_asset_resources_reflection();
+    });
 }
 
 bool PrefabResourceFactory::registerType(arp::reflection::NameView resourceType, Creator creator)
@@ -2101,8 +2108,8 @@ core::UniquePtr<ResourceBase> makeTypedResource(const arp::reflection::object& p
 PrefabResourceFactory& prefabResourceFactory()
 {
     static PrefabResourceFactory factory;
-    static bool initialized = false;
-    if (!initialized) {
+    static std::once_flag initialized;
+    std::call_once(initialized, [&] {
         factory.registerType(ExternalAssetSourceResource::resourceTypeName(),
             makeTypedResource<ExternalAssetSourceResource>);
         factory.registerType(PrefabResource::resourceTypeName(), makeTypedResource<PrefabResource>);
@@ -2142,8 +2149,7 @@ PrefabResourceFactory& prefabResourceFactory()
             PreviewStudioResource::resourceTypeName(), makeTypedResource<PreviewStudioResource>);
         factory.registerType(
             ParticleEffectResource::resourceTypeName(), makeTypedResource<ParticleEffectResource>);
-        initialized = true;
-    }
+    });
     return factory;
 }
 

@@ -40,6 +40,31 @@ void repeated_characters_reuse_one_glyph_entry()
     assert(!first.exposesNativeBackendHandles());
 }
 
+void borrowed_glyph_hits_do_not_copy_long_font_identity()
+{
+    using namespace arp::renderer::ui;
+    GlyphAtlasCache cache({64u, 64u, 1u});
+    auto key = glyphKey('A');
+    key.fontToken = text("font.with.a.long.immutable.resource.identity");
+    cache.beginFrame(1u);
+    const auto inserted = cache.resolveGlyphBorrowed({key, 8u, 12u, 9.0f});
+    assert(inserted.ok() && inserted.uploadScheduled() && !inserted.cacheHit());
+    const auto* entry = &inserted.entry();
+    const auto id = entry->entryId;
+    cache.beginFrame(2u);
+    const auto allocations = arp::core::defaultCpuAllocator().stats().allocationCount;
+    for (unsigned i = 0; i < 100u; ++i) {
+        const auto hit = cache.resolveGlyphBorrowed({key, 8u, 12u, 9.0f});
+        assert(hit.ok() && hit.cacheHit() && !hit.uploadScheduled() && &hit.entry() == entry);
+    }
+    assert(arp::core::defaultCpuAllocator().stats().allocationCount == allocations);
+    const auto owned = cache.resolveGlyph({key, 8u, 12u, 9.0f});
+    assert(owned.ok() && owned.entry().entryId == id && &owned.entry() != entry);
+    key.glyphId = 0u;
+    const auto invalid = cache.resolveGlyphBorrowed({key, 8u, 12u, 9.0f});
+    assert(!invalid.ok() && invalid.diagnostics() == text("UI glyph atlas missing glyph id."));
+}
+
 void glyph_key_includes_font_size_render_mode_and_scale_bucket()
 {
     arp::renderer::ui::GlyphAtlasCache cache({128u, 64u, 1u});
@@ -152,6 +177,7 @@ void single_page_policy_rejects_implicit_page_growth()
 int main()
 {
     repeated_characters_reuse_one_glyph_entry();
+    borrowed_glyph_hits_do_not_copy_long_font_identity();
     glyph_key_includes_font_size_render_mode_and_scale_bucket();
     missing_glyph_and_atlas_full_are_deterministic_failures();
     dynamic_glyph_policy_and_upload_budget_are_explicit();

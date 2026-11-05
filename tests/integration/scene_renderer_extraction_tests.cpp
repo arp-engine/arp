@@ -106,14 +106,8 @@ void assertAnimatorComponentIsTheOnlyAnimationComponent()
     assert(extractorHeader.find("AnimationComponent") == arp::core::pmr::String::npos);
     assert(extractorSource.find("AnimationComponent") == arp::core::pmr::String::npos);
 
-    // The extractor must NOT special-case component types via dynamic_cast or
-    // an is3DComponent() predicate — it dispatches polymorphically through
-    // Component::extract() and routes by typeId contract. AnimatorComponent's
-    // data reaches the queue via the "scene3d.animation" typeId, not via a
-    // direct type reference in the extractor source.
-    assert(extractorSource.find("dynamic_cast") == arp::core::pmr::String::npos);
-    assert(extractorSource.find("is3DComponent") == arp::core::pmr::String::npos);
-    assert(extractorSource.find("AnimatorComponent") == arp::core::pmr::String::npos);
+    // Runtime polymorphic dispatch is verified below with a component type
+    // unknown to the extractor. Source comments can legitimately name types.
     assert(extractorSource.find("scene3d.animation") != arp::core::pmr::String::npos);
     assert(extractorSource.find("scene3d.mesh") != arp::core::pmr::String::npos);
     assert(extractorSource.find("scene3d.terrain") != arp::core::pmr::String::npos);
@@ -121,6 +115,31 @@ void assertAnimatorComponentIsTheOnlyAnimationComponent()
     // Each renderable 3D component must override extract() (self-describing).
     assert(componentsHeader.find("void extract(const arp::scene::RenderExtractContext&")
         != arp::core::pmr::String::npos);
+}
+
+void extracts_animation_from_an_unknown_component_type()
+{
+    class AnimationEmitter final : public Component {
+    public:
+        void extract(const RenderExtractContext& context, RenderExtractSink& sink) const override
+        {
+            const auto desc = animatorDesc();
+            const Scene3DAnimationExtractPayload animation{desc.clip, desc.controller};
+            RenderExtractPayload payload;
+            payload.typeId = "scene3d.animation";
+            payload.data = &animation;
+            sink.accept(context, payload);
+        }
+    };
+
+    Scene scene("animation_contract_dispatch");
+    auto& object = scene.createObject("unknown_animation_component");
+    assert(scene.reparent(object.id(), scene.rootId()).ok());
+    object.addComponent<AnimationEmitter>();
+    const auto result = Scene3DRenderExtractor().extract(scene, snapshotFor(scene));
+    assert(result.ok() && result.queue().animationBindingCount() == 1);
+    assert(result.queue().animations()[0].objectId == object.id());
+    assert(result.queue().animations()[0].clip == animatorDesc().clip);
 }
 
 void extracts_3d_render_queue_from_component_driven_snapshot()
@@ -255,6 +274,7 @@ void reports_missing_terrain_metadata_deterministically()
 int main()
 {
     assertAnimatorComponentIsTheOnlyAnimationComponent();
+    extracts_animation_from_an_unknown_component_type();
     extracts_3d_render_queue_from_component_driven_snapshot();
     skips_disabled_objects_and_components_without_scene_modes();
     reports_missing_mesh_bounds_and_handles_deterministically();

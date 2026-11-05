@@ -1,9 +1,11 @@
 #include "core/memory/cpu_allocator.h"
 #include "scriptvm/aot/aot_v5.h"
 #include "scriptvm/interpreter/vm.h"
+#include "scriptvm/runtime/module_exports.h"
 #include "scriptvm/runtime/value.h"
 
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 
@@ -12,6 +14,32 @@ extern "C" int arp_register_script_aot_package_v5(arp::scriptvm::AotRegistration
 namespace {
 
 const arp::scriptvm::AotPackageDescriptorV5* registeredPackage = nullptr;
+int checkedHostMode = 0;
+int checkedHostCalls = 0;
+
+arp::scriptvm::Value checkedHostFixture(const arp::core::pmr::Vector<arp::scriptvm::Value>&)
+{
+    ++checkedHostCalls;
+    return checkedHostMode == 4 ? arp::scriptvm::makeString(arp::core::pmr::String("wrong result"))
+                                : arp::scriptvm::makeInt(42);
+}
+
+bool describeCheckedHostFixture(void*,
+    const arp::scriptvm::Value& value,
+    arp::scriptvm::ScriptValueMemoryDescriptor& descriptor) noexcept
+{
+    const auto* callable = arp::scriptvm::checkedValuePayload<arp::scriptvm::HostCallable>(value);
+    if (!callable)
+        return false;
+    const auto* target = callable->fn.target<arp::scriptvm::Value (*)(
+        const arp::core::pmr::Vector<arp::scriptvm::Value>&)>();
+    if (!target || *target != &checkedHostFixture)
+        return false;
+    // This fixture owns a function pointer with no captures; its contract
+    // strings use core allocation and are already covered by the quota.
+    descriptor = {callable, sizeof(*callable), false};
+    return true;
+}
 
 struct BoundaryState {
     bool suspended = false;
@@ -301,7 +329,82 @@ int main()
         return 13;
     if (!configureAotOnlyBoundCallV5(instance, &invokeReflectionFixture, nullptr).ok())
         return 16;
+    instance.context->valueMemoryDescriptor = &describeCheckedHostFixture;
     DirectNativeDispatcherV5 dispatcher(std::move(instance));
+    for (const char* name : {"arp-fn:basic/checked_callback_main",
+             "arp-fn:basic/checked_callback_closure",
+             "arp-fn:basic/checked_callback_local_append"}) {
+        error = {};
+        const auto checked = dispatcher.invoke(name, nullptr, 0u, &error);
+        int actual = 0;
+        if (error.code != ScriptDiagnosticCode::None || !tryGetInt(checked, actual) || actual != 42)
+            return 220;
+    }
+    for (const char* name :
+        {"arp-fn:basic/checked_callback_export", "arp-fn:basic/checked_method_export"}) {
+        error = {};
+        const Value callback[] = {dispatcher.invoke(name, nullptr, 0u, &error)};
+        if (error.code != ScriptDiagnosticCode::None)
+            return 224;
+        const auto sameContext =
+            dispatcher.invoke("arp-fn:basic/checked_callback_invoke", callback, 1u, &error);
+        int actual = 0;
+        if (error.code != ScriptDiagnosticCode::None || !tryGetInt(sameContext, actual)
+            || actual != 42)
+            return 225;
+        ScriptAotModuleInstanceV5 foreignInstance;
+        if (!createAotOnlyModuleInstanceV5(
+                registry, registeredPackage->packageIdentity, "basic", foreignInstance)
+                .ok())
+            return 226;
+        DirectNativeDispatcherV5 foreign(std::move(foreignInstance));
+        error = {};
+        (void)foreign.invoke("arp-fn:basic/checked_callback_invoke", callback, 1u, &error);
+        if (error.code != ScriptDiagnosticCode::AotArtifactInvalid)
+            return 227;
+    }
+    HostCallableContract callbackContract;
+    callbackContract.bindingId = "smoke:checked-callback/v1";
+    callbackContract.signatureHash = "sha256:smoke-checked-callback";
+    callbackContract.fixedArity = 1;
+    callbackContract.lifetimeVersion = 1;
+    error = {};
+    const auto appendOrder =
+        dispatcher.invoke("arp-fn:basic/checked_append_order", nullptr, 0u, &error);
+    int appendState = 0;
+    if (error.code != ScriptDiagnosticCode::None || !tryGetInt(appendOrder, appendState)
+        || appendState != 12)
+        return 223;
+    for (int mode = 0; mode < 5; ++mode) {
+        auto contract = callbackContract;
+        if (mode == 1)
+            contract.maySuspend = true;
+        if (mode == 2)
+            contract.bindingId.clear();
+        if (mode == 3)
+            contract.fixedArity = 0;
+        checkedHostMode = mode;
+        checkedHostCalls = 0;
+        const Value callback[] = {Value{HostCallable{&checkedHostFixture, std::move(contract)}}};
+        error = {};
+        const auto checked =
+            dispatcher.invoke("arp-fn:basic/checked_callback_invoke", callback, 1u, &error);
+        int actual = 0;
+        if (mode == 0) {
+            if (error.code != ScriptDiagnosticCode::None || !tryGetInt(checked, actual)
+                || actual != 42 || checkedHostCalls != 3) {
+                std::fprintf(stderr,
+                    "checked host callback mode=%d calls=%d value=%d error=%s\n",
+                    mode,
+                    checkedHostCalls,
+                    actual,
+                    error.message.c_str());
+                return 221;
+            }
+        } else if (error.code != ScriptDiagnosticCode::AotArtifactInvalid
+            || checkedHostCalls != (mode == 4 ? 1 : 0))
+            return 222;
+    }
     const Value aliasArgs[] = {makeInt(1000000)};
     error = {};
     const auto indexedAlias =

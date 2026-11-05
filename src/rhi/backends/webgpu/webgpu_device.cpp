@@ -1035,6 +1035,15 @@ public:
         return report;
     }
 
+    bool timestampQueriesSupported() const override
+    {
+        return webGpuNativeDeviceAvailable() && !webGpuNativeDeviceLost()
+            && rhi::semantics::hasExecutableOptionalNativeFeature(
+                desc_.capabilityContract, rhi::semantics::NativeBackendFeature::TimestampQueries);
+    }
+
+    bool transientAliasingSupported() const override { return false; }
+
     rhi::DeviceCapabilities capabilities() const override
     {
         auto caps =
@@ -1115,8 +1124,7 @@ public:
             && compute.maxStorageBufferBindingSizeBytes != 0u;
         compute.mode =
             complete ? rhi::CapabilityMode::Native : rhi::CapabilityMode::DiagnosticFailure;
-        caps.features.timestampQueries = rhi::semantics::hasExecutableOptionalNativeFeature(
-            desc_.capabilityContract, rhi::semantics::NativeBackendFeature::TimestampQueries);
+        caps.features.timestampQueries = timestampQueriesSupported();
         caps.features.textureCompressionBc = hasFeature(
             desc_.capabilityContract, rhi::semantics::NativeBackendFeature::TextureCompressionBc);
         // R32SampledUpload/1 remains fail-closed until the browser/native

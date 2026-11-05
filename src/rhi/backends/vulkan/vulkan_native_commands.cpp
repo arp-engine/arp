@@ -928,6 +928,7 @@ void VulkanRhiNativeCommandPayload::resolveSubmittedCompletion()
     if (impl_->stagingUploads)
         (void)impl_->stagingUploads->retireCompleted();
     impl_->retainedResources.clear();
+    impl_->retainedResourceReferenceCount = 0u;
     impl_->preparedBindings.clear();
     impl_->indexedPipelines.clear();
     impl_->indexedSnapshots.clear();
@@ -1012,11 +1013,27 @@ bool VulkanRhiNativeCommandPayload::retainIndexedSnapshot(
 }
 
 void VulkanRhiNativeCommandPayload::retainResource(
-    std::shared_ptr<VulkanRhiNativeResourcePayload> payload)
+    const std::shared_ptr<VulkanRhiNativeResourcePayload>& payload)
 {
     if (impl_ && (payload || recordingStorageBound())) {
         (void)retainResources(&payload, 1u);
     }
+}
+
+void VulkanRhiNativeCommandPayload::retainResource(
+    std::shared_ptr<VulkanRhiNativeResourcePayload>&& payload)
+{
+    if (!impl_ || (!payload && !recordingStorageBound()))
+        return;
+    if (const auto* id = resourceRetentionStorageDiagnostic(1u)) {
+        rejectRecordingStorage(id);
+        return;
+    }
+    if (!payload) {
+        rejectRecordingStorage("RHI-VULKAN-COLD-RESOURCE-PAYLOAD-MISSING");
+        return;
+    }
+    impl_->retainResourceVersion(std::move(payload));
 }
 
 const char* VulkanRhiNativeCommandPayload::recordingStorageDiagnostic() const noexcept
@@ -1093,7 +1110,8 @@ const char* VulkanRhiNativeCommandPayload::resourceRetentionStorageDiagnostic(
     if (const auto* id = recordingStorageDiagnostic())
         return id;
     if (impl_ && impl_->recordingStorage
-        && count > impl_->recordingStorage->resourceReferences - impl_->retainedResources.size())
+        && count
+            > impl_->recordingStorage->resourceReferences - impl_->retainedResourceReferenceCount)
         return "RHI-VULKAN-COLD-RESOURCE-REFERENCE-CAPACITY";
     return nullptr;
 }
@@ -1150,7 +1168,7 @@ const char* VulkanRhiNativeCommandPayload::retainResources(
     }
     for (std::size_t i = 0u; i < count; ++i)
         if (payloads[i])
-            impl_->retainedResources.push_back(payloads[i]);
+            impl_->retainResourceVersion(payloads[i]);
     return nullptr;
 }
 
@@ -1295,6 +1313,11 @@ void drainVulkanRhiSubmittedCommandsForShutdown(const VulkanRhiRuntime& runtime)
             return;
     clearReusableFences(runtime);
     clearReusableCommandResources(runtime);
+    runtime.commandDomain().framebufferCache.clearIdle([&](auto& resources) {
+        destroyVulkanRhiNativeRenderPassResources(runtime, resources);
+    });
+    runtime.commandDomain().renderPassCache.clearIdle(runtime.logicalDevice(),
+        functionFrom<PFN_vkDestroyRenderPass>(runtime.getDeviceProcAddr("vkDestroyRenderPass")));
 }
 
 std::uint64_t completedVulkanRhiSubmittedFrameSerial(const VulkanRhiRuntime& runtime)
@@ -1364,8 +1387,7 @@ bool VulkanRhiNativeCommandPayload::flushPendingBarriers(std::pmr::string& diagn
         impl_->pendingDestinationStages = 0;
         return true;
     }
-    auto* cmdPipelineBarrier = functionFrom<PFN_vkCmdPipelineBarrier>(
-        impl_->device.getDeviceProcAddr("vkCmdPipelineBarrier"));
+    auto* cmdPipelineBarrier = impl_->device.commandDispatch().pipelineBarrier;
     if (!cmdPipelineBarrier) {
         diagnostics = "Vulkan RHI native command buffer missing vkCmdPipelineBarrier";
         return false;
@@ -1876,8 +1898,7 @@ bool VulkanRhiNativeCommandPayload::recordBindlessFaultLatchClearPreamble(
         impl_->device.getDeviceProcAddr("vkAllocateCommandBuffers"));
     auto* beginCommandBuffer = functionFrom<PFN_vkBeginCommandBuffer>(
         impl_->device.getDeviceProcAddr("vkBeginCommandBuffer"));
-    auto* cmdPipelineBarrier = functionFrom<PFN_vkCmdPipelineBarrier>(
-        impl_->device.getDeviceProcAddr("vkCmdPipelineBarrier"));
+    auto* cmdPipelineBarrier = impl_->device.commandDispatch().pipelineBarrier;
     auto* fillBuffer =
         functionFrom<PFN_vkCmdFillBuffer>(impl_->device.getDeviceProcAddr("vkCmdFillBuffer"));
     auto* freeCommandBuffers = functionFrom<PFN_vkFreeCommandBuffers>(
@@ -2785,8 +2806,7 @@ bool VulkanRhiNativeCommandPayload::recordComputePipelineBind(
         diagnostics = "Vulkan RHI native compute bind requires a native pipeline payload";
         return false;
     }
-    auto* cmdBindPipeline =
-        functionFrom<PFN_vkCmdBindPipeline>(impl_->device.getDeviceProcAddr("vkCmdBindPipeline"));
+    auto* cmdBindPipeline = impl_->device.commandDispatch().bindPipeline;
     if (!cmdBindPipeline) {
         diagnostics = "Vulkan RHI native command buffer missing vkCmdBindPipeline";
         return false;
@@ -2827,8 +2847,7 @@ bool VulkanRhiNativeCommandPayload::recordComputePushConstants(std::uint32_t off
             "Vulkan RHI native compute push constants require a bound compute pipeline layout";
         return false;
     }
-    auto* cmdPushConstants =
-        functionFrom<PFN_vkCmdPushConstants>(impl_->device.getDeviceProcAddr("vkCmdPushConstants"));
+    auto* cmdPushConstants = impl_->device.commandDispatch().pushConstants;
     if (!cmdPushConstants) {
         diagnostics = "Vulkan RHI native command buffer missing vkCmdPushConstants";
         return false;
@@ -2884,8 +2903,7 @@ bool VulkanRhiNativeCommandPayload::recordDescriptorSetBind(
             : "Vulkan RHI native descriptor bind requires a descriptor set and compute layout";
         return false;
     }
-    auto* cmdBindDescriptorSets = functionFrom<PFN_vkCmdBindDescriptorSets>(
-        impl_->device.getDeviceProcAddr("vkCmdBindDescriptorSets"));
+    auto* cmdBindDescriptorSets = impl_->device.commandDispatch().bindDescriptorSets;
     if (!cmdBindDescriptorSets) {
         diagnostics = "Vulkan RHI native command buffer missing vkCmdBindDescriptorSets";
         return false;
@@ -2898,8 +2916,7 @@ bool VulkanRhiNativeCommandPayload::recordDescriptorSetBind(
         &handle,
         dynamicOffsetCount,
         dynamicOffsets);
-    if (std::getenv("ARP_FORWARD_PLUS_DESCRIPTOR_TRACE") != nullptr && graphicsBind
-        && setIndex == 1u) {
+    if (impl_->device.descriptorTracingEnabled() && graphicsBind && setIndex == 1u) {
         std::cerr << "[vulkan-descriptor-bind-trace] set="
                   << descriptorSet.backendVulkanDescriptorSetHandle() << " setIndex=" << setIndex
                   << " pipelineLayout=" << layout << " descriptorPayload=" << &descriptorSet
@@ -2932,8 +2949,7 @@ bool VulkanRhiNativeCommandPayload::recordDispatch(std::uint32_t groupCountX,
         }
         return true;
     }
-    auto* cmdDispatch =
-        functionFrom<PFN_vkCmdDispatch>(impl_->device.getDeviceProcAddr("vkCmdDispatch"));
+    auto* cmdDispatch = impl_->device.commandDispatch().dispatch;
     if (!cmdDispatch) {
         diagnostics = "Vulkan RHI native command buffer missing vkCmdDispatch";
         return false;
@@ -2975,8 +2991,7 @@ bool VulkanRhiNativeCommandPayload::recordDispatchIndirect(
         diagnostics = "Vulkan RHI native indirect dispatch requires a native args buffer";
         return false;
     }
-    auto* cmdDispatchIndirect = functionFrom<PFN_vkCmdDispatchIndirect>(
-        impl_->device.getDeviceProcAddr("vkCmdDispatchIndirect"));
+    auto* cmdDispatchIndirect = impl_->device.commandDispatch().dispatchIndirect;
     if (!cmdDispatchIndirect) {
         diagnostics =
             "Vulkan RHI native indirect dispatch missing vkCmdDispatchIndirect entrypoint";

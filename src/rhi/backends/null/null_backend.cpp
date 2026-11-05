@@ -296,6 +296,10 @@ public:
         return report;
     }
 
+    bool timestampQueriesSupported() const override { return false; }
+
+    bool transientAliasingSupported() const override { return false; }
+
     DeviceCapabilities capabilities() const override
     {
         auto caps =

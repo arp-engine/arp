@@ -5,6 +5,8 @@
 #include "rhi/backends/vulkan/vulkan_native_commands.h"
 #include "rhi/backends/vulkan/vulkan_query_pool.h"
 #include "rhi/backends/vulkan/vulkan_recording_storage.h"
+#include "rhi/backends/vulkan/vulkan_render_pass_cache.h"
+#include "rhi/backends/vulkan/vulkan_render_pass_resources.h"
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 #include "rhi/backends/vulkan/vulkan_staging_upload_pool.h"
 #include "rhi/frontend/bindless_binding_preparation.h"
@@ -12,6 +14,7 @@
 #include "rhi/frontend/command_retention_storage.h"
 #include "rhi/frontend/transfer_recorded_staging_upload.h"
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <utility>
@@ -24,23 +27,6 @@ class VulkanOriginalCommandCustody;
 class VulkanConformanceClearFrame;
 
 struct VulkanRhiOrdinaryRenderPassContent;
-
-struct VulkanRhiNativeRenderPassResources {
-    VkRenderPass renderPass = VK_NULL_HANDLE;
-    VkFramebuffer framebuffer = VK_NULL_HANDLE;
-    /// Up to 8 color attachments + 1 depth attachment (matches the Null
-    /// render-pass validation limit of 8 color attachments).
-    static constexpr std::uint32_t kMaxImageViews = 9;
-    std::array<VkImageView, kMaxImageViews> imageViews{};
-    std::uint32_t imageViewCount = 0;
-    /// Number of subpasses in this render pass (1 = single-subpass, the
-    /// legacy behavior). Set from desc.subpasses.size() when non-empty.
-    std::uint32_t subpassCount = 1;
-    /// Current subpass index during recording (0-based). Advanced by
-    /// recordNextSubpass; bounds-checked against subpassCount.
-    std::uint32_t currentSubpassIndex = 0;
-    std::shared_ptr<VulkanRhiOrdinaryRenderPassContent> originalContent;
-};
 
 // Observation metadata on the existing prepared native pass. Canonical source
 // identities remain in the original Program; command/operand positions select
@@ -139,6 +125,24 @@ struct VulkanRhiNativeCommandPayload::Impl {
     std::shared_ptr<void> scratchIndexAllocationPayload;
     std::uint32_t scratchIndexCapacity = 0;
     core::pmr::Vector<std::shared_ptr<VulkanRhiNativeResourcePayload>> retainedResources;
+    // Logical references remain charged per recording operation, even when
+    // only one owner of an exact physical resource version needs to be pinned.
+    std::size_t retainedResourceReferenceCount = 0u;
+
+    template <class Owner> void retainResourceVersion(Owner&& owner)
+    {
+        const auto less = [](const auto& lhs, const auto& rhs) {
+            if (lhs.get() != rhs.get())
+                return std::less<const VulkanRhiNativeResourcePayload*>{}(lhs.get(), rhs.get());
+            return lhs.owner_before(rhs);
+        };
+        const auto position =
+            std::lower_bound(retainedResources.begin(), retainedResources.end(), owner, less);
+        if (position == retainedResources.end() || less(owner, *position))
+            retainedResources.insert(position, std::forward<Owner>(owner));
+        ++retainedResourceReferenceCount;
+    }
+
     core::UniquePtr<rhi::common::CommandRetentionStorage> recordingRetention;
     core::UniquePtr<core::MutationJournal> retainedResourceStates;
     // Finished ordinary wrappers alias this exact journal through this payload.

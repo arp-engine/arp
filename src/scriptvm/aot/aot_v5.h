@@ -21,7 +21,9 @@ namespace arp::scriptvm {
 class DirectNativeExecutionContext;
 
 inline constexpr std::uint32_t kAotContractVersion = 5u;
-inline constexpr std::uint32_t kDirectNativeEntryAbiVersion = 1u;
+// ABI 2 carries native callback context identity in closure/method Values.
+// Packages built with the previous carrier layout must be regenerated.
+inline constexpr std::uint32_t kDirectNativeEntryAbiVersion = 2u;
 inline constexpr const char* kAotPackageManifestType = "arp.script.aot-package/v1";
 
 struct AotPackageDescriptorV5;
@@ -485,6 +487,11 @@ struct DirectNativeExecutionContext {
         VmError* error);
     ARP_API bool resolveModuleExport(
         const char* moduleId, const char* exportName, Value& result, VmError* error);
+    ARP_API bool invokeSynchronousHostCallback(const Value& callable,
+        const Value* arguments,
+        std::size_t argumentCount,
+        Value& result,
+        VmError* error);
     ARP_API bool acceptsGeneratorIdentity(const GeneratorIdentityV3& identity) const noexcept;
     ARP_API void prepareSideEffect(DirectNativeResumeStateV5& resume, std::uint32_t pc) noexcept;
     ARP_API void commitSideEffect(DirectNativeResumeStateV5& resume, std::uint32_t pc) noexcept;

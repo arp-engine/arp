@@ -63,6 +63,32 @@ void testVersionAndCanonicalFingerprint()
     require(!validateTypedIr(module).ok(), "pre-v7 module is rejected");
 }
 
+void testCheckedCallbackContract()
+{
+    auto frontend = ScriptFrontend::compile(
+        "def invoke(callback: (int) -> int) -> int:\n    return callback(42)\n",
+        "checked-callback.arp",
+        "checked-callback");
+    require(frontend.ok(), "typed callback frontend succeeds");
+    auto lowered = ScriptLowerer::lower(frontend.module);
+    require(lowered.ok(), "typed callback lowering succeeds");
+    auto& module = lowered.module;
+    auto* call = findOperation(module, TypedIrOpcode::CallValue);
+    require(call && call->checkedCallableSignature.has_value(),
+        "typed value call carries checked signature");
+    const auto fingerprint = module.fingerprint;
+    call->checkedCallableSignature->result.kind = TypedIrType::Bool;
+    require(computeTypedIrFingerprint(module) != fingerprint,
+        "checked signature affects artifact fingerprint");
+    call->checkedCallableSignature->fixedParameterCount = 0;
+    module.fingerprint = computeTypedIrFingerprint(module);
+    require(!validateTypedIr(module).ok(), "checked callback arity mismatch is rejected");
+    call->checkedCallableSignature->fixedParameterCount = 1;
+    call->checkedCallableSignature->result.kind = static_cast<TypedIrType>(255);
+    module.fingerprint = computeTypedIrFingerprint(module);
+    require(!validateTypedIr(module).ok(), "checked callback unknown carrier type is rejected");
+}
+
 void testOpcodeDescriptorContract()
 {
     for (std::uint32_t value = 0u; value < static_cast<std::uint32_t>(TypedIrOpcode::OpcodeCount);
@@ -131,6 +157,7 @@ void testCfgAndDescriptorMismatchReject()
 int main()
 {
     testVersionAndCanonicalFingerprint();
+    testCheckedCallbackContract();
     testOpcodeDescriptorContract();
     testStableFunctionReferences();
     testCfgAndDescriptorMismatchReject();

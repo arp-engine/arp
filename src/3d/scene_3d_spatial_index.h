@@ -57,6 +57,12 @@ public:
     // Extraction order follows stable object/component identity. Persistent
     // emitters may opt in to extraction outside the mesh's view bounds.
     void extractVisible(const scene::Scene& scene, scene::RenderExtractSink& sink) const;
+    // Additional unbounded components have no invented proxy bounds. They must
+    // be sorted, unique, and disjoint from this index; dispatch merges both
+    // streams in the same stable identity order as ordinary scene extraction.
+    void extractVisible(const scene::Scene& scene,
+        scene::RenderExtractSink& sink,
+        core::ArrayView<SceneSpatialOwner> unbounded) const;
 
     const auto& visibleHandles() const { return visible_; }
 

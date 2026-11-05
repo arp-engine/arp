@@ -1992,6 +1992,8 @@ int main()
     assert(expiredShutdownDrain.diagnosticId
         == arp::rhi::semantics::kShutdownDrainDeadlineExpiredDiagnostic);
     const auto caps = device->capabilities();
+    assert(device->timestampQueriesSupported() == caps.features.timestampQueries);
+    assert(device->transientAliasingSupported() == caps.features.transientAliasing);
     assert(caps.backend == Backend::Metal);
     assert(caps.core.graphics);
     assert(caps.core.compute);

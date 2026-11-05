@@ -1,5 +1,7 @@
 #include "scriptvm/aot/aot_v5.h"
 
+#include "scriptvm/runtime/module_exports.h"
+
 #include <cassert>
 #include <cstring>
 #include <limits>
@@ -1318,6 +1320,57 @@ bool DirectNativeExecutionContext::invokeBoundCall(const char* bindingId,
     }
     const ScriptValueSpan resultRoot{&result, 1u};
     return succeeded && memoryRoots.synchronize(&resultRoot, 1u, activeCaptures, error);
+}
+
+bool DirectNativeExecutionContext::invokeSynchronousHostCallback(const Value& callable,
+    const Value* arguments,
+    std::size_t argumentCount,
+    Value& result,
+    VmError* error)
+{
+    const auto fail = [&](ScriptDiagnosticCode code, const char* message) {
+        result = makeNil();
+        if (error != nullptr) {
+            error->code = code;
+            error->message = message;
+        }
+        return false;
+    };
+    const auto* host = checkedValuePayload<HostCallable>(callable);
+    if (host == nullptr || !host->fn || !host->contract.valid() || host->contract.maySuspend
+        || host->contract.fixedArity != static_cast<int>(argumentCount))
+        return fail(ScriptDiagnosticCode::AotArtifactInvalid,
+            "CheckedCallback/1 requires an explicit synchronous host callable contract");
+    if (memoryLimitReached(*this)) {
+        memoryLimitExceeded(*this, error);
+        return false;
+    }
+    if (argumentCount > budget.maxCallArguments || (argumentCount != 0u && arguments == nullptr))
+        return fail(ScriptDiagnosticCode::ResourceLimitExceeded,
+            "CheckedCallback/1 host argument budget is invalid");
+    MemoryRootOwnerScope memoryRoots{*this};
+    const ScriptValueSpan roots[]{{&callable, 1u}, {arguments, argumentCount}};
+    if (!memoryRoots.synchronize(roots, 2u, activeCaptures, error))
+        return false;
+    try {
+        core::pmr::Vector<Value> values{&core::defaultCpuMemoryResource()};
+        if (argumentCount != 0u)
+            values.assign(arguments, arguments + argumentCount);
+        result = host->fn(values);
+    } catch (const std::bad_alloc&) {
+        return fail(ScriptDiagnosticCode::ResourceLimitExceeded,
+            "CheckedCallback/1 host callback exceeded memory budget");
+    } catch (const ScriptHostException& exception) {
+        return fail(ScriptDiagnosticCode::UserRaise, exception.what());
+    } catch (const std::exception& exception) {
+        return fail(ScriptDiagnosticCode::HostError, exception.what());
+    }
+    const ScriptValueSpan resultRoot{&result, 1u};
+    if (!memoryRoots.synchronize(&resultRoot, 1u, activeCaptures, error)) {
+        result = makeNil();
+        return false;
+    }
+    return true;
 }
 
 bool DirectNativeExecutionContext::resolveModuleExport(

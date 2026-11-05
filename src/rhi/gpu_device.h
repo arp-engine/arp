@@ -463,6 +463,21 @@ public:
         const std::array<std::shared_ptr<core::CpuMemoryQuota>, 3u>&) const;
     virtual Backend backend() const = 0;
     virtual DeviceCapabilities capabilities() const = 0;
+
+    // Scalar projections of the current capability facts. These must agree
+    // with capabilities(), including native availability/revocation, without
+    // requiring callers to construct diagnostic strings and fallback plans.
+    // Custom devices retain the full-snapshot implementation by default.
+    virtual bool timestampQueriesSupported() const
+    {
+        return capabilities().features.timestampQueries;
+    }
+
+    virtual bool transientAliasingSupported() const
+    {
+        return capabilities().features.transientAliasing;
+    }
+
     virtual MemoryStats memoryStats() const = 0;
 
     // AllocatorBackingObservation/1. Cold diagnostic, externally quiescent

@@ -1,4 +1,5 @@
 #include "fixtures/capability_override_device.h"
+#include "fixtures/generated_shader_package_fixture.h"
 #include "fixtures/submission_outcome_queue.h"
 #include "renderer/render_graph/compiled_frame_graph.h"
 #include "renderer/render_graph/frame_graph_resource_pool.h"
@@ -538,11 +539,13 @@ void test_null_smoke_still_passes()
     assert(device);
 
     NullHiddenFrameSmokeRunner runner(*device);
+    const auto shaderPackage = arp::rhi::test::GeneratedShaderPackageFixture::nullHiddenFrame();
     const auto report = runner.run({
         "Phase4Smoke",
         {320, 180},
         TextureFormat::Bgra8Unorm,
         2u,
+        &shaderPackage,
     });
 
     if (!report.success) {

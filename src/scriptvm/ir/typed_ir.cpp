@@ -739,6 +739,10 @@ core::pmr::String computeTypedIrFingerprint(const TypedIrModule& module)
     }
     for (const auto& schema : module.scriptClassSchemas) {
         hashString(hash, schema.className);
+        if (!schema.baseClassName.empty()) {
+            hashString(hash, "script-base");
+            hashString(hash, schema.baseClassName);
+        }
         hashStringVector(hash, schema.fields);
         for (const auto& method : schema.methods) {
             hashString(hash, method.first);
@@ -798,6 +802,10 @@ core::pmr::String computeTypedIrFingerprint(const TypedIrModule& module)
                 hashString(hash, operation.callableBindingId);
                 hashString(hash, operation.closureTargetFunctionId);
                 hashInt(hash, operation.closureCaptureCount);
+                if (operation.checkedCallableSignature) {
+                    hashString(hash, "CheckedCallback/1");
+                    hashSignature(hash, *operation.checkedCallableSignature);
+                }
                 hashInt(hash, operation.delegatedGeneratorRange ? 1 : 0);
                 hashInt(hash, operation.effectFlags);
             }
@@ -896,6 +904,19 @@ ScriptResult validateTypedIr(const TypedIrModule& module)
         if (schema.className.empty())
             return invalid(core::pmr::String(
                 "typed IR script class schema has no name", &core::defaultCpuMemoryResource()));
+        auto base = schema.baseClassName;
+        for (std::size_t depth = 0; !base.empty(); ++depth) {
+            const auto parent = std::find_if(module.scriptClassSchemas.begin(),
+                module.scriptClassSchemas.end(),
+                [&](const auto& candidate) {
+                    return candidate.className == base;
+                });
+            if (depth >= module.scriptClassSchemas.size()
+                || parent == module.scriptClassSchemas.end())
+                return invalid(core::pmr::String("typed IR script class base graph is invalid",
+                    &core::defaultCpuMemoryResource()));
+            base = parent->baseClassName;
+        }
         for (std::size_t other = index + 1; other < module.scriptClassSchemas.size(); ++other) {
             if (schema.className == module.scriptClassSchemas[other].className)
                 return invalid(
@@ -1257,6 +1278,25 @@ ScriptResult validateTypedIr(const TypedIrModule& module)
                         diagnostic += operation.callableBindingId;
                         return invalid(std::move(diagnostic));
                     }
+                }
+                if (operation.checkedCallableSignature) {
+                    const auto& signature = *operation.checkedCallableSignature;
+                    const auto validType = [](const TypedIrTypeRef& type) {
+                        return type.kind <= TypedIrType::Class
+                            && (type.kind == TypedIrType::Class ? !type.className.empty()
+                                                                : type.className.empty());
+                    };
+                    if (operation.opcode != TypedIrOpcode::CallValue
+                        || !operation.callableBindingId.empty()
+                        || !operation.closureTargetFunctionId.empty() || signature.variadic
+                        || signature.fixedParameterCount != operation.b
+                        || !validType(signature.result)
+                        || !std::all_of(
+                            signature.parameters.begin(), signature.parameters.end(), validType)
+                        || static_cast<int>(signature.parameters.size()) != operation.b)
+                        return invalid(
+                            core::pmr::String("typed IR checked callback contract is invalid",
+                                &core::defaultCpuMemoryResource()));
                 }
                 if (!operation.closureTargetFunctionId.empty() || operation.closureCaptureCount >= 0
                     || operation.closureCaptureCount == kScriptMethodProvenanceCaptureCount) {
@@ -1741,7 +1781,8 @@ void annotateTypedIrClosureCallProvenance(TypedIrModule& module,
                 valid = false;
             for (int index = 0; valid && index < operation.b; ++index)
                 valid = popUnknown();
-            if (valid && callee.known()) {
+            if (valid && callee.known()
+                && !(callee.scriptMethod && operation.checkedCallableSignature)) {
                 const auto& target =
                     module.functions[static_cast<std::size_t>(callee.functionIndex)];
                 if (callee.scriptMethod
@@ -1749,6 +1790,7 @@ void annotateTypedIrClosureCallProvenance(TypedIrModule& module,
                         : (target.captureCount == callee.captureCount
                               && target.parameterCount == operation.b)) {
                     operation.closureTargetFunctionId = target.id;
+                    operation.checkedCallableSignature.reset();
                     operation.closureCaptureCount = callee.scriptMethod
                         ? kScriptMethodProvenanceCaptureCount
                         : callee.captureCount;

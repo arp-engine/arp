@@ -776,6 +776,12 @@ void strictContractRejectsLegacyAndIncompleteArtifacts()
     auto package = validPackage();
     assert(validateAotPackageV5(package, currentAotPlatform()).ok());
 
+    auto legacyCarrier = package.modules[0];
+    legacyCarrier.entryAbiVersion = kDirectNativeEntryAbiVersion - 1u;
+    const auto legacyCarrierResult = validateAotModuleV5(legacyCarrier, currentAotPlatform());
+    assert(legacyCarrierResult.failed());
+    assert(legacyCarrierResult.diagnostic().code == ScriptDiagnosticCode::AotVersionMismatch);
+
     auto legacy = package;
     legacy.contractVersion = 4u;
     const auto legacyResult = validateAotPackageV5(legacy, currentAotPlatform());
@@ -1557,8 +1563,14 @@ void unsupportedShapeFailsAtBuildTime()
         arp::core::pmr::String("unsupported.arp", &arp::core::defaultCpuMemoryResource()),
         arp::core::pmr::String("unsupported", &arp::core::defaultCpuMemoryResource()));
     assert(frontend.ok());
-    const auto lowered = ScriptLowerer::lower(frontend.module);
+    auto lowered = ScriptLowerer::lower(frontend.module);
     assert(lowered.ok());
+    assert(generateDirectNativeModuleV5(lowered.module, codegenOptions()).ok());
+    for (auto& function : lowered.module.functions)
+        for (auto& block : function.blocks)
+            for (auto& operation : block.operations)
+                operation.checkedCallableSignature.reset();
+    lowered.module.fingerprint = computeTypedIrFingerprint(lowered.module);
     const auto generated = generateDirectNativeModuleV5(lowered.module, codegenOptions());
     assert(!generated.ok());
     assert(generated.error.code == ScriptDiagnosticCode::AotArtifactInvalid);

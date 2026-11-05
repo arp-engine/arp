@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <memory_resource>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -341,6 +342,15 @@ public:
     bool lastExecutionSubmitted() const noexcept { return lastExecutionSubmitted_; }
 
     void reset();
+    // Ordinary per-frame authoring only. Retire graph-owned GPU resources
+    // through the existing completion-gated pool, release every import and
+    // declaration, and retain CPU vector capacity for the next frame. All
+    // prior handles/builders/callbacks become invalid. Original provenance
+    // domains require their own lifecycle and reject this entry unchanged.
+    void resetForNextFrame();
+    // CPU storage hints only; does not create graph resources, declarations or
+    // execution authority, and does not change any GPU/retention budget.
+    void reserveBuildStorage(std::size_t textures, std::size_t buffers, std::size_t passes);
 
     /// Transient resource pool access (for diagnostics and testing).
     /// The pool caches GpuTexture objects across frames, keyed by TextureDesc
@@ -384,6 +394,7 @@ private:
     friend class PassBuilder;
     friend class SubgraphBuilder;
     friend class FrameGraphCompiler;
+    friend class FrameGraphCompileCache;
     friend class FrameGraphExecutor;
 
     friend class OriginalFrameGraphExecution;
@@ -604,10 +615,21 @@ private:
     FrameGraphAliasedResourceLayout transientAliasedLayout_;
     std::pmr::vector<std::uint32_t> transientAliasedTextureHandles_;
     std::pmr::vector<TextureRecord> textures_;
+    // Borrowed object identity -> stable graph handle. Imported references
+    // retain these objects across reset(), even when owned records disappear.
+    // Contiguous sorted storage avoids per-import hash-node allocations.
+    core::pmr::Vector<std::pair<const rhi::GpuTexture*, TextureHandle>> importedTextureIndex_;
     std::pmr::vector<arp::core::UniquePtr<rhi::GpuTextureView>> subpassInputViews_;
     std::pmr::vector<BufferRecord> buffers_;
+    core::pmr::Vector<std::pair<const rhi::GpuBuffer*, BufferHandle>> importedBufferIndex_;
     rhi::CommandEncoderDesc commandEncoderDesc_{"FrameGraph"};
     std::pmr::vector<PassRecord> passes_;
+    core::pmr::Vector<PassRecord> reusablePassStorage_;
+    void resetImpl(bool reusePassStorage);
+
+    // Ordinary execution diagnostics own their text until reset. Explicit
+    // original/retirement domains retain their existing quota path.
+    core::UniquePtr<std::pmr::unsynchronized_pool_resource> traceTextMemory_;
     std::pmr::vector<std::pmr::string> executionTrace_;
     std::pmr::vector<ResourceTraceRecord> resourceTrace_;
     std::pmr::vector<PassTraceRecord> passTrace_;

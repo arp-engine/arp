@@ -465,7 +465,7 @@ endif()
 
 if(SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
     set(arp_contract_shader_outputs)
-    foreach(module IN ITEMS rhi_push_contract rhi_pipeline_contract null_hidden_frame_smoke)
+    foreach(module IN ITEMS rhi_push_contract rhi_pipeline_contract null_hidden_frame_smoke webgpu_rhi)
         foreach(extension IN ITEMS slang spv metal wgsl reflection.yaml artifact-set.yaml)
             list(APPEND arp_contract_shader_outputs "${CMAKE_BINARY_DIR}/${module}.${extension}")
         endforeach()
@@ -475,7 +475,8 @@ if(SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
             --output "${CMAKE_BINARY_DIR}" --slangc "${SLANGC_EXECUTABLE}"
             --spirv-reflect "${SPIRV_REFLECT_EXECUTABLE}"
         DEPENDS tests/fixtures/compile_shader_contract_fixtures.py tests/fixtures/rhi_push_contract.slang
-            tests/fixtures/null_hidden_frame_smoke.slang scripts/compile_shaders.py scripts/shader_bindings_codegen.py
+            tests/fixtures/null_hidden_frame_smoke.slang tests/fixtures/webgpu_rhi.slang
+            scripts/compile_shaders.py scripts/shader_bindings_codegen.py
         VERBATIM)
     add_custom_target(arp_generated_contract_shader_fixtures DEPENDS ${arp_contract_shader_outputs})
     foreach(target IN ITEMS arp_build_a_queen arp_survivors)
@@ -486,7 +487,8 @@ if(SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
     foreach(target IN ITEMS arp_rhi_null_hidden_frame_smoke_tests arp_allocator_backing_tests arp_rhi_pipeline_contract_tests
         arp_rhi_command_contract_tests arp_rhi_dynamic_viewport_scissor_contract_tests
         arp_rhi_depth_bias_clamp_contract_tests arp_rhi_webgl_profile_contract_tests arp_render_graph_tests
-        arp_rhi_cache_budget_tests arp_rhi_bindless_contract_tests)
+        arp_render_graph_rhi_execution_tests
+        arp_rhi_cache_budget_tests arp_rhi_bindless_contract_tests arp_rhi_webgpu_device_contract_tests)
         if(TARGET ${target})
             add_dependencies(${target} arp_generated_contract_shader_fixtures)
             if(EMSCRIPTEN)
@@ -494,6 +496,10 @@ if(SLANGC_EXECUTABLE AND SPIRV_REFLECT_EXECUTABLE)
                     get_filename_component(name "${output}" NAME)
                     target_link_options(${target} PRIVATE "SHELL:--preload-file \"${output}@/${name}\"")
                 endforeach()
+            elseif(TEST ${target})
+                # Publications live at the top-level build root even when
+                # ARP is embedded through add_subdirectory().
+                set_tests_properties(${target} PROPERTIES WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
             endif()
         endif()
     endforeach()
@@ -550,6 +556,7 @@ endif()
 foreach(source IN ITEMS tests/contract/ui_document_source_tests.cpp
     tests/contract/ui_document_input_tests.cpp
     tests/integration/ui_text_layout_cache_tests.cpp
+    tests/integration/ui_glyph_atlas_cache_tests.cpp
     tests/integration/ui_atlas_runtime_cache_tests.cpp
     tests/integration/ui_resource_recovery_plan_tests.cpp
     tests/contract/ui_text_shaping_contract_tests.cpp
@@ -575,6 +582,10 @@ foreach(source IN ITEMS tests/contract/ui_document_source_tests.cpp
     set_tests_properties(${target} PROPERTIES TIMEOUT 60 LABELS "ui;io;resource")
 endforeach()
 set_tests_properties(arp_scene_ui_document_component_tests PROPERTIES LABELS "ui;io;scene")
+if(NOT EMSCRIPTEN)
+    set_tests_properties(arp_ui_atlas_runtime_cache_tests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
 
 if(NOT EMSCRIPTEN)
     add_executable(arp_ui_atlas_metadata_resource_tests
@@ -715,7 +726,11 @@ foreach(target IN ITEMS arp_scene_2d_resource_tests arp_ui_bitmap_font_resource_
 endforeach()
 
 foreach(source IN ITEMS
+    tests/contract/animator_resource_binding_tests.cpp
+    tests/contract/package_resource_preparation_tests.cpp
+    tests/contract/package_domain_registration_tests.cpp
     tests/contract/resource_async_file_service_contract_tests.cpp
+    tests/contract/resource_domain_tests.cpp
     tests/integration/resource_graph_executor_tests.cpp
     tests/contract/resource_staged_source_tests.cpp
     tests/contract/resource_graph_admission_tests.cpp
@@ -746,6 +761,15 @@ foreach(source IN ITEMS
         endif()
     endif()
 endforeach()
+
+add_test(NAME arp_animator_resource_binding_smoke COMMAND arp_animator_resource_binding_tests --smoke)
+set_tests_properties(arp_animator_resource_binding_smoke PROPERTIES TIMEOUT 60 LABELS "resource;animation;smoke")
+
+add_test(NAME arp_package_resource_preparation_smoke COMMAND arp_package_resource_preparation_tests --smoke)
+set_tests_properties(arp_package_resource_preparation_smoke PROPERTIES TIMEOUT 60 LABELS "resource;package;smoke")
+
+add_test(NAME arp_package_domain_registration_smoke COMMAND arp_package_domain_registration_tests --smoke)
+set_tests_properties(arp_package_domain_registration_smoke PROPERTIES TIMEOUT 60 LABELS "resource;package;smoke")
 
 add_test(NAME arp_resource_manager_owner_admission_tests
     COMMAND arp_resource_graph_admission_tests --manager)

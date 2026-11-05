@@ -491,6 +491,20 @@ public:
             diagnostic);
     }
 
+    bool timestampQueriesSupported() const override
+    {
+        return desc_.runtime && !desc_.runtime->coreQueueCapabilityDiagnostic()
+            && desc_.runtime->timestampQueriesEnabled();
+    }
+
+    bool transientAliasingSupported() const override
+    {
+        return desc_.runtime && !desc_.runtime->coreQueueCapabilityDiagnostic()
+            && !heapPlacement_.admissionDiagnostic()
+            && rhi::semantics::hasExecutableNativeFeature(desc_.capabilityContract,
+                rhi::semantics::NativeBackendFeature::ExplicitMemoryControl);
+    }
+
     rhi::DeviceCapabilities capabilities() const override
     {
         auto caps =
@@ -599,7 +613,7 @@ public:
             compute.mode =
                 complete ? rhi::CapabilityMode::Native : rhi::CapabilityMode::DiagnosticFailure;
         }
-        caps.features.timestampQueries = desc_.runtime && desc_.runtime->timestampQueriesEnabled();
+        caps.features.timestampQueries = timestampQueriesSupported();
         // The whole RHI BC capability is optional in Vulkan. Publish it only
         // after querying every BC format exposed by this RHI (BC1, BC3, and
         // both BC7 color spaces) for sampled + transfer-destination usage.

@@ -98,18 +98,17 @@ const rhi::DescriptorBindingDesc* findBinding(
 }
 
 rhi::ValidationResult validateRegisteredDescriptorViewShape(
-    const std::shared_ptr<VulkanRhiResourceRegistry>& registry,
-    rhi::GpuResourceId id,
+    const VulkanRhiResourceRegistry::DescriptorResource& registered,
     rhi::DescriptorResourceKind kind,
     rhi::DescriptorType type,
     bool dimensionConstrained,
     rhi::TextureViewDimension dimension,
     bool depthTexture)
 {
-    const auto resource = registry ? registry->payload(id) : nullptr;
+    const auto& resource = registered.resource;
     if (!resource)
         return {false, "RHI-DESCRIPTOR-RESOURCE-NOT-LIVE: Vulkan resource is unknown"};
-    if (type == rhi::DescriptorType::StorageBuffer && registry->bufferGpuWritesSealed(id))
+    if (type == rhi::DescriptorType::StorageBuffer && registered.bufferGpuWritesSealed)
         return {false, "RHI-BUFFER-GPU-WRITES-SEALED"};
     if (type != rhi::DescriptorType::SampledTexture && type != rhi::DescriptorType::StorageTexture
         && type != rhi::DescriptorType::InputAttachment)
@@ -117,7 +116,7 @@ rhi::ValidationResult validateRegisteredDescriptorViewShape(
     if (kind != rhi::DescriptorResourceKind::TextureView
         || !resource->backendVulkanTextureViewDescAvailable())
         return {false, "Vulkan RHI descriptor requires a texture view payload"};
-    const auto parent = rhi::validateDescriptorTextureParent(registry->textureViewParentIsLive(id));
+    const auto parent = rhi::validateDescriptorTextureParent(registered.textureViewParentLive);
     if (!parent.success)
         return parent;
     const auto* originalView = resource->backendVulkanOriginalTextureViewDesc();
@@ -146,11 +145,12 @@ rhi::ValidationResult validateRegisteredDescriptorView(
     rhi::TextureViewDimension dimension,
     bool depthTexture)
 {
-    const auto resource = registry ? registry->payload(id) : nullptr;
-    if (resource && resource->backendVulkanOriginalContentExclusive())
+    const auto registered = registry ? registry->descriptorResource(id, type)
+                                     : VulkanRhiResourceRegistry::DescriptorResource{};
+    if (registered.resource && registered.resource->backendVulkanOriginalContentExclusive())
         return {false, "RHI-TEXTURE-CONTENT-EXCLUSIVE-USE"};
     return validateRegisteredDescriptorViewShape(
-        registry, id, kind, type, dimensionConstrained, dimension, depthTexture);
+        registered, kind, type, dimensionConstrained, dimension, depthTexture);
 }
 
 struct VulkanCompletedTexturePublication {
@@ -292,7 +292,7 @@ public:
         std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry,
         std::shared_ptr<rhi::semantics::DirectObjectBudgetLease> generationBudget)
         : allocation_(std::move(allocation)), layout_(std::move(layout)),
-          arenaGeneration_(arenaGeneration.ticket()),
+          arenaGeneration_(arenaGeneration.observe()),
           nativePayload_(core::makeShared<VulkanDescriptorStorage>(
               std::move(nativePayload), nativeResources.runtime(), allocation_.descriptorCapacity)),
           nativeResources_(std::move(nativeResources)),
@@ -999,18 +999,25 @@ public:
             return {false,
                 "RHI-DESCRIPTOR-ALLOCATION-STALE: Vulkan RHI descriptor set allocation is stale"};
         }
-        if (!hasWrittenBinding(binding)) {
+        const auto* desc = findBinding(layout_, binding);
+        if (!desc) {
             return {false, "Vulkan RHI descriptor binding is not written"};
         }
-        const auto* desc = findBinding(layout_, binding);
+        const auto offset = rhi::descriptorElementIndex(layout_, binding, 0u);
+        bool written = false;
         for (std::uint32_t element = 0u; element < desc->arrayCount; ++element) {
-            if (!hasWrittenBindingElement(binding, element))
+            if (!written_[offset + element])
                 continue;
-            const auto validation = validateBindingElement(binding, element);
+            written = true;
+            const auto validation = originalSynchronous_
+                ? validateBindingElement(binding, element)
+                : validateCurrentBindingElement(binding, element);
             if (!validation.success)
                 return validation;
         }
-        return {true, {}};
+        return written
+            ? rhi::ValidationResult{true, {}}
+            : rhi::ValidationResult{false, "Vulkan RHI descriptor binding is not written"};
     }
 
     rhi::ValidationResult validateBindingElement(
@@ -1027,9 +1034,17 @@ public:
             return {false,
                 "RHI-DESCRIPTOR-ALLOCATION-STALE: Vulkan descriptor array validation after arena "
                 "reset"};
-        if (!hasWrittenBindingElement(binding, element))
-            return {false, "Vulkan descriptor array element is not written"};
+        return validateCurrentBindingElement(binding, element);
+    }
+
+    // Caller has checked the arena once for this synchronous consumption.
+    // Resource/content validity is deliberately checked again on every call.
+    rhi::ValidationResult validateCurrentBindingElement(
+        std::uint32_t binding, std::uint32_t element) const
+    {
         const auto index = rhi::descriptorElementIndex(layout_, binding, element);
+        if (index == UINT32_MAX || index >= written_.size() || !written_[index])
+            return {false, "Vulkan descriptor array element is not written"};
         const auto& publication = nativePayload_->completedTextures[index];
         if (publication.source)
             return validateCompletedTexture(
@@ -1051,7 +1066,7 @@ public:
 
     core::LifetimeEpoch::Ticket allocationEpochTicket() const noexcept override
     {
-        return arenaGeneration_;
+        return arenaGeneration_.ticket();
     }
 
     std::optional<rhi::DescriptorBindingWrite> successfulBindingWrite(
@@ -1195,8 +1210,9 @@ private:
         const auto view = vulkanRhiNativePayload(*publication.source->originalObject());
         const auto parent =
             vulkanRhiNativePayload(*publication.source->originalParentLease()->originalObject());
-        const auto registered =
-            resourceRegistry_ ? resourceRegistry_->payload(write.resource) : nullptr;
+        const auto registered = resourceRegistry_
+            ? resourceRegistry_->descriptorResource(write.resource, binding.type)
+            : VulkanRhiResourceRegistry::DescriptorResource{};
         if (!runtime || !runtime->valid() || runtime->syntheticRuntime()
             || (!cell && write.type != rhi::DescriptorType::SampledTexture)
             || binding.type != write.type
@@ -1207,7 +1223,7 @@ private:
                         : rhi::ResourceState::ShaderRead)
             || binding.depthTexture != bool(publication.depthContent)
             || write.resource != publication.source->resource() || !view || !parent
-            || !core::SharedOwnerProjection::sameOwner(view, registered)
+            || !core::SharedOwnerProjection::sameOwner(view, registered.resource)
             || !core::SharedOwnerProjection::sameOwner(
                 parent, view->backendVulkanTextureViewParentPayload())
             || !view->backendVulkanOriginalContentExclusive()
@@ -1228,8 +1244,7 @@ private:
             if ((publication.colorFormatFeatures & required) != required)
                 return {false, "RHI-VULKAN-COMPLETED-HDR-FORMAT-FEATURES"};
         }
-        return validateRegisteredDescriptorViewShape(resourceRegistry_,
-            write.resource,
+        return validateRegisteredDescriptorViewShape(registered,
             write.resourceKind,
             binding.type,
             binding.textureViewDimensionConstrained,
@@ -1410,7 +1425,7 @@ private:
 
     rhi::DescriptorSetAllocation allocation_;
     rhi::DescriptorLayoutDesc layout_;
-    core::LifetimeEpoch::Ticket arenaGeneration_;
+    core::LifetimeEpoch::Observation arenaGeneration_;
     std::shared_ptr<VulkanDescriptorStorage> nativePayload_;
     VulkanRhiNativeResourceAllocator nativeResources_;
     std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry_;
@@ -1427,7 +1442,7 @@ public:
         std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry,
         std::shared_ptr<rhi::semantics::DirectObjectBudgetLease> generationBudget)
         : allocation_(std::move(allocation)), desc_(std::move(desc)),
-          arenaGeneration_(arenaGeneration.ticket()),
+          arenaGeneration_(arenaGeneration.observe()),
           written_(desc_.capacity, false, &core::defaultCpuMemoryResource()),
           resourceRegistry_(std::move(resourceRegistry)),
           writes_(desc_.capacity, &core::defaultCpuMemoryResource()),
@@ -1503,7 +1518,7 @@ public:
 
     core::LifetimeEpoch::Ticket allocationEpochTicket() const noexcept override
     {
-        return arenaGeneration_;
+        return arenaGeneration_.ticket();
     }
 
     std::optional<rhi::DescriptorTableWrite> successfulDescriptorWrite(
@@ -1530,7 +1545,7 @@ private:
     }
 
     rhi::DescriptorTableDesc desc_;
-    core::LifetimeEpoch::Ticket arenaGeneration_;
+    core::LifetimeEpoch::Observation arenaGeneration_;
     core::pmr::Vector<bool> written_;
     std::shared_ptr<VulkanRhiResourceRegistry> resourceRegistry_;
     core::pmr::Vector<rhi::DescriptorTableWrite> writes_;

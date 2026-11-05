@@ -1,6 +1,12 @@
 # RHI-owned tests, independent of cloud/example target registration.
 include("${CMAKE_CURRENT_LIST_DIR}/ArpAllocatorBacking.cmake")
 if(TARGET arp_rhi_vulkan AND NOT APPLE AND NOT EMSCRIPTEN)
+    add_executable(arp_rhi_vulkan_render_pass_cache_tests tests/unit/vulkan_render_pass_cache_tests.cpp)
+    target_link_libraries(arp_rhi_vulkan_render_pass_cache_tests PRIVATE arp_core arp_vulkan_headers)
+    target_include_directories(arp_rhi_vulkan_render_pass_cache_tests PRIVATE src)
+    target_compile_options(arp_rhi_vulkan_render_pass_cache_tests PRIVATE -UNDEBUG)
+    arp_add_mingw_static_runtime(arp_rhi_vulkan_render_pass_cache_tests)
+    add_test(NAME arp_rhi_vulkan_render_pass_cache_tests COMMAND arp_rhi_vulkan_render_pass_cache_tests)
     target_sources(arp_rhi_vulkan PRIVATE
         src/rhi/backends/vulkan/vulkan_original_graphics_pipeline.cpp
         src/rhi/backends/vulkan/vulkan_original_compute_pipeline.cpp

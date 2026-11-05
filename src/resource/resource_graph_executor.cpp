@@ -1,6 +1,7 @@
 #include "resource/resource_graph_executor.h"
 
 #include "core/io/file_read_contract.h"
+#include "resource/resource_candidate_preparation.h"
 #include "resource/resource_graph_plan.h"
 #include "resource/resource_source_io.h"
 
@@ -18,6 +19,9 @@ struct ExecutionState {
     std::thread::id ownerThread;
     core::io::FileReadRequest locationCheck;
     core::runtime::CompletionQueue* completionQueue = nullptr;
+    core::runtime::WorkService* preparationWorkers = nullptr;
+    ResourceCandidatePreparation* preparer = nullptr;
+    ResourceCandidatePreparationResult prepared;
     ResourceGraphExecutionRequest request;
     ResourceGraphExecutionCompletion completion;
     ResourceGraphExecutionResult result;
@@ -249,8 +253,83 @@ void processNode(void* userData) noexcept
     });
 }
 
+core::runtime::WorkStatus prepareCandidate(void* context)
+{
+    auto& state = *static_cast<ExecutionState*>(context);
+    try {
+        auto decodedBudget = state.request.budget.maxDecodedBytes;
+        if (state.request.graph.context.maxDecodedBytes)
+            decodedBudget = std::min(decodedBudget, state.request.graph.context.maxDecodedBytes);
+        state.prepared = state.preparer->prepareResourceCandidate(
+            {state.sources, decodedBudget, state.request.cancellation});
+        return state.prepared.success ? core::runtime::WorkStatus::Completed
+                                      : core::runtime::WorkStatus::Failed;
+    } catch (...) {
+        state.prepared.success = false;
+        state.prepared.diagnosticId = "RESOURCE-CANDIDATE-PREPARATION-EXCEPTION";
+        return core::runtime::WorkStatus::Failed;
+    }
+}
+
+void candidatePrepared(void* context, core::runtime::WorkResult completed) noexcept
+{
+    auto* state = static_cast<ExecutionState*>(context);
+    bool process = false;
+    dispatchGuard(state, [&] {
+        if (completed.status != core::runtime::WorkStatus::Completed || !state->prepared.success) {
+            state->result.fileStatus = completed.status == core::runtime::WorkStatus::Cancelled
+                ? core::io::FileIoStatus::Cancelled
+                : core::io::FileIoStatus::InvalidRequest;
+            state->result.diagnosticId = state->prepared.diagnosticId
+                ? state->prepared.diagnosticId
+                : "RESOURCE-CANDIDATE-PREPARATION-FAILED";
+            state->result.resource = failure(state->request.graph, state->result.diagnosticId);
+            if (!state->prepared.diagnostics.empty())
+                state->result.resource.diagnostics = std::move(state->prepared.diagnostics);
+            finishFromDispatch(state);
+            return;
+        }
+        const auto& candidate =
+            state->request.graph.nodes[state->order[state->orderIndex]].resource;
+        auto decodedBudget = state->request.budget.maxDecodedBytes;
+        if (state->request.graph.context.maxDecodedBytes)
+            decodedBudget = std::min(decodedBudget, state->request.graph.context.maxDecodedBytes);
+        if (candidate->processedByteCount() > decodedBudget) {
+            state->result.diagnosticId = "RESOURCE-CANDIDATE-DECODE-BUDGET";
+            state->result.resource = failure(state->request.graph, state->result.diagnosticId);
+            finishFromDispatch(state);
+            return;
+        }
+        process = true;
+    });
+    if (process)
+        processNode(state);
+}
+
 ResourceGraphSubmitStatus submitNodeProcessing(ExecutionState* state)
 {
+    state->preparer = dynamic_cast<ResourceCandidatePreparation*>(
+        state->request.graph.nodes[state->order[state->orderIndex]].resource.get());
+    if (state->preparer) {
+        if (!state->preparationWorkers) {
+            state->result.diagnosticId = "RESOURCE-CANDIDATE-WORKERS-REQUIRED";
+            return ResourceGraphSubmitStatus::InvalidRequest;
+        }
+        state->prepared = {};
+        const auto submitted = state->preparationWorkers->submit(
+            {prepareCandidate, state, candidatePrepared, state, state->request.cancellation});
+        if (!submitted.accepted()) {
+            state->result.fileStatus =
+                submitted.status == core::runtime::WorkServiceStatus::Cancelled
+                ? core::io::FileIoStatus::Cancelled
+                : core::io::FileIoStatus::QueueFull;
+            state->result.diagnosticId = "RESOURCE-CANDIDATE-WORK-SUBMISSION";
+        }
+        return submitted.accepted() ? ResourceGraphSubmitStatus::Accepted
+            : submitted.status == core::runtime::WorkServiceStatus::QueueFull
+            ? ResourceGraphSubmitStatus::QueueFull
+            : ResourceGraphSubmitStatus::ServiceClosed;
+    }
     const auto submitted = state->completionQueue->post({processNode, state});
     if (!submitted.accepted()) {
         state->result.fileStatus = submitted.status == core::runtime::CompletionStatus::QueueFull
@@ -509,6 +588,20 @@ ResourceGraphExecutor::ResourceGraphExecutor(ResourceManager& manager,
 ResourceGraphSubmitStatus ResourceGraphExecutor::submit(
     ResourceGraphExecutionRequest request, ResourceGraphExecutionCompletion completion) noexcept
 {
+    return submitImpl(std::move(request), completion, nullptr);
+}
+
+ResourceGraphSubmitStatus ResourceGraphExecutor::submit(ResourceGraphExecutionRequest request,
+    ResourceGraphExecutionCompletion completion,
+    core::runtime::WorkService& preparationWorkers) noexcept
+{
+    return submitImpl(std::move(request), completion, &preparationWorkers);
+}
+
+ResourceGraphSubmitStatus ResourceGraphExecutor::submitImpl(ResourceGraphExecutionRequest request,
+    ResourceGraphExecutionCompletion completion,
+    core::runtime::WorkService* preparationWorkers) noexcept
+{
     if (std::this_thread::get_id() != ownerThread_ || !manager_.isOwnerThread()
         || request.graph.context.sources)
         return ResourceGraphSubmitStatus::InvalidRequest;
@@ -556,6 +649,7 @@ ResourceGraphSubmitStatus ResourceGraphExecutor::submit(
         state->locationCheck.contractVersion = 1;
         state->locationCheck.maxBytes = request.budget.maxSourceBytes;
         state->completionQueue = &completionQueue_;
+        state->preparationWorkers = preparationWorkers;
         state->request = std::move(request);
         state->completion = completion;
         // Validation + per-node processing/admission + per-read acquisition +

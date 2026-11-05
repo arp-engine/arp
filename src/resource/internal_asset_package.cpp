@@ -858,7 +858,22 @@ AssetPackageReadPlan InternalAssetPackageReader::planSourceReads(
     const AssetPackageReadBudget& budget,
     core::SharedPtr<const AssetPackageCodecRegistry> codecs) const
 {
+    return planSourceReads(
+        directory, sources, budget, std::move(codecs), AssetPackageReadPhase::Complete);
+}
+
+AssetPackageReadPlan InternalAssetPackageReader::planSourceReads(
+    const std::filesystem::path& directory,
+    const AssetPackageSourceContext& sources,
+    const AssetPackageReadBudget& budget,
+    core::SharedPtr<const AssetPackageCodecRegistry> codecs,
+    AssetPackageReadPhase phase) const
+{
     AssetPackageReadPlan result;
+    if (phase != AssetPackageReadPhase::Complete && phase != AssetPackageReadPhase::Metadata) {
+        result.diagnostics = "PACKAGE-IO-READ-PHASE";
+        return result;
+    }
     if (!sources.resources.requirePreloadedSources || !sources.resources.sources
         || (codecs && !codecs->frozen())) {
         result.diagnostics = "PACKAGE-IO-SOURCE-CONFIG-OR-CODECS";
@@ -922,6 +937,10 @@ AssetPackageReadPlan InternalAssetPackageReader::planSourceReads(
     auto validated = readSources(directory, sources, budget.maxMetadataBytes, budget.maxResources);
     if (!validated.success) {
         result.diagnostics = std::move(validated.diagnostics);
+        return result;
+    }
+    if (phase == AssetPackageReadPhase::Metadata) {
+        result.success = true;
         return result;
     }
     if (!metadata.closurePath.empty()) {
@@ -1159,15 +1178,128 @@ ResourceLoadResult InternalAssetPackageReader::loadImpl(
     ResourceLoadPolicy policy,
     const AssetPackageSourceContext* sources) const
 {
+    return loadImplBounded(packageDirectory,
+        manager,
+        std::move(codecs),
+        policy,
+        sources,
+        AssetPackageClosureService::maxMetadataBytes,
+        AssetPackageClosureService::maxResources);
+}
+
+ResourceLoadResult InternalAssetPackageReader::loadSources(const std::filesystem::path& directory,
+    ResourceManager& manager,
+    const AssetPackageSourceContext& sources,
+    std::size_t maxMetadataBytes,
+    std::size_t maxResources,
+    core::SharedPtr<const AssetPackageCodecRegistry> codecs) const
+{
+    if (!sources.resources.requirePreloadedSources || !sources.resources.sources
+        || !sources.resources.maxDecodedBytes || sources.resources.maxDecodedBytes == SIZE_MAX
+        || !maxMetadataBytes || maxMetadataBytes == SIZE_MAX || !maxResources
+        || maxResources == SIZE_MAX)
+        return {false, ResourceState::Failed, {}, {}, "PACKAGE-IO-BOUNDED-SOURCE-CONFIG"};
+    return loadImplBounded(directory,
+        manager,
+        std::move(codecs),
+        sources.resources.policy,
+        &sources,
+        maxMetadataBytes,
+        maxResources);
+}
+
+ResourceLoadResult InternalAssetPackageReader::loadImplBounded(
+    const std::filesystem::path& packageDirectory,
+    ResourceManager& manager,
+    core::SharedPtr<const AssetPackageCodecRegistry> codecs,
+    ResourceLoadPolicy policy,
+    const AssetPackageSourceContext* sources,
+    std::size_t maxMetadataBytes,
+    std::size_t maxResources) const
+{
+    return processImplBounded(packageDirectory,
+        &manager,
+        std::move(codecs),
+        policy,
+        sources,
+        maxMetadataBytes,
+        maxResources,
+        nullptr);
+}
+
+AssetPackagePreparationResult InternalAssetPackageReader::prepareSources(
+    const std::filesystem::path& directory,
+    const AssetPackageSourceContext& sources,
+    std::size_t maxMetadataBytes,
+    std::size_t maxResources,
+    core::SharedPtr<const AssetPackageCodecRegistry> codecs) const
+{
+    AssetPackagePreparationResult prepared;
+    if (!sources.resources.requirePreloadedSources || !sources.resources.sources
+        || !sources.resources.maxDecodedBytes || sources.resources.maxDecodedBytes == SIZE_MAX
+        || !maxMetadataBytes || maxMetadataBytes == SIZE_MAX || !maxResources
+        || maxResources == SIZE_MAX) {
+        prepared.diagnostics = "PACKAGE-IO-BOUNDED-SOURCE-CONFIG";
+        return prepared;
+    }
+    const auto result = processImplBounded(directory,
+        nullptr,
+        std::move(codecs),
+        sources.resources.policy,
+        &sources,
+        maxMetadataBytes,
+        maxResources,
+        &prepared);
+    prepared.success = result.success;
+    prepared.diagnostics = result.diagnostics;
+    return prepared;
+}
+
+AssetPackagePreparationPlan InternalAssetPackageReader::planPreparationSources(
+    const std::filesystem::path& directory,
+    const AssetPackageSourceContext& sources,
+    std::size_t maxMetadataBytes,
+    std::size_t maxResources,
+    core::SharedPtr<const AssetPackageCodecRegistry> codecs) const
+{
+    AssetPackagePreparationPlan plan;
+    if (!sources.resources.requirePreloadedSources || !sources.resources.sources
+        || !sources.resources.maxDecodedBytes || sources.resources.maxDecodedBytes == SIZE_MAX
+        || !maxMetadataBytes || maxMetadataBytes == SIZE_MAX || !maxResources
+        || maxResources == SIZE_MAX) {
+        plan.diagnostics = "PACKAGE-IO-BOUNDED-SOURCE-CONFIG";
+        return plan;
+    }
+    const auto processed = processImplBounded(directory,
+        nullptr,
+        std::move(codecs),
+        sources.resources.policy,
+        &sources,
+        maxMetadataBytes,
+        maxResources,
+        nullptr,
+        &plan);
+    plan.success = processed.success;
+    plan.diagnostics = processed.diagnostics;
+    return plan;
+}
+
+ResourceLoadResult InternalAssetPackageReader::processImplBounded(
+    const std::filesystem::path& packageDirectory,
+    ResourceManager* manager,
+    core::SharedPtr<const AssetPackageCodecRegistry> codecs,
+    ResourceLoadPolicy policy,
+    const AssetPackageSourceContext* sources,
+    std::size_t maxMetadataBytes,
+    std::size_t maxResources,
+    AssetPackagePreparationResult* preparedOutput,
+    AssetPackagePreparationPlan* planOutput) const
+{
     if (codecs && !codecs->frozen())
         return {false, ResourceState::Failed, {}, {}, "PACKAGE-CODEC-REGISTRY-NOT-FROZEN"};
-    auto readResult = sources ? readSources(packageDirectory,
-                                    *sources,
-                                    AssetPackageClosureService::maxMetadataBytes,
-                                    AssetPackageClosureService::maxResources)
-                              : read(packageDirectory,
-                                    AssetPackageClosureService::maxMetadataBytes,
-                                    AssetPackageClosureService::maxResources);
+    auto readResult = sources
+        ? readSources(packageDirectory, *sources, maxMetadataBytes, maxResources)
+        : read(packageDirectory, maxMetadataBytes, maxResources);
     if (!readResult.success) {
         return ResourceLoadResult{
             false,
@@ -1185,14 +1317,16 @@ ResourceLoadResult InternalAssetPackageReader::loadImpl(
             : AssetPackageClosureService(codecs).inspect(packageDirectory);
         if (!closure.success)
             return {false, ResourceState::Failed, {}, {}, closure.diagnostics};
-        loadContext.maxDecodedBytes = closure.maxDecodedBytes;
-        const auto callerBudget = manager.telemetry().budget.maxDecodedBytes;
+        loadContext.maxDecodedBytes = loadContext.maxDecodedBytes
+            ? std::min(loadContext.maxDecodedBytes, closure.maxDecodedBytes)
+            : closure.maxDecodedBytes;
+        const auto callerBudget = manager ? manager->telemetry().budget.maxDecodedBytes : 0u;
         if (callerBudget != 0u)
             loadContext.maxDecodedBytes = std::min(loadContext.maxDecodedBytes, callerBudget);
     }
     if (sources) {
         registerPrefabAssetReflection();
-        const auto managerLimit = manager.telemetry().budget.maxDecodedBytes;
+        const auto managerLimit = manager ? manager->telemetry().budget.maxDecodedBytes : 0u;
         if (managerLimit)
             loadContext.maxDecodedBytes = std::min(loadContext.maxDecodedBytes, managerLimit);
         for (const auto& entry : readResult.package.entries) {
@@ -1229,6 +1363,8 @@ ResourceLoadResult InternalAssetPackageReader::loadImpl(
                 return isManifestAsset(entry.resourceType)
                     || (codecs && codecs->find(entry.resourceType));
             });
+    if (preparedOutput && !atomicTypedPackage)
+        return {false, ResourceState::Failed, {}, {}, "PACKAGE-PREPARATION-TYPED-REQUIRED"};
     for (const auto& entry : readResult.package.entries) {
         if (atomicTypedPackage) {
             if (!isManifestAsset(entry.resourceType)
@@ -1240,7 +1376,7 @@ ResourceLoadResult InternalAssetPackageReader::loadImpl(
                     entry.resourceType,
                     makeDiagnostic("TERRAIN-PACKAGE-TYPED-FACTORY-REQUIRED")};
         } else {
-            const auto declared = manager.declareResource(entry.resourceId, entry.resourceType);
+            const auto declared = manager->declareResource(entry.resourceId, entry.resourceType);
             if (!declared.success
                 && declared.diagnostics.find("duplicate resource id") == core::pmr::String::npos) {
                 return declared;
@@ -1258,7 +1394,7 @@ ResourceLoadResult InternalAssetPackageReader::loadImpl(
         std::size_t codecDecodedBytes = 0;
         const auto decodeLimit = loadContext.maxDecodedBytes
             ? loadContext.maxDecodedBytes
-            : manager.telemetry().budget.maxDecodedBytes;
+            : (manager ? manager->telemetry().budget.maxDecodedBytes : 0u);
         for (auto& entry : readResult.package.entries) {
             if (!inspector.supports(entry.resourceType))
                 continue;
@@ -1286,7 +1422,7 @@ ResourceLoadResult InternalAssetPackageReader::loadImpl(
                 if ((found != readResult.package.entries.end()
                         && found->resourceType != dependency.expectedType)
                     || (found == readResult.package.entries.end()
-                        && !inspector.externalReady(manager, dependency)))
+                        && (!manager || !inspector.externalReady(*manager, dependency))))
                     return {false,
                         ResourceState::Failed,
                         entry.resourceId,
@@ -1399,13 +1535,14 @@ ResourceLoadResult InternalAssetPackageReader::loadImpl(
                     return node.resource->reference().id == dependency.id;
                 }))
                 continue;
-            const auto* record = manager.recordSnapshot(dependency.id);
+            const auto* record = manager ? manager->recordSnapshot(dependency.id) : nullptr;
             if (!record || record->state != ResourceState::Ready)
                 return {false,
                     ResourceState::Failed,
                     dependency.id,
                     {},
-                    makeDiagnostic("PACKAGE-DEPENDENCY-NOT-READY")};
+                    makeDiagnostic(manager ? "PACKAGE-DEPENDENCY-NOT-READY"
+                                           : "PACKAGE-PREPARATION-EXTERNAL-DEPENDENCY")};
             ResourceGraphNode external;
             external.resource = core::makeUnique<ResourceBase>(
                 ResourceReference{record->id, record->type, {}, record->status, {}});
@@ -1415,6 +1552,11 @@ ResourceLoadResult InternalAssetPackageReader::loadImpl(
     const auto plan = buildResourceGraphPlan(ordering);
     if (!plan.success)
         return {false, ResourceState::Failed, plan.resourceId, plan.resourceType, plan.diagnostics};
+    if (planOutput) {
+        planOutput->package = std::move(readResult.package);
+        planOutput->maxDecodedBytes = loadContext.maxDecodedBytes;
+        return {true, ResourceState::Declared, {}, {}, {}};
+    }
     ResourceLoadResult last;
     core::pmr::Vector<core::UniquePtr<ResourceBase>> prepared{&core::defaultCpuMemoryResource()};
 
@@ -1537,7 +1679,7 @@ ResourceLoadResult InternalAssetPackageReader::loadImpl(
                 prepared.push_back(std::move(typed));
                 last = {true, ResourceState::Ready, entry.resourceId, entry.resourceType, {}};
             } else
-                last = manager.loadResource(std::move(typed), {policy});
+                last = manager->loadResource(std::move(typed), {policy});
         } else if (prefabResourceFactory().supports(entry.resourceType)) {
             core::pmr::String payloadYaml(&core::defaultCpuMemoryResource());
             core::pmr::String diagnostics(&core::defaultCpuMemoryResource());
@@ -1654,16 +1796,22 @@ ResourceLoadResult InternalAssetPackageReader::loadImpl(
                 prepared.push_back(std::move(typed));
                 last = {true, ResourceState::Ready, entry.resourceId, entry.resourceType, {}};
             } else
-                last = manager.loadResource(std::move(typed), {policy});
+                last = manager->loadResource(std::move(typed), {policy});
         } else {
-            last = compatibility::loadFromEnvelope(manager, entry.envelopeYaml, policy);
+            last = compatibility::loadFromEnvelope(*manager, entry.envelopeYaml, policy);
         }
         if (!last.success) {
             return last;
         }
     }
     if (atomicTypedPackage) {
-        const auto batch = manager.loadResourcesAtomically(std::move(prepared), loadContext);
+        if (preparedOutput) {
+            preparedOutput->package = std::move(readResult.package);
+            preparedOutput->resources = std::move(prepared);
+            preparedOutput->maxDecodedBytes = loadContext.maxDecodedBytes;
+            return last;
+        }
+        const auto batch = manager->loadResourcesAtomically(std::move(prepared), loadContext);
         if (!batch.success)
             return {false, ResourceState::Failed, batch.failedResourceId, {}, batch.diagnostics};
     }

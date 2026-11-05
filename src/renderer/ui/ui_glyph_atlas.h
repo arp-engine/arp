@@ -148,6 +148,51 @@ private:
     arp::core::pmr::String diagnostics_{&arp::core::defaultCpuMemoryResource()};
 };
 
+// Synchronous cache view; entry references last until the next cache mutation.
+struct GlyphAtlasBorrowRequest {
+    const GlyphKey& key;
+    std::uint32_t width = 0u, height = 0u;
+    float advanceX = 0.0f, bearingX = 0.0f, bearingY = 0.0f;
+};
+
+class GlyphAtlasBorrowResult final {
+public:
+    static GlyphAtlasBorrowResult success(
+        const GlyphAtlasEntry& entry, bool hit, GlyphAtlasUploadSchedule upload = {})
+    {
+        GlyphAtlasBorrowResult result;
+        result.entry_ = &entry;
+        result.cacheHit_ = hit;
+        result.upload_ = upload;
+        return result;
+    }
+
+    static GlyphAtlasBorrowResult failure(arp::core::pmr::String diagnostic)
+    {
+        GlyphAtlasBorrowResult result;
+        result.diagnostics_ = std::move(diagnostic);
+        return result;
+    }
+
+    bool ok() const { return entry_ != nullptr; }
+
+    bool cacheHit() const { return cacheHit_; }
+
+    bool uploadScheduled() const { return !cacheHit_ && upload_.byteSize > 0u; }
+
+    const GlyphAtlasEntry& entry() const { return *entry_; }
+
+    const GlyphAtlasUploadSchedule& upload() const { return upload_; }
+
+    const arp::core::pmr::String& diagnostics() const { return diagnostics_; }
+
+private:
+    const GlyphAtlasEntry* entry_ = nullptr;
+    bool cacheHit_ = false;
+    GlyphAtlasUploadSchedule upload_;
+    arp::core::pmr::String diagnostics_{&arp::core::defaultCpuMemoryResource()};
+};
+
 class GlyphAtlasCache final {
 public:
     explicit GlyphAtlasCache(GlyphAtlasCacheDesc desc) : desc_(desc) {}
@@ -173,22 +218,36 @@ public:
 
     GlyphAtlasResolveResult resolveGlyph(const GlyphAtlasRequest& request)
     {
+        const auto borrowed = resolveGlyphBorrowed({request.key,
+            request.width,
+            request.height,
+            request.advanceX,
+            request.bearingX,
+            request.bearingY});
+        if (!borrowed.ok())
+            return GlyphAtlasResolveResult::failure(borrowed.diagnostics());
+        return GlyphAtlasResolveResult::success(
+            borrowed.entry(), borrowed.cacheHit(), borrowed.upload());
+    }
+
+    GlyphAtlasBorrowResult resolveGlyphBorrowed(const GlyphAtlasBorrowRequest& request)
+    {
         if (request.key.fontToken.empty()) {
-            return GlyphAtlasResolveResult::failure(text("UI glyph atlas missing font token."));
+            return GlyphAtlasBorrowResult::failure(text("UI glyph atlas missing font token."));
         }
         if (request.key.glyphId == 0u) {
-            return GlyphAtlasResolveResult::failure(text("UI glyph atlas missing glyph id."));
+            return GlyphAtlasBorrowResult::failure(text("UI glyph atlas missing glyph id."));
         }
         if (request.key.sizePx == 0u || request.width == 0u || request.height == 0u) {
-            return GlyphAtlasResolveResult::failure(
+            return GlyphAtlasBorrowResult::failure(
                 text("UI glyph atlas request requires explicit non-zero size."));
         }
         if (desc_.pageWidth == 0u || desc_.pageHeight == 0u || desc_.maxPages == 0u) {
-            return GlyphAtlasResolveResult::failure(
+            return GlyphAtlasBorrowResult::failure(
                 text("UI glyph atlas cache requires explicit page dimensions and budget."));
         }
         if (request.width > desc_.pageWidth || request.height > desc_.pageHeight) {
-            return GlyphAtlasResolveResult::failure(
+            return GlyphAtlasBorrowResult::failure(
                 text("UI glyph atlas entry exceeds page dimensions."));
         }
 
@@ -198,14 +257,14 @@ public:
             });
         if (found != entries_.end()) {
             ++cacheHitCount_;
-            return GlyphAtlasResolveResult::success(*found, true);
+            return GlyphAtlasBorrowResult::success(*found, true);
         }
         if (desc_.insertionPolicy == GlyphAtlasInsertionPolicy::Static) {
-            return GlyphAtlasResolveResult::failure(
+            return GlyphAtlasBorrowResult::failure(
                 text("UI glyph atlas static policy disallows dynamic glyph insertion."));
         }
         if (dynamicGlyphsThisFrame_ >= desc_.dynamicGlyphBudgetPerFrame) {
-            return GlyphAtlasResolveResult::failure(
+            return GlyphAtlasBorrowResult::failure(
                 text("UI glyph atlas dynamic glyph budget exhausted."));
         }
 
@@ -218,10 +277,10 @@ public:
         auto* page = writablePageFor(allocWidth, allocHeight);
         if (page == nullptr) {
             if (desc_.pagePolicy == GlyphAtlasPageAllocationPolicy::SinglePage) {
-                return GlyphAtlasResolveResult::failure(
+                return GlyphAtlasBorrowResult::failure(
                     text("UI glyph atlas single-page policy exhausted."));
             }
-            return GlyphAtlasResolveResult::failure(text("UI glyph atlas page budget exhausted."));
+            return GlyphAtlasBorrowResult::failure(text("UI glyph atlas page budget exhausted."));
         }
 
         GlyphAtlasEntry entry;
@@ -244,18 +303,17 @@ public:
         page->cursorX += allocWidth;
         page->rowHeight = std::max(page->rowHeight, allocHeight);
 
-        entries_.push_back(entry);
-        ++cacheMissCount_;
-        ++dynamicGlyphsThisFrame_;
-
         GlyphAtlasUploadSchedule upload;
         upload.frameSequence = currentFrameSequence_;
         upload.pageIndex = entry.pageIndex;
         upload.atlasRect = entry.atlasRect;
         upload.byteSize = request.width * request.height;
         upload.generation = currentGeneration_;
+        entries_.push_back(std::move(entry));
+        ++cacheMissCount_;
+        ++dynamicGlyphsThisFrame_;
         pendingUploads_.push_back(upload);
-        return GlyphAtlasResolveResult::success(std::move(entry), false, upload);
+        return GlyphAtlasBorrowResult::success(entries_.back(), false, upload);
     }
 
     const GlyphAtlasCacheDesc& desc() const { return desc_; }

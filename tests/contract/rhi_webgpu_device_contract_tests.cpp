@@ -2,6 +2,7 @@
 #include "../fixtures/cpp_source_evidence.h"
 #include "../fixtures/depth_stencil_attachment_input_fixture.h"
 #include "../fixtures/frame_input_lifecycle_checks.h"
+#include "../fixtures/generated_shader_package_fixture.h"
 #include "../fixtures/original_heap_registration_fixture.h"
 #include "../fixtures/original_query_registration_fixture.h"
 #include "../fixtures/render_pass_arguments_fixture.h"
@@ -1039,32 +1040,11 @@ arp::rhi::ShaderPackageDesc makeWebGpuShaderPackage()
     shaderPackage.artifacts.spirvPath = "webgpu_rhi.spv";
     shaderPackage.artifacts.mslPath = "webgpu_rhi.metal";
     shaderPackage.artifacts.wgslPath = "webgpu_rhi.wgsl";
-#if defined(ARP_SOURCE_DIR)
-    shaderPackage.artifacts.reflectionPath =
-        ARP_SOURCE_DIR "/tests/fixtures/webgpu_rhi.reflection.yaml";
-#else
     shaderPackage.artifacts.reflectionPath = "webgpu_rhi.reflection.yaml";
-#endif
-    shaderPackage.reflection.pushConstantByteCount = 64;
-    shaderPackage.reflection.pushConstantContractVersion = "AtomicFullBlockPush/1";
-    shaderPackage.reflection.pushConstantStages = "VS|FS|CS";
-    shaderPackage.reflection.pushConstantWebGpuBindingGroup = 3;
-    shaderPackage.reflection.pushConstantWebGpuBindingIndex = 0;
-    shaderPackage.reflection.pushConstantMembers.push_back({
-        "data",
-        "uint32",
-        32,
-        0,
-        0,
-        0,
-        0,
-        false,
-        {16},
-        4,
-        0,
-        64,
-        0,
-    });
+    arp::rhi::test::GeneratedShaderPackageFixture::prepare(
+        shaderPackage, "webgpu_rhi.artifact-set.yaml");
+    assert(shaderPackage.reflection.pushConstantByteCount == 64u);
+    assert(shaderPackage.reflection.pushConstantMembers.size() == 4u);
     return shaderPackage;
 }
 
@@ -1595,6 +1575,8 @@ int main(int argc, char** argv)
     assert(!rejectedStorageTexture);
 
     const auto caps = device->capabilities();
+    assert(device->timestampQueriesSupported() == caps.features.timestampQueries);
+    assert(device->transientAliasingSupported() == caps.features.transientAliasing);
     assert(caps.backend == Backend::WebGPU);
     const bool nativeAvailable = webGpuNativeDeviceAvailable() && !webGpuNativeDeviceLost();
     // This fixture's writable profile supplies CPU contract inputs. Only the

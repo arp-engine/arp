@@ -984,7 +984,7 @@ ResourceGraphSubmitStatus ResourceManager::loadGraphAsync(core::runtime::AsyncRu
         request.budget = budget;
         request.cancellation = std::move(cancellation);
         ResourceGraphExecutor executor(*this, runtime.fileService(), runtime.completionQueue());
-        return executor.submit(std::move(request), completion);
+        return executor.submit(std::move(request), completion, runtime.workService());
     } catch (const std::bad_alloc&) {
         return ResourceGraphSubmitStatus::AllocationFailed;
     } catch (...) {

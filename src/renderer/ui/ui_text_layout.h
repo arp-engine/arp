@@ -110,6 +110,39 @@ private:
     arp::core::pmr::String diagnostics_{&arp::core::defaultCpuMemoryResource()};
 };
 
+// Borrowed runs remain valid until the next cache mutation (including a miss).
+// This result never extends cache lifetime. Keep resolve() for owned snapshots.
+class TextLayoutBorrowResult final {
+public:
+    static TextLayoutBorrowResult success(const TextLayoutRun& run, bool cacheHit)
+    {
+        TextLayoutBorrowResult result;
+        result.run_ = &run;
+        result.cacheHit_ = cacheHit;
+        return result;
+    }
+
+    static TextLayoutBorrowResult failure(arp::core::pmr::String diagnostic)
+    {
+        TextLayoutBorrowResult result;
+        result.diagnostics_ = std::move(diagnostic);
+        return result;
+    }
+
+    bool ok() const { return run_ != nullptr; }
+
+    bool cacheHit() const { return cacheHit_; }
+
+    const TextLayoutRun& run() const { return *run_; }
+
+    const arp::core::pmr::String& diagnostics() const { return diagnostics_; }
+
+private:
+    const TextLayoutRun* run_ = nullptr;
+    bool cacheHit_ = false;
+    arp::core::pmr::String diagnostics_{&arp::core::defaultCpuMemoryResource()};
+};
+
 struct ShapedGlyph {
     std::uint32_t codepoint = 0u;
     std::uint32_t cluster = 0u;
@@ -276,25 +309,33 @@ public:
 
     TextLayoutResolveResult resolve(const TextLayoutKey& key)
     {
+        const auto borrowed = resolveBorrowed(key);
+        if (!borrowed.ok())
+            return TextLayoutResolveResult::failure(borrowed.diagnostics());
+        return TextLayoutResolveResult::success(borrowed.run(), borrowed.cacheHit());
+    }
+
+    TextLayoutBorrowResult resolveBorrowed(const TextLayoutKey& key)
+    {
         if (key.fontToken.empty()) {
-            return TextLayoutResolveResult::failure(
+            return TextLayoutBorrowResult::failure(
                 text("UI text layout requires an explicit font token."));
         }
         if (key.styleId.empty()) {
-            return TextLayoutResolveResult::failure(
+            return TextLayoutBorrowResult::failure(
                 text("UI text layout requires an explicit style id."));
         }
         if (key.sizePx == 0u || key.maxWidthPx == 0u || key.scaleBucket == 0u) {
-            return TextLayoutResolveResult::failure(
+            return TextLayoutBorrowResult::failure(
                 text("UI text layout requires explicit size, width, and scale bucket."));
         }
         if (key.locale.empty()) {
-            return TextLayoutResolveResult::failure(
+            return TextLayoutBorrowResult::failure(
                 text("UI text layout requires an explicit locale."));
         }
         if (key.text.find('\n') != arp::core::pmr::String::npos
             || key.text.find('\r') != arp::core::pmr::String::npos) {
-            return TextLayoutResolveResult::failure(
+            return TextLayoutBorrowResult::failure(
                 text("UI text layout cache supports single-line text only."));
         }
 
@@ -303,7 +344,7 @@ public:
         });
         if (found != runs_.end()) {
             ++cacheHitCount_;
-            return TextLayoutResolveResult::success(*found, true);
+            return TextLayoutBorrowResult::success(*found, true);
         }
 
         TextLayoutRun run;
@@ -314,7 +355,7 @@ public:
 
         const auto shaped = shaping_.shape(key);
         if (!shaped.success) {
-            return TextLayoutResolveResult::failure(shaped.diagnostics);
+            return TextLayoutBorrowResult::failure(shaped.diagnostics);
         }
 
         float cursorX = 0.0f;
@@ -323,7 +364,7 @@ public:
         for (const auto& glyph : shaped.glyphs) {
             const auto metrics = glyphMetrics(key, glyph.codepoint);
             if (!metrics.ok) {
-                return TextLayoutResolveResult::failure(metrics.diagnostics);
+                return TextLayoutBorrowResult::failure(metrics.diagnostics);
             }
             run.heightPx = std::max(run.heightPx, static_cast<float>(metrics.face.lineHeightPx));
             if (fontFaceCache_ != nullptr && previousCodepoint != 0u
@@ -335,7 +376,7 @@ public:
                         glyph.codepoint,
                         kerningX,
                         kerningDiagnostics)) {
-                    return TextLayoutResolveResult::failure(std::move(kerningDiagnostics));
+                    return TextLayoutBorrowResult::failure(std::move(kerningDiagnostics));
                 }
                 cursorX += kerningX;
             }
@@ -374,9 +415,9 @@ public:
         }
         run.widthPx = cursorX;
 
-        runs_.push_back(run);
+        runs_.push_back(std::move(run));
         ++cacheMissCount_;
-        return TextLayoutResolveResult::success(std::move(run), false);
+        return TextLayoutBorrowResult::success(runs_.back(), false);
     }
 
     const arp::core::pmr::Vector<TextLayoutRun>& runs() const { return runs_; }

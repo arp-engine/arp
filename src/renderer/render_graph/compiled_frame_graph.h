@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <memory_resource>
 #include <string>
 #include <vector>
 
@@ -201,11 +202,15 @@ public:
 
 private:
     friend class FrameGraph;
+    friend class FrameGraphCompiler;
     struct RetirementSource;
     std::shared_ptr<const RetirementSource> retirementSource_;
 
     void invalidateRetirementSource() noexcept { retirementSource_.reset(); }
 
+    // Published ordinary metadata outlives compiler scratch and may be shared
+    // through the compilation cache. Copies retain this storage owner.
+    core::SharedPtr<std::pmr::monotonic_buffer_resource> textMemory_;
     rhi::CommandEncoderDesc commandEncoderDesc_{"FrameGraph"};
     std::pmr::vector<CompiledPass> passes_;
     std::pmr::vector<size_t> executionOrder_;

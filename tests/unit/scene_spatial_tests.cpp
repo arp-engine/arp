@@ -166,10 +166,13 @@ public:
 class Counter final : public scene::RenderExtractSink {
 public:
     unsigned count = 0;
+    core::pmr::Vector<std::uint64_t> order{&core::defaultCpuMemoryResource()};
 
-    void accept(const scene::RenderExtractContext&, const scene::RenderExtractPayload&) override
+    void accept(
+        const scene::RenderExtractContext&, const scene::RenderExtractPayload& payload) override
     {
         ++count;
+        order.push_back(payload.objectId.value());
     }
 };
 
@@ -178,11 +181,13 @@ void extraction()
     scene::Scene scene;
     Scene3DSpatialIndex index;
     auto& inside = scene.createObject("inside");
+    auto& unbounded = scene.createObject("unbounded emitter");
     auto& hidden = scene.createObject("hidden");
     auto& emitter = scene.createObject("offscreen emitter");
     auto& a = inside.addComponent<Probe>();
     auto& b = hidden.addComponent<Probe>();
     auto& c = emitter.addComponent<Probe>();
+    auto& d = unbounded.addComponent<Probe>();
     index.insert({inside.id(), a.id()}, {{0, 0, 0}, {1, 1, 1}}, SpatialMobility::Dynamic);
     const auto discarded =
         index.insert({hidden.id(), b.id()}, {{20, 20, 20}, {21, 21, 21}}, SpatialMobility::Static);
@@ -193,6 +198,20 @@ void extraction()
     Counter selected;
     index.extractVisible(scene, selected);
     check(selected.count == 2, "extraction lost an emitter or dispatched an offscreen mesh");
+    const SceneSpatialOwner unboundedOwner{unbounded.id(), d.id(), true};
+    Counter merged;
+    index.extractVisible(scene, merged, {&unboundedOwner, 1});
+    check(merged.count == 3 && merged.order[0] == inside.id().value()
+            && merged.order[1] == unbounded.id().value() && merged.order[2] == emitter.id().value(),
+        "Unbounded emitters changed stable extraction order");
+    const SceneSpatialOwner duplicate{inside.id(), a.id(), true};
+    rejects([&] {
+        index.extractVisible(scene, merged, {&duplicate, 1});
+    });
+    const std::array<SceneSpatialOwner, 2> unordered{unboundedOwner, duplicate};
+    rejects([&] {
+        index.extractVisible(scene, merged, {unordered.data(), unordered.size()});
+    });
     index.update(discarded, {{0, 0, 0}, {1, 1, 1}});
     rejects([&] {
         index.extractVisible(scene, selected);

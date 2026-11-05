@@ -226,6 +226,19 @@ void testDerivedClassListInitialization()
     analyzeOk(src, "derived class list initialization");
 }
 
+void testAllContainerExpressionsAreAnalyzed()
+{
+    analyzeError("var values: [int] = [1, missing]\n",
+        ScriptDiagnosticCode::UndeclaredName,
+        "later list elements are analyzed");
+    analyzeError("var values: {string: int} = {\"first\": 1, \"second\": missing}\n",
+        ScriptDiagnosticCode::UndeclaredName,
+        "later dictionary elements are analyzed");
+    analyzeError("var values: [int] = [1]\nvar value: int = values[missing]\n",
+        ScriptDiagnosticCode::UndeclaredName,
+        "index expressions are analyzed");
+}
+
 void testClassForwardMethodRef()
 {
     const char* src = "class ForwardMethods:\n"
@@ -535,6 +548,7 @@ int main()
     testClassInheritanceValid();
     testTransitiveClassAssignability();
     testDerivedClassListInitialization();
+    testAllContainerExpressionsAreAnalyzed();
     testClassForwardMethodRef();
     testClassRedeclaredField();
     testIfScopeValid();

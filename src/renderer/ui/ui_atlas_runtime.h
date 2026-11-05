@@ -99,9 +99,13 @@ public:
 
     const arp::core::pmr::Vector<UiDrawCommand>& commands() const { return commands_; }
 
+    // Transfer the owned resolved commands without a second vector/string copy.
+    arp::core::pmr::Vector<UiDrawCommand> takeCommands() && { return std::move(commands_); }
+
     bool exposesNativeBackendHandles() const { return false; }
 
 private:
+    friend class UnifiedUiAtlasRuntime;
     bool ok_ = false;
     arp::core::pmr::String diagnostics_{&arp::core::defaultCpuMemoryResource()};
     arp::core::pmr::Vector<UiDrawCommand> commands_{&arp::core::defaultCpuMemoryResource()};
@@ -343,7 +347,7 @@ public:
                 gk.sizePx = rasterSizePx;
                 gk.renderMode = sdfFont ? GlyphRenderMode::Sdf : GlyphRenderMode::AlphaMask;
                 gk.scaleBucket = 1u;
-                const auto glyph = glyphAtlas_.resolveGlyph({
+                const auto glyph = glyphAtlas_.resolveGlyphBorrowed({
                     gk,
                     dimensionFor(static_cast<float>(rasterSizePx)),
                     dimensionFor(static_cast<float>(rasterSizePx)),
@@ -513,29 +517,60 @@ public:
 
     UnifiedUiAtlasResolveResult resolve(const arp::core::pmr::Vector<UiDrawCommand>& commands) const
     {
-        if (!ok_) {
-            return UnifiedUiAtlasResolveResult::failure(diagnostics_);
+        UnifiedUiAtlasResolveResult result;
+        resolveInto(commands, result);
+        return result;
+    }
+
+    // The result owns its strings and commands. Callers may keep it across
+    // frames to reuse storage; input must be a separate command vector.
+    void resolveInto(const arp::core::pmr::Vector<UiDrawCommand>& commands,
+        UnifiedUiAtlasResolveResult& result) const
+    {
+        const auto fail = [&](const arp::core::pmr::String& diagnostic) {
+            result.ok_ = false;
+            result.diagnostics_ = diagnostic;
+            result.commands_.clear();
+        };
+        if (&commands == &result.commands_) {
+            fail(text("UI atlas resolve output must not alias its input."));
+            return;
         }
-        arp::core::pmr::Vector<UiDrawCommand> resolved{&arp::core::defaultCpuMemoryResource()};
+        if (!ok_) {
+            fail(diagnostics_);
+            return;
+        }
+        result.ok_ = false;
+        result.diagnostics_.clear();
+        auto& resolved = result.commands_;
+        std::size_t count = 0u;
+        const auto append = [&](const UiDrawCommand& command) -> UiDrawCommand& {
+            if (count == resolved.size())
+                resolved.emplace_back();
+            auto& slot = resolved[count++];
+            slot = command;
+            return slot;
+        };
         resolved.reserve(commands.size());
         glyphAtlas_.beginFrame(++frameSequence_);
 
         for (const auto& command : commands) {
             if (command.kind != UiDrawCommandKind::Text) {
-                resolved.push_back(command);
+                append(command);
                 continue;
             }
 
-            auto layout = textLayout_.resolve(layoutKeyFor(command));
+            const auto layout = textLayout_.resolveBorrowed(layoutKeyFor(command));
             if (!layout.ok()) {
                 if (layout.diagnostics().find("shaping") != arp::core::pmr::String::npos) {
                     ++telemetry_.unsupportedScriptCount;
                 }
-                return UnifiedUiAtlasResolveResult::failure(layout.diagnostics());
+                fail(layout.diagnostics());
+                return;
             }
 
             for (const auto& quad : layout.run().glyphQuads) {
-                const auto glyph = glyphAtlas_.resolveGlyph({
+                const auto glyph = glyphAtlas_.resolveGlyphBorrowed({
                     quad.glyph,
                     dimensionFor(quad.localRect.width),
                     dimensionFor(quad.localRect.height),
@@ -544,7 +579,8 @@ public:
                     quad.rasterOriginY,
                 });
                 if (!glyph.ok()) {
-                    return UnifiedUiAtlasResolveResult::failure(glyph.diagnostics());
+                    fail(glyph.diagnostics());
+                    return;
                 }
                 if (glyph.cacheHit()) {
                     ++telemetry_.glyphHits;
@@ -552,7 +588,8 @@ public:
                     ++telemetry_.glyphMisses;
                     const auto written = writeGlyphPixels(command, quad, glyph.entry());
                     if (!written.ok()) {
-                        return UnifiedUiAtlasResolveResult::failure(written.diagnostics());
+                        fail(written.diagnostics());
+                        return;
                     }
                     // TEMP DIAG: dump miss-glyph atlasRect + normalized UV to
                     // diagnose the "i i rrior" symptom (W/a rendering as i).
@@ -608,11 +645,8 @@ public:
                     quad.localRect.width * renderScale,
                     quad.localRect.height * renderScale);
                 glyphCommand.clipRect = command.clipRect;
-                glyphCommand.textureResourceId = logicalAtlasResourceId_;
                 glyphCommand.textureSourceRect = normalizedGlyphAtlasRect(glyph.entry().atlasRect);
                 glyphCommand.hasTextureSourceRect = true;
-                glyphCommand.styleId = command.styleId;
-                glyphCommand.fontToken = quad.glyph.fontToken;
                 glyphCommand.atlasPageIndex = glyph.entry().pageIndex;
                 glyphCommand.hasAtlasPageIndex = true;
                 glyphCommand.sdfMode = sdfGlyph;
@@ -624,11 +658,15 @@ public:
                 if (!clipGlyphCommand(glyphCommand)) {
                     continue;
                 }
-                resolved.push_back(std::move(glyphCommand));
+                auto& slot = append(glyphCommand);
+                slot.textureResourceId = logicalAtlasResourceId_;
+                slot.styleId = command.styleId;
+                slot.fontToken = quad.glyph.fontToken;
             }
         }
 
-        return UnifiedUiAtlasResolveResult::success(std::move(resolved));
+        resolved.resize(count);
+        result.ok_ = true;
     }
 
 private:
@@ -678,9 +716,10 @@ private:
         return std::max(1u, static_cast<std::uint32_t>(std::ceil(value)));
     }
 
-    TextLayoutKey layoutKeyFor(const UiDrawCommand& command) const
+    const TextLayoutKey& layoutKeyFor(const UiDrawCommand& command) const
     {
-        TextLayoutKey key;
+        auto& key = layoutKeyScratch_;
+        key.renderMode = GlyphRenderMode::AlphaMask;
         key.text = command.text;
         key.styleId = command.styleId;
         key.fontToken = command.fontToken;
@@ -887,6 +926,7 @@ private:
     // rasterize (a const concept) may need to warm a previously-unseen face.
     mutable arp::ui::UiFontFaceCache fontFaceCache_;
     mutable TextLayoutCache textLayout_;
+    mutable TextLayoutKey layoutKeyScratch_;
     arp::core::pmr::Vector<arp::ui::UiFontFaceDesc> fontFaces_{
         &arp::core::defaultCpuMemoryResource()};
     mutable GlyphAtlasCache glyphAtlas_{{1u, 1u, 1u}};

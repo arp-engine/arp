@@ -103,6 +103,7 @@ function(arp_add_webgl_component_libraries)
         "${arp_component_root}/src/assets/image_decoder.cpp"
         "${arp_component_root}/src/resource/resource_contract.cpp"
         "${arp_component_root}/src/resource/resource_manager.cpp"
+        "${arp_component_root}/src/resource/resource_domain.cpp"
         "${arp_component_root}/src/resource/resource_graph_plan.cpp"
         "${arp_component_root}/src/resource/resource_graph_executor.cpp"
         "${arp_component_root}/src/resource/shader_artifact_resource.cpp"

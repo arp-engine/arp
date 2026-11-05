@@ -77,6 +77,45 @@ def run(args):
     manifest.write_bytes(original_manifest)
     invoke('final')
     assert hashes(output) == baseline
+    # A shared class-import DAG exercises package expansion without the IMBA
+    # prebundler. Compile twice to catch annotations leaking between modules.
+    diamond = directory / 'diamond-source'
+    diamond.mkdir(exist_ok=True)
+    modules = []
+    for index in range(14):
+        name = f'node_{index}'
+        dependencies = [f'node_{previous}' for previous in (index - 1, index - 2) if previous >= 0]
+        text = ''.join(f'import {dependency}\n' for dependency in dependencies)
+        text += f'\nclass Layer{index}:\n    def value(self) -> int:\n        return 42\n'
+        if index == 13:
+            text += '\ndef main() -> int:\n    var item: Layer13 = Layer13()\n    return item.value()\n'
+        (diamond / (name + '.arp')).write_text(text, encoding='utf-8')
+        modules.append(dict(id=name, version=1, source=name + '.arp',
+                            entries=['main' if index == 13 else '__module_init__'],
+                            dependencies=dependencies))
+    package = yaml.safe_load(original_manifest)
+    package['package'] = 'diamond'
+    package['modules'] = modules
+    graph = 'arp.script.aot-contract/v1\ndependency-graph\n'
+    for module in modules:
+        graph += module['id'] + '\nversion:1\n'
+        graph += ''.join('dependency:' + dependency + '\n' for dependency in module['dependencies'])
+    package['contracts']['dependency-graph-hash'] = 'sha256:' + hashlib.sha256(graph.encode()).hexdigest()
+    diamond_manifest = diamond / 'package.yaml'
+    diamond_manifest.write_text(yaml.safe_dump(package, sort_keys=False), encoding='utf-8')
+    diamond_output = directory / 'diamond-compiled'
+    diamond_hashes = None
+    for attempt in range(2):
+        process = subprocess.run([str(args.executable.resolve()), 'compile', str(diamond_manifest),
+            '--output', str(diamond_output)], cwd=ROOT, capture_output=True, text=True,
+            encoding='utf-8', errors='replace', timeout=60)
+        assert process.returncode == 0, (process.stdout, process.stderr)
+        current_hashes = hashes(diamond_output)
+        if diamond_hashes is not None:
+            assert current_hashes == diamond_hashes
+        diamond_hashes = current_hashes
+        reports.append(dict(case=f'diamond-class-imports-{attempt}', returncode=process.returncode,
+                            stdout=process.stdout, stderr=process.stderr))
     (directory / 'report.yaml').write_text(yaml.safe_dump(dict(cases=reports, outputs=baseline,
         explicitNativeHostFileService=True, completeOutputPublicationMigrated=False,
         runtimeAotExecutionValidated=False, productionReady=False), sort_keys=False), encoding='utf-8')

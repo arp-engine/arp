@@ -35,6 +35,8 @@ struct AssetPackageReadPlan {
     core::pmr::Vector<ResourceFileReadIntent> reads{&core::defaultCpuMemoryResource()};
 };
 
+enum class AssetPackageReadPhase { Complete, Metadata };
+
 constexpr NameView kInternalAssetPackageFormat = "ArpInternalAssetPackage";
 constexpr std::uint32_t kInternalAssetPackageVersion = 1;
 
@@ -79,6 +81,27 @@ struct InternalAssetPackageValidationResult {
     InternalAssetPackageDesc package;
 };
 
+// CPU candidates only: no manager registration or Ready residency. All strong
+// dependencies must be in this package. Keep the acquired sources alive until
+// normal candidate load/admission finishes; no borrowed context is stored here.
+struct AssetPackagePreparationResult {
+    bool success = false;
+    core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
+    InternalAssetPackageDesc package;
+    core::pmr::Vector<core::UniquePtr<ResourceBase>> resources{&core::defaultCpuMemoryResource()};
+    std::size_t maxDecodedBytes = 0;
+};
+
+// Validated metadata/dependency plan before runtime binary decode. Success is
+// neither decoded readiness nor registration. File/content validation still runs
+// in each repeatable typed descriptor before owner publication.
+struct AssetPackagePreparationPlan {
+    bool success = false;
+    core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
+    InternalAssetPackageDesc package;
+    std::size_t maxDecodedBytes = 0;
+};
+
 ARP_API ResourceEnvelopeBuildResult buildResourceEnvelope(
     const ResourceEnvelopeBuildDesc& desc, const reflection::object& payload);
 // Explicit domain YAML payloads share the canonical hash/envelope writer.
@@ -106,6 +129,25 @@ public:
         const AssetPackageSourceContext& sources,
         const AssetPackageReadBudget& budget,
         core::SharedPtr<const AssetPackageCodecRegistry> codecs = {}) const;
+    AssetPackageReadPlan planSourceReads(const std::filesystem::path& directory,
+        const AssetPackageSourceContext& sources,
+        const AssetPackageReadBudget& budget,
+        core::SharedPtr<const AssetPackageCodecRegistry> codecs,
+        AssetPackageReadPhase phase) const;
+
+    // Source-only, registry-free CPU preparation. Initialize reflection schemas
+    // and freeze codecs before calling from a worker. Publication is separate.
+    AssetPackagePreparationResult prepareSources(const std::filesystem::path& directory,
+        const AssetPackageSourceContext& sources,
+        std::size_t maxMetadataBytes,
+        std::size_t maxResources,
+        core::SharedPtr<const AssetPackageCodecRegistry> codecs = {}) const;
+
+    AssetPackagePreparationPlan planPreparationSources(const std::filesystem::path& directory,
+        const AssetPackageSourceContext& sources,
+        std::size_t maxMetadataBytes,
+        std::size_t maxResources,
+        core::SharedPtr<const AssetPackageCodecRegistry> codecs = {}) const;
 
     ResourceLoadResult load(const std::filesystem::path& packageDirectory,
         ResourceManager& manager,
@@ -118,6 +160,12 @@ public:
         ResourceManager& manager,
         const AssetPackageSourceContext& sources,
         core::SharedPtr<const AssetPackageCodecRegistry> codecs = {}) const;
+    ResourceLoadResult loadSources(const std::filesystem::path& packageDirectory,
+        ResourceManager& manager,
+        const AssetPackageSourceContext& sources,
+        std::size_t maxMetadataBytes,
+        std::size_t maxResources,
+        core::SharedPtr<const AssetPackageCodecRegistry> codecs = {}) const;
 
 private:
     InternalAssetPackageValidationResult readImpl(const std::filesystem::path& packageDirectory,
@@ -129,6 +177,22 @@ private:
         core::SharedPtr<const AssetPackageCodecRegistry> codecs,
         ResourceLoadPolicy policy,
         const AssetPackageSourceContext* sources) const;
+    ResourceLoadResult loadImplBounded(const std::filesystem::path&,
+        ResourceManager&,
+        core::SharedPtr<const AssetPackageCodecRegistry>,
+        ResourceLoadPolicy,
+        const AssetPackageSourceContext*,
+        std::size_t maxMetadataBytes,
+        std::size_t maxResources) const;
+    ResourceLoadResult processImplBounded(const std::filesystem::path&,
+        ResourceManager*,
+        core::SharedPtr<const AssetPackageCodecRegistry>,
+        ResourceLoadPolicy,
+        const AssetPackageSourceContext*,
+        std::size_t maxMetadataBytes,
+        std::size_t maxResources,
+        AssetPackagePreparationResult*,
+        AssetPackagePreparationPlan* = nullptr) const;
 };
 
 } // namespace arp::resource

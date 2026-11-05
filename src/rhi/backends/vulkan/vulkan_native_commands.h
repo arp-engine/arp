@@ -266,7 +266,8 @@ public:
     bool submit(const VulkanRhiTimelineSubmitInfo& timeline,
         std::pmr::string& diagnostics,
         bool* acceptedThisAttempt = nullptr);
-    void retainResource(std::shared_ptr<VulkanRhiNativeResourcePayload> payload);
+    void retainResource(const std::shared_ptr<VulkanRhiNativeResourcePayload>& payload);
+    void retainResource(std::shared_ptr<VulkanRhiNativeResourcePayload>&& payload);
     // Private original-derived storage preflight. No mutation/allocation.
     const char* recordingBarrierStorageDiagnostic(rhi::CommandUsageKind kind) const noexcept;
     const char* resourceRetentionStorageDiagnostic(std::size_t count) const noexcept;

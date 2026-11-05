@@ -53,13 +53,13 @@ void unified_ui_atlas_runtime_lowers_text_to_glyph_quads()
     textCommand.clipRect = textCommand.rect;
     textCommand.text = text("LEVEL");
     textCommand.styleId = text("text.hud");
-    textCommand.fontToken = text("font.ui.body");
+    textCommand.fontToken = text("font.ui.body.with.a.long.resource.identity");
 
     arp::core::pmr::Vector<arp::renderer::ui::UiDrawCommand> commands{
         &arp::core::defaultCpuMemoryResource()};
     commands.push_back(std::move(textCommand));
 
-    auto fonts = arp::tests::preparedUiFontFaces("font.ui.body");
+    auto fonts = arp::tests::preparedUiFontFaces("font.ui.body.with.a.long.resource.identity");
     arp::renderer::ui::UnifiedUiAtlasRuntimeBuildDesc desc;
     desc.fontFaces = &fonts;
     desc.baseAtlas = std::move(baseAtlas);
@@ -94,6 +94,71 @@ void unified_ui_atlas_runtime_lowers_text_to_glyph_quads()
         assert(command.atlasPageIndex == 0u);
     }
     assert(!runtime.exposesNativeBackendHandles());
+
+    // Stable frames keep the owned command slots and glyph resource strings.
+    // Long font identities exercise borrowed layout/glyph results as well
+    // as the persistent layout key; a stable frame needs no new allocation.
+    arp::renderer::ui::UnifiedUiAtlasResolveResult reused;
+    runtime.resolveInto(commands, reused);
+    assert(reused.ok() && reused.commands().size() == resolved.commands().size());
+    const auto* storage = reused.commands().data();
+    const auto warmAllocations = arp::core::defaultCpuAllocator().stats().allocationCount;
+    for (unsigned i = 0; i < 16u; ++i) {
+        runtime.resolveInto(commands, reused);
+        assert(reused.ok() && reused.commands().data() == storage);
+        assert(reused.commands()[0].textureResourceId == resolved.commands()[0].textureResourceId);
+        assert(reused.commands()[0].rect.x == resolved.commands()[0].rect.x);
+        assert(
+            reused.commands()[0].textureSourceRect.x == resolved.commands()[0].textureSourceRect.x);
+    }
+    const auto reusedAllocations =
+        arp::core::defaultCpuAllocator().stats().allocationCount - warmAllocations;
+    assert(reusedAllocations == 0u);
+    const auto freshStart = arp::core::defaultCpuAllocator().stats().allocationCount;
+    for (unsigned i = 0; i < 16u; ++i)
+        assert(runtime.resolve(commands).ok());
+    assert(
+        reusedAllocations < arp::core::defaultCpuAllocator().stats().allocationCount - freshStart);
+    commands[0].fontToken.clear();
+    runtime.resolveInto(commands, reused);
+    assert(!reused.ok() && reused.commands().empty());
+    commands[0].fontToken = "font.ui.body.with.a.long.resource.identity";
+    runtime.resolveInto(commands, reused);
+    assert(reused.ok() && reused.commands().size() == 5u);
+}
+
+void reused_layout_key_resets_sdf_mode_for_the_next_font()
+{
+    using namespace arp::renderer::ui;
+    auto fonts = arp::tests::preparedUiFontFaces("font.alpha");
+    auto sdf = fonts.front();
+    sdf.tokenId = "font.sdf";
+    sdf.renderMode = "sdf";
+    fonts.push_back(std::move(sdf));
+    arp::renderer::GuiAtlasTextureDesc base;
+    base.resourceId = "texture/mixed-fonts";
+    base.extent = {4u, 4u};
+    base.rgba8.resize(64u, 255u);
+    UiDrawCommand command;
+    command.kind = UiDrawCommandKind::Text;
+    command.styleId = "text.body";
+    command.fontToken = "font.sdf";
+    command.text = "A";
+    command.rect = command.clipRect = arp::ui::LayoutRect::fromOriginSize(0, 0, 200, 80);
+    arp::core::pmr::Vector<UiDrawCommand> commands{command};
+    command.fontToken = "font.alpha";
+    commands.push_back(command);
+    UnifiedUiAtlasRuntimeBuildDesc desc;
+    desc.baseAtlas = std::move(base);
+    desc.fontFaces = &fonts;
+    desc.commands = &commands;
+    auto runtime = UnifiedUiAtlasRuntime::build(std::move(desc));
+    assert(runtime.ok());
+    for (unsigned i = 0; i < 3u; ++i) {
+        const auto result = runtime.resolve(commands);
+        assert(result.ok() && result.commands().size() == 2u);
+        assert(result.commands()[0].sdfMode && !result.commands()[1].sdfMode);
+    }
 }
 
 void asset_declared_han_font_does_not_depend_on_editor_token_name()
@@ -755,6 +820,7 @@ int main()
 {
     asset_declared_han_font_does_not_depend_on_editor_token_name();
     unified_ui_atlas_runtime_lowers_text_to_glyph_quads();
+    reused_layout_key_resets_sdf_mode_for_the_next_font();
     glyph_cells_do_not_clip_wide_uppercase_letters();
     glyph_quads_are_clipped_to_command_clip_rect();
     pika_numeric_font_face_keeps_general_label_inside_authored_rect();

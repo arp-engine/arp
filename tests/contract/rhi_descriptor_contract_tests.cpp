@@ -18,8 +18,79 @@
 #include <cassert>
 #include <memory>
 
+namespace {
+class CountingDescriptorSet final : public arp::rhi::DescriptorSet {
+public:
+    CountingDescriptorSet()
+    {
+        layout_.bindings.push_back(
+            {0u, arp::rhi::DescriptorType::UniformBuffer, arp::rhi::ShaderStage::Vertex});
+    }
+
+    const arp::rhi::DescriptorSetAllocation& allocation() const override { return allocation_; }
+
+    const arp::rhi::DescriptorLayoutDesc& layout() const override { return layout_; }
+
+    bool isCurrentAllocation() const override
+    {
+        ++arenaChecks;
+        return live;
+    }
+
+    bool hasWrittenBinding(std::uint32_t) const override { return true; }
+
+    bool hasWrittenBindingElement(std::uint32_t, std::uint32_t) const override { return true; }
+
+    arp::rhi::ValidationResult validateBinding(std::uint32_t) const override { return {true, {}}; }
+
+    arp::rhi::ValidationResult validateBindingElement(std::uint32_t, std::uint32_t) const override
+    {
+        ++elementChecks;
+        return {true, {}};
+    }
+
+    arp::rhi::DescriptorSetStats stats() const override { return {}; }
+
+    mutable unsigned arenaChecks = 0u, elementChecks = 0u;
+    bool live = true;
+
+private:
+    arp::rhi::ValidationResult writeImpl(const arp::rhi::DescriptorBindingWrite&) override
+    {
+        return {true, {}};
+    }
+
+    arp::rhi::DescriptorSetAllocation allocation_{true};
+    arp::rhi::DescriptorLayoutDesc layout_;
+};
+
+void complete_metadata_delegation_observes_live_bindings_once()
+{
+    using namespace arp::rhi;
+    auto device = createNullDevice();
+    auto layout = device->createPipelineLayout({});
+    assert(layout);
+    CountingDescriptorSet set;
+    BoundDescriptorSlots bound;
+    assert(bound.bindSet(0u, set, nullptr, 0u).success);
+    ShaderReflectionDesc reflection;
+    assert(bound.validateComplete(layout.get(), &reflection, ShaderStage::Vertex).success);
+    assert(set.arenaChecks == 1u && set.elementChecks == 1u);
+    assert(bound.validateComplete(layout.get(), &reflection, ShaderStage::Vertex).success);
+    assert(set.arenaChecks == 2u && set.elementChecks == 2u);
+    set.live = false;
+    const auto stale = bound.validateComplete(nullptr, nullptr, ShaderStage::Vertex);
+    assert(!stale.success && stale.diagnostics.find("ALLOCATION-STALE") != std::pmr::string::npos);
+    set.live = true;
+    const auto missing = bound.validateComplete(nullptr, nullptr, ShaderStage::Vertex);
+    assert(!missing.success
+        && missing.diagnostics.find("pipeline must be bound") != std::pmr::string::npos);
+}
+} // namespace
+
 int main()
 {
+    complete_metadata_delegation_observes_live_bindings_once();
     arp::test::DescriptorSlotShapeFixture::verify();
     arp::test::DescriptorBufferBindingRangeFixture::verifyContract();
     {

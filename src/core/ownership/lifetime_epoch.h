@@ -22,6 +22,8 @@ class LifetimeEpoch final {
     };
 
 public:
+    class Observation;
+
     class Ticket final {
     public:
         Ticket() = default;
@@ -42,6 +44,7 @@ public:
 
     private:
         friend class LifetimeEpoch;
+        friend class Observation;
 
         explicit Ticket(const std::shared_ptr<State>& state) noexcept
             : state_(state), generation_(state->current)
@@ -49,6 +52,33 @@ public:
 
         std::weak_ptr<State> state_;
         std::uint64_t generation_ = 0u;
+    };
+
+    // Repeated observation under the same external serialization as Ticket.
+    // The weak ticket guards this immutable borrow of the private state. No
+    // temporary strong owner is acquired by isCurrent(), and the owner is
+    // still the only object that can advance or destroy that state.
+    class Observation final {
+    public:
+        Observation() = default;
+
+        bool isCurrent() const noexcept
+        {
+            return identity_.generation_ != 0u && !identity_.state_.expired()
+                && state_->current == identity_.generation_;
+        }
+
+        Ticket ticket() const noexcept { return identity_; }
+
+    private:
+        friend class LifetimeEpoch;
+
+        explicit Observation(const std::shared_ptr<State>& state) noexcept
+            : identity_(state), state_(state.get())
+        {}
+
+        Ticket identity_;
+        const State* state_ = nullptr;
     };
 
     // A starting value permits bounded-domain exhaustion tests. Zero starts
@@ -61,6 +91,8 @@ public:
     LifetimeEpoch& operator=(LifetimeEpoch&&) = delete;
 
     Ticket ticket() const noexcept { return Ticket(state_); }
+
+    Observation observe() const noexcept { return Observation(state_); }
 
     bool isActive() const noexcept { return state_->current != 0u; }
 

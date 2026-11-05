@@ -254,18 +254,41 @@ SceneSpatialOwner Scene3DSpatialIndex::owner(SceneSpatialHandle h) const
 void Scene3DSpatialIndex::extractVisible(
     const scene::Scene& scene, scene::RenderExtractSink& sink) const
 {
+    extractVisible(scene, sink, {});
+}
+
+void Scene3DSpatialIndex::extractVisible(const scene::Scene& scene,
+    scene::RenderExtractSink& sink,
+    core::ArrayView<SceneSpatialOwner> unbounded) const
+{
     if (queriedRevision_ != revision_)
         throw core::DiagnosticError("SCENE3D-SPATIAL-QUERY-STALE");
-    for (const auto handle : extraction_) {
-        const auto identity = require(handle).owner;
+    const auto key = [](const SceneSpatialOwner& owner) {
+        return std::tuple{owner.object.value(), owner.component.value()};
+    };
+    for (std::size_t i = 1; i < unbounded.size(); ++i)
+        if (!(key(unbounded[i - 1]) < key(unbounded[i])))
+            throw core::DiagnosticError("SCENE3D-SPATIAL-UNBOUNDED-ORDER");
+    const auto dispatch = [&](const SceneSpatialOwner& identity) {
         const auto* object = scene.findObject(identity.object);
         const auto* component = object ? object->findComponent(identity.component) : nullptr;
         if (!component)
             throw core::DiagnosticError("SCENE3D-SPATIAL-COMPONENT-RETIRED");
         if (!object->activeInHierarchy() || !component->enabled() || component->pendingDestroy())
-            continue;
+            return;
         const auto world = object->world_transform();
         component->extract({object, &world, true}, sink);
+    };
+    std::size_t next = 0;
+    for (const auto handle : extraction_) {
+        const auto identity = require(handle).owner;
+        while (next < unbounded.size() && key(unbounded[next]) < key(identity))
+            dispatch(unbounded[next++]);
+        if (next < unbounded.size() && key(unbounded[next]) == key(identity))
+            throw core::DiagnosticError("SCENE3D-SPATIAL-DUPLICATE-UNBOUNDED");
+        dispatch(identity);
     }
+    while (next < unbounded.size())
+        dispatch(unbounded[next++]);
 }
 } // namespace arp::scene3d

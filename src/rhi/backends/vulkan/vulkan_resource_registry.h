@@ -14,6 +14,14 @@ namespace arp::rhi_vulkan {
 
 class VulkanRhiResourceRegistry {
 public:
+    // One synchronous descriptor observation. Never cache this across writes,
+    // commands or public-object destruction; each use obtains a fresh result.
+    struct DescriptorResource {
+        std::shared_ptr<VulkanRhiNativeResourcePayload> resource;
+        bool textureViewParentLive = false;
+        bool bufferGpuWritesSealed = false;
+    };
+
     /// Construct with an explicit CPU memory resource. When omitted, the
     /// process-wide default resource is used. Threaded through to the pmr
     /// entries map so a backend can bind a per-instance intent/budget
@@ -131,6 +139,31 @@ public:
         if (!resolved)
             entries_.erase(found);
         return resolved;
+    }
+
+    DescriptorResource descriptorResource(rhi::GpuResourceId id, rhi::DescriptorType type) const
+    {
+        std::scoped_lock lock(mutex_);
+        const auto found = entries_.find(id.value);
+        if (found == entries_.end())
+            return {};
+        const auto& entry = found->second;
+        DescriptorResource result;
+        result.resource = entry.payload.lock();
+        if (!result.resource) {
+            entries_.erase(found);
+            return {};
+        }
+        if (type == rhi::DescriptorType::StorageBuffer)
+            if (const auto seal = entry.gpuWriteSeal.lock())
+                result.bufferGpuWritesSealed = seal->writableDescriptorSealed();
+        if (entry.parentTexture.isValid()
+            && result.resource->backendVulkanTextureViewDescAvailable()) {
+            const auto parent = entries_.find(entry.parentTexture.value);
+            if (parent != entries_.end() && parent->second.textureObject)
+                result.textureViewParentLive = bool(parent->second.payload.lock());
+        }
+        return result;
     }
 
     void unregisterResource(rhi::GpuResourceId id)

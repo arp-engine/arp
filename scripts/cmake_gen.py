@@ -185,7 +185,7 @@ class CmakeWriter:
         self._w()
 
         # RC compiler for MinGW
-        self._w("if(CMAKE_HOST_WIN32 AND EXISTS \"C:/mingw64/bin/windres.exe\")")
+        self._w("if(CMAKE_HOST_WIN32 AND NOT DEFINED CMAKE_RC_COMPILER AND EXISTS \"C:/mingw64/bin/windres.exe\")")
         self._w("    set(ENV{RC} \"C:/mingw64/bin/windres.exe\")")
         self._w("    set(CMAKE_RC_COMPILER \"C:/mingw64/bin/windres.exe\" CACHE FILEPATH \"\" FORCE)")
         self._w("endif()")
@@ -859,6 +859,7 @@ class CmakeWriter:
         self._emit_sdl3_postbuild()
         self._emit_enable_testing()
         self._w("include(cmake/ScriptAotTestRegistrations.cmake)")
+        self._w("include(cmake/GuiReuseValidation.cmake)")
         self._w()
         self._emit_android_package_contract()
         self._w("include(cmake/ArpEditor.cmake)")

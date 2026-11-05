@@ -97,8 +97,10 @@ void verifyLifetimeEpoch()
 {
     using arp::core::LifetimeEpoch;
     LifetimeEpoch::Ticket old;
+    LifetimeEpoch::Observation repeated;
     arp::core::LifetimeObserver<const int> observer;
     assert(!old.isCurrent());
+    assert(!repeated.isCurrent());
     assert(observer.get() == nullptr);
     {
         LifetimeEpoch owner;
@@ -106,36 +108,50 @@ void verifyLifetimeEpoch()
         observer = {&value, owner.ticket()};
         assert(observer.get() == &value && *observer.get() == 17);
         old = owner.ticket();
+        repeated = owner.observe();
+        auto observationCopy = repeated;
+        auto observationMoved = std::move(observationCopy);
+        assert(!observationCopy.isCurrent() && observationMoved.isCurrent());
+        assert(repeated.isCurrent() && repeated.ticket().sameCurrentEpoch(old));
         auto copy = old;
         assert(old.isCurrent() && copy.isCurrent());
         const auto before = arp::core::defaultCpuAllocator().stats();
         for (unsigned i = 0; i < 4096u; ++i) {
             owner.advance();
             assert(owner.ticket().isCurrent() && !old.isCurrent());
+            assert(owner.observe().isCurrent() && !repeated.isCurrent());
+            assert(!observationMoved.isCurrent());
             assert(observer.get() == nullptr);
         }
         const auto after = arp::core::defaultCpuAllocator().stats();
         assert(after.allocationCount == before.allocationCount);
         assert(after.liveBytes == before.liveBytes);
         old = owner.ticket();
+        repeated = owner.observe();
         assert(old.isCurrent() && !copy.isCurrent());
     }
     assert(!old.isCurrent());
+    assert(!repeated.isCurrent() && !repeated.ticket().isCurrent());
     assert(observer.get() == nullptr);
     LifetimeEpoch replacement;
     assert(replacement.ticket().isCurrent() && !old.isCurrent());
     LifetimeEpoch terminal(std::numeric_limits<std::uint64_t>::max() - 1u);
     auto beforeLast = terminal.ticket();
+    auto observedBeforeLast = terminal.observe();
     terminal.advance();
     auto last = terminal.ticket();
+    auto observedLast = terminal.observe();
+    assert(observedLast.isCurrent() && !observedBeforeLast.isCurrent());
     assert(last.isCurrent() && !beforeLast.isCurrent());
     terminal.advance();
     assert(!last.isCurrent() && !terminal.isActive() && !terminal.ticket().isCurrent());
+    assert(!observedLast.isCurrent() && !terminal.observe().isCurrent());
     terminal.advance();
     assert(!terminal.isActive() && !last.isCurrent());
     LifetimeEpoch exhausted(0u);
     exhausted.advance();
     assert(!exhausted.isActive() && !exhausted.ticket().isCurrent());
+    assert(!exhausted.observe().isCurrent());
 }
 
 void verifyWebGpuMetadataIdentity(bool liveness)

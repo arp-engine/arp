@@ -1,6 +1,7 @@
 #include "core/memory/cpu_allocator.h"
 #include "fixtures/capability_override_device.h"
 #include "renderer/render_graph/compiled_frame_graph.h"
+#include "renderer/render_graph/frame_graph_compile_cache.h"
 #include "renderer/render_graph/render_graph.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi_shader_package_test_helpers.h"
@@ -1132,7 +1133,11 @@ void test_sparse_handles_after_reset_and_compiler_scratch_lifetime()
     const auto removedBuffer = graph.createBuffer(bd);
     auto importedBuffer = arp::core::shareUnique(device->createBuffer(bd));
     const auto retainedBuffer = graph.importBufferRef(importedBuffer);
+    assert(graph.importTextureRef(imported).id == retained.id);
+    assert(graph.importBufferRef(importedBuffer).id == retainedBuffer.id);
     graph.reset();
+    assert(graph.importTextureRef(imported).id == retained.id);
+    assert(graph.importBufferRef(importedBuffer).id == retainedBuffer.id);
     assert(&graph.texture(retained) == imported.get());
     assert(&graph.buffer(retainedBuffer) == importedBuffer.get());
     const auto next = graph.createTexture(desc);
@@ -1169,11 +1174,261 @@ void test_sparse_handles_after_reset_and_compiler_scratch_lifetime()
     assert(compiled.passes()[0].name == "PersistentCompilerOutput");
     assert(!compiled.resourceLifetimes().empty() && !compiled.barrierPlan().empty());
     graph.execute(compiled);
+    const auto retainedTrace = graph.barrierTrace();
+    assert(retainedTrace.size() == compiled.barrierPlan().size());
+    for (std::size_t i = 0; i < retainedTrace.size(); ++i) {
+        const auto& actual = retainedTrace[i];
+        const auto& expected = compiled.barrierPlan()[i];
+        assert(actual.passName == expected.passName && actual.resourceName == expected.resourceName
+            && actual.kind == expected.kind && actual.handleId == expected.handleId
+            && actual.oldLayout == expected.oldLayout && actual.newLayout == expected.newLayout
+            && actual.srcStage == expected.srcStage && actual.dstStage == expected.dstStage
+            && actual.srcAccess == expected.srcAccess && actual.dstAccess == expected.dstAccess
+            && actual.aspect == expected.aspect && actual.before == expected.before
+            && actual.after == expected.after && actual.memoryOnly == expected.memoryOnly
+            && actual.replaySourceStages == expected.replaySourceStages
+            && actual.replaySourceAccess == expected.replaySourceAccess);
+    }
+    graph.execute(compiled);
+    assert(graph.barrierTrace().size() == retainedTrace.size());
+    graph.reset();
+    // Public value copies and compiler output must outlive execution's text
+    // storage, including long labels that do not fit small-string storage.
+    assert(retainedTrace.front().passName == "PersistentCompilerOutput");
+    assert(retainedTrace.front().resourceName == compiled.barrierPlan().front().resourceName);
+    arp::render_graph::CompiledFrameGraph assigned;
+    assigned = compiled;
+    auto moved = compiled;
+    assigned = std::move(moved);
+    assert(assigned.resourceLifetimes().front().firstUsePassName == "PersistentCompilerOutput");
+    assert(assigned.barrierPlan().front().passName == retainedTrace.front().passName);
+}
+
+void test_compiler_metadata_storage_and_value_lifetime()
+{
+    auto device = arp::rhi::createNullDevice();
+    const std::pmr::string label = "CompilerMetadataResourceWithLongOwnedName";
+    const std::pmr::string reader = "CompilerMetadataReaderWithLongOwnedName";
+    const std::pmr::string writer = "CompilerMetadataWriterWithLongOwnedName";
+    const auto compileResources = [&](unsigned count) {
+        arp::render_graph::FrameGraph graph(*device);
+        std::vector<arp::render_graph::BufferHandle> buffers;
+        for (unsigned i = 0; i < count; ++i) {
+            auto bufferName = label;
+            bufferName.append(std::to_string(i));
+            buffers.push_back(graph.importBufferRef(
+                arp::core::shareUnique(device->createBuffer(bufferDesc(bufferName,
+                    64,
+                    arp::rhi::ResourceUsage::UniformBuffer | arp::rhi::ResourceUsage::CopyDst,
+                    arp::rhi::ResourceState::ShaderRead)))));
+        }
+        const auto texture = graph.importTexture(device->createTexture(textureDesc(label,
+            {8, 8, 1},
+            arp::rhi::TextureFormat::Rgba8Unorm,
+            arp::rhi::TextureUsage::Sampled | arp::rhi::TextureUsage::RenderAttachment,
+            arp::rhi::ResourceState::ShaderRead)));
+        auto readPass = graph.addPass(reader);
+        readPass.read(texture, arp::rhi::ResourceState::ShaderRead);
+        for (const auto buffer : buffers)
+            readPass.read(buffer, arp::rhi::ResourceState::ShaderRead);
+        readPass.execute([](arp::render_graph::RenderContext&) {});
+        auto writePass = graph.addPass(writer);
+        writePass.writeAttachment(texture,
+            arp::rhi::ResourceState::ColorAttachment,
+            arp::rhi::LoadOp::Clear,
+            arp::rhi::StoreOp::Store);
+        writePass.execute([](arp::render_graph::RenderContext&) {});
+        auto copyPass = graph.addPass("CompilerMetadataCopyWithLongOwnedName")
+                            .kind(arp::render_graph::PassKind::Copy);
+        for (const auto buffer : buffers)
+            copyPass.write(buffer, arp::rhi::ResourceState::CopyDst);
+        copyPass.execute([](arp::render_graph::RenderContext&) {});
+        const auto before = arp::core::defaultCpuAllocator().stats().allocationCount;
+        auto compiled = graph.compile();
+        const auto allocations = arp::core::defaultCpuAllocator().stats().allocationCount - before;
+        auto* arena = compiled.passResourceUses()[0][0].resourceName.get_allocator().resource();
+        assert(arena != &arp::core::defaultCpuMemoryResource());
+        for (const auto& uses : compiled.passResourceUses())
+            for (const auto& use : uses) {
+                assert(use.resourceName.compare(0, label.size(), label) == 0);
+                assert(use.resourceName.get_allocator().resource() == arena);
+            }
+        assert(compiled.dependencies().size() == count + 1);
+        for (const auto& dependency : compiled.dependencies()) {
+            assert(dependency.resourceName.compare(0, label.size(), label) == 0);
+            assert(dependency.dependency == arp::render_graph::TopologyDependencyKind::War);
+            assert(dependency.resourceName.get_allocator().resource() == arena);
+        }
+        graph.execute(compiled);
+        graph.resetForNextFrame();
+        // The source records and compiler scratch are gone before any value copy
+        // is read; moved records may still refer to the retained text arena.
+        auto copied = compiled;
+        auto moved = std::move(compiled);
+        arp::render_graph::CompiledFrameGraph assigned;
+        assigned = copied;
+        copied = {};
+        assert(assigned.passes()[0].name == reader);
+        assigned = std::move(moved);
+        assert(assigned.passes()[1].name == writer);
+        assert(assigned.passResourceUses()[0].back().resourceName.compare(0, label.size(), label)
+            == 0);
+        assert(assigned.dependencies().back().resourceName.compare(0, label.size(), label) == 0);
+        assert(assigned.externalResources().front().resourceName == label);
+        return allocations;
+    };
+    const auto small = compileResources(16);
+    const auto large = compileResources(128);
+    // Eight times the declarations must not cause eight times the independent
+    // allocations. Arena growth and output-vector growth remain permitted.
+    assert(large < small * 3);
+    std::printf("compiler metadata allocations: 16=%llu, 128=%llu\n",
+        static_cast<unsigned long long>(small),
+        static_cast<unsigned long long>(large));
+}
+
+void test_frame_storage_reuse_releases_imports()
+{
+    auto device = arp::rhi::createNullDevice();
+    arp::render_graph::FrameGraph graph(*device);
+    const auto td = textureDesc("ReusableImportedTexture",
+        {8, 8, 1},
+        arp::rhi::TextureFormat::Rgba8Unorm,
+        arp::rhi::TextureUsage::RenderAttachment | arp::rhi::TextureUsage::Sampled,
+        arp::rhi::ResourceState::ShaderRead);
+    const auto bd = bufferDesc("ReusableImportedBuffer",
+        64,
+        arp::rhi::ResourceUsage::UniformBuffer,
+        arp::rhi::ResourceState::ShaderRead);
+    graph.reserveBuildStorage(64, 64, 4);
+    for (unsigned frame = 0; frame < 3; ++frame) {
+        std::vector<std::shared_ptr<arp::rhi::GpuTexture>> textures;
+        std::vector<std::shared_ptr<arp::rhi::GpuBuffer>> buffers;
+        std::vector<arp::render_graph::TextureHandle> textureHandles;
+        std::vector<arp::render_graph::BufferHandle> bufferHandles;
+        for (unsigned i = 0; i < 64; ++i) {
+            textures.push_back(arp::core::shareUnique(device->createTexture(td)));
+            buffers.push_back(arp::core::shareUnique(device->createBuffer(bd)));
+            textureHandles.push_back(graph.importTextureRef(textures.back()));
+            bufferHandles.push_back(graph.importBufferRef(buffers.back()));
+        }
+        // Reverse lookup exercises ordered insertion and vector growth;
+        // stable handles must survive both without duplicate records.
+        for (std::size_t i = textures.size(); i-- > 0;) {
+            assert(graph.importTextureRef(textures[i]).id == textureHandles[i].id);
+            assert(graph.importBufferRef(buffers[i]).id == bufferHandles[i].id);
+        }
+        auto callbackOwner = arp::core::makeShared<unsigned>(frame);
+        std::weak_ptr<unsigned> callbackLifetime = callbackOwner;
+        const auto beforeAuthoring = arp::core::defaultCpuAllocator().stats().allocationCount;
+        graph.addPass("ReusableFrame")
+            .read(bufferHandles.front(), arp::rhi::ResourceState::ShaderRead)
+            .writeAttachment(textureHandles.front(),
+                arp::rhi::ResourceState::ColorAttachment,
+                arp::rhi::LoadOp::Clear,
+                arp::rhi::StoreOp::Store)
+            .execute([callbackOwner](arp::render_graph::RenderContext&) {});
+        const auto authoringAllocations =
+            arp::core::defaultCpuAllocator().stats().allocationCount - beforeAuthoring;
+        if (frame > 0)
+            assert(authoringAllocations == 0u);
+        graph.execute(graph.compile());
+        callbackOwner.reset();
+        assert(!callbackLifetime.expired());
+        std::weak_ptr<arp::rhi::GpuTexture> texture = textures.front();
+        std::weak_ptr<arp::rhi::GpuBuffer> buffer = buffers.front();
+        textures.clear();
+        buffers.clear();
+        assert(!texture.expired() && !buffer.expired());
+        graph.resetForNextFrame();
+        assert(texture.expired() && buffer.expired());
+        assert(callbackLifetime.expired());
+        assert(graph.executionTrace().empty() && graph.markerTrace().empty());
+    }
+}
+
+void test_compilation_cache_exact_recipe_and_current_callbacks()
+{
+    auto device = arp::rhi::createNullDevice();
+    arp::render_graph::FrameGraphCompileCache cache(*device, 2);
+    arp::core::SharedPtr<const arp::render_graph::CompiledFrameGraph> retained;
+    unsigned observed = 0;
+    const auto frame = [&](unsigned stamp,
+                           unsigned width,
+                           arp::rhi::ResourceState state,
+                           bool culling,
+                           float red = 0) {
+        arp::render_graph::FrameGraph graph(*device);
+        graph.setPassCullingEnabled(culling);
+        auto target = arp::core::shareUnique(device->createTexture(textureDesc("CacheTarget",
+            {width, 32, 1},
+            arp::rhi::TextureFormat::Rgba8Unorm,
+            arp::rhi::TextureUsage::RenderAttachment | arp::rhi::TextureUsage::Sampled,
+            state)));
+        const auto handle = graph.importTextureRef(target);
+        graph.addPass("CurrentCallback")
+            .writeAttachment(handle,
+                arp::rhi::ResourceState::ColorAttachment,
+                arp::rhi::LoadOp::Clear,
+                arp::rhi::StoreOp::Store,
+                {},
+                {red, 0, 0, 1})
+            .execute([&, stamp](arp::render_graph::RenderContext&) {
+                observed = stamp;
+            });
+        auto compiled = cache.compile(graph);
+        graph.execute(*compiled);
+        assert(observed == stamp);
+        return compiled;
+    };
+    retained = frame(1, 32, arp::rhi::ResourceState::ShaderRead, false);
+    auto matched = frame(2, 32, arp::rhi::ResourceState::ShaderRead, false);
+    assert(matched == retained && cache.hits() == 1 && cache.misses() == 1);
+    assert(frame(3, 64, arp::rhi::ResourceState::ShaderRead, false) != retained);
+    assert(frame(4, 32, arp::rhi::ResourceState::ColorAttachment, false) != retained);
+    assert(cache.entryCount() == 2);
+    assert(retained->passes()[0].name == "CurrentCallback");
+    const auto misses = cache.misses();
+    (void)frame(5, 32, arp::rhi::ResourceState::ColorAttachment, true);
+    assert(cache.misses() == misses + 1);
+    const auto beforeClear = cache.misses();
+    const auto changedClear = frame(6, 32, arp::rhi::ResourceState::ColorAttachment, true, .5f);
+    assert(
+        cache.misses() == beforeClear + 1 && changedClear->loadStorePlan()[0].clearColor.r == .5f);
+    {
+        arp::render_graph::FrameGraph invalid(*device);
+        const auto unwritten = invalid.createTransientTexture(textureDesc("Unwritten",
+            {32, 32, 1},
+            arp::rhi::TextureFormat::Rgba8Unorm,
+            arp::rhi::TextureUsage::Sampled | arp::rhi::TextureUsage::RenderAttachment));
+        invalid.addPass("ReadBeforeProducer")
+            .read(unwritten, arp::rhi::ResourceState::ShaderRead)
+            .execute([](arp::render_graph::RenderContext&) {});
+        bool diagnostic = false;
+        try {
+            (void)cache.compile(invalid);
+        } catch (const std::runtime_error&) {
+            diagnostic = true;
+        }
+        assert(diagnostic);
+    }
+    auto otherDevice = arp::rhi::createNullDevice();
+    arp::render_graph::FrameGraph wrongDevice(*otherDevice);
+    bool rejected = false;
+    try {
+        (void)cache.compile(wrongDevice);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    assert(rejected);
 }
 
 int main()
 {
+    test_compiler_metadata_storage_and_value_lifetime();
+    test_compilation_cache_exact_recipe_and_current_callbacks();
     test_sparse_handles_after_reset_and_compiler_scratch_lifetime();
+    test_frame_storage_reuse_releases_imports();
     test_texture_pass_order_and_transitions();
     test_compile_orders_passes_by_resource_dependencies();
     test_imported_read_before_write_preserves_external_contents();

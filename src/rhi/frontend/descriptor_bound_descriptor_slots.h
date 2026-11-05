@@ -106,9 +106,13 @@ public:
         const ShaderReflectionDesc* shaderReflection,
         ShaderStage requiredStages) const
     {
-        const auto live = validateLiveBindings();
-        if (!live.success)
-            return live;
+        // The metadata overload below performs the full live traversal once.
+        // On missing metadata keep the existing liveness-first diagnostic order.
+        if (!pipelineLayout || !shaderReflection) {
+            const auto live = validateLiveBindings();
+            if (!live.success)
+                return live;
+        }
         if (!pipelineLayout) {
             return {false, "pipeline must be bound before descriptor completeness validation"};
         }

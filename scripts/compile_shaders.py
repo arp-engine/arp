@@ -2351,6 +2351,7 @@ SCALAR_TYPE_SIZES = {
 }
 
 VERTEX_FORMAT_NAMES = {
+    "float": "Float",
     "float2": "Float2", "float3": "Float3", "float4": "Float4",
 }
 
@@ -3330,6 +3331,7 @@ SHADER_SOURCES = [
     ("CloudCompactComposite", "cloud_compact_composite", "renderer/cloud_compact_composite.slang", ["vertexMain", "fragmentMain"]),
     ("SceneOpaque", "scene_opaque", "renderer/scene_opaque.slang", ["vertexMain", "fragmentMain"]),
     ("SkinnedLayerSurface", "skinned_layer_surface", "renderer/skinned_layer_surface.slang", ["vertexMain", "fragmentMain"]),
+    ("TerrainLayerSurface", "terrain_layer_surface", "renderer/terrain_layer_surface.slang", ["vertexMain", "fragmentMain"]),
     ("InstancedLayerSurface", "instanced_layer_surface", "renderer/instanced_layer_surface.slang", ["vertexMain", "fragmentMain"]),
     ("VertexColoredSurface", "vertex_colored_surface", "renderer/vertex_colored_surface.slang", ["vertexMain", "fragmentMain"]),
     ("DisplayTransfer", "display_transfer", "renderer/display_transfer.slang", ["vertexMain", "fragmentMain"]),
@@ -3425,6 +3427,7 @@ SHADER_SOURCES = [
 ]
 
 SHADER_SHARED_SOURCES = (
+    "renderer/layer_surface_body.slang",
     "renderer/pbr_brdf.slang",
     "core/leaf_surface.slang",
     "core/pbr_material.slang",
@@ -3448,6 +3451,7 @@ WGSL_PUSH_CONSTANT_SHADERS = {
     "vertex_colored_surface",
     "display_transfer",
     "skinned_layer_surface",
+    "terrain_layer_surface",
     "gui_unified",
     "queen_portable_shadow",
     "queen_portable",
@@ -3482,6 +3486,7 @@ WGSL_VERTEX_LOCATION_SHADERS = {
     "vertex_colored_surface",
     "display_transfer",
     "skinned_layer_surface",
+    "terrain_layer_surface",
     "gui_unified",
     "scene_opaque",
     "scene_pbr",

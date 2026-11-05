@@ -211,6 +211,7 @@ public:
             return RendererResult{false, "GUI RHI render pipeline creation failed"};
         }
 
+        drawPlan_.commands.reserve(detail::kGuiRendererMaxDrawCommands);
         const auto maxUploadBytes = static_cast<std::uint64_t>(detail::kGuiRendererMaxDrawCommands)
             * detail::kGuiRendererVertexBytesPerCommand;
         frameConstants_ = device_.createBuffer({
@@ -609,6 +610,7 @@ public:
 private:
     void reset()
     {
+        drawPlan_ = {};
         shaderPackage_ = {};
         pipeline_.reset();
         pipelineLayout_.reset();
@@ -707,8 +709,12 @@ private:
             return RendererResult{false, frameValid.diagnostics};
         }
 
-        const auto drawPlan =
-            buildGuiDrawPlan(commands, frame.colorTarget.extent, device_.backend());
+        if (commands.size() > detail::kGuiRendererMaxDrawCommands) {
+            passTelemetry_.diagnostics = "GUI RHI draw command count exceeds renderer budget";
+            return RendererResult{false, passTelemetry_.diagnostics};
+        }
+        updateGuiDrawPlan(commands, frame.colorTarget.extent, device_.backend(), drawPlan_);
+        const auto& drawPlan = drawPlan_;
         if (!drawPlan.success) {
             passTelemetry_.diagnostics = drawPlan.diagnostics;
             return RendererResult{false, drawPlan.diagnostics};
@@ -757,6 +763,7 @@ private:
 
     rhi::GpuDevice& device_;
     GuiRendererDesc desc_;
+    GuiDrawPlan drawPlan_;
     rhi::ShaderPackageDesc shaderPackage_;
     arp::core::UniquePtr<rhi::PipelineLayout> pipelineLayout_;
     arp::core::UniquePtr<rhi::RenderPipeline> pipeline_;

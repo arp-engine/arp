@@ -386,6 +386,9 @@ struct ScriptClosure {
     std::shared_ptr<const Program> programOwner;
     std::shared_ptr<Vm> vmOwner;
     ScriptAotModuleHandle aotModule = nullptr;
+    // Weak native context identity prevents cross-instance dispatch without
+    // creating a globals -> callback -> execution context ownership cycle.
+    std::weak_ptr<void> nativeContextOwner;
     std::shared_ptr<void> aotContextOwner;
     std::shared_ptr<void> moduleOwner;
     std::uint32_t moduleVersion = 0;
@@ -434,6 +437,8 @@ struct ScriptPointer {
 struct ScriptMethod {
     int funcIndex = 0;
     Value receiver;
+    ScriptAotModuleHandle aotModule = nullptr;
+    std::weak_ptr<void> nativeContextOwner;
 
     ScriptMethod() = default;
 

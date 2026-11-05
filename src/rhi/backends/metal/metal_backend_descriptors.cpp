@@ -217,7 +217,7 @@ public:
         std::shared_ptr<MetalRhiResourceRegistry> registry,
         const core::LifetimeEpoch& generation)
         : allocation_(std::move(allocation)), layout_(std::move(layout)),
-          registry_(std::move(registry)), generation_(generation.ticket())
+          registry_(std::move(registry)), generation_(generation.observe())
     {}
 
     const rhi::DescriptorSetAllocation& allocation() const override { return allocation_; }
@@ -724,7 +724,9 @@ public:
             if (write.binding != binding)
                 continue;
             written = true;
-            const auto validation = validateBindingElement(binding, write.arrayElement);
+            const auto validation = originalSynchronous_
+                ? validateBindingElement(binding, write.arrayElement)
+                : validateCurrentBindingElement(binding, write.arrayElement);
             if (!validation.success)
                 return validation;
         }
@@ -751,6 +753,12 @@ public:
                 "RHI-DESCRIPTOR-ALLOCATION-STALE: Metal RHI descriptor set validation rejected "
                 "after arena reset"};
         }
+        return validateCurrentBindingElement(binding, arrayElement);
+    }
+
+    rhi::ValidationResult validateCurrentBindingElement(
+        std::uint32_t binding, std::uint32_t arrayElement) const
+    {
         const auto* desc = findBinding(binding);
         for (const auto& write : writes_) {
             if (write.binding != binding || write.arrayElement != arrayElement)
@@ -991,7 +999,7 @@ public:
 
     core::LifetimeEpoch::Ticket allocationEpochTicket() const noexcept override
     {
-        return generation_;
+        return generation_.ticket();
     }
 
     std::optional<rhi::DescriptorBindingWrite> successfulBindingWrite(
@@ -1292,7 +1300,7 @@ private:
     rhi::DescriptorSetAllocation allocation_;
     rhi::DescriptorLayoutDesc layout_;
     std::shared_ptr<MetalRhiResourceRegistry> registry_;
-    core::LifetimeEpoch::Ticket generation_;
+    core::LifetimeEpoch::Observation generation_;
     core::pmr::Vector<rhi::DescriptorBindingWrite> writes_{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<CompletedTexturePublication> completedTextures_{
         &core::defaultCpuMemoryResource()};
@@ -1305,7 +1313,7 @@ public:
         std::shared_ptr<MetalRhiResourceRegistry> registry,
         const core::LifetimeEpoch& generation)
         : allocation_(std::move(allocation)), desc_(std::move(desc)),
-          registry_(std::move(registry)), generation_(generation.ticket()),
+          registry_(std::move(registry)), generation_(generation.observe()),
           descriptors_(desc_.capacity, &core::defaultCpuMemoryResource())
     {}
 
@@ -1405,7 +1413,7 @@ public:
 
     core::LifetimeEpoch::Ticket allocationEpochTicket() const noexcept override
     {
-        return generation_;
+        return generation_.ticket();
     }
 
     std::optional<rhi::DescriptorTableWrite> successfulDescriptorWrite(
@@ -1451,7 +1459,7 @@ private:
     rhi::DescriptorTableAllocation allocation_;
     rhi::DescriptorTableDesc desc_;
     std::shared_ptr<MetalRhiResourceRegistry> registry_;
-    core::LifetimeEpoch::Ticket generation_;
+    core::LifetimeEpoch::Observation generation_;
     core::pmr::Vector<Descriptor> descriptors_;
 };
 

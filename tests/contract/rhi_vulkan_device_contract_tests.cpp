@@ -1,5 +1,6 @@
 #include "../fixtures/cpp_source_evidence.h"
 #include "../fixtures/depth_stencil_attachment_input_fixture.h"
+#include "../fixtures/generated_shader_package_fixture.h"
 #include "../fixtures/original_command_sampler_custody_fixture.h"
 #include "core/memory/cpu_allocator.h"
 #include "rhi/backends/null/null_backend.h"
@@ -84,18 +85,57 @@ void verifyRegistryLookupPreservesWeakLiveness()
     registry.registerTexture(parentId, parent);
     registry.registerResource(viewId, view, parentId);
     assert(registry.textureViewParentIsLive(viewId));
+    assert(
+        registry.descriptorResource(viewId, rhi::DescriptorType::SampledTexture).resource == view);
+    assert(registry.descriptorResource(viewId, rhi::DescriptorType::SampledTexture)
+            .textureViewParentLive);
+    const auto observed = allocator.stats();
+    for (unsigned repeat = 0; repeat < 1000u; ++repeat)
+        assert(registry.descriptorResource(viewId, rhi::DescriptorType::SampledTexture)
+                .textureViewParentLive);
+    assert(allocator.stats().allocationCount == observed.allocationCount);
+    assert(allocator.stats().deallocationCount == observed.deallocationCount);
     registry.unregisterResource(parentId);
     assert(!registry.textureViewParentIsLive(viewId));
+    assert(!registry.descriptorResource(viewId, rhi::DescriptorType::SampledTexture)
+            .textureViewParentLive);
+    assert(
+        registry.descriptorResource(viewId, rhi::DescriptorType::SampledTexture).resource == view);
     assert(parent); // native retention must not keep a public parent ID live
     registry.registerResource(parentId, parent);
     assert(!registry.textureViewParentIsLive(viewId)); // wrong registered kind
+    assert(!registry.descriptorResource(viewId, rhi::DescriptorType::SampledTexture)
+            .textureViewParentLive);
     registry.registerTexture(parentId, parent);
     assert(registry.textureViewParentIsLive(viewId));
+    assert(registry.descriptorResource(viewId, rhi::DescriptorType::SampledTexture)
+            .textureViewParentLive);
     parent.reset();
     assert(!registry.textureViewParentIsLive(viewId));
+    assert(!registry.descriptorResource(viewId, rhi::DescriptorType::SampledTexture)
+            .textureViewParentLive);
     assert(!registry.payload(parentId));
     view.reset();
-    assert(!registry.payload(viewId));
+    assert(!registry.descriptorResource(viewId, rhi::DescriptorType::SampledTexture).resource);
+    assert(allocator.stats().liveBytes == 0u);
+
+    auto device = rhi::createNullDevice();
+    auto buffer = device->createBuffer({"ObservedBuffer",
+        64,
+        rhi::ResourceUsage::StorageBuffer,
+        rhi::MemoryUsage::CpuToGpu,
+        rhi::ResourceState::ShaderRead});
+    auto bufferPayload = core::makeShared<VulkanRhiNativeResourcePayload>();
+    registry.registerResource(buffer->id(), bufferPayload);
+    registry.registerBufferObject(buffer->id(), *buffer);
+    assert(!registry.descriptorResource(buffer->id(), rhi::DescriptorType::StorageBuffer)
+            .bufferGpuWritesSealed);
+    buffer->sealWrites();
+    assert(registry.descriptorResource(buffer->id(), rhi::DescriptorType::StorageBuffer)
+            .bufferGpuWritesSealed);
+    registry.unregisterResource(buffer->id());
+    assert(!registry.descriptorResource(buffer->id(), rhi::DescriptorType::StorageBuffer).resource);
+    assert(bufferPayload);
     assert(allocator.stats().liveBytes == 0u);
 }
 
@@ -124,6 +164,8 @@ void assertVulkanIndirectDispatchLoweringIsNativeAndFailClosed()
         readText(ARP_SOURCE_DIR "/src/rhi/backends/vulkan/vulkan_native_commands.h");
     const auto nativeSource =
         readText(ARP_SOURCE_DIR "/src/rhi/backends/vulkan/vulkan_native_commands.cpp");
+    const auto runtimeSource =
+        readText(ARP_SOURCE_DIR "/src/rhi/backends/vulkan/vulkan_runtime.cpp");
 
     assert(commandSource.find("recordDispatchIndirect") != std::pmr::string::npos);
     assert(commandSource.find("ResourceUsage::IndirectBuffer") != std::pmr::string::npos);
@@ -137,7 +179,8 @@ void assertVulkanIndirectDispatchLoweringIsNativeAndFailClosed()
     assert(commandSource.find("pushState_.onConsume()") != std::pmr::string::npos);
     assert(commandSource.find("indirect dispatch not implemented") == std::pmr::string::npos);
     assert(nativeHeader.find("recordDispatchIndirect") != std::pmr::string::npos);
-    assert(nativeSource.find("PFN_vkCmdDispatchIndirect") != std::pmr::string::npos);
+    assert(runtimeSource.find("PFN_vkCmdDispatchIndirect") != std::pmr::string::npos);
+    assert(nativeSource.find("commandDispatch().dispatchIndirect") != std::pmr::string::npos);
     assert(nativeSource.find("vkCmdDispatchIndirect") != std::pmr::string::npos);
 #endif
 }
@@ -799,6 +842,8 @@ int main(int argc, char** argv)
     assert(shutdownDrainReport.diagnosticId
         == "ARP-RHI-VULKAN-SHUTDOWN-DRAIN-NATIVE-RUNTIME-UNAVAILABLE");
     const auto caps = device->capabilities();
+    assert(device->timestampQueriesSupported() == caps.features.timestampQueries);
+    assert(device->transientAliasingSupported() == caps.features.transientAliasing);
     assert(caps.backend == Backend::Vulkan);
     // Explicit synthetic objects validate metadata; they do not authenticate
     // native feature queries or advertise executable hardware capabilities.
@@ -1027,6 +1072,13 @@ int main(int argc, char** argv)
         16,
         0,
     });
+    arp::rhi::test::GeneratedShaderPackageFixture::prepare(shaderPackage,
+#ifdef ARP_SHADER_DIR
+        ARP_SHADER_DIR "/clear.artifact-set.yaml"
+#else
+        "shaders/clear.artifact-set.yaml"
+#endif
+    );
     RenderPipelineDesc pipelineDesc;
     pipelineDesc.label = "VulkanTrianglePipeline";
     pipelineDesc.layout = pipelineLayout.get();

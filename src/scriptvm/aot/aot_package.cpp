@@ -436,6 +436,7 @@ bool mergePackageClassDependencies(const ScriptAotPackageDefinition& package,
     const ScriptSourceSnapshot& sources,
     const std::shared_ptr<Module>& syntax,
     core::pmr::Vector<String>& resolving,
+    core::pmr::Map<String, std::shared_ptr<Module>>& expanded,
     ScriptDiagnostic& diagnostic)
 {
     core::pmr::Vector<StmtPtr> merged{&core::defaultCpuMemoryResource()};
@@ -457,25 +458,29 @@ bool mergePackageClassDependencies(const ScriptAotPackageDefinition& package,
             diagnostic = error("circular AOT source module import", dependency->source);
             return false;
         }
-        const auto* source = sources.find(dependency->moduleId);
-        auto parsed = parseSource(source->text, pathText(dependency->source));
-        if (!parsed.ok() || !parsed.module) {
-            diagnostic = parsed.ok()
-                ? error("AOT dependency parser returned no module", dependency->source)
-                : parsed.error;
-            return false;
+        auto cached = expanded.find(dependency->moduleId);
+        if (cached == expanded.end()) {
+            const auto* source = sources.find(dependency->moduleId);
+            auto parsed = parseSource(source->text, pathText(dependency->source));
+            if (!parsed.ok() || !parsed.module) {
+                diagnostic = parsed.ok()
+                    ? error("AOT dependency parser returned no module", dependency->source)
+                    : parsed.error;
+                return false;
+            }
+            resolving.push_back(declaration->importModule);
+            const bool nested = mergePackageClassDependencies(
+                package, sources, parsed.module, resolving, expanded, diagnostic);
+            resolving.pop_back();
+            if (!nested)
+                return false;
+            cached = expanded.emplace(dependency->moduleId, std::move(parsed.module)).first;
         }
-        resolving.push_back(declaration->importModule);
-        const bool nested =
-            mergePackageClassDependencies(package, sources, parsed.module, resolving, diagnostic);
-        resolving.pop_back();
-        if (!nested)
-            return false;
-        if (!hasClassDeclaration(parsed.module)) {
+        if (!hasClassDeclaration(cached->second)) {
             appendUniqueDeclaration(merged, declaration);
             continue;
         }
-        for (const auto& dependencyDeclaration : parsed.module->decls)
+        for (const auto& dependencyDeclaration : cached->second->decls)
             appendUniqueDeclaration(merged, dependencyDeclaration);
     }
     syntax->decls = std::move(merged);
@@ -495,8 +500,13 @@ ScriptFrontendResult compilePackageFrontend(const ScriptAotPackageDefinition& pa
         return result;
     }
     core::pmr::Vector<String> resolving{&core::defaultCpuMemoryResource()};
+    // Cache only syntax expansion within this frontend invocation. Semantic
+    // analysis may mutate AST type annotations, so analyzed modules must never
+    // be shared between separate module compilations.
+    core::pmr::Map<String, std::shared_ptr<Module>> expanded{&core::defaultCpuMemoryResource()};
     resolving.push_back(module.moduleId);
-    if (!mergePackageClassDependencies(package, sources, parsed.module, resolving, result.error))
+    if (!mergePackageClassDependencies(
+            package, sources, parsed.module, resolving, expanded, result.error))
         return result;
     const auto analyzed = analyze(parsed.module, nullptr);
     if (!analyzed.ok()) {

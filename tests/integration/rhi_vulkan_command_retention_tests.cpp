@@ -2924,8 +2924,9 @@ void nativeRecordingStorage(const std::shared_ptr<VulkanRhiRuntime>& runtime)
             assert(native->retainResources(owners, 2u));
         if (mode == 1u) {
             assert(!native->retainResources(&source, 1u) && !native->retainResources(&source, 1u));
-            assert(
-                source.use_count() == ownersBefore + 2u + 2u); // Two local arrays plus two slots.
+            // Two logical recording slots still consume the full ceiling,
+            // while one exact native version needs only one retained owner.
+            assert(source.use_count() == ownersBefore + 2u + 1u);
             assert(native->retainResources(&source, 1u));
         }
         if (mode == 2u)
@@ -3501,6 +3502,12 @@ private:
         assert(vulkanRhiTextureStateCommitted(*texture)
             && texture->subresourceState(range) == ResourceState::ShaderRead
             && texture->subresourceState(untouched) == ResourceState::Undefined);
+        // This cold ordinary pass has its own cache domain. Drain it before
+        // measuring the independent bounded prepared-pass lifetime below.
+        command.reset();
+        assert(!waitIdleAndRetireVulkanRhiSubmittedCommands(f.runtime));
+        drainVulkanRhiSubmittedCommandsForShutdown(*f.runtime);
+        assert((clearNativeLive == std::array<unsigned, 3u>{}));
     }
 };
 

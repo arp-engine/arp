@@ -71,8 +71,16 @@ public:
 
     ResourceGraphSubmitStatus submit(ResourceGraphExecutionRequest request,
         ResourceGraphExecutionCompletion completion) noexcept;
+    // Opt-in candidates prepare on this worker service; publication remains
+    // owner work. Candidate types without the preparation interface are unchanged.
+    ResourceGraphSubmitStatus submit(ResourceGraphExecutionRequest request,
+        ResourceGraphExecutionCompletion completion,
+        core::runtime::WorkService& preparationWorkers) noexcept;
 
 private:
+    ResourceGraphSubmitStatus submitImpl(ResourceGraphExecutionRequest,
+        ResourceGraphExecutionCompletion,
+        core::runtime::WorkService*) noexcept;
     ResourceManager& manager_;
     core::io::FileService& fileService_;
     core::runtime::CompletionQueue& completionQueue_;

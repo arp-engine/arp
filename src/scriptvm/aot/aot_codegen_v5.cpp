@@ -10,6 +10,12 @@ namespace arp::scriptvm {
 namespace {
 
 using String = core::pmr::String;
+String checkedCallbackSymbol(const TypedIrSignature& signature);
+
+String callbackNumber(std::int64_t value)
+{
+    return String(std::to_string(value).c_str(), &core::defaultCpuMemoryResource());
+}
 
 String quote(const String& value)
 {
@@ -3360,7 +3366,8 @@ void emitFunction(String& source,
             source += std::to_string(targetIndex);
             source += ", std::move(captures) }; closure.functionId = ";
             source += quote(operation.targetId);
-            source += "; stack[sp++] = Value { std::move(closure) }; }\n";
+            source +=
+                "; closure.aotModule = context.moduleDescriptor; closure.nativeContextOwner = context.lifetimeOwner; stack[sp++] = Value { std::move(closure) }; }\n";
         } else if (opcode == TypedIrOpcode::MakeClosure) {
             const int targetIndex = resolveFunctionIndex(module, operation.targetId);
             source += "    { constexpr std::size_t count = ";
@@ -3370,9 +3377,28 @@ void emitFunction(String& source,
             source += std::to_string(targetIndex);
             source += ", std::move(captures) }; closure.functionId = ";
             source += quote(operation.targetId);
-            source += "; stack[sp++] = Value { std::move(closure) }; }\n";
+            source +=
+                "; closure.aotModule = context.moduleDescriptor; closure.nativeContextOwner = context.lifetimeOwner; stack[sp++] = Value { std::move(closure) }; }\n";
         } else if (opcode == TypedIrOpcode::MakeMethodValue) {
-            source += "    /* receiver remains in the operand slot */\n";
+            if (pc + 1u < operations.size()
+                && operations[pc + 1u]->opcode == TypedIrOpcode::CallValue
+                && operations[pc + 1u]->closureCaptureCount
+                    == kScriptMethodProvenanceCaptureCount) {
+                source += "    /* receiver remains in the operand slot */\n";
+            } else {
+                source +=
+                    "    { Value receiver = stack[--sp]; const auto* instance = checkedValuePayload<arp::reflection::instance>(receiver); if (!instance || !instance->alive() || !instance->class_()) { if (error) { error->code = ScriptDiagnosticCode::AotArtifactInvalid; error->message = \"CheckedCallback/1 method receiver is invalid\"; } goto aot_exception_dispatch; } int methodIndex = -1;\n";
+                for (const auto& schema : module.scriptClassSchemas) {
+                    const auto method = schema.methods.find(operation.text);
+                    if (method == schema.methods.end())
+                        continue;
+                    source += "    if (instance->class_()->name() == " + quote(schema.className)
+                        + ") methodIndex = "
+                        + callbackNumber(resolveFunctionIndex(module, method->second)) + ";\n";
+                }
+                source +=
+                    "    if (methodIndex < 0) { if (error) { error->code = ScriptDiagnosticCode::AotArtifactInvalid; error->message = \"CheckedCallback/1 method class is outside the module\"; } goto aot_exception_dispatch; } ScriptMethod method{methodIndex, std::move(receiver)}; method.aotModule = context.moduleDescriptor; method.nativeContextOwner = context.lifetimeOwner; stack[sp++] = Value{std::move(method)}; }\n";
+            }
         } else if (opcode == TypedIrOpcode::CallValue
             && operation.closureCaptureCount == kScriptMethodProvenanceCaptureCount
             && !operation.text.empty()) {
@@ -3464,6 +3490,13 @@ void emitFunction(String& source,
                 source +=
                     ", error); if (error != nullptr && error->code != ScriptDiagnosticCode::None) { if (error->code == ScriptDiagnosticCode::Suspended) { if (!synchronizeFrameRoots()) return makeNil(); return result; } goto aot_exception_dispatch; } frame->childPc = 0xffffffffu; stack[sp++] = result; }\n";
             }
+        } else if (opcode == TypedIrOpcode::CallValue && operation.checkedCallableSignature) {
+            source += "    { constexpr std::size_t count = " + callbackNumber(operation.b)
+                + "u; if (frame->childPc != " + callbackNumber(pc)
+                + "u) { sp -= count + 1u; frame->childPc = " + callbackNumber(pc)
+                + "u; } const Value& callable = stack[sp + count]; const Value result = "
+                + checkedCallbackSymbol(*operation.checkedCallableSignature)
+                + "(context, callable, materializeExecutionSlots(stack, sp, count).data(), &frame->childResume, error); if (error && error->code != ScriptDiagnosticCode::None) { if (error->code == ScriptDiagnosticCode::Suspended) { if (!synchronizeFrameRoots()) return makeNil(); return result; } goto aot_exception_dispatch; } frame->childPc = 0xffffffffu; stack[sp++] = result; }\n";
         } else if (opcode == TypedIrOpcode::CallValue) {
             const auto binding = std::find_if(module.callableBindings.begin(),
                 module.callableBindings.end(),
@@ -3591,6 +3624,154 @@ void emitFunction(String& source,
         "    resume.frame.reset(); resume.pc = 0u; resume.commitState = 0u; resume.injectionKind = DirectNativeInjectionKindV5::None; resume.injectionValue = makeNil(); resume.awaitInjectionSupported = false; resume.awaitInjectionReady = false; return makeNil();\n}\n";
 }
 
+String checkedCallbackSymbol(const TypedIrSignature& signature)
+{
+    return "checked_callback_" + symbolPart(typedIrSignatureHash(signature));
+}
+
+String callbackValueCheck(
+    const TypedIrModule& module, const TypedIrTypeRef& type, const String& value)
+{
+    String check{&core::defaultCpuMemoryResource()};
+    switch (type.kind) {
+    case TypedIrType::Any:
+    case TypedIrType::Object:
+        check = "true";
+        break;
+    case TypedIrType::Int:
+        check = value + ".is<int>()";
+        break;
+    case TypedIrType::Int64:
+        check = value + ".is<std::int64_t>()";
+        break;
+    case TypedIrType::Float:
+        check = value + ".is<double>()";
+        break;
+    case TypedIrType::Bool:
+        check = value + ".is<bool>()";
+        break;
+    case TypedIrType::String:
+        check = value + ".is<arp::core::pmr::String>()";
+        break;
+    case TypedIrType::Bytes:
+        check = value + ".is<ScriptBytes>()";
+        break;
+    case TypedIrType::List:
+        check = value + ".is<arp::reflection::hlist>()";
+        break;
+    case TypedIrType::Dict:
+        check = value + ".is<arp::reflection::hdict>()";
+        break;
+    case TypedIrType::Function:
+        check = "(" + value + ".is<HostCallable>() || " + value + ".is<ScriptClosure>() || " + value
+            + ".is<ScriptMethod>())";
+        break;
+    case TypedIrType::Class: {
+        const String instance = value + ".ptr<arp::reflection::instance>()";
+        const String actual = instance + "->class_()->name()";
+        check = "(" + value + ".is<arp::reflection::instance>() && " + instance + "->alive() && "
+            + instance + "->class_() != nullptr && (" + actual + " == " + quote(type.className);
+        for (const auto& schema : module.scriptClassSchemas) {
+            auto base = schema.baseClassName;
+            for (std::size_t depth = 0; !base.empty() && depth < module.scriptClassSchemas.size();
+                ++depth) {
+                if (base == type.className) {
+                    check += " || " + actual + " == " + quote(schema.className);
+                    break;
+                }
+                const auto parent = std::find_if(module.scriptClassSchemas.begin(),
+                    module.scriptClassSchemas.end(),
+                    [&](const auto& candidate) {
+                        return candidate.className == base;
+                    });
+                base = parent == module.scriptClassSchemas.end() ? String{} : parent->baseClassName;
+            }
+        }
+        check += "))";
+        break;
+    }
+    }
+    return type.nullable ? "(isNil(" + value + ") || " + check + ")" : check;
+}
+
+void emitCheckedCallbacks(
+    String& source, const TypedIrModule& module, const core::pmr::Vector<String>& symbols)
+{
+    core::pmr::Map<String, TypedIrSignature> signatures{&core::defaultCpuMemoryResource()};
+    for (const auto& function : module.functions)
+        for (const auto& block : function.blocks)
+            for (const auto& operation : block.operations)
+                if (operation.checkedCallableSignature)
+                    signatures.emplace(checkedCallbackSymbol(*operation.checkedCallableSignature),
+                        *operation.checkedCallableSignature);
+    for (const auto& [symbol, signature] : signatures) {
+        source += "static Value " + symbol
+            + "(DirectNativeExecutionContext& context, const Value& callable, const Value* args, DirectNativeResumeStateV5* resume, VmError* error) {\n";
+        source +=
+            "    VmError localError; if (error == nullptr) error = &localError; auto reject = [&]() { error->code = ScriptDiagnosticCode::AotArtifactInvalid; error->message = \"CheckedCallback/1 callable identity or signature mismatch\"; return makeNil(); };\n";
+        for (std::size_t index = 0; index < signature.parameters.size(); ++index)
+            source += "    if (!("
+                + callbackValueCheck(
+                    module, signature.parameters[index], "args[" + callbackNumber(index) + "]")
+                + ")) return reject();\n";
+        source +=
+            "    Value result; bool invoked = false; if (callable.is<HostCallable>()) { if (!context.invokeSynchronousHostCallback(callable, args, "
+            + callbackNumber(signature.parameters.size())
+            + "u, result, error)) return makeNil(); invoked = true; }\n";
+        source +=
+            "    else if (const auto* closure = checkedValuePayload<ScriptClosure>(callable)) { if (closure->programOwner || closure->vmOwner || closure->bridge || closure->aotModule != context.moduleDescriptor || closure->nativeContextOwner.lock().get() != &context || (closure->aotContextOwner && closure->aotContextOwner.get() != &context)) return reject(); struct Scope { DirectNativeExecutionContext& context; const arp::core::pmr::Vector<std::shared_ptr<ScriptCell>>* previous; ~Scope() { context.activeCaptures = previous; } } scope {context, context.activeCaptures}; context.activeCaptures = &closure->captures;\n";
+        for (std::size_t index = 0; index < module.functions.size(); ++index) {
+            const auto& function = module.functions[index];
+            if (function.isGenerator || !function.safepoints.empty() || function.signature.variadic
+                || typedIrSignatureHash(function.signature) != typedIrSignatureHash(signature))
+                continue;
+            source += "    if (closure->funcIndex == " + callbackNumber(index)
+                + " && closure->functionId == " + quote(function.id)
+                + " && closure->captures.size() == " + callbackNumber(function.captureCount)
+                + "u) { result = " + symbols[index] + "(context, args, "
+                + callbackNumber(signature.parameters.size())
+                + "u, resume, error); invoked = true; }\n";
+        }
+        source +=
+            "    } else if (const auto* method = checkedValuePayload<ScriptMethod>(callable)) { const auto* receiver = checkedValuePayload<arp::reflection::instance>(method->receiver); if (method->aotModule != context.moduleDescriptor || method->nativeContextOwner.lock().get() != &context || !receiver || !receiver->alive() || !receiver->class_()) return reject();\n";
+        for (std::size_t index = 0; index < module.functions.size(); ++index) {
+            const auto& function = module.functions[index];
+            if (function.isGenerator || !function.safepoints.empty() || function.signature.variadic
+                || function.signature.parameters.size() != signature.parameters.size() + 1u)
+                continue;
+            auto bound = function.signature;
+            bound.parameters.erase(bound.parameters.begin());
+            --bound.fixedParameterCount;
+            if (typedIrSignatureHash(bound) != typedIrSignatureHash(signature))
+                continue;
+            String receiverCheck{&core::defaultCpuMemoryResource()};
+            for (const auto& schema : module.scriptClassSchemas) {
+                if (std::none_of(
+                        schema.methods.begin(), schema.methods.end(), [&](const auto& method) {
+                            return method.second == function.id;
+                        }))
+                    continue;
+                if (!receiverCheck.empty())
+                    receiverCheck += " || ";
+                receiverCheck += "receiver->class_()->name() == " + quote(schema.className);
+            }
+            if (receiverCheck.empty())
+                continue;
+            source += "    if (method->funcIndex == " + callbackNumber(index) + " && ("
+                + receiverCheck + ")) { std::array<Value, "
+                + callbackNumber(signature.parameters.size() + 1u)
+                + "> values; values[0] = method->receiver; for (std::size_t i = 0; i < "
+                + callbackNumber(signature.parameters.size())
+                + "u; ++i) values[i+1u] = args[i]; result = " + symbols[index]
+                + "(context, values.data(), values.size(), resume, error); invoked = true; }\n";
+        }
+        source +=
+            "    } if (!invoked) return reject(); if (error->code != ScriptDiagnosticCode::None) return makeNil(); if (!("
+            + callbackValueCheck(module, signature.result, "result")
+            + ")) return reject(); return result;\n}\n";
+    }
+}
+
 String platformYaml(AotPlatform platforms)
 {
     String result("[", &core::defaultCpuMemoryResource());
@@ -3687,7 +3868,7 @@ ScriptResult verifyDirectNativeControlFlowV5(const TypedIrModule& module)
                         && ((!binding->maySuspend)
                             || (binding->generatorBridge
                                 && binding->origin == TypedIrCallableOrigin::ScriptFunction));
-                    if (!directFunction && !boundFunction) {
+                    if (!directFunction && !boundFunction && !operation.checkedCallableSignature) {
                         return unsupported(function,
                             &operation,
                             "indirect call has no synchronous bound-call contract");
@@ -3934,6 +4115,7 @@ DirectNativeGeneratedModuleV5 generateDirectNativeModuleV5(
     result.header += "();\n";
     result.source = "#include ";
     result.source += quote(options.generatedHeader);
+    result.source += "\n#include \"scriptvm/runtime/module_exports.h\"\n";
     result.source +=
         "\n#include \"scriptvm/runtime/semantic_runtime.h\"\n#include \"scriptvm/aot/native_slot_operations.h\"\n#include \"scriptvm/runtime/execution_slot_values.h\"\n#include <array>\n#include <cstring>\n#include <limits>\n#include <string_view>\n#include <utility>\n\nnamespace {\nusing namespace arp::scriptvm;\n";
     const auto scalarCandidates = scalarFunctionCandidates(module);
@@ -3962,6 +4144,7 @@ DirectNativeGeneratedModuleV5 generateDirectNativeModuleV5(
         result.source +=
             "(DirectNativeExecutionContext&, const std::int64_t*, std::size_t, std::int64_t*, VmError*);\n";
     }
+    emitCheckedCallbacks(result.source, module, symbols);
     for (std::size_t index = 0; index < module.functions.size(); ++index) {
         if (scalarCandidates[index] != 0u)
             emitScalarFunction(result.source,

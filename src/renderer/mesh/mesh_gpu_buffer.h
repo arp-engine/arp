@@ -8,8 +8,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -208,8 +210,21 @@ inline std::pmr::vector<SubmeshDrawBounds> calculateSubmeshDrawBounds(const Mesh
     return bounds;
 }
 
-inline MeshGpuBufferResult uploadMeshToRhi(rhi::GpuDevice& device, const MeshAsset& mesh)
+// Host-visible encoded stream: source vertex order, positions and all index/section
+// metadata remain authoritative. Consumer authors the matching L2 vertex layout.
+template <class Vertex>
+inline MeshGpuBufferResult uploadMeshVertexStreamToRhi(
+    rhi::GpuDevice& device, const MeshAsset& mesh, const core::pmr::Vector<Vertex>& vertices)
 {
+    static_assert(std::is_trivially_copyable_v<Vertex> && sizeof(Vertex) % 4 == 0);
+    static_assert(sizeof(vertices[0].position) == sizeof(mesh.vertices[0].position));
+    if (vertices.size() != mesh.vertices.size())
+        return {false, "MESH-VERTEX-STREAM-COUNT", {}};
+    for (std::size_t i = 0; i < vertices.size(); ++i)
+        if (std::memcmp(
+                vertices[i].position, mesh.vertices[i].position, sizeof(mesh.vertices[i].position))
+            != 0)
+            return {false, "MESH-VERTEX-STREAM-POSITION", {}};
     try {
         assets::validateMeshSourceRanges(mesh);
     } catch (const core::DiagnosticError& error) {
@@ -221,7 +236,7 @@ inline MeshGpuBufferResult uploadMeshToRhi(rhi::GpuDevice& device, const MeshAss
 
     auto vertexBuffer = device.createBuffer(rhi::BufferDesc{
         "MeshVertices",
-        static_cast<uint64_t>(mesh.vertices.size() * sizeof(MeshVertex)),
+        static_cast<uint64_t>(vertices.size() * sizeof(Vertex)),
         rhi::ResourceUsage::VertexBuffer | rhi::ResourceUsage::CopyDst,
         rhi::MemoryUsage::CpuToGpu,
         rhi::ResourceState::ShaderRead,
@@ -236,9 +251,8 @@ inline MeshGpuBufferResult uploadMeshToRhi(rhi::GpuDevice& device, const MeshAss
     if (!vertexBuffer || !indexBuffer) {
         return MeshGpuBufferResult{false, "RHI buffer creation failed", {}};
     }
-    const auto vertexWritten = device.writeBuffer(*vertexBuffer,
-        mesh.vertices.data(),
-        static_cast<uint64_t>(mesh.vertices.size() * sizeof(MeshVertex)));
+    const auto vertexWritten = device.writeBuffer(
+        *vertexBuffer, vertices.data(), static_cast<uint64_t>(vertices.size() * sizeof(Vertex)));
     if (!vertexWritten.success) {
         return MeshGpuBufferResult{false, vertexWritten.diagnostics, {}};
     }
@@ -259,6 +273,11 @@ inline MeshGpuBufferResult uploadMeshToRhi(rhi::GpuDevice& device, const MeshAss
         mesh.sourceRanges,
         mesh.sourceRangesVersion);
     return MeshGpuBufferResult{true, "", std::move(uploaded)};
+}
+
+inline MeshGpuBufferResult uploadMeshToRhi(rhi::GpuDevice& device, const MeshAsset& mesh)
+{
+    return uploadMeshVertexStreamToRhi(device, mesh, mesh.vertices);
 }
 
 inline MeshGpuBufferUploadResult uploadOrUpdateMeshToRhi(
