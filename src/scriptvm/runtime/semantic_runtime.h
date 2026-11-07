@@ -442,6 +442,9 @@ public:
     // remains owned by the caller because it may establish a resumable frame.
     static SemanticOperationResult makeScriptInstance(
         const core::pmr::String& className, const core::pmr::Vector<core::pmr::String>& fields);
+    static SemanticOperationResult makeScriptInstance(const core::pmr::String& className,
+        const core::pmr::Vector<core::pmr::String>& fields,
+        std::shared_ptr<const reflection::InstanceFieldLayout> layout);
     static SemanticRangeNextResult rangeNextCollection(Value source, int index);
     // Same collection semantics, with generated indices/bytes kept inline.
     // List/dictionary elements retain their exact mutable Value carriers.

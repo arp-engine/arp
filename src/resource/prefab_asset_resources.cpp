@@ -543,13 +543,28 @@ class RuntimeBlobWriter final {
 public:
     template <typename T> void POD(const T& value)
     {
-        static_assert(std::is_trivially_copyable_v<T>);
-        const auto* ptr = reinterpret_cast<const std::uint8_t*>(&value);
-        bytes_.insert(bytes_.end(), ptr, ptr + sizeof(T));
+        static_assert(
+            std::is_arithmetic_v<T> || std::is_enum_v<T>, "runtime blob only encodes scalars");
+        static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8);
+        std::uint64_t bits = 0;
+        if constexpr (std::is_floating_point_v<T>) {
+            static_assert(std::numeric_limits<T>::is_iec559);
+            if constexpr (sizeof(T) == 4) {
+                std::uint32_t word;
+                std::memcpy(&word, &value, 4);
+                bits = word;
+            } else
+                std::memcpy(&bits, &value, 8);
+        } else
+            bits = static_cast<std::uint64_t>(value);
+        for (unsigned i = 0; i < sizeof(T); ++i)
+            bytes_.push_back(static_cast<std::uint8_t>(bits >> (i * 8)));
     }
 
     void string(const std::pmr::string& value)
     {
+        if (value.size() > UINT32_MAX)
+            throw std::runtime_error("runtime blob string length overflow");
         const auto size = static_cast<std::uint32_t>(value.size());
         POD(size);
         const auto* ptr = reinterpret_cast<const std::uint8_t*>(value.data());
@@ -587,11 +602,28 @@ public:
 
     template <typename T> bool POD(T& out)
     {
-        static_assert(std::is_trivially_copyable_v<T>);
+        static_assert(
+            std::is_arithmetic_v<T> || std::is_enum_v<T>, "runtime blob only decodes scalars");
+        static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8);
         if (sizeof(T) > remaining()) {
             return false;
         }
-        std::memcpy(&out, bytes_.data() + cursor_, sizeof(T));
+        std::uint64_t bits = 0;
+        for (unsigned i = 0; i < sizeof(T); ++i)
+            bits |= std::uint64_t(bytes_[cursor_ + i]) << (i * 8);
+        if constexpr (std::is_floating_point_v<T>) {
+            static_assert(std::numeric_limits<T>::is_iec559);
+            if constexpr (sizeof(T) == 4) {
+                const auto word = static_cast<std::uint32_t>(bits);
+                std::memcpy(&out, &word, 4);
+            } else
+                std::memcpy(&out, &bits, 8);
+        } else {
+            if constexpr (std::is_same_v<T, bool>)
+                if (bits > 1)
+                    return false;
+            out = static_cast<T>(bits);
+        }
         cursor_ += sizeof(T);
         return true;
     }
@@ -1302,6 +1334,14 @@ bool parseRuntimePayloadResource(const InternalAssetPackageEntry& entry,
 
 } // namespace
 
+core::pmr::Vector<std::uint8_t> encodePrefabRuntimePayload(
+    const PrefabRuntimePayloadWriteDesc& desc)
+{
+    RuntimeBlobWriter writer;
+    writeRuntimeBlob(writer, desc);
+    return writer.bytes();
+}
+
 PrefabRuntimePayloadWriteResult writePrefabRuntimePayload(const PrefabRuntimePayloadWriteDesc& desc)
 {
     PrefabRuntimePayloadWriteResult result;
@@ -1542,6 +1582,30 @@ AssetPackageReadPlan PrefabRuntimePayloadSourceReader::planSourceReads(
     if (result.success)
         result.reads.front().role = "prefab-runtime-blob";
     return result;
+}
+
+PrefabRuntimePayloadLoadResult decodePrefabRuntimePayload(
+    const core::pmr::Vector<std::uint8_t>& bytes,
+    const PrefabRuntimePayloadResource& metadata,
+    std::size_t budget)
+{
+    return decodeRuntimePayloadBytes(bytes, metadata, budget);
+}
+
+PrefabRuntimePayloadLoadResult decodeCookedPrefabRuntimePayload(
+    const core::pmr::Vector<std::uint8_t>& bytes,
+    const PrefabRuntimePayloadResource& original,
+    std::size_t budget)
+{
+    auto metadata = original;
+    if (bytes.size() > INT_MAX) {
+        PrefabRuntimePayloadLoadResult r;
+        r.diagnostics = "COOKED-MODEL-SIZE";
+        return r;
+    }
+    metadata.blobByteSize = static_cast<int>(bytes.size());
+    metadata.blobHash = static_cast<int>(hashBytes(bytes));
+    return decodeRuntimePayloadBytes(bytes, metadata, budget);
 }
 
 PrefabRuntimePayloadLoadResult PrefabRuntimePayloadSourceReader::readSources(

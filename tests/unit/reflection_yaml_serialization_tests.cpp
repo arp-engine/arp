@@ -262,6 +262,7 @@ int main()
 
     auto wrongType = legacyRead("type: YamlPlayer\nfields:\n  active: not-bool\n");
     assert(!wrongType.success);
+    assert(wrongType.value.is_undefined());
     assertContains(wrongType.diagnostics, "active");
     assertContains(wrongType.diagnostics, "bool");
 

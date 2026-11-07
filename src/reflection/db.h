@@ -33,6 +33,9 @@ public:
     db& operator=(const db&) = delete;
 
     class_info* find_class(NameView name);
+    // Public names can change on staged or standalone class_info objects too.
+    // Notify every database lazily rather than retaining an owner pointer.
+    static void notifyClassNameChanged() noexcept;
     class_info* findNativeClass(NameView nativeName);
     const typeinfo* find_type(NameView name) const;
     void markExplicitClassDeclaration(class_info* cls);
@@ -56,6 +59,9 @@ private:
         &core::defaultCpuMemoryResource()};
     core::pmr::Map<core::pmr::String, std::shared_ptr<void>> owners_{
         &core::defaultCpuMemoryResource()};
+    core::pmr::Map<core::pmr::String, class_info*, NameLess> classLookups_{
+        &core::defaultCpuMemoryResource()};
+    std::uint64_t classLookupNameRevision_ = 0;
 };
 
 } // namespace arp::reflection

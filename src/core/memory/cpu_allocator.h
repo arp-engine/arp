@@ -307,6 +307,33 @@ private:
     Impl* impl_ = nullptr;
 };
 
+// Opt-in allocation coalescing for a synchronous construction interval.
+// The default allocator's General requests share backing blocks. Every
+// allocation remains independently releasable (also on another thread), and
+// the final release retires its block. There is no idle pool. Nested enabled
+// scopes join the current group; disabled scopes pause it for shared caches.
+// Quota/precharged requests always keep their ordinary individual allocation.
+// Stats and ledger entries count the physical backing, including spare space;
+// use inspectCpuAllocationContaining for grouped/interior addresses.
+class ARP_API CpuAllocationGroupScope final {
+public:
+    explicit CpuAllocationGroupScope(bool enabled = true) noexcept;
+    ~CpuAllocationGroupScope();
+    CpuAllocationGroupScope(const CpuAllocationGroupScope&) = delete;
+    CpuAllocationGroupScope& operator=(const CpuAllocationGroupScope&) = delete;
+
+private:
+    friend class DefaultCpuAllocator;
+
+    struct State {
+        void* head = nullptr;
+        void* current = nullptr;
+        std::size_t nextBytes = 0;
+    } state_;
+
+    void* previous_ = nullptr;
+};
+
 using CpuAllocateCallback = void* (*)(void* userData, const CpuAllocationDesc& desc);
 using CpuDeallocateCallback = void (*)(void* userData, void* ptr, const CpuAllocationDesc& desc);
 using CpuStatsCallback = CpuMemoryStats (*)(void* userData);

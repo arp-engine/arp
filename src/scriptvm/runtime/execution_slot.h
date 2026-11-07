@@ -1,5 +1,6 @@
 #pragma once
 
+#include "scriptvm/runtime/detail/execution_reference_domain.h"
 #include "scriptvm/runtime/scalar_value.h"
 
 #include <algorithm>
@@ -13,7 +14,12 @@ namespace arp::scriptvm {
 // Capture/host/container/continuation edges explicitly materialize a Value.
 class ExecutionSlot final {
     using Literal = const core::pmr::String*;
-    enum class Kind : std::uint8_t { Scalar, Boxed, Literal, Method };
+    enum class Kind : std::uint8_t { Scalar, Boxed, Literal, Method, Private };
+
+    struct PrivateReference {
+        detail::ExecutionReferenceDomain* domain;
+        std::size_t index;
+    };
 
     // Payloads overlap: inline scalars must not pay for a second reference
     // payload. Lifetime transitions use the standard construct/destroy APIs.
@@ -22,6 +28,7 @@ class ExecutionSlot final {
         Value value;
         Literal literal;
         ScriptMethod method;
+        PrivateReference reference;
 
         Storage() : scalar() {}
 
@@ -118,8 +125,8 @@ public:
             text = *storage_.literal;
             return true;
         }
-        if (kind_ == Kind::Boxed) {
-            if (const auto* actual = checkedValuePayload<core::pmr::String>(storage_.value)) {
+        if ((kind_ == Kind::Boxed || kind_ == Kind::Private)) {
+            if (const auto* actual = checkedValuePayload<core::pmr::String>(readCarrier())) {
                 text = *actual;
                 return true;
             }
@@ -131,14 +138,16 @@ public:
     {
         if (kind_ == Kind::Method)
             return &storage_.method;
-        if (kind_ == Kind::Boxed)
-            return checkedValuePayload<ScriptMethod>(storage_.value);
+        if ((kind_ == Kind::Boxed || kind_ == Kind::Private))
+            return checkedValuePayload<ScriptMethod>(readCarrier());
         return nullptr;
     }
 
     const ScriptClosure* closure() const
     {
-        return kind_ == Kind::Boxed ? checkedValuePayload<ScriptClosure>(storage_.value) : nullptr;
+        return (kind_ == Kind::Boxed || kind_ == Kind::Private)
+            ? checkedValuePayload<ScriptClosure>(readCarrier())
+            : nullptr;
     }
 
     // Actual owned C++ payloads are mutually exclusive. A positive selector
@@ -152,14 +161,14 @@ public:
             methodValue = &storage_.method;
             return;
         }
-        if (kind_ != Kind::Boxed)
+        if ((kind_ != Kind::Boxed && kind_ != Kind::Private))
             return;
-        if (const auto* actual = exactValuePayload<ScriptMethod>(storage_.value)) {
+        if (const auto* actual = exactValuePayload<ScriptMethod>(readCarrier())) {
             methodValue = actual;
             assert(method() == methodValue && closure() == nullptr);
             return;
         }
-        if (const auto* actual = exactValuePayload<ScriptClosure>(storage_.value)) {
+        if (const auto* actual = exactValuePayload<ScriptClosure>(readCarrier())) {
             closureValue = actual;
             assert(method() == nullptr && closure() == closureValue);
             return;
@@ -174,7 +183,8 @@ public:
             value = storage_.scalar;
             return true;
         }
-        return kind_ == Kind::Boxed && ScriptScalar::read(storage_.value, value);
+        return (kind_ == Kind::Boxed || kind_ == Kind::Private)
+            && ScriptScalar::read(readCarrier(), value);
     }
 
     template <class T> bool is() const
@@ -185,8 +195,8 @@ public:
             else
                 return storage_.scalar.ptr<T>() != nullptr;
         }
-        if (kind_ == Kind::Boxed)
-            return storage_.value.is<T>();
+        if ((kind_ == Kind::Boxed || kind_ == Kind::Private))
+            return readCarrier().is<T>();
         if (kind_ == Kind::Literal)
             return std::is_same_v<T, core::pmr::String>;
         return std::is_same_v<T, ScriptMethod>;
@@ -196,10 +206,10 @@ public:
     {
         if (kind_ == Kind::Scalar)
             return const_cast<T*>(storage_.scalar.ptr<T>());
-        if (kind_ == Kind::Boxed) {
-            if (const auto* actual = exactValuePayload<T>(storage_.value))
+        if ((kind_ == Kind::Boxed || kind_ == Kind::Private)) {
+            if (const auto* actual = exactValuePayload<T>(readCarrier()))
                 return const_cast<T*>(actual);
-            return storage_.value.ptr<T>();
+            return readCarrier().ptr<T>();
         }
         // A mutable pointer must never escape to Program-owned literal bytes.
         if constexpr (std::is_same_v<T, core::pmr::String> || std::is_same_v<T, ScriptMethod>)
@@ -230,6 +240,11 @@ public:
             // Copy the receiver first: a quota failure must leave the slot intact.
             Value value{storage_.method};
             setValue(std::move(value));
+        } else if (kind_ == Kind::Private) {
+            const auto reference = storage_.reference;
+            auto value = reference.domain->take(reference.index);
+            std::uninitialized_move_n(&value, 1, &storage_.value);
+            kind_ = Kind::Boxed;
         }
         return storage_.value;
     }
@@ -275,11 +290,15 @@ public:
     // or method. Borrow qualifiers use this before admitting a closed interval.
     const Value* boxedCarrier() const noexcept
     {
+        if (kind_ == Kind::Private)
+            return &boxed();
         return kind_ == Kind::Boxed ? &storage_.value : nullptr;
     }
 
     Value* uniqueBoxed()
     {
+        if (kind_ == Kind::Private)
+            boxed();
         return kind_ == Kind::Boxed && storage_.value.hasUniqueStorage() ? &storage_.value
                                                                          : nullptr;
     }
@@ -289,6 +308,78 @@ public:
     operator const Value&() const { return boxed(); }
 
 private:
+    friend struct Frame;
+
+    const Value& readCarrier() const
+    {
+        assert(kind_ == Kind::Boxed || kind_ == Kind::Private);
+        return kind_ == Kind::Private ? storage_.reference.domain->inspect(storage_.reference.index)
+                                      : storage_.value;
+    }
+
+    void installPrivate(detail::ExecutionReferenceDomain* domain, std::size_t index)
+    {
+        assert(kind_ != Kind::Boxed);
+        // Incoming handle already owns a root; publish our detached state before
+        // old payload destruction. No public path can identify this destination.
+        const auto oldKind = kind_;
+        const auto oldReference = kind_ == Kind::Private ? storage_.reference : PrivateReference{};
+        if (oldKind == Kind::Private) {
+            kind_ = Kind::Scalar;
+            std::uninitialized_copy_n(&emptyScalar_, 1, &storage_.scalar);
+            oldReference.domain->drop(oldReference.index);
+        } else
+            destroy();
+        storage_.reference = {domain, index};
+        kind_ = Kind::Private;
+    }
+
+    void assignForVm(detail::ExecutionReferenceDomain* domain, const ExecutionSlot& source)
+    {
+        if (domain && kind_ != Kind::Boxed) {
+            std::size_t index = detail::ExecutionReferenceDomain::absent;
+            if (source.kind_ == Kind::Private && source.storage_.reference.domain == domain)
+                index = domain->clone(source.storage_.reference.index);
+            else if (source.kind_ == Kind::Boxed || source.kind_ == Kind::Private)
+                index = domain->import(source.readCarrier());
+            if (index != detail::ExecutionReferenceDomain::absent) {
+                installPrivate(domain, index);
+                return;
+            }
+        }
+        *this = source;
+    }
+
+    void assignForVm(detail::ExecutionReferenceDomain* domain, ExecutionSlot&& source)
+    {
+        // Ordinary public move is also the cross-frame publication boundary.
+        // Admission then transfers that ordinary carrier without another retain.
+        if (domain && kind_ != Kind::Boxed
+            && (source.kind_ == Kind::Boxed || source.kind_ == Kind::Private)) {
+            auto value = source.takeValue();
+            const auto index = domain->adopt(std::move(value));
+            if (index != detail::ExecutionReferenceDomain::absent)
+                installPrivate(domain, index);
+            else
+                setValue(std::move(value));
+            return;
+        }
+        *this = std::move(source);
+    }
+
+    void assignForVm(detail::ExecutionReferenceDomain* domain, Value&& value)
+    {
+        if (domain && kind_ != Kind::Boxed) {
+            const auto index = domain->adopt(std::move(value));
+            if (index != detail::ExecutionReferenceDomain::absent) {
+                installPrivate(domain, index);
+                return;
+            }
+        }
+        setValue(std::move(value));
+    }
+
+    inline static const ScriptScalar emptyScalar_{};
     // Defined at the runtime ABI boundary. Keep reflection/native-object
     // resolution out of every inline scalar reader and arithmetic handler.
     template <class T> ARP_API const T* boxedScalarPointer() const;
@@ -299,6 +390,12 @@ private:
             std::destroy_at(&storage_.value);
         else if (kind_ == Kind::Method)
             std::destroy_at(&storage_.method);
+        else if (kind_ == Kind::Private) {
+            const auto reference = storage_.reference;
+            kind_ = Kind::Scalar;
+            std::uninitialized_copy_n(&emptyScalar_, 1, &storage_.scalar);
+            reference.domain->drop(reference.index);
+        }
         // Scalar and literal are trivially destructible.
     }
 
@@ -330,6 +427,8 @@ private:
             setScalar(other.storage_.scalar);
             return;
         }
+        if (other.kind_ == Kind::Private)
+            other.boxed();
         if (other.kind_ == Kind::Boxed) {
             setValue(std::move(other.storage_.value));
             return;

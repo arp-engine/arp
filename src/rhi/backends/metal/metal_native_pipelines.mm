@@ -7,6 +7,7 @@
 #include "rhi/backends/metal/metal_compute_workgroup_limits.h"
 #include "rhi/backends/metal/metal_native_format.h"
 #include "rhi/backends/metal/metal_native_runtime.h"
+#include "rhi/backends/metal/metal_pipeline_archive.h"
 #include "rhi/semantics/native_pipeline_state_lowering.h"
 #include "shader/graphics_shader_module_artifact.h"
 
@@ -1038,12 +1039,10 @@ static std::shared_ptr<MetalRhiNativePipelinePayload> createMetalRhiNativeRender
                 .collect(pipelineDesc.vertexDescriptor, vertexFunction, desc, vertexStreams);
             NSError* error = nil;
             MTLRenderPipelineReflection* reflection = nil;
-            pipeline = [defaultMetalDevice()
-                newRenderPipelineStateWithDescriptor:pipelineDesc
-                                             options:MTLPipelineOptionArgumentInfo
-                | MTLPipelineOptionBufferTypeInfo
-                                          reflection:&reflection
-                                               error:&error];
+            pipeline = newMetalRhiCachedRenderPipeline(pipelineDesc,
+                MTLPipelineOptionArgumentInfo | MTLPipelineOptionBufferTypeInfo,
+                &reflection,
+                &error);
             if (pipeline == nil && error != nil) {
                 diagnostics = "RHI-METAL-RENDER-PIPELINE-CREATE-FAILED: ";
                 diagnostics += error.localizedDescription.UTF8String;
@@ -1272,14 +1271,13 @@ createMetalRhiNativeComputePipelinePayloadImpl(const rhi::ComputePipelineDesc& d
         if (function != nil) {
             NSError* error = nil;
             MTLComputePipelineReflection* reflection = nil;
-            pipeline = [defaultMetalDevice()
-                newComputePipelineStateWithFunction:function
-                                            options:MTLPipelineOptionArgumentInfo
-                | (ordinary && ordinary->nativeBufferMemoryRequested()
-                        ? MTLPipelineOptionBufferTypeInfo
-                        : 0u)
-                                         reflection:&reflection
-                                              error:&error];
+            pipeline = newMetalRhiCachedComputePipeline(function,
+                MTLPipelineOptionArgumentInfo
+                    | (ordinary && ordinary->nativeBufferMemoryRequested()
+                            ? MTLPipelineOptionBufferTypeInfo
+                            : 0u),
+                &reflection,
+                &error);
             if (pipeline != nil) {
                 const auto axes = pipeline.device.maxThreadsPerThreadgroup;
                 const MetalRhiComputeWorkgroupLimits limits{

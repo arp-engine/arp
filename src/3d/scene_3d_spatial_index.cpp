@@ -71,6 +71,7 @@ void Scene3DSpatialIndex::reserve(std::size_t count)
     changed_.reserve(count);
     alwaysExtract_.reserve(count);
     extraction_.reserve(count);
+    unboundedBindings_.reserve(count);
     dynamic_.reserve(count);
 }
 
@@ -115,6 +116,7 @@ SceneSpatialHandle Scene3DSpatialIndex::insert(
     e.visible = true;
     e.active = true;
     e.stamp = 0;
+    e.binding = {};
     if (mobility == SpatialMobility::Static)
         staticDirty_ = true;
     else
@@ -263,32 +265,71 @@ void Scene3DSpatialIndex::extractVisible(const scene::Scene& scene,
 {
     if (queriedRevision_ != revision_)
         throw core::DiagnosticError("SCENE3D-SPATIAL-QUERY-STALE");
+    if (extracting_)
+        throw core::DiagnosticError("SCENE3D-SPATIAL-EXTRACT-REENTRANT");
+
+    struct DispatchGuard {
+        bool& active;
+
+        explicit DispatchGuard(bool& value) : active(value) { active = true; }
+
+        ~DispatchGuard() { active = false; }
+    } guard(extracting_);
+
     const auto key = [](const SceneSpatialOwner& owner) {
         return std::tuple{owner.object.value(), owner.component.value()};
     };
     for (std::size_t i = 1; i < unbounded.size(); ++i)
         if (!(key(unbounded[i - 1]) < key(unbounded[i])))
             throw core::DiagnosticError("SCENE3D-SPATIAL-UNBOUNDED-ORDER");
-    const auto dispatch = [&](const SceneSpatialOwner& identity) {
-        const auto* object = scene.findObject(identity.object);
-        const auto* component = object ? object->findComponent(identity.component) : nullptr;
-        if (!component)
-            throw core::DiagnosticError("SCENE3D-SPATIAL-COMPONENT-RETIRED");
-        if (!object->activeInHierarchy() || !component->enabled() || component->pendingDestroy())
+    if (extractionIdentity_ != scene.renderContextIdentity()) {
+        // Never dereference a borrowed pointer until its scene token and epoch
+        // have been checked. The retained token cannot be recycled by a scene.
+        for (const auto& entry : entries_)
+            entry.binding = {};
+        unboundedBindings_.clear();
+        extractionIdentity_ = scene.renderContextIdentity();
+    }
+    unboundedBindings_.resize(unbounded.size());
+    for (std::size_t i = 0; i < unbounded.size(); ++i)
+        if (key(unboundedBindings_[i].owner) != key(unbounded[i]))
+            unboundedBindings_[i] = {unbounded[i], {}};
+    const auto dispatch = [&](const SceneSpatialOwner& identity, ExtractionBinding& binding) {
+        // Read for every dispatch: a sink may synchronously mutate the scene.
+        const auto revision = extractionIdentity_->revision();
+        if (binding.revision != revision) {
+            const auto* object = scene.findObject(identity.object);
+            const auto* component = object ? object->findComponent(identity.component) : nullptr;
+            if (!component)
+                throw core::DiagnosticError("SCENE3D-SPATIAL-COMPONENT-RETIRED");
+            binding = {object,
+                component,
+                object->world_transform(),
+                revision,
+                object->activeInHierarchy()};
+            ++telemetry_.contextResolves;
+        } else
+            ++telemetry_.contextCacheHits;
+        if (!binding.active || !binding.component->enabled() || binding.component->pendingDestroy())
             return;
-        const auto world = object->world_transform();
-        component->extract({object, &world, true}, sink);
+        // Own this call's world value across synchronous sink callbacks.
+        const auto world = binding.world;
+        ++telemetry_.extractionDispatches;
+        binding.component->extract({binding.object, &world, true}, sink);
+    };
+    const auto dispatchUnbounded = [&](std::size_t i) {
+        dispatch(unbounded[i], unboundedBindings_[i].binding);
     };
     std::size_t next = 0;
     for (const auto handle : extraction_) {
         const auto identity = require(handle).owner;
         while (next < unbounded.size() && key(unbounded[next]) < key(identity))
-            dispatch(unbounded[next++]);
+            dispatchUnbounded(next++);
         if (next < unbounded.size() && key(unbounded[next]) == key(identity))
             throw core::DiagnosticError("SCENE3D-SPATIAL-DUPLICATE-UNBOUNDED");
-        dispatch(identity);
+        dispatch(identity, require(handle).binding);
     }
     while (next < unbounded.size())
-        dispatch(unbounded[next++]);
+        dispatchUnbounded(next++);
 }
 } // namespace arp::scene3d

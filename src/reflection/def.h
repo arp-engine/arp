@@ -50,6 +50,13 @@ struct parameter {
 };
 
 using NameView = std::basic_string_view<char>;
+
+struct NameLess {
+    using is_transparent = void;
+
+    bool operator()(NameView left, NameView right) const noexcept { return left < right; }
+};
+
 using ByteBuffer = core::pmr::Vector<std::uint8_t>;
 
 template <typename T> std::enable_if_t<!std::is_void_v<T>, class_info*> class_of();

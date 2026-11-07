@@ -202,6 +202,38 @@ void sharing(const std::filesystem::path& source)
         << "PASS prewarm/Ready/in-flight sharing, allocation-free observation, one source read, shared dependency and reverse release\n";
 }
 
+void dispatchBudgets()
+{
+    ResourceManager manager;
+    core::runtime::AsyncRuntime runtime(runtimeDesc());
+    ResourceDomain domain(manager, runtime, budget());
+    unsigned callbacks = 0;
+    const auto enqueue = [&] {
+        check(runtime.completionQueue()
+                  .post({[](void* data) {
+                             ++*static_cast<unsigned*>(data);
+                         },
+                      &callbacks})
+                  .accepted(),
+            "budget fixture enqueue");
+    };
+    for (unsigned i = 0; i < 10; ++i)
+        enqueue();
+    check(!domain.dispatch(0).success() && callbacks == 0,
+        "zero callback budget must fail without draining work");
+    check(domain.dispatch(1).success() && callbacks == 1,
+        "interactive dispatch must honor a single callback budget");
+    check(domain.dispatch(64).success() && callbacks == 10,
+        "foreground dispatch must drain the pending batch");
+    for (unsigned i = 0; i < 40; ++i)
+        enqueue();
+    check(domain.dispatch().success() && callbacks == 42,
+        "per-call budgets must preserve the configured default of 32");
+    check(domain.dispatch(64).success() && callbacks == 50,
+        "budget switching must retain all queued callbacks");
+    std::cout << "PASS per-call owner dispatch budgets, zero rejection and default preservation\n";
+}
+
 void cancellation(const std::filesystem::path& source)
 {
     Observations observations;
@@ -538,6 +570,7 @@ int main()
             out << "sealed domain fixture";
         }
         sharing(fixture);
+        dispatchBudgets();
         cancellation(fixture);
         failures(fixture);
         invalidPlans();

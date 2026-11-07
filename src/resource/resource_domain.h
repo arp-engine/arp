@@ -157,12 +157,18 @@ public:
         const ResourceIdentity&, const core::SharedCallback<void()>& yield = {});
     // Dispatch the shared runtime, publish acquisitions, release unused roots.
     ResourceDomainResult dispatch();
+    // Per-call runtime completion budget; acquisition publication is unchanged.
+    // Does not change worker count, resource identity or the shared runtime's
+    // configured default; zero is invalid.
+    ResourceDomainResult dispatch(std::size_t maxCallbacks);
     ResourceDomainResult collect();
     ResourceDomainResult close();
     ResourceDomainTelemetry telemetry() const;
+    ResourceState stateOf(NameView) const;
     const ResourceManager& resources() const;
 
 private:
+    ResourceDomainResult dispatchImpl(std::size_t maxCallbacks);
     ResourceDomainResult registerResourcesImpl(
         core::ArrayView<const ResourceRegistration>, bool requireCompleteClosure);
     struct Impl;

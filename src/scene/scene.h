@@ -68,6 +68,11 @@ public:
 
     SceneExecutionMode executionMode() const noexcept { return executionMode_; }
 
+    const core::SharedPtr<RenderContextEpoch>& renderContextIdentity() const noexcept
+    {
+        return renderContextIdentity_;
+    }
+
     // Domain plugins install an allow-listed native component factory during
     // runtime setup. Script calls still invoke GameObject directly; this is
     // not a script service/facade dispatch path.
@@ -206,6 +211,9 @@ public:
 
 private:
     friend class GameObject;
+    friend class Component;
+
+    void invalidateRenderContexts();
 
     void requireIdentityIdle() const;
     ComponentId allocateComponentId();
@@ -228,6 +236,8 @@ private:
 
     SceneId sceneId_;
     const SceneExecutionMode executionMode_;
+    core::SharedPtr<RenderContextEpoch> renderContextIdentity_ =
+        core::makeShared<RenderContextEpoch>();
     MainSceneRegistry* mainSceneRegistry_ = nullptr;
     std::size_t maxObjects_ = SIZE_MAX;
     uint64_t nextObjectId_ = 2;

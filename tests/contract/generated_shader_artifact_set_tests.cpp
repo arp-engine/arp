@@ -10,6 +10,7 @@
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/frontend/pipeline_definition_identity.h"
 #include "rhi/frontend/pipeline_state_copy.h"
+#include "tests/fixtures/pipeline_cache_lifecycle_checks.h"
 
 #include <cassert>
 #include <chrono>
@@ -280,6 +281,57 @@ void verifyPackage(const core::SharedPtr<const shader::GeneratedShaderArtifactSe
         assert(!cache.acquireRenderPipeline(changed));
         assert(cache.acquireRenderPipeline(desc));
     }
+    {
+        rhi::PipelineCache cache(*device);
+        auto first = cache.acquireRenderPipelineLease(desc);
+        assert(first);
+        auto secondLayout = device->createPipelineLayout(layout->desc());
+        auto equivalent = desc;
+        equivalent.layout = secondLayout.get();
+        auto second = cache.acquireRenderPipelineLease(equivalent);
+        assert(second.get() == first.get() && cache.renderPipelineMissCount() == 1
+            && cache.renderPipelineHitCount() == 1);
+        auto unhydrated = rhi::ShaderPackageStateCopy::copy(package);
+        unhydrated.generatedReflectionHydrated = false;
+        equivalent.shaderPackage = &unhydrated;
+        assert(!cache.acquireRenderPipelineLease(equivalent));
+        // A stable hash is only a candidate selector. An authored label is
+        // deliberately absent from that hash but part of exact identity.
+        auto collision = rhi::ShaderPackageStateCopy::copy(package);
+        collision.label += "/distinct";
+        assert(rhi::stableShaderPackageHash(collision) == rhi::stableShaderPackageHash(package));
+        equivalent.shaderPackage = &collision;
+        auto distinct = cache.acquireRenderPipelineLease(equivalent);
+        assert(distinct && distinct.get() != first.get());
+        cache.evictStale(100, 1);
+        assert(cache.renderPipelineMissCount() == 2 && first->validationReport().success);
+        cache.clearForShutdown();
+        assert(!cache.entryCount() && first->validationReport().success);
+        secondLayout.reset();
+        collision.generatedArtifactSet.reset();
+        assert(distinct->validationReport().success && owner.use_count() > ownersBefore);
+    }
+    {
+        rhi::PipelineCache bounded(*device);
+        assert(
+            bounded.configureBudget({rhi::semantics::kCacheBudgetContractVersion, "LeasedPSO", 2}));
+        auto first = bounded.acquireRenderPipelineLease(desc);
+        assert(first && bounded.entryCount() == 2);
+        auto changed = desc;
+        changed.label += "/another-definition";
+        assert(!bounded.acquireRenderPipelineLease(changed));
+        assert(bounded.renderPipelineMissCount() == 1);
+        first.reset();
+        bounded.evictStale(100, 1);
+        assert(bounded.entryCount() == 0);
+        auto retry = bounded.acquireRenderPipelineLease(changed);
+        assert(retry && bounded.renderPipelineMissCount() == 2);
+        auto invalid = desc;
+        invalid.layout = nullptr;
+        assert(!bounded.acquireRenderPipelineLease(invalid));
+        assert(bounded.renderPipelineMissCount() == 2);
+    }
+    arp::tests::checkPipelineCacheLifecycle(*device, desc);
     package.generatedArtifactSet.reset();
     package.artifacts.publicationPath.clear();
     assert(rhi::validateShaderPackage(package).success);

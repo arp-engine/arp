@@ -506,7 +506,7 @@ ScriptRunResult ScriptToolRunner::runFileFunction(const std::filesystem::path& s
 namespace {
 
 struct SourceModuleLifetime final {
-    scriptvm::Program program;
+    scriptvm::ValidatedInterpreterProgram program;
 };
 
 using detail::diagnosticText;
@@ -932,7 +932,12 @@ ScriptRunResult ScriptToolRunner::runPreparedFunction(const ToolScriptSources& s
         }
 
         auto lifetime = core::makeShared<SourceModuleLifetime>();
-        lifetime->program = compiled.program;
+        const auto validation =
+            scriptvm::ValidatedInterpreterProgram::create(compiled.program, lifetime->program);
+        if (!validation.ok()) {
+            sourceModuleDiagnostics = diagnosticText(validation.diagnostic());
+            return nullptr;
+        }
         auto exports = core::makeShared<scriptvm::ModuleExports>();
         exports->moduleVersion = 1u;
         exports->exportContractHash = compiled.typedIr.fingerprint;
@@ -966,7 +971,7 @@ ScriptRunResult ScriptToolRunner::runPreparedFunction(const ToolScriptSources& s
             contract.result = declaration->retType;
             exports->scriptFunctionContracts.emplace(declaration->funcName, std::move(contract));
         }
-        for (const auto& [name, index] : lifetime->program.funcIndex) {
+        for (const auto& [name, index] : lifetime->program.program().funcIndex) {
             if (name == "__module_init__" || name == "__entry__") {
                 continue;
             }
@@ -1052,9 +1057,16 @@ ScriptRunResult ScriptToolRunner::runPreparedFunction(const ToolScriptSources& s
         return result;
     }
 
+    scriptvm::ValidatedInterpreterProgram program;
+    const auto validation =
+        scriptvm::ValidatedInterpreterProgram::create(compiled.program, program);
+    if (!validation.ok()) {
+        result.diagnostics = diagnosticText(validation.diagnostic());
+        return result;
+    }
     scriptvm::EvalResult evaluated;
     try {
-        evaluated = scriptvm::runFunctionByName(compiled.program,
+        evaluated = scriptvm::runFunctionByName(program,
             core::pmr::String(functionName, &core::defaultCpuMemoryResource()),
             args,
             &modules);

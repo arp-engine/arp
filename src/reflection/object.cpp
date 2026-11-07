@@ -67,7 +67,10 @@ core::pmr::String typeNameFromParts(
 
 const object& object::undefined()
 {
-    static object value;
+    static object value = [] {
+        core::CpuAllocationGroupScope independentStorage(false);
+        return object{};
+    }();
     return value;
 }
 

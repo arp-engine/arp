@@ -37,6 +37,7 @@ inline ResourceSourcePlanValidation pendingResourceReads(
         core::io::FileReadRequest request;
         request.contractVersion = 1;
         request.path = intent.path;
+        request.range = intent.range;
         request.pathScope = intent.pathScope;
         request.mount = intent.mount;
         request.expectedVersion = intent.expectedVersion;
@@ -46,11 +47,23 @@ inline ResourceSourcePlanValidation pendingResourceReads(
         if (valid.status != core::io::FileIoStatus::Success)
             return {ResourceSourcePlanStatus::InvalidRequest, valid};
         for (std::size_t j = 0; j < i; ++j)
-            if (reads[j].path == intent.path)
+            if (reads[j].path == intent.path && reads[j].pathScope == intent.pathScope
+                && reads[j].mount == intent.mount
+                && reads[j].contentVersion == intent.contentVersion
+                && reads[j].expectedVersion == intent.expectedVersion
+                && reads[j].range.mode == intent.range.mode
+                && reads[j].range.offset == intent.range.offset
+                && reads[j].range.size == intent.range.size)
                 return {ResourceSourcePlanStatus::Ambiguous, {}};
     }
     for (auto intent = reads.begin(); intent != reads.end();) {
-        const auto* source = sources.find(intent->path);
+        const auto* source = sources.find(*intent);
+        // Legacy whole-file consumers bind one path to one location/version for
+        // the duration of a graph. Preserve that conflict contract while cooked
+        // sections use their explicit location, range and content identity.
+        if (!source && intent->range.mode == core::io::FileReadRangeMode::WholeFile
+            && intent->contentVersion.empty())
+            source = sources.find(intent->path);
         if (!source) {
             ++intent;
             continue;

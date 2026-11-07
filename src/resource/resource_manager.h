@@ -66,6 +66,10 @@ struct ResourceFileReadIntent {
     core::PoolHandle mount;
     core::io::FileVersionToken expectedVersion;
     std::uint64_t maxVersionBytes = 0;
+    core::io::FileReadRange range{};
+    // Logical cooked section identity. Unlike a backend whole-file version,
+    // this never asks FileService to hash bytes outside the requested range.
+    core::pmr::String contentVersion{&core::defaultCpuMemoryResource()};
 };
 
 struct ResourceSourceBuffer {
@@ -75,12 +79,15 @@ struct ResourceSourceBuffer {
     core::io::FilePathScope pathScope = core::io::FilePathScope::Unspecified;
     core::PoolHandle mount;
     core::io::FileVersionToken version;
+    core::io::FileReadRange range{};
+    core::pmr::String contentVersion{&core::defaultCpuMemoryResource()};
 };
 
 class ARP_API ResourceSourceSet final {
 public:
     bool add(ResourceSourceBuffer source);
     const ResourceSourceBuffer* find(NameView path) const;
+    const ResourceSourceBuffer* find(const ResourceFileReadIntent&) const;
     void clear();
     std::size_t totalBytes() const noexcept;
 

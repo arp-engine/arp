@@ -1,3 +1,4 @@
+#include "rhi/backends/metal/metal_pipeline_archive_identity.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/gpu_descriptors.h"
 #include "rhi/gpu_device.h"
@@ -7,8 +8,44 @@
 
 int main()
 {
+    {
+        using Identity = arp::rhi_metal::MetalPipelineArchiveIdentity;
+        const Identity::Device identity{47, 15, 1, 2};
+        std::array<std::uint8_t, Identity::envelopeBytes + 5> bytes{};
+        Identity::seal(bytes.data(), bytes.size(), identity);
+        assert(Identity::matches({bytes.data(), bytes.size()}, identity));
+        for (std::size_t i = 0; i < bytes.size(); ++i) {
+            auto changed = bytes;
+            changed[i] ^= 0x80;
+            assert(!Identity::matches({changed.data(), changed.size()}, identity));
+        }
+        for (std::size_t i = 0; i < identity.size(); ++i) {
+            auto changed = identity;
+            ++changed[i];
+            assert(!Identity::matches({bytes.data(), bytes.size()}, changed));
+        }
+        assert(!Identity::matches({bytes.data(), Identity::envelopeBytes}, identity));
+        assert(!Identity::matches({bytes.data(), bytes.size() - 1}, identity));
+    }
     using namespace arp::rhi;
     using namespace arp::rhi::semantics;
+
+    {
+        auto sharedDevice = createNullDevice();
+        PipelineCache shared(*sharedDevice);
+        assert(shared.configureBudget({kCacheBudgetContractVersion, "SharedLayout", 1u}));
+        PipelineLayoutDesc definition;
+        definition.pushConstantRanges.push_back({ShaderStage::Vertex, 0u, 4u});
+        auto lease = shared.acquireSharedPipelineLayout(definition);
+        assert(lease && shared.acquireSharedPipelineLayout(definition).get() == lease.get());
+        definition.pushConstantRanges[0].stages = ShaderStage::Fragment;
+        assert(!shared.acquireSharedPipelineLayout(definition));
+        shared.evictStale(100, 1);
+        assert(shared.entryCount() == 1);
+        lease.reset();
+        shared.evictStale(100, 1);
+        assert(shared.entryCount() == 0 && shared.acquireSharedPipelineLayout(definition));
+    }
 
     auto device = createNullDevice();
     auto& pipelines = device->pipelineCache();

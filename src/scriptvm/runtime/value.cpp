@@ -11,6 +11,13 @@
 #include <exception>
 #include <limits>
 
+#if defined(_WIN32) && defined(__MINGW32__)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace {
 
 struct IntValueCache {
@@ -27,6 +34,7 @@ struct IntValueCache {
     {
         auto* cached = entries[index];
         if (cached == nullptr) {
+            arp::core::CpuAllocationGroupScope independentStorage(false);
             auto owner = arp::core::makeUnique<arp::scriptvm::Value>(value);
             cached = owner.get();
             owners.push_back(std::move(owner));
@@ -48,10 +56,64 @@ struct IntValueCache {
     }
 };
 
+#if defined(_WIN32) && defined(__MINGW32__)
+class IntValueCacheSlot final {
+public:
+    IntValueCacheSlot()
+    {
+        // Register our main-thread cleanup after the resource's destruction
+        // registration, so it runs while that resource is still alive.
+        (void)arp::core::defaultCpuMemoryResource();
+        index_ = FlsAlloc(destroy);
+        if (index_ == FLS_OUT_OF_INDEXES)
+            throw std::bad_alloc();
+    }
+
+    ~IntValueCacheSlot()
+    {
+        if (auto* cache = FlsGetValue(index_)) {
+            if (!FlsSetValue(index_, nullptr))
+                std::terminate();
+            destroy(cache);
+        }
+        // The process owns this single slot. Worker exit callbacks may still
+        // need it; no cache objects are intentionally retained by the slot.
+    }
+
+    DWORD index() const noexcept { return index_; }
+
+private:
+    static void NTAPI destroy(void* cache) noexcept
+    {
+        arp::core::destroyCpuAllocatedUnique<IntValueCache>(cache);
+    }
+
+    DWORD index_ = FLS_OUT_OF_INDEXES;
+};
+#endif
+
 IntValueCache& intValueCache()
 {
+#if defined(_WIN32) && defined(__MINGW32__)
+    // MinGW's emulated TLS storage can retire before its registered C++
+    // destructor. Keep the cache object out of that storage and give one FLS
+    // slot ownership of its thread-exit destruction instead. The process owns
+    // the slot; each thread owns and releases its actual cache and carriers.
+    static const IntValueCacheSlot slot;
+    auto* cache = static_cast<IntValueCache*>(FlsGetValue(slot.index()));
+    if (cache == nullptr) {
+        arp::core::CpuMemoryQuotaScope uncharged(nullptr);
+        arp::core::CpuAllocationGroupScope independentStorage(false);
+        auto owner = arp::core::makeUnique<IntValueCache>();
+        if (!FlsSetValue(slot.index(), owner.get()))
+            throw std::bad_alloc();
+        cache = owner.release();
+    }
+    return *cache;
+#else
     thread_local IntValueCache cache;
     return cache;
+#endif
 }
 
 } // namespace
@@ -83,9 +145,9 @@ template <class Visitor> bool visitNativeInteger(const Value& value, Visitor vis
 
 template <class T> const T* ExecutionSlot::boxedScalarPointer() const
 {
-    if (kind_ != Kind::Boxed)
+    if (kind_ != Kind::Boxed && kind_ != Kind::Private)
         return nullptr;
-    return checkedValuePayload<T>(storage_.value);
+    return checkedValuePayload<T>(readCarrier());
 }
 
 template const int* ExecutionSlot::boxedScalarPointer<int>() const;
@@ -138,10 +200,10 @@ IntegerValueCacheBorrow IntegerValueCacheBorrow::current() noexcept
 
 Value makeBool(bool v)
 {
-    static const std::array<Value, 2> values{
-        Value{false},
-        Value{true},
-    };
+    static const std::array<Value, 2> values = [] {
+        core::CpuAllocationGroupScope independentStorage(false);
+        return std::array<Value, 2>{Value{false}, Value{true}};
+    }();
     return values[v ? 1u : 0u];
 }
 

@@ -644,6 +644,18 @@ ResourceAcquireResult ResourceDomain::acquire(
 
 ResourceDomainResult ResourceDomain::dispatch()
 {
+    return dispatchImpl(0);
+}
+
+ResourceDomainResult ResourceDomain::dispatch(std::size_t maxCallbacks)
+{
+    if (!maxCallbacks)
+        return result(ResourceAcquireStatus::InvalidRequest, "RESOURCE-DOMAIN-DISPATCH-BUDGET");
+    return dispatchImpl(maxCallbacks);
+}
+
+ResourceDomainResult ResourceDomain::dispatchImpl(std::size_t maxCallbacks)
+{
     auto self = impl_;
     if (!self->isOwner())
         return result(ResourceAcquireStatus::InvalidRequest, "RESOURCE-DOMAIN-OWNER");
@@ -651,7 +663,10 @@ ResourceDomainResult ResourceDomain::dispatch()
         return result(ResourceAcquireStatus::Busy, "RESOURCE-DOMAIN-REENTRANT-DISPATCH");
     self->pumping = true;
     try {
-        self->runtime.dispatch();
+        if (maxCallbacks)
+            self->runtime.dispatch(maxCallbacks);
+        else
+            self->runtime.dispatch();
         self->collect();
         self->publish();
         self->startLoads(self);
@@ -694,6 +709,27 @@ ResourceDomainResult ResourceDomain::close()
     return self->stats.inFlightLoads || !self->requests.empty() || !disposed
         ? result(ResourceAcquireStatus::Busy, "RESOURCE-DOMAIN-DRAINING")
         : result(ResourceAcquireStatus::Closed);
+}
+
+ResourceState ResourceDomain::stateOf(NameView id) const
+{
+    if (!impl_->isOwner())
+        throw std::logic_error("RESOURCE-DOMAIN-OWNER");
+    const auto found =
+        impl_->entries.find(core::pmr::String(id, &core::defaultCpuMemoryResource()));
+    if (found == impl_->entries.end())
+        return ResourceState::Unloaded;
+    switch (found->second->state) {
+    case Impl::State::Dormant:
+        return ResourceState::Declared;
+    case Impl::State::Loading:
+        return ResourceState::Loading;
+    case Impl::State::Ready:
+        return ResourceState::Ready;
+    case Impl::State::Failed:
+        return ResourceState::Failed;
+    }
+    return ResourceState::Failed;
 }
 
 ResourceDomainTelemetry ResourceDomain::telemetry() const

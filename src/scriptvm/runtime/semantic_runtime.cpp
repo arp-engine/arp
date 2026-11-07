@@ -574,9 +574,7 @@ SemanticOperationResult ScriptSemanticRuntime::compare(
         const bool result = operation == SemanticCompareOperation::Equal ? equal
             : operation == SemanticCompareOperation::NotEqual            ? !equal
                                                                          : false;
-        SemanticOperationResult success;
-        success.value = makeBool(result);
-        return success;
+        return {makeBool(result), {}};
     }
     if (!normalizeNumeric(lhs, rhs))
         return failure(ScriptDiagnosticCode::BadCast, "numeric comparison conversion failed");
@@ -607,9 +605,7 @@ SemanticOperationResult ScriptSemanticRuntime::compare(
             result = left >= right;
             break;
         }
-        SemanticOperationResult success;
-        success.value = makeBool(result);
-        return success;
+        return {makeBool(result), {}};
     }
     if (lhs.is<std::int64_t>() && rhs.is<std::int64_t>()) {
         const auto left = *lhs.ptr<std::int64_t>();
@@ -634,9 +630,7 @@ SemanticOperationResult ScriptSemanticRuntime::compare(
             result = left >= right;
             break;
         }
-        SemanticOperationResult success;
-        success.value = makeBool(result);
-        return success;
+        return {makeBool(result), {}};
     }
     if (lhs.is<double>() && rhs.is<double>()) {
         const auto left = *lhs.ptr<double>();
@@ -661,17 +655,13 @@ SemanticOperationResult ScriptSemanticRuntime::compare(
             result = left >= right;
             break;
         }
-        SemanticOperationResult success;
-        success.value = makeBool(result);
-        return success;
+        return {makeBool(result), {}};
     }
     if (lhs.is<core::pmr::String>() && rhs.is<core::pmr::String>()) {
         const auto& left = *lhs.ptr<core::pmr::String>();
         const auto& right = *rhs.ptr<core::pmr::String>();
         result = compareStrings(operation, left, right);
-        SemanticOperationResult success;
-        success.value = makeBool(result);
-        return success;
+        return {makeBool(result), {}};
     }
     if (lhs.is<bool>() && rhs.is<bool>()) {
         const auto left = *lhs.ptr<bool>();
@@ -696,9 +686,7 @@ SemanticOperationResult ScriptSemanticRuntime::compare(
             result = left >= right;
             break;
         }
-        SemanticOperationResult success;
-        success.value = makeBool(result);
-        return success;
+        return {makeBool(result), {}};
     }
     switch (operation) {
     case SemanticCompareOperation::Equal:
@@ -720,39 +708,27 @@ SemanticOperationResult ScriptSemanticRuntime::compare(
         result = lhs >= rhs;
         break;
     }
-    SemanticOperationResult success;
-    success.value = makeBool(result);
-    return success;
+    return {makeBool(result), {}};
 }
 
 SemanticOperationResult ScriptSemanticRuntime::negate(Value value)
 {
     if (value.is<int>()) {
-        SemanticOperationResult success;
-        success.value = makeInt(-value.cast<int>());
-        return success;
+        return {makeInt(-value.cast<int>()), {}};
     }
     if (value.is<std::int64_t>()) {
-        SemanticOperationResult success;
-        success.value = makeInt64(-value.cast<std::int64_t>());
-        return success;
+        return {makeInt64(-value.cast<std::int64_t>()), {}};
     }
     if (value.is<float>()) {
-        SemanticOperationResult success;
-        success.value = Value{-value.cast<float>()};
-        return success;
+        return {Value{-value.cast<float>()}, {}};
     }
     if (value.is<double>()) {
-        SemanticOperationResult success;
-        success.value = makeFloat(-value.cast<double>());
-        return success;
+        return {makeFloat(-value.cast<double>()), {}};
     }
     Value result = -value;
     if (result.is_undefined())
         return failure(ScriptDiagnosticCode::BadCast, "semantic negation unavailable");
-    SemanticOperationResult success;
-    success.value = std::move(result);
-    return success;
+    return {std::move(result), {}};
 }
 
 SemanticOperationResult ScriptSemanticRuntime::logicalNot(Value value)
@@ -760,9 +736,7 @@ SemanticOperationResult ScriptSemanticRuntime::logicalNot(Value value)
     bool boolean = false;
     if (!tryGetBool(value, boolean))
         return failure(ScriptDiagnosticCode::BadCast, "expected bool operand");
-    SemanticOperationResult success;
-    success.value = makeBool(!boolean);
-    return success;
+    return {makeBool(!boolean), {}};
 }
 
 SemanticOperationResult ScriptSemanticRuntime::convert(
@@ -773,33 +747,25 @@ SemanticOperationResult ScriptSemanticRuntime::convert(
         int result = 0;
         if (!tryGetInt(value, result))
             return failure(ScriptDiagnosticCode::BadCast, "int conversion failed");
-        SemanticOperationResult success;
-        success.value = makeInt(result);
-        return success;
+        return {makeInt(result), {}};
     }
     case SemanticConversionOperation::Int64: {
         std::int64_t result = 0;
         if (!tryGetInt64(value, result))
             return failure(ScriptDiagnosticCode::BadCast, "int64 conversion failed");
-        SemanticOperationResult success;
-        success.value = makeInt64(result);
-        return success;
+        return {makeInt64(result), {}};
     }
     case SemanticConversionOperation::Float: {
         double result = 0.0;
         if (!tryGetFloat(value, result))
             return failure(ScriptDiagnosticCode::BadCast, "float conversion failed");
-        SemanticOperationResult success;
-        success.value = makeFloat(result);
-        return success;
+        return {makeFloat(result), {}};
     }
     case SemanticConversionOperation::String: {
         core::pmr::String result{&core::defaultCpuMemoryResource()};
         if (!tryGetString(value, result))
             return failure(ScriptDiagnosticCode::BadCast, "string conversion failed");
-        SemanticOperationResult success;
-        success.value = makeString(std::move(result));
-        return success;
+        return {makeString(std::move(result)), {}};
     }
     case SemanticConversionOperation::Bool: {
         bool result = false;
@@ -807,20 +773,14 @@ SemanticOperationResult ScriptSemanticRuntime::convert(
             result = false;
         else if (!tryGetBool(value, result))
             return failure(ScriptDiagnosticCode::BadCast, "bool conversion failed");
-        SemanticOperationResult success;
-        success.value = makeBool(result);
-        return success;
+        return {makeBool(result), {}};
     }
     case SemanticConversionOperation::Bytes:
         if (value.is<ScriptBytes>()) {
-            SemanticOperationResult success;
-            success.value = std::move(value);
-            return success;
+            return {std::move(value), {}};
         }
         if (value.is<core::pmr::String>()) {
-            SemanticOperationResult success;
-            success.value = makeBytes(*value.ptr<core::pmr::String>());
-            return success;
+            return {makeBytes(*value.ptr<core::pmr::String>()), {}};
         }
         return failure(ScriptDiagnosticCode::BadCast, "bytes conversion requires string or bytes");
     }
@@ -853,9 +813,7 @@ SemanticOperationResult ScriptSemanticRuntime::length(Value value)
     const auto scalar = lengthScalar(ExecutionSlot(std::move(value)));
     if (!scalar.ok())
         return failure(scalar.code, scalar.message);
-    SemanticOperationResult success;
-    success.value = scalar.value.materialize();
-    return success;
+    return {scalar.value.materialize(), {}};
 }
 
 SemanticOperationResult ScriptSemanticRuntime::append(
@@ -869,9 +827,7 @@ SemanticOperationResult ScriptSemanticRuntime::append(
             ScriptDiagnosticCode::ResourceLimitExceeded, "append exceeds the container limit");
     }
     values->push_back(std::move(value));
-    SemanticOperationResult success;
-    success.value = std::move(list);
-    return success;
+    return {std::move(list), {}};
 }
 
 SemanticOperationResult ScriptSemanticRuntime::erase(Value dictionary, Value key)
@@ -882,9 +838,7 @@ SemanticOperationResult ScriptSemanticRuntime::erase(Value dictionary, Value key
     const auto found = values.find(key);
     if (found != values.end())
         values.erase(found);
-    SemanticOperationResult success;
-    success.value = makeNil();
-    return success;
+    return {makeNil(), {}};
 }
 
 SemanticOperationResult ScriptSemanticRuntime::clear(Value container)
@@ -896,9 +850,7 @@ SemanticOperationResult ScriptSemanticRuntime::clear(Value container)
     } else {
         return failure(ScriptDiagnosticCode::BadCast, "clear() requires list or dict");
     }
-    SemanticOperationResult success;
-    success.value = makeNil();
-    return success;
+    return {makeNil(), {}};
 }
 
 namespace {
@@ -979,9 +931,7 @@ public:
             operands.pop_back();
         }
         std::reverse(list.begin(), list.end());
-        SemanticOperationResult success;
-        success.value = Value{std::move(list)};
-        return success;
+        return {Value{std::move(list)}, {}};
     }
 
     template <class Operands>
@@ -1147,9 +1097,7 @@ public:
             // otherwise allocated undefined Value from map::operator[].
             dict.insert_or_assign(std::move(key), std::move(value));
         }
-        SemanticOperationResult success;
-        success.value = Value{std::move(dict)};
-        return success;
+        return {Value{std::move(dict)}, {}};
     }
 };
 } // namespace
@@ -1350,9 +1298,7 @@ SemanticOperationResult ScriptSemanticRuntime::makeRange(
         range.reserve(static_cast<std::size_t>(count));
         IntegerValueBuilder::appendReservedRange(range, start, end);
     }
-    SemanticOperationResult success;
-    success.value = Value{std::move(range)};
-    return success;
+    return {Value{std::move(range)}, {}};
 }
 
 SemanticOperationResult ScriptSemanticRuntime::makeRangeFromStack(
@@ -1419,9 +1365,7 @@ SemanticOperationResult ScriptSemanticRuntime::makeReflectedInstance(
             diagnostic.diagnostic.message += className;
             return diagnostic;
         }
-        SemanticOperationResult success;
-        success.value = std::move(instance);
-        return success;
+        return {std::move(instance), {}};
     } catch (const std::bad_alloc&) {
         throw;
     } catch (...) {
@@ -1432,6 +1376,14 @@ SemanticOperationResult ScriptSemanticRuntime::makeReflectedInstance(
 SemanticOperationResult ScriptSemanticRuntime::makeScriptInstance(
     const core::pmr::String& className, const core::pmr::Vector<core::pmr::String>& fields)
 {
+    return makeScriptInstance(className, fields, {});
+}
+
+SemanticOperationResult ScriptSemanticRuntime::makeScriptInstance(
+    const core::pmr::String& className,
+    const core::pmr::Vector<core::pmr::String>& fields,
+    std::shared_ptr<const reflection::InstanceFieldLayout> layout)
+{
     auto* classInfo = arp::reflection::db::instance().find_class(className);
     if (classInfo == nullptr) {
         classInfo = arp::reflection::db::instance().register_class(
@@ -1439,12 +1391,10 @@ SemanticOperationResult ScriptSemanticRuntime::makeScriptInstance(
     }
     if (classInfo == nullptr)
         return failure(ScriptDiagnosticCode::HostError, "script class registration failed");
-    arp::reflection::instance instance{classInfo};
-    for (const auto& field : fields)
-        instance.slot(field) = makeNil();
-    SemanticOperationResult success;
-    success.value = Value{instance};
-    return success;
+    arp::reflection::instance instance = layout
+        ? arp::reflection::instance{classInfo, std::move(layout)}
+        : arp::reflection::instance{classInfo, fields};
+    return {Value{std::move(instance)}, {}};
 }
 
 namespace {
@@ -1787,15 +1737,17 @@ SemanticOperationResult ScriptSemanticRuntime::storeIndex(Value base, Value inde
             return failure(ScriptDiagnosticCode::IndexError, "list index out of range");
         (*list)[static_cast<std::size_t>(slot)] = std::move(value);
     } else if (base.is<arp::reflection::hdict>()) {
-        (*base.ptr<arp::reflection::hdict>())[std::move(index)] = std::move(value);
+        auto* dictionary = base.ptr<arp::reflection::hdict>();
+        if (core::currentCpuMemoryQuota() == nullptr)
+            dictionary->insert_or_assign(std::move(index), std::move(value));
+        else
+            (*dictionary)[std::move(index)] = std::move(value);
     } else if (base.is<ScriptBytes>()) {
         return failure(ScriptDiagnosticCode::ImmutableAssign, "bytes values are immutable");
     } else {
         return failure(ScriptDiagnosticCode::NotIndexable, "value is not indexable");
     }
-    SemanticOperationResult success;
-    success.value = makeNil();
-    return success;
+    return {makeNil(), {}};
 }
 
 SemanticOperationResult ScriptSemanticRuntime::findField(
@@ -1824,9 +1776,7 @@ SemanticOperationResult ScriptSemanticRuntime::findField(
         } else if (base.class_() != nullptr) {
             result = base.class_()->get_attr(base, fieldName);
         }
-        SemanticOperationResult success;
-        success.value = std::move(result);
-        return success;
+        return {std::move(result), {}};
     } catch (const std::bad_alloc&) {
         throw;
     } catch (...) {
@@ -1858,9 +1808,7 @@ SemanticOperationResult ScriptSemanticRuntime::loadModuleExport(
         result.diagnostic.message += exportName;
         return result;
     }
-    SemanticOperationResult success;
-    success.value = found->second;
-    return success;
+    return {found->second, {}};
 }
 
 SemanticOperationResult ScriptSemanticRuntime::loadModule(
@@ -1884,9 +1832,7 @@ SemanticOperationResult ScriptSemanticRuntime::loadModule(
             }
             return result;
         }
-        SemanticOperationResult success;
-        success.value = Value{ModuleObject(exports)};
-        return success;
+        return {Value{ModuleObject(exports)}, {}};
     } catch (const std::bad_alloc&) {
         throw;
     } catch (...) {
@@ -1927,9 +1873,7 @@ SemanticOperationResult ScriptSemanticRuntime::storeField(
         } else {
             return failure(ScriptDiagnosticCode::NoMember, "field store failed");
         }
-        SemanticOperationResult success;
-        success.value = makeNil();
-        return success;
+        return {makeNil(), {}};
     } catch (const std::bad_alloc&) {
         throw;
     } catch (...) {

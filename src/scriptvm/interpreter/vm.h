@@ -126,6 +126,15 @@ public:
 
     std::size_t maxContinuationFrames() const noexcept { return maxContinuationFrames_; }
 
+    // Experimental frame-local reference coalescing. Enable explicitly after
+    // validating the workload; public Value/continuation ownership is unchanged.
+    void setPrivateReferenceDomainsEnabled(bool enabled) noexcept
+    {
+        privateReferenceDomainsEnabled_ = enabled;
+    }
+
+    bool privateReferenceDomainsEnabled() const noexcept { return privateReferenceDomainsEnabled_; }
+
     void setMemoryQuota(std::shared_ptr<core::CpuMemoryQuota> quota)
     {
         memoryQuota_ = std::move(quota);
@@ -471,6 +480,7 @@ private:
     std::size_t maxCallArguments_ = 4096;
     std::size_t maxContinuationFrames_ = 1024;
     std::shared_ptr<core::CpuMemoryQuota> memoryQuota_;
+    bool privateReferenceDomainsEnabled_ = false;
 
     // A private synchronous call may inherit the exact binding installed by
     // its caller. Public/reentrant entries always install a fresh core scope;

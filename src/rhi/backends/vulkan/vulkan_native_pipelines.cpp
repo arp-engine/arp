@@ -1381,8 +1381,8 @@ VulkanRhiNativeResourceResult createComputePayload(const std::shared_ptr<VulkanR
     pipelineInfo.layout = layoutBuild.layout;
 
     auto& pipeline = objects.pipeline;
-    const auto pipelineCreated = createComputePipelines(
-        runtime->logicalDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+    const auto pipelineCreated =
+        runtime->createCachedComputePipeline(createComputePipelines, pipelineInfo, pipeline);
     observe(pipelineCreated);
     if (pipelineCreated != VK_SUCCESS) {
         result.diagnostics = vkFailure("vkCreateComputePipelines", pipelineCreated);
@@ -2247,8 +2247,8 @@ VulkanRhiNativeResourceResult VulkanRhiNativeResourceAllocator::createRenderPipe
     pipelineInfo.subpass = desc.subpassIndex;
 
     auto& pipeline = objects.pipeline;
-    const auto pipelineCreated = createGraphicsPipelines(
-        runtime_->logicalDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+    const auto pipelineCreated =
+        runtime_->createCachedGraphicsPipeline(createGraphicsPipelines, pipelineInfo, pipeline);
     observe(pipelineCreated);
 
     if (pipelineCreated != VK_SUCCESS) {

@@ -1555,6 +1555,12 @@ const IUiControlFactory* UiControlFactoryRegistry::find(const arp::core::pmr::St
     return binding ? binding->factory.get() : nullptr;
 }
 
+UiArpuiRuntimeLoadResult instantiateUiDocument(
+    UiDocument document, const UiControlFactoryRegistry* factories, size_t capacity)
+{
+    return createRuntimeFromDocument(std::move(document), factories, capacity);
+}
+
 UiArpuiRuntimeLoadResult UiArpuiRuntimeLoadResult::success(UiDocument document,
     arp::core::UniquePtr<UiControlRuntime> runtime,
     arp::core::pmr::Vector<UiRuntimeNodeBinding> bindings)

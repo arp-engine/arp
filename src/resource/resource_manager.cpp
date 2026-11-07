@@ -466,7 +466,14 @@ bool isResourceUuid(NameView value)
 
 bool ResourceSourceSet::add(ResourceSourceBuffer source)
 {
-    if (source.path.empty() || find(source.path) != nullptr
+    ResourceFileReadIntent identity;
+    identity.path = source.path;
+    identity.pathScope = source.pathScope;
+    identity.mount = source.mount;
+    identity.range = source.range;
+    identity.expectedVersion = source.version;
+    identity.contentVersion = source.contentVersion;
+    if (source.path.empty() || find(identity) != nullptr
         || source.bytes.size() > SIZE_MAX - totalBytes_) {
         return false;
     }
@@ -478,10 +485,27 @@ bool ResourceSourceSet::add(ResourceSourceBuffer source)
 
 const ResourceSourceBuffer* ResourceSourceSet::find(NameView path) const
 {
+    const ResourceSourceBuffer* found = nullptr;
     for (const auto& source : sources_) {
-        if (source.path == path) {
-            return &source;
+        if (source.path == path && source.range.mode == core::io::FileReadRangeMode::WholeFile) {
+            if (found)
+                return nullptr;
+            found = &source;
         }
+    }
+    return found;
+}
+
+const ResourceSourceBuffer* ResourceSourceSet::find(const ResourceFileReadIntent& intent) const
+{
+    for (const auto& source : sources_) {
+        if (source.path == intent.path && source.pathScope == intent.pathScope
+            && source.mount == intent.mount && source.contentVersion == intent.contentVersion
+            && source.range.mode == intent.range.mode && source.range.offset == intent.range.offset
+            && source.range.size == intent.range.size
+            && (intent.expectedVersion.kind == core::io::FileVersionKind::None
+                || source.version == intent.expectedVersion))
+            return &source;
     }
     return nullptr;
 }

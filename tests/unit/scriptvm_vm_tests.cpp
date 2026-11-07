@@ -13,9 +13,11 @@
 #include "scriptvm/interpreter/eval.h"
 #include "scriptvm/runtime/module_registry.h"
 #include "scriptvm/runtime/value.h"
+#include "tests/scriptvm_interpreter_test_fixture.h"
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string_view>
 
 using namespace arp::scriptvm;
@@ -44,6 +46,27 @@ struct ReflectedConstructible {
     explicit ReflectedConstructible(int initial) : value(initial) {}
 
     int value = 0;
+};
+
+struct StoreReleaseProbe {
+    int* releases;
+    arp::reflection::instance* receiver;
+
+    StoreReleaseProbe(int& count, arp::reflection::instance& target)
+        : releases(&count), receiver(&target)
+    {}
+
+    StoreReleaseProbe(const StoreReleaseProbe&) = default;
+
+    StoreReleaseProbe(StoreReleaseProbe&& other) noexcept
+        : releases(std::exchange(other.releases, nullptr)), receiver(other.receiver)
+    {}
+
+    ~StoreReleaseProbe()
+    {
+        if (releases)
+            receiver->__setitem__("release_marker", Value{++*releases});
+    }
 };
 
 void registerReflectedScalar()
@@ -1812,11 +1835,369 @@ void testPointerAddressingParitySurface()
     }
 }
 
+void testConstructionSnapshotAndFieldSpans()
+{
+    auto compiled =
+        test::buildInterpreter("class FieldSpanPair:\n"
+                               "    left: float\n    right: float\n"
+                               "    def __init__(self, value: float):\n"
+                               "        self.left = value\n        self.right = value\n"
+                               "def build() -> FieldSpanPair:\n    return FieldSpanPair(2.5)\n",
+            "field-spans.arp",
+            "field-spans");
+    require(compiled.ok(), "field span source compiles");
+    if (!compiled.ok())
+        return;
+    auto source = std::move(compiled.program);
+    ValidatedInterpreterProgram snapshot;
+    const auto validation = ValidatedInterpreterProgram::create(source, snapshot);
+    require(validation.ok(), "construction snapshot validates");
+    if (!validation.ok()) {
+        std::fprintf(
+            stderr, "construction snapshot: %s\n", validation.diagnostic().message.c_str());
+        return;
+    }
+    const auto fingerprint = computeInterpreterBytecodeFingerprint(snapshot.program());
+    source.classSchemas.clear();
+    source.functions[source.funcIndex.at("build")].code.clear();
+    auto made = runFunctionByName(snapshot, "build", {});
+    require(made.ok(), "construction uses immutable schema and instructions");
+    auto* pair = made.value.ptr<arp::reflection::instance>();
+    auto& left = pair->slot("left");
+    auto& right = pair->slot("right");
+    require(*left.ptr<double>() == 2.5 && *right.ptr<double>() == 2.5,
+        "field spans preserve inline scalar values");
+    require(left.storageIdentity() != right.storageIdentity(),
+        "separate inline float loads create independent mutable carriers");
+    *left.ptr<double>() = 7.0;
+    require(*right.ptr<double>() == 2.5, "float source materialization never introduces aliases");
+    require(computeInterpreterBytecodeFingerprint(snapshot.program()) == fingerprint,
+        "construction plans leave bytecode identity unchanged");
+    for (int cleanupCase = 0; cleanupCase < 2; ++cleanupCase) {
+        // Overwriting a field may run native cleanup which reenters the same
+        // instance and inserts a dynamic field. Match the reflection setter's
+        // cleanup count, ordering and incoming carrier identity.
+        int referenceReleases = 0, vmReleases = 0;
+        Value reference{
+            arp::reflection::instance{pair->class_(), snapshot.fieldLayout("FieldSpanPair")}};
+        Value target{
+            arp::reflection::instance{pair->class_(), snapshot.fieldLayout("FieldSpanPair")}};
+        auto* referencePair = reference.ptr<arp::reflection::instance>();
+        auto* targetPair = target.ptr<arp::reflection::instance>();
+        for (const char* field : {"left", "right"}) {
+            if (cleanupCase == 1 && std::string_view(field) == "left")
+                continue;
+            referencePair->__setitem__(
+                field, Value{StoreReleaseProbe{referenceReleases, *referencePair}});
+            targetPair->__setitem__(field, Value{StoreReleaseProbe{vmReleases, *targetPair}});
+        }
+        require(referenceReleases == 0 && vmReleases == 0,
+            "overwrite probes remain owned until their fields are replaced");
+        const Value supplied{8.5};
+        referencePair->__setitem__("left", supplied);
+        referencePair->__setitem__("right", supplied);
+        arp::core::pmr::Vector<Value> args{&arp::core::defaultCpuMemoryResource()};
+        args.push_back(target);
+        args.push_back(supplied);
+        const auto result =
+            runFunction(snapshot, snapshot.program().constructorIndex.at("FieldSpanPair"), args);
+        require(result.ok(), "existing-field overwrite survives native cleanup reentry");
+        require(referenceReleases == 2 - cleanupCase && vmReleases == referenceReleases,
+            "existing-field overwrite releases each old payload exactly once");
+        requireInt(targetPair->__getitem__("release_marker"),
+            2 - cleanupCase,
+            "existing-field overwrite preserves cleanup writes into the same instance");
+        for (const char* field : {"left", "right"})
+            require(targetPair->__getitem__(field).storageIdentity() == supplied.storageIdentity(),
+                "existing-field overwrite preserves the incoming mutable carrier");
+    }
+    for (int layoutCase = 0; layoutCase < 4; ++layoutCase) {
+        for (int budget = 0; budget <= 7; ++budget) {
+            auto layout = snapshot.fieldLayout("FieldSpanPair");
+            if (layoutCase == 1)
+                layout =
+                    arp::core::makeShared<arp::reflection::InstanceFieldLayout>(layout->names());
+            else if (layoutCase >= 2) {
+                arp::core::pmr::Vector<arp::core::pmr::String> fields{
+                    &arp::core::defaultCpuMemoryResource()};
+                fields.emplace_back("a_different_declared_field");
+                if (layoutCase == 2) {
+                    fields.emplace_back("left");
+                    fields.emplace_back("right");
+                }
+                layout = arp::core::makeShared<arp::reflection::InstanceFieldLayout>(fields);
+            }
+            Value baseline{arp::reflection::instance{pair->class_(), layout}};
+            Value candidate{arp::reflection::instance{pair->class_(), layout}};
+            const Value supplied{3.5};
+            arp::core::pmr::Vector<Value> rawArgs{&arp::core::defaultCpuMemoryResource()};
+            arp::core::pmr::Vector<Value> fastArgs{&arp::core::defaultCpuMemoryResource()};
+            rawArgs.push_back(baseline);
+            rawArgs.push_back(supplied);
+            fastArgs.push_back(candidate);
+            fastArgs.push_back(supplied);
+            Vm raw, fast;
+            require(fast.bindProgram(snapshot).ok(), "field span test binds snapshot");
+            raw.setInstructionBudget(budget);
+            fast.setInstructionBudget(budget);
+            VmError rawError, fastError;
+            const int index = snapshot.program().constructorIndex.at("FieldSpanPair");
+            raw.runFunction(snapshot.program(), index, rawArgs, &rawError);
+            fast.runFunction(snapshot.program(), index, fastArgs, &fastError);
+            require(rawError.code == fastError.code && rawError.message == fastError.message,
+                "field span budget boundaries preserve diagnostics");
+            for (const char* field : {"left", "right"}) {
+                const auto rawValue = baseline.ptr<arp::reflection::instance>()->__getitem__(field);
+                const auto fastValue =
+                    candidate.ptr<arp::reflection::instance>()->__getitem__(field);
+                require(
+                    isNil(rawValue) == isNil(fastValue), "budget failure preserves partial writes");
+                if (!isNil(rawValue))
+                    require(rawValue.storageIdentity() == supplied.storageIdentity()
+                            && fastValue.storageIdentity() == supplied.storageIdentity(),
+                        "imported mutable float aliases survive field spans");
+            }
+        }
+    }
+    // A bytecode function may be shared by multiple class method/constructor
+    // tables. Its local zero cannot certify one unique declared-field layout.
+    Program shared = snapshot.program();
+    const int sharedConstructor = shared.constructorIndex.at("FieldSpanPair");
+    shared.classSchemas["FieldSpanOther"] = {"a_sentinel", "left", "right"};
+    shared.constructorIndex["FieldSpanOther"] = sharedConstructor;
+    shared.methodSets["FieldSpanOther"]["initialize"] = sharedConstructor;
+    shared.bytecodeFingerprint = computeInterpreterBytecodeFingerprint(shared);
+    ValidatedInterpreterProgram sharedSnapshot;
+    const auto sharedValidation = ValidatedInterpreterProgram::create(shared, sharedSnapshot);
+    require(sharedValidation.ok(), "shared constructor and method mapping validates");
+    if (!sharedValidation.ok())
+        return;
+    for (const char* name : {"FieldSpanPair", "FieldSpanOther"}) {
+        Value receiver{arp::reflection::instance{pair->class_(), sharedSnapshot.fieldLayout(name)}};
+        auto* instance = receiver.ptr<arp::reflection::instance>();
+        instance->slot("a_sentinel") = makeInt(91);
+        const Value supplied{6.25};
+        arp::core::pmr::Vector<Value> args{&arp::core::defaultCpuMemoryResource()};
+        args.push_back(receiver);
+        args.push_back(supplied);
+        const auto result = runFunction(sharedSnapshot, sharedConstructor, args);
+        require(result.ok(), "shared field plan preserves either receiver layout");
+        for (const char* field : {"left", "right"})
+            require(instance->__getitem__(field).storageIdentity() == supplied.storageIdentity(),
+                "shared field plan stores into the named slot with carrier identity");
+        requireInt(instance->__getitem__("a_sentinel"),
+            91,
+            "shared field plan leaves unrelated declared or dynamic slots unchanged");
+    }
+    ValidatedInterpreterProgram empty;
+    require(!runFunction(empty, 0, {}).ok(), "invalid immutable snapshot fails safely");
+}
+
+void testLocalNilComparison()
+{
+    namespace core = arp::core;
+    registerReflectedScalar();
+    const auto compiled =
+        test::buildInterpreter("def local_nil(value: any) -> bool:\n    return value == nil\n",
+            "local-nil.arp",
+            "local-nil");
+    require(compiled.ok(), "local nil comparison template compiles");
+    if (!compiled.ok()) {
+        std::printf("local nil template: %s\n", compiled.error.message.c_str());
+        return;
+    }
+    const int functionIndex = compiled.program.funcIndex.at("local_nil");
+    core::pmr::Vector<Value> inputs{makeNil(),
+        Value{nullptr},
+        Value{12},
+        Value{2.5},
+        makeBool(false),
+        makeString(std::string_view("text")),
+        Value{arp::reflection::makeEmptyHList()},
+        Value{arp::reflection::hdict{}},
+        Value{ReflectedScalar{4}}};
+    for (const auto comparison : {Opcode::CmpEq, Opcode::CmpNe}) {
+        for (int sourceKind = 0; sourceKind < 4; ++sourceKind) {
+            for (int prefix = 0; prefix < 2; ++prefix) {
+                Program program = compiled.program;
+                auto& function = program.functions[functionIndex];
+                function.code.clear();
+                function.locals = 2;
+                function.results = 1;
+                function.maxStack = 3;
+                if (sourceKind == 1) {
+                    const double value = 3.5;
+                    std::int64_t bits = 0;
+                    std::memcpy(&bits, &value, sizeof(bits));
+                    function.code.emplace_back(Opcode::LoadFloat, 0, 0, bits);
+                    function.code.emplace_back(Opcode::StoreLocal, 0);
+                } else if (sourceKind == 2) {
+                    function.code.emplace_back(
+                        Opcode::LoadString, 0, 0, 0, core::pmr::String("literal"));
+                    function.code.emplace_back(Opcode::StoreLocal, 0);
+                } else if (sourceKind == 3) {
+                    function.code.emplace_back(Opcode::LoadLocal, 0);
+                    function.code.emplace_back(Opcode::MakeMethodValue, functionIndex);
+                    function.code.emplace_back(Opcode::StoreLocal, 0);
+                }
+                if (prefix)
+                    function.code.emplace_back(Opcode::LoadInt, 0, 0, 37);
+                function.code.emplace_back(Opcode::LoadLocal, 0);
+                function.code.emplace_back(Opcode::LoadNil);
+                function.code.emplace_back(comparison);
+                if (prefix) {
+                    function.code.emplace_back(Opcode::StoreLocal, 1);
+                    function.code.emplace_back(Opcode::Pop);
+                    function.code.emplace_back(Opcode::LoadLocal, 1);
+                }
+                function.code.emplace_back(Opcode::Return, 1);
+                program.bytecodeFingerprint = computeInterpreterBytecodeFingerprint(program);
+                ValidatedInterpreterProgram snapshot;
+                require(ValidatedInterpreterProgram::create(program, snapshot).ok(),
+                    "local nil comparison validates");
+                if (!snapshot.valid())
+                    continue;
+                const int codeSize = static_cast<int>(function.code.size());
+                for (const auto& input : inputs) {
+                    const void* identity = input.storageIdentity();
+                    for (int quotaCase = 0; quotaCase < 3; ++quotaCase) {
+                        for (int budget = 0; budget <= codeSize; ++budget) {
+                            Vm raw, fast;
+                            require(fast.bindProgram(snapshot).ok(),
+                                "local nil comparison binds immutable program");
+                            raw.setInstructionBudget(budget);
+                            fast.setInstructionBudget(budget);
+                            auto quota = core::makeShared<core::CpuMemoryQuota>(1u << 20u);
+                            if (quotaCase == 1) {
+                                raw.setMemoryQuota(quota);
+                                fast.setMemoryQuota(quota);
+                            }
+                            core::CpuMemoryQuotaScope scope(quotaCase == 2 ? quota : nullptr);
+                            core::pmr::Vector<Value> arguments{input};
+                            VmError rawError, fastError;
+                            const auto a = raw.runFunction(
+                                snapshot.program(), functionIndex, arguments, &rawError);
+                            const auto b = fast.runFunction(
+                                snapshot.program(), functionIndex, arguments, &fastError);
+                            require(rawError.code == fastError.code
+                                    && rawError.message == fastError.message
+                                    && rawError.traceback == fastError.traceback,
+                                "local nil comparison preserves every budget diagnostic and PC");
+                            if (budget == codeSize) {
+                                require(rawError.code == ScriptDiagnosticCode::None,
+                                    "complete local nil comparison succeeds");
+                                const bool nil = sourceKind == 0 && isNil(input);
+                                const bool expected = comparison == Opcode::CmpEq ? nil : !nil;
+                                requireBool(a, expected, "raw local nil comparison value");
+                                requireBool(b, expected, "validated local nil comparison value");
+                            }
+                            require(input.storageIdentity() == identity
+                                    && arguments[0].storageIdentity() == identity,
+                                "local nil comparison preserves imported carrier identity");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void testContiguousFieldInitialization()
+{
+    auto compiled = test::buildInterpreter("class StoreRun:\n"
+                                           "    first: float\n    second: float\n    count: int\n"
+                                           "    def fill(self, other: StoreRun, value: float):\n"
+                                           "        self.first = value\n        self.second = 2.5\n"
+                                           "        self.count = 7\n        other.first = value\n"
+                                           "        self.count = 9\n        self.second = 3.5\n"
+                                           "def build() -> StoreRun:\n    return StoreRun()\n",
+        "store-runs.arp",
+        "store-runs");
+    require(compiled.ok(), "contiguous initialization source compiles");
+    if (!compiled.ok())
+        return;
+    ValidatedInterpreterProgram snapshot;
+    require(ValidatedInterpreterProgram::create(compiled.program, snapshot).ok(),
+        "contiguous initialization snapshot validates");
+    if (!snapshot.valid())
+        return;
+    const int function = snapshot.program().methodSets.at("StoreRun").at("fill");
+    const auto layout = snapshot.fieldLayout("StoreRun");
+    auto seed = runFunctionByName(snapshot, "build", {});
+    require(seed.ok(), "store runs create the registered receiver class");
+    if (!seed.ok())
+        return;
+    const auto* receiverClass = seed.value.ptr<arp::reflection::instance>()->class_();
+    const int codeSize = static_cast<int>(snapshot.program().functions[function].code.size());
+    // Exhaust every original instruction boundary, including the transition
+    // to another receiver and the repeated stores into non-nil destinations.
+    for (int quotaCase = 0; quotaCase < 2; ++quotaCase) {
+        for (int budget = 0; budget <= codeSize; ++budget) {
+            Value rawSelf{arp::reflection::instance{receiverClass, layout}};
+            Value rawOther{arp::reflection::instance{receiverClass, layout}};
+            Value fastSelf{arp::reflection::instance{receiverClass, layout}};
+            Value fastOther{arp::reflection::instance{receiverClass, layout}};
+            const Value supplied{8.5};
+            arp::core::pmr::Vector<Value> rawArgs{rawSelf, rawOther, supplied};
+            arp::core::pmr::Vector<Value> fastArgs{fastSelf, fastOther, supplied};
+            Vm raw, fast;
+            require(fast.bindProgram(snapshot).ok(), "store runs bind immutable program");
+            raw.setInstructionBudget(budget);
+            fast.setInstructionBudget(budget);
+            if (quotaCase != 0) {
+                raw.setMemoryQuota(arp::core::makeShared<arp::core::CpuMemoryQuota>(1u << 20u));
+                fast.setMemoryQuota(arp::core::makeShared<arp::core::CpuMemoryQuota>(1u << 20u));
+            }
+            VmError rawError, fastError;
+            raw.runFunction(snapshot.program(), function, rawArgs, &rawError);
+            fast.runFunction(snapshot.program(), function, fastArgs, &fastError);
+            if (budget == codeSize)
+                require(rawError.code == ScriptDiagnosticCode::None
+                        && fastError.code == ScriptDiagnosticCode::None,
+                    "the complete mixed store sequence executes successfully");
+            require(rawError.code == fastError.code && rawError.message == fastError.message
+                    && rawError.traceback == fastError.traceback,
+                "store runs preserve every budget diagnostic and traceback PC");
+            for (int receiver = 0; receiver < 2; ++receiver) {
+                auto* reference = rawArgs[receiver].ptr<arp::reflection::instance>();
+                auto* candidate = fastArgs[receiver].ptr<arp::reflection::instance>();
+                for (const char* field : {"first", "second", "count"}) {
+                    const auto a = reference->findSlot(field);
+                    const auto b = candidate->findSlot(field);
+                    require(isNil(*a) == isNil(*b),
+                        "store runs preserve partial field writes across receivers");
+                    if (isNil(*a))
+                        continue;
+                    if (std::string_view(field) == "count") {
+                        int left = 0, right = 0;
+                        require(tryGetInt(*a, left) && tryGetInt(*b, right) && left == right,
+                            "store runs preserve repeated integer stores");
+                    } else {
+                        require(*a->ptr<double>() == *b->ptr<double>(),
+                            "store runs preserve inline and boxed float values");
+                        if (std::string_view(field) == "first")
+                            require(a->storageIdentity() == supplied.storageIdentity()
+                                    && b->storageIdentity() == supplied.storageIdentity(),
+                                "store runs retain imported mutable carrier aliases");
+                        else
+                            require(a->storageIdentity() != supplied.storageIdentity()
+                                    && b->storageIdentity() != supplied.storageIdentity(),
+                                "inline float stores remain independent carriers");
+                    }
+                }
+            }
+        }
+    }
+}
+
 } // namespace
 
 int main()
 {
     try {
+        testConstructionSnapshotAndFieldSpans();
+        testContiguousFieldInitialization();
+        testLocalNilComparison();
         testScalarArithmetic();
         std::printf("PASSED: testScalarArithmetic\n");
         testControlFlowIf();

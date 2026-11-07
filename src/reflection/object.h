@@ -18,6 +18,7 @@ class class_info;
 class ARP_API object final {
 public:
     object();
+
     object(const object& rhs);
     object(object&& rhs) noexcept;
 
@@ -105,7 +106,8 @@ public:
     bool native_reference_alive() const;
     void invalidate_native_reference() const;
     // Stable for the lifetime of the shared reflection value. This is the
-    // exact core allocation identity, not the address of the inline variant.
+    // carrier identity, not the address of the inline variant. Its core backing
+    // allocation is resolved with inspectCpuAllocationContaining.
     const void* storageIdentity() const noexcept;
 
     // Carrier ownership only; callers must separately prove payload ownership

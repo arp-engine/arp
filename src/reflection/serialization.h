@@ -3,6 +3,7 @@
 #include "core/concurrency/callback.h"
 #include "core/encoding/yaml_contract.h"
 #include "reflection/reflection.h"
+#include "reflection/serialization_value.h"
 
 namespace arp::reflection {
 
@@ -13,6 +14,7 @@ struct SerializationOptions {
     std::size_t maxDepth = 32;
     std::size_t maxValues = 65536;
     std::size_t maxCollectionLength = 4096;
+    std::size_t maxBytes = 64u * 1024u * 1024u;
 };
 
 // Runtime languages expose field schemas without inventing C++ payload types.
@@ -37,13 +39,21 @@ struct SerializationDescriptor {
 
 // Reference ownership and lookup belong to the caller. Reflection only sees
 // declared property metadata and an external resolver, never domain services.
-class SerializationContext {
+class ARP_API SerializationContext {
 public:
     virtual ~SerializationContext() = default;
+
     virtual bool writeReference(
-        const property&, const object&, core::YamlContract::Node&, core::pmr::String&) const = 0;
+        const property&, const object&, core::YamlContract::Node&, core::pmr::String&) const
+    {
+        return false;
+    }
+
     virtual bool readReference(
-        const property&, const core::YamlContract::Node&, object&, core::pmr::String&) const = 0;
+        const property&, const core::YamlContract::Node&, object&, core::pmr::String&) const
+    {
+        return false;
+    }
 
     virtual bool writeReference(const SerializationDescriptor&,
         const object&,
@@ -60,7 +70,23 @@ public:
     {
         return false;
     }
+
+    virtual bool writeReferenceValue(
+        const property&, const object&, SerializationValue&, core::pmr::String&) const;
+    virtual bool readReferenceValue(
+        const property&, const SerializationValue&, object&, core::pmr::String&) const;
+    virtual bool writeReferenceValue(const SerializationDescriptor&,
+        const object&,
+        SerializationValue&,
+        core::pmr::String&) const;
+    virtual bool readReferenceValue(const SerializationDescriptor&,
+        const SerializationValue&,
+        object&,
+        core::pmr::String&) const;
 };
+
+ARP_API SerializationValue serialization_value_from_yaml(
+    const core::YamlContract::Node&, SerializationOptions = {});
 
 struct SerializationDiagnostic {
     core::pmr::String path{&core::defaultCpuMemoryResource()};
@@ -80,6 +106,13 @@ public:
     bool writeValue(const SerializationDescriptor&, const object&, core::YamlContract::Node&);
     bool readValue(const SerializationDescriptor&, const core::YamlContract::Node&, object&);
 
+    bool writeFields(const object&, SerializationValue&);
+    bool readFields(const SerializationValue&, const object&);
+    bool writeValue(const object&, SerializationValue&);
+    bool readValue(const SerializationValue&, const typeinfo*, object&);
+    bool writeValue(const SerializationDescriptor&, const object&, SerializationValue&);
+    bool readValue(const SerializationDescriptor&, const SerializationValue&, object&);
+
     void setPath(NameView path) { path_.assign(path); }
 
     std::size_t valuesConsumed() const { return values_; }
@@ -94,17 +127,16 @@ public:
     core::pmr::Vector<object> releaseOwnedObjects() { return std::move(ownedObjects_); }
 
 private:
-    bool fields(
-        const object&, core::YamlContract::Node&, const core::YamlContract::Node*, std::size_t);
-    bool write(const object&, core::YamlContract::Node&, std::size_t);
-    bool read(const core::YamlContract::Node&, const typeinfo*, object&, std::size_t);
-    bool readObject(const core::YamlContract::Node&, const class_info*, bool, object&, std::size_t);
+    bool fields(const object&, SerializationValue&, const SerializationValue*, std::size_t);
+    bool write(const object&, SerializationValue&, std::size_t);
+    bool read(const SerializationValue&, const typeinfo*, object&, std::size_t);
+    bool readObject(const SerializationValue&, const class_info*, bool, object&, std::size_t);
     bool fail(NameView);
     bool visit(std::size_t);
     bool described(const SerializationDescriptor&,
         object&,
-        core::YamlContract::Node&,
-        const core::YamlContract::Node*,
+        SerializationValue&,
+        const SerializationValue*,
         std::size_t);
     SerializationOptions options_;
     const SerializationContext* context_;

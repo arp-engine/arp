@@ -5,6 +5,7 @@
 #include "../fixtures/original_heap_registration_fixture.h"
 #include "../fixtures/original_query_registration_fixture.h"
 #include "../fixtures/original_texture_state_fixture.h"
+#include "../fixtures/pipeline_cache_lifecycle_checks.h"
 #include "core/memory/cpu_allocator.h"
 #include "rhi/backends/metal/metal_allocator.h"
 #include "rhi/backends/metal/metal_backend_objects.h"
@@ -118,6 +119,12 @@ void assertMetalRhiAppleApiBoundary()
         // This private bridge header is included only by Objective-C++ native
         // translation units and intentionally owns the framework enum type.
         if (entry.path().filename() == "metal_native_format.h") {
+            continue;
+        }
+        if (entry.path().filename() == "metal_pipeline_archive.h") {
+            const auto bridge = readText(entry.path());
+            assert(bridge.find("#if !defined(__OBJC__)") != std::pmr::string::npos);
+            assert(bridge.find("#error") != std::pmr::string::npos);
             continue;
         }
         assert(!hasAnyToken(readText(entry.path()), nativeTokens));
@@ -2408,6 +2415,15 @@ int main()
     assert(layout);
     auto shaderPackage = makeMetalShaderPackage();
     assert(validateShaderPackage(shaderPackage).success);
+#if defined(ARP_CACHE_TEST_PUBLICATION)
+    arp::tests::checkPipelineCacheGeneratedFixture(*device, ARP_CACHE_TEST_PUBLICATION);
+#else
+    std::fprintf(stderr, "Metal PSO lifecycle: generated fixture unavailable in this build\n");
+#endif
+    const auto archive = describeMetalRhiPipelineArchive();
+    if (!runtimeBoundary.runtimeAvailableOnThisPlatform)
+        assert(std::string_view(archive.status) == "Unavailable:NativeRuntimeAbsent"
+            && archive.uses == 0 && archive.loadedBytes == 0);
 
     // A contract that lacks an executable push-constant payload must fail
     // closed at pipeline creation rather than defer the error to recording.

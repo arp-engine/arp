@@ -34,6 +34,18 @@ namespace arp::scene {
 
 class GameObject; // forward declaration (full definition in game_object.h)
 
+// Retained extraction contexts borrow component pointers. Scene mutations
+// invalidate them before publishing changed identity, hierarchy or transforms.
+// Retaining this token also prevents scene-address reuse from becoming an ABA.
+class RenderContextEpoch final {
+public:
+    std::uint64_t revision() const noexcept { return revision_; }
+
+private:
+    friend class Scene;
+    std::uint64_t revision_ = 1;
+};
+
 AENUM()
 enum class RenderExtractKind {
     // Domain-neutral UI primitives.

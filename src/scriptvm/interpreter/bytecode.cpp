@@ -1,6 +1,7 @@
 #include "scriptvm/interpreter/bytecode.h"
 
 #include "core/hash/sha256.h"
+#include "reflection/instance.h"
 #include "scriptvm/interpreter/bytecode_lowerer.h"
 #include "scriptvm/ir/typed_ir.h"
 
@@ -2167,15 +2168,138 @@ ScriptDiagnosticCode InterpreterHandlerFilterPlan::lookup(
     return valid ? position->code : ScriptDiagnosticCode::None;
 }
 
+namespace {
+struct InterpreterSnapshot final : Program {
+    explicit InterpreterSnapshot(const Program& source) : Program(source) {}
+
+    core::pmr::Map<core::pmr::String, std::shared_ptr<const reflection::InstanceFieldLayout>>
+        layouts{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<InterpreterConstructionPlan> constructionPlans{
+        &core::defaultCpuMemoryResource()};
+    core::pmr::Vector<InterpreterFieldSpanPlan> fieldSpans{&core::defaultCpuMemoryResource()};
+};
+} // namespace
+
+std::shared_ptr<const reflection::InstanceFieldLayout> ValidatedInterpreterProgram::fieldLayout(
+    const core::pmr::String& className) const noexcept
+{
+    if (!program_)
+        return {};
+    const auto& layouts = static_cast<const InterpreterSnapshot&>(*program_).layouts;
+    const auto found = layouts.find(className);
+    return found == layouts.end() ? nullptr : found->second;
+}
+
+const InterpreterConstructionPlan* ValidatedInterpreterProgram::constructionPlanOwned(
+    const Function* function) const noexcept
+{
+    assert(ownsFunction(function));
+    const auto& snapshot = static_cast<const InterpreterSnapshot&>(*program_);
+    const auto& plan =
+        snapshot.constructionPlans[static_cast<std::size_t>(function - snapshot.functions.data())];
+    return plan.entries.empty() ? nullptr : &plan;
+}
+
+const InterpreterFieldSpanPlan* ValidatedInterpreterProgram::fieldSpansOwned(
+    const Function* function) const noexcept
+{
+    assert(ownsFunction(function));
+    const auto& snapshot = static_cast<const InterpreterSnapshot&>(*program_);
+    const auto& plan =
+        snapshot.fieldSpans[static_cast<std::size_t>(function - snapshot.functions.data())];
+    return plan.entries.empty() ? nullptr : &plan;
+}
+
 ScriptResult ValidatedInterpreterProgram::create(
     const Program& source, ValidatedInterpreterProgram& out)
 {
     out = {};
     try {
-        auto snapshot = core::makeShared<Program>(source);
+        auto snapshot = core::makeShared<InterpreterSnapshot>(source);
         const auto validation = validateInterpreterBytecode(*snapshot);
         if (!validation.ok())
             return validation;
+        for (const auto& schema : snapshot->classSchemas)
+            snapshot->layouts.emplace(
+                schema.first, core::makeShared<reflection::InstanceFieldLayout>(schema.second));
+
+        struct SelfLayout {
+            const reflection::InstanceFieldLayout* layout = nullptr;
+            bool ambiguous = false;
+        };
+
+        core::pmr::Vector<SelfLayout> selfLayouts(
+            snapshot->functions.size(), SelfLayout{}, &core::defaultCpuMemoryResource());
+        const auto bindSelf = [&](const core::pmr::String& name, int index) {
+            const auto found = snapshot->layouts.find(name);
+            if (index < 0 || static_cast<std::size_t>(index) >= selfLayouts.size()
+                || found == snapshot->layouts.end())
+                return;
+            auto& binding = selfLayouts[static_cast<std::size_t>(index)];
+            if (binding.ambiguous)
+                return;
+            if (binding.layout != nullptr && binding.layout != found->second.get()) {
+                binding.layout = nullptr;
+                binding.ambiguous = true;
+            } else
+                binding.layout = found->second.get();
+        };
+        for (const auto& constructor : snapshot->constructorIndex)
+            bindSelf(constructor.first, constructor.second);
+        for (const auto& methods : snapshot->methodSets)
+            for (const auto& method : methods.second)
+                bindSelf(methods.first, method.second);
+        snapshot->fieldSpans.resize(snapshot->functions.size());
+        snapshot->constructionPlans.resize(snapshot->functions.size());
+        for (std::size_t index = 0; index < snapshot->functions.size(); ++index) {
+            const auto& function = snapshot->functions[index];
+            auto& plan = snapshot->constructionPlans[index];
+            auto& spans = snapshot->fieldSpans[index];
+            for (std::size_t pc = 0; pc < function.code.size(); ++pc) {
+                const auto& instruction = function.code[pc];
+                if (instruction.op == Opcode::LoadLocal && instruction.a >= 0
+                    && instruction.a < function.locals && pc + 1 < function.code.size()) {
+                    const auto& source = function.code[pc + 1];
+                    const bool store = pc + 2 < function.code.size()
+                        && function.code[pc + 2].op == Opcode::StoreField
+                        && ((source.op == Opcode::LoadLocal && source.a >= 0
+                                && source.a < function.locals)
+                            || (source.op >= Opcode::LoadNil && source.op <= Opcode::LoadFloat)
+                            || source.op == Opcode::LoadString);
+                    if (store || source.op == Opcode::LoadField) {
+                        if (spans.entries.empty())
+                            spans.entries.assign(function.code.size(), -1);
+                        InterpreterFieldSpanPlan::Site site;
+                        site.receiver = instruction.a;
+                        site.kind = store ? InterpreterFieldSpanPlan::Kind::Store
+                                          : InterpreterFieldSpanPlan::Kind::Load;
+                        if (instruction.a == 0) {
+                            const auto* layout = selfLayouts[index].layout;
+                            const auto& name = function.code[pc + (store ? 2 : 1)].s;
+                            const auto field = layout ? layout->find(name) : 0;
+                            if (layout && field < layout->names().size()) {
+                                site.layout = layout;
+                                site.fieldIndex = field;
+                            }
+                        }
+                        spans.entries[pc] = static_cast<int>(spans.sites.size());
+                        spans.sites.push_back(site);
+                    }
+                }
+                if (instruction.op != Opcode::MakeInstance)
+                    continue;
+                const auto schema = snapshot->classSchemas.find(instruction.s);
+                if (schema == snapshot->classSchemas.end())
+                    continue;
+                if (plan.entries.empty())
+                    plan.entries.assign(function.code.size(), -1);
+                const auto constructor = snapshot->constructorIndex.find(instruction.s);
+                plan.entries[pc] = static_cast<int>(plan.sites.size());
+                plan.sites.push_back({&schema->second,
+                    &snapshot->layouts.find(instruction.s)->second,
+                    constructor != snapshot->constructorIndex.end() ? constructor->second : -1});
+            }
+        }
         const auto stackProofs = InterpreterBytecodeLowerer::analyzeProgramStacks(*snapshot);
         for (std::size_t index = 0; index < snapshot->functions.size(); ++index) {
             auto& function = snapshot->functions[index];

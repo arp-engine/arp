@@ -169,6 +169,10 @@ public:
     PFN_vkGetDeviceProcAddr getDeviceProcAddr() const;
     PFN_vkVoidFunction getDeviceProcAddr(const char* name) const;
     const VulkanRhiCommandDispatch& commandDispatch() const noexcept;
+    VkResult createCachedGraphicsPipeline(
+        PFN_vkCreateGraphicsPipelines, const VkGraphicsPipelineCreateInfo&, VkPipeline&) const;
+    VkResult createCachedComputePipeline(
+        PFN_vkCreateComputePipelines, const VkComputePipelineCreateInfo&, VkPipeline&) const;
     bool descriptorTracingEnabled() const noexcept;
     VkPhysicalDevice physicalDevice() const;
     VkDevice logicalDevice() const;

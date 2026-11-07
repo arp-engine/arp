@@ -5,6 +5,7 @@
 #include "../fixtures/generated_shader_package_fixture.h"
 #include "../fixtures/original_heap_registration_fixture.h"
 #include "../fixtures/original_query_registration_fixture.h"
+#include "../fixtures/pipeline_cache_lifecycle_checks.h"
 #include "../fixtures/render_pass_arguments_fixture.h"
 #include "../fixtures/webgpu_frozen_render_pass_binding_fixture.h"
 #include "../fixtures/webgpu_frozen_transfer_arguments_fixture.h"
@@ -2065,6 +2066,7 @@ int main(int argc, char** argv)
     assert(unsupportedPatchReport.diagnostics.find("PatchList") != std::pmr::string::npos);
     auto renderPipeline = device->createRenderPipeline(renderPipelineDesc);
     assert(renderPipeline);
+    arp::tests::checkPipelineCacheLifecycle(*device, renderPipelineDesc);
     assert(!renderPipeline->nativeHandleExposedToUpperLayer());
 
     ComputePipelineDesc computePipelineDesc;

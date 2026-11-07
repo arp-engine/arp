@@ -76,7 +76,7 @@ public:
 
     bool is_enabled() const { return enabled(); }
 
-    void setEnabled(bool enabled) { enabled_ = enabled; }
+    void setEnabled(bool enabled);
     AFUNC()
 
     void set_enabled(bool enabled) { setEnabled(enabled); }
@@ -151,6 +151,7 @@ public:
 
 protected:
     Component();
+    void notifyRenderContextChanged();
 
 private:
     friend class GameObject;

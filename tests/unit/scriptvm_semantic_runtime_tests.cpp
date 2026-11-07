@@ -3,11 +3,14 @@
 #include "scriptvm/interpreter/vm.h"
 #include "scriptvm/runtime/semantic_runtime.h"
 
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <stdexcept>
 #include <thread>
 
 namespace {
@@ -81,6 +84,37 @@ void require(bool condition, const char* message)
 struct NativeArgumentValue {
     int number = 17;
 };
+
+void testScriptConstructionStorage()
+{
+    const arp::core::pmr::String name("SlotContract", &arp::core::defaultCpuMemoryResource());
+    arp::core::pmr::Vector<arp::core::pmr::String> fields{&arp::core::defaultCpuMemoryResource()};
+    fields.emplace_back("health");
+    fields.emplace_back("items");
+    fields.emplace_back("health");
+    auto first = ScriptSemanticRuntime::makeScriptInstance(name, fields);
+    require(first.ok(), "schema construction succeeds with duplicate fields");
+    auto* firstStorage = first.value.ptr<arp::reflection::instance>();
+    require(firstStorage->slots().size() == 2 && isNil(firstStorage->slot("health"))
+            && isNil(firstStorage->slot("items")),
+        "declared fields exist and start as nil");
+    (void)arp::reflection::db::instance().find_class(name);
+    auto layout = arp::core::makeShared<arp::reflection::InstanceFieldLayout>(fields);
+    const auto before = arp::core::defaultCpuAllocator().stats();
+    auto second = ScriptSemanticRuntime::makeScriptInstance(name, fields, layout);
+    const auto after = arp::core::defaultCpuAllocator().stats();
+    require(second.ok() && after.allocationCount - before.allocationCount <= 4,
+        "shared schema construction allocates only value storage and carrier without copied names or discarded Values");
+    Value alias = first.value;
+    alias.ptr<arp::reflection::instance>()->slot("health") = makeInt(17);
+    require(firstStorage->slot("health").cast<int>() == 17
+            && isNil(second.value.ptr<arp::reflection::instance>()->slot("health")),
+        "moved construction preserves aliases and independent instance storage");
+    auto empty = ScriptSemanticRuntime::makeScriptInstance(name, {});
+    require(empty.ok() && empty.value.ptr<arp::reflection::instance>()->slots().empty()
+            && empty.value.class_() == first.value.class_(),
+        "empty schema retains class identity without declared slots");
+}
 
 void testOwnedNativeClassArgument()
 {
@@ -1130,6 +1164,61 @@ static void testIntegerValueCacheBorrow()
     worker.join();
     require(isolated && *cache.makeCached(37).ptr<int>() == prior,
         "integer cache borrow: thread ownership and live parent payload remain independent");
+}
+
+static void testIntegerValueCacheThreadExit()
+{
+    // Warm process-wide payload metadata before comparing thread-owned bytes.
+    (void)makeInt(61700);
+    auto quota = arp::core::makeShared<arp::core::CpuMemoryQuota>(1);
+    const auto baseline = arp::core::defaultCpuAllocator().stats().liveBytes;
+    for (unsigned round = 0; round < 8; ++round) {
+        {
+            std::array<Value, 4> retained;
+            std::array<std::thread, 4> workers;
+            for (unsigned index = 0; index < workers.size(); ++index) {
+                workers[index] = std::thread([&, index] {
+                    arp::core::CpuMemoryQuotaScope scope(quota);
+                    arp::core::CpuAllocationGroupScope temporary;
+                    const auto cache = IntegerValueCacheBorrow::current();
+                    retained[index] = cache.makeCached(61700 + static_cast<int>(index));
+                    for (int value = 0; value < 96; ++value)
+                        (void)cache.makeCached(value);
+                    const auto charge = arp::core::inspectCpuAllocationCharge(
+                        cache.find(61700 + static_cast<int>(index)));
+                    require(charge.found && charge.quota == nullptr && quota->liveBytes() == 0,
+                        "integer cache: first binding and cold entries stay outside caller group/quota");
+                    try {
+                        throw std::runtime_error("cache unwind");
+                    } catch (const std::runtime_error&) {
+                        require(*cache.makeCached(61700).ptr<int>() == 61700,
+                            "integer cache: exception unwinding preserves current thread cache");
+                    }
+                });
+            }
+            for (auto& worker : workers)
+                worker.join();
+            for (unsigned index = 0; index < retained.size(); ++index) {
+                require(*retained[index].ptr<int>() == 61700 + static_cast<int>(index),
+                    "integer cache: returned carrier survives originating thread teardown");
+            }
+        }
+        // Native thread cleanup can finish after pthread_join's completion
+        // notification. Bound the wait for the actual FLS-owned releases.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (arp::core::defaultCpuAllocator().stats().liveBytes > baseline
+            && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        const auto after = arp::core::defaultCpuAllocator().stats().liveBytes;
+        if (after != baseline)
+            std::fprintf(stderr,
+                "cache thread round=%u baseline=%llu after=%llu\n",
+                round,
+                static_cast<unsigned long long>(baseline),
+                static_cast<unsigned long long>(after));
+        require(after == baseline,
+            "integer cache: repeated concurrent thread exit releases cache and all cold owners");
+    }
 }
 
 static void testOwnedCollectionGeneratorExclusion()
@@ -2416,6 +2505,13 @@ void testUniqueStringAppend()
 
 int main(int argc, char** argv)
 {
+    testScriptConstructionStorage();
+    if (argc == 2 && std::string_view(argv[1]) == "--integer-cache-lifetime") {
+        testIntegerValueCacheBorrow();
+        testIntegerValueCacheThreadExit();
+        std::printf("Integer cache thread lifetime contract passed\n");
+        return 0;
+    }
     if (argc == 2 && std::string_view(argv[1]) == "--native-class-argument") {
         testOwnedNativeClassArgument();
         std::printf("Native value class argument contract passed\n");
@@ -2625,6 +2721,7 @@ int main(int argc, char** argv)
     testOwnedCollectionGeneratorExclusion();
     testIntegerValueRangeBuilder();
     testIntegerValueCacheBorrow();
+    testIntegerValueCacheThreadExit();
     testInlineCollectionIteration();
     testInlineCollectionIndex();
     testConversionAndLengthContract();

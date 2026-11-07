@@ -43,4 +43,16 @@ ARP_API EvalResult runFunctionByName(const Program& program,
     const arp::core::pmr::Vector<Value>& args,
     ModuleRegistry* moduleRegistry = nullptr);
 
+// Compiled tooling modules retain one private validated snapshot. Each call
+// still owns a fresh VM/global graph, while internal calls can consume its
+// stack proofs and immutable execution plans.
+ARP_API EvalResult runFunction(const ValidatedInterpreterProgram& program,
+    int funcIndex,
+    const arp::core::pmr::Vector<Value>& args,
+    ModuleRegistry* moduleRegistry = nullptr);
+ARP_API EvalResult runFunctionByName(const ValidatedInterpreterProgram& program,
+    core::pmr::String name,
+    const arp::core::pmr::Vector<Value>& args,
+    ModuleRegistry* moduleRegistry = nullptr);
+
 } // namespace arp::scriptvm

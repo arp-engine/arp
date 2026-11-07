@@ -919,11 +919,28 @@ target_link_libraries(arp_reflection_native_object_tests PRIVATE arp_reflection)
 add_executable(arp_reflection_yaml_serialization_tests tests/unit/reflection_yaml_serialization_tests.cpp)
 target_link_libraries(arp_reflection_yaml_serialization_tests PRIVATE arp_reflection)
 add_test(NAME arp_reflection_yaml_serialization_tests COMMAND arp_reflection_yaml_serialization_tests)
+add_executable(arp_reflection_binary_serialization_tests tests/unit/reflection_binary_serialization_tests.cpp)
+target_link_libraries(arp_reflection_binary_serialization_tests PRIVATE arp_reflection)
+if(NOT MSVC)
+    target_compile_options(arp_reflection_binary_serialization_tests PRIVATE -UNDEBUG)
+    target_compile_options(arp_reflection_yaml_serialization_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_reflection_binary_serialization_tests COMMAND arp_reflection_binary_serialization_tests)
+add_test(NAME arp_reflection_binary_smoke COMMAND arp_reflection_binary_serialization_tests --smoke)
 
 add_executable(arp_reflection_registry_tests
     tests/unit/reflection_registry_tests.cpp)
 target_include_directories(arp_reflection_registry_tests PRIVATE . src)
 target_link_libraries(arp_reflection_registry_tests PRIVATE arp_reflection)
+
+add_executable(arp_reflection_instance_storage_tests tests/unit/reflection_instance_storage_tests.cpp)
+target_include_directories(arp_reflection_instance_storage_tests PRIVATE . src)
+target_link_libraries(arp_reflection_instance_storage_tests PRIVATE arp_reflection)
+if(MSVC)
+    target_compile_options(arp_reflection_instance_storage_tests PRIVATE /UNDEBUG)
+else()
+    target_compile_options(arp_reflection_instance_storage_tests PRIVATE -UNDEBUG)
+endif()
 
 if(NOT EMSCRIPTEN)
     find_package(Threads REQUIRED)
@@ -1009,6 +1026,8 @@ target_include_directories(arp_audio PUBLIC src 3rd/miniaudio)
 target_link_libraries(arp_audio PUBLIC arp_core arp_scene)
 
 add_library(arp_resource
+    src/resource/cooked_resource.cpp
+    src/resource/cooked_prefab_codecs.cpp
     src/resource/audio_clip_resource.cpp
     src/resource/audio_package.cpp
     src/resource/audio_playback_registry.cpp
@@ -1054,6 +1073,7 @@ add_library(arp_ui_runtime
     src/ui/ui_atlas_image_resource.cpp
     src/ui/ui_document.cpp
     src/ui/ui_document_resource.cpp
+    src/ui/ui_cooked_resources.cpp
     src/ui/ui_font_set_resource.cpp
     src/ui/ui_theme_resource.cpp
 )
@@ -1390,6 +1410,7 @@ if(APPLE)
         src/rhi/backends/metal/metal_native_commands.mm
         src/rhi/backends/metal/metal_native_descriptors.mm
         src/rhi/backends/metal/metal_native_pipelines.mm
+        src/rhi/backends/metal/metal_pipeline_archive.mm
         src/rhi/backends/metal/metal_native_resources.mm
         src/rhi/backends/metal/metal_native_runtime.mm
         src/rhi/backends/metal/metal_native_sync.mm
@@ -1444,6 +1465,14 @@ add_library(arp_rhi_metal
 target_include_directories(arp_rhi_metal PUBLIC src)
 target_link_libraries(arp_rhi_metal PUBLIC arp_rhi_semantics arp_shader)
 if(APPLE)
+    add_executable(arp_rhi_metal_pipeline_archive_tests tests/integration/rhi_metal_pipeline_archive_tests.mm)
+    target_include_directories(arp_rhi_metal_pipeline_archive_tests PRIVATE src)
+    target_link_libraries(arp_rhi_metal_pipeline_archive_tests PRIVATE arp_rhi_metal)
+    target_compile_options(arp_rhi_metal_pipeline_archive_tests PRIVATE -UNDEBUG)
+    add_test(NAME arp_rhi_metal_pipeline_archive_tests COMMAND Python3::Interpreter
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/rhi_metal_pipeline_archive_tests.py"
+        --executable $<TARGET_FILE:arp_rhi_metal_pipeline_archive_tests>)
+    set_tests_properties(arp_rhi_metal_pipeline_archive_tests PROPERTIES TIMEOUT 300 LABELS "metal;native;pipeline-cache")
     add_executable(arp_rhi_metal_original_texture_upload_tests tests/integration/rhi_metal_original_texture_upload_tests.mm)
     target_include_directories(arp_rhi_metal_original_texture_upload_tests PRIVATE . src)
     target_link_libraries(arp_rhi_metal_original_texture_upload_tests PRIVATE arp_rhi_metal)
@@ -6203,6 +6232,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
         COMMAND arp_rhi_null_hidden_frame_smoke_tests)
 endif()
 if(TARGET arp_graphics_shader_module_fixture)
+    add_dependencies(arp_rhi_metal_device_contract_tests arp_graphics_shader_module_fixture)
+    target_compile_definitions(arp_rhi_metal_device_contract_tests PRIVATE
+        ARP_CACHE_TEST_PUBLICATION="${graphics_module_publication}")
     foreach(original_artifact_owner_test IN ITEMS arp_rhi_command_retention_contract_tests arp_rhi_null_hidden_frame_smoke_tests)
         add_dependencies(${original_artifact_owner_test} arp_graphics_shader_module_fixture)
         target_compile_definitions(${original_artifact_owner_test} PRIVATE
@@ -7358,6 +7390,19 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     target_compile_definitions(arp_scriptvm_fastpath_tests PRIVATE ARP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
+# Experimental pooled-frame reference ownership has its own contract suite.
+add_executable(arp_scriptvm_private_reference_tests
+    tests/unit/scriptvm_private_reference_tests.cpp
+)
+target_include_directories(arp_scriptvm_private_reference_tests PRIVATE . src)
+target_link_libraries(arp_scriptvm_private_reference_tests PRIVATE arp_scriptvm_runtime arp_scriptvm_ir arp_scriptvm_frontend arp_scriptvm_interpreter arp_scriptvm_aot_tooling)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(arp_scriptvm_private_reference_tests PRIVATE -UNDEBUG)
+endif()
+if(MINGW)
+    target_link_options(arp_scriptvm_private_reference_tests PRIVATE -static-libstdc++ -static-libgcc)
+endif()
+
 add_executable(arp_scriptvm_module_tests
     tests/unit/scriptvm_module_tests.cpp
 )
@@ -8225,6 +8270,7 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     add_test(NAME arp_scriptvm_interpreter_pipeline_tests COMMAND arp_scriptvm_interpreter_pipeline_tests)
     add_test(NAME arp_scriptvm_e2e_contract_tests COMMAND arp_scriptvm_e2e_contract_tests)
     add_test(NAME arp_scriptvm_fastpath_tests COMMAND arp_scriptvm_fastpath_tests)
+    add_test(NAME arp_scriptvm_private_reference_tests COMMAND arp_scriptvm_private_reference_tests)
     add_test(NAME arp_scriptvm_lexer_tests COMMAND arp_scriptvm_lexer_tests)
     add_test(NAME arp_scriptvm_module_tests COMMAND arp_scriptvm_module_tests)
     add_test(NAME arp_scriptvm_parser_tests COMMAND arp_scriptvm_parser_tests)
@@ -8234,6 +8280,7 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     add_test(NAME arp_main_scene_registry_tests COMMAND arp_main_scene_registry_tests)
     add_test(NAME arp_reflection_native_object_tests COMMAND arp_reflection_native_object_tests)
     add_test(NAME arp_reflection_registry_tests COMMAND arp_reflection_registry_tests)
+    add_test(NAME arp_reflection_instance_storage_tests COMMAND arp_reflection_instance_storage_tests)
     if(TARGET arp_reflection_value_lifetime_tests)
         add_test(NAME arp_reflection_value_lifetime_tests COMMAND arp_reflection_value_lifetime_tests)
         set_tests_properties(arp_reflection_value_lifetime_tests PROPERTIES TIMEOUT 30)
@@ -8585,3 +8632,19 @@ include(cmake/ToolDocumentImport.cmake)
 include(cmake/ToolScriptSourceValidation.cmake)
 include(cmake/UnifiedIoValidation.cmake)
 include(cmake/ArpMetalDispatchProbe.cmake)
+
+add_executable(arp_resource_cook tools/resource_cook/main.cpp)
+target_include_directories(arp_resource_cook PRIVATE src)
+target_link_libraries(arp_resource_cook PRIVATE "$<LINK_GROUP:RESCAN,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d>")
+arp_add_mingw_static_runtime(arp_resource_cook)
+
+add_executable(arp_cooked_resource_tests tests/contract/cooked_resource_tests.cpp)
+target_include_directories(arp_cooked_resource_tests PRIVATE . src)
+target_link_libraries(arp_cooked_resource_tests PRIVATE "$<LINK_GROUP:RESCAN,arp_resource,arp_scriptvm_host_plugin_runtime,arp_3d>")
+arp_add_mingw_static_runtime(arp_cooked_resource_tests)
+if(NOT MSVC)
+    target_compile_options(arp_cooked_resource_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME arp_cooked_resource_tests COMMAND arp_cooked_resource_tests)
+add_test(NAME arp_cooked_resource_smoke COMMAND arp_cooked_resource_tests --smoke)
+set_tests_properties(arp_cooked_resource_tests arp_cooked_resource_smoke PROPERTIES TIMEOUT 120 LABELS "resource;cooked;cpu")

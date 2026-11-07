@@ -1,15 +1,23 @@
 #include "rhi/backends/vulkan/vulkan_runtime.h"
 
+#include "core/io/atomic_file_service.h"
+#include "core/io/file_io.h"
 #include "core/memory/cpu_allocator.h"
 #include "rhi/backends/vulkan/vulkan_command_domain.h"
 #include "rhi/backends/vulkan/vulkan_original_device_native_loss.h"
+#include "rhi/backends/vulkan/vulkan_pipeline_cache_identity.h"
 #include "rhi/semantics/query_lowering.h"
 
+#include <charconv>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <mutex>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace arp::rhi_vulkan {
@@ -135,6 +143,7 @@ struct VulkanRhiRuntime::Impl {
     {
         if (!nativeAdmitted)
             return;
+        finishPipelineCache();
         commands.framebufferCache.clearIdle([&](auto& resources) {
             (void)destroyVulkanRhiUncachedRenderPassResources(logicalDevice,
                 functionFrom<PFN_vkDestroyFramebuffer>(
@@ -174,6 +183,156 @@ struct VulkanRhiRuntime::Impl {
         std::uint64_t token = 0;
         bool abandoned = false;
     };
+
+    void ensurePipelineCache()
+    {
+        if (pipelineCacheAttempted)
+            return;
+        pipelineCacheAttempted = true;
+        if (desc.enableSyntheticRuntime) {
+            pipelineCacheStatus = "SyntheticNoDriverCache";
+            return;
+        }
+        if (!timestampFacts.propertiesQueried) {
+            pipelineCacheStatus = "EquivalentUncached:IdentityQueryUnavailable";
+            return;
+        }
+        const auto create = functionFrom<PFN_vkCreatePipelineCache>(
+            desc.getDeviceProcAddr(logicalDevice, "vkCreatePipelineCache"));
+        const auto destroy = functionFrom<PFN_vkDestroyPipelineCache>(
+            desc.getDeviceProcAddr(logicalDevice, "vkDestroyPipelineCache"));
+        if (!create || !destroy) {
+            pipelineCacheStatus = "EquivalentUncached:EntryUnavailable";
+            return;
+        }
+        if (const auto* path = std::getenv("ARP_VULKAN_PIPELINE_CACHE_PATH"); path && *path)
+            pipelineCachePath = path;
+        else if (const auto* base = std::getenv("LOCALAPPDATA"); base && *base) {
+            pipelineCachePath = base;
+            pipelineCachePath += "/arp/pipeline-cache/";
+            char number[32];
+            for (const auto value : {physicalDeviceProperties.vendorID,
+                     physicalDeviceProperties.deviceID,
+                     physicalDeviceProperties.driverVersion}) {
+                const auto result = std::to_chars(number, number + sizeof(number), value, 16);
+                pipelineCachePath.append(number, result.ptr);
+                pipelineCachePath += '-';
+            }
+            for (const auto value : physicalDeviceProperties.pipelineCacheUUID) {
+                constexpr char digits[] = "0123456789abcdef";
+                pipelineCachePath += digits[value >> 4];
+                pipelineCachePath += digits[value & 15];
+            }
+            pipelineCachePath += ".bin";
+        }
+        core::BinaryFileReadResult input;
+        if (!pipelineCachePath.empty())
+            input = core::readBinaryFile(
+                pipelineCachePath.c_str(), VulkanPipelineCacheIdentity::maximumFileBytes);
+        const bool compatible = input.success
+            && VulkanPipelineCacheIdentity::matches(
+                {input.bytes.data(), input.bytes.size()}, physicalDeviceProperties);
+        VkPipelineCacheCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+        if (compatible) {
+            info.initialDataSize = input.bytes.size() - VulkanPipelineCacheIdentity::envelopeBytes;
+            info.pInitialData = input.bytes.data() + VulkanPipelineCacheIdentity::envelopeBytes;
+        }
+        const auto result = create(logicalDevice, &info, nullptr, &pipelineCache);
+        if (result != VK_SUCCESS || pipelineCache == VK_NULL_HANDLE) {
+            pipelineCache = VK_NULL_HANDLE;
+            if (result == VK_ERROR_DEVICE_LOST)
+                pipelineCacheInitializationResult = result;
+            pipelineCacheStatus = "EquivalentUncached:CacheCreationFailed";
+            return;
+        }
+        pipelineCacheStatus = "NativeDriverCache";
+        pipelineCacheInputStatus = compatible ? "CompatibleLoaded"
+            : input.success                   ? "IncompatibleRejected"
+                                              : "EmptyOrMissing";
+        pipelineCacheLoadedBytes = compatible ? info.initialDataSize : 0;
+    }
+
+    void finishPipelineCache() noexcept
+    {
+        if (!pipelineCacheAttempted)
+            return;
+        if (pipelineCache) {
+            try {
+                pipelineCacheSaveStatus = originalDeviceLost ? "DeviceLost"
+                    : pipelineCachePath.empty()              ? "PathDisabled"
+                                                             : "QueryUnavailableOrFailed";
+                const auto getData = functionFrom<PFN_vkGetPipelineCacheData>(
+                    desc.getDeviceProcAddr(logicalDevice, "vkGetPipelineCacheData"));
+                std::size_t size = 0;
+                if (!originalDeviceLost && !pipelineCachePath.empty() && getData
+                    && getData(logicalDevice, pipelineCache, &size, nullptr) == VK_SUCCESS && size
+                    && size <= VulkanPipelineCacheIdentity::maximumFileBytes
+                            - VulkanPipelineCacheIdentity::envelopeBytes) {
+                    core::pmr::Vector<std::uint8_t> output(&core::defaultCpuMemoryResource());
+                    output.resize(size + VulkanPipelineCacheIdentity::envelopeBytes);
+                    VulkanPipelineCacheIdentity::envelope(output.data(), physicalDeviceProperties);
+                    const auto capacity = size;
+                    const auto result = getData(logicalDevice,
+                        pipelineCache,
+                        &size,
+                        output.data() + VulkanPipelineCacheIdentity::envelopeBytes);
+                    if (result == VK_SUCCESS && size <= capacity) {
+                        pipelineCacheSaveStatus = "InvalidDriverHeader";
+                        output.resize(size + VulkanPipelineCacheIdentity::envelopeBytes);
+                        VulkanPipelineCacheIdentity::seal(output.data(), output.size());
+                        if (VulkanPipelineCacheIdentity::matches(
+                                {output.data(), output.size()}, physicalDeviceProperties)) {
+                            std::error_code error;
+                            const auto parent =
+                                std::filesystem::path(pipelineCachePath.c_str()).parent_path();
+                            if (!parent.empty())
+                                std::filesystem::create_directories(parent, error);
+                            pipelineCacheSaveStatus =
+                                error ? "DirectoryFailed" : "AtomicReplaceFailed";
+                            if (!error) {
+                                core::io::AtomicFileService files(
+                                    1, VulkanPipelineCacheIdentity::maximumFileBytes);
+                                const auto request =
+                                    files.replace(pipelineCachePath, std::move(output));
+                                if (request) {
+                                    core::io::AtomicFileResult saved;
+                                    // Teardown only: the bounded file worker owns
+                                    // replacement; no disk write enters a frame.
+                                    while (!files.take(request, saved)) {
+                                        files.poll();
+                                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                                    }
+                                    if (saved.success) {
+                                        pipelineCacheSavedBytes = size;
+                                        pipelineCacheSaveStatus = "Saved";
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        pipelineCacheSaveStatus = "DataIncompleteOrFailed";
+                    }
+                }
+            } catch (...) {
+                // Persistence is an optional accelerator. Keep the previous
+                // atomic file and report failure without changing execution.
+                pipelineCacheSaveStatus = "Exception";
+            }
+            const auto destroy = functionFrom<PFN_vkDestroyPipelineCache>(
+                desc.getDeviceProcAddr(logicalDevice, "vkDestroyPipelineCache"));
+            destroy(logicalDevice, pipelineCache, nullptr);
+            pipelineCache = VK_NULL_HANDLE;
+        }
+        std::fprintf(stderr,
+            "[vulkan-pipeline-cache] status=%s input=%s save=%s uses=%llu loaded=%llu saved=%llu\n",
+            pipelineCacheStatus,
+            pipelineCacheInputStatus,
+            pipelineCacheSaveStatus,
+            static_cast<unsigned long long>(pipelineCacheUses),
+            static_cast<unsigned long long>(pipelineCacheLoadedBytes),
+            static_cast<unsigned long long>(pipelineCacheSavedBytes));
+    }
 
     void retireCompletedPresentFences()
     {
@@ -457,6 +616,15 @@ struct VulkanRhiRuntime::Impl {
     VulkanRhiCommandDispatch commandDispatch;
     bool descriptorTracing = false;
     VulkanRhiCommandDomain commands;
+    std::mutex pipelineCacheMutex;
+    VkPipelineCache pipelineCache = VK_NULL_HANDLE;
+    VkResult pipelineCacheInitializationResult = VK_SUCCESS;
+    const char* pipelineCacheSaveStatus = "NotAttempted";
+    bool pipelineCacheAttempted = false;
+    const char* pipelineCacheStatus = "NotRequested";
+    const char* pipelineCacheInputStatus = "NotLoaded";
+    core::pmr::String pipelineCachePath{&core::defaultCpuMemoryResource()};
+    std::uint64_t pipelineCacheUses = 0, pipelineCacheLoadedBytes = 0, pipelineCacheSavedBytes = 0;
     bool nativeAdmitted = false;
     const char* admissionDiagnostic = nullptr;
     rhi::CoreCapabilities coreQueue;
@@ -489,6 +657,36 @@ struct VulkanRhiRuntime::Impl {
 VulkanRhiCommandDomain& VulkanRhiRuntime::commandDomain() const noexcept
 {
     return impl_->commands;
+}
+
+VkResult VulkanRhiRuntime::createCachedGraphicsPipeline(PFN_vkCreateGraphicsPipelines create,
+    const VkGraphicsPipelineCreateInfo& info,
+    VkPipeline& output) const
+{
+    std::lock_guard lock(impl_->pipelineCacheMutex);
+    impl_->ensurePipelineCache();
+    if (impl_->pipelineCacheInitializationResult != VK_SUCCESS) {
+        captureOriginalDeviceLoss(impl_->pipelineCacheInitializationResult);
+        return impl_->pipelineCacheInitializationResult;
+    }
+    if (impl_->pipelineCache)
+        ++impl_->pipelineCacheUses;
+    return create(impl_->logicalDevice, impl_->pipelineCache, 1, &info, nullptr, &output);
+}
+
+VkResult VulkanRhiRuntime::createCachedComputePipeline(PFN_vkCreateComputePipelines create,
+    const VkComputePipelineCreateInfo& info,
+    VkPipeline& output) const
+{
+    std::lock_guard lock(impl_->pipelineCacheMutex);
+    impl_->ensurePipelineCache();
+    if (impl_->pipelineCacheInitializationResult != VK_SUCCESS) {
+        captureOriginalDeviceLoss(impl_->pipelineCacheInitializationResult);
+        return impl_->pipelineCacheInitializationResult;
+    }
+    if (impl_->pipelineCache)
+        ++impl_->pipelineCacheUses;
+    return create(impl_->logicalDevice, impl_->pipelineCache, 1, &info, nullptr, &output);
 }
 
 VulkanRhiRuntime::VulkanRhiRuntime(const VulkanRhiRuntimeDesc& desc)

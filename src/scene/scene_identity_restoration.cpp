@@ -284,6 +284,7 @@ void Scene::IdentityRestoration::prepare()
 void Scene::IdentityRestoration::commit()
 {
     prepare();
+    scene_.invalidateRenderContexts();
     for (auto& item : components_) {
         auto* owner = item.owner;
         owner->componentIds_.insert(

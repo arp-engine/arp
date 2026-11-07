@@ -952,8 +952,13 @@ Vm::InternalReturn<SlotReturn> Vm::runFunctionInternalImpl(const Program& progra
         frameStorage_.push_back(std::move(owner));
         lifetime.frame_ = frame;
     }
+    // Private ownership is independent of the one-result stack proof.
+    // Original checked dispatch, PC and instruction-budget semantics remain.
+    if (privateReferenceDomainsEnabled_ && validatedProgram_.owner().get() == &program
+        && !fn.isGenerator && !fn.isVariadic && fn.captureCount == 0 && captures.empty())
+        frame->enablePrivateReferences(&memoryQuota_);
     for (int i = 0; i < fixedParams; ++i)
-        frame->locals[i] = args[i];
+        frame->assignLocalForVm(i, args[i]);
     if constexpr (!ProvenStaticCall) {
         if (fn.isVariadic) {
             auto& res = arp::core::defaultCpuMemoryResource();
@@ -2277,6 +2282,19 @@ Value Vm::executeFrameImpl(const Program& program,
             err.message = "stack underflow on comparison";
             return false;
         }
+        if constexpr (op == SemanticCompareOperation::Equal
+            || op == SemanticCompareOperation::NotEqual) {
+            const auto& lhs = frame.stack[frame.stack.size() - 2u];
+            const auto& rhs = frame.stack.back();
+            const bool leftNil = lhs.template is<void>() || lhs.template is<std::nullptr_t>();
+            const bool rightNil = rhs.template is<void>() || rhs.template is<std::nullptr_t>();
+            if (leftNil || rightNil) {
+                const bool equal = leftNil && rightNil;
+                frame.replaceScalarPair<StackProven>(
+                    ScriptScalar(op == SemanticCompareOperation::Equal ? equal : !equal));
+                return true;
+            }
+        }
         ScriptScalar left, right;
         bool value = false;
         if (frame.peekScalarPair<StackProven>(left, right)
@@ -2335,6 +2353,14 @@ Value Vm::executeFrameImpl(const Program& program,
     };
     auto& res = arp::core::defaultCpuMemoryResource();
     Value result = Value::undefined();
+    // Borrow the real same-thread entry array after frame admission. It stays
+    // live through synchronous host reentry; cold entries still use makeInt.
+    const auto integerValues = quotaBinding_ != nullptr ? quotaBinding_->integerCache()
+                                                        : IntegerValueCacheBorrow::current();
+    const auto* constructionPlan =
+        StaticValidated ? validatedProgram_.constructionPlanOwned(frame.function) : nullptr;
+    const auto* fieldSpans =
+        StaticValidated ? validatedProgram_.fieldSpansOwned(frame.function) : nullptr;
     if (produced != nullptr)
         *produced = false;
     if (frames_.empty() && executionSession_ == nullptr)
@@ -2386,6 +2412,111 @@ dispatch:
             err.code = ScriptDiagnosticCode::ExecutionBudgetExceeded;
             err.message = "script instruction budget exceeded";
             goto error_exit;
+        }
+        if constexpr (StaticValidated) {
+            // Closed local/field spans have no callback or suspension edge.
+            // Borrow an exact receiver instead of retaining it on the operand
+            // stack. A nil destination cannot release a user-owned destructor.
+            const int pc = frame.ip;
+            const auto* site = fieldSpans ? fieldSpans->lookup(pc) : nullptr;
+            if (site && memoryQuota_ == nullptr
+                && static_cast<std::size_t>(site->receiver) < frame.locals.size()) {
+                const auto* carrier = frame.locals[site->receiver].boxedCarrier();
+                auto* receiver = carrier
+                    ? const_cast<arp::reflection::instance*>(
+                          exactValuePayload<arp::reflection::instance>(*carrier))
+                    : nullptr;
+                const auto limit =
+                    std::min(maxFrameValues_, static_cast<std::size_t>(frame.function->maxStack));
+                const auto findField = [&](const core::pmr::String& name) {
+                    auto* field = site->layout
+                        ? receiver->findDeclaredSlot(site->layout, site->fieldIndex)
+                        : nullptr;
+                    return field ? field : receiver->findSlot(name);
+                };
+                if (receiver && receiver->alive() && frame.stack.size() < limit
+                    && site->kind == InterpreterFieldSpanPlan::Kind::Load
+                    && (remainingInstructions < 0 || remainingInstructions >= 2)
+                    && core::currentCpuMemoryQuota() == nullptr) {
+                    const auto* field = findField(code[pc + 1].s);
+                    if (field && !field->is_undefined()) {
+                        frame.lastIp = pc + 1;
+                        frame.ip = pc + 2;
+                        if (remainingInstructions > 0)
+                            remainingInstructions -= 2;
+                        frame.push(*field);
+                        continue;
+                    }
+                }
+                if (receiver && receiver->alive()
+                    && site->kind == InterpreterFieldSpanPlan::Kind::Store
+                    && frame.stack.size() <= limit && limit - frame.stack.size() >= 2u
+                    && (remainingInstructions < 0 || remainingInstructions >= 3)
+                    && core::currentCpuMemoryQuota() == nullptr) {
+                    const auto& source = code[pc + 1];
+                    const bool localSource = source.op == Opcode::LoadLocal && source.a >= 0
+                        && static_cast<std::size_t>(source.a) < frame.locals.size();
+                    const bool scalarSource =
+                        source.op >= Opcode::LoadNil && source.op <= Opcode::LoadFloat;
+                    if (localSource || scalarSource || source.op == Opcode::LoadString) {
+                        auto* destination = findField(code[pc + 2].s);
+                        if (destination && destination->is_undefined()) {
+                            if (localSource) {
+                                if (const auto* value = frame.locals[source.a].boxedCarrier()) {
+                                    // The source is already an owned ABI carrier.
+                                    // A closed write to nil can copy it directly:
+                                    // neither side materializes or releases a
+                                    // user payload before this assignment ends.
+                                    frame.lastIp = pc + 2;
+                                    frame.ip = pc + 3;
+                                    if (remainingInstructions > 0)
+                                        remainingInstructions -= 3;
+                                    *destination = *value;
+                                    continue;
+                                }
+                            }
+                            frame.lastIp = pc + 1;
+                            frame.ip = pc + 2;
+                            if (remainingInstructions > 0)
+                                remainingInstructions -= 2;
+                            ExecutionSlot value;
+                            switch (source.op) {
+                            case Opcode::LoadLocal:
+                                // Copy the slot before materialization: an inline
+                                // float load creates an independent mutable carrier.
+                                value = frame.locals[source.a];
+                                break;
+                            case Opcode::LoadNil:
+                                break;
+                            case Opcode::LoadBool:
+                                value = ScriptScalar(source.a != 0);
+                                break;
+                            case Opcode::LoadInt:
+                                value = ScriptScalar(static_cast<int>(source.i64));
+                                break;
+                            case Opcode::LoadInt64:
+                                value = ScriptScalar(source.i64);
+                                break;
+                            case Opcode::LoadFloat:
+                                value = ScriptScalar(bitsToDouble(source.i64));
+                                break;
+                            case Opcode::LoadString:
+                                value = ExecutionSlot::borrowLiteral(source.s);
+                                break;
+                            default:
+                                assert(false);
+                                break;
+                            }
+                            frame.lastIp = pc + 2;
+                            frame.ip = pc + 3;
+                            if (remainingInstructions > 0)
+                                --remainingInstructions;
+                            *destination = value.takeValue(integerValues);
+                            continue;
+                        }
+                    }
+                }
+            }
         }
         if constexpr (StaticValidated && !StackProven) {
             if (integerPlan != nullptr && memoryQuota_ == nullptr) {
@@ -2710,7 +2841,7 @@ dispatch:
                 err.message = "local slot out of range";
                 goto error_exit;
             }
-            frame.locals[inst.a] = frame.popSlot<StackProven>();
+            frame.assignLocalForVm(inst.a, frame.popSlot<StackProven>());
             break;
         case Opcode::StoreCapture:
             if (inst.a < 0 || inst.a >= static_cast<int>(frame.captures.size())
@@ -2719,7 +2850,7 @@ dispatch:
                 err.message = "invalid capture slot";
                 goto error_exit;
             }
-            frame.captures[inst.a]->value = frame.pop<StackProven>();
+            frame.captures[inst.a]->value = frame.pop<StackProven>(&integerValues);
             break;
         case Opcode::StoreGlobal:
             ensureGlobals(program);
@@ -2729,7 +2860,7 @@ dispatch:
                 goto error_exit;
             }
             {
-                Value value = frame.pop<StackProven>();
+                Value value = frame.pop<StackProven>(&integerValues);
                 if (isScriptPointer(globalStorage(program)[inst.a])) {
                     auto semantic = ScriptSemanticRuntime::storePointer(
                         *globalStorage(program)[inst.a].ptr<ScriptPointer>(), std::move(value));
@@ -2767,7 +2898,7 @@ dispatch:
                 if (slotResult != nullptr && !frame.replaceReturnValue) {
                     *slotResult = frame.popSlot<StackProven>();
                 } else {
-                    result = frame.pop<StackProven>();
+                    result = frame.pop<StackProven>(&integerValues);
                     if (frame.replaceReturnValue)
                         result = frame.returnValue.boxed();
                     if (slotResult != nullptr)
@@ -2776,6 +2907,45 @@ dispatch:
                 if (produced != nullptr)
                     *produced = true;
                 goto normal_exit;
+            }
+            // MakeInstance always publishes its receiver and discards the
+            // constructor's normal return. With no active allocation quota,
+            // an empty return list need not cross that unobservable edge.
+            // A resumed constructor can own the receiver override itself and
+            // must retain the ordinary return path below.
+            if (n == 0 && !frame.replaceReturnValue && memoryQuota_ == nullptr
+                && core::currentCpuMemoryQuota() == nullptr && frames_.size() >= 2u
+                && frames_.back() == &frame) {
+                const auto* caller = frames_[frames_.size() - 2u];
+                if (caller->lastIp >= 0
+                    && static_cast<std::size_t>(caller->lastIp) < caller->function->code.size()
+                    && caller->function->code[static_cast<std::size_t>(caller->lastIp)].op
+                        == Opcode::MakeInstance) {
+                    if (produced != nullptr)
+                        *produced = true;
+                    goto normal_exit;
+                }
+                const auto budget = executionSession_ ? executionSession_->remainingInstructions
+                                                      : remainingInstructions_;
+                if (budget != 0 && caller->lastIp >= 0
+                    && static_cast<std::size_t>(caller->lastIp) < caller->function->code.size()
+                    && (caller->function->code[static_cast<std::size_t>(caller->lastIp)].op
+                            == Opcode::Call
+                        || caller->function->code[static_cast<std::size_t>(caller->lastIp)].op
+                            == Opcode::CallValue)
+                    && caller->ip >= 0
+                    && static_cast<std::size_t>(caller->ip) < caller->function->code.size()
+                    && caller->function->code[static_cast<std::size_t>(caller->ip)].op
+                        == Opcode::Pop) {
+                    // The caller immediately drops this stock empty list.
+                    // Keep the produced-result stack effect; its nil carrier
+                    // is consumed before any callback or budget boundary.
+                    if (slotResult != nullptr)
+                        *slotResult = ScriptScalar();
+                    if (produced != nullptr)
+                        *produced = true;
+                    goto normal_exit;
+                }
             }
             // Preserve multi-return bytecode as one list Value.
             arp::reflection::hlist ret((arp::reflection::hlist::allocator_type(&res)));
@@ -2786,7 +2956,7 @@ dispatch:
                     err.message = "stack underflow on return";
                     goto error_exit;
                 }
-                ret[static_cast<std::size_t>(i)] = frame.pop<StackProven>();
+                ret[static_cast<std::size_t>(i)] = frame.pop<StackProven>(&integerValues);
             }
             result = Value{std::move(ret)};
             if (frame.replaceReturnValue)
@@ -2958,7 +3128,7 @@ dispatch:
             break;
         }
         case Opcode::Neg: {
-            Value v = frame.pop<StackProven>();
+            Value v = frame.pop<StackProven>(&integerValues);
             const auto semantic = ScriptSemanticRuntime::negate(std::move(v));
             if (!semantic.ok()) {
                 err.code = semantic.diagnostic.code;
@@ -2969,7 +3139,7 @@ dispatch:
             break;
         }
         case Opcode::Not: {
-            Value v = frame.pop<StackProven>();
+            Value v = frame.pop<StackProven>(&integerValues);
             const auto semantic = ScriptSemanticRuntime::logicalNot(std::move(v));
             if (!semantic.ok()) {
                 err.code = semantic.diagnostic.code;
@@ -3075,7 +3245,7 @@ dispatch:
                     err.message = "stack underflow on call args";
                     goto error_exit;
                 }
-                callArgs_.push_back(frame.pop<StackProven>());
+                callArgs_.push_back(frame.pop<StackProven>(&integerValues));
             }
             std::reverse(callArgs_.begin(), callArgs_.end());
             // Generator calls materialize a local resumable value. They must
@@ -3184,30 +3354,53 @@ dispatch:
                         &returnedSlot,
                         true);
                 } else {
-                    if (!collectSlotArguments(
-                            frame, argC, err, "stack underflow on callvalue args"))
-                        goto error_exit;
-                    if (method != nullptr)
-                        callSlots_.insert(callSlots_.begin(), ExecutionSlot(method->receiver));
-                    if (localClosure) {
-                        const auto& callee = program.functions[localIndex];
-                        const auto* plan = validatedProgram_.scalarExpressions(&callee);
-                        if (plan != nullptr && plan->captureLeaf.valid()
-                            && executeScalarCaptureLeaf(callee,
-                                plan->captureLeaf,
-                                *closure,
-                                frame,
-                                static_cast<std::size_t>(argC),
-                                remainingInstructions))
-                            break;
+                    const auto& target = program.functions[localIndex];
+                    if (method != nullptr && !target.isVariadic && target.captureCount == 0
+                        && target.params == argC + 1 && memoryQuota_ == nullptr
+                        && core::currentCpuMemoryQuota() == nullptr) {
+                        if (frame.stack.size() < static_cast<std::size_t>(argC)) {
+                            err.code = ScriptDiagnosticCode::StackUnderflow;
+                            err.message = "stack underflow on callvalue args";
+                            goto error_exit;
+                        }
+                        const ExecutionArgumentsView arguments(
+                            frame.stack, static_cast<std::size_t>(argC), method->receiver);
+                        const bool provenTarget =
+                            StaticValidated && validatedProgram_.hasVerifiedStackBound(&target);
+                        callResult = runFunctionInternal(program,
+                            localIndex,
+                            arguments,
+                            emptyCaptures(),
+                            &err,
+                            &resultProduced,
+                            &returnedSlot,
+                            provenTarget);
+                    } else {
+                        if (!collectSlotArguments(
+                                frame, argC, err, "stack underflow on callvalue args"))
+                            goto error_exit;
+                        if (method != nullptr)
+                            callSlots_.insert(callSlots_.begin(), ExecutionSlot(method->receiver));
+                        if (localClosure) {
+                            const auto& callee = program.functions[localIndex];
+                            const auto* plan = validatedProgram_.scalarExpressions(&callee);
+                            if (plan != nullptr && plan->captureLeaf.valid()
+                                && executeScalarCaptureLeaf(callee,
+                                    plan->captureLeaf,
+                                    *closure,
+                                    frame,
+                                    static_cast<std::size_t>(argC),
+                                    remainingInstructions))
+                                break;
+                        }
+                        callResult = runFunctionInternal(program,
+                            localIndex,
+                            ExecutionArgumentsView(callSlots_),
+                            captures,
+                            &err,
+                            &resultProduced,
+                            &returnedSlot);
                     }
-                    callResult = runFunctionInternal(program,
-                        localIndex,
-                        ExecutionArgumentsView(callSlots_),
-                        captures,
-                        &err,
-                        &resultProduced,
-                        &returnedSlot);
                 }
                 if (err.code == ScriptDiagnosticCode::Suspended) {
                     result = std::move(callResult);
@@ -3233,7 +3426,7 @@ dispatch:
                     err.message = "stack underflow on callvalue args";
                     goto error_exit;
                 }
-                args.push_back(frame.pop<StackProven>());
+                args.push_back(frame.pop<StackProven>(&integerValues));
             }
             std::reverse(args.begin(), args.end());
             if (isScriptClosure(callee)) {
@@ -3498,7 +3691,7 @@ dispatch:
                     err.message = "stack underflow on host call args";
                     goto error_exit;
                 }
-                hostArgs.push_back(frame.pop<StackProven>());
+                hostArgs.push_back(frame.pop<StackProven>(&integerValues));
             }
             std::reverse(hostArgs.begin(), hostArgs.end());
             try {
@@ -3560,7 +3753,7 @@ dispatch:
             break;
         }
         case Opcode::MakeMethodValue: {
-            Value receiver = frame.pop<StackProven>();
+            Value receiver = frame.pop<StackProven>(&integerValues);
             const int methodIndex = resolveScriptMethod(program, inst, receiver);
             frame.push(ExecutionSlot(ScriptMethod{methodIndex, std::move(receiver)}));
             break;
@@ -3633,9 +3826,14 @@ dispatch:
             // Script classes use the VM instance path. A reflected C++ class
             // must be created through its registered __new__/__init__ path so
             // the returned Value contains the real native object.
-            auto schemaIt = program.classSchemas.find(inst.s);
-            arp::reflection::class_info* cls = arp::reflection::db::instance().find_class(inst.s);
-            if (schemaIt == program.classSchemas.end() && cls == nullptr) {
+            const auto* constructionSite =
+                constructionPlan ? constructionPlan->lookup(frame.lastIp) : nullptr;
+            const auto schemaIt =
+                constructionSite ? program.classSchemas.end() : program.classSchemas.find(inst.s);
+            const bool scriptClass = constructionSite || schemaIt != program.classSchemas.end();
+            arp::reflection::class_info* cls =
+                !scriptClass ? arp::reflection::db::instance().find_class(inst.s) : nullptr;
+            if (!scriptClass && cls == nullptr) {
                 err.code = ScriptDiagnosticCode::UndeclaredName;
                 err.message = "unknown class '";
                 err.message += inst.s;
@@ -3643,20 +3841,51 @@ dispatch:
                 goto error_exit;
             }
 
-            arp::core::pmr::Vector<Value> initArgs(
-                (arp::core::pmr::Vector<Value>::allocator_type(&res)));
-            initArgs.reserve(inst.b);
-            for (int i = 0; i < inst.b; ++i) {
-                if (stackInvalid(frame.stack.empty())) {
+            // A private, verified constructor can consume the original stack
+            // suffix just like an admitted bound method. Keep inline scalars
+            // through this internal edge instead of boxing and copying an
+            // intermediate Value vector. Quota-bound execution retains its
+            // original allocation order and diagnostics below.
+            const auto constructorIt = constructionSite ? program.constructorIndex.end()
+                                                        : program.constructorIndex.find(inst.s);
+            const int constructorIndex = constructionSite         ? constructionSite->constructor
+                : constructorIt != program.constructorIndex.end() ? constructorIt->second
+                                                                  : -1;
+            bool consumeConstructorSlots = false;
+            bool provenConstructor = false;
+            if (scriptClass && constructorIndex >= 0 && memoryQuota_ == nullptr
+                && core::currentCpuMemoryQuota() == nullptr) {
+                const auto& constructor = program.functions[constructorIndex];
+                consumeConstructorSlots = !constructor.isVariadic && !constructor.isGenerator
+                    && constructor.captureCount == 0 && constructor.params == inst.b + 1;
+                if (consumeConstructorSlots
+                    && frame.stack.size() < static_cast<std::size_t>(inst.b)) {
                     err.code = ScriptDiagnosticCode::StackUnderflow;
                     err.message = "stack underflow on class constructor args";
                     goto error_exit;
                 }
-                initArgs.push_back(frame.pop<StackProven>());
+                if constexpr (StaticValidated) {
+                    provenConstructor = consumeConstructorSlots
+                        && validatedProgram_.hasVerifiedStackBoundOwned(&constructor);
+                }
             }
-            std::reverse(initArgs.begin(), initArgs.end());
 
-            if (schemaIt == program.classSchemas.end()) {
+            arp::core::pmr::Vector<Value> initArgs(
+                (arp::core::pmr::Vector<Value>::allocator_type(&res)));
+            if (!consumeConstructorSlots) {
+                initArgs.reserve(inst.b);
+                for (int i = 0; i < inst.b; ++i) {
+                    if (stackInvalid(frame.stack.empty())) {
+                        err.code = ScriptDiagnosticCode::StackUnderflow;
+                        err.message = "stack underflow on class constructor args";
+                        goto error_exit;
+                    }
+                    initArgs.push_back(frame.pop<StackProven>(&integerValues));
+                }
+                std::reverse(initArgs.begin(), initArgs.end());
+            }
+
+            if (!scriptClass) {
                 Value newFunction = cls->get_field("__new__");
                 if (!newFunction.is_function()) {
                     err.code = ScriptDiagnosticCode::HostError;
@@ -3689,25 +3918,43 @@ dispatch:
                 break;
             }
 
-            const auto& fieldNames = schemaIt->second;
-            const auto scriptInstance =
-                ScriptSemanticRuntime::makeScriptInstance(inst.s, fieldNames);
+            const auto& fieldNames =
+                constructionSite ? *constructionSite->fields : schemaIt->second;
+            core::CpuAllocationGroupScope constructionGroup(
+                memoryQuota_ == nullptr && core::currentCpuMemoryQuota() == nullptr);
+            const auto scriptInstance = ScriptSemanticRuntime::makeScriptInstance(inst.s,
+                fieldNames,
+                constructionSite      ? *constructionSite->layout
+                    : StaticValidated ? validatedProgram_.fieldLayout(inst.s)
+                                      : nullptr);
             if (!scriptInstance.ok()) {
                 err.code = scriptInstance.diagnostic.code;
                 err.message = scriptInstance.diagnostic.message;
                 goto error_exit;
             }
             Value instanceValue = scriptInstance.value;
-            auto constructorIt = program.constructorIndex.find(inst.s);
-            if (constructorIt != program.constructorIndex.end()) {
-                initArgs.insert(initArgs.begin(), instanceValue);
+            if (constructorIndex >= 0) {
                 bool constructorProduced = false;
-                runFunctionInternal(program,
-                    constructorIt->second,
-                    initArgs,
-                    emptyCaptures(),
-                    &err,
-                    &constructorProduced);
+                if (consumeConstructorSlots) {
+                    const ExecutionArgumentsView arguments(
+                        frame.stack, static_cast<std::size_t>(inst.b), instanceValue);
+                    runFunctionInternal(program,
+                        constructorIndex,
+                        arguments,
+                        emptyCaptures(),
+                        &err,
+                        &constructorProduced,
+                        nullptr,
+                        provenConstructor);
+                } else {
+                    initArgs.insert(initArgs.begin(), instanceValue);
+                    runFunctionInternal(program,
+                        constructorIndex,
+                        initArgs,
+                        emptyCaptures(),
+                        &err,
+                        &constructorProduced);
+                }
                 if (err.code == ScriptDiagnosticCode::Suspended) {
                     if (suspendedFrame_.function == nullptr) {
                         err.code = ScriptDiagnosticCode::AotSwitchUnsupported;
@@ -3762,7 +4009,7 @@ dispatch:
         // ---------- container access ----------
         case Opcode::LoadIndex: {
             auto idx = frame.popSlot<StackProven>();
-            Value base = frame.pop<StackProven>();
+            Value base = frame.pop<StackProven>(&integerValues);
             auto semantic = ScriptSemanticRuntime::loadIndexSlots(base, idx);
             if (!semantic.ok()) {
                 err.code = semantic.diagnostic.code;
@@ -3773,9 +4020,9 @@ dispatch:
             break;
         }
         case Opcode::StoreIndex: {
-            Value val = frame.pop<StackProven>();
-            Value idx = frame.pop<StackProven>();
-            Value base = frame.pop<StackProven>();
+            Value val = frame.pop<StackProven>(&integerValues);
+            Value idx = frame.pop<StackProven>(&integerValues);
+            Value base = frame.pop<StackProven>(&integerValues);
             if (base.is<arp::reflection::hdict>()) {
                 auto* dict = base.ptr<arp::reflection::hdict>();
                 if (dict->find(idx) == dict->end() && dict->size() >= maxContainerValues_) {
@@ -3796,8 +4043,35 @@ dispatch:
         case Opcode::LoadField: {
             // A = field index (unused for instance-backed; kept for compat),
             // S = field name. Route through reflection instance __getitem__.
-            Value base = frame.pop<StackProven>();
+            Value base = frame.pop<StackProven>(&integerValues);
             const auto& fname = inst.s;
+            if (const auto* actual = exactValuePayload<arp::reflection::instance>(base)) {
+                if (!actual->alive()) {
+                    err.code = ScriptDiagnosticCode::HostError;
+                    err.message = "ARP-SCRIPT-COMPONENT-STALE-INSTANCE";
+                    goto error_exit;
+                }
+                auto field = const_cast<arp::reflection::instance*>(actual)->__getitem__(fname);
+                if (!field.is_undefined()) {
+                    frame.push(std::move(field));
+                    break;
+                }
+                if (actual->class_() != nullptr) {
+                    const auto methods = program.methodSets.find(actual->class_()->name());
+                    if (methods != program.methodSets.end()) {
+                        const auto method = methods->second.find(fname);
+                        if (method != methods->second.end()) {
+                            frame.push(
+                                ExecutionSlot(ScriptMethod{method->second, std::move(base)}));
+                            break;
+                        }
+                    }
+                }
+                err.code = ScriptDiagnosticCode::NoMember;
+                err.message = "field lookup failed: ";
+                err.message += fname;
+                goto error_exit;
+            }
             auto semantic = ScriptSemanticRuntime::findField(base, fname);
             Value result = Value::undefined();
             if (semantic.ok() && !semantic.value.is_undefined()) {
@@ -3826,6 +4100,10 @@ dispatch:
                     err.message = semantic.diagnostic.message;
                 goto error_exit;
             }
+            if (exactValuePayload<arp::reflection::instance>(base) != nullptr) {
+                frame.push(std::move(result));
+                break;
+            }
             if (result.is<arp::reflection::function>() && base.class_() != nullptr
                 && !base.is<arp::reflection::instance>() && !isReflectedTypeBinding(base)
                 && !base.is<arp::reflection::enumeration>() && !isModuleObject(base))
@@ -3835,9 +4113,18 @@ dispatch:
         }
         case Opcode::StoreField: {
             // A = field index (unused), S = field name.
-            Value val = frame.pop<StackProven>();
-            Value base = frame.pop<StackProven>();
+            Value val = frame.pop<StackProven>(&integerValues);
+            Value base = frame.pop<StackProven>(&integerValues);
             const auto& fname = inst.s;
+            if (const auto* actual = exactValuePayload<arp::reflection::instance>(base)) {
+                if (!actual->alive()) {
+                    err.code = ScriptDiagnosticCode::HostError;
+                    err.message = "ARP-SCRIPT-COMPONENT-STALE-INSTANCE";
+                    goto error_exit;
+                }
+                const_cast<arp::reflection::instance*>(actual)->__setitem__(fname, val);
+                break;
+            }
             const auto semantic =
                 ScriptSemanticRuntime::storeField(std::move(base), fname, std::move(val));
             if (!semantic.ok()) {
@@ -3901,8 +4188,8 @@ dispatch:
                 err.message = "stack underflow on AddrIndex";
                 goto error_exit;
             }
-            Value index = frame.pop<StackProven>();
-            Value base = frame.pop<StackProven>();
+            Value index = frame.pop<StackProven>(&integerValues);
+            Value base = frame.pop<StackProven>(&integerValues);
             const auto valid = ScriptSemanticRuntime::loadIndex(base, index);
             if (!valid.ok()) {
                 err.code = valid.diagnostic.code;
@@ -3918,7 +4205,7 @@ dispatch:
                 err.message = "stack underflow on AddrField";
                 goto error_exit;
             }
-            Value base = frame.pop<StackProven>();
+            Value base = frame.pop<StackProven>(&integerValues);
             const auto valid = ScriptSemanticRuntime::loadField(base, inst.s);
             if (!valid.ok() && !base.is<arp::reflection::instance>()) {
                 err.code = valid.diagnostic.code;
@@ -3949,8 +4236,8 @@ dispatch:
             }
             // The compiler leaves the address below the value: [pointer,
             // value]. Pop in the same order as the AOT Value frame machine.
-            Value val = frame.pop<StackProven>();
-            Value pointerValue = frame.pop<StackProven>();
+            Value val = frame.pop<StackProven>(&integerValues);
+            Value pointerValue = frame.pop<StackProven>(&integerValues);
             if (!pointerValue.is<ScriptPointer>()) {
                 err.code = ScriptDiagnosticCode::NilDeref;
                 err.message = "StoreIndirect requires a script pointer";
@@ -3982,8 +4269,8 @@ dispatch:
         }
         case Opcode::BuiltinAppend: {
             // pop value, pop list, append, push list back.
-            Value val = frame.pop<StackProven>();
-            Value lst = frame.pop<StackProven>();
+            Value val = frame.pop<StackProven>(&integerValues);
+            Value lst = frame.pop<StackProven>(&integerValues);
             const auto semantic =
                 ScriptSemanticRuntime::append(std::move(lst), std::move(val), maxContainerValues_);
             if (!semantic.ok()) {
@@ -3995,8 +4282,8 @@ dispatch:
             break;
         }
         case Opcode::BuiltinDelete: {
-            Value key = frame.pop<StackProven>();
-            Value cont = frame.pop<StackProven>();
+            Value key = frame.pop<StackProven>(&integerValues);
+            Value cont = frame.pop<StackProven>(&integerValues);
             const auto semantic = ScriptSemanticRuntime::erase(std::move(cont), std::move(key));
             if (!semantic.ok()) {
                 err.code = semantic.diagnostic.code;
@@ -4006,7 +4293,7 @@ dispatch:
             break;
         }
         case Opcode::BuiltinClear: {
-            Value cont = frame.pop<StackProven>();
+            Value cont = frame.pop<StackProven>(&integerValues);
             const auto semantic = ScriptSemanticRuntime::clear(std::move(cont));
             if (!semantic.ok()) {
                 err.code = semantic.diagnostic.code;
@@ -4023,7 +4310,7 @@ dispatch:
                 err.message = "range index slot out of range";
                 goto error_exit;
             }
-            Value src = frame.pop<StackProven>();
+            Value src = frame.pop<StackProven>(&integerValues);
             if (inst.a >= 0 && inst.a < static_cast<int>(frame.locals.size()))
                 frame.locals[inst.a] = std::move(src);
             frame.locals[inst.b] = ScriptScalar(-1);
@@ -4236,7 +4523,7 @@ dispatch:
 
         // ---------- conversions ----------
         case Opcode::ConvertInt: {
-            Value v = frame.pop<StackProven>();
+            Value v = frame.pop<StackProven>(&integerValues);
             const auto semantic =
                 ScriptSemanticRuntime::convert(SemanticConversionOperation::Int, std::move(v));
             if (!semantic.ok()) {
@@ -4248,7 +4535,7 @@ dispatch:
             break;
         }
         case Opcode::ConvertInt64: {
-            Value v = frame.pop<StackProven>();
+            Value v = frame.pop<StackProven>(&integerValues);
             const auto semantic =
                 ScriptSemanticRuntime::convert(SemanticConversionOperation::Int64, std::move(v));
             if (!semantic.ok()) {
@@ -4260,7 +4547,7 @@ dispatch:
             break;
         }
         case Opcode::ConvertFloat: {
-            Value v = frame.pop<StackProven>();
+            Value v = frame.pop<StackProven>(&integerValues);
             const auto semantic =
                 ScriptSemanticRuntime::convert(SemanticConversionOperation::Float, std::move(v));
             if (!semantic.ok()) {
@@ -4272,7 +4559,7 @@ dispatch:
             break;
         }
         case Opcode::ConvertString: {
-            Value v = frame.pop<StackProven>();
+            Value v = frame.pop<StackProven>(&integerValues);
             const auto semantic =
                 ScriptSemanticRuntime::convert(SemanticConversionOperation::String, std::move(v));
             if (!semantic.ok()) {
@@ -4284,7 +4571,7 @@ dispatch:
             break;
         }
         case Opcode::ConvertBool: {
-            Value v = frame.pop<StackProven>();
+            Value v = frame.pop<StackProven>(&integerValues);
             const auto semantic =
                 ScriptSemanticRuntime::convert(SemanticConversionOperation::Bool, std::move(v));
             if (!semantic.ok()) {
@@ -4296,7 +4583,7 @@ dispatch:
             break;
         }
         case Opcode::ConvertBytes: {
-            Value v = frame.pop<StackProven>();
+            Value v = frame.pop<StackProven>(&integerValues);
             const auto semantic =
                 ScriptSemanticRuntime::convert(SemanticConversionOperation::Bytes, std::move(v));
             if (!semantic.ok()) {
@@ -4482,7 +4769,7 @@ dispatch:
         }
 
         case Opcode::Await: {
-            Value awaitable = frame.pop<StackProven>();
+            Value awaitable = frame.pop<StackProven>(&integerValues);
             Value awaitedResult;
             core::pmr::String awaitDiagnostics{&res};
             if (!isScriptAwaitable(awaitable)) {
@@ -4565,7 +4852,7 @@ dispatch:
                     goto error_exit;
                 }
             }
-            Value raised = frame.pop<StackProven>();
+            Value raised = frame.pop<StackProven>(&integerValues);
             err.code = ScriptDiagnosticCode::UserRaise;
             if (!tryGetString(raised, err.message))
                 err.message = "script raised a non-string value";
@@ -4590,7 +4877,7 @@ dispatch:
         }
         case Opcode::LoadModuleExport: {
             // S = export name. Pop ModuleObject, push the exported Value.
-            Value modVal = frame.pop<StackProven>();
+            Value modVal = frame.pop<StackProven>(&integerValues);
             const auto result = ScriptSemanticRuntime::loadModuleExport(modVal, inst.s);
             if (!result.ok()) {
                 err.code = result.diagnostic.code;

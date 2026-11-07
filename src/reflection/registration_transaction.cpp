@@ -17,6 +17,7 @@ namespace arp::reflection {
 namespace {
 
 thread_local RegistrationTransaction* activeTransaction = nullptr;
+std::atomic<std::size_t> activeTransactionScopes{0};
 
 core::pmr::String makeString(NameView value)
 {
@@ -937,19 +938,27 @@ RegistrationScope::RegistrationScope(RegistrationTransaction& transaction) noexc
         transaction_ = nullptr;
         return;
     }
+    activeTransactionScopes.fetch_add(1, std::memory_order_relaxed);
     activeTransaction = &transaction;
 }
 
 RegistrationScope::~RegistrationScope()
 {
-    if (transaction_ != nullptr && activeTransaction == transaction_)
+    if (transaction_ != nullptr && activeTransaction == transaction_) {
         activeTransaction = previous_;
+        activeTransactionScopes.fetch_sub(1, std::memory_order_relaxed);
+    }
 }
 
 namespace detail {
 
 RegistrationTransaction* currentRegistrationTransaction() noexcept
 {
+    // Most execution has no registration transaction on any thread. Avoid
+    // emulated TLS lookup in that state. Same-thread atomic coherence ensures
+    // an active scope never observes a count preceding its own increment.
+    if (activeTransactionScopes.load(std::memory_order_relaxed) == 0)
+        return nullptr;
     return activeTransaction;
 }
 

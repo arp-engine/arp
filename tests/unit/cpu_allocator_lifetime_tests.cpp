@@ -1,12 +1,195 @@
 #include "core/memory/cpu_allocator.h"
 
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <limits>
 #include <memory_resource>
 #include <thread>
 
 namespace {
+
+void allocationScopeStateIsThreadIsolated()
+{
+    using namespace arp::core;
+    auto& resource = defaultCpuMemoryResource();
+    for (unsigned round = 0; round < 4; ++round) {
+        std::atomic<unsigned> ready{0};
+        std::atomic<bool> proceed{false};
+        std::array<std::thread, 4> workers;
+        for (unsigned i = 0; i < workers.size(); ++i) {
+            workers[i] = std::thread([&, i] {
+                assert(currentCpuMemoryQuota() == nullptr);
+                auto quota = i % 2 ? makeShared<CpuMemoryQuota>(128) : nullptr;
+                {
+                    CpuMemoryQuotaScope binding(quota);
+                    CpuAllocationGroupScope group;
+                    auto* allocation = resource.allocate(37, 64);
+                    const auto charge = inspectCpuAllocationContaining(allocation);
+                    assert(charge.found && charge.quota == quota.get());
+                    assert((charge.allocationIdentity == allocation) == (quota != nullptr));
+                    ready.fetch_add(1, std::memory_order_release);
+                    while (!proceed.load(std::memory_order_acquire))
+                        std::this_thread::yield();
+                    assert(currentCpuMemoryQuota() == quota);
+                    resource.deallocate(allocation, 37, 64);
+                }
+                assert(currentCpuMemoryQuota() == nullptr);
+                assert(!quota || quota->liveBytes() == 0);
+            });
+        }
+        while (ready.load(std::memory_order_acquire) != workers.size())
+            std::this_thread::yield();
+        assert(currentCpuMemoryQuota() == nullptr);
+        auto independent = makeUnique<int>(3);
+        assert(inspectCpuAllocationCharge(independent.get()).found);
+        proceed.store(true, std::memory_order_release);
+        for (auto& worker : workers)
+            worker.join();
+    }
+}
+
+void allocationGroupsPreserveMixedPayloadsAndTransferredBackingCharge()
+{
+    using namespace arp::core;
+    constexpr std::array<std::size_t, 8> sizes{0, 1, 17, 4097, 70000, 3, 8193, 33};
+    constexpr std::array<std::size_t, 8> alignments{1, 8, 16, 256, 4096, 64, 32, 128};
+    std::array<void*, sizes.size()> allocations{};
+    auto quota = makeShared<CpuMemoryQuota>();
+    auto& resource = defaultCpuMemoryResource();
+    const auto before = defaultCpuAllocator().stats().liveBytes;
+    CpuAllocationChargeInfo chargedBacking;
+    {
+        CpuAllocationGroupScope group;
+        for (std::size_t i = 0; i < sizes.size(); ++i) {
+            allocations[i] = resource.allocate(sizes[i], alignments[i]);
+            assert(reinterpret_cast<std::uintptr_t>(allocations[i]) % alignments[i] == 0);
+            std::memset(allocations[i], static_cast<int>(i + 1), sizes[i] ? sizes[i] : 1);
+        }
+        chargedBacking = inspectCpuAllocationContaining(allocations.back());
+        assert(chargedBacking.found);
+        assert(!cpuAllocationOverlapsQuotaOwner(allocations.back(), quota));
+        CpuAllocationDesc desc;
+        desc.sizeBytes = chargedBacking.sizeBytes;
+        CpuAllocationResult source;
+        {
+            CpuMemoryQuotaScope scope(quota);
+            source = defaultCpuAllocator().allocate(desc);
+        }
+        assert(source.ptr);
+        assert(!transferCpuAllocationCharge(source.ptr, allocations.back()));
+        assert(transferCpuAllocationCharge(
+            source.ptr, const_cast<void*>(chargedBacking.allocationIdentity)));
+        defaultCpuAllocator().deallocate(source.ptr, desc);
+        assert(quota->liveBytes() == chargedBacking.sizeBytes);
+        assert(cpuAllocationOverlapsQuotaOwner(chargedBacking.allocationIdentity, quota));
+
+        CpuAllocationDesc invalid;
+        invalid.sizeBytes = std::numeric_limits<std::size_t>::max();
+        assert(!defaultCpuAllocator().allocate(invalid).ptr);
+        invalid.sizeBytes = 1;
+        invalid.alignment = 3;
+        assert(!defaultCpuAllocator().allocate(invalid).ptr);
+    }
+    for (std::size_t i = 0; i < sizes.size(); ++i) {
+        const auto* bytes = static_cast<const unsigned char*>(allocations[i]);
+        for (std::size_t j = 0; j < (sizes[i] ? sizes[i] : 1); ++j)
+            assert(bytes[j] == i + 1);
+    }
+    // Keep the first tiny object and last backing alive while freeing all
+    // other sizes. Child release must not release a transferred backing quota.
+    for (std::size_t i = 1; i + 1 < sizes.size(); ++i)
+        resource.deallocate(allocations[i], sizes[i], alignments[i]);
+    assert(quota->liveBytes() == chargedBacking.sizeBytes);
+    std::thread finalRelease([&] {
+        resource.deallocate(allocations.front(), sizes.front(), alignments.front());
+        resource.deallocate(allocations.back(), sizes.back(), alignments.back());
+    });
+    finalRelease.join();
+    assert(quota->liveBytes() == 0);
+    assert(defaultCpuAllocator().stats().liveBytes == before);
+}
+
+void allocationGroupsPreserveIndependentLifetimes()
+{
+    using namespace arp::core;
+    auto& resource = defaultCpuMemoryResource();
+    const auto before = defaultCpuAllocator().stats();
+    std::array<void*, 128> allocations{};
+    {
+        CpuAllocationGroupScope group;
+        for (auto& allocation : allocations)
+            allocation = resource.allocate(37, 64);
+        for (auto* allocation : allocations) {
+            assert(reinterpret_cast<std::uintptr_t>(allocation) % 64 == 0);
+            const auto backing = inspectCpuAllocationContaining(allocation);
+            assert(backing.found && backing.quota == nullptr && backing.sizeBytes >= 37);
+            assert(backing.allocationIdentity != allocation);
+            assert(!inspectCpuAllocationCharge(allocation).found);
+        }
+        assert(defaultCpuAllocator().stats().allocationCount - before.allocationCount
+            < allocations.size());
+        // Nested scopes share the outer ownership window. Pausing creates a
+        // real independent allocation, suitable for a process/thread cache.
+        CpuAllocationGroupScope nested;
+        {
+            CpuAllocationGroupScope paused(false);
+            auto independent = makeUnique<int>(91);
+            assert(inspectCpuAllocationCharge(independent.get()).found);
+        }
+    }
+    assert(defaultCpuAllocator().stats().liveBytes > before.liveBytes);
+    // The backing lease survives the scope and supports concurrent releases.
+    std::thread releaseFirstHalf([&] {
+        for (std::size_t index = 0; index < allocations.size() / 2; ++index)
+            resource.deallocate(allocations[index], 37, 64);
+    });
+    for (std::size_t index = allocations.size() / 2; index < allocations.size(); ++index)
+        resource.deallocate(allocations[index], 37, 64);
+    releaseFirstHalf.join();
+    assert(defaultCpuAllocator().stats().liveBytes == before.liveBytes);
+}
+
+void allocationGroupsKeepQuotaAndFailureContracts()
+{
+    using namespace arp::core;
+    auto quota = makeShared<CpuMemoryQuota>(64);
+    auto& resource = defaultCpuMemoryResource();
+    const auto before = defaultCpuAllocator().stats().liveBytes;
+    {
+        CpuAllocationGroupScope group;
+        {
+            CpuMemoryQuotaScope binding(quota);
+            auto object = makeUnique<int>(11);
+            const auto charge = inspectCpuAllocationCharge(object.get());
+            assert(charge.found && charge.quota == quota.get());
+            assert(quota->liveBytes() == sizeof(int));
+            bool rejected = false;
+            try {
+                (void)resource.allocate(65, 8);
+            } catch (const std::bad_alloc&) {
+                rejected = true;
+            }
+            assert(rejected && quota->liveBytes() == sizeof(int));
+        }
+        assert(quota->liveBytes() == 0);
+
+        struct Throws {
+            Throws() { throw 1; }
+        };
+
+        bool unwound = false;
+        try {
+            auto object = makeUnique<Throws>();
+        } catch (int) {
+            unwound = true;
+        }
+        assert(unwound);
+    }
+    assert(defaultCpuAllocator().stats().liveBytes == before);
+}
 
 void scopeMatchesExactQuotaOwnership()
 {
@@ -45,6 +228,24 @@ void scopeMatchesExactQuotaOwnership()
 struct ThreadExitCache {
     std::pmr::vector<std::uint64_t> values{&arp::core::defaultCpuMemoryResource()};
 };
+
+struct ThreadExitAllocationProbe {
+    ~ThreadExitAllocationProbe()
+    {
+        using namespace arp::core;
+        assert(currentCpuMemoryQuota() == nullptr);
+        CpuMemoryQuotaScope quota(nullptr);
+        CpuAllocationGroupScope group;
+        auto value = makeUnique<int>(29);
+        assert(*value == 29 && inspectCpuAllocationContaining(value.get()).found);
+    }
+};
+
+void prepareThreadExitAllocationProbe()
+{
+    thread_local ThreadExitAllocationProbe probe;
+    (void)probe;
+}
 
 ThreadExitCache& threadExitCache()
 {
@@ -199,6 +400,10 @@ void allocationLedgerPreservesMixedQuotaOwnership()
 
 int main()
 {
+    allocationScopeStateIsThreadIsolated();
+    allocationGroupsPreserveMixedPayloadsAndTransferredBackingCharge();
+    allocationGroupsPreserveIndependentLifetimes();
+    allocationGroupsKeepQuotaAndFailureContracts();
     scopeMatchesExactQuotaOwnership();
     quotaLeaseIsAtomicAndTransferable();
     allocationLedgerFindsInteriorAddresses();
@@ -206,6 +411,7 @@ int main()
     exerciseThreadExit();
 
     std::thread worker([] {
+        prepareThreadExitAllocationProbe();
         exerciseThreadExit();
     });
     worker.join();

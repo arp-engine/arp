@@ -4,11 +4,13 @@
 #include "core/container/array_view.h"
 #include "core/diagnostics/diagnostic_error.h"
 #include "scene/ids.h"
+#include "scene/render_extract.h"
 
 #include <array>
 
 namespace arp::scene {
 class Scene;
+class Component;
 class RenderExtractSink;
 } // namespace arp::scene
 
@@ -37,6 +39,7 @@ struct SceneSpatialOwner {
 struct SceneSpatialTelemetry {
     std::size_t objects = 0, visible = 0, nodeTests = 0, candidateLeaves = 0;
     std::uint64_t staticBuilds = 0, dynamicUpdates = 0, queries = 0, cacheHits = 0;
+    std::uint64_t contextResolves = 0, contextCacheHits = 0, extractionDispatches = 0;
 };
 
 // Scene-3D-owned persistent renderable registry. Providers supply coarse world
@@ -71,6 +74,19 @@ public:
     const auto& telemetry() const { return telemetry_; }
 
 private:
+    struct ExtractionBinding {
+        const scene::GameObject* object = nullptr;
+        const scene::Component* component = nullptr;
+        scene::Transform world;
+        std::uint64_t revision = 0;
+        bool active = false;
+    };
+
+    struct UnboundedBinding {
+        SceneSpatialOwner owner;
+        ExtractionBinding binding;
+    };
+
     struct Entry {
         SceneSpatialOwner owner;
         Aabb bounds;
@@ -78,6 +94,7 @@ private:
         std::uint32_t generation = 1, proxy = UINT32_MAX;
         bool active = false, visible = true;
         std::uint64_t stamp = 0;
+        mutable ExtractionBinding binding;
     };
     class Sink;
     bool live(SceneSpatialHandle handle) const;
@@ -90,11 +107,15 @@ private:
         previous_{&core::defaultCpuMemoryResource()}, changed_{&core::defaultCpuMemoryResource()};
     core::pmr::Vector<SceneSpatialHandle> alwaysExtract_{&core::defaultCpuMemoryResource()},
         extraction_{&core::defaultCpuMemoryResource()};
+    mutable core::SharedPtr<const scene::RenderContextEpoch> extractionIdentity_;
+    mutable bool extracting_ = false;
+    mutable core::pmr::Vector<UnboundedBinding> unboundedBindings_{
+        &core::defaultCpuMemoryResource()};
     Bvh static_;
     DynamicAabbTree dynamic_;
     std::array<float, 16> camera_{};
     std::uint64_t revision_ = 0, queriedRevision_ = UINT64_MAX, stamp_ = 0;
     bool staticDirty_ = false, enabled_ = false;
-    SceneSpatialTelemetry telemetry_;
+    mutable SceneSpatialTelemetry telemetry_;
 };
 } // namespace arp::scene3d

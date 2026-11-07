@@ -2,6 +2,7 @@
 #include "../fixtures/depth_stencil_attachment_input_fixture.h"
 #include "../fixtures/generated_shader_package_fixture.h"
 #include "../fixtures/original_command_sampler_custody_fixture.h"
+#include "../fixtures/pipeline_cache_lifecycle_checks.h"
 #include "core/memory/cpu_allocator.h"
 #include "rhi/backends/null/null_backend.h"
 #include "rhi/backends/vulkan/vulkan_backend_objects.h"
@@ -1095,6 +1096,7 @@ int main(int argc, char** argv)
     assert(pipelineReport.pipelineCacheKeyStable);
     auto renderPipeline = device->createRenderPipeline(pipelineDesc);
     assert(renderPipeline);
+    arp::tests::checkPipelineCacheLifecycle(*device, pipelineDesc);
     assert(!renderPipeline->nativeHandleExposedToUpperLayer());
     {
         const auto before = inspectVulkanRhiNativeResourceStats(*device);

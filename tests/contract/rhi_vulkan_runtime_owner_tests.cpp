@@ -1,5 +1,6 @@
 #include "core/io/file_io.h"
 #include "rhi/backends/vulkan/vulkan_allocator.h"
+#include "rhi/backends/vulkan/vulkan_pipeline_cache_identity.h"
 #include "rhi/backends/vulkan/vulkan_timeline_semaphore.h"
 #include "tests/fixtures/vulkan_query_only_runtime_owner.h"
 
@@ -253,6 +254,48 @@ void timelineAdmissionRefusesUnsupportedRuntime()
 
 int main()
 {
+    {
+        using Identity = arp::rhi_vulkan::VulkanPipelineCacheIdentity;
+        VkPhysicalDeviceProperties properties{};
+        properties.vendorID = 123;
+        properties.deviceID = 456;
+        properties.driverVersion = 7;
+        properties.apiVersion = VK_API_VERSION_1_1;
+        std::array<std::uint8_t, Identity::envelopeBytes + 32> bytes{};
+        Identity::envelope(bytes.data(), properties);
+        const std::array<std::uint32_t, 4> header{
+            32, VK_PIPELINE_CACHE_HEADER_VERSION_ONE, 123, 456};
+        std::memcpy(bytes.data() + Identity::envelopeBytes, header.data(), sizeof(header));
+        Identity::seal(bytes.data(), bytes.size());
+        assert(Identity::matches({bytes.data(), bytes.size()}, properties));
+        assert(!Identity::matches({bytes.data(), bytes.size() - 1}, properties));
+        for (std::size_t i = 0; i < bytes.size(); ++i) {
+            auto changed = bytes;
+            changed[i] ^= 128;
+            assert(!Identity::matches({changed.data(), changed.size()}, properties));
+        }
+        for (unsigned field = 0; field < 5; ++field) {
+            auto other = properties;
+            if (field == 0)
+                ++other.vendorID;
+            if (field == 1)
+                ++other.deviceID;
+            if (field == 2)
+                ++other.driverVersion;
+            if (field == 3)
+                ++other.apiVersion;
+            if (field == 4)
+                ++other.pipelineCacheUUID[0];
+            assert(!Identity::matches({bytes.data(), bytes.size()}, other));
+        }
+        for (std::size_t field : {0u, 4u, 8u, 12u, 16u}) {
+            auto changed = bytes;
+            changed[Identity::envelopeBytes + field] ^= 128;
+            Identity::seal(changed.data(), changed.size());
+            assert(!Identity::matches({changed.data(), changed.size()}, properties));
+        }
+    }
+
     // Default production construction must not silently select the synthetic
     // validator runtime. This rejects before resolving any native entry point.
     assertRejected(VulkanRhiRuntimeDesc{}, "RHI-VULKAN-RUNTIME-OWNER-MISSING");

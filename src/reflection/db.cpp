@@ -29,6 +29,8 @@ namespace {
 // 0 = not started, 1 = registering, 2 = complete.
 thread_local bool builtinRegistrationInProgress = false;
 
+std::atomic<std::uint64_t> classNameRevision{1};
+
 std::atomic_int& builtinRegistrationState()
 {
     static std::atomic_int state{0};
@@ -101,21 +103,41 @@ db& db::instance()
 
 db::db() = default;
 
+void db::notifyClassNameChanged() noexcept
+{
+    classNameRevision.fetch_add(1, std::memory_order_release);
+}
+
 class_info* db::find_class(NameView name)
 {
+    // Lookup caches belong to the database, not to a caller's construction.
+    core::CpuAllocationGroupScope independentStorage(false);
     std::lock_guard<std::mutex> lock(mutex_);
+    const auto revision = classNameRevision.load(std::memory_order_acquire);
+    if (classLookupNameRevision_ != revision) {
+        classLookups_.clear();
+        classLookupNameRevision_ = revision;
+    }
+    const auto cached = classLookups_.find(name);
+    if (cached != classLookups_.end())
+        return cached->second;
     auto key = detail::makeString(name);
+    const auto remember = [&](class_info* value) {
+        if (value != nullptr)
+            classLookups_.emplace(std::move(key), value);
+        return value;
+    };
     auto found = classes_.find(key);
     if (found != classes_.end() && found->second->explicitlyDeclared_
         && found->second->name() == key) {
-        return found->second.get();
+        return remember(found->second.get());
     }
     for (auto& entry : classes_) {
         if (entry.second && entry.second->explicitlyDeclared_ && entry.second->name() == key) {
-            return entry.second.get();
+            return remember(entry.second.get());
         }
     }
-    return found == classes_.end() ? nullptr : found->second.get();
+    return remember(found == classes_.end() ? nullptr : found->second.get());
 }
 
 class_info* db::findNativeClass(NameView nativeName)
@@ -135,8 +157,10 @@ const typeinfo* db::find_type(NameView name) const
 void db::markExplicitClassDeclaration(class_info* cls)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (cls != nullptr)
+    if (cls != nullptr) {
         cls->explicitlyDeclared_ = true;
+        classLookups_.clear();
+    }
 }
 
 bool db::recordGeneratedClassSchema(
@@ -165,6 +189,7 @@ class_info* db::register_class(NameView name,
     std::size_t alignment,
     get_derived_info_func getDerivedInfo)
 {
+    core::CpuAllocationGroupScope independentStorage(false);
     std::lock_guard<std::mutex> lock(mutex_);
     auto key = detail::makeString(name);
     auto found = classes_.find(key);
@@ -174,11 +199,13 @@ class_info* db::register_class(NameView name,
     auto info = core::makeUnique<class_info>(key, type, size, alignment, getDerivedInfo);
     class_info* ptr = info.get();
     classes_.emplace(std::move(key), std::move(info));
+    classLookups_.clear();
     return ptr;
 }
 
 const typeinfo* db::register_type(NameView name, class_info* cls, std::uint64_t mask)
 {
+    core::CpuAllocationGroupScope independentStorage(false);
     std::lock_guard<std::mutex> lock(mutex_);
     auto key = detail::makeString(name);
     auto found = types_.find(key);
@@ -260,6 +287,7 @@ bool db::commitRegistrationTransaction(
     // Both maps use the process default PMR resource. std::map::merge moves
     // existing nodes without allocating, so after preflight publication is
     // all-or-nothing under the database mutex.
+    classLookups_.clear();
     for (auto& [key, type] : transaction.types_)
         type->cls_ = transaction.publicationClass(type->cls_);
     for (auto& [key, cls] : transaction.classes_) {

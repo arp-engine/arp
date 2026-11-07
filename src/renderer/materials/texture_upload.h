@@ -9,6 +9,17 @@
 #include <limits>
 
 namespace arp::renderer {
+// Optional cold-loading submission policy. The caller owns backpressure and
+// deadlines; recording/staging and native completion remain backend-owned.
+// A policy may retry only when QueueSubmitResult::hasAcceptedWork() is false.
+// Normal frame uploads keep the default single, non-blocking queue submission.
+class TextureUploadSubmissionPolicy {
+public:
+    virtual ~TextureUploadSubmissionPolicy() = default;
+    virtual rhi::QueueSubmitResult submit(
+        rhi::GpuQueue&, const rhi::CommandBuffer&, rhi::GpuFence*) = 0;
+};
+
 struct PackedRgba8TextureRows {
     core::pmr::Vector<std::uint8_t> pixels{&core::defaultCpuMemoryResource()};
     std::uint32_t bytesPerRow = 0u;
@@ -80,7 +91,8 @@ inline RendererResult uploadTextureRgba8(rhi::GpuDevice& device,
     std::uint32_t bytesPerRow,
     std::uint32_t rowsPerImage,
     core::SharedPtr<const rhi::GpuFence>* completion = nullptr,
-    std::uint32_t arrayLayer = 0)
+    std::uint32_t arrayLayer = 0,
+    TextureUploadSubmissionPolicy* submissionPolicy = nullptr)
 {
     if (completion)
         completion->reset();
@@ -158,9 +170,10 @@ inline RendererResult uploadTextureRgba8(rhi::GpuDevice& device,
         : core::SharedPtr<rhi::GpuFence>{};
     if (completion && !ownedCompletion && !suppliedCompletion)
         return RendererResult{false, "RGBA8 texture upload command completion is unavailable"};
-    const auto submitted = suppliedCompletion
-        ? device.queue().submit(*commands, suppliedCompletion.get())
-        : device.queue().submit(*commands);
+    const auto submitted = submissionPolicy
+        ? submissionPolicy->submit(device.queue(), *commands, suppliedCompletion.get())
+        : suppliedCompletion ? device.queue().submit(*commands, suppliedCompletion.get())
+                             : device.queue().submit(*commands);
     if (submitted.success && completion)
         *completion = ownedCompletion ? ownedCompletion : suppliedCompletion;
     return RendererResult{submitted.success, submitted.diagnostics};

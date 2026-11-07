@@ -148,6 +148,7 @@ bool activeSources(ExecutionState* state) noexcept
         for (std::size_t i = 0; i < state->sources.size(); ++i) {
             const auto& source = *state->sources.sourceAt(i);
             state->locationCheck.path = source.path;
+            state->locationCheck.range = source.range;
             state->locationCheck.pathScope = source.pathScope;
             state->locationCheck.mount = source.mount;
             ++state->result.telemetry.locationValidations;
@@ -371,6 +372,8 @@ void completeFileReadImpl(void* userData, core::io::FileReadResult read)
     }
     ResourceSourceBuffer source;
     source.path = intent.path;
+    source.range = intent.range;
+    source.contentVersion = intent.contentVersion;
     source.role = intent.role;
     source.pathScope = intent.pathScope;
     source.mount = intent.mount;
@@ -452,6 +455,7 @@ ResourceGraphSubmitStatus startFileRead(ExecutionState* state)
     core::io::FileReadRequest request;
     request.pathScope = intent.pathScope;
     request.path = intent.path;
+    request.range = intent.range;
     request.mount = intent.mount;
     request.expectedVersion = intent.expectedVersion;
     request.maxVersionBytes = intent.maxVersionBytes;

@@ -19,6 +19,15 @@ struct MetalRhiNativeRuntimeBoundaryReport {
 
 MetalRhiNativeRuntimeBoundaryReport describeMetalRhiNativeRuntimeBoundary();
 
+struct MetalRhiPipelineArchiveReport {
+    const char* status = "NotRequested";
+    const char* input = "NotLoaded";
+    const char* save = "NotAttempted";
+    std::uint64_t uses = 0, loadedBytes = 0, savedBytes = 0;
+};
+
+MetalRhiPipelineArchiveReport describeMetalRhiPipelineArchive();
+
 /// All Metal native payloads in one RHI instance must use one device identity.
 /// The opaque shared ownership keeps the Objective-C device alive without
 /// exposing Metal headers outside Objective-C++ translation units.

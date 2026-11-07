@@ -5,6 +5,7 @@
 
 #include "reflection/class_info.h"
 
+#include "reflection/db.h"
 #include "reflection/instance.h"
 #include "reflection/property.h"
 
@@ -349,6 +350,7 @@ const core::pmr::String& class_info::name() const
 void class_info::set_name(NameView name)
 {
     name_ = detail::makeString(name);
+    db::notifyClassNameChanged();
 }
 
 value_t class_info::valueType() const

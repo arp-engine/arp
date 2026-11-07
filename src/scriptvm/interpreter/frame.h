@@ -23,7 +23,60 @@ namespace arp::scriptvm {
 
 class Vm;
 
+namespace detail {
+struct FrameReferenceContract;
+}
+
 struct Frame {
+private:
+    friend class Vm;
+    friend struct detail::FrameReferenceContract;
+    // Declared first: root metadata outlives every slot during destruction.
+    core::UniquePtr<detail::ExecutionReferenceDomain> referenceDomain_;
+    detail::ExecutionReferenceDomain* activeReferenceDomain_ = nullptr;
+
+    void enablePrivateReferences(const std::shared_ptr<core::CpuMemoryQuota>* quota)
+    {
+        assert(!activeReferenceDomain_);
+        if ((quota && *quota) || core::currentCpuMemoryQuota())
+            return;
+        if (!referenceDomain_) {
+            try {
+                referenceDomain_ = core::makeUnique<detail::ExecutionReferenceDomain>(quota);
+            } catch (const std::bad_alloc&) {
+                return;
+            }
+        }
+        assert(referenceDomain_->empty());
+        if (locals.size() == std::numeric_limits<std::size_t>::max()
+            || stack.capacity() > std::numeric_limits<std::size_t>::max() - locals.size() - 1)
+            return;
+        const auto count = locals.size() + stack.capacity() + 1;
+        if (referenceDomain_->prepare(count, quota))
+            activeReferenceDomain_ = referenceDomain_.get();
+    }
+
+    void assignLocalForVm(std::size_t index, ExecutionSlot&& value)
+    {
+        locals[index].assignForVm(activeReferenceDomain_, std::move(value));
+    }
+
+    const Function* publishForMove() noexcept
+    {
+        for (auto& slot : locals)
+            if (slot.kind_ == ExecutionSlot::Kind::Private)
+                slot.boxed();
+        for (auto& slot : stack)
+            if (slot.kind_ == ExecutionSlot::Kind::Private)
+                slot.boxed();
+        if (returnValue.kind_ == ExecutionSlot::Kind::Private)
+            returnValue.boxed();
+        activeReferenceDomain_ = nullptr;
+        assert(!referenceDomain_ || referenceDomain_->empty());
+        return function;
+    }
+
+public:
     struct HandlerInfo {
         int handlerPc = 0;
         std::size_t stackDepth = 0;
@@ -68,7 +121,7 @@ struct Frame {
     {}
 
     Frame(Frame&& other) noexcept
-        : function(other.function), ip(other.ip), lastIp(other.lastIp),
+        : function(other.publishForMove()), ip(other.ip), lastIp(other.lastIp),
           locals(std::move(other.locals), &arp::core::defaultCpuMemoryResource()),
           captures(std::move(other.captures), &arp::core::defaultCpuMemoryResource()),
           stack(std::move(other.stack), &arp::core::defaultCpuMemoryResource()),
@@ -80,6 +133,7 @@ struct Frame {
     {
         if (this == &other)
             return *this;
+        activeReferenceDomain_ = nullptr;
         function = other.function;
         ip = other.ip;
         lastIp = other.lastIp;
@@ -96,6 +150,8 @@ struct Frame {
     {
         if (this == &other)
             return *this;
+        other.publishForMove();
+        activeReferenceDomain_ = nullptr;
         function = other.function;
         ip = other.ip;
         lastIp = other.lastIp;
@@ -131,17 +187,53 @@ struct Frame {
         dictionaryScratch.clear();
         replaceReturnValue = false;
         returnValue = ScriptScalar();
+        activeReferenceDomain_ = nullptr;
+        assert(!referenceDomain_ || referenceDomain_->empty());
         if (fn) {
             locals.resize(fn->locals);
             stack.reserve(fn->maxStack);
         }
     }
 
-    void push(Value v) { stack.emplace_back(std::move(v)); }
+    void push(Value v)
+    {
+        if (!activeReferenceDomain_) {
+            stack.emplace_back(std::move(v));
+            return;
+        }
+        stack.emplace_back();
+        stack.back().assignForVm(activeReferenceDomain_, std::move(v));
+    }
 
-    void push(const ExecutionSlot& slot) { stack.emplace_back(slot); }
+    void push(const ExecutionSlot& slot)
+    {
+        if (!activeReferenceDomain_) {
+            stack.emplace_back(slot);
+            return;
+        }
+        // slot may point into stack; reserve can relocate it, so pin first.
+        ExecutionSlot pending;
+        pending.assignForVm(activeReferenceDomain_, slot);
+        stack.emplace_back();
+        if (pending.kind_ == ExecutionSlot::Kind::Private) {
+            stack.back().storage_.reference = pending.storage_.reference;
+            stack.back().kind_ = ExecutionSlot::Kind::Private;
+            pending.kind_ = ExecutionSlot::Kind::Scalar;
+            std::uninitialized_copy_n(&ExecutionSlot::emptyScalar_, 1, &pending.storage_.scalar);
+        } else
+            stack.back() = std::move(pending);
+    }
 
-    void push(ExecutionSlot&& slot) { stack.emplace_back(std::move(slot)); }
+    void push(ExecutionSlot&& slot)
+    {
+        if (!activeReferenceDomain_) {
+            stack.emplace_back(std::move(slot));
+            return;
+        }
+        ExecutionSlot pending(std::move(slot));
+        stack.emplace_back();
+        stack.back().assignForVm(activeReferenceDomain_, std::move(pending));
+    }
 
     void push(ScriptScalar scalar) { stack.emplace_back(scalar); }
 

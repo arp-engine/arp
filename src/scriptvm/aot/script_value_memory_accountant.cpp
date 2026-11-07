@@ -325,8 +325,17 @@ bool ScriptValueMemoryAccountant::synchronizeOwner(const void* owner,
         if (value->is<arp::reflection::instance>()) {
             const auto* instance = value->ptr<arp::reflection::instance>();
             if (instance != nullptr) {
+                if (instance->fieldStorageAllocation() != nullptr
+                    && !addAllocationForAddress(
+                        candidateCharges, instance->fieldStorageAllocation(), quota_.get(), error))
+                    return false;
+                if (instance->fieldLayoutAllocation() != nullptr
+                    && !addAllocationForAddress(
+                        candidateCharges, instance->fieldLayoutAllocation(), quota_.get(), error))
+                    return false;
                 for (const auto& item : instance->slots()) {
-                    if (!addAllocationForAddress(candidateCharges, &item, quota_.get(), error))
+                    if (!addAllocationForAddress(
+                            candidateCharges, &item.second, quota_.get(), error))
                         return false;
                     if (!item.first.empty()
                         && !addAllocationForAddress(

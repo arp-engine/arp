@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -17,6 +18,13 @@
 
 #include <mimalloc.h>
 
+#if defined(_WIN32) && defined(__MINGW32__)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace arp::core {
 
 namespace {
@@ -24,20 +32,140 @@ namespace {
 constexpr std::uint32_t kAllocationHeaderMagic = 0x41525043u;
 constexpr std::size_t kAllocatorNameMaxBytes = 127u;
 
+struct AllocationGroupBlock;
+
 struct AllocationHeader {
     void* raw = nullptr;
     std::size_t sizeBytes = 0;
     std::size_t alignment = alignof(std::max_align_t);
-    CpuAllocationIntent intent = CpuAllocationIntent::General;
-    std::uint32_t magic = kAllocationHeaderMagic;
     std::shared_ptr<CpuMemoryQuota> quota;
 };
+
+// Every allocation ends with this trailer. Group children need only their
+// backing lease; quota, size and raw ownership belong to the backing itself.
+struct AllocationTrailer {
+    CpuAllocationIntent intent = CpuAllocationIntent::General;
+    std::uint32_t magic = kAllocationHeaderMagic;
+    AllocationGroupBlock* group = nullptr;
+};
+
+constexpr std::size_t kAllocationHeaderBytes = sizeof(AllocationHeader) + sizeof(AllocationTrailer);
+static_assert(sizeof(AllocationTrailer) % alignof(AllocationHeader) == 0);
+static_assert(alignof(AllocationHeader) <= alignof(void*));
+static_assert(alignof(AllocationTrailer) <= alignof(void*));
 
 // TLS only points into the active stack scope. It has no destructor, so
 // thread/process teardown never releases allocator-owned state from a TLS
 // shared_ptr after static runtime objects have begun shutting down.
-thread_local CpuMemoryQuotaScope* currentQuotaScope = nullptr;
-thread_local CpuQuotaPrechargedAllocationScope* currentPrechargeScope = nullptr;
+struct AllocationThreadState {
+    CpuMemoryQuotaScope* quotaScope = nullptr;
+    CpuQuotaPrechargedAllocationScope* prechargeScope = nullptr;
+    void* group = nullptr;
+};
+
+thread_local AllocationThreadState allocationThreadState;
+
+AllocationThreadState& currentAllocationThreadState() noexcept
+{
+#if defined(_WIN32) && defined(__MINGW32__)
+    // MinGW emulated TLS takes a pthread lock even for a warm lookup. Cache
+    // the address in a native slot; the C++ TLS runtime still owns storage
+    // and thread-exit cleanup. The process owns this one slot permanently,
+    // matching the allocator's lifetime and avoiding shutdown-order hazards.
+    static const DWORD slot = [] {
+        const DWORD index = TlsAlloc();
+        if (index == TLS_OUT_OF_INDEXES)
+            std::terminate();
+        return index;
+    }();
+    auto* state = static_cast<AllocationThreadState*>(TlsGetValue(slot));
+    if (state == nullptr) {
+        state = &allocationThreadState;
+        if (!TlsSetValue(slot, state))
+            std::terminate();
+    }
+    return *state;
+#else
+    return allocationThreadState;
+#endif
+}
+
+struct AllocationGroupBlock {
+    std::atomic<std::size_t> references{1}; // The active scope owns one lease.
+    AllocationGroupBlock* next = nullptr;
+    std::size_t capacity = 0;
+    std::size_t used = 0;
+};
+
+void releaseAllocationGroupBlock(AllocationGroupBlock* block) noexcept
+{
+    if (block->references.fetch_sub(1, std::memory_order_acq_rel) != 1)
+        return;
+    CpuAllocationDesc desc;
+    desc.sizeBytes = sizeof(AllocationGroupBlock) + block->capacity;
+    desc.alignment = alignof(AllocationGroupBlock);
+    block->~AllocationGroupBlock();
+    defaultCpuAllocator().deallocate(block, desc);
+}
+
+template <class State>
+CpuAllocationResult allocateInGroup(DefaultCpuAllocator& allocator,
+    State& state,
+    const CpuAllocationDesc& desc,
+    std::size_t sizeBytes,
+    std::size_t alignment)
+{
+    auto* block = static_cast<AllocationGroupBlock*>(state.current);
+    const auto availableAddress = [](AllocationGroupBlock* candidate) {
+        return reinterpret_cast<std::uintptr_t>(candidate + 1) + candidate->used;
+    };
+    const auto fits = [&](AllocationGroupBlock* candidate) {
+        if (!candidate)
+            return false;
+        const auto offset = alignCpuAllocationOffsetUp(
+            availableAddress(candidate) + sizeof(AllocationTrailer), alignment);
+        if (!offset.success)
+            return false;
+        const auto prefix = offset.alignedValue - reinterpret_cast<std::uintptr_t>(candidate + 1);
+        return prefix <= candidate->capacity && sizeBytes <= candidate->capacity - prefix;
+    };
+    if (!fits(block)) {
+        const auto needed = sizeBytes + sizeof(AllocationTrailer) + alignment - 1u;
+        const auto capacity = std::max(state.nextBytes, needed);
+        if (capacity > std::numeric_limits<std::size_t>::max() - sizeof(AllocationGroupBlock))
+            return {nullptr, "allocation group backing size overflows addressable range"};
+        CpuAllocationDesc backing = desc;
+        backing.sizeBytes = sizeof(AllocationGroupBlock) + capacity;
+        backing.alignment = alignof(AllocationGroupBlock);
+        backing.label = "allocation-group";
+
+        struct Pause {
+            void* saved = std::exchange(currentAllocationThreadState().group, nullptr);
+
+            ~Pause() { currentAllocationThreadState().group = saved; }
+        } pause;
+
+        auto result = allocator.allocate(backing);
+        if (!result.ptr)
+            return result;
+        block = ::new (result.ptr) AllocationGroupBlock{};
+        block->capacity = capacity;
+        block->next = static_cast<AllocationGroupBlock*>(state.head);
+        state.head = state.current = block;
+        state.nextBytes =
+            capacity <= std::numeric_limits<std::size_t>::max() / 2u ? capacity * 2u : capacity;
+    }
+    const auto offset =
+        alignCpuAllocationOffsetUp(availableAddress(block) + sizeof(AllocationTrailer), alignment);
+    auto* allocation = reinterpret_cast<void*>(offset.alignedValue);
+    auto* trailer = reinterpret_cast<AllocationTrailer*>(
+        static_cast<unsigned char*>(allocation) - sizeof(AllocationTrailer));
+    ::new (static_cast<void*>(trailer)) AllocationTrailer{};
+    trailer->group = block;
+    block->used = offset.alignedValue - reinterpret_cast<std::uintptr_t>(block + 1) + sizeBytes;
+    block->references.fetch_add(1, std::memory_order_relaxed);
+    return {allocation, {}};
+}
 
 std::atomic_bool allocatorProcessShuttingDown{false};
 
@@ -121,7 +249,7 @@ std::size_t normalizedAlignment(std::size_t alignment)
 bool wouldAllocationOverflow(std::size_t sizeBytes, std::size_t alignment)
 {
     const auto max = std::numeric_limits<std::size_t>::max();
-    return sizeBytes > max - alignment || sizeBytes + alignment > max - sizeof(AllocationHeader);
+    return sizeBytes > max - alignment || sizeBytes + alignment > max - kAllocationHeaderBytes;
 }
 
 void recordAllocation(CpuMemoryStats& stats, const CpuAllocationDesc& desc)
@@ -166,10 +294,16 @@ CpuAllocationResult failAllocation(
     return CpuAllocationResult{nullptr, diagnostics};
 }
 
+AllocationTrailer* trailerFromAllocation(void* ptr)
+{
+    auto* bytes = static_cast<unsigned char*>(ptr);
+    return reinterpret_cast<AllocationTrailer*>(bytes - sizeof(AllocationTrailer));
+}
+
 AllocationHeader* headerFromAllocation(void* ptr)
 {
     auto* bytes = static_cast<unsigned char*>(ptr);
-    return reinterpret_cast<AllocationHeader*>(bytes - sizeof(AllocationHeader));
+    return reinterpret_cast<AllocationHeader*>(bytes - kAllocationHeaderBytes);
 }
 
 template <class T> class AllocationLedgerAllocator {
@@ -397,7 +531,8 @@ bool transferCpuAllocationCharge(void* chargedAllocation, void* deferredAllocati
         return false;
     auto* source = headerFromAllocation(chargedAllocation);
     auto* target = headerFromAllocation(deferredAllocation);
-    if (source->magic != kAllocationHeaderMagic || target->magic != kAllocationHeaderMagic
+    if (trailerFromAllocation(chargedAllocation)->magic != kAllocationHeaderMagic
+        || trailerFromAllocation(deferredAllocation)->magic != kAllocationHeaderMagic
         || source->raw == nullptr || target->raw == nullptr || source->quota == nullptr
         || target->quota != nullptr)
         return false;
@@ -416,26 +551,26 @@ bool transferCpuAllocationCharge(void* chargedAllocation, void* deferredAllocati
 }
 
 CpuMemoryQuotaScope::CpuMemoryQuotaScope(std::shared_ptr<CpuMemoryQuota> quota) noexcept
-    : quota_(std::move(quota)), previous_(currentQuotaScope)
+    : quota_(std::move(quota)), previous_(currentAllocationThreadState().quotaScope)
 {
-    currentQuotaScope = this;
+    currentAllocationThreadState().quotaScope = this;
 }
 
 CpuMemoryQuotaScope::~CpuMemoryQuotaScope()
 {
-    currentQuotaScope = previous_;
+    currentAllocationThreadState().quotaScope = previous_;
 }
 
 CpuQuotaPrechargedAllocationScope::CpuQuotaPrechargedAllocationScope(
     CpuMemoryQuotaLease&& lease) noexcept
-    : lease_(std::move(lease)), previous_(currentPrechargeScope)
+    : lease_(std::move(lease)), previous_(currentAllocationThreadState().prechargeScope)
 {
-    currentPrechargeScope = this;
+    currentAllocationThreadState().prechargeScope = this;
 }
 
 CpuQuotaPrechargedAllocationScope::~CpuQuotaPrechargedAllocationScope()
 {
-    currentPrechargeScope = previous_;
+    currentAllocationThreadState().prechargeScope = previous_;
 }
 
 std::shared_ptr<CpuMemoryQuota> CpuQuotaPrechargedAllocationScope::consume(
@@ -470,6 +605,26 @@ struct DefaultCpuAllocator::Impl {
     RawCpuAllocationBackend& backend;
     StatsRecorder recorder;
 };
+
+CpuAllocationGroupScope::CpuAllocationGroupScope(bool enabled) noexcept
+    : previous_(currentAllocationThreadState().group)
+{
+    if (!enabled)
+        currentAllocationThreadState().group = nullptr;
+    else if (!previous_ && currentCpuMemoryQuota() == nullptr)
+        currentAllocationThreadState().group = &state_;
+}
+
+CpuAllocationGroupScope::~CpuAllocationGroupScope()
+{
+    currentAllocationThreadState().group = previous_;
+    auto* block = static_cast<AllocationGroupBlock*>(state_.head);
+    while (block) {
+        auto* next = block->next;
+        releaseAllocationGroupBlock(block);
+        block = next;
+    }
+}
 
 const CpuIntentMemoryStats& CpuMemoryStats::byIntent(CpuAllocationIntent intent) const
 {
@@ -513,11 +668,20 @@ CpuAllocationResult DefaultCpuAllocator::allocate(const CpuAllocationDesc& desc)
             impl_->recorder, desc, "allocation size overflows allocator header reservation");
     }
 
-    const auto totalBytes = sizeBytes + alignment - 1u + sizeof(AllocationHeader);
+    auto& threadState = currentAllocationThreadState();
+    if (threadState.group != nullptr && threadState.prechargeScope == nullptr
+        && desc.intent == CpuAllocationIntent::General
+        && (threadState.quotaScope == nullptr || threadState.quotaScope->matchesQuota(nullptr))
+        && this == &defaultCpuAllocator()) {
+        auto& group = *static_cast<CpuAllocationGroupScope::State*>(threadState.group);
+        return allocateInGroup(*this, group, desc, sizeBytes, alignment);
+    }
+
+    const auto totalBytes = sizeBytes + alignment - 1u + kAllocationHeaderBytes;
     auto quota = currentCpuMemoryQuota();
     bool quotaWasPrecharged = false;
-    if (currentPrechargeScope != nullptr) {
-        auto prechargedQuota = currentPrechargeScope->consume(sizeBytes);
+    if (currentAllocationThreadState().prechargeScope != nullptr) {
+        auto prechargedQuota = currentAllocationThreadState().prechargeScope->consume(sizeBytes);
         if (prechargedQuota != nullptr) {
             quota = std::move(prechargedQuota);
             quotaWasPrecharged = true;
@@ -535,7 +699,7 @@ CpuAllocationResult DefaultCpuAllocator::allocate(const CpuAllocationDesc& desc)
 
     const auto rawAddress = reinterpret_cast<std::uintptr_t>(raw);
     const auto aligned = alignCpuAllocationOffsetUp(
-        static_cast<std::size_t>(rawAddress + sizeof(AllocationHeader)), alignment);
+        static_cast<std::size_t>(rawAddress + kAllocationHeaderBytes), alignment);
     if (!aligned.success) {
         if (quota != nullptr)
             quota->release(sizeBytes);
@@ -545,19 +709,21 @@ CpuAllocationResult DefaultCpuAllocator::allocate(const CpuAllocationDesc& desc)
             aligned.diagnostics ? aligned.diagnostics : "allocation alignment failed");
     }
     const auto alignedAddress = static_cast<std::uintptr_t>(aligned.alignedValue);
-    auto* header = reinterpret_cast<AllocationHeader*>(alignedAddress - sizeof(AllocationHeader));
+    auto* header = reinterpret_cast<AllocationHeader*>(alignedAddress - kAllocationHeaderBytes);
     ::new (static_cast<void*>(header)) AllocationHeader{};
     header->raw = raw;
     header->sizeBytes = sizeBytes;
     header->alignment = alignment;
-    header->intent = desc.intent;
-    header->magic = kAllocationHeaderMagic;
     header->quota = std::move(quota);
+    auto* trailer = trailerFromAllocation(reinterpret_cast<void*>(alignedAddress));
+    ::new (static_cast<void*>(trailer)) AllocationTrailer{};
+    trailer->intent = desc.intent;
 
     auto* allocation = reinterpret_cast<void*>(alignedAddress);
     if (!registerAllocationLedger(allocation, sizeBytes, header->quota.get())) {
         auto failedQuota = std::move(header->quota);
-        header->magic = 0u;
+        trailer->magic = 0u;
+        trailer->~AllocationTrailer();
         header->~AllocationHeader();
         impl_->backend.deallocate(raw);
         if (failedQuota != nullptr)
@@ -581,8 +747,9 @@ void DefaultCpuAllocator::deallocate(void* ptr, const CpuAllocationDesc& desc) n
         return;
     }
 
-    auto* header = headerFromAllocation(ptr);
-    if (header->magic != kAllocationHeaderMagic || !header->raw) {
+    auto* trailer = trailerFromAllocation(ptr);
+    if (trailer->magic != kAllocationHeaderMagic
+        || (trailer->group == nullptr && !headerFromAllocation(ptr)->raw)) {
         std::lock_guard<std::mutex> lock(impl_->recorder.mutex);
         recordFailure(impl_->recorder.stats,
             impl_->recorder.lastFailureDiagnostics,
@@ -591,12 +758,21 @@ void DefaultCpuAllocator::deallocate(void* ptr, const CpuAllocationDesc& desc) n
         return;
     }
 
+    if (trailer->group != nullptr) {
+        auto* block = trailer->group;
+        trailer->magic = 0u;
+        trailer->~AllocationTrailer();
+        releaseAllocationGroupBlock(block);
+        return;
+    }
+
+    auto* header = headerFromAllocation(ptr);
     const auto sizeBytes = header->sizeBytes;
-    const auto intent = header->intent;
+    const auto intent = trailer->intent;
     auto quota = std::move(header->quota);
     void* raw = header->raw;
     unregisterAllocationLedger(ptr);
-    header->magic = 0u;
+    trailer->magic = 0u;
 
     {
         std::lock_guard<std::mutex> lock(impl_->recorder.mutex);
@@ -604,6 +780,7 @@ void DefaultCpuAllocator::deallocate(void* ptr, const CpuAllocationDesc& desc) n
     }
     if (quota != nullptr)
         quota->release(sizeBytes);
+    trailer->~AllocationTrailer();
     header->~AllocationHeader();
     impl_->backend.deallocate(raw);
 }
@@ -813,8 +990,9 @@ std::pmr::memory_resource& defaultCpuMemoryResource()
 
 std::shared_ptr<CpuMemoryQuota> currentCpuMemoryQuota()
 {
-    return currentQuotaScope != nullptr ? currentQuotaScope->quota_
-                                        : std::shared_ptr<CpuMemoryQuota>{};
+    return currentAllocationThreadState().quotaScope != nullptr
+        ? currentAllocationThreadState().quotaScope->quota_
+        : std::shared_ptr<CpuMemoryQuota>{};
 }
 
 void notifyCpuAllocatorProcessShutdown() noexcept

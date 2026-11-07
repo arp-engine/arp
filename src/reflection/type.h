@@ -60,6 +60,8 @@ public:
     void setEnumValues(const core::pmr::Map<core::pmr::String, int>& values) const;
     bool containsEnumValue(int value) const;
 
+    const core::pmr::Vector<int>& enumValues() const noexcept { return enumValues_; }
+
 private:
     friend class db;
     friend class RegistrationTransaction;

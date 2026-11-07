@@ -136,6 +136,9 @@ struct ExternalAssetSourceResource : public ResourceBase {
     APROP(Serialize)
     int contentHash = 0;
 
+    // Binary value document, populated only by the cooked source codec.
+    core::pmr::String cookedDocument{&core::defaultCpuMemoryResource()};
+
     arp::core::pmr::Vector<ResourceDependency> dependencies() const;
     AssetResourcePackageBuildResult buildPackageEntry(
         const AssetResourcePackageBuildDesc& desc) const;
@@ -290,6 +293,18 @@ public:
         const std::filesystem::path& root,
         const AssetPackageSourceContext& sources) const;
 };
+
+ARP_API PrefabRuntimePayloadLoadResult decodePrefabRuntimePayload(
+    const core::pmr::Vector<std::uint8_t>&,
+    const PrefabRuntimePayloadResource&,
+    std::size_t maxDecodedBytes);
+
+ARP_API core::pmr::Vector<std::uint8_t> encodePrefabRuntimePayload(
+    const PrefabRuntimePayloadWriteDesc&);
+ARP_API PrefabRuntimePayloadLoadResult decodeCookedPrefabRuntimePayload(
+    const core::pmr::Vector<std::uint8_t>&,
+    const PrefabRuntimePayloadResource&,
+    std::size_t maxDecodedBytes);
 
 ARP_API PrefabRuntimePayloadWriteResult writePrefabRuntimePayload(
     const PrefabRuntimePayloadWriteDesc& desc);

@@ -17,6 +17,10 @@
 #include <cstdint>
 #include <functional>
 
+namespace arp::reflection {
+class InstanceFieldLayout;
+}
+
 namespace arp::scriptvm {
 
 inline constexpr std::uint32_t kInterpreterBytecodeVersion = 1u;
@@ -344,6 +348,46 @@ core::pmr::String formatProgram(const Program& program);
 ARP_API core::pmr::String computeInterpreterBytecodeFingerprint(const Program& program);
 ARP_API ScriptResult validateInterpreterBytecode(const Program& program);
 
+struct InterpreterConstructionSite {
+    const core::pmr::Vector<core::pmr::String>* fields = nullptr;
+    const std::shared_ptr<const reflection::InstanceFieldLayout>* layout = nullptr;
+    int constructor = -1;
+};
+
+struct InterpreterConstructionPlan {
+    core::pmr::Vector<int> entries{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<InterpreterConstructionSite> sites{&core::defaultCpuMemoryResource()};
+
+    const InterpreterConstructionSite* lookup(int pc) const noexcept
+    {
+        const auto index = entries[static_cast<std::size_t>(pc)];
+        return index >= 0 ? &sites[static_cast<std::size_t>(index)] : nullptr;
+    }
+};
+
+// These spans contain only original local/field instructions. Preparation
+// resolves their shape and, for an unambiguous self receiver, a declared index.
+// Runtime still admits exact live receivers, stack space, quota and budget.
+struct InterpreterFieldSpanPlan {
+    enum class Kind : std::uint8_t { Load, Store };
+
+    struct Site {
+        const reflection::InstanceFieldLayout* layout = nullptr;
+        std::size_t fieldIndex = 0;
+        int receiver = 0;
+        Kind kind = Kind::Load;
+    };
+
+    core::pmr::Vector<int> entries{&core::defaultCpuMemoryResource()};
+    core::pmr::Vector<Site> sites{&core::defaultCpuMemoryResource()};
+
+    const Site* lookup(int pc) const noexcept
+    {
+        const auto index = entries[static_cast<std::size_t>(pc)];
+        return index >= 0 ? &sites[static_cast<std::size_t>(index)] : nullptr;
+    }
+};
+
 // A private deep snapshot is the validation boundary. A shared_ptr<const Program>
 // supplied by callers alone is insufficient: it may alias a mutable owner.
 class ARP_API ValidatedInterpreterProgram final {
@@ -355,6 +399,9 @@ public:
     const Program& program() const { return *program_; }
 
     const std::shared_ptr<const Program>& owner() const noexcept { return program_; }
+
+    std::shared_ptr<const reflection::InstanceFieldLayout> fieldLayout(
+        const core::pmr::String& className) const noexcept;
 
     bool ownsFunction(const Function* function) const noexcept
     {
@@ -395,6 +442,10 @@ public:
 
 private:
     friend class Vm;
+
+    const InterpreterConstructionPlan* constructionPlanOwned(
+        const Function* function) const noexcept;
+    const InterpreterFieldSpanPlan* fieldSpansOwned(const Function* function) const noexcept;
 
     // Only VM paths that already proved exact snapshot/function provenance
     // may borrow this metadata. Public callers retain the checked boundary.

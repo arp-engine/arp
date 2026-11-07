@@ -18,6 +18,15 @@ GameObject::~GameObject()
     reflectionObject_.invalidate_native_reference();
 }
 
+void GameObject::setActive(bool active)
+{
+    if (active_ != active) {
+        if (scene_)
+            scene_->invalidateRenderContexts();
+        active_ = active;
+    }
+}
+
 Transform GameObject::world_transform() const
 {
     return scene_ ? scene_->computeWorldTransform(id_) : transform().localTransform();
@@ -149,6 +158,8 @@ bool GameObject::removeComponent(ComponentId componentId)
         return false;
     if ((*found)->pendingDestroy())
         return true;
+    if (scene_)
+        scene_->invalidateRenderContexts();
     if (scene_ && scene_->dispatching_) {
         (*found)->pendingDestroy_ = true;
         return true;
@@ -194,6 +205,7 @@ Component& GameObject::attachComponent(arp::core::UniquePtr<Component> component
     const auto componentId = scene_->allocateComponentId();
     component->bind(componentId, id_, this);
     auto* attached = component.get();
+    scene_->invalidateRenderContexts();
     componentIds_.push_back(componentId);
     components_.push_back(std::move(component));
     return *attached;

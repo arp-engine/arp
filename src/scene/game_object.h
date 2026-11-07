@@ -50,7 +50,7 @@ public:
 
     bool active() const { return active_; }
 
-    void setActive(bool active) { active_ = active; }
+    void setActive(bool active);
 
     bool activeInHierarchy() const;
 

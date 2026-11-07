@@ -56,6 +56,11 @@ public:
 
     static bool read(const Value& value, ScriptScalar& out)
     {
+        // An exact instance carrier cannot be a numeric/native scalar. Avoid
+        // registering/querying unrelated reflection types on component checks.
+        // Selector misses retain all cv, module and native conversion paths.
+        if (exactValuePayload<arp::reflection::instance>(value) != nullptr)
+            return false;
         // These selectors prove actual owned storage without resolving native
         // controls or registering reflection metadata. A miss must retain the
         // original ordered type queries (including cv and module boundaries).

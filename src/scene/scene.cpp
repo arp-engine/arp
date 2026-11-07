@@ -130,6 +130,13 @@ Scene::Scene(arp::core::pmr::String name, SceneId sceneId)
     : Scene(std::move(name), sceneId, SceneExecutionMode::Runtime)
 {}
 
+void Scene::invalidateRenderContexts()
+{
+    if (renderContextIdentity_->revision_ == UINT64_MAX)
+        throw std::overflow_error("ARP-SCENE-RENDER-CONTEXT-EPOCH-EXHAUSTED");
+    ++renderContextIdentity_->revision_;
+}
+
 Scene::Scene(arp::core::pmr::String name, SceneId sceneId, SceneExecutionMode mode)
     : GameObject(GameObjectId::fromValue(1), std::move(name), this), sceneId_(sceneId),
       executionMode_(mode)
@@ -144,6 +151,7 @@ Scene::Scene(arp::core::pmr::String name, SceneId sceneId, SceneExecutionMode mo
 
 Scene::~Scene()
 {
+    invalidateRenderContexts();
     dispatching_ = true;
     const SceneUpdateContext context{};
     shuttingDown_ = true;
@@ -151,6 +159,7 @@ Scene::~Scene()
         object->pendingDestroy_ = true;
     flushDestroyed(context);
     while (!components_.empty()) {
+        invalidateRenderContexts();
         auto owned = std::move(components_.back());
         components_.pop_back();
         dispatchComponentDestruction(*owned, context);
@@ -173,6 +182,7 @@ GameObject& Scene::createObject(arp::core::pmr::String name)
     // Newly created script objects belong to the canonical Scene root by
     // default. Scripts may still reparent them explicitly; keeping the
     // default rooted makes an object immediately participate in traversal.
+    invalidateRenderContexts();
     result.setParentId(id_);
     appendChild(result.id());
     objectLookup_[objectId.value()] = &result;
@@ -270,6 +280,7 @@ SceneResult Scene::reparent(GameObjectId childId, GameObjectId parentId, std::si
 
     auto success = SceneResult::success();
     if (oldParentId == parentId && oldParent) {
+        invalidateRenderContexts();
         if (!oldParent->reorderChild(childId, childIndex))
             return SceneResult::failure(SceneDiagnosticCode::InvalidObjectId,
                 "Child is missing from its parent's sibling list.");
@@ -280,6 +291,7 @@ SceneResult Scene::reparent(GameObjectId childId, GameObjectId parentId, std::si
     if (!parent->prepareChildInsertion(childId, childIndex))
         return SceneResult::failure(SceneDiagnosticCode::InvalidChildIndex,
             "Child insertion index is outside the target sibling list.");
+    invalidateRenderContexts();
     if (oldParentId.valid() && oldParent)
         oldParent->removeChild(childId);
     child->setParentId(parentId);
@@ -551,6 +563,7 @@ SceneUpdateResult Scene::dispatchPhysicsEvents(
 
 void Scene::markDestroyed(GameObject& object)
 {
+    invalidateRenderContexts();
     object.pendingDestroy_ = true;
     for (const auto child : object.childIds())
         if (auto* value = findObject(child))
@@ -593,6 +606,7 @@ void Scene::flushDestroyed(const SceneUpdateContext& context)
                 continue;
             if (auto* parent = findObject(object->parentId()))
                 parent->removeChild(object->id());
+            invalidateRenderContexts();
             auto owned = std::move(objects_[i]);
             objects_.erase(objects_.begin() + i);
             objectLookup_.erase(owned->id().value());
@@ -611,6 +625,7 @@ void Scene::flushDestroyed(const SceneUpdateContext& context)
                 if (!object.components_[i]->pendingDestroy())
                     continue;
                 const auto id = object.components_[i]->id();
+                invalidateRenderContexts();
                 auto owned = std::move(object.components_[i]);
                 object.components_.erase(object.components_.begin() + i);
                 object.componentIds_.erase(

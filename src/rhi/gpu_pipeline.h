@@ -1050,6 +1050,28 @@ class GpuDevice;
 ///
 /// Fence-gated eviction: entries not hit for maxUnusedFrames frames are
 /// evicted when evictStale is called with the current frame serial.
+class ARP_API RenderPipelineLease {
+public:
+    RenderPipelineLease() = default;
+
+    RenderPipelineLease(std::nullptr_t) {}
+
+    RenderPipeline* get() const noexcept;
+
+    RenderPipeline* operator->() const noexcept { return get(); }
+
+    RenderPipeline& operator*() const noexcept { return *get(); }
+
+    explicit operator bool() const noexcept { return get() != nullptr; }
+
+    void reset() noexcept { state_.reset(); }
+
+private:
+    friend class PipelineCache;
+    struct State;
+    core::SharedPtr<State> state_;
+};
+
 class ARP_API PipelineCache {
 public:
     /// Construct with an explicit CPU memory resource. When omitted, the
@@ -1074,6 +1096,12 @@ public:
 
     /// Acquire a pipeline layout. Same semantics.
     PipelineLayout* acquirePipelineLayout(const PipelineLayoutDesc& desc);
+
+    // Cold, externally serialized preparation. Leases own frozen definitions
+    // and layouts across stale eviction/cache teardown. Hashes only select
+    // candidates; complete descriptor identity is checked before every hit.
+    RenderPipelineLease acquireRenderPipelineLease(const RenderPipelineDesc& desc);
+    core::SharedPtr<PipelineLayout> acquireSharedPipelineLayout(const PipelineLayoutDesc& desc);
 
     /// Mark the current frame as complete. All entries hit during this frame
     /// have their lastUsedFrameSerial updated.
@@ -1131,6 +1159,21 @@ private:
     core::pmr::UnorderedMap<std::uint64_t, RenderEntry> renderCache_;
     core::pmr::UnorderedMap<std::uint64_t, ComputeEntry> computeCache_;
     core::pmr::UnorderedMap<std::uint64_t, LayoutEntry> layoutCache_;
+
+    struct SharedRenderEntry {
+        std::uint64_t key = 0;
+        core::SharedPtr<RenderPipelineLease::State> state;
+        std::uint64_t lastUsedFrameSerial = 0;
+    };
+
+    struct SharedLayoutEntry {
+        std::uint64_t key = 0;
+        core::SharedPtr<PipelineLayout> layout;
+        std::uint64_t lastUsedFrameSerial = 0;
+    };
+
+    core::pmr::Vector<SharedRenderEntry> sharedRenderCache_;
+    core::pmr::Vector<SharedLayoutEntry> sharedLayoutCache_;
     std::uint64_t currentFrameSerial_ = 0;
     std::uint32_t renderHitCount_ = 0;
     std::uint32_t renderMissCount_ = 0;

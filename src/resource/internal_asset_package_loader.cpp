@@ -101,6 +101,7 @@ public:
         core::io::FileReadRequest read;
         read.contractVersion = 1;
         read.path = intent.path;
+        read.range = intent.range;
         read.pathScope = intent.pathScope;
         read.mount = intent.mount;
         read.expectedVersion = intent.expectedVersion;
@@ -191,6 +192,8 @@ public:
             const auto& intent = job->reads[job->readIndex];
             ResourceSourceBuffer source;
             source.path = intent.path;
+            source.range = intent.range;
+            source.contentVersion = intent.contentVersion;
             source.role = intent.role;
             source.pathScope = intent.pathScope;
             source.mount = intent.mount;

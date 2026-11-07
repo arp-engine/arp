@@ -4,6 +4,13 @@
 
 namespace arp::rhi_metal {
 
+MetalRhiPipelineArchiveReport describeMetalRhiPipelineArchive()
+{
+    MetalRhiPipelineArchiveReport report;
+    report.status = "Unavailable:NativeRuntimeAbsent";
+    return report;
+}
+
 std::shared_ptr<void> metalRhiNativeDeviceIdentity()
 {
     return {};

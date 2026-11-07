@@ -50,7 +50,7 @@ public:
     Transform world_transform() const;
     AFUNC()
 
-    void set_local_transform(const Transform& transform) { localTransform_ = transform; }
+    void set_local_transform(const Transform& transform) { setLocalTransform(transform); }
     AFUNC()
 
     void set_local_translation(arp::core::Vec3 translation) { setLocalTranslation(translation); }
@@ -99,26 +99,34 @@ public:
         if (!finite(properties.position) || !finite(properties.rotation)
             || !finite(properties.scale))
             return false;
-        localTransform_.translation = properties.position;
-        localTransform_.rotation = arp::core::Quat::fromYawPitchRoll(
-            properties.rotation.y, properties.rotation.x, properties.rotation.z);
-        localTransform_.scale = properties.scale;
+        setLocalTransform({properties.position,
+            properties.scale,
+            arp::core::Quat::fromYawPitchRoll(
+                properties.rotation.y, properties.rotation.x, properties.rotation.z)});
         return true;
     }
 
-    void setLocalTransform(const Transform& transform) { localTransform_ = transform; }
+    void setLocalTransform(const Transform& transform)
+    {
+        notifyRenderContextChanged();
+        localTransform_ = transform;
+    }
 
     void setLocalTranslation(arp::core::Vec3 translation)
     {
+        notifyRenderContextChanged();
         localTransform_.translation = translation;
     }
 
-    void setLocalRotation(arp::core::Quat rotation) { localTransform_.rotation = rotation; }
+    void setLocalRotation(arp::core::Quat rotation)
+    {
+        notifyRenderContextChanged();
+        localTransform_.rotation = rotation;
+    }
 
     void setLocalYawPitch(float yawDegrees, float pitchDegrees)
     {
-        localTransform_.rotation =
-            arp::core::Quat::fromYawPitchRoll(yawDegrees, pitchDegrees, 0.0f);
+        setLocalRotation(arp::core::Quat::fromYawPitchRoll(yawDegrees, pitchDegrees, 0.0f));
     }
 
     void setWorldTransformForTraversal(const Transform& transform) { worldTransform_ = transform; }

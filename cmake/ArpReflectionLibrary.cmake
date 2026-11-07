@@ -12,6 +12,8 @@ function(arp_add_reflection_library target core_target yaml_target)
         "${reflection_root}/object.cpp"
         "${reflection_root}/property.cpp"
         "${reflection_root}/serialization.cpp"
+        "${reflection_root}/serialization_yaml.cpp"
+        "${reflection_root}/serialization_binary.cpp"
         "${reflection_root}/type.cpp"
         "${reflection_root}/variant.cpp"
     )

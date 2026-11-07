@@ -435,6 +435,9 @@ private:
     arp::core::pmr::Vector<UiRuntimeNodeBinding> bindings_;
 };
 
+ARP_API UiArpuiRuntimeLoadResult instantiateUiDocument(
+    UiDocument, const UiControlFactoryRegistry* = nullptr, size_t maxWidgetCount = 0);
+
 class UiArpuiRuntimeLoader final {
 public:
     UiArpuiRuntimeLoadResult load(const UiArpuiRuntimeLoadDesc& desc) const;
@@ -562,6 +565,9 @@ public:
     const arp::core::pmr::String& themeId() const { return themeId_; }
 
     void addToken(UiThemeToken token);
+
+    const auto& tokens() const noexcept { return tokens_; }
+
     const UiThemeToken* findToken(const arp::core::pmr::String& tokenId) const;
     void appendContentFingerprint(core::StableHash64& hash) const noexcept;
 

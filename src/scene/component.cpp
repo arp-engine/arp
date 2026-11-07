@@ -1,6 +1,7 @@
 #include "scene/component.h"
 
 #include "reflection/db.h"
+#include "scene/scene.h"
 
 namespace arp::scene {
 
@@ -10,6 +11,20 @@ Component::Component() : reflectionObject_(arp::reflection::object::native_refer
 Component::~Component()
 {
     reflectionObject_.invalidate_native_reference();
+}
+
+void Component::notifyRenderContextChanged()
+{
+    if (owner_ && owner_->scene())
+        owner_->scene()->invalidateRenderContexts();
+}
+
+void Component::setEnabled(bool enabled)
+{
+    if (enabled_ != enabled) {
+        notifyRenderContextChanged();
+        enabled_ = enabled;
+    }
 }
 
 void Component::bindNativeReflectionObject()

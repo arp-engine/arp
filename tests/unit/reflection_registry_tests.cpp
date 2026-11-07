@@ -3,12 +3,14 @@
 #include "reflection/registration_type_binding.h"
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 // Reflection contract tests must keep their checks active in Release builds.
@@ -820,10 +822,81 @@ void specialMemberReplacementReleasesOldBindings()
     assert(probe.get_field("__new__").cast<function&>().call().cast<int>() == 22);
 }
 
+void classLookupCachePreservesNamePrecedence()
+{
+    db local;
+    auto* target = local.register_class("lkTarget", instance_t, 0, 0, nullptr);
+    assert(local.find_class("lkTarget") == target);
+    assert(local.find_class("lkMissing") == nullptr);
+    auto* later = local.register_class("lkMissing", instance_t, 0, 0, nullptr);
+    assert(local.find_class("lkMissing") == later);
+
+    auto* alias = local.register_class("lkB", instance_t, 0, 0, nullptr);
+    alias->set_name("lkTarget");
+    // A non-explicit renamed class cannot override an existing storage key.
+    assert(local.find_class("lkTarget") == target);
+    local.markExplicitClassDeclaration(alias);
+    assert(local.find_class("lkTarget") == alias);
+    assert(local.findNativeClass("lkTarget") == target);
+    alias->set_name("lkOther");
+    assert(local.find_class("lkTarget") == target);
+    assert(local.find_class("lkOther") == alias);
+    assert(local.find_class("lkB") == alias);
+
+    auto* earlier = local.register_class("lkA", instance_t, 0, 0, nullptr);
+    earlier->set_name("lkOther");
+    local.markExplicitClassDeclaration(earlier);
+    // Duplicate public aliases retain the original storage-key order.
+    assert(local.find_class("lkOther") == earlier);
+    earlier->set_name("lkTarget");
+    assert(local.find_class("lkTarget") == earlier);
+    local.markExplicitClassDeclaration(target);
+    // An explicitly declared exact key takes precedence over a foreign alias.
+    assert(local.find_class("lkTarget") == target);
+    target->set_name("lkRenamed");
+    assert(local.find_class("lkTarget") == earlier);
+    assert(local.find_class("lkRenamed") == target);
+    earlier->set_name("lkElse");
+    assert(local.find_class("lkTarget") == target);
+}
+
 } // namespace
+
+void verifiesRegistrationThreadIsolation()
+{
+    using namespace arp::reflection;
+    RegistrationTransaction workerTransaction("thread-isolation-worker");
+    RegistrationTransaction mainTransaction("thread-isolation-main");
+    std::atomic<bool> entered{false}, release{false};
+    assert(detail::currentRegistrationTransaction() == nullptr);
+    std::thread worker([&] {
+        {
+            RegistrationScope scope(workerTransaction);
+            assert(detail::currentRegistrationTransaction() == &workerTransaction);
+            entered.store(true, std::memory_order_release);
+            while (!release.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            assert(detail::currentRegistrationTransaction() == &workerTransaction);
+        }
+        assert(detail::currentRegistrationTransaction() == nullptr);
+    });
+    while (!entered.load(std::memory_order_acquire))
+        std::this_thread::yield();
+    assert(detail::currentRegistrationTransaction() == nullptr);
+    {
+        RegistrationScope scope(mainTransaction);
+        assert(detail::currentRegistrationTransaction() == &mainTransaction);
+    }
+    assert(detail::currentRegistrationTransaction() == nullptr);
+    release.store(true, std::memory_order_release);
+    worker.join();
+    assert(detail::currentRegistrationTransaction() == nullptr);
+}
 
 int main()
 {
+    verifiesRegistrationThreadIsolation();
+    classLookupCachePreservesNamePrecedence();
     specialMemberReplacementReleasesOldBindings();
     readsEnumValuesThroughTypeErasedReflection();
     exactPayloadStorageProof();

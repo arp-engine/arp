@@ -9,7 +9,7 @@
 
 namespace arp::reflection {
 namespace {
-using Node = core::YamlContract::Node;
+using Node = SerializationValue;
 
 class PathScope final {
 public:
@@ -34,6 +34,13 @@ bool selected(const property& prop, SerializationProfile profile)
 
 template <class T> bool integer(const Node& node, object& value)
 {
+    if (node.is_unsigned()) {
+        const auto number = node.get_value<std::uint64_t>();
+        if (number > static_cast<std::uint64_t>((std::numeric_limits<T>::max)()))
+            return false;
+        value = object(static_cast<T>(number));
+        return true;
+    }
     if (!node.is_integer())
         return false;
     const auto number = node.get_value<Node::integer_type>();
@@ -111,7 +118,11 @@ bool SerializationArchive::writeValue(const object& value, Node& node)
 bool SerializationArchive::readValue(const Node& node, const typeinfo* type, object& value)
 {
     try {
-        return read(node, type, value, 0);
+        object candidate;
+        if (!read(node, type, candidate, 0))
+            return false;
+        value = std::move(candidate);
+        return true;
     } catch (const std::exception& error) {
         return fail(error.what());
     }
@@ -134,8 +145,7 @@ bool SerializationArchive::fields(
         for (const auto& entry : input->get_value_ref<const Node::mapping_type&>()) {
             if (!entry.first.is_string())
                 return fail("field name must be a string");
-            const auto name =
-                core::toPmrString(entry.first.get_value_ref<const Node::string_type&>());
+            const auto name = entry.first.get_value_ref<const Node::string_type&>();
             const auto it = properties.find(name);
             PathScope path(path_, name);
             if (it == properties.end()
@@ -158,7 +168,7 @@ bool SerializationArchive::fields(
         if (!selected(prop, options_.profile))
             continue;
         PathScope path(path_, entry.first);
-        const std::string name = core::toStdString(entry.first);
+        const auto& name = entry.first;
         if (input && !input->contains(name)) {
             if (options_.profile == SerializationProfile::Authoring)
                 return fail("missing required reflected field");
@@ -173,8 +183,8 @@ bool SerializationArchive::fields(
                 return fail("declared reference requires serialization context");
             core::pmr::String error{&core::defaultCpuMemoryResource()};
             const bool ok = input
-                ? context_->readReference(prop, (*input)[name], fieldValue, error)
-                : context_->writeReference(prop, prop.get_value(value), field, error);
+                ? context_->readReferenceValue(prop, (*input)[name], fieldValue, error)
+                : context_->writeReferenceValue(prop, prop.get_value(value), field, error);
             if (!ok)
                 return fail(error.empty() ? NameView("invalid reference") : NameView(error));
         } else if (prop.has_indirect_value()) {
@@ -267,7 +277,7 @@ bool SerializationArchive::write(const object& value, Node& node, std::size_t de
     }
 #define ARP_WRITE_INTEGER(T)                                                                       \
     if (value.is<T>()) {                                                                           \
-        node = static_cast<Node::integer_type>(value.cast<T>());                                   \
+        node = value.cast<T>();                                                                    \
         return true;                                                                               \
     }
     ARP_WRITE_INTEGER(std::int8_t)
@@ -279,7 +289,7 @@ bool SerializationArchive::write(const object& value, Node& node, std::size_t de
     ARP_WRITE_INTEGER(std::uint32_t)
 #undef ARP_WRITE_INTEGER
     if (value.is<std::uint64_t>()) {
-        node = core::toStdString(core::formatUnsigned(value.cast<std::uint64_t>()));
+        node = value.cast<std::uint64_t>();
         return true;
     }
     if (type->is_enum()) {
@@ -295,7 +305,7 @@ bool SerializationArchive::write(const object& value, Node& node, std::size_t de
         const double number = value.is<float>() ? value.cast<float>() : value.cast<double>();
         if (!std::isfinite(number))
             return fail("number must be finite");
-        node = number;
+        node = value.is<float>() ? Node(value.cast<float>()) : Node(number);
         return true;
     }
     if (value.is<core::pmr::String>()) {
@@ -331,7 +341,7 @@ bool SerializationArchive::readObject(
         return fail("expected typed object mapping");
     if (!node.contains("type") || !node["type"].is_string())
         return fail("missing required type string");
-    const auto name = core::toPmrString(node["type"].get_value_ref<const Node::string_type&>());
+    const auto name = node["type"].get_value_ref<const Node::string_type&>();
     const auto* cls = db::instance().find_class(name);
     if (!cls)
         return fail("unregistered type");
@@ -356,10 +366,18 @@ bool SerializationArchive::read(
     if (!type) {
         if (node.is_boolean())
             type = type_of<bool>();
-        else if (node.is_integer())
-            type = type_of<int>();
-        else if (node.is_float_number())
-            type = type_of<double>();
+        else if (node.is_integer()) {
+            type = node.width() == 1 ? type_of<std::int8_t>()
+                : node.width() == 2  ? type_of<std::int16_t>()
+                : node.width() == 8  ? type_of<std::int64_t>()
+                                     : type_of<int>();
+        } else if (node.is_unsigned()) {
+            type = node.width() == 1 ? type_of<std::uint8_t>()
+                : node.width() == 2  ? type_of<std::uint16_t>()
+                : node.width() == 4  ? type_of<std::uint32_t>()
+                                     : type_of<std::uint64_t>();
+        } else if (node.is_float_number())
+            type = node.width() == 4 ? type_of<float>() : type_of<double>();
         else if (node.is_string())
             type = type_of<core::pmr::String>();
         else if (node.is_sequence())
@@ -420,6 +438,10 @@ bool SerializationArchive::read(
     ARP_READ_INTEGER(std::uint32_t)
 #undef ARP_READ_INTEGER
     if (type->is<std::uint64_t>()) {
+        if (node.is_unsigned()) {
+            value = object(node.get_value<std::uint64_t>());
+            return true;
+        }
         if (!node.is_string())
             return fail("uint64 requires canonical decimal string");
         const auto& text = node.get_value_ref<const Node::string_type&>();
@@ -452,7 +474,7 @@ bool SerializationArchive::read(
     if (type->is<core::pmr::String>()) {
         if (!node.is_string())
             return fail("expected string");
-        value = object(core::toPmrString(node.get_value_ref<const Node::string_type&>()));
+        value = object(node.get_value_ref<const Node::string_type&>());
         return true;
     }
     if (type->is<hlist>()) {
@@ -519,8 +541,9 @@ bool SerializationArchive::described(const SerializationDescriptor& descriptor,
         if (!context_)
             return fail("reference requires serialization context");
         core::pmr::String diagnostic{&core::defaultCpuMemoryResource()};
-        const bool ok = input ? context_->readReference(descriptor, *input, value, diagnostic)
-                              : context_->writeReference(descriptor, value, output, diagnostic);
+        const bool ok = input
+            ? context_->readReferenceValue(descriptor, *input, value, diagnostic)
+            : context_->writeReferenceValue(descriptor, value, output, diagnostic);
         return ok
             || fail(diagnostic.empty() ? NameView("invalid reference") : NameView(diagnostic));
     }
@@ -591,46 +614,4 @@ bool SerializationArchive::described(const SerializationDescriptor& descriptor,
     return true;
 }
 
-ReflectionYamlResult serialize_to_yaml(const object& value, SerializationOptions options)
-{
-    ReflectionYamlResult result;
-    SerializationArchive archive(options);
-    Node root;
-    result.success = archive.writeValue(value, root);
-    if (result.success) {
-        try {
-            result.yaml = core::YamlContract::serialize(root);
-        } catch (const std::exception& error) {
-            result.success = false;
-            result.diagnostics = error.what();
-        }
-    } else
-        result.diagnostics = archive.diagnostics();
-    return result;
-}
-
-ReflectionObjectResult deserialize_from_yaml(NameView text, SerializationOptions options)
-{
-    ReflectionObjectResult result;
-    SerializationArchive archive(options);
-    try {
-        const auto root = Node::deserialize(text.begin(), text.end());
-        // The text API is a typed object document; embedded values use archive.
-        if (!root.is_mapping()) {
-            result.diagnostics = "YAML root must be a mapping";
-            return result;
-        }
-        if (!root.contains("type")) {
-            result.diagnostics = "missing required type string";
-            return result;
-        }
-        result.success = archive.readValue(root, nullptr, result.value);
-        result.diagnostics = archive.diagnostics();
-        if (result.success)
-            result.ownedObjects = archive.releaseOwnedObjects();
-    } catch (const std::exception& error) {
-        result.diagnostics = error.what();
-    }
-    return result;
-}
 } // namespace arp::reflection
