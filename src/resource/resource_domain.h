@@ -161,7 +161,15 @@ public:
     // Does not change worker count, resource identity or the shared runtime's
     // configured default; zero is invalid.
     ResourceDomainResult dispatch(std::size_t maxCallbacks);
+    // Cold loading pump: drains completions and waits on producer notifications
+    // until the time slice ends or all acquisitions complete. Callback execution
+    // itself is not preempted. Rendering continues on its independent clock.
+    ResourceDomainResult dispatchFor(std::chrono::steady_clock::duration, std::size_t maxCallbacks);
     ResourceDomainResult collect();
+    // Derived CPU preparation shares this domain's bounded worker and completion
+    // queues. The caller owns task data until completion (including cancellation).
+    // Does not create an asset or bypass graph acquisition/publication semantics.
+    core::runtime::WorkSubmitResult submitPreparation(core::runtime::WorkItem);
     ResourceDomainResult close();
     ResourceDomainTelemetry telemetry() const;
     ResourceState stateOf(NameView) const;

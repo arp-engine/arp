@@ -2269,8 +2269,45 @@ private:
         const core::pmr::String name = named ? expr->left->name : core::pmr::String{};
         auto classIt = classFields_.find(name.c_str());
         auto fnIt = functionIndex_.find(name.c_str());
-        for (const auto& arg : expr->args)
-            compileExpr(function, arg);
+        const TypedIrSignature* argumentSignature = nullptr;
+        std::size_t parameterOffset = 0;
+        if (classIt != classFields_.end()) {
+            const auto constructor = constructors_.find(name.c_str());
+            if (constructor != constructors_.end()) {
+                argumentSignature =
+                    &functions_[static_cast<std::size_t>(constructor->second)]->ir.signature;
+                parameterOffset = 1;
+            }
+        } else if (fnIt != functionIndex_.end()
+            && functions_[static_cast<std::size_t>(fnIt->second)]->ir.captureCount == 0) {
+            argumentSignature = &functions_[static_cast<std::size_t>(fnIt->second)]->ir.signature;
+        }
+        // A conversion consumes the stack top. Emit it while its own argument
+        // is there, before evaluating the next argument or the callable.
+        for (std::size_t index = 0; index < expr->args.size(); ++index) {
+            const auto& argument = expr->args[index];
+            compileExpr(function, argument);
+            if (argumentSignature != nullptr) {
+                const auto parameter = index + parameterOffset;
+                if (parameter < argumentSignature->parameters.size())
+                    emitConversion(function,
+                        argument->inferredType,
+                        argumentSignature->parameters[parameter],
+                        expr->pos);
+                else if (parameterOffset == 0 && argumentSignature->variadic)
+                    emitConversion(function,
+                        argument->inferredType,
+                        argumentSignature->variadicElement,
+                        expr->pos);
+            } else if (fnIt == functionIndex_.end() && expr->left->inferredType != nullptr
+                && expr->left->inferredType->kind == TypeKind::Func
+                && index < expr->left->inferredType->params.size()) {
+                emitConversion(function,
+                    argument->inferredType,
+                    expr->left->inferredType->params[index],
+                    expr->pos);
+            }
+        }
         const int count = static_cast<int>(expr->args.size());
         if (!named && expr->left->kind == ExprKind::Field && expr->left->name == "append"
             && count == 1 && expr->left->left && expr->left->left->inferredType
@@ -2291,32 +2328,10 @@ private:
             clearAllCallableContainerBindings();
             return;
         }
-        if (fnIt == functionIndex_.end() && expr->left->inferredType != nullptr
-            && expr->left->inferredType->kind == TypeKind::Func) {
-            const auto& parameters = expr->left->inferredType->params;
-            for (int index = 0; index < count && index < static_cast<int>(parameters.size());
-                ++index) {
-                emitConversion(function,
-                    expr->args[static_cast<std::size_t>(index)]->inferredType,
-                    parameters[static_cast<std::size_t>(index)],
-                    expr->pos);
-            }
-        }
         const auto invalidateCallableLists = [this]() {
             clearAllCallableContainerBindings();
         };
         if (classIt != classFields_.end()) {
-            const auto constructor = constructors_.find(name.c_str());
-            if (constructor != constructors_.end()) {
-                const auto& signature =
-                    functions_[static_cast<std::size_t>(constructor->second)]->ir.signature;
-                for (int i = 0; i < count && i + 1 < static_cast<int>(signature.parameters.size());
-                    ++i)
-                    emitConversion(function,
-                        expr->args[static_cast<std::size_t>(i)]->inferredType,
-                        signature.parameters[static_cast<std::size_t>(i + 1)],
-                        expr->pos);
-            }
             function.pop(count);
             emit(function, TypedIrOpcode::MakeInstance, 0, count, 0, name, expr->pos);
             function.push();
@@ -2421,20 +2436,6 @@ private:
         }
         if (fnIt != functionIndex_.end()
             && functions_[static_cast<std::size_t>(fnIt->second)]->ir.captureCount == 0) {
-            const auto& signature =
-                functions_[static_cast<std::size_t>(fnIt->second)]->ir.signature;
-            for (int i = 0; i < count; ++i) {
-                if (i < static_cast<int>(signature.parameters.size()))
-                    emitConversion(function,
-                        expr->args[static_cast<std::size_t>(i)]->inferredType,
-                        signature.parameters[static_cast<std::size_t>(i)],
-                        expr->pos);
-                else if (signature.variadic)
-                    emitConversion(function,
-                        expr->args[static_cast<std::size_t>(i)]->inferredType,
-                        signature.variadicElement,
-                        expr->pos);
-            }
             function.pop(count);
             emit(function, TypedIrOpcode::Call, fnIt->second, count, 0, {}, expr->pos);
             function.push();

@@ -26,6 +26,11 @@ struct ScriptAotToolchain {
 
 class ScriptToolRunner final {
 public:
+    void setInvocationObserver(std::shared_ptr<scriptvm::ScriptInvocationObserver> observer)
+    {
+        invocationObserver_ = std::move(observer);
+    }
+
     ScriptToolRunner(std::filesystem::path projectRoot,
         std::filesystem::path pluginRoot,
         std::filesystem::path cacheRoot,
@@ -58,6 +63,7 @@ private:
     std::filesystem::path hostLibrary_;
     std::filesystem::path sourceModuleRoot_;
     ScriptAotToolchain aotToolchain_;
+    std::shared_ptr<scriptvm::ScriptInvocationObserver> invocationObserver_;
 #if !defined(ARP_SCRIPT_AOT_ONLY_TOOL)
     core::UniquePtr<scriptvm::CppPluginImporter> pluginImporter_;
 #endif

@@ -357,6 +357,10 @@ ScriptRunResult ScriptToolRunner::runPackageFunction(const std::filesystem::path
     const core::pmr::Vector<scriptvm::Value>& args)
 {
     ScriptRunResult result;
+    if (invocationObserver_) {
+        result.diagnostics = "SCRIPT-INVOCATION-AUDIT-AOT-UNSUPPORTED";
+        return result;
+    }
     if (moduleId == nullptr || moduleId[0] == '\0' || functionName == nullptr
         || functionName[0] == '\0') {
         result.diagnostics = "AotOnly package module/function identity is incomplete";
@@ -435,6 +439,10 @@ ScriptRunResult ScriptToolRunner::runFileFunction(const std::filesystem::path& s
 {
     ScriptRunResult result;
     const auto filename = scriptPath.filename().generic_string();
+    if (invocationObserver_) {
+        result.diagnostics = "SCRIPT-INVOCATION-AUDIT-AOT-UNSUPPORTED";
+        return result;
+    }
     if (filename != "unity_import.arp" && filename != "script_unity_import.arp") {
         result.diagnostics = "AotOnly tool script is not declared by the unity-import package";
         return result;
@@ -851,12 +859,45 @@ ScriptRunResult ScriptToolRunner::runPreparedFunction(const ToolScriptSources& s
     const auto& source = *sources.entry()->source();
     const auto& sourceName = sources.entry()->displayName;
 
+    std::shared_ptr<const scriptvm::ScriptInvocationAudit> audit;
+    if (invocationObserver_) {
+        auto configured = core::makeShared<scriptvm::ScriptInvocationAudit>();
+        configured->observer = invocationObserver_;
+        configured->run = core::makeShared<scriptvm::ScriptExecutionRun>();
+        audit = std::move(configured);
+    }
+    const auto observeProgram = [audit](const scriptvm::ValidatedInterpreterProgram& program,
+                                    const core::pmr::String& module,
+                                    bool entry,
+                                    core::pmr::String& diagnostic) {
+        if (!audit)
+            return true;
+        scriptvm::VmError error;
+        try {
+            if (!audit->observer->linkedProgram({audit->run, program.owner(), module, entry}, error)
+                || error.code != scriptvm::ScriptDiagnosticCode::None) {
+                diagnostic =
+                    error.message.empty() ? "SCRIPT-LINKED-PROGRAM-REJECTED" : error.message;
+                return false;
+            }
+        } catch (const std::bad_alloc&) {
+            throw;
+        } catch (const std::exception& exception) {
+            diagnostic = exception.what();
+            return false;
+        } catch (...) {
+            diagnostic = "SCRIPT-LINKED-PROGRAM-OBSERVER-THREW";
+            return false;
+        }
+        return true;
+    };
+
     auto& pluginImporter = *pluginImporter_;
     scriptvm::ModuleRegistry modules;
     modules.setCppPluginImporter(&pluginImporter);
     core::pmr::String sourceModuleDiagnostics{&core::defaultCpuMemoryResource()};
     auto sourceResolver =
-        [&sources, &modules, &sourceModuleDiagnostics, &pluginImporter](
+        [&sources, &modules, &sourceModuleDiagnostics, &pluginImporter, audit, observeProgram](
             const core::pmr::String& moduleName) -> std::shared_ptr<scriptvm::ModuleExports> {
         sourceModuleDiagnostics.clear();
         const auto fail = [&](const char* message) -> std::shared_ptr<scriptvm::ModuleExports> {
@@ -938,6 +979,8 @@ ScriptRunResult ScriptToolRunner::runPreparedFunction(const ToolScriptSources& s
             sourceModuleDiagnostics = diagnosticText(validation.diagnostic());
             return nullptr;
         }
+        if (!observeProgram(lifetime->program, moduleName, false, sourceModuleDiagnostics))
+            return nullptr;
         auto exports = core::makeShared<scriptvm::ModuleExports>();
         exports->moduleVersion = 1u;
         exports->exportContractHash = compiled.typedIr.fingerprint;
@@ -978,10 +1021,10 @@ ScriptRunResult ScriptToolRunner::runPreparedFunction(const ToolScriptSources& s
             const auto capturedIndex = index;
             scriptvm::ModuleRegistry* registry = &modules;
             scriptvm::HostFn function =
-                [lifetime, capturedIndex, registry](
+                [lifetime, capturedIndex, registry, audit](
                     const core::pmr::Vector<scriptvm::Value>& args) -> scriptvm::Value {
                 const auto evaluated =
-                    scriptvm::runFunction(lifetime->program, capturedIndex, args, registry);
+                    scriptvm::runFunction(lifetime->program, capturedIndex, args, registry, audit);
                 if (!evaluated.ok()) {
                     const auto diagnostic = diagnosticText(evaluated.error);
                     throw scriptvm::ScriptHostException(
@@ -1064,12 +1107,15 @@ ScriptRunResult ScriptToolRunner::runPreparedFunction(const ToolScriptSources& s
         result.diagnostics = diagnosticText(validation.diagnostic());
         return result;
     }
+    if (!observeProgram(program, sourceName, true, result.diagnostics))
+        return result;
     scriptvm::EvalResult evaluated;
     try {
         evaluated = scriptvm::runFunctionByName(program,
             core::pmr::String(functionName, &core::defaultCpuMemoryResource()),
             args,
-            &modules);
+            &modules,
+            audit);
     } catch (const std::exception& error) {
         result.diagnostics = error.what();
         return result;

@@ -55,4 +55,16 @@ ARP_API EvalResult runFunctionByName(const ValidatedInterpreterProgram& program,
     const arp::core::pmr::Vector<Value>& args,
     ModuleRegistry* moduleRegistry = nullptr);
 
+// Explicit opt-in; legacy overloads preserve their ABI and execution path.
+ARP_API EvalResult runFunction(const ValidatedInterpreterProgram& program,
+    int funcIndex,
+    const core::pmr::Vector<Value>& args,
+    ModuleRegistry* moduleRegistry,
+    std::shared_ptr<const ScriptInvocationAudit> audit);
+ARP_API EvalResult runFunctionByName(const ValidatedInterpreterProgram& program,
+    core::pmr::String name,
+    const core::pmr::Vector<Value>& args,
+    ModuleRegistry* moduleRegistry,
+    std::shared_ptr<const ScriptInvocationAudit> audit);
+
 } // namespace arp::scriptvm

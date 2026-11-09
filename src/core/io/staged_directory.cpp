@@ -5,6 +5,7 @@
 
 #include <cerrno>
 #include <system_error>
+#include <thread>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -77,7 +78,7 @@ bool StagedDirectory::begin(const std::filesystem::path& destination)
     return true;
 }
 
-bool StagedDirectory::publish()
+bool StagedDirectory::publish(std::chrono::milliseconds lockWait)
 {
     if (!owned_) {
         diagnostic_ = "ARP-DIRECTORY-STAGING-INACTIVE";
@@ -92,9 +93,20 @@ bool StagedDirectory::publish()
     bool published = false;
     std::error_code nativeError;
 #ifdef _WIN32
-    published = MoveFileW(staging_.c_str(), destination_.c_str()) != 0;
-    if (!published)
-        nativeError = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+    const auto deadline = std::chrono::steady_clock::now() + lockWait;
+    do {
+        published = MoveFileW(staging_.c_str(), destination_.c_str()) != 0;
+        if (published)
+            break;
+        const auto code = GetLastError();
+        nativeError = std::error_code(static_cast<int>(code), std::system_category());
+        if ((code != ERROR_ACCESS_DENIED && code != ERROR_SHARING_VIOLATION
+                && code != ERROR_LOCK_VIOLATION)
+            || !absent(destination_) || std::chrono::steady_clock::now() >= deadline)
+            break;
+        std::this_thread::sleep_until(
+            std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(10)));
+    } while (true);
 #elif defined(__linux__) && defined(SYS_renameat2)
     published = syscall(SYS_renameat2,
                     AT_FDCWD,
@@ -110,6 +122,7 @@ bool StagedDirectory::publish()
     if (!published)
         nativeError = std::error_code(errno, std::generic_category());
 #else
+    (void)lockWait;
     diagnostic_ = "ARP-DIRECTORY-EXCLUSIVE-PUBLISH-UNSUPPORTED";
     return false;
 #endif

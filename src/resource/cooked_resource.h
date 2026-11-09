@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <type_traits>
 
 namespace arp::resource {
 using CookedBytes = core::pmr::Vector<std::uint8_t>;
@@ -64,6 +65,18 @@ public:
         const ResourceBase&, reflection::SerializationOptions) const = 0;
     virtual core::UniquePtr<ResourceBase> descriptor(
         core::SharedPtr<const CookedResourceSpec>) const = 0;
+
+    // Called while planning (which may run on a worker). The repeatable factory
+    // owns validated metadata; reflected codecs clone typed state without parsing
+    // again during owner registration or a later load attempt.
+    virtual ResourceDescriptorFactory prepareDescriptorFactory(
+        core::SharedPtr<const CookedResourceSpec> spec) const
+    {
+        return [spec]() {
+            return spec->codec->descriptor(spec);
+        };
+    }
+
     virtual CookedBytes cookPayload(
         const ResourceBase&, const std::filesystem::path&, const CookedResourceBudget&) const;
     virtual CookedResourceResult preparePayload(
@@ -121,6 +134,15 @@ public:
         for (const auto& d : spec_->entry.dependencies)
             deps.push_back(d.binding);
         this->configureMetadata(spec_->entry.reference, std::move(deps));
+    }
+
+    CookedResourceCandidate(core::SharedPtr<const CookedResourceSpec> spec, const T& metadata)
+        : spec_(std::move(spec))
+    {
+        if (metadata.reference().id != spec_->entry.reference.id
+            || metadata.reference().type != spec_->entry.reference.type)
+            throw std::runtime_error("COOKED-PREPARED-DESCRIPTOR-IDENTITY");
+        static_cast<T&>(*this) = metadata;
     }
 
     bool collectFileReadIntents(ResourceManager&,
@@ -186,6 +208,24 @@ public:
     {
         return core::makeUnique<CookedResourceCandidate<T>>(std::move(spec));
     }
+
+    ResourceDescriptorFactory prepareDescriptorFactory(
+        core::SharedPtr<const CookedResourceSpec> spec) const override
+    {
+        if constexpr (std::is_copy_assignable_v<T>) {
+            auto checked = descriptor(spec);
+            if (!checked)
+                throw std::runtime_error("COOKED-DESCRIPTOR");
+            auto mutableMetadata = core::makeShared<T>();
+            *mutableMetadata = dynamic_cast<const T&>(*checked);
+            core::SharedPtr<const T> metadata = std::move(mutableMetadata);
+            return [spec, metadata]() -> core::UniquePtr<ResourceBase> {
+                return core::makeUnique<CookedResourceCandidate<T>>(spec, *metadata);
+            };
+        } else {
+            return CookedResourceCodec::prepareDescriptorFactory(std::move(spec));
+        }
+    }
 };
 
 class ARP_API CookedResourceCatalog final {
@@ -244,6 +284,12 @@ struct ResourceCookInput {
 
 class ARP_API ResourceCookService final {
 public:
+    // Deterministic v1 loose delivery -> v2 metadata catalog + payload container.
+    // The destination must be absent; failed conversion never changes the input.
+    CookedResourceResult pack(const std::filesystem::path& source,
+        const std::filesystem::path& output,
+        core::SharedPtr<const CookedResourceCodecRegistry>,
+        CookedResourceBudget = {}) const;
     CookedResourceResult cook(core::ArrayView<const ResourceCookInput>,
         const std::filesystem::path&,
         core::SharedPtr<const CookedResourceCodecRegistry>,

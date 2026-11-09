@@ -792,6 +792,8 @@ private:
     using ResourceRecordMap =
         core::pmr::UnorderedMap<core::pmr::String, core::UniquePtr<ResourceRecord>>;
     using ResourceAliasMap = core::pmr::UnorderedMap<core::pmr::String, core::pmr::String>;
+    class AliasTransaction;
+    void admitAlias(const core::pmr::String& alias, const core::pmr::String& id);
 
     ResourceRecord* findRecord(NameView resourceId);
     const ResourceRecord* findRecord(NameView resourceId) const;
@@ -821,6 +823,7 @@ private:
 
     ResourceRecordMap records_{&core::defaultCpuMemoryResource()};
     ResourceAliasMap aliases_{&core::defaultCpuMemoryResource()};
+    AliasTransaction* aliasTransaction_ = nullptr;
     core::pmr::Vector<core::UniquePtr<ResourceBase>> retainedResources_{
         &core::defaultCpuMemoryResource()};
     core::pmr::Vector<ResourceLifecycleObserver*> lifecycleObservers_{

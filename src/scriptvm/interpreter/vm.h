@@ -13,6 +13,7 @@
 #include "scriptvm/interpreter/bytecode.h"
 #include "scriptvm/interpreter/execution_session.h"
 #include "scriptvm/interpreter/frame.h"
+#include "scriptvm/interpreter/invocation_observer.h"
 #include "scriptvm/interpreter/suspended_frame.h"
 #include "scriptvm/ir/typed_ir.h"
 #include "scriptvm/runtime/diagnostics.h"
@@ -45,6 +46,17 @@ struct Suspension {
 class Vm {
 public:
     Vm();
+
+    void setInvocationAudit(std::shared_ptr<const ScriptInvocationAudit> audit)
+    {
+        invocationAudit_ = std::move(audit);
+    }
+
+    // Only available inside an observed interpreter invocation, including its
+    // synchronous host calls. No retained VM/program pointer is returned.
+    static const ScriptInvocation* currentInvocation() noexcept;
+    static Value invokeCurrentValue(
+        const Value& callable, const core::pmr::Vector<Value>& args, VmError* error = nullptr);
 
     // Set the host registry for CallHost opcode support.
     void setHostRegistry(HostRegistry* registry) { hostRegistry_ = registry; }
@@ -269,7 +281,8 @@ private:
         bool hasReceiver,
         std::int64_t remaining) const
     {
-        return !(memoryQuota_ != nullptr && (hasReceiver || callee.params != 1))
+        return invocationAudit_ == nullptr
+            && !(memoryQuota_ != nullptr && (hasReceiver || callee.params != 1))
             && argumentCount + hasReceiver <= maxCallArguments_
             && (remaining < 0 || remaining >= cost)
             && static_cast<std::size_t>(callee.locals) <= maxFrameValues_
@@ -295,7 +308,8 @@ private:
         std::size_t argumentCount,
         std::int64_t remaining) const
     {
-        return memoryQuota_ == nullptr && argumentCount == static_cast<std::size_t>(callee.params)
+        return invocationAudit_ == nullptr && memoryQuota_ == nullptr
+            && argumentCount == static_cast<std::size_t>(callee.params)
             && argumentCount <= maxCallArguments_
             && static_cast<std::size_t>(callee.locals) <= maxFrameValues_
             && static_cast<std::size_t>(callee.maxStack) <= maxFrameValues_
@@ -451,6 +465,7 @@ private:
     // Module registry (optional, set by caller for LoadModule support).
     ModuleRegistry* moduleRegistry_ = nullptr;
     std::shared_ptr<const Program> programOwner_;
+    std::shared_ptr<const ScriptInvocationAudit> invocationAudit_;
 
     struct ProgramGlobalBinding {
         std::shared_ptr<const Program> program;

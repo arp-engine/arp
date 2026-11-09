@@ -17,6 +17,62 @@
 
 namespace arp::resource {
 
+// Admission only inserts aliases: an existing binding must already name the
+// same UUID. Journal new keys before insertion so rollback only erases nodes
+// and remains allocation-free even after a loader exhausts its quota.
+class ResourceManager::AliasTransaction {
+public:
+    explicit AliasTransaction(ResourceManager& manager)
+        : manager_(manager), previous_(manager.aliasTransaction_)
+    {
+        manager_.aliasTransaction_ = this;
+    }
+
+    ~AliasTransaction() { rollback(); }
+
+    void record(const core::pmr::String& alias)
+    {
+        if (previous_)
+            previous_->record(alias);
+        inserted_.push_back(alias);
+    }
+
+    void rollback() noexcept
+    {
+        if (!active_)
+            return;
+        for (const auto& alias : inserted_)
+            manager_.aliases_.erase(alias);
+        commit();
+    }
+
+    void commit() noexcept
+    {
+        if (!active_)
+            return;
+        manager_.aliasTransaction_ = previous_;
+        active_ = false;
+    }
+
+private:
+    ResourceManager& manager_;
+    AliasTransaction* previous_;
+    core::pmr::Vector<core::pmr::String> inserted_{&core::defaultCpuMemoryResource()};
+    bool active_ = true;
+};
+
+void ResourceManager::admitAlias(const core::pmr::String& alias, const core::pmr::String& id)
+{
+    const auto existing = aliases_.find(alias);
+    if (existing != aliases_.end()) {
+        assert(existing->second == id);
+        return;
+    }
+    if (aliasTransaction_)
+        aliasTransaction_->record(alias);
+    aliases_.emplace(alias, id);
+}
+
 ResourceBase::~ResourceBase()
 {
     reflectionObject_.invalidate_native_reference();
@@ -714,7 +770,7 @@ ResourceLoadResult ResourceManager::admitResourceMetadata(
     recordPtr->metadataAdmitted = true;
     recordPtr->diagnostics.clear();
     if (!recordPtr->alias.empty()) {
-        aliases_[recordPtr->alias] = recordPtr->id;
+        admitAlias(recordPtr->alias, recordPtr->id);
     }
     return resultFor(
         true, recordPtr->state, recordPtr->id, recordPtr->type, recordPtr->diagnostics);
@@ -840,7 +896,7 @@ ResourceBatchLoadResult ResourceManager::loadResourcesAtomically(
     // Rollback reinserts retained map nodes without allocating, even if a
     // loader exhausted its core quota while constructing a candidate.
     records_.reserve(records_.size() + resources.size());
-    ResourceAliasMap aliasesBefore(aliases_, &core::defaultCpuMemoryResource());
+    AliasTransaction aliasesBefore(*this);
     const auto budgetBefore = budgetConfig_;
     const auto budgetEventsBefore = budgetExhaustionEvents_;
     for (auto& snapshot : snapshots) {
@@ -859,7 +915,7 @@ ResourceBatchLoadResult ResourceManager::loadResourcesAtomically(
             if (snapshot.hadRecord)
                 records_.insert(std::move(*snapshot.record));
         }
-        aliases_.swap(aliasesBefore);
+        aliasesBefore.rollback();
         budgetConfig_ = budgetBefore;
         budgetExhaustionEvents_ = budgetEventsBefore;
         result.loadedCount = 0u;
@@ -907,6 +963,7 @@ ResourceBatchLoadResult ResourceManager::loadResourcesAtomically(
     // No failing operations remain after the final gate. Keep record pointers
     // stable and advance the previous epoch, rather than publishing a new
     // record with generation 1 and reviving handles from before unload.
+    aliasesBefore.commit();
     for (auto& snapshot : snapshots) {
         if (!snapshot.hadRecord)
             continue;
@@ -1201,7 +1258,7 @@ ResourceLoadResult ResourceManager::admitParsedEnvelope(const ResourceEnvelope& 
     record.ownedObjects = std::move(ownedObjects);
     record.state = ResourceState::Ready;
     if (!record.alias.empty()) {
-        aliases_[record.alias] = record.id;
+        admitAlias(record.alias, record.id);
     }
     return resultFor(true, record.state, record.id, record.type, record.diagnostics);
 }
@@ -1539,7 +1596,7 @@ ResourceManager::ResourceReloadResult ResourceManager::reloadResource(
     // the old node. The old record and its payload remain untouched throughout.
     records_.reserve(records_.size() + 1);
     retainedResources_.reserve(retainedResources_.size() + 1);
-    ResourceAliasMap aliasesBefore(aliases_, &core::defaultCpuMemoryResource());
+    AliasTransaction aliasesBefore(*this);
     ResourceRecordMap candidateNodes{&core::defaultCpuMemoryResource()};
     auto candidateRecord = core::makeUnique<ResourceRecord>();
     candidateRecord->id = resourceId;
@@ -1556,7 +1613,7 @@ ResourceManager::ResourceReloadResult ResourceManager::reloadResource(
             return;
         records_.erase(resourceId);
         records_.insert(std::move(originalNode));
-        aliases_.swap(aliasesBefore);
+        aliasesBefore.rollback();
         result.telemetry.rolledBack = true;
         result.telemetry.oldContentHash = oldContentHash;
     };
@@ -1612,6 +1669,7 @@ ResourceManager::ResourceReloadResult ResourceManager::reloadResource(
         }
         // No failing operations remain: preserve the public record address,
         // retire its old typed payload and publish exactly one new generation.
+        aliasesBefore.commit();
         auto& candidate = *current->second;
         auto& original = *originalNode.mapped();
         candidate.ownedResource = std::move(resource);

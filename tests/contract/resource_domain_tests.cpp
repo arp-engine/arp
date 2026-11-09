@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -234,6 +235,31 @@ void dispatchBudgets()
     std::cout << "PASS per-call owner dispatch budgets, zero rejection and default preservation\n";
 }
 
+void timedPump()
+{
+    Observations observations;
+    ResourceDomain domain(runtimeDesc(), budget());
+    define(domain, observations, leaf);
+    define(domain, observations, first, leaf);
+    ResourceLease held;
+    check(domain
+              .acquireAsync(identity(first),
+                  [&](ResourceAcquireResult result) {
+                      check(result.lease.ready(), "timed pump acquisition failed");
+                      held = std::move(result.lease);
+                  })
+              .success(),
+        "timed pump submit");
+    check(
+        !domain.dispatchFor(std::chrono::milliseconds(0), 1).success(), "zero time slice accepted");
+    check(domain.dispatchFor(std::chrono::seconds(2), 1).success() && held.ready(),
+        "timed pump did not advance dependency completions");
+    held.reset();
+    domain.collect();
+    check(domain.stateOf(leaf) == ResourceState::Declared, "timed pump dependency release");
+    std::cout << "PASS notified cold pump, bounded callbacks, dependency progress and release\n";
+}
+
 void cancellation(const std::filesystem::path& source)
 {
     Observations observations;
@@ -365,6 +391,43 @@ void ownedLifetime()
     check(observations.destroyed.size() == 1, "final lease did not dispose owned resource context");
     std::cout
         << "PASS owned CPU resource outlives facade after producers drain, final lease releases context\n";
+}
+
+void idleOwnedDomain()
+{
+    Observations observations;
+    auto bounds = budget();
+    bounds.maxResources = 1024;
+    ResourceDomain domain(runtimeDesc(), bounds);
+    for (unsigned i = 0; i < 1024; ++i) {
+        char id[40];
+        std::snprintf(id, sizeof(id), "%08x-0000-4000-8000-000000000000", i);
+        ResourceIdentity key{id, "DomainProbe", "sealed-content-v1"};
+        check(domain
+                  .registerResource(key,
+                      [key, &observations]() -> core::UniquePtr<ResourceBase> {
+                          return core::makeUnique<Probe>(
+                              key.id.c_str(), nullptr, std::filesystem::path{}, observations);
+                      })
+                  .success(),
+            "large dormant catalog registration");
+    }
+    const ResourceIdentity root{
+        "00000000-0000-4000-8000-000000000000", "DomainProbe", "sealed-content-v1"};
+    auto acquired = domain.acquire(root);
+    check(acquired.lease.ready(), "large catalog acquisition");
+    const auto before = core::defaultCpuAllocator().stats().allocationCount;
+    for (unsigned i = 0; i < 128; ++i)
+        check(domain.dispatch().success(), "idle dispatch");
+    check(core::defaultCpuAllocator().stats().allocationCount == before,
+        "idle owned domain scanned registry with allocated lookups");
+    check(observations.loads.size() == 1, "unrequested dormant entries were loaded");
+    acquired.lease.reset();
+    domain.collect();
+    check(domain.stateOf(root.id) == ResourceState::Declared, "dirty release did not reclaim root");
+    check(domain.acquire(root).lease.ready(), "released descriptor could not reload");
+    std::cout
+        << "PASS large dormant catalog, allocation-free idle dispatch, dirty release and reload\n";
 }
 
 void limitsAndReentrancy()
@@ -571,10 +634,12 @@ int main()
         }
         sharing(fixture);
         dispatchBudgets();
+        timedPump();
         cancellation(fixture);
         failures(fixture);
         invalidPlans();
         ownedLifetime();
+        idleOwnedDomain();
         limitsAndReentrancy();
         background(fixture);
         return 0;

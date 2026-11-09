@@ -292,6 +292,31 @@ int main()
 {
     registerResourceTypes();
 
+    // A one-resource transaction must fit a fixed scratch budget regardless
+    // of unrelated resident aliases. A whole-registry snapshot exceeds it.
+    for (const unsigned count : {1024u, 2048u, 4096u}) {
+        arp::resource::ResourceManager registry;
+        for (unsigned i = 0; i < count; ++i) {
+            char id[40], alias[96];
+            std::snprintf(id, sizeof(id), "%08x-0000-4000-8000-000000000000", i);
+            std::snprintf(alias, sizeof(alias), "unrelated/resident/resource/alias/%08x", i);
+            assert(
+                registry.loadResource(arp::core::makeUnique<AtomicBatchResource>(id, alias, false))
+                    .success);
+        }
+        const auto quota = arp::core::makeShared<arp::core::CpuMemoryQuota>(64u * 1024u);
+        {
+            arp::core::CpuMemoryQuotaScope scope(quota);
+            arp::core::pmr::Vector<arp::core::UniquePtr<arp::resource::ResourceBase>> batch{
+                &arp::core::defaultCpuMemoryResource()};
+            batch.push_back(arp::core::makeUnique<AtomicBatchResource>(
+                kBatchFirstId, "bounded/transaction", false));
+            assert(registry.loadResourcesAtomically(std::move(batch)).success);
+        }
+        assert(registry.resolveAlias("bounded/transaction").success);
+        assert(registry.resolveAlias("unrelated/resident/resource/alias/00000000").success);
+    }
+
     {
         arp::resource::ResourceManager manager;
         auto dependency = manager.declareResource(kTextureId, "TestTextureResource");

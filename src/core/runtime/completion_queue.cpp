@@ -60,6 +60,7 @@ void CompletionQueue::append(CompletionCallback callback) noexcept
     ++size_;
     ++telemetry_.submitted;
     telemetry_.maxQueueDepth = std::max<std::uint64_t>(telemetry_.maxQueueDepth, size_);
+    available_.notify_all();
 }
 
 CompletionPostResult CompletionQueue::postReserved(
@@ -132,6 +133,16 @@ void CompletionQueue::shutdown() noexcept
 {
     std::lock_guard<std::mutex> lock(mutex_);
     closed_ = true;
+    available_.notify_all();
+}
+
+bool CompletionQueue::waitUntil(std::chrono::steady_clock::time_point deadline)
+{
+    std::unique_lock lock(mutex_);
+    available_.wait_until(lock, deadline, [this] {
+        return closed_ || size_ != 0;
+    });
+    return size_ != 0;
 }
 
 bool CompletionQueue::closed() const noexcept

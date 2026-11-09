@@ -19,6 +19,7 @@ using R = core::encoding::BinaryReader;
 constexpr std::uint64_t catalogMagic = 0x31544143505241ull;
 constexpr std::uint64_t resourceMagic = 0x31534552505241ull;
 constexpr std::size_t headerSize = 104;
+constexpr std::size_t catalogHeaderSize = 52;
 
 void require(bool ok, const char* text)
 {
@@ -34,6 +35,29 @@ core::StringView view(core::ArrayView<const std::uint8_t> b)
 core::pmr::String digest(core::ArrayView<const std::uint8_t> b)
 {
     return core::Sha256::hexDigest(view(b));
+}
+
+struct CatalogSections {
+    bool packed;
+    core::ArrayView<const std::uint8_t> records;
+    core::ArrayView<const std::uint8_t> metadata;
+};
+
+CatalogSections catalogSections(core::ArrayView<const std::uint8_t> bytes)
+{
+    R r(bytes);
+    require(r.integer() == catalogMagic, "COOKED-CATALOG-FORMAT-RECOOK");
+    const auto format = r.integer(4);
+    require(format == 1 || format == 2, "COOKED-CATALOG-FORMAT-RECOOK");
+    const auto size = r.integer();
+    const auto hash = r.raw(32);
+    const auto body = r.raw(size);
+    const auto metadata = r.raw(r.remaining());
+    require(format == 2 || metadata.empty(), "COOKED-CATALOG-TRAILING");
+    const auto actual = core::Sha256::digest(
+        view({bytes.data() + catalogHeaderSize, bytes.size() - catalogHeaderSize}));
+    require(std::equal(actual.begin(), actual.end(), hash.begin()), "COOKED-CATALOG-HASH");
+    return {format == 2, body, metadata};
 }
 
 core::pmr::String string(const V& n)
@@ -366,20 +390,26 @@ CookedResourceResult CookedResourceCatalog::read(core::ArrayView<const std::uint
 {
     try {
         require(bytes.size() <= b.maxMetadataBytes, "COOKED-CATALOG-BUDGET");
-        R r(bytes);
-        require(r.integer() == catalogMagic && r.integer(4) == 1, "COOKED-CATALOG-FORMAT-RECOOK");
-        const auto size = r.integer();
-        const auto hash = r.raw(32);
-        const auto body = r.raw(size);
-        require(!r.remaining(), "COOKED-CATALOG-TRAILING");
-        const auto actual = core::Sha256::digest(view(body));
-        require(std::equal(actual.begin(), actual.end(), hash.begin()), "COOKED-CATALOG-HASH");
-        auto decoded = reflection::decode_serialization_value(body, options(b));
+        const auto sections = catalogSections(bytes);
+        auto decoded = reflection::decode_serialization_value(sections.records, options(b));
         require(decoded.success, decoded.diagnostics.c_str());
         require(decoded.value.is_sequence(), "COOKED-CATALOG-SCHEMA");
         core::pmr::Vector<CookedResourceEntry> entries{&core::defaultCpuMemoryResource()};
         for (const auto& n : decoded.value.get_value_ref<const V::sequence_type&>())
             entries.push_back(entry(n));
+        if (sections.packed) {
+            require(std::is_sorted(entries.begin(),
+                        entries.end(),
+                        [](const auto& a, const auto& c) {
+                            return a.reference.id < c.reference.id;
+                        }),
+                "COOKED-PACK-ORDER");
+            R metadata(sections.metadata);
+            for (const auto& e : entries)
+                require(digest(metadata.raw(e.metadataBytes)) == e.metadataHash,
+                    "COOKED-METADATA-HASH");
+            require(!metadata.remaining(), "COOKED-METADATA-TRAILING");
+        }
         return assign(std::move(entries), codecs, b);
     } catch (const std::exception& e) {
         return {false, e.what()};
@@ -405,25 +435,43 @@ CookedResourcePlan buildPlan(const std::filesystem::path& root,
         result.metadataReadBytes += catalog.bytes.size();
         auto loaded = result.catalog.read({catalog.bytes.data(), catalog.bytes.size()}, *codecs, b);
         require(loaded.success, loaded.diagnostics.c_str());
+        const auto sections = catalogSections({catalog.bytes.data(), catalog.bytes.size()});
+        R packedMetadata(sections.metadata);
+        std::uint64_t payloadOffset = 0;
+        const auto packedVersion = sections.packed
+            ? digest({catalog.bytes.data(), catalog.bytes.size()})
+            : core::pmr::String{&core::defaultCpuMemoryResource()};
         std::size_t metadataTotal = catalog.bytes.size();
         for (const auto& e : result.catalog.entries()) {
-            std::filesystem::path path;
-            require(resolveResourceSourcePath(root, e.file, origin, path), "COOKED-RESOURCE-PATH");
-            intent.path = core::FilePath::utf8(path);
-            intent.contentVersion = e.contentVersion;
-            intent.range = core::io::FileReadRange::exactRange(0, headerSize);
-            intent.maxBytes = headerSize;
-            auto h = reader(intent);
-            result.metadataReadBytes += h.bytes.size();
-            auto expected = header(e);
-            require(h.bytes == expected, "COOKED-HEADER-MISMATCH");
-            require(e.metadataBytes <= b.maxMetadataBytes - metadataTotal,
-                "COOKED-METADATA-TOTAL-BUDGET");
-            metadataTotal += static_cast<std::size_t>(e.metadataBytes);
-            intent.range = core::io::FileReadRange::exactRange(headerSize, e.metadataBytes);
-            intent.maxBytes = static_cast<std::size_t>(e.metadataBytes);
-            auto metadata = reader(intent);
-            result.metadataReadBytes += metadata.bytes.size();
+            core::io::FileReadResult metadata;
+            if (sections.packed) {
+                const auto bytes = packedMetadata.raw(e.metadataBytes);
+                metadata.bytes.assign(bytes.begin(), bytes.end());
+                std::filesystem::path path;
+                require(resolveResourceSourcePath(root, "payload.arpbin", origin, path),
+                    "COOKED-RESOURCE-PATH");
+                intent.path = core::FilePath::utf8(path);
+                intent.contentVersion = packedVersion;
+            } else {
+                std::filesystem::path path;
+                require(
+                    resolveResourceSourcePath(root, e.file, origin, path), "COOKED-RESOURCE-PATH");
+                intent.path = core::FilePath::utf8(path);
+                intent.contentVersion = e.contentVersion;
+                intent.range = core::io::FileReadRange::exactRange(0, headerSize);
+                intent.maxBytes = headerSize;
+                auto h = reader(intent);
+                result.metadataReadBytes += h.bytes.size();
+                auto expected = header(e);
+                require(h.bytes == expected, "COOKED-HEADER-MISMATCH");
+                require(e.metadataBytes <= b.maxMetadataBytes - metadataTotal,
+                    "COOKED-METADATA-TOTAL-BUDGET");
+                metadataTotal += static_cast<std::size_t>(e.metadataBytes);
+                intent.range = core::io::FileReadRange::exactRange(headerSize, e.metadataBytes);
+                intent.maxBytes = static_cast<std::size_t>(e.metadataBytes);
+                metadata = reader(intent);
+                result.metadataReadBytes += metadata.bytes.size();
+            }
             require(digest({metadata.bytes.data(), metadata.bytes.size()}) == e.metadataHash,
                 "COOKED-METADATA-HASH");
             auto spec = core::makeShared<CookedResourceSpec>();
@@ -434,16 +482,16 @@ CookedResourcePlan buildPlan(const std::filesystem::path& root,
             spec->archiveOptions = options(b);
             spec->payloadRead = intent;
             spec->payloadRead.role = "cooked-payload";
-            spec->payloadRead.range =
-                core::io::FileReadRange::exactRange(headerSize + e.metadataBytes, e.payloadBytes);
+            spec->payloadRead.range = core::io::FileReadRange::exactRange(
+                sections.packed ? payloadOffset : headerSize + e.metadataBytes, e.payloadBytes);
             spec->payloadRead.maxBytes = static_cast<std::size_t>(e.payloadBytes);
+            payloadOffset += e.payloadBytes;
             // Validate typed metadata before registration. No payload or source buffers are retained.
-            auto checked = spec->codec->descriptor(spec);
+            auto factory = spec->codec->prepareDescriptorFactory(spec);
+            require(bool(factory), "COOKED-DESCRIPTOR-FACTORY");
+            auto checked = factory();
             require(bool(checked), "COOKED-DESCRIPTOR");
-            result.registrations.push_back(
-                {e.identity(), [spec]() -> core::UniquePtr<ResourceBase> {
-                     return spec->codec->descriptor(spec);
-                 }});
+            result.registrations.push_back({e.identity(), std::move(factory)});
         }
         result.success = true;
     } catch (const std::exception& e) {
@@ -506,24 +554,24 @@ bool CookedResourceLoader::planFileReadIntents(const std::filesystem::path& root
         require(acquired->bytes.size() <= b.maxMetadataBytes, "COOKED-CATALOG-BUDGET");
         // Read-only shape parsing discovers ranges. Full integrity/schema/DAG
         // validation is repeated by planSources before any registration.
-        R r({acquired->bytes.data(), acquired->bytes.size()});
-        require(r.integer() == catalogMagic && r.integer(4) == 1, "COOKED-CATALOG-FORMAT-RECOOK");
-        const auto length = r.integer();
-        auto hash = r.raw(32);
-        auto body = r.raw(length);
-        require(!r.remaining(), "COOKED-CATALOG-TRAILING");
-        auto actual = core::Sha256::digest(view(body));
-        require(std::equal(actual.begin(), actual.end(), hash.begin()), "COOKED-CATALOG-HASH");
-        auto decoded = reflection::decode_serialization_value(body, options(b));
+        const auto sections = catalogSections({acquired->bytes.data(), acquired->bytes.size()});
+        auto decoded = reflection::decode_serialization_value(sections.records, options(b));
         require(decoded.success && decoded.value.is_sequence()
                 && decoded.value.size() <= b.maxResources,
             "COOKED-CATALOG-BUDGET");
         std::size_t total = acquired->bytes.size();
+        R packedMetadata(sections.metadata);
         for (const auto& node : decoded.value.get_value_ref<const V::sequence_type&>()) {
             const auto e = entry(node);
             require(e.file == e.reference.id + ".arpres.bin" && isResourceUuid(e.reference.id)
-                    && e.metadataBytes && e.metadataBytes <= b.maxMetadataBytes - total,
+                    && e.metadataBytes && e.metadataBytes <= b.maxMetadataBytes,
                 "COOKED-METADATA-BUDGET");
+            if (sections.packed) {
+                require(digest(packedMetadata.raw(e.metadataBytes)) == e.metadataHash,
+                    "COOKED-METADATA-HASH");
+                continue;
+            }
+            require(e.metadataBytes <= b.maxMetadataBytes - total, "COOKED-METADATA-BUDGET");
             total += static_cast<std::size_t>(e.metadataBytes);
             std::filesystem::path path;
             require(resolveResourceSourcePath(root, e.file, origin, path), "COOKED-RESOURCE-PATH");
@@ -537,6 +585,7 @@ bool CookedResourceLoader::planFileReadIntents(const std::filesystem::path& root
             intent.maxBytes = static_cast<std::size_t>(e.metadataBytes);
             reads.push_back(std::move(intent));
         }
+        require(!sections.packed || !packedMetadata.remaining(), "COOKED-METADATA-TRAILING");
         return true;
     } catch (const std::exception& e) {
         error = e.what();
@@ -551,6 +600,95 @@ CookedResourceResult CookedResourceLoader::registerPlan(
         return {false, plan.diagnostics};
     auto result = domain.registerResources({plan.registrations.data(), plan.registrations.size()});
     return {result.success(), result.diagnosticId ? result.diagnosticId : ""};
+}
+
+CookedResourceResult ResourceCookService::pack(const std::filesystem::path& source,
+    const std::filesystem::path& output,
+    core::SharedPtr<const CookedResourceCodecRegistry> codecs,
+    CookedResourceBudget b) const
+{
+    try {
+        require(b.maxMetadataBytes <= SIZE_MAX - headerSize
+                && b.maxPayloadBytes <= SIZE_MAX - headerSize - b.maxMetadataBytes,
+            "COOKED-PACK-BUDGET");
+        core::io::StagedDirectory staging;
+        const bool started = staging.begin(output);
+        require(started, staging.diagnostic().c_str());
+        core::runtime::AsyncRuntime runtime({128, 2, 64, 32});
+        auto plan = CookedResourceLoader().plan(source, runtime, codecs, b);
+        require(plan.success, plan.diagnostics.c_str());
+        auto inputCatalog = core::readBinaryFile(source / "catalog.arpbin", b.maxMetadataBytes);
+        require(inputCatalog.success, "COOKED-PACK-CATALOG");
+        require(!catalogSections({inputCatalog.bytes.data(), inputCatalog.bytes.size()}).packed,
+            "COOKED-PACK-INPUT-MUST-BE-LOOSE");
+        W metadata(b.maxMetadataBytes);
+        std::ofstream payload(staging.path() / "payload.arpbin", std::ios::binary);
+        require(bool(payload), "COOKED-PACK-WRITE");
+        for (const auto& e : plan.catalog.entries()) {
+            ResourceFileReadIntent intent;
+            std::filesystem::path path;
+            require(resolveResourceSourcePath(source, e.file, {}, path), "COOKED-RESOURCE-PATH");
+            intent.path = core::FilePath::utf8(path);
+            intent.pathScope = core::io::FilePathScope::HostFilesystem;
+            intent.maxBytes =
+                headerSize + static_cast<std::size_t>(e.metadataBytes + e.payloadBytes);
+            auto original = read(runtime, intent);
+            R file({original.bytes.data(), original.bytes.size()});
+            const auto h = file.raw(headerSize);
+            const auto expected = header(e);
+            require(std::equal(h.begin(), h.end(), expected.begin()), "COOKED-HEADER-MISMATCH");
+            const auto m = file.raw(e.metadataBytes);
+            const auto p = file.raw(e.payloadBytes);
+            require(!file.remaining(), "COOKED-RESOURCE-TRAILING");
+            require(
+                digest(m) == e.metadataHash && digest(p) == e.payloadHash, "COOKED-PACK-INTEGRITY");
+            metadata.raw(m);
+            if (!p.empty())
+                payload.write(reinterpret_cast<const char*>(p.data()),
+                    static_cast<std::streamsize>(p.size()));
+            require(bool(payload), "COOKED-PACK-WRITE");
+        }
+        payload.close();
+        require(bool(payload), "COOKED-PACK-WRITE");
+        auto records = plan.catalog.write(b);
+        require(records.success, records.diagnostics.c_str());
+        const auto sections = catalogSections({records.bytes.data(), records.bytes.size()});
+        W content(b.maxMetadataBytes);
+        content.raw(sections.records);
+        content.raw({metadata.bytes().data(), metadata.bytes().size()});
+        W catalog(b.maxMetadataBytes);
+        catalog.integer(catalogMagic);
+        catalog.integer(2, 4);
+        catalog.integer(sections.records.size());
+        const auto hash =
+            core::Sha256::digest(view({content.bytes().data(), content.bytes().size()}));
+        catalog.raw({hash.data(), hash.size()});
+        catalog.raw({content.bytes().data(), content.bytes().size()});
+        save(staging.path() / "catalog.arpbin", {catalog.bytes().data(), catalog.bytes().size()});
+        // Re-read the new layout, validate every descriptor and independently
+        // hash each payload range before publishing. No C++ layout is stored.
+        auto verified = CookedResourceLoader().plan(staging.path(), runtime, codecs, b);
+        require(verified.success, verified.diagnostics.c_str());
+        std::uint64_t offset = 0;
+        for (const auto& e : verified.catalog.entries()) {
+            if (e.payloadBytes) {
+                ResourceFileReadIntent intent;
+                intent.path = core::FilePath::utf8(staging.path() / "payload.arpbin");
+                intent.pathScope = core::io::FilePathScope::HostFilesystem;
+                intent.range = core::io::FileReadRange::exactRange(offset, e.payloadBytes);
+                intent.maxBytes = static_cast<std::size_t>(e.payloadBytes);
+                auto bytes = read(runtime, intent);
+                require(digest({bytes.bytes.data(), bytes.bytes.size()}) == e.payloadHash,
+                    "COOKED-PACK-INTEGRITY");
+            }
+            offset += e.payloadBytes;
+        }
+        const bool published = staging.publish(std::chrono::milliseconds(500));
+        require(published, staging.diagnostic().c_str());
+        return {true};
+    } catch (const std::exception& e) {
+        return {false, e.what()};
+    }
 }
 
 CookedResourceResult ResourceCookService::cook(core::ArrayView<const ResourceCookInput> inputs,

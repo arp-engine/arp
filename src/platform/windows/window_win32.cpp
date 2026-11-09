@@ -80,6 +80,7 @@ struct WindowRecord {
     bool highPixelDensity = true;
     bool hidden = false;
     bool minimized = false;
+    bool cursorVisible = true;
     bool creating = false;
     bool hasLastPointer = false;
     float lastPointerX = 0.0f;
@@ -447,10 +448,20 @@ LRESULT CALLBACK windowProcedure(HWND hwnd, UINT message, WPARAM wParam, LPARAM 
         }
         break;
     case WM_SETFOCUS:
+        if (!record->cursorVisible)
+            SetCursor(nullptr);
         queueFocus(state, *record, true);
         break;
     case WM_KILLFOCUS:
+        if (!record->cursorVisible)
+            SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)));
         queueFocus(state, *record, false);
+        break;
+    case WM_SETCURSOR:
+        if (!record->cursorVisible && GetForegroundWindow() == hwnd && LOWORD(lParam) == HTCLIENT) {
+            SetCursor(nullptr);
+            return TRUE;
+        }
         break;
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
@@ -726,6 +737,26 @@ bool PlatformWindow::hidden() const
         return true;
     const auto* record = static_cast<WindowSystemState*>(systemState_)->recordById(windowId_);
     return record != nullptr ? record->hidden : true;
+}
+
+void PlatformWindow::setCursorVisible(bool visible)
+{
+    if (systemState_ == nullptr)
+        return;
+    auto* record = static_cast<WindowSystemState*>(systemState_)->recordById(windowId_);
+    if (record == nullptr || record->hwnd == nullptr || record->cursorVisible == visible)
+        return;
+    record->cursorVisible = visible;
+    if (GetForegroundWindow() == record->hwnd)
+        SetCursor(visible ? LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)) : nullptr);
+}
+
+void* PlatformWindow::nativeWindowHandle() const
+{
+    if (systemState_ == nullptr)
+        return nullptr;
+    const auto* record = static_cast<WindowSystemState*>(systemState_)->recordById(windowId_);
+    return record != nullptr ? record->hwnd : nullptr;
 }
 
 PlatformSurfaceKind PlatformWindow::surfaceKind() const

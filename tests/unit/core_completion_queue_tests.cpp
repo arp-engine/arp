@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <thread>
 
 namespace {
 
@@ -106,6 +107,28 @@ int main()
     assert(otherToken.valid());
     otherToken = {};
     assert(other.reserved() == 0);
+
+    CompletionQueue notified({2});
+    OrderProbe notifiedProbe;
+    auto reserved = notified.reserve();
+    std::thread producer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        assert(notified.postReserved(std::move(reserved), {recordOne, &notifiedProbe}).accepted());
+    });
+    assert(notified.waitUntil(std::chrono::steady_clock::now() + std::chrono::seconds(2)));
+    producer.join();
+    assert(notifiedProbe.count == 0); // Waiting never invokes owner callbacks.
+    assert(notified.waitUntil(std::chrono::steady_clock::now()));
+    assert(notified.dispatch(1).dispatched == 1 && notifiedProbe.count == 1);
+    assert(!notified.waitUntil(std::chrono::steady_clock::now() + std::chrono::milliseconds(1)));
+    std::thread closer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        notified.shutdown();
+    });
+    const auto beforeClose = std::chrono::steady_clock::now();
+    assert(!notified.waitUntil(beforeClose + std::chrono::seconds(2)));
+    closer.join();
+    assert(std::chrono::steady_clock::now() - beforeClose < std::chrono::seconds(1));
 
     return 0;
 }

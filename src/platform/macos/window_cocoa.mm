@@ -526,6 +526,10 @@ bool PlatformWindow::hidden() const
     return record != nullptr ? record->hidden : true;
 }
 
+void PlatformWindow::setCursorVisible(bool)
+{
+}
+
 PlatformSurfaceKind PlatformWindow::surfaceKind() const
 {
     return PlatformSurfaceKind::DesktopWindow;

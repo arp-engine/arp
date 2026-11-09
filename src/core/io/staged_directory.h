@@ -3,6 +3,7 @@
 #include "core/api.h"
 #include "core/memory/cpu_allocator.h"
 
+#include <chrono>
 #include <filesystem>
 
 namespace arp::core::io {
@@ -17,12 +18,14 @@ public:
     StagedDirectory& operator=(const StagedDirectory&) = delete;
 
     bool begin(const std::filesystem::path& destination);
-    bool publish();
+    // Optional tooling wait for a transient Windows sharing/access lock.
+    // Existing destinations are never replaced. Default remains fail-fast.
+    bool publish(std::chrono::milliseconds lockWait = {});
 
     const std::filesystem::path& path() const noexcept { return staging_; }
 
     // Stable diagnostic ID; native publication failures append
-    // " native=<error-category>:<numeric-code>" without automatic retry.
+    // " native=<error-category>:<numeric-code>" after the requested lock wait.
     const pmr::String& diagnostic() const noexcept { return diagnostic_; }
 
 private:

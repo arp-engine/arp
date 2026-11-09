@@ -4,6 +4,7 @@
 #include <cassert>
 #include <chrono>
 #include <fstream>
+#include <thread>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -75,6 +76,25 @@ int main()
         // Explicit recovery after releasing a known lock, never an automatic retry.
         assert(transaction.publish() && transaction.diagnostic().empty());
         assert(arp::core::readTextFile(root / "locked/payload").text == "complete");
+    }
+    {
+        StagedDirectory transaction;
+        assert(transaction.begin(root / "transient-lock"));
+        const auto directory = CreateFileW(transaction.path().c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            nullptr);
+        assert(directory != INVALID_HANDLE_VALUE);
+        assert(!transaction.publish(std::chrono::milliseconds(5)));
+        std::thread release([directory] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            assert(CloseHandle(directory));
+        });
+        assert(transaction.publish(std::chrono::milliseconds(1000)));
+        release.join();
     }
 #endif
     {

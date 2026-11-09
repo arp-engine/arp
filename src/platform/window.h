@@ -305,6 +305,12 @@ public:
     /// Logical-to-pixel scale factor; 1.0 when the platform reports none.
     float pixelDensity() const;
     bool hidden() const;
+    /// Show or hide the native pointer while it is over this window.
+    void setCursorVisible(bool visible);
+#if defined(_WIN32)
+    /// Borrowed HWND, valid until this window is destroyed.
+    void* nativeWindowHandle() const;
+#endif
     PlatformSurfaceKind surfaceKind() const;
     /// Resize the client area to the given logical extent. The cached extents
     /// update synchronously; use sync() before relying on OS-visible state.

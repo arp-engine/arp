@@ -3,6 +3,8 @@
 #include "core/api.h"
 #include "core/memory/cpu_allocator.h"
 
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -94,6 +96,9 @@ public:
     CompletionPostResult postReserved(
         CompletionReservation&& reservation, CompletionCallback callback) noexcept;
     CompletionDispatchResult dispatch(std::size_t maxCallbacks);
+    // Waits for work or shutdown without dispatching callbacks. A producer
+    // notification cannot be lost between the pending check and the wait.
+    bool waitUntil(std::chrono::steady_clock::time_point deadline);
     void shutdown() noexcept;
 
     bool closed() const noexcept;
@@ -113,6 +118,7 @@ private:
 
     CompletionQueueDesc desc_;
     mutable std::mutex mutex_;
+    std::condition_variable available_;
     core::pmr::Vector<Record> records_;
     std::size_t head_ = 0;
     std::size_t size_ = 0;

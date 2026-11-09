@@ -18,6 +18,23 @@ namespace arp::scriptvm {
 
 namespace {
 
+thread_local const ScriptInvocation* activeInvocation = nullptr;
+
+class ActiveInvocationScope final {
+public:
+    explicit ActiveInvocationScope(const ScriptInvocation* invocation)
+        : previous_(std::exchange(activeInvocation, invocation))
+    {}
+
+    ~ActiveInvocationScope() { activeInvocation = previous_; }
+
+    ActiveInvocationScope(const ActiveInvocationScope&) = delete;
+    ActiveInvocationScope& operator=(const ActiveInvocationScope&) = delete;
+
+private:
+    const ScriptInvocation* previous_;
+};
+
 // Empty captures vector (PMR-aware), reused for non-closure calls.
 const arp::core::pmr::Vector<std::shared_ptr<ScriptCell>>& emptyCaptures()
 {
@@ -569,6 +586,55 @@ bool normalizeNumericOperands(Value& lhs, Value& rhs)
 
 } // namespace
 
+const ScriptInvocation* Vm::currentInvocation() noexcept
+{
+    return activeInvocation;
+}
+
+Value Vm::invokeCurrentValue(
+    const Value& callable, const core::pmr::Vector<Value>& args, VmError* error)
+{
+    VmError localError;
+    auto& err = error ? *error : localError;
+    const auto* current = activeInvocation;
+    const auto reject = [&]() {
+        err.code = ScriptDiagnosticCode::HostError;
+        err.message = "SCRIPT-INVOCATION-AUDIT-CALLABLE-UNSUPPORTED";
+        return makeNil();
+    };
+    if (!current || !current->vm.invocationAudit_
+        || current->vm.invocationAudit_->run.get() != &current->run)
+        return reject();
+    auto& vm = current->vm;
+    const auto& program = current->program;
+    // A host caller may pass values borrowed from this VM's call scratch.
+    // Own both carriers before recursive execution can reuse that scratch.
+    const Value callee = callable;
+    core::pmr::Vector<Value> arguments(args, &core::defaultCpuMemoryResource());
+    const core::pmr::Vector<std::shared_ptr<ScriptCell>>* captures = &emptyCaptures();
+    int index = -1;
+    if (const auto* method = checkedValuePayload<ScriptMethod>(callee)) {
+        if (method->aotModule != nullptr)
+            return reject();
+        index = method->funcIndex;
+        arguments.insert(arguments.begin(), method->receiver);
+    } else if (const auto* closure = checkedValuePayload<ScriptClosure>(callee)) {
+        if (closure->aotModule != nullptr || (closure->vmOwner && closure->vmOwner.get() != &vm)
+            || (closure->programOwner && closure->programOwner.get() != &program)
+            || closure->bridge != nullptr)
+            return reject();
+        index = closure->funcIndex;
+        captures = &closure->captures;
+    } else
+        return reject();
+    if (index < 0 || index >= static_cast<int>(program.functions.size())
+        || program.functions[index].isGenerator)
+        return reject();
+    bool produced = false;
+    auto value = vm.runFunctionInternal(program, index, arguments, *captures, &err, &produced);
+    return err.code == ScriptDiagnosticCode::None && produced ? value : makeNil();
+}
+
 Vm::Vm()
 {
     installInterpreterGeneratorBridge();
@@ -914,7 +980,8 @@ Vm::InternalReturn<SlotReturn> Vm::runFunctionInternalImpl(const Program& progra
         const auto* plan = validatedProgram_.scalarExpressionsOwned(&fn);
         auto& budget =
             executionSession_ ? executionSession_->remainingInstructions : remainingInstructions_;
-        if (memoryQuota_ == nullptr && plan && plan->guardedReturn.valid()
+        if (invocationAudit_ == nullptr && memoryQuota_ == nullptr && plan
+            && plan->guardedReturn.valid()
             && (budget < 0 || budget >= plan->guardedReturn.cost())) {
             const auto& guard = plan->guardedReturn;
             bool returns = false;
@@ -996,7 +1063,7 @@ Vm::InternalReturn<SlotReturn> Vm::runFunctionInternalImpl(const Program& progra
         if constexpr (ProvenStaticCall) {
             assert(validatedProgram_.owner().get() == &program
                 && validatedProgram_.hasVerifiedStackBoundOwned(&fn));
-            if (validatedProgram_.hasScalarDispatchOwned(&fn)) {
+            if (invocationAudit_ == nullptr && validatedProgram_.hasScalarDispatchOwned(&fn)) {
                 // The private call publishes only to the real ExecutionSlot.
                 // Do not acquire a second undefined Value carrier per call.
                 std::optional<Value> result;
@@ -1024,7 +1091,38 @@ Vm::InternalReturn<SlotReturn> Vm::runFunctionInternalImpl(const Program& progra
             return publish(
                 executeFrameRef(program, *frame, *err, &frameProduced, false, slotResult));
     };
-    auto result = execute();
+    const auto executeObserved = [&]() -> InternalReturn<SlotReturn> {
+        if (invocationAudit_ == nullptr && activeInvocation == nullptr)
+            return execute();
+        if (invocationAudit_ == nullptr) {
+            ActiveInvocationScope quarantine(nullptr);
+            return execute();
+        }
+        if (!invocationAudit_->observer || !invocationAudit_->run || fn.isGenerator) {
+            if (err) {
+                err->code = ScriptDiagnosticCode::HostError;
+                err->message = "SCRIPT-INVOCATION-AUDIT-UNSUPPORTED";
+            }
+            return nilResult();
+        }
+        const ScriptInvocation invocation{*this,
+            program,
+            *invocationAudit_->run,
+            funcIndex,
+            {frame->locals.data(), static_cast<std::size_t>(fn.params)},
+            frame->captures};
+        ActiveInvocationScope scope(&invocation);
+        if (!invocationAudit_->observer->beforeInvoke(invocation, *err)
+            || err->code != ScriptDiagnosticCode::None) {
+            if (err->code == ScriptDiagnosticCode::None) {
+                err->code = ScriptDiagnosticCode::HostError;
+                err->message = "SCRIPT-INVOCATION-AUDIT-REJECTED";
+            }
+            return nilResult();
+        }
+        return execute();
+    };
+    auto result = executeObserved();
     assert(lifetime.published_ && !frames_.empty() && frames_.back() == frame);
     frames_.pop_back();
     lifetime.published_ = false;
@@ -1043,6 +1141,11 @@ bool Vm::createGenerator(const Program& program,
     Value& out,
     VmError& err)
 {
+    if (invocationAudit_ != nullptr) {
+        err.code = ScriptDiagnosticCode::HostError;
+        err.message = "SCRIPT-INVOCATION-AUDIT-SUSPENSION-UNSUPPORTED";
+        return false;
+    }
     if (funcIndex < 0 || funcIndex >= static_cast<int>(program.functions.size())) {
         err.code = ScriptDiagnosticCode::InvalidOpcode;
         err.message = "invalid generator function index";
@@ -2188,7 +2291,7 @@ Value Vm::executeFrameRef(const Program& program,
         && frame.locals.size() == static_cast<std::size_t>(frame.function->locals)) {
         if (validatedProgram_.hasVerifiedStackBoundOwned(frame.function) && !injectError
             && frame.ip == 0 && frame.stack.empty() && frame.handlers.empty()) {
-            if (callBridge_ == nullptr
+            if (invocationAudit_ == nullptr && callBridge_ == nullptr
                 && validatedProgram_.hasScalarDispatchOwned(frame.function)) {
                 Value result = Value::undefined();
                 const auto status =
@@ -3313,6 +3416,16 @@ dispatch:
             const ScriptMethod* method;
             const ScriptClosure* closure;
             calleeSlot.scriptCallable(method, closure);
+            if (invocationAudit_ != nullptr
+                && ((method && method->aotModule != nullptr)
+                    || (closure
+                        && (closure->aotModule != nullptr || closure->bridge != nullptr
+                            || (closure->programOwner && closure->programOwner.get() != &program)
+                            || (closure->vmOwner && closure->vmOwner.get() != this))))) {
+                err.code = ScriptDiagnosticCode::HostError;
+                err.message = "SCRIPT-INVOCATION-AUDIT-CALLABLE-UNSUPPORTED";
+                goto error_exit;
+            }
             const bool localClosure = closure != nullptr && closure->aotModule == nullptr
                 && (closure->vmOwner == nullptr || closure->vmOwner.get() == this);
             const int localIndex = method != nullptr ? method->funcIndex
@@ -4738,6 +4851,11 @@ dispatch:
 
         // ---------- yield ----------
         case Opcode::Yield: {
+            if (invocationAudit_ != nullptr) {
+                err.code = ScriptDiagnosticCode::HostError;
+                err.message = "SCRIPT-INVOCATION-AUDIT-SUSPENSION-UNSUPPORTED";
+                goto error_exit;
+            }
             // Pop the yielded value and return it as a result.
             // Sets a special error code so the caller knows the function
             // suspended rather than returned.
@@ -4769,6 +4887,11 @@ dispatch:
         }
 
         case Opcode::Await: {
+            if (invocationAudit_ != nullptr) {
+                err.code = ScriptDiagnosticCode::HostError;
+                err.message = "SCRIPT-INVOCATION-AUDIT-SUSPENSION-UNSUPPORTED";
+                goto error_exit;
+            }
             Value awaitable = frame.pop<StackProven>(&integerValues);
             Value awaitedResult;
             core::pmr::String awaitDiagnostics{&res};

@@ -6551,6 +6551,50 @@ void testPrivateStringAppend()
     }
 }
 
+void testMixedArgumentConversions()
+{
+    const char* source = R"ARP(
+def mark(order: [int], value: int) -> int:
+    order.append(value)
+    return value
+
+def tag(order: [int]) -> string:
+    order.append(9)
+    return "tail"
+
+def mixed(first: int64, second: int64, tail: string) -> int64:
+    if tail != "tail":
+        raise "lost trailing argument"
+    return first * 10 + second
+
+class MixedArguments:
+    value: int64
+    def __init__(self, first: int64, second: int64, tail: string):
+        self.value = mixed(first, second, tail)
+    def apply(self, first: int64, second: int64, tail: string) -> int64:
+        return mixed(first, second, tail)
+
+def test() -> int:
+    var order: [int] = []
+    var direct: int64 = mixed(mark(order, 1), mark(order, 2), tag(order))
+    var callback: (int64, int64, string) -> int64 = mixed
+    var indirect: int64 = callback(mark(order, 3), mark(order, 4), tag(order))
+    var object: MixedArguments = MixedArguments(mark(order, 5), mark(order, 6), tag(order))
+    var method: int64 = object.apply(mark(order, 7), mark(order, 8), tag(order))
+    if order.length() != 12:
+        raise "argument evaluation count changed"
+    if order[0] != 1 or order[1] != 2 or order[2] != 9 or order[3] != 3 or order[4] != 4 or order[5] != 9:
+        raise "direct or indirect argument order changed"
+    if order[6] != 5 or order[7] != 6 or order[8] != 9 or order[9] != 7 or order[10] != 8 or order[11] != 9:
+        raise "constructor or method argument order changed"
+    return (direct + indirect + object.value + method) as int
+)ARP";
+    const auto result = runSource(source, "mixed argument conversions");
+    require(result.ok(), "mixed numeric arguments preserve trailing value and evaluation order");
+    if (result.ok())
+        requireInt(result.value, 180, "mixed numeric arguments convert their own stack slots");
+}
+
 } // namespace
 
 int main()
@@ -6639,6 +6683,7 @@ int main()
     testScalarExpressionPlans();
     testIntegerExpressionExecution();
     testStringKeyIndexReplay();
+    testMixedArgumentConversions();
 
     if (g_failures > 0) {
         std::printf("\n%d test(s) FAILED\n", g_failures);

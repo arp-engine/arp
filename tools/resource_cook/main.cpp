@@ -10,7 +10,7 @@ int main(int argc, char** argv)
 {
     if (argc != 4) {
         std::cerr
-            << "usage: arp_resource_cook manifest.yaml source-root output-directory\n       arp_resource_cook --package package-directory output-directory\n       arp_resource_cook --document input.yaml output.arpbin\n";
+            << "usage: arp_resource_cook manifest.yaml source-root output-directory\n       arp_resource_cook --package package-directory output-directory\n       arp_resource_cook --pack loose-cooked-directory output-directory\n       arp_resource_cook --document input.yaml output.arpbin\n";
         return 2;
     }
     try {
@@ -37,7 +37,9 @@ int main(int argc, char** argv)
             return 0;
         }
         auto codecs = arp::resource::makePrefabCookedResourceCodecs();
-        auto result = std::string_view(argv[1]) == "--package"
+        auto result = std::string_view(argv[1]) == "--pack"
+            ? arp::resource::ResourceCookService().pack(argv[2], argv[3], codecs)
+            : std::string_view(argv[1]) == "--package"
             ? arp::resource::ResourceCookService().cookPackage(argv[2], argv[3], codecs)
             : arp::resource::ResourceCookService().cookManifest(argv[1], argv[2], argv[3], codecs);
         if (!result.success) {

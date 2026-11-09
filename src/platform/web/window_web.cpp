@@ -343,6 +343,10 @@ bool PlatformWindow::hidden() const
     return state != nullptr ? state->hidden : true;
 }
 
+void PlatformWindow::setCursorVisible(bool)
+{
+}
+
 PlatformSurfaceKind PlatformWindow::surfaceKind() const
 {
     return PlatformSurfaceKind::WebCanvas;

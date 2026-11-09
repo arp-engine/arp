@@ -1,6 +1,7 @@
 #include "resource/resource_domain.h"
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <stdexcept>
 #include <thread>
@@ -8,11 +9,18 @@
 namespace arp::resource {
 namespace detail {
 struct ResourceLeaseState {
+    ~ResourceLeaseState()
+    {
+        if (released)
+            released->store(true, std::memory_order_release);
+    }
+
     ResourceIdentity identity;
     ResourceHandle<ResourceBase> handle;
     core::LifetimeEpoch::Ticket lifetime;
     std::thread::id owner;
     core::SharedPtr<void> keepAlive;
+    core::SharedPtr<std::atomic<bool>> released;
 };
 } // namespace detail
 
@@ -63,6 +71,13 @@ bool sameDependencies(
 struct ResourceDomain::Impl : ResourceLifecycleObserver {
     enum class State { Dormant, Loading, Ready, Failed };
     struct Job;
+    struct Entry;
+
+    struct Edge {
+        Entry* parent;
+        Entry* child;
+        Edge* next = nullptr;
+    };
 
     struct Entry {
         ResourceIdentity identity;
@@ -75,7 +90,51 @@ struct ResourceDomain::Impl : ResourceLifecycleObserver {
         core::UniquePtr<Job> job;
         const char* failure = nullptr;
         core::pmr::String diagnostics{&core::defaultCpuMemoryResource()};
+        core::pmr::Vector<Edge> edges{&core::defaultCpuMemoryResource()};
+        Edge* incoming = nullptr;
+        std::size_t unresolved = 0;
+        bool connected = false;
+        Entry* readyNext = nullptr;
+        Entry* dirtyNext = nullptr;
+        bool readyQueued = false;
+        bool dirtyQueued = false;
     };
+
+    // Entries have stable addresses and queues are bounded by maxResources.
+    // Completion and release propagation never allocate queue nodes.
+    template <Entry* Entry::* Next, bool Entry::* Queued> struct Queue {
+        Entry* head = nullptr;
+        Entry* tail = nullptr;
+
+        void push(Entry& entry) noexcept
+        {
+            if (entry.*Queued)
+                return;
+            entry.*Queued = true;
+            entry.*Next = nullptr;
+            if (tail)
+                tail->*Next = &entry;
+            else
+                head = &entry;
+            tail = &entry;
+        }
+
+        Entry* pop() noexcept
+        {
+            auto* entry = head;
+            if (entry) {
+                head = entry->*Next;
+                if (!head)
+                    tail = nullptr;
+                entry->*Next = nullptr;
+                entry->*Queued = false;
+            }
+            return entry;
+        }
+    };
+
+    Queue<&Entry::readyNext, &Entry::readyQueued> ready;
+    Queue<&Entry::dirtyNext, &Entry::dirtyQueued> dirty;
 
     struct Job {
         core::SharedPtr<Impl> owner;
@@ -85,6 +144,7 @@ struct ResourceDomain::Impl : ResourceLifecycleObserver {
 
     struct Request {
         Entry* root = nullptr;
+        Entry* failure = nullptr;
         core::pmr::Vector<Entry*> closure{&core::defaultCpuMemoryResource()};
         ResourceAcquireCompletion complete;
         core::runtime::CancellationToken cancellation;
@@ -108,6 +168,7 @@ struct ResourceDomain::Impl : ResourceLifecycleObserver {
     };
 
     core::pmr::Vector<Pin> leases{&core::defaultCpuMemoryResource()};
+    core::SharedPtr<std::atomic<bool>> leasesReleased = core::makeShared<std::atomic<bool>>(false);
     ResourceDomainTelemetry stats;
     Entry* unloading = nullptr;
     bool closed = false, pumping = false;
@@ -149,15 +210,22 @@ struct ResourceDomain::Impl : ResourceLifecycleObserver {
 
     bool isOwner() const noexcept { return owner == std::this_thread::get_id(); }
 
-    ResourceDomainResult closure(
-        Entry& root, core::pmr::Vector<Entry*>& output, const decltype(entries)* staged = nullptr)
+    using VisitColors = core::pmr::Map<Entry*, unsigned>;
+
+    ResourceDomainResult closure(Entry& root,
+        core::pmr::Vector<Entry*>& output,
+        const decltype(entries)* staged = nullptr,
+        VisitColors* visited = nullptr)
     {
         struct Frame {
             Entry* entry;
             std::size_t next = 0;
         };
 
-        core::pmr::Map<Entry*, unsigned> colors{&core::defaultCpuMemoryResource()};
+        VisitColors local{&core::defaultCpuMemoryResource()};
+        auto& colors = visited ? *visited : local;
+        if (colors[&root] == 2)
+            return result(ResourceAcquireStatus::Accepted);
         core::pmr::Vector<Frame> stack{&core::defaultCpuMemoryResource()};
         stack.push_back({&root});
         colors[&root] = 1;
@@ -199,9 +267,57 @@ struct ResourceDomain::Impl : ResourceLifecycleObserver {
     {
         if (!entry.holdsDependencies)
             return;
-        for (const auto& dependency : entry.dependencies)
-            --entries.find(dependency.id)->second->parents;
+        for (const auto& edge : entry.edges) {
+            --edge.child->parents;
+            dirty.push(*edge.child);
+        }
         entry.holdsDependencies = false;
+    }
+
+    void enqueueReady(Entry& entry) noexcept
+    {
+        if (entry.state == State::Dormant && entry.pending && !entry.unresolved)
+            ready.push(entry);
+    }
+
+    void connect(Entry& entry)
+    {
+        if (entry.connected)
+            return;
+        entry.edges.reserve(entry.dependencies.size());
+        for (const auto& dependency : entry.dependencies) {
+            auto* child = entries.at(dependency.id).get();
+            entry.edges.push_back({&entry, child});
+        }
+        // All allocations precede linking. Once connected, edges never move.
+        for (auto& edge : entry.edges) {
+            edge.next = edge.child->incoming;
+            edge.child->incoming = &edge;
+            entry.unresolved += edge.child->state != State::Ready;
+        }
+        entry.connected = true;
+    }
+
+    void setState(Entry& entry, State state) noexcept
+    {
+        const bool wasReady = entry.state == State::Ready;
+        entry.state = state;
+        if (wasReady != (state == State::Ready))
+            for (auto* edge = entry.incoming; edge; edge = edge->next) {
+                if (wasReady)
+                    ++edge->parent->unresolved;
+                else
+                    --edge->parent->unresolved;
+                enqueueReady(*edge->parent);
+            }
+        enqueueReady(entry);
+        dirty.push(entry);
+        if (state == State::Failed)
+            for (auto& request : requests)
+                if (!request->failure
+                    && std::find(request->closure.begin(), request->closure.end(), &entry)
+                        != request->closure.end())
+                    request->failure = &entry;
     }
 
     static void loaded(void* context, ResourceGraphExecutionResult completed) noexcept
@@ -211,9 +327,10 @@ struct ResourceDomain::Impl : ResourceLifecycleObserver {
         auto& entry = *job->entry;
         --self->stats.inFlightLoads;
         const bool cancelled = completed.fileStatus == core::io::FileIoStatus::Cancelled;
-        entry.state = cancelled          ? State::Dormant
-            : completed.resource.success ? State::Ready
-                                         : State::Failed;
+        self->setState(entry,
+            cancelled                        ? State::Dormant
+                : completed.resource.success ? State::Ready
+                                             : State::Failed);
         entry.failure =
             completed.diagnosticId ? completed.diagnosticId : "RESOURCE-DOMAIN-LOAD-FAILED";
         entry.diagnostics = std::move(completed.resource.diagnostics);
@@ -234,31 +351,25 @@ struct ResourceDomain::Impl : ResourceLifecycleObserver {
     {
         if (closed)
             return;
-        for (auto& [id, owned] : entries) {
-            auto& entry = *owned;
-            if (stats.inFlightLoads == budget.maxInFlightLoads)
-                break;
-            if (entry.state != State::Dormant || !entry.pending)
-                continue;
-            bool ready = true;
-            for (const auto& dependency : entry.dependencies)
-                ready &= entries.at(dependency.id)->state == State::Ready;
-            if (!ready)
+        while (ready.head && stats.inFlightLoads < budget.maxInFlightLoads) {
+            auto& entry = *ready.pop();
+            const auto& id = entry.identity.id;
+            if (entry.state != State::Dormant || !entry.pending || entry.unresolved)
                 continue;
             try {
                 auto descriptor = entry.factory();
                 if (!descriptor || descriptor->reference().id != id
                     || descriptor->reference().type != entry.identity.type
                     || !sameDependencies(descriptor->dependencies(), entry.dependencies)) {
-                    entry.state = State::Failed;
+                    setState(entry, State::Failed);
                     entry.failure = "RESOURCE-DOMAIN-FACTORY-CONFLICT";
                     continue;
                 }
                 auto job = core::makeUnique<Job>();
                 job->owner = self;
                 job->entry = &entry;
-                for (const auto& dependency : entry.dependencies)
-                    ++entries.at(dependency.id)->parents;
+                for (const auto& edge : entry.edges)
+                    ++edge.child->parents;
                 entry.holdsDependencies = true;
                 entry.job = std::move(job);
                 entry.state = State::Loading;
@@ -275,11 +386,16 @@ struct ResourceDomain::Impl : ResourceLifecycleObserver {
                     --stats.inFlightLoads;
                     entry.job.reset();
                     releaseDependencies(entry);
-                    entry.state = State::Failed;
+                    setState(entry, State::Failed);
                     entry.failure = "RESOURCE-DOMAIN-LOAD-SUBMISSION";
                 }
             } catch (...) {
-                entry.state = State::Failed;
+                if (entry.job) {
+                    --stats.inFlightLoads;
+                    entry.job.reset();
+                    releaseDependencies(entry);
+                }
+                setState(entry, State::Failed);
                 entry.failure = "RESOURCE-DOMAIN-FACTORY-ALLOCATION";
             }
         }
@@ -298,12 +414,7 @@ struct ResourceDomain::Impl : ResourceLifecycleObserver {
                 completion.result =
                     result(ResourceAcquireStatus::Cancelled, "RESOURCE-DOMAIN-CANCELLED");
             else {
-                Entry* failure = nullptr;
-                for (auto* entry : request.closure)
-                    if (entry->state == State::Failed) {
-                        failure = entry;
-                        break;
-                    }
+                Entry* failure = request.failure;
                 if (failure) {
                     completion.result = result(ResourceAcquireStatus::Failed, failure->failure);
                     try {
@@ -321,6 +432,7 @@ struct ResourceDomain::Impl : ResourceLifecycleObserver {
                             lease->handle = manager.find<ResourceBase>(request.root->identity.id);
                             lease->lifetime = lifetime.ticket();
                             lease->owner = owner;
+                            lease->released = leasesReleased;
                             if (ownedManager)
                                 lease->keepAlive = self.lock();
                             leases.push_back({request.root, lease});
@@ -340,8 +452,10 @@ struct ResourceDomain::Impl : ResourceLifecycleObserver {
             }
             auto released = std::move(requests[i]);
             requests.erase(requests.begin() + static_cast<std::ptrdiff_t>(i));
-            for (auto* entry : released->closure)
+            for (auto* entry : released->closure) {
                 --entry->pending;
+                dirty.push(*entry);
+            }
             ++delivered;
             released->complete(std::move(completion));
         }
@@ -349,48 +463,53 @@ struct ResourceDomain::Impl : ResourceLifecycleObserver {
 
     bool collect()
     {
-        for (auto it = leases.begin(); it != leases.end();) {
-            if (it->state.expired()) {
-                --it->root->roots;
-                it = leases.erase(it);
-            } else
-                ++it;
+        if (leasesReleased->exchange(false, std::memory_order_acq_rel)) {
+            for (auto it = leases.begin(); it != leases.end();) {
+                if (it->state.expired()) {
+                    --it->root->roots;
+                    dirty.push(*it->root);
+                    it = leases.erase(it);
+                } else
+                    ++it;
+            }
         }
-        bool deferred = false, changed = true;
-        while (changed) {
-            changed = false;
+        // An owned manager cannot be mutated outside this domain. Borrowed
+        // managers retain the external-generation check on explicit dispatch.
+        if (!ownedManager)
             for (auto& [id, owned] : entries) {
                 auto& entry = *owned;
                 if (entry.state == State::Ready
                     && (manager.stateOf(id) != ResourceState::Ready
                         || manager.generationOf(id) != entry.generation)) {
-                    entry.state = State::Failed;
+                    setState(entry, State::Failed);
                     entry.failure = "RESOURCE-DOMAIN-EXTERNAL-GENERATION";
                     releaseDependencies(entry);
-                    continue;
                 }
-                if (entry.roots || entry.parents || entry.pending)
-                    continue;
-                if (entry.state == State::Loading) {
-                    entry.job->cancellation.cancel();
-                    continue;
-                }
-                if (entry.state != State::Ready)
-                    continue;
-                unloading = &entry;
-                auto disposed = manager.unload(id);
-                unloading = nullptr;
-                if (!disposed.success) {
-                    deferred = true;
-                    continue;
-                }
-                entry.state = State::Dormant;
-                releaseDependencies(entry);
-                ++stats.releasedResources;
-                changed = true;
             }
+        decltype(dirty) deferred;
+        while (auto* candidate = dirty.pop()) {
+            auto& entry = *candidate;
+            if (entry.roots || entry.parents || entry.pending)
+                continue;
+            if (entry.state == State::Loading) {
+                entry.job->cancellation.cancel();
+                continue;
+            }
+            if (entry.state != State::Ready)
+                continue;
+            unloading = &entry;
+            auto disposed = manager.unload(entry.identity.id);
+            unloading = nullptr;
+            if (!disposed.success) {
+                deferred.push(entry);
+                continue;
+            }
+            setState(entry, State::Dormant);
+            releaseDependencies(entry);
+            ++stats.releasedResources;
         }
-        return !deferred;
+        dirty = deferred;
+        return !dirty.head;
     }
 };
 
@@ -439,6 +558,13 @@ ResourceDomainResult ResourceDomain::registerResource(
 {
     ResourceRegistration registration{std::move(identity), std::move(factory)};
     return registerResourcesImpl({&registration, 1}, false);
+}
+
+core::runtime::WorkSubmitResult ResourceDomain::submitPreparation(core::runtime::WorkItem item)
+{
+    if (!impl_->manager.isOwnerThread() || impl_->closed)
+        return {core::runtime::WorkServiceStatus::ServiceClosed, {}};
+    return impl_->runtime.workService().submit(std::move(item));
 }
 
 ResourceDomainResult ResourceDomain::registerResources(
@@ -514,17 +640,20 @@ ResourceDomainResult ResourceDomain::registerResourcesImpl(
             entry->dependencies = dependencies;
             staged.emplace(identity.id, std::move(entry));
         }
-        if (requireCompleteClosure)
+        if (requireCompleteClosure) {
+            Impl::VisitColors visited{&core::defaultCpuMemoryResource()};
+            core::pmr::Vector<Impl::Entry*> closure{&core::defaultCpuMemoryResource()};
             for (const auto& registration : registrations) {
                 const auto candidate = staged.find(registration.identity.id);
                 auto* root = candidate != staged.end()
                     ? candidate->second.get()
                     : self.entries.find(registration.identity.id)->second.get();
-                core::pmr::Vector<Impl::Entry*> closure{&core::defaultCpuMemoryResource()};
-                const auto planned = self.closure(*root, closure, &staged);
+                closure.clear();
+                const auto planned = self.closure(*root, closure, &staged, &visited);
                 if (!planned.success())
                     return planned;
             }
+        }
         // Both maps use the core allocator. Node transfer performs no allocation;
         // publication cannot fail halfway after all validation/allocation above.
         self.entries.merge(staged);
@@ -559,6 +688,8 @@ ResourceDomainResult ResourceDomain::acquireAsync(const ResourceIdentity& identi
         const auto planned = self.closure(*request->root, request->closure);
         if (!planned.success())
             return planned;
+        for (auto* entry : request->closure)
+            self.connect(*entry);
         for (auto* entry : request->closure) {
             if (entry->state == Impl::State::Ready
                 && (self.manager.stateOf(entry->identity.id) != ResourceState::Ready
@@ -571,6 +702,11 @@ ResourceDomainResult ResourceDomain::acquireAsync(const ResourceIdentity& identi
                 entry->diagnostics.clear();
             }
         }
+        for (auto* entry : request->closure)
+            if (entry->state == Impl::State::Failed) {
+                request->failure = entry;
+                break;
+            }
         if (request->root->state == Impl::State::Ready)
             ++self.stats.readyHits;
         else if (request->root->pending)
@@ -578,8 +714,10 @@ ResourceDomainResult ResourceDomain::acquireAsync(const ResourceIdentity& identi
         request->complete = std::move(completion);
         request->cancellation = std::move(cancellation);
         self.requests.push_back(std::move(request));
-        for (auto* entry : self.requests.back()->closure)
+        for (auto* entry : self.requests.back()->closure) {
             ++entry->pending;
+            self.enqueueReady(*entry);
+        }
         return result(ResourceAcquireStatus::Accepted);
     } catch (...) {
         return result(ResourceAcquireStatus::BudgetExceeded, "RESOURCE-DOMAIN-REQUEST-ALLOCATION");
@@ -654,6 +792,27 @@ ResourceDomainResult ResourceDomain::dispatch(std::size_t maxCallbacks)
     return dispatchImpl(maxCallbacks);
 }
 
+ResourceDomainResult ResourceDomain::dispatchFor(
+    std::chrono::steady_clock::duration duration, std::size_t maxCallbacks)
+{
+    if (!impl_->isOwner())
+        return result(ResourceAcquireStatus::InvalidRequest, "RESOURCE-DOMAIN-OWNER");
+    if (duration <= std::chrono::steady_clock::duration::zero() || !maxCallbacks)
+        return result(ResourceAcquireStatus::InvalidRequest, "RESOURCE-DOMAIN-DISPATCH-BUDGET");
+    const auto deadline = std::chrono::steady_clock::now() + duration;
+    do {
+        const auto dispatched = dispatch(maxCallbacks);
+        if (!dispatched.success() || impl_->closed || impl_->requests.empty())
+            return dispatched;
+        if (std::chrono::steady_clock::now() >= deadline)
+            break;
+        if (impl_->ready.head && impl_->stats.inFlightLoads < impl_->budget.maxInFlightLoads)
+            continue;
+        impl_->runtime.completionQueue().waitUntil(deadline);
+    } while (std::chrono::steady_clock::now() < deadline);
+    return result(ResourceAcquireStatus::Accepted);
+}
+
 ResourceDomainResult ResourceDomain::dispatchImpl(std::size_t maxCallbacks)
 {
     auto self = impl_;
@@ -699,6 +858,7 @@ ResourceDomainResult ResourceDomain::close()
         self->leases.clear();
         for (auto& [id, entry] : self->entries) {
             entry->roots = 0;
+            self->dirty.push(*entry);
             if (entry->job)
                 entry->job->cancellation.cancel();
         }

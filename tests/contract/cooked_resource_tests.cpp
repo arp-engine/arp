@@ -43,11 +43,19 @@ struct Probe : ResourceBase {
 
 struct Counts {
     std::array<std::atomic<unsigned>, 5> prepared{};
+    std::atomic<unsigned> metadataRestores{0};
 };
 
 class Codec final : public ReflectedCookedResourceCodec<Probe> {
 public:
     explicit Codec(Counts& counts) : counts_(counts) {}
+
+    core::UniquePtr<ResourceBase> descriptor(
+        core::SharedPtr<const CookedResourceSpec> spec) const override
+    {
+        ++counts_.metadataRestores;
+        return ReflectedCookedResourceCodec<Probe>::descriptor(std::move(spec));
+    }
 
     CookedBytes cookPayload(const ResourceBase& base,
         const std::filesystem::path&,
@@ -185,8 +193,26 @@ void run(const std::filesystem::path& root)
     desc.enableThreadPoolFileBackend = false;
     desc.fileBackend = observer;
     core::runtime::AsyncRuntime runtime(desc);
+    counts.metadataRestores = 0;
     auto plan = CookedResourceLoader().plan(root / "a", runtime, codecs);
     check(plan.success, plan.diagnostics.c_str());
+    check(counts.metadataRestores == plan.catalog.entries().size(),
+        "typed metadata was restored more than once while planning");
+    for (const auto& registration : plan.registrations) {
+        auto first = registration.factory();
+        auto second = registration.factory();
+        auto& value = dynamic_cast<Probe&>(*first);
+        const auto& independent = dynamic_cast<const Probe&>(*second);
+        const auto original = independent.seed;
+        value.seed = -77;
+        value.data.assign(32, 9);
+        auto third = registration.factory();
+        check(independent.seed == original && independent.data.empty()
+                && dynamic_cast<const Probe&>(*third).seed == original,
+            "repeatable prepared descriptor shared mutable state");
+    }
+    check(counts.metadataRestores == plan.catalog.entries().size(),
+        "owner descriptor factory repeated binary reflection parsing");
     check(plan.metadataReadBytes < 65536, "phase one read payload");
     check(observer->reads.size() == 1 + plan.catalog.entries().size() * 2,
         "unexpected phase one reads");
@@ -204,6 +230,8 @@ void run(const std::filesystem::path& root)
     ResourceManager manager;
     ResourceDomain domain(manager, runtime, domainBudget());
     check(CookedResourceLoader().registerPlan(plan, domain).success, "register");
+    check(counts.metadataRestores == plan.catalog.entries().size(),
+        "registration restored typed metadata on the owner");
     check(domain.stateOf(ids[0]) == ResourceState::Declared && readyCount(manager) == 0,
         "phase one readiness");
     ResourceLease first, second;
@@ -269,6 +297,78 @@ void run(const std::filesystem::path& root)
         std::this_thread::yield();
     }
     check(readyCount(manager) == 0, "cancelled residency published");
+    // Packed layout keeps Stage1 to one metadata-only read. Stage2 still reads
+    // exactly the requested diamond, with independent ranges in one container.
+    {
+        auto packed = ResourceCookService().pack(root / "a", root / "packed-a", codecs);
+        check(packed.success, packed.diagnostics.c_str());
+        check(ResourceCookService().pack(root / "a", root / "packed-b", codecs).success,
+            "repeat pack");
+        unsigned files = 0;
+        for (const auto& file : std::filesystem::directory_iterator(root / "packed-a")) {
+            const auto a = core::readBinaryFile(file.path());
+            const auto b = core::readBinaryFile(root / "packed-b" / file.path().filename());
+            check(a.success && b.success && a.bytes == b.bytes, "nondeterministic pack");
+            ++files;
+        }
+        check(files == 2, "pack did not consolidate files");
+        const auto beforeCatalog = core::readBinaryFile(root / "packed-b/catalog.arpbin");
+        check(!ResourceCookService().pack(root / "a", root / "packed-b", codecs).success
+                && core::readBinaryFile(root / "packed-b/catalog.arpbin").bytes
+                    == beforeCatalog.bytes,
+            "failed pack replaced existing output");
+        auto observed = core::makeShared<ObservedBackend>();
+        auto packedDesc = desc;
+        packedDesc.fileBackend = observed;
+        core::runtime::AsyncRuntime packedRuntime(packedDesc);
+        auto packedPlan = CookedResourceLoader().plan(root / "packed-a", packedRuntime, codecs);
+        check(packedPlan.success, packedPlan.diagnostics.c_str());
+        check(observed->reads.size() == 1
+                && std::filesystem::path(observed->reads.front().path).filename()
+                    == "catalog.arpbin",
+            "packed Stage1 touched payload");
+        ResourceManager packedManager;
+        ResourceDomain packedDomain(packedManager, packedRuntime, domainBudget());
+        check(CookedResourceLoader().registerPlan(packedPlan, packedDomain).success,
+            "packed registration");
+        for (const auto& e : packedPlan.catalog.entries())
+            check(e.contentVersion == plan.catalog.find(e.reference.id)->contentVersion,
+                "physical packing changed resource content identity");
+        const auto untouched = counts.prepared[4].load();
+        auto acquired = packedDomain.acquire(identity);
+        check(acquired.lease.ready() && acquired.lease.get<Probe>()->seed == 3,
+            "packed diamond acquisition");
+        check(observed->reads.size() == 5 && counts.prepared[4] == untouched,
+            "packed load read unrelated resource or duplicate diamond");
+        for (std::size_t i = 1; i < observed->reads.size(); ++i)
+            check(std::filesystem::path(observed->reads[i].path).filename() == "payload.arpbin"
+                    && observed->reads[i].range.mode == core::io::FileReadRangeMode::ExactRange
+                    && observed->reads[i].range.size == 65536,
+                "packed payload range lost");
+        acquired.lease.reset();
+        packedDomain.collect();
+        check(readyCount(packedManager) == 0, "packed closure leaked");
+        auto payload = core::readBinaryFile(root / "packed-a/payload.arpbin");
+        std::size_t offset = 0;
+        for (const auto& e : packedPlan.catalog.entries()) {
+            if (e.reference.id == ids[3])
+                payload.bytes[offset] ^= 1;
+            offset += e.payloadBytes;
+        }
+        write(root / "packed-a/payload.arpbin", payload.bytes);
+        check(CookedResourceLoader().plan(root / "packed-a", packedRuntime, codecs).success,
+            "packed Stage1 checked payload bytes");
+        auto damaged = packedDomain.acquire(identity);
+        check(!damaged.lease.ready() && !damaged.result.success() && readyCount(packedManager) == 0,
+            "damaged packed payload was admitted");
+        auto metadata = core::readBinaryFile(root / "packed-a/catalog.arpbin");
+        metadata.bytes.back() ^= 1;
+        write(root / "packed-a/catalog.arpbin", metadata.bytes);
+        check(!CookedResourceLoader().plan(root / "packed-a", packedRuntime, codecs).success,
+            "damaged packed metadata accepted");
+        std::cout
+            << "PASS deterministic pack, single-read Stage1, lazy diamond ranges and independent integrity\n";
+    }
     // A corrupt payload is invisible in stage one, and fails lazily without a Ready root.
     auto entry = plan.catalog.find(ids[3]);
     auto bytes = core::readBinaryFile(root / "a" / std::filesystem::path(entry->file));
